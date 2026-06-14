@@ -236,6 +236,8 @@ const webhookEndpoints = `
 content = content.replace('app.post("/api/setup-telegram", ', webhookEndpoints);
 
 fs.writeFileSync('server.ts', content);
+// تمام کدهای انتهای فایل را با این جایگزین کن:
+
 const n8nEndpoint = `
   app.post("/api/n8n-check-slots", async (req, res) => {
     try {
@@ -247,7 +249,10 @@ const n8nEndpoint = `
       res.status(500).json({ error: "Failed to fetch slots" });
     }
   });
-`;
 
-// سپس این کد را به محتویاتِ server.ts اضافه کنید (شبیه به همان کاری که برای webhook کردید)
-content = content.replace('app.post("/api/setup-telegram", ', n8nEndpoint + "\napp.post(\"/api/setup-telegram\", ");
+  app.post("/api/setup-telegram", `; // اینجا دکمه را می‌بندیم و Route اصلی را اضافه می‌کنیم
+
+// حالا یکبار replace نهایی را انجام بده:
+content = content.replace('app.post("/api/setup-telegram", ', webhookEndpoints + "\n" + n8nEndpoint);
+
+fs.writeFileSync('server.ts', content);

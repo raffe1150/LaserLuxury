@@ -1,0 +1,8 @@
+{
+  "name": "Laser Luxury Agent",
+  "description": "Multi-channel AI agent sandbox for a Gothenburg laser clinic.",
+  "requestFramePermissions": [
+    "microphone"
+  ],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -158,6 +158,7 @@ OFFICIAL SERVICES & PRICE LIST - LASER LUXURY:
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
+          messaging_type: "RESPONSE",
             recipient: { id: senderId },
             message: { text: textResponse }
           })
@@ -177,6 +178,7 @@ OFFICIAL SERVICES & PRICE LIST - LASER LUXURY:
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
+              messaging_type: "RESPONSE",
                 recipient: { id: senderId },
                 message: { text: "Ursäkta, jag stötte på ett tekniskt problem. Kan du försöka igen om en stund?" }
               })

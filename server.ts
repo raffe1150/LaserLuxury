@@ -1283,7 +1283,7 @@ OFFICIAL SERVICES & PRICE LIST - LASER LUXURY:
       let finalSystemInstruction = (activeConfig.systemPrompt || "") + currentDateContext + constraint;
       if (incomingAudioData) {
           finalSystemInstruction += 
-            "\nVoice specific instructions: You officially support 4 languages: Swedish, Persian (Farsi), English, and Spanish.\n" +
+            "\nVoice specific instructions: You officially support 7 languages: Swedish, German/Tyska, Italian, Portuguese, Persian (Farsi), English, and Spanish.\n" +
             "CRITICAL: Detect the language the user is speaking, and you MUST reply in that exact same language.\n" +
             "CRITICAL CONSTRAINT: Keep response max 60 words, use memory of checked slots if applicable, otherwise use `checkSlots` immediately!!";
       }

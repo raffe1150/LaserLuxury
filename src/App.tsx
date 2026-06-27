@@ -10,7 +10,7 @@ interface Salon {
 
 type Language = 'EN' | 'FA' | 'SV' | 'ES' | 'DE';
 
-export function ConfigPanel() {
+export default function App() {
   const [activeTab, setActiveTab] = useState<'dashboard' | 'salons' | 'settings'>('dashboard');
   const [language, setLanguage] = useState<Language>('EN');
   

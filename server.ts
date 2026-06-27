@@ -636,7 +636,11 @@ async function processTelegramUpdate(update: any, config: any, platform: string 
         }
       }
     }
-    // 🌟 پایان تزریق
+       // 🌟 پایان تزریق
+
+  } catch (tenantErr) {
+    console.error("Tenant config injection failed:", tenantErr);
+  }
 
   try {
     const text = update.message.text;

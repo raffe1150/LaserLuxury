@@ -611,10 +611,37 @@ async function processTelegramUpdate(update: any, config: any, platform: string 
   if (!update.message.chat) return;
 
   const chatId = update.message.chat.id;
+  try {
+    // 🌟 تزریق پایگاه داده برای بارگذاری پویای اطلاعات بیزینس
+    if (supabase) {
+      const { data: sessionData } = await supabase
+        .from('chat_history')
+        .select('business_id')
+        .eq('user_id', chatId.toString())
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (sessionData && sessionData.business_id) {
+        const { data: activeTenant } = await supabase
+          .from('businesses')
+          .select('*')
+          .eq('id', sessionData.business_id)
+          .single();
+
+        if (activeTenant) {
+          config.telegramToken = activeTenant.telegram_bot_token;
+          config.googleCalendarId = activeTenant.google_calendar_id;
+          config.systemPrompt = activeTenant.custom_system_prompt;
+        }
+      }
+    }
+    // 🌟 پایان تزریق
 
   try {
     const text = update.message.text;
     const voice = update.message.voice;
+    
     
     const ai = new GoogleGenAI({ apiKey: apiKey || process.env.GEMINI_API_KEY });
     if (!chatSessions[chatId]) chatSessions[chatId] = [];
@@ -953,6 +980,31 @@ async function processInstagramUpdate(webhook_event: any, config: any, platform:
 
   const chatId = `ig_${senderId}`;
   const voice = null; 
+  try {
+  // 🌟 تزریق پایگاه داده برای بارگذاری پویای اطلاعات بیزینس (اینستاگرام)
+  if (supabase) {
+    const { data: sessionData } = await supabase
+      .from('chat_history')
+      .select('business_id')
+      .eq('user_id', chatId.toString())
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (sessionData && sessionData.business_id) {
+      const { data: activeTenant } = await supabase
+        .from('businesses')
+        .select('*')
+        .eq('id', sessionData.business_id)
+        .single();
+
+      if (activeTenant && config) {
+        config.systemPrompt = activeTenant.custom_system_prompt;
+        config.googleCalendarId = activeTenant.google_calendar_id;
+      }
+    }
+  }
+  // 🌟 پایان تزریق
 
   try {
     const ai = new GoogleGenAI({ apiKey: config?.apiKey || process.env.GEMINI_API_KEY });
@@ -1373,18 +1425,36 @@ OFFICIAL SERVICES & PRICE LIST - LASER LUXURY:
       let audioDataOut = null;
       let outMimeType = null;
       
-      if (incomingAudioData) {
-         try {
-           const EdgeTTS = (await import('node-edge-tts')).EdgeTTS;
-           let voiceCode = 'en-US-AriaNeural'; // default English
-           const lowerText = textPart.toLowerCase();
-           if (/[\u0600-\u06FF]/.test(textPart)) {
-               voiceCode = 'fa-IR-DilaraNeural'; // Persian
-           } else if (/[åäöÅÄÖ]/i.test(textPart) || /\b(hej|tack|ja|nej|bra|jag|är|en|ett|för)\b/i.test(textPart)) {
-               voiceCode = 'sv-SE-SofieNeural'; // Swedish
-           } else if (/[áéíóúñ¿¡]/i.test(textPart) || /\b(gracias|hola|adiós|sí|claro|por favor|el|la|los|las|y)\b/i.test(textPart)) {
-               voiceCode = 'es-ES-ElviraNeural'; // Spanish
-           }
+     if (incomingAudioData) {
+    try {
+        const EdgeTTS = (await import('node-edge-tts')).EdgeTTS;
+        let voiceCode = 'en-US-AriaNeural'; // default English
+        const lowerText = textPart.toLowerCase();
+
+        // بررسی زبان فارسی
+        if (/[\u0600-\u06FF]/.test(textPart)) {
+            voiceCode = 'fa-IR-DilaraNeural'; 
+            
+        // بررسی زبان سوئدی
+        } else if (/[\u00e4\u00f6\u00e5\u00c4\u00d6\u00c5]/i.test(textPart) || /\b(hej|tack|ja|nej|bra|jag|är|en|ett|för|ledig|boka)\b/i.test(lowerText)) {
+            voiceCode = 'sv-SE-SofieNeural'; 
+            
+        // بررسی زبان اسپانیایی
+        } else if (/[\u00e1\u00e9\u00ed\u00f3\u00fa\u00f1\u00bf\u00a1]/i.test(textPart) || /\b(gracias|hola|adiós|sí|claro|por favor)\b/i.test(lowerText)) {
+            voiceCode = 'es-ES-ElviraNeural'; 
+
+        // ----- فیکسِ قطعی برای آلمانی (با بررسی کلمات رایج آلمانی در پاسخ) -----
+        } else if (/\b(h[aä]ll[oö]|guten|tag|danke|nein|entschuldigung|super|ist|ledig|freitag|uhr|termin)\b/i.test(lowerText) || lowerText.includes(' ist ') || lowerText.includes(' ledig ')) {
+            voiceCode = 'de-DE-KatjaNeural'; // German (آلمانی)
+
+        // بررسی ایتالیایی
+        } else if (/\b(ciao|buongiorno|grazie|prego)\b/i.test(lowerText)) {
+            voiceCode = 'it-IT-ElsaNeural'; // Italian (ایتالیایی)
+
+        // بررسی پرتغالی
+        } else if (/\b(olá|bom dia|obrigado)\b/i.test(lowerText)) {
+            voiceCode = 'pt-PT-DuarteNeural'; // Portuguese (پرتغالی)
+        }
 
            const outName = `/tmp/web_tts_${Date.now()}.mp3`;
            const cleanWebText = sanitizeTTS(textPart);

@@ -1,197 +1,125 @@
 import React, { useState } from 'react';
-import { AgentConfig, Message } from './types';
-import { ConfigPanel } from './components/ConfigPanel';
-import { ChatSandbox } from './components/ChatSandbox';
-
-const DEFAULT_PROMPT = `You are the Multi-Channel AI Agent for 'Laser Luxury', a high-end laser and beauty clinic in Gothenburg, Sweden. 
-Your tone is warm, professional, playful, and friendly. 
-You must answer in the exact language the user speaks: Swedish, English, or Persian (including Finglish).
-
-Your primary goals are:
-1. Provide clinic information (prices, opening hours, treatments).
-2. Help users book an appointment.
-
-CRITICAL: If a user confirms their booking details (date and time) and you finalize it, you MUST include the exact string "[BOOKING_CONFIRMED]" somewhere in your final response message so the system can trigger the calendar synchronization.
-
-CRITICAL CONSTRAINT: Your response for each message MUST be concise and strictly limited to a maximum of 60 words. Never exceed this limit under any circumstances, whether responding in Swedish, English, or Persian or another languages . Keep it brief, professional, and straight to the point.`;
 
 export default function App() {
-  const [config, setConfig] = useState<AgentConfig>(() => {
-    const saved = localStorage.getItem('laserLuxuryConfig');
-    if (saved) {
-      try {
-        return JSON.parse(saved);
-      } catch (e) {
-        console.error("Failed to parse saved config", e);
-      }
-    }
-    return {
-      apiKey: '',
-      instagramToken: '',
-      telegramToken: '',
-      systemPrompt: DEFAULT_PROMPT,
-      calendarProvider: 'google',
-      calendarApiUrl: '',
-      calendarApiKey: '',
-    };
-  });
-  
-  const [isActivated, setIsActivated] = useState(false);
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [isTyping, setIsTyping] = useState(false);
-  const [chatId] = useState(() => 'web-' + Math.random().toString(36).substring(7));
-  const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [businessId, setBusinessId] = useState('');
+  const [telegramToken, setTelegramToken] = useState('');
+  const [calendarId, setCalendarId] = useState('');
+  const [systemPrompt, setSystemPrompt] = useState('');
 
-  const showToast = (message: string, durationMs: number = 4000) => {
-    setToastMessage(message);
-    setTimeout(() => setToastMessage(null), durationMs);
-  };
-
-  const handleSaveSettings = () => {
-    localStorage.setItem('laserLuxuryConfig', JSON.stringify(config));
-    showToast("💾 Settings saved to browser!");
-  };
-
-  const handleToggleActivation = async () => {
-    if (!isActivated) {
-      if (!config.apiKey.trim()) {
-        showToast("Error: Google AI Studio API Key is required to activate!");
-        return;
-      }
-      
-      // Notify backend about config for Telegram webhook
-      try {
-        await fetch('/api/setup-telegram', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(config)
-        });
-      } catch (e) {
-        console.error("Failed to setup backend webhook config:", e);
-      }
-
-      if (config.instagramToken) console.log("✅ Instagram Webhook stub connected using token:", config.instagramToken);
-      if (config.telegramToken) console.log("✅ Telegram Webhook registered using token:", config.telegramToken);
-      
-      // If either webhook token is present, we simulate a successful integration connection
-      if (config.instagramToken || config.telegramToken) {
-         showToast("Systems connected: Webhooks initialized!");
-      }
-    } else {
-      setMessages([]);
-    }
-    setIsActivated(!isActivated);
-  };
-
-  const handleSendMessage = async (text: string, audioData?: string, audioMimeType?: string) => {
-    const newUserMsg: Message = { id: Date.now().toString(), role: 'user', text, audioData, audioMimeType, timestamp: new Date() };
-    setMessages(prev => [...prev, newUserMsg]);
-    setIsTyping(true);
-
-    try {
-      // Send Request to Backend Server
-      const result = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          message: text,
-          history: messages,
-          systemPrompt: config.systemPrompt,
-          apiKey: config.apiKey
-        })
-      });
-
-      const data = await result.json();
-
-      if (!result.ok) {
-        throw new Error(data.error || "Failed to contact AI.");
-      }
-
-      let agentText = data.text || "I'm sorry, I encountered an issue.";
-      let agentAudio = data.audioData;
-      let agentAudioMimeType = data.mimeType;
-      
-      // Process Webhook/Calendar trigger stub
-      if (agentText.includes('[BOOKING_CONFIRMED]')) {
-        agentText = agentText.replace('[BOOKING_CONFIRMED]', '').trim();
-        // The user asked for a specific alert, we utilize the Toast for UI elegance and fallback alert
-        showToast("📅 System Trigger: Booking data sent to Google Calendar API!", 6000);
-      }
-
-      const newAgentMsg: Message = {
-        id: (Date.now() + 1).toString(),
-        role: 'agent',
-        text: agentText,
-        audioData: agentAudio,
-        audioMimeType: agentAudioMimeType,
-        timestamp: new Date()
-      };
-
-      setMessages(prev => [...prev, newAgentMsg]);
-
-    } catch (error: any) {
-      console.error(error);
-      const errorMsg: Message = {
-        id: (Date.now() + 1).toString(),
-        role: 'agent',
-        text: `System Error: ${error.message}. Please check your API key and server connection.`,
-        timestamp: new Date()
-      };
-      setMessages(prev => [...prev, errorMsg]);
-    } finally {
-      setIsTyping(false);
-    }
-  };
-
-  const handleTranscribeAudio = async (audioData: string, mimeType: string): Promise<string> => {
-    try {
-      const result = await fetch('/api/transcribe', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          audioData,
-          mimeType,
-          apiKey: config.apiKey
-        })
-      });
-
-      const data = await result.json();
-
-      if (!result.ok) {
-        throw new Error(data.error || "Failed to transcribe audio.");
-      }
-
-      return data.text || "";
-    } catch (error: any) {
-      console.error(error);
-      showToast(`Transcription Error: ${error.message}`);
-      return "";
-    }
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    // اینجا می توانید اتصال به API دیتابیس (Supabase یا اندپوینت شما) را قرار دهید
+    console.log('Saved:', { businessId, telegramToken, calendarId, systemPrompt });
+    alert('تنظیمات با موفقیت ذخیره شد!');
   };
 
   return (
-    <div className="w-full h-screen bg-slate-50 flex flex-col md:flex-row overflow-hidden font-sans text-slate-800">
-      {/* Config Pannel - Left */}
-      <div className="w-full md:w-[360px] shrink-0 h-[45vh] md:h-screen z-20">
-        <ConfigPanel 
-          config={config} 
-          onConfigChange={setConfig} 
-          isActivated={isActivated}
-          onToggleActivation={handleToggleActivation}
-          onSaveSettings={handleSaveSettings}
-        />
-      </div>
+    <div className="flex h-screen bg-gray-50 font-sans antialiased text-gray-800">
+      {/* سایدبار ناوبری */}
+      <aside className="w-64 bg-indigo-950 text-white flex flex-col justify-between shadow-xl">
+        <div>
+          <div className="h-20 flex items-center px-8 border-b border-indigo-800/50">
+            <span className="text-xl font-bold tracking-wider text-white">Laser Luxury</span>
+          </div>
+          <nav className="mt-8 px-4 space-y-1">
+            <a href="#" className="flex items-center px-4 py-3 text-sm font-medium rounded-lg bg-indigo-900 text-white">
+              <span className="ml-3"> داشبورد</span>
+            </a>
+            <a href="#" className="flex items-center px-4 py-3 text-sm font-medium rounded-lg text-indigo-200 hover:bg-indigo-900/40">
+              <span className="ml-3"> سالن‌ها / مراکز</span>
+            </a>
+            <a href="#" className="flex items-center px-4 py-3 text-sm font-medium rounded-lg text-indigo-200 hover:bg-indigo-900/40">
+              <span className="ml-3"> تنظیمات سیستم</span>
+            </a>
+          </nav>
+        </div>
+        <div className="p-6 border-t border-indigo-800/50 text-xs text-indigo-300">
+          پنل مدیریت انحصاری
+        </div>
+      </aside>
 
-      {/* Main Sandbox Area - Right */}
-      <div className="flex-1 h-[55vh] md:h-screen relative z-10 box-border">
-        <ChatSandbox 
-          messages={messages} 
-          isActivated={isActivated}
-          isTyping={isTyping}
-          onSendMessage={handleSendMessage}
-          onTranscribeAudio={handleTranscribeAudio}
-          toastMessage={toastMessage}
-        />
+      {/* محتوای اصلی */}
+      <div className="flex-1 flex flex-col overflow-y-auto">
+        <header className="h-20 bg-white border-b border-gray-200 flex items-center justify-between px-10 shadow-sm">
+          <h1 className="text-2xl font-semibold text-gray-900">داشبورد مدیریت یکپارچه</h1>
+          <div className="flex items-center space-x-4">
+            <span className="text-sm font-medium text-gray-600">مدیرسیستم</span>
+            <div className="w-10 h-10 rounded-full bg-indigo-100 flex items-center justify-center font-semibold text-indigo-700">
+              A
+            </div>
+          </div>
+        </header>
+
+        <main className="p-10 max-w-5xl">
+          {/* کارت‌های آماری */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-8 mb-10">
+            <div className="bg-white rounded-2xl p-6 border border-gray-200 shadow-sm">
+              <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wider">مراکز فعال</h3>
+              <p className="mt-4 text-4xl font-extrabold text-gray-900">12</p>
+            </div>
+            <div className="bg-white rounded-2xl p-6 border border-gray-200 shadow-sm">
+              <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wider">کل مکالمات</h3>
+              <p className="mt-4 text-4xl font-extrabold text-gray-900">48</p>
+            </div>
+            <div className="bg-white rounded-2xl p-6 border border-gray-200 shadow-sm">
+              <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wider">رزروهای موفق ماه</h3>
+              <p className="mt-4 text-4xl font-extrabold text-gray-900">184</p>
+            </div>
+          </div>
+
+          {/* فرم تنظیمات اختصاصی */}
+          <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-8">
+            <h2 className="text-xl font-bold text-gray-900 mb-6 border-b pb-4">پیکربندی هوش مصنوعی سالن</h2>
+
+            <form onSubmit={handleSubmit} className="space-y-6">
+              <div>
+                <label className="block text-sm font-bold text-gray-700">شناسه کسب‌وکار (Business ID)</label>
+                <input 
+                  type="text" 
+                  value={businessId}
+                  onChange={(e) => setBusinessId(e.target.value)}
+                  className="mt-1 block w-full rounded-lg border-gray-300 shadow-sm p-3 border focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm" 
+                  placeholder="مثال: laser_luxury_tehran" 
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-bold text-gray-700">توکن ربات تلگرام (Telegram Bot Token)</label>
+                <input 
+                  type="text" 
+                  value={telegramToken}
+                  onChange={(e) => setTelegramToken(e.target.value)}
+                  className="mt-1 block w-full rounded-lg border-gray-300 shadow-sm p-3 border focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm" 
+                  placeholder="123456789:ABCdef..." 
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-bold text-gray-700">شناسه تقویم گوگل (Google Calendar ID)</label>
+                <input 
+                  type="text" 
+                  value={calendarId}
+                  onChange={(e) => setCalendarId(e.target.value)}
+                  className="mt-1 block w-full rounded-lg border-gray-300 shadow-sm p-3 border focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm" 
+                  placeholder="mail@group.calendar.google.com" 
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-bold text-gray-700">شخصیت و دستورالعمل‌ها (System Prompt)</label>
+                <textarea 
+                  rows="6" 
+                  value={systemPrompt}
+                  onChange={(e) => setSystemPrompt(e.target.value)}
+                  className="mt-1 block w-full rounded-lg border-gray-300 shadow-sm p-3 border focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm" 
+                  placeholder="متن سیستم پراMPT منشی اختصاصی را اینجا قرار دهید..." 
+                ></textarea>
+              </div>
+              <div className="flex justify-end pt-4 border-t">
+                <button type="submit" className="bg-indigo-600 text-white px-8 py-3 rounded-xl font-bold hover:bg-indigo-700 shadow-md transition duration-200">
+                  ذخیره تنظیمات
+                </button>
+              </div>
+            </form>
+          </div>
+        </main>
       </div>
     </div>
   );

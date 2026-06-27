@@ -9,6 +9,7 @@ interface Salon {
 }
 
 export default function App() {
+  throw new Error("APP TSX IS RUNNING");
   const [activeTab, setActiveTab] = useState<'dashboard' | 'salons' | 'settings'>('dashboard');
   
   const [businessId, setBusinessId] = useState('');

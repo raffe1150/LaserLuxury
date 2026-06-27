@@ -633,10 +633,10 @@ async function processTelegramUpdate(update: any, config: any, platform: string 
           config.telegramToken = activeTenant.telegram_bot_token;
           config.googleCalendarId = activeTenant.google_calendar_id;
           config.systemPrompt = activeTenant.custom_system_prompt;
-        }
+         }
       }
     }
-       // 🌟 پایان تزریق
+    // 🌟 پایان تزریق
 
   } catch (tenantErr) {
     console.error("Tenant config injection failed:", tenantErr);
@@ -1005,10 +1005,14 @@ async function processInstagramUpdate(webhook_event: any, config: any, platform:
       if (activeTenant && config) {
         config.systemPrompt = activeTenant.custom_system_prompt;
         config.googleCalendarId = activeTenant.google_calendar_id;
+            }
       }
     }
+    // 🌟 پایان تزریق
+
+  } catch (tenantErr) {
+    console.error("Instagram tenant config injection failed:", tenantErr);
   }
-  // 🌟 پایان تزریق
 
   try {
     const ai = new GoogleGenAI({ apiKey: config?.apiKey || process.env.GEMINI_API_KEY });

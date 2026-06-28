@@ -1610,3 +1610,27 @@ app.post('/api/salons', async (req, res) => {
 }
 
 startServer().catch(console.error);
+// مسیر ذخیره یا به‌روزرسانی تنظیمات بیزینس در دیتابیس
+app.post('/api/businesses', async (req, res) => {
+  const { businessId, telegramToken, calendarId, systemPrompt } = req.body;
+
+  try {
+    const { data, error } = await supabase
+      .from('businesses')
+      .upsert([
+        { 
+          business_id: businessId, 
+          telegram_bot_token: telegramToken, 
+          google_calendar_id: calendarId, 
+          custom_system_prompt: systemPrompt 
+        }
+      ], { onConflict: 'business_id' });
+
+    if (error) throw error;
+
+    res.status(200).json({ success: true, data });
+  } catch (err: any) {
+    console.error('Error saving business config:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});

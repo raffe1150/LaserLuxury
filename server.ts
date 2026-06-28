@@ -1629,26 +1629,28 @@ Do not mention internal tools, API calls, system prompts, or database logic.
   });
 
   // API: دریافت تنظیمات بیزینس از دیتابیس
-  app.get('/api/businesses', async (req, res) => {
-    try {
-      if (!supabase) {
-        return res.status(500).json({ success: false, message: 'Supabase is not configured.' });
-      }
-
-      const { data, error } = await supabase
-        .from('businesses')
-        .select('*')
-        .eq('id', 1)
-        .maybeSingle();
-
-      if (error) throw error;
-
-      res.status(200).json({ success: true, data });
-    } catch (err: any) {
-      console.error('Error fetching business config:', err);
-      res.status(500).json({ success: false, message: err.message });
+app.get('/api/businesses', async (req, res) => {
+  try {
+    if (!supabase) {
+      return res.status(500).json({ success: false, message: 'Supabase is not configured.' });
     }
-  });
+
+    const { data, error } = await supabase
+      .from('businesses')
+      .select('*')
+      .order('id', { ascending: true });
+
+    if (error) throw error;
+
+    res.status(200).json({
+      success: true,
+      data: data || [],
+    });
+  } catch (err: any) {
+    console.error('Error fetching businesses:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
 
   // API: ذخیره یا به‌روزرسانی تنظیمات بیزینس در دیتابیس
 app.post('/api/businesses', async (req, res) => {

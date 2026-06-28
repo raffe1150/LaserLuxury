@@ -27,6 +27,7 @@ export default function App() {
 
   const [newSalonName, setNewSalonName] = useState('');
   const [newBusinessId, setNewBusinessId] = useState('');
+  const [editingSalon, setEditingSalon] = useState<Salon | null>(null);
 
   const handleSaveConfig = (e: React.FormEvent) => {
     e.preventDefault();
@@ -37,20 +38,35 @@ export default function App() {
     e.preventDefault();
     if (!newSalonName || !newBusinessId) return;
     
-    const newSalon: Salon = {
-      id: Date.now().toString(),
-      name: newSalonName,
-      businessId: newBusinessId,
-      status: 'active'
-    };
+    if (editingSalon) {
+      setSalons(salons.map(s => s.id === editingSalon.id ? { ...s, name: newSalonName, businessId: newBusinessId } : s));
+      setEditingSalon(null);
+    } else {
+      const newSalon: Salon = {
+        id: Date.now().toString(),
+        name: newSalonName,
+        businessId: newBusinessId,
+        status: 'active'
+      };
+      setSalons([...salons, newSalon]);
+    }
     
-    setSalons([...salons, newSalon]);
     setNewSalonName('');
     setNewBusinessId('');
   };
 
+  const handleEditInit = (salon: Salon) => {
+    setEditingSalon(salon);
+    setNewSalonName(salon.name);
+    setNewBusinessId(salon.businessId);
+  };
+
   const handleDeleteSalon = (id: string) => {
     setSalons(salons.filter(salon => salon.id !== id));
+  };
+
+  const handleNotificationClick = () => {
+    alert('🔔 You have no new notifications at the moment.');
   };
 
   // ترجمه عبارات به ۵ زبان
@@ -68,6 +84,7 @@ export default function App() {
       enterprisePanel: 'Multi-Branch Enterprise Panel',
       enterpriseDesc: 'The system is configured to support multiple salons and provide intelligent receptionist services. Please use the "Salons" menu to manage branches and the "Settings" menu to adjust AI guidelines.',
       addNewSalon: 'Add New Salon',
+      updateSalon: 'Update Salon',
       salonName: 'Salon Name',
       businessIdLabel: 'Business ID',
       status: 'Status',
@@ -99,6 +116,7 @@ export default function App() {
       enterprisePanel: 'پنل مدیریت چندشعبه‌ای (Enterprise)',
       enterpriseDesc: 'سیستم برای پشتیبانی از چند سالن و ارائه خدمات منشی‌گری هوشمند پیکربندی شده است. لطفاً از منوی «سالن‌ها» برای مدیریت شعبه‌ها و از منوی «تنظیمات» برای تغییر دستورالعمل‌های هوش مصنوعی استفاده نمایید.',
       addNewSalon: 'افزودن سالن جدید',
+      updateSalon: 'ویرایش سالن',
       salonName: 'نام سالن',
       businessIdLabel: 'شناسه کسب و کار (Business ID)',
       status: 'وضعیت',
@@ -130,6 +148,7 @@ export default function App() {
       enterprisePanel: 'Företagspanel för flera filialer',
       enterpriseDesc: 'Systemet är konfigurerat för att stödja flera salonger och tillhandahålla intelligenta receptionstjänster. Använd menyn "Salonger" för att hantera filialer och menyn "Inställningar" för att justera AI-instruktioner.',
       addNewSalon: 'Lägg till ny salong',
+      updateSalon: 'Uppdatera salong',
       salonName: 'Salongnamn',
       businessIdLabel: 'Företags-ID',
       status: 'Status',
@@ -161,6 +180,7 @@ export default function App() {
       enterprisePanel: 'Panel corporativo multisucursal',
       enterpriseDesc: 'El sistema está configurado para admitir múltiples salones y brindar servicios de recepcionista inteligente. Utilice el menú "Salones" para administrar sucursales y "Ajustes" para ajustar las pautas de IA.',
       addNewSalon: 'Añadir nuevo salón',
+      updateSalon: 'Actualizar salón',
       salonName: 'Nombre del salón',
       businessIdLabel: 'ID de Negocio',
       status: 'Estado',
@@ -192,6 +212,7 @@ export default function App() {
       enterprisePanel: 'Unternehmenspanel für mehrere Filialen',
       enterpriseDesc: 'Das System ist so konfiguriert, dass es mehrere Salons unterstützt und intelligente Empfangsdienste bereitstellt. Bitte nutzen Sie das Menü "Salons" zur Verwaltung der Filialen und das Menü "Einstellungen" zur Anpassung der KI-Richtlinien.',
       addNewSalon: 'Neuen Salon hinzufügen',
+      updateSalon: 'Salon aktualisieren',
       salonName: 'Salonname',
       businessIdLabel: 'Geschäfts-ID',
       status: 'Status',
@@ -222,7 +243,7 @@ export default function App() {
           <div className="h-24 flex items-center px-6 border-b border-slate-800/80 bg-slate-950/40">
             <div className="flex items-center space-x-3 space-x-reverse">
               <div className="w-11 h-11 rounded-2xl bg-gradient-to-tr from-indigo-600 to-violet-500 flex items-center justify-center font-black text-white text-base shadow-lg shadow-indigo-600/30">LL</div>
-              <span className="text-xl font-black tracking-wider text-white">Laser Luxury</span>
+              <span className="text-xl font-black tracking-wider text-white">ClinicPilot </span>
             </div>
           </div>
           
@@ -312,7 +333,10 @@ export default function App() {
           </div>
           
           <div className="flex items-center space-x-6 space-x-reverse">
-            <button className="relative p-3 text-slate-600 hover:bg-indigo-50/60 rounded-xl transition-all border border-slate-100 hover:border-indigo-100 hover:text-indigo-600">
+            <button 
+              onClick={handleNotificationClick}
+              className="relative p-3 text-slate-600 hover:bg-indigo-50/60 rounded-xl transition-all border border-slate-100 hover:border-indigo-100 hover:text-indigo-600"
+            >
               <Bell className="w-5 h-5" />
               <span className="absolute top-2.5 right-2.5 w-2 h-2 bg-rose-500 rounded-full animate-pulse"></span>
             </button>
@@ -391,11 +415,11 @@ export default function App() {
                 <p className="text-slate-500 text-sm mt-2 font-semibold">مدیریت تمامی شعبه‌ها، کلینیک‌ها و وضعیت فعالیت آن‌ها.</p>
               </div>
 
-              {/* فرم افزودن سالن جدید */}
+              {/* فرم افزودن/ویرایش سالن */}
               <div className="bg-white rounded-2xl border border-slate-200/80 shadow-sm p-8 mb-10 max-w-4xl">
                 <h2 className="text-base font-black text-slate-900 mb-6 tracking-tight flex items-center">
                   <Plus className="w-5 h-5 ml-2 text-indigo-600" />
-                  {t.addNewSalon}
+                  {editingSalon ? t.updateSalon : t.addNewSalon}
                 </h2>
                 <form onSubmit={handleAddSalon} className="grid grid-cols-1 md:grid-cols-3 gap-6 items-end">
                   <div>
@@ -420,8 +444,12 @@ export default function App() {
                       required
                     />
                   </div>
-                  <button type="submit" className="w-full bg-gradient-to-r from-indigo-600 to-violet-600 text-white py-3 rounded-xl font-extrabold hover:brightness-110 shadow-lg shadow-indigo-500/10 transition duration-200 text-sm">
-                    {t.addNewSalon}
+                  <button type="submit" className={`w-full py-3 rounded-xl font-extrabold shadow-lg transition duration-200 text-sm ${
+                    editingSalon 
+                      ? 'bg-gradient-to-r from-amber-500 to-orange-500 text-white shadow-amber-500/10 hover:brightness-110' 
+                      : 'bg-gradient-to-r from-indigo-600 to-violet-600 text-white shadow-indigo-500/10 hover:brightness-110'
+                  }`}>
+                    {editingSalon ? t.updateSalon : t.addNewSalon}
                   </button>
                 </form>
               </div>
@@ -456,12 +484,17 @@ export default function App() {
                           </span>
                         </td>
                         <td className="py-6 px-8 text-left space-x-3 space-x-reverse">
-                          <button className="p-2.5 text-slate-400 hover:text-indigo-600 rounded-xl hover:bg-indigo-50 transition border border-slate-50/30 hover:border-indigo-100">
+                          <button 
+                            onClick={() => handleEdit2 && handleEdit2(handleEdit2) && handleEdit2(handleEdit)(handleEdit)(salon) || handleEdit2 && handleEdit2(handleEdit) &&handleEdit2()(EditInit(salon) || handleEditInit(salon)}
+                            className="p-2.5 text-slate-400 hover:text-indigo-600 rounded-xl hover:bg-indigo-50 transition border border-slate-50/30 hover:border-indigo-100"
+                            title="Edit Salon"
+                          >
                             <Edit2 className="w-4 h-4" />
                           </button>
                           <button 
                             onClick={() => handleDeleteSalon(salon.id)} 
                             className="p-2.5 text-slate-400 hover:text-rose-600 rounded-xl hover:bg-rose-50 transition border border-slate-50/30 hover:border-rose-100"
+                            title="Delete Salon"
                           >
                             <Trash2 className="w-4 h-4" />
                           </button>

@@ -32,7 +32,9 @@ export default function App() {
     const result = await response.json();
 console.log('BUSINESSES RESULT:', result);
 
-const formattedSalons = result.data.map((item: any) => ({
+const businesses = Array.isArray(result) ? result : result.data;
+
+const formattedSalons = businesses.map((item: any) => ({
   id: item.id.toString(),
   name: item.business_name,
   businessId: item.id.toString(),

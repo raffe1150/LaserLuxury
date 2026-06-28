@@ -54,9 +54,42 @@ export default function App() {
   fetchSalons();
 }, []);
 
-  const handleSaveConfig = (e: React.FormEvent) => {
+  const handleSaveConfig = async (e: React.FormEvent) => {
     e.preventDefault();
-    alert(translations[language].saved);
+
+    if (!businessId.trim()) {
+      alert('Please enter a Business ID / business name first.');
+      return;
+    }
+
+    try {
+      const response = await fetch('/api/businesses', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          businessName: businessId.trim(),
+          businessId: businessId.trim(),
+          telegramToken: telegramToken.trim(),
+          calendarId: calendarId.trim(),
+          systemPrompt,
+        }),
+      });
+
+      const result = await response.json();
+
+      if (!response.ok || !result.success) {
+        console.error('Save settings failed:', result);
+        alert('Failed to save settings: ' + (result.message || 'Unknown error'));
+        return;
+      }
+
+      alert(translations[language].saved);
+    } catch (error) {
+      console.error('Save config error:', error);
+      alert('Could not connect to the server.');
+    }
   };
 
  const handleAddSalon = async (e: React.FormEvent) => {
@@ -119,37 +152,6 @@ export default function App() {
   setNewSalonName('');
   setNewBusinessId('');
 };
-  const handleSaveSettings = async () => {
-  if (!businessId) {
-    alert("لطفاً ابتدا یک Business ID وارد کنید.");
-    return;
-  }
-
-  try {
- const response = await fetch('https://laserluxury.onrender.com/api/businesses', {
-  method: 'POST',
-  headers: {
-    'Content-Type': 'application/json',
-  },
-  body: JSON.stringify({
-    businessId,
-    telegramToken,
-    calendarId,
-    systemPrompt,
-  }),
-});
-    const result = await response.json();
-    if (result.success) {
-      alert("تنظیمات با موفقیت در دیتابیس (Supabase) ذخیره شد!");
-    } else {
-      alert("خطا در ذخیره تنظیمات: " + result.message);
-    }
-  } catch (err) {
-    console.error("Error connecting to server:", err);
-    alert("ارتباط با سرور برقرار نشد.");
-  }
-};
-
   const handleEditInit = (salon: Salon) => {
     setEditingSalon(salon);
     setNewSalonName(salon.name);

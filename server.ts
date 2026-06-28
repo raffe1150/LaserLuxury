@@ -1607,19 +1607,19 @@ OFFICIAL SERVICES & PRICE LIST - LASER LUXURY:
 app.post('/api/businesses', async (req, res) => {
   const { businessId, telegramToken, calendarId, systemPrompt } = req.body;
 
-  try {
+ try {
     const { data, error } = await supabase
       .from('businesses')
       .upsert(
         [
           { 
-            business_id: businessId, 
+            business_name: businessId, // Inja bayad business_name bashad!
             telegram_bot_token: telegramToken, 
             google_calendar_id: calendarId, 
             custom_system_prompt: systemPrompt 
           }
         ],
-        { onConflict: 'business_id' } // مشخص می‌کند که تداخل روی فیلد business_id بررسی شود
+        { onConflict: 'business_name' } // Inja ham bayad business_name bashad!
       );
 
     if (error) throw error;

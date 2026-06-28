@@ -1563,7 +1563,36 @@ OFFICIAL SERVICES & PRICE LIST - LASER LUXURY:
       res.sendFile(path.join(distPath, "index.html"));
     });
   }
+// مسیر دریافت لیست سالن‌ها/شعبه‌ها از دیتابیس
+app.get('/api/salons', async (req, res) => {
+  try {
+    // واکشی اطلاعات از جدول salons در Supabase
+    const { data, error } = await supabase.from('salons').select('*');
+    if (error) throw error;
+    res.status(200).json(data);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
+// مسیر ثبت سالن/شعبه جدید در دیتابیس
+app.post('/api/salons', async (req, res) => {
+  try {
+    const { salonName, businessId } = req.body;
+    
+    // درج رکورد جدید در جدول دیتابیس
+    const { data, error } = await supabase
+      .from('salons')
+      .insert([{ salon_name: salonName, business_id: businessId }])
+      .select();
+
+    if (error) throw error;
+
+    res.status(200).json({ success: true, data });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
   app.listen(PORT, () => {
     console.log(`Server running smoothly on port ${PORT}`);
     

@@ -29,13 +29,14 @@ export default function App() {
       const response = await fetch('/api/businesses');
 
       if (response.ok) {
-     const result = await response.json();
+    const result = await response.json();
+console.log('BUSINESSES RESULT:', result);
 
 const formattedSalons = result.data.map((item: any) => ({
-    id: item.id.toString(),
-    name: item.business_name,
-    businessId: item.business_name,
-    status: 'active',
+  id: item.id.toString(),
+  name: item.business_name,
+  businessId: item.id.toString(),
+  status: 'active',
 }));
         setSalons(formattedSalons);
       }

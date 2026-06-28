@@ -29,10 +29,17 @@ export default function App() {
       const response = await fetch('/api/businesses');
 
       if (response.ok) {
-    const result = await response.json();
-console.log('BUSINESSES RESULT:', result);
-
-const businesses = Array.isArray(result) ? result : result.data;
+   const result = await response.json();
+console.log("RESULT =", JSON.stringify(result, null, 2));
+console.log("RESULT.DATA =", JSON.stringify(result.data, null, 2));
+console.log("IS ARRAY =", Array.isArray(result.data));
+const businesses = Array.isArray(result)
+  ? result
+  : Array.isArray(result.data)
+    ? result.data
+    : result.data
+      ? [result.data]
+      : [];
 
 const formattedSalons = businesses.map((item: any) => ({
   id: item.id.toString(),

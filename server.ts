@@ -1626,48 +1626,58 @@ OFFICIAL SERVICES & PRICE LIST - LASER LUXURY:
   });
 
   // API: ذخیره یا به‌روزرسانی تنظیمات بیزینس در دیتابیس
-  app.post('/api/businesses', async (req, res) => {
-    try {
-      if (!supabase) {
-        return res.status(500).json({ success: false, message: 'Supabase is not configured.' });
-      }
-
-      const { businessName, businessId, telegramToken, calendarId, systemPrompt } = req.body;
-      const finalBusinessName = businessName || businessId;
-
-      if (!finalBusinessName) {
-        return res.status(400).json({ success: false, message: 'businessName is required.' });
-      }
-
-      const payload = {
-        id: 1,
-        business_name: finalBusinessName,
-        telegram_bot_token: telegramToken || '',
-        google_calendar_id: calendarId || '',
-        custom_system_prompt: systemPrompt || '',
-      };
-
-      const { data, error } = await supabase
-        .from('businesses')
-        .upsert([payload], { onConflict: 'id' })
-        .select();
-
-      if (error) throw error;
-
-      activeConfig = {
-        ...activeConfig,
-        telegramToken: payload.telegram_bot_token,
-        googleCalendarId: payload.google_calendar_id,
-        systemPrompt: payload.custom_system_prompt,
-      };
-
-      res.status(200).json({ success: true, data });
-    } catch (err: any) {
-      console.error('Error saving business config:', err);
-      res.status(500).json({ success: false, message: err.message });
+app.post('/api/businesses', async (req, res) => {
+  try {
+    if (!supabase) {
+      return res.status(500).json({ success: false, message: 'Supabase is not configured.' });
     }
-  });
 
+    const { id, businessName, businessId, telegramToken, calendarId, systemPrompt } = req.body;
+    const finalBusinessName = businessName || businessId;
+
+    if (!finalBusinessName) {
+      return res.status(400).json({ success: false, message: 'businessName is required.' });
+    }
+
+    const payload: any = {
+      business_name: finalBusinessName,
+      telegram_bot_token: telegramToken || '',
+      google_calendar_id: calendarId || '',
+      custom_system_prompt: systemPrompt || '',
+    };
+
+    let query;
+
+    if (id) {
+      query = supabase
+        .from('businesses')
+        .update(payload)
+        .eq('id', id)
+        .select();
+    } else {
+      query = supabase
+        .from('businesses')
+        .insert([payload])
+        .select();
+    }
+
+    const { data, error } = await query;
+
+    if (error) throw error;
+
+    activeConfig = {
+      ...activeConfig,
+      telegramToken: payload.telegram_bot_token,
+      googleCalendarId: payload.google_calendar_id,
+      systemPrompt: payload.custom_system_prompt,
+    };
+
+    res.status(200).json({ success: true, data });
+  } catch (err: any) {
+    console.error('Error saving business config:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({

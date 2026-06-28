@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { LayoutDashboard, Building2, Settings, LogOut, Bell, Search, ChevronDown, Plus, Edit2, Trash2, ShieldCheck, Globe } from 'lucide-react';
 
 interface Salon {
@@ -29,31 +29,96 @@ export default function App() {
   const [newBusinessId, setNewBusinessId] = useState('');
   const [editingSalon, setEditingSalon] = useState<Salon | null>(null);
 
+  useEffect(() => {
+  async function fetchSalons() {
+    try {
+      const response = await fetch('/api/salons');
+
+      if (response.ok) {
+        const data = await response.json();
+
+        const formattedSalons = data.map((item: any) => ({
+          id: item.id,
+          name: item.salon_name,
+          businessId: item.business_id,
+          status: item.status,
+        }));
+
+        setSalons(formattedSalons);
+      }
+    } catch (error) {
+      console.error('Error fetching salons:', error);
+    }
+  }
+
+  fetchSalons();
+}, []);
+
   const handleSaveConfig = (e: React.FormEvent) => {
     e.preventDefault();
     alert(translations[language].saved);
   };
 
-  const handleAddSalon = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newSalonName || !newBusinessId) return;
-    
-    if (editingSalon) {
-      setSalons(salons.map(s => s.id === editingSalon.id ? { ...s, name: newSalonName, businessId: newBusinessId } : s));
-      setEditingSalon(null);
-    } else {
-      const newSalon: Salon = {
-        id: Date.now().toString(),
-        name: newSalonName,
-        businessId: newBusinessId,
-        status: 'active'
-      };
-      setSalons([...salons, newSalon]);
+ const handleAddSalon = async (e: React.FormEvent) => {
+  e.preventDefault();
+
+  if (!newSalonName.trim() || !newBusinessId.trim()) return;
+
+  if (editingSalon) {
+    setSalons(
+      salons.map((salon) =>
+        salon.id === editingSalon.id
+          ? {
+              ...salon,
+              name: newSalonName.trim(),
+              businessId: newBusinessId.trim(),
+            }
+          : salon
+      )
+    );
+
+    setEditingSalon(null);
+  } else {
+    try {
+      const response = await fetch('/api/salons', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          salonName: newSalonName.trim(),
+          businessId: newBusinessId.trim(),
+          status: 'active',
+        }),
+      });
+
+      if (response.ok) {
+        const result = await response.json();
+
+        if (result.success && result.data?.[0]) {
+          const added = result.data[0];
+
+          const newSalonServer: Salon = {
+            id: added.id,
+            name: added.salon_name,
+            businessId: added.business_id,
+            status: added.status,
+          };
+
+          setSalons((currentSalons) => [...currentSalons, newSalonServer]);
+        }
+      } else {
+        alert('Failed to save in database.');
+      }
+    } catch (err) {
+      console.error('Error adding salon:', err);
+      alert('Could not connect to the server.');
     }
-    
-    setNewSalonName('');
-    setNewBusinessId('');
-  };
+  }
+
+  setNewSalonName('');
+  setNewBusinessId('');
+};
 
   const handleEditInit = (salon: Salon) => {
     setEditingSalon(salon);

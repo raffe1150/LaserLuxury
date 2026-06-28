@@ -1604,41 +1604,32 @@ OFFICIAL SERVICES & PRICE LIST - LASER LUXURY:
   });
 
   // API: ذخیره یا به‌روزرسانی تنظیمات بیزینس در دیتابیس
-  app.post('/api/businesses', async (req, res) => {
-    try {
-      if (!supabase) {
-        return res.status(500).json({ success: false, message: 'Supabase is not configured.' });
-      }
+app.post('/api/businesses', async (req, res) => {
+  const { businessId, telegramToken, calendarId, systemPrompt } = req.body;
 
-      const { businessId, telegramToken, calendarId, systemPrompt } = req.body;
+  try {
+    const { data, error } = await supabase
+      .from('businesses')
+      .upsert(
+        [
+          { 
+            business_id: businessId, 
+            telegram_bot_token: telegramToken, 
+            google_calendar_id: calendarId, 
+            custom_system_prompt: systemPrompt 
+          }
+        ],
+        { onConflict: 'business_id' } // مشخص می‌کند که تداخل روی فیلد business_id بررسی شود
+      );
 
-      if (!businessId) {
-        return res.status(400).json({ success: false, message: 'businessId is required.' });
-      }
+    if (error) throw error;
 
-      const { data, error } = await supabase
-        .from('businesses')
-        .upsert(
-          [
-            {
-              business_id: businessId,
-              telegram_bot_token: telegramToken,
-              google_calendar_id: calendarId,
-              custom_system_prompt: systemPrompt,
-            },
-          ],
-          { onConflict: 'business_id' }
-        )
-        .select();
-
-      if (error) throw error;
-
-      res.status(200).json({ success: true, data });
-    } catch (err: any) {
-      console.error('Error saving business config:', err);
-      res.status(500).json({ success: false, message: err.message });
-    }
-  });
+    res.status(200).json({ success: true, data });
+  } catch (err: any) {
+    console.error('Error saving business config:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
 
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {

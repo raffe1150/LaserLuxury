@@ -100,12 +100,11 @@ export default function App() {
 
   return (
     <div className="flex h-screen bg-slate-50 font-sans antialiased text-slate-800 w-full">
-      {/* ... بقیه کدهای UI */}
-
-  const handleSaveConfig = (e: React.FormEvent) => {
-    e.preventDefault();
-    alert(translations[language].saved);
-  };
+    
+const handleSaveConfig = (e: React.FormEvent) => {
+  e.preventDefault();
+  alert(translations[language].saved);
+};
 
   const handleAddSalon = (e: React.FormEvent) => {
     e.preventDefault();

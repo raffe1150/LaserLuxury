@@ -1559,7 +1559,7 @@ OFFICIAL SERVICES & PRICE LIST - LASER LUXURY:
       const { data, error } = await supabase
         .from('salons')
         .select('*')
-        .order('created_at', { ascending: false });
+       
 
       if (error) throw error;
 

@@ -32,18 +32,16 @@ export default function App() {
   useEffect(() => {
   async function fetchSalons() {
     try {
-      const response = await fetch('/api/salons');
+      const response = await fetch('/api/businesses');
 
       if (response.ok) {
         const data = await response.json();
-
-        const formattedSalons = data.map((item: any) => ({
-          id: item.id,
-          name: item.salon_name,
-          businessId: item.business_id,
-          status: item.status,
-        }));
-
+const formattedSalons = data.map((item: any) => ({
+  id: item.id.toString(),
+  name: item.business_name,
+  businessId: item.id.toString(),
+  status: 'active',
+}));
         setSalons(formattedSalons);
       }
     } catch (error) {

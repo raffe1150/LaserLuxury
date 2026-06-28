@@ -119,6 +119,37 @@ export default function App() {
   setNewSalonName('');
   setNewBusinessId('');
 };
+  const handleSaveSettings = async () => {
+  if (!businessId) {
+    alert("لطفاً ابتدا یک Business ID وارد کنید.");
+    return;
+  }
+
+  try {
+    const response = await fetch('/api/businesses', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        businessId,
+        telegramToken,
+        calendarId,
+        systemPrompt,
+      }),
+    });
+
+    const result = await response.json();
+    if (result.success) {
+      alert("تنظیمات با موفقیت در دیتابیس (Supabase) ذخیره شد!");
+    } else {
+      alert("خطا در ذخیره تنظیمات: " + result.message);
+    }
+  } catch (err) {
+    console.error("Error connecting to server:", err);
+    alert("ارتباط با سرور برقرار نشد.");
+  }
+};
 
   const handleEditInit = (salon: Salon) => {
     setEditingSalon(salon);

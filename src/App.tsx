@@ -20,91 +20,19 @@ export default function App() {
   const [systemPrompt, setSystemPrompt] = useState('');
 
   const [salons, setSalons] = useState<Salon[]>([
-    { id: '1', name: 'Laser Luxury Tehran', businessId: 'laser_tehran', status: 'active' },
-    { id: '2', name: 'Beauty Clinic Zafaranieh', businessId: 'beauty_zaf', status: 'active' },
-    { id: '3', name: 'Laser Center Isfahan', businessId: 'laser_esf', status: 'inactive' }
+    { id: '1', name: 'Laser Luxury ', businessId: 'laser_clinic', status: 'active' },
+    { id: '2', name: 'Beauty Clinic ', businessId: 'beauty_clinic', status: 'active' },
+    { id: '3', name: 'Laser Center ', businessId: 'laser_beauty', status: 'inactive' }
   ]);
 
   const [newSalonName, setNewSalonName] = useState('');
   const [newBusinessId, setNewBusinessId] = useState('');
   const [editingSalon, setEditingSalon] = useState<Salon | null>(null);
-  useEffect(() => {
-    async function fetchSalons() {
-      try {
-        const response = await fetch('/api/salons');
-        if (response.ok) {
-          const data = await response.json();
-          const formattedSalons = data.map((item: any) => ({
-            id: item.id,
-            name: item.salon_name,
-            businessId: item.business_id,
-            status: item.status
-          }));
-          setSalons(formattedSalons);
-        }
-      } catch (error) {
-        console.error('Error fetching salons:', error);
-      }
-    }
-    fetchSalons();
-  }, []);
 
-  const handleAddSalon = async (e: React.FormEvent) => {
+  const handleSaveConfig = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newSalonName || !newBusinessId) return;
-    
-    if (editingSalon) {
-      setSalons(salons.map(s => s.id === editingSalon.id ? { ...s, name: newSalonName, businessId: newBusinessId } : s));
-      setEditingSalon(null);
-    } else {
-      try {
-        const response = await fetch('/api/salons', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            salonName: newSalonName,
-            businessId: newBusinessId,
-            status: 'active'
-          }),
-        });
-
-        if (response.ok) {
-          const result = await response.json();
-          if (result.success && result.data[0]) {
-            const added = result.data[0];
-            const newSalonServer: Salon = {
-              id: added.id,
-              name: added.salon_name,
-              businessId: added.business_id,
-              status: added.status
-            };
-            setSalons([...salons, newSalonServer]);
-          }
-        } else {
-          alert('Failed to save in database.');
-        }
-      } catch (err) {
-        console.error('Error adding salon:', err);
-      }
-    }
-    
-    setNewSalonName('');
-    setNewBusinessId('');
+    alert(translations[language].saved);
   };
-
-  // ----------------------------------------------------
-
-  const t = translations[language];
-
-  return (
-    <div className="flex h-screen bg-slate-50 font-sans antialiased text-slate-800 w-full">
-    
-const handleSaveConfig = (e: React.FormEvent) => {
-  e.preventDefault();
-  alert(translations[language].saved);
-};
 
   const handleAddSalon = (e: React.FormEvent) => {
     e.preventDefault();
@@ -306,7 +234,7 @@ const handleSaveConfig = (e: React.FormEvent) => {
   };
 
   const t = translations[language];
- 
+
   return (
     <div className="flex h-screen bg-slate-50 font-sans antialiased text-slate-800 w-full">
       {/* سایدبار ناوبری */}

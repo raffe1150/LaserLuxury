@@ -1548,6 +1548,98 @@ OFFICIAL SERVICES & PRICE LIST - LASER LUXURY:
     }
   });
 
+
+  // API: دریافت لیست سالن‌ها/شعبه‌ها از دیتابیس
+  app.get('/api/salons', async (req, res) => {
+    try {
+      if (!supabase) {
+        return res.status(500).json({ success: false, message: 'Supabase is not configured.' });
+      }
+
+      const { data, error } = await supabase
+        .from('salons')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+
+      res.status(200).json(data || []);
+    } catch (err: any) {
+      console.error('Error fetching salons:', err);
+      res.status(500).json({ success: false, message: err.message });
+    }
+  });
+
+  // API: ثبت سالن/شعبه جدید در دیتابیس
+  app.post('/api/salons', async (req, res) => {
+    try {
+      if (!supabase) {
+        return res.status(500).json({ success: false, message: 'Supabase is not configured.' });
+      }
+
+      const { salonName, businessId, status } = req.body;
+
+      if (!salonName || !businessId) {
+        return res.status(400).json({ success: false, message: 'salonName and businessId are required.' });
+      }
+
+      const { data, error } = await supabase
+        .from('salons')
+        .insert([
+          {
+            salon_name: salonName,
+            business_id: businessId,
+            status: status || 'active',
+          },
+        ])
+        .select();
+
+      if (error) throw error;
+
+      res.status(200).json({ success: true, data });
+    } catch (err: any) {
+      console.error('Error adding salon:', err);
+      res.status(500).json({ success: false, message: err.message });
+    }
+  });
+
+  // API: ذخیره یا به‌روزرسانی تنظیمات بیزینس در دیتابیس
+  app.post('/api/businesses', async (req, res) => {
+    try {
+      if (!supabase) {
+        return res.status(500).json({ success: false, message: 'Supabase is not configured.' });
+      }
+
+      const { businessId, telegramToken, calendarId, systemPrompt } = req.body;
+
+      if (!businessId) {
+        return res.status(400).json({ success: false, message: 'businessId is required.' });
+      }
+
+      const { data, error } = await supabase
+        .from('businesses')
+        .upsert(
+          [
+            {
+              business_id: businessId,
+              telegram_bot_token: telegramToken,
+              google_calendar_id: calendarId,
+              custom_system_prompt: systemPrompt,
+            },
+          ],
+          { onConflict: 'business_id' }
+        )
+        .select();
+
+      if (error) throw error;
+
+      res.status(200).json({ success: true, data });
+    } catch (err: any) {
+      console.error('Error saving business config:', err);
+      res.status(500).json({ success: false, message: err.message });
+    }
+  });
+
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
@@ -1563,36 +1655,6 @@ OFFICIAL SERVICES & PRICE LIST - LASER LUXURY:
       res.sendFile(path.join(distPath, "index.html"));
     });
   }
-// مسیر دریافت لیست سالن‌ها/شعبه‌ها از دیتابیس
-app.get('/api/salons', async (req, res) => {
-  try {
-    // واکشی اطلاعات از جدول salons در Supabase
-    const { data, error } = await supabase.from('salons').select('*');
-    if (error) throw error;
-    res.status(200).json(data);
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// مسیر ثبت سالن/شعبه جدید در دیتابیس
-app.post('/api/salons', async (req, res) => {
-  try {
-    const { salonName, businessId } = req.body;
-    
-    // درج رکورد جدید در جدول دیتابیس
-    const { data, error } = await supabase
-      .from('salons')
-      .insert([{ salon_name: salonName, business_id: businessId }])
-      .select();
-
-    if (error) throw error;
-
-    res.status(200).json({ success: true, data });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
   app.listen(PORT, () => {
     console.log(`Server running smoothly on port ${PORT}`);
     
@@ -1610,27 +1672,3 @@ app.post('/api/salons', async (req, res) => {
 }
 
 startServer().catch(console.error);
-// مسیر ذخیره یا به‌روزرسانی تنظیمات بیزینس در دیتابیس
-app.post('/api/businesses', async (req, res) => {
-  const { businessId, telegramToken, calendarId, systemPrompt } = req.body;
-
-  try {
-    const { data, error } = await supabase
-      .from('businesses')
-      .upsert([
-        { 
-          business_id: businessId, 
-          telegram_bot_token: telegramToken, 
-          google_calendar_id: calendarId, 
-          custom_system_prompt: systemPrompt 
-        }
-      ], { onConflict: 'business_id' });
-
-    if (error) throw error;
-
-    res.status(200).json({ success: true, data });
-  } catch (err: any) {
-    console.error('Error saving business config:', err);
-    res.status(500).json({ success: false, message: err.message });
-  }
-});

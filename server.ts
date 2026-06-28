@@ -563,54 +563,144 @@ activeConfig = {
 const chatSessions: Record<number, any[]> = {};
 let globalWaitUntil = 0;
 
-let isPolling = false;
-let pollingInterval: NodeJS.Timeout | null = null;
-let lastUpdateId = 0;
+type TelegramPollerState = {
+  isPolling: boolean;
+  lastUpdateId: number;
+  pollingTimeout: NodeJS.Timeout | null;
+  config: any;
+};
+
+const telegramPollers: Record<string, TelegramPollerState> = {};
+const processedUpdateIds = new Set<string>();
+
+function maskToken(token?: string) {
+  if (!token) return "missing-token";
+  if (token.length < 12) return token;
+  return `${token.slice(0, 8)}...${token.slice(-6)}`;
+}
+
+function normalizeBusinessConfig(row: any) {
+  return {
+    ...activeConfig,
+    businessRecordId: row.id,
+    businessName: row.business_name,
+    telegramToken: row.telegram_bot_token,
+    googleCalendarId: row.google_calendar_id,
+    systemPrompt: row.custom_system_prompt,
+    calendarProvider: "google",
+  };
+}
 
 async function startTelegramPolling(config: any) {
-  if (isPolling) return;
-  isPolling = true;
-  console.log("Starting Telegram long polling...");
-  
+  const token = config?.telegramToken;
+  if (!token) {
+    console.log("Telegram polling skipped: missing telegram token.");
+    return;
+  }
+
+  if (telegramPollers[token]?.isPolling) {
+    console.log(`Telegram polling already active for ${config.businessName || "business"} (${maskToken(token)})`);
+    return;
+  }
+
+  const pollingConfig = { ...activeConfig, ...config, telegramToken: token };
+  const state: TelegramPollerState = {
+    isPolling: true,
+    lastUpdateId: 0,
+    pollingTimeout: null,
+    config: pollingConfig,
+  };
+
+  telegramPollers[token] = state;
+
+  console.log(`Starting Telegram long polling for ${pollingConfig.businessName || "business"} (${maskToken(token)})...`);
+
+  try {
+    await fetch(`https://api.telegram.org/bot${token}/deleteWebhook`);
+  } catch (e) {
+    console.error(`Error clearing webhook for ${maskToken(token)}:`, e);
+  }
+
   const poll = async () => {
     try {
-      const res = await fetch(`https://api.telegram.org/bot${config.telegramToken}/getUpdates?offset=${lastUpdateId + 1}&timeout=30`);
+      const res = await fetch(`https://api.telegram.org/bot${token}/getUpdates?offset=${state.lastUpdateId + 1}&timeout=30`);
       const data = await res.json();
-      if (data.ok && data.result.length > 0) {
+
+      if (!data.ok) {
+        console.error(`Telegram getUpdates failed for ${pollingConfig.businessName || "business"} (${maskToken(token)}):`, data);
+      } else if (data.result.length > 0) {
+        console.log(`Received ${data.result.length} Telegram update(s) for ${pollingConfig.businessName || "business"} (${maskToken(token)})`);
         for (const update of data.result) {
-          lastUpdateId = update.update_id;
-          await processTelegramUpdate(update, config);
+          state.lastUpdateId = update.update_id;
+          await processTelegramUpdate(update, state.config, "telegram-polling");
         }
       }
     } catch (e) {
-      console.error("Polling error:", e);
+      console.error(`Polling error for ${pollingConfig.businessName || "business"} (${maskToken(token)}):`, e);
     }
-    if (isPolling) {
-      pollingInterval = setTimeout(poll, 1000);
+
+    if (state.isPolling) {
+      state.pollingTimeout = setTimeout(poll, 1000);
     }
   };
-  
+
   poll();
 }
 
-const processedUpdateIds = new Set<number>();
+async function startAllBusinessTelegramPollers() {
+  const startedTokens = new Set<string>();
+
+  if (supabase) {
+    try {
+      const { data, error } = await supabase
+        .from('businesses')
+        .select('*')
+        .not('telegram_bot_token', 'is', null);
+
+      if (error) throw error;
+
+      for (const business of data || []) {
+        const token = business.telegram_bot_token;
+        if (!token || startedTokens.has(token)) continue;
+
+        startedTokens.add(token);
+        await startTelegramPolling(normalizeBusinessConfig(business));
+      }
+    } catch (err) {
+      console.error("Failed to load business telegram pollers from Supabase:", err);
+    }
+  }
+
+  const fallbackToken = activeConfig.telegramToken || process.env.TELEGRAM_TOKEN || process.env.TELEGRAM_BOT_TOKEN;
+  if (fallbackToken && !startedTokens.has(fallbackToken)) {
+    await startTelegramPolling({
+      ...activeConfig,
+      businessName: activeConfig.businessName || "Environment Bot",
+      telegramToken: fallbackToken,
+    });
+  }
+}
 
 async function processTelegramUpdate(update: any, config: any, platform: string = "telegram-polling") {
+  const telegramToken = config?.telegramToken;
+  if (!telegramToken) return;
+
   if (update.update_id) {
-    if (processedUpdateIds.has(update.update_id)) return;
-    processedUpdateIds.add(update.update_id);
-    if (processedUpdateIds.size > 1000) {
+    const processedKey = `${telegramToken}:${update.update_id}`;
+    if (processedUpdateIds.has(processedKey)) return;
+    processedUpdateIds.add(processedKey);
+    if (processedUpdateIds.size > 5000) {
         const first = processedUpdateIds.values().next().value;
         if (first !== undefined) processedUpdateIds.delete(first);
     }
   }
 
-  const { telegramToken, apiKey, systemPrompt } = config;
-  if (!telegramToken) return;
+  const { apiKey, systemPrompt } = config;
   if (!update.message) return;
   if (!update.message.chat) return;
 
   const chatId = update.message.chat.id;
+  console.log(`Processing Telegram message for ${config.businessName || "business"} (${maskToken(telegramToken)}), chatId=${chatId}`);
   try {
     // 🌟 تزریق پایگاه داده برای بارگذاری پویای اطلاعات بیزینس
     if (supabase) {
@@ -1665,6 +1755,12 @@ app.post('/api/businesses', async (req, res) => {
 
     if (error) throw error;
 
+    const savedBusiness = data?.[0];
+
+    if (savedBusiness?.telegram_bot_token) {
+      await startTelegramPolling(normalizeBusinessConfig(savedBusiness));
+    }
+
     activeConfig = {
       ...activeConfig,
       telegramToken: payload.telegram_bot_token,
@@ -1695,15 +1791,13 @@ app.post('/api/businesses', async (req, res) => {
   }
   app.listen(PORT, () => {
     console.log(`Server running smoothly on port ${PORT}`);
-    
-    // Auto-start polling if config loaded at boot
-    if (activeConfig && activeConfig.telegramToken) {
-      console.log("Found existing telegram instance in config, starting polling automatically on boot...");
-      // Ensure any old webhook is cleared
-      fetch(`https://api.telegram.org/bot${activeConfig.telegramToken}/deleteWebhook`).catch(() => {});
-      startTelegramPolling(activeConfig);
-    }
-    
+
+    // Auto-start polling for all business bot tokens saved in Supabase.
+    // This is what makes the backend multi-business / multi-bot.
+    startAllBusinessTelegramPollers().catch((err) => {
+      console.error("Failed to start Telegram pollers:", err);
+    });
+
     // Setup cron
     setupDailyReminders();
   });

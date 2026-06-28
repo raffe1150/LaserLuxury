@@ -18,13 +18,7 @@ export default function App() {
   const [telegramToken, setTelegramToken] = useState('');
   const [calendarId, setCalendarId] = useState('');
   const [systemPrompt, setSystemPrompt] = useState('');
-
-  const [salons, setSalons] = useState<Salon[]>([
-    { id: '1', name: 'Laser Luxury ', businessId: 'laser_clinic', status: 'active' },
-    { id: '2', name: 'Beauty Clinic ', businessId: 'beauty_clinic', status: 'active' },
-    { id: '3', name: 'Laser Center ', businessId: 'laser_beauty', status: 'inactive' }
-  ]);
-
+  const [salons, setSalons] = useState<Salon[]>([]);
   const [newSalonName, setNewSalonName] = useState('');
   const [newBusinessId, setNewBusinessId] = useState('');
   const [editingSalon, setEditingSalon] = useState<Salon | null>(null);

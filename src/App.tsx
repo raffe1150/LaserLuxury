@@ -444,13 +444,29 @@ export default function App() {
                       required
                     />
                   </div>
-                  <button type="submit" className={`w-full py-3 rounded-xl font-extrabold shadow-lg transition duration-200 text-sm ${
-                    editingSalon 
-                      ? 'bg-gradient-to-r from-amber-500 to-orange-500 text-white shadow-amber-500/10 hover:brightness-110' 
-                      : 'bg-gradient-to-r from-indigo-600 to-violet-600 text-white shadow-indigo-500/10 hover:brightness-110'
-                  }`}>
-                    {editingSalon ? t.updateSalon : t.addNewSalon}
-                  </button>
+                  <div className="flex gap-3">
+                    <button type="submit" className={`flex-1 py-3 rounded-xl font-extrabold shadow-lg transition duration-200 text-sm ${
+                      editingSalon 
+                        ? 'bg-gradient-to-r from-amber-500 to-orange-500 text-white shadow-amber-500/10 hover:brightness-110' 
+                        : 'bg-gradient-to-r from-indigo-600 to-violet-600 text-white shadow-indigo-500/10 hover:brightness-110'
+                    }`}>
+                      {editingSalon ? t.updateSalon : t.addNewSalon}
+                    </button>
+
+                    {editingSalon && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingSalon(null);
+                          setNewSalonName('');
+                          setNewBusinessId('');
+                        }}
+                        className="px-5 py-3 rounded-xl font-extrabold bg-slate-100 text-slate-600 hover:bg-slate-200 transition text-sm"
+                      >
+                        Cancel
+                      </button>
+                    )}
+                  </div>
                 </form>
               </div>
 
@@ -485,7 +501,7 @@ export default function App() {
                         </td>
                         <td className="py-6 px-8 text-left space-x-3 space-x-reverse">
                           <button 
-                            onClick={() => handleEdit2 && handleEdit2(handleEdit2) && handleEdit2(handleEdit)(handleEdit)(salon) || handleEdit2 && handleEdit2(handleEdit) &&handleEdit2()(EditInit(salon) || handleEditInit(salon)}
+                            onClick={() => handleEditInit(salon)}
                             className="p-2.5 text-slate-400 hover:text-indigo-600 rounded-xl hover:bg-indigo-50 transition border border-slate-50/30 hover:border-indigo-100"
                             title="Edit Salon"
                           >

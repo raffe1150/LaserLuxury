@@ -126,19 +126,18 @@ export default function App() {
   }
 
   try {
-    const response = await fetch('/api/businesses', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        businessId,
-        telegramToken,
-        calendarId,
-        systemPrompt,
-      }),
-    });
-
+ const response = await fetch('https://laserluxury.onrender.com/api/businesses', {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+  },
+  body: JSON.stringify({
+    businessId,
+    telegramToken,
+    calendarId,
+    systemPrompt,
+  }),
+});
     const result = await response.json();
     if (result.success) {
       alert("تنظیمات با موفقیت در دیتابیس (Supabase) ذخیره شد!");

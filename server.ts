@@ -1683,6 +1683,30 @@ app.get('/api/businesses', async (req, res) => {
     res.status(500).json({ success: false, message: err.message });
   }
 });
+  app.delete('/api/businesses/:id', async (req, res) => {
+  try {
+    if (!supabase) {
+      return res.status(500).json({ success: false, message: 'Supabase is not configured.' });
+    }
+
+    const { id } = req.params;
+
+    const { error } = await supabase
+      .from('businesses')
+      .delete()
+      .eq('id', Number(id));
+
+    if (error) throw error;
+
+    res.status(200).json({
+      success: true,
+      message: 'Business deleted successfully',
+    });
+  } catch (err: any) {
+    console.error('Error deleting business:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
   // API: ذخیره یا به‌روزرسانی تنظیمات بیزینس در دیتابیس
 app.post('/api/businesses', async (req, res) => {
   try {

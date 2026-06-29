@@ -586,6 +586,19 @@ const formattedSalons = businesses.map((item: any) => ({
     placeholder="Google Calendar ID"
   />
 </div>
+                  <div className="md:col-span-3">
+  <label className="block text-xs font-black text-slate-600 tracking-wider uppercase">
+    Custom System Prompt
+  </label>
+
+  <textarea
+    value={editSystemPrompt}
+    onChange={(e) => setEditSystemPrompt(e.target.value)}
+    rows={8}
+    className="mt-2 block w-full rounded-xl border-slate-200 shadow-sm p-3 border focus:ring-4 focus:ring-indigo-500/10"
+    placeholder="Custom AI System Prompt"
+  />
+</div>
                   <div className="flex gap-3">
                     <button type="submit" className={`flex-1 py-3 rounded-xl font-extrabold shadow-lg transition duration-200 text-sm ${
                       editingSalon 

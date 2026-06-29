@@ -1652,14 +1652,25 @@ app.get('/api/businesses', async (req, res) => {
   }
 });
 
-  app.put('/api/businesses/:id', async (req, res) => {
+app.put('/api/businesses/:id', async (req, res) => {
   try {
     if (!supabase) {
       return res.status(500).json({ success: false, message: 'Supabase is not configured.' });
     }
 
     const { id } = req.params;
-    const { businessName, telegramToken, calendarId, systemPrompt } = req.body;
+
+    const {
+      businessName,
+      telegramToken,
+      calendarId,
+      systemPrompt,
+      instagramPageId,
+      instagramAccountId,
+      instagramAccessToken,
+      instagramVerifyToken,
+      instagramEnabled,
+    } = req.body;
 
     const { data, error } = await supabase
       .from('businesses')
@@ -1668,6 +1679,12 @@ app.get('/api/businesses', async (req, res) => {
         telegram_bot_token: telegramToken || '',
         google_calendar_id: calendarId || '',
         custom_system_prompt: systemPrompt || '',
+
+        instagram_page_id: instagramPageId || '',
+        instagram_account_id: instagramAccountId || '',
+        instagram_access_token: instagramAccessToken || '',
+        instagram_verify_token: instagramVerifyToken || '',
+        instagram_enabled: Boolean(instagramEnabled),
       })
       .eq('id', Number(id))
       .select();
@@ -1714,19 +1731,37 @@ app.post('/api/businesses', async (req, res) => {
       return res.status(500).json({ success: false, message: 'Supabase is not configured.' });
     }
 
-    const { id, businessName, businessId, telegramToken, calendarId, systemPrompt } = req.body;
+   const {
+  id,
+  businessName,
+  businessId,
+  telegramToken,
+  calendarId,
+  systemPrompt,
+  instagramPageId,
+  instagramAccountId,
+  instagramAccessToken,
+  instagramVerifyToken,
+  instagramEnabled,
+} = req.body;
     const finalBusinessName = businessName || businessId;
 
     if (!finalBusinessName) {
       return res.status(400).json({ success: false, message: 'businessName is required.' });
     }
 
-    const payload: any = {
-      business_name: finalBusinessName,
-      telegram_bot_token: telegramToken || '',
-      google_calendar_id: calendarId || '',
-      custom_system_prompt: systemPrompt || '',
-    };
+  const payload: any = {
+  business_name: finalBusinessName,
+  telegram_bot_token: telegramToken || '',
+  google_calendar_id: calendarId || '',
+  custom_system_prompt: systemPrompt || '',
+
+  instagram_page_id: instagramPageId || '',
+  instagram_account_id: instagramAccountId || '',
+  instagram_access_token: instagramAccessToken || '',
+  instagram_verify_token: instagramVerifyToken || '',
+  instagram_enabled: Boolean(instagramEnabled),
+};
 
     let query;
 

@@ -1801,6 +1801,33 @@ app.post('/api/businesses', async (req, res) => {
     res.status(500).json({ success: false, message: err.message });
   }
 });
+  app.get('/webhook/instagram', (req, res) => {
+  const mode = req.query['hub.mode'];
+  const token = req.query['hub.verify_token'];
+  const challenge = req.query['hub.challenge'];
+
+  const verifyToken = process.env.INSTAGRAM_VERIFY_TOKEN || 'clinicpilot_verify_123';
+
+  if (mode === 'subscribe' && token === verifyToken) {
+    console.log('Instagram webhook verified successfully.');
+    return res.status(200).send(challenge);
+  }
+
+  console.log('Instagram webhook verification failed.');
+  return res.sendStatus(403);
+});
+
+app.post('/webhook/instagram', async (req, res) => {
+  try {
+    console.log('Incoming Instagram webhook:');
+    console.log(JSON.stringify(req.body, null, 2));
+
+    return res.sendStatus(200);
+  } catch (err) {
+    console.error('Instagram webhook error:', err);
+    return res.sendStatus(500);
+  }
+});
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({

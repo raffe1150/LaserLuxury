@@ -1652,6 +1652,37 @@ app.get('/api/businesses', async (req, res) => {
   }
 });
 
+  app.put('/api/businesses/:id', async (req, res) => {
+  try {
+    if (!supabase) {
+      return res.status(500).json({ success: false, message: 'Supabase is not configured.' });
+    }
+
+    const { id } = req.params;
+    const { businessName, telegramToken, calendarId, systemPrompt } = req.body;
+
+    const { data, error } = await supabase
+      .from('businesses')
+      .update({
+        business_name: businessName,
+        telegram_bot_token: telegramToken || '',
+        google_calendar_id: calendarId || '',
+        custom_system_prompt: systemPrompt || '',
+      })
+      .eq('id', Number(id))
+      .select();
+
+    if (error) throw error;
+
+    res.status(200).json({
+      success: true,
+      data: data || [],
+    });
+  } catch (err: any) {
+    console.error('Error updating business:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
   // API: ذخیره یا به‌روزرسانی تنظیمات بیزینس در دیتابیس
 app.post('/api/businesses', async (req, res) => {
   try {

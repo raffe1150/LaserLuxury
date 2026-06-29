@@ -107,67 +107,104 @@ const formattedSalons = businesses.map((item: any) => ({
     }
   };
 
- const handleAddSalon = async (e: React.FormEvent) => {
+const handleAddSalon = async (e: React.FormEvent) => {
   e.preventDefault();
 
   if (!newSalonName.trim() || !newBusinessId.trim()) return;
 
   if (editingSalon) {
-    setSalons(
-      salons.map((salon) =>
-        salon.id === editingSalon.id
-          ? {
-              ...salon,
-              name: newSalonName.trim(),
-              businessId: newBusinessId.trim(),
-            }
-          : salon
-      )
-    );
+    try {
+      const response = await fetch(`/api/businesses/${editingSalon.id}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          businessName: newSalonName.trim(),
+          telegramToken: editTelegramToken.trim(),
+          calendarId: editCalendarId.trim(),
+          systemPrompt: editSystemPrompt,
+        }),
+      });
 
-    setEditingSalon(null);
+      const result = await response.json();
+
+      if (!response.ok || !result.success) {
+        alert(result.message || 'Failed to update business.');
+        return;
+      }
+
+      setSalons((currentSalons) =>
+        currentSalons.map((salon) =>
+          salon.id === editingSalon.id
+            ? {
+                ...salon,
+                name: newSalonName.trim(),
+                businessId: newBusinessId.trim(),
+                telegramToken: editTelegramToken.trim(),
+                calendarId: editCalendarId.trim(),
+                systemPrompt: editSystemPrompt,
+              }
+            : salon
+        )
+      );
+
+      setEditingSalon(null);
+    } catch (err) {
+      console.error('Error updating business:', err);
+      alert('Could not connect to the server.');
+    }
   } else {
     try {
-      const response = await fetch('/api/salons', {
+      const response = await fetch('/api/businesses', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          salonName: newSalonName.trim(),
-          businessId: newBusinessId.trim(),
-          status: 'active',
+          businessName: newSalonName.trim(),
+          telegramToken: editTelegramToken.trim(),
+          calendarId: editCalendarId.trim(),
+          systemPrompt: editSystemPrompt,
         }),
       });
 
-      if (response.ok) {
-        const result = await response.json();
+      const result = await response.json();
 
-        if (result.success && result.data?.[0]) {
-          const added = result.data[0];
+      if (!response.ok || !result.success) {
+        alert(result.message || 'Failed to save in database.');
+        return;
+      }
 
-          const newSalonServer: Salon = {
-            id: added.id,
-            name: added.salon_name,
-            businessId: added.business_id,
-            status: added.status,
-          };
+      const added = Array.isArray(result.data) ? result.data[0] : result.data;
 
-          setSalons((currentSalons) => [...currentSalons, newSalonServer]);
-        }
-      } else {
-        alert('Failed to save in database.');
+      if (added) {
+        const newSalonServer: Salon = {
+          id: added.id.toString(),
+          name: added.business_name,
+          businessId: added.id.toString(),
+          status: 'active',
+          telegramToken: added.telegram_bot_token || '',
+          calendarId: added.google_calendar_id || '',
+          systemPrompt: added.custom_system_prompt || '',
+        };
+
+        setSalons((currentSalons) => [...currentSalons, newSalonServer]);
       }
     } catch (err) {
-      console.error('Error adding salon:', err);
+      console.error('Error adding business:', err);
       alert('Could not connect to the server.');
     }
   }
 
   setNewSalonName('');
   setNewBusinessId('');
+  setEditTelegramToken('');
+  setEditCalendarId('');
+  setEditSystemPrompt('');
 };
- const handleEditInit = (salon: Salon) => {
+
+const handleEditInit = (salon: Salon) => {
   setEditingSalon(salon);
 
   setNewSalonName(salon.name);
@@ -177,13 +214,14 @@ const formattedSalons = businesses.map((item: any) => ({
   setEditCalendarId(salon.calendarId || '');
   setEditSystemPrompt(salon.systemPrompt || '');
 };
-  const handleDeleteSalon = (id: string) => {
-    setSalons(salons.filter(salon => salon.id !== id));
-  };
 
-  const handleNotificationClick = () => {
-    alert('🔔 You have no new notifications at the moment.');
-  };
+const handleDeleteSalon = (id: string) => {
+  setSalons(salons.filter((salon) => salon.id !== id));
+};
+
+const handleNotificationClick = () => {
+  alert('🔔 You have no new notifications at the moment.');
+};
 
   // ترجمه عبارات به ۵ زبان
   const translations = {

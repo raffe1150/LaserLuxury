@@ -6,6 +6,10 @@ interface Salon {
   name: string;
   businessId: string;
   status: 'active' | 'inactive';
+
+  telegramToken?: string;
+  calendarId?: string;
+  systemPrompt?: string;
 }
 
 type Language = 'EN' | 'FA' | 'SV' | 'ES' | 'DE';
@@ -22,6 +26,10 @@ export default function App() {
   const [newSalonName, setNewSalonName] = useState('');
   const [newBusinessId, setNewBusinessId] = useState('');
   const [editingSalon, setEditingSalon] = useState<Salon | null>(null);
+
+  const [editTelegramToken, setEditTelegramToken] = useState('');
+  const [editCalendarId, setEditCalendarId] = useState('');
+  const [editSystemPrompt, setEditSystemPrompt] = useState('');
 
   useEffect(() => {
   async function fetchSalons() {
@@ -46,6 +54,10 @@ const formattedSalons = businesses.map((item: any) => ({
   name: item.business_name,
   businessId: item.id.toString(),
   status: 'active',
+
+  telegramToken: item.telegram_bot_token || '',
+  calendarId: item.google_calendar_id || '',
+  systemPrompt: item.custom_system_prompt || '',
 }));
         setSalons(formattedSalons);
       }
@@ -155,12 +167,16 @@ const formattedSalons = businesses.map((item: any) => ({
   setNewSalonName('');
   setNewBusinessId('');
 };
-  const handleEditInit = (salon: Salon) => {
-    setEditingSalon(salon);
-    setNewSalonName(salon.name);
-    setNewBusinessId(salon.businessId);
-  };
+ const handleEditInit = (salon: Salon) => {
+  setEditingSalon(salon);
 
+  setNewSalonName(salon.name);
+  setNewBusinessId(salon.businessId);
+
+  setEditTelegramToken(salon.telegramToken || '');
+  setEditCalendarId(salon.calendarId || '');
+  setEditSystemPrompt(salon.systemPrompt || '');
+};
   const handleDeleteSalon = (id: string) => {
     setSalons(salons.filter(salon => salon.id !== id));
   };
@@ -544,6 +560,19 @@ const formattedSalons = businesses.map((item: any) => ({
                       required
                     />
                   </div>
+                  <div>
+  <label className="block text-xs font-black text-slate-600 tracking-wider uppercase">
+    Telegram Bot Token
+  </label>
+
+  <input
+    type="text"
+    value={editTelegramToken}
+    onChange={(e) => setEditTelegramToken(e.target.value)}
+    className="mt-2 block w-full rounded-xl border-slate-200 shadow-sm p-3 border focus:ring-4 focus:ring-indigo-500/10"
+    placeholder="Telegram Bot Token"
+  />
+</div>
                   <div className="flex gap-3">
                     <button type="submit" className={`flex-1 py-3 rounded-xl font-extrabold shadow-lg transition duration-200 text-sm ${
                       editingSalon 

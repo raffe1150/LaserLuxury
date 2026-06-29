@@ -573,6 +573,19 @@ const formattedSalons = businesses.map((item: any) => ({
     placeholder="Telegram Bot Token"
   />
 </div>
+                  <div>
+  <label className="block text-xs font-black text-slate-600 tracking-wider uppercase">
+    Google Calendar ID
+  </label>
+
+  <input
+    type="text"
+    value={editCalendarId}
+    onChange={(e) => setEditCalendarId(e.target.value)}
+    className="mt-2 block w-full rounded-xl border-slate-200 shadow-sm p-3 border focus:ring-4 focus:ring-indigo-500/10"
+    placeholder="Google Calendar ID"
+  />
+</div>
                   <div className="flex gap-3">
                     <button type="submit" className={`flex-1 py-3 rounded-xl font-extrabold shadow-lg transition duration-200 text-sm ${
                       editingSalon 

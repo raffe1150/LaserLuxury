@@ -215,8 +215,29 @@ const handleEditInit = (salon: Salon) => {
   setEditSystemPrompt(salon.systemPrompt || '');
 };
 
-const handleDeleteSalon = (id: string) => {
-  setSalons(salons.filter((salon) => salon.id !== id));
+const handleDeleteSalon = async (id: string) => {
+  const confirmed = window.confirm(
+    "Are you sure you want to delete this business?"
+  );
+
+  if (!confirmed) return;
+
+  try {
+    const response = await fetch(`/api/businesses/${id}`, {
+      method: "DELETE",
+    });
+
+    const result = await response.json();
+
+    if (!response.ok || !result.success) {
+      throw new Error(result.message || "Failed to delete business");
+    }
+
+    setSalons((prev) => prev.filter((salon) => salon.id !== id));
+  } catch (error) {
+    console.error("Delete failed:", error);
+    alert("Failed to delete the business.");
+  }
 };
 
 const handleNotificationClick = () => {

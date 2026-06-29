@@ -10,6 +10,11 @@ interface Salon {
   telegramToken?: string;
   calendarId?: string;
   systemPrompt?: string;
+  instagramPageId?: string;
+  instagramAccountId?: string;
+  instagramAccessToken?: string;
+  instagramVerifyToken?: string;
+  instagramEnabled?: boolean;
 }
 
 type Language = 'EN' | 'FA' | 'SV' | 'ES' | 'DE';
@@ -30,6 +35,11 @@ export default function App() {
   const [editTelegramToken, setEditTelegramToken] = useState('');
   const [editCalendarId, setEditCalendarId] = useState('');
   const [editSystemPrompt, setEditSystemPrompt] = useState('');
+  const [editInstagramPageId, setEditInstagramPageId] = useState('');
+  const [editInstagramAccountId, setEditInstagramAccountId] = useState('');
+  const [editInstagramAccessToken, setEditInstagramAccessToken] = useState('');
+  const [editInstagramVerifyToken, setEditInstagramVerifyToken] = useState('');
+  const [editInstagramEnabled, setEditInstagramEnabled] = useState(false);
 
   useEffect(() => {
   async function fetchSalons() {
@@ -58,6 +68,12 @@ const formattedSalons = businesses.map((item: any) => ({
   telegramToken: item.telegram_bot_token || '',
   calendarId: item.google_calendar_id || '',
   systemPrompt: item.custom_system_prompt || '',
+
+  instagramPageId: item.instagram_page_id || '',
+  instagramAccountId: item.instagram_account_id || '',
+  instagramAccessToken: item.instagram_access_token || '',
+  instagramVerifyToken: item.instagram_verify_token || '',
+  instagramEnabled: item.instagram_enabled ?? false,
 }));
         setSalons(formattedSalons);
       }
@@ -124,6 +140,11 @@ const handleAddSalon = async (e: React.FormEvent) => {
           telegramToken: editTelegramToken.trim(),
           calendarId: editCalendarId.trim(),
           systemPrompt: editSystemPrompt,
+          instagramPageId: editInstagramPageId.trim(),
+          instagramAccountId: editInstagramAccountId.trim(),
+          instagramAccessToken: editInstagramAccessToken.trim(),
+          instagramVerifyToken: editInstagramVerifyToken.trim(),
+          instagramEnabled: editInstagramEnabled,
         }),
       });
 
@@ -144,6 +165,11 @@ const handleAddSalon = async (e: React.FormEvent) => {
                 telegramToken: editTelegramToken.trim(),
                 calendarId: editCalendarId.trim(),
                 systemPrompt: editSystemPrompt,
+                instagramPageId: editInstagramPageId.trim(),
+                instagramAccountId: editInstagramAccountId.trim(),
+                instagramAccessToken: editInstagramAccessToken.trim(),
+                instagramVerifyToken: editInstagramVerifyToken.trim(),
+                instagramEnabled: editInstagramEnabled,
               }
             : salon
         )
@@ -166,6 +192,11 @@ const handleAddSalon = async (e: React.FormEvent) => {
           telegramToken: editTelegramToken.trim(),
           calendarId: editCalendarId.trim(),
           systemPrompt: editSystemPrompt,
+          instagramPageId: editInstagramPageId.trim(),
+          instagramAccountId: editInstagramAccountId.trim(),
+          instagramAccessToken: editInstagramAccessToken.trim(),
+          instagramVerifyToken: editInstagramVerifyToken.trim(),
+          instagramEnabled: editInstagramEnabled,
         }),
       });
 
@@ -187,6 +218,11 @@ const handleAddSalon = async (e: React.FormEvent) => {
           telegramToken: added.telegram_bot_token || '',
           calendarId: added.google_calendar_id || '',
           systemPrompt: added.custom_system_prompt || '',
+          instagramPageId: added.instagram_page_id || '',
+          instagramAccountId: added.instagram_account_id || '',
+          instagramAccessToken: added.instagram_access_token || '',
+          instagramVerifyToken: added.instagram_verify_token || '',
+          instagramEnabled: added.instagram_enabled ?? false,
         };
 
         setSalons((currentSalons) => [...currentSalons, newSalonServer]);
@@ -202,6 +238,11 @@ const handleAddSalon = async (e: React.FormEvent) => {
   setEditTelegramToken('');
   setEditCalendarId('');
   setEditSystemPrompt('');
+  setEditInstagramPageId('');
+  setEditInstagramAccountId('');
+  setEditInstagramAccessToken('');
+  setEditInstagramVerifyToken('');
+  setEditInstagramEnabled(false);
 };
 
 const handleEditInit = (salon: Salon) => {
@@ -213,6 +254,12 @@ const handleEditInit = (salon: Salon) => {
   setEditTelegramToken(salon.telegramToken || '');
   setEditCalendarId(salon.calendarId || '');
   setEditSystemPrompt(salon.systemPrompt || '');
+
+  setEditInstagramPageId(salon.instagramPageId || '');
+  setEditInstagramAccountId(salon.instagramAccountId || '');
+  setEditInstagramAccessToken(salon.instagramAccessToken || '');
+  setEditInstagramVerifyToken(salon.instagramVerifyToken || '');
+  setEditInstagramEnabled(salon.instagramEnabled ?? false);
 };
 
 const handleDeleteSalon = async (id: string) => {
@@ -658,6 +705,84 @@ const handleNotificationClick = () => {
     placeholder="Custom AI System Prompt"
   />
 </div>
+
+                  <div className="md:col-span-3 rounded-2xl border border-indigo-100 bg-indigo-50/40 p-5">
+                    <div className="flex items-start justify-between gap-4 mb-5">
+                      <div>
+                        <h3 className="text-sm font-black text-slate-900 tracking-tight">
+                          Instagram Integration
+                        </h3>
+                        <p className="text-xs text-slate-500 font-semibold mt-1">
+                          Connect this business to Instagram DM automation.
+                        </p>
+                      </div>
+
+                      <label className="flex items-center gap-2 text-xs font-black text-slate-700">
+                        <input
+                          type="checkbox"
+                          checked={editInstagramEnabled}
+                          onChange={(e) => setEditInstagramEnabled(e.target.checked)}
+                          className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                        />
+                        Enable Instagram
+                      </label>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-xs font-black text-slate-600 tracking-wider uppercase">
+                          Instagram Page ID
+                        </label>
+                        <input
+                          type="text"
+                          value={editInstagramPageId}
+                          onChange={(e) => setEditInstagramPageId(e.target.value)}
+                          className="mt-2 block w-full rounded-xl border-slate-200 shadow-sm p-3 border focus:ring-4 focus:ring-indigo-500/10 bg-white text-sm font-semibold"
+                          placeholder="Page ID"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-black text-slate-600 tracking-wider uppercase">
+                          Instagram Account ID
+                        </label>
+                        <input
+                          type="text"
+                          value={editInstagramAccountId}
+                          onChange={(e) => setEditInstagramAccountId(e.target.value)}
+                          className="mt-2 block w-full rounded-xl border-slate-200 shadow-sm p-3 border focus:ring-4 focus:ring-indigo-500/10 bg-white text-sm font-semibold"
+                          placeholder="Instagram Business Account ID"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-black text-slate-600 tracking-wider uppercase">
+                          Instagram Access Token
+                        </label>
+                        <input
+                          type="password"
+                          value={editInstagramAccessToken}
+                          onChange={(e) => setEditInstagramAccessToken(e.target.value)}
+                          className="mt-2 block w-full rounded-xl border-slate-200 shadow-sm p-3 border focus:ring-4 focus:ring-indigo-500/10 bg-white text-sm font-semibold"
+                          placeholder="Access Token"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-black text-slate-600 tracking-wider uppercase">
+                          Instagram Verify Token
+                        </label>
+                        <input
+                          type="text"
+                          value={editInstagramVerifyToken}
+                          onChange={(e) => setEditInstagramVerifyToken(e.target.value)}
+                          className="mt-2 block w-full rounded-xl border-slate-200 shadow-sm p-3 border focus:ring-4 focus:ring-indigo-500/10 bg-white text-sm font-semibold"
+                          placeholder="Webhook Verify Token"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
                   <div className="flex gap-3">
                     <button type="submit" className={`flex-1 py-3 rounded-xl font-extrabold shadow-lg transition duration-200 text-sm ${
                       editingSalon 
@@ -679,6 +804,11 @@ const handleNotificationClick = () => {
   setEditTelegramToken('');
   setEditCalendarId('');
   setEditSystemPrompt('');
+  setEditInstagramPageId('');
+  setEditInstagramAccountId('');
+  setEditInstagramAccessToken('');
+  setEditInstagramVerifyToken('');
+  setEditInstagramEnabled(false);
 }}
                         className="px-5 py-3 rounded-xl font-extrabold bg-slate-100 text-slate-600 hover:bg-slate-200 transition text-sm"
                       >

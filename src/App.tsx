@@ -612,10 +612,15 @@ const formattedSalons = businesses.map((item: any) => ({
                       <button
                         type="button"
                         onClick={() => {
-                          setEditingSalon(null);
-                          setNewSalonName('');
-                          setNewBusinessId('');
-                        }}
+  setEditingSalon(null);
+
+  setNewSalonName('');
+  setNewBusinessId('');
+
+  setEditTelegramToken('');
+  setEditCalendarId('');
+  setEditSystemPrompt('');
+}}
                         className="px-5 py-3 rounded-xl font-extrabold bg-slate-100 text-slate-600 hover:bg-slate-200 transition text-sm"
                       >
                         Cancel

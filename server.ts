@@ -1819,15 +1819,27 @@ app.post('/api/businesses', async (req, res) => {
 
 app.post('/webhook/instagram', async (req, res) => {
   try {
-    console.log('Incoming Instagram webhook:');
-    console.log(JSON.stringify(req.body, null, 2));
+  console.log('Incoming Instagram webhook:');
+  console.log(JSON.stringify(req.body, null, 2));
 
-    return res.sendStatus(200);
-  } catch (err) {
-    console.error('Instagram webhook error:', err);
-    return res.sendStatus(500);
+  const entry = req.body.entry?.[0];
+  const change = entry?.changes?.[0];
+  const value = change?.value;
+
+  if (change?.field === 'messages' && value?.message?.text) {
+    const senderId = value.sender.id;
+    const recipientId = value.recipient.id;
+    const messageText = value.message.text;
+
+    console.log('==============================');
+    console.log('Sender ID:', senderId);
+    console.log('Recipient ID:', recipientId);
+    console.log('Message:', messageText);
+    console.log('==============================');
   }
-});
+
+  return res.sendStatus(200);
+}
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({

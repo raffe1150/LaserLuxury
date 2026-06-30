@@ -1,3 +1,4 @@
+
 import "dotenv/config";
 import express from "express";
 import cron from "node-cron";
@@ -2074,10 +2075,19 @@ app.post('/webhook/instagram', async (req, res) => {
 
     for (const entry of body.entry || []) {
       for (const messagingEvent of entry.messaging || []) {
-        if (messagingEvent?.message?.text) {
+        const hasText = Boolean(messagingEvent?.message?.text);
+        const hasAudio = Boolean(
+          messagingEvent?.message?.attachments?.some(
+            (attachment: any) => attachment?.type === 'audio' && attachment?.payload?.url
+          )
+        );
+
+        if (hasText || hasAudio) {
           processInstagramUpdate(messagingEvent, activeConfig).catch((e) => {
             console.error('Instagram async processing failed:', e);
           });
+        } else {
+          console.log('Instagram webhook ignored: no text/audio message payload.');
         }
       }
 

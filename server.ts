@@ -1823,6 +1823,24 @@ app.post('/webhook/instagram', async (req, res) => {
     console.log(JSON.stringify(req.body, null, 2));
 
     const entry = req.body.entry?.[0];
+
+    // Real Instagram DM payload
+    const messagingEvent = entry?.messaging?.[0];
+
+    if (messagingEvent?.message?.text) {
+      const senderId = messagingEvent.sender.id;
+      const recipientId = messagingEvent.recipient.id;
+      const messageText = messagingEvent.message.text;
+
+      console.log('==============================');
+      console.log('REAL INSTAGRAM DM');
+      console.log('Sender ID:', senderId);
+      console.log('Recipient ID:', recipientId);
+      console.log('Message:', messageText);
+      console.log('==============================');
+    }
+
+    // Meta test payload
     const change = entry?.changes?.[0];
     const value = change?.value;
 
@@ -1832,6 +1850,7 @@ app.post('/webhook/instagram', async (req, res) => {
       const messageText = value.message.text;
 
       console.log('==============================');
+      console.log('META TEST MESSAGE');
       console.log('Sender ID:', senderId);
       console.log('Recipient ID:', recipientId);
       console.log('Message:', messageText);

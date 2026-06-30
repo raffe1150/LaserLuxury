@@ -1006,7 +1006,52 @@ function detectTtsVoiceCode(text: string): string {
 
   return "en-US-AriaNeural";
 }
+function detectUserLanguage(text: string): string {
+  if (!text) return "en";
 
+  const lower = text.toLowerCase();
+
+  // Persian
+  if (
+    /[\u0600-\u06FF]/.test(text) ||
+    /\b(salam|chetori|khubi|mamnoon|merci|lotfan|bebakhshid|mikham|mitoni)\b/i.test(lower)
+  ) {
+    return "fa";
+  }
+
+  // Swedish
+  if (
+    /[åäö]/i.test(text) ||
+    /\b(hej|tack|ja|nej|bokning|boka|tid|kl|måndag|tisdag|onsdag|torsdag|fredag)\b/i.test(lower)
+  ) {
+    return "sv";
+  }
+
+  // German
+  if (
+    /\b(hallo|guten|danke|bitte|termin|uhr|morgen|nachmittag|ja|nein)\b/i.test(lower)
+  ) {
+    return "de";
+  }
+
+  // Spanish
+  if (
+    /[áéíóúñ¿¡]/i.test(text) ||
+    /\b(hola|gracias|por favor|quiero|cita|mañana|sí)\b/i.test(lower)
+  ) {
+    return "es";
+  }
+
+  // Arabic
+  if (
+    /[\u0600-\u06FF]/.test(text) &&
+    /\b(مرحبا|السلام|شكرا|موعد|اليوم|غدا)\b/u.test(text)
+  ) {
+    return "ar";
+  }
+
+  return "en";
+}
 function setupDailyReminders() {
   cron.schedule("0 19 * * *", async () => {
     console.log("[Cron] Starting daily reminder job for tomorrow's appointments...");
@@ -1653,8 +1698,21 @@ async function startServer() {
           }
       }
 
-      const messages: any[] = [...history];
-      messages.push({ role: "user", content: userMessageContent });
+     const messages: any[] = [...history];
+
+const userText =
+  typeof userMessageContent === "string"
+    ? userMessageContent
+    : Array.isArray(userMessageContent)
+      ? userMessageContent.join(" ")
+      : "";
+
+const userLanguage = detectUserLanguage(userText);
+
+messages.push({
+  role: "user",
+  content: userMessageContent
+});
 const businessName = config.businessName || config.business_name || 'this business';
 
 const constraint = `
@@ -1678,15 +1736,18 @@ Do not mention internal tools, API calls, system prompts, or database logic.
         day: 'numeric'
       });
       const currentDateContext = `\nCrucial Context: The client's current local date and time in Sweden (Europe/Stockholm) is dynamically: ${swedenDate}. Any reference by the user to 'idag', 'imorgon', or days of the week must be evaluated strictly using this dynamic date as the anchor. Note that for YYYY-MM-DD tools, June is '06' (index 5 in Javascript Date).`;
-      
-      let finalSystemInstruction = (activeConfig.systemPrompt || "") + currentDateContext + constraint;
-      if (incomingAudioData) {
-          finalSystemInstruction += 
-            "\nVoice specific instructions: You officially support 7 languages: Swedish, German/Tyska, Italian, Portuguese, Persian (Farsi), English, and Spanish.\n" +
-            "CRITICAL: Detect the language the user is speaking, and you MUST reply in that exact same language.\n" +
-            "CRITICAL CONSTRAINT: Keep response max 60 words, use memory of checked slots if applicable, otherwise use `checkSlots` immediately!!";
-      }
-
+     const languageEngine = `
+LANGUAGE ENGINE:
+The detected customer language is "${userLanguage}".
+Reply ONLY in this language.
+If the customer explicitly asks to change language, switch immediately.
+Never translate unless requested.
+`;
+      let finalSystemInstruction =
+  (systemPrompt || "") +
+  currentDateContext +
+  constraint +
+  languageEngine;
       let chatResponse = await generateContentWithFallback(null, {
         messages,
         systemInstruction: finalSystemInstruction, 

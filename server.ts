@@ -562,6 +562,7 @@ activeConfig = {
 };
 
 const chatSessions: Record<number, any[]> = {};
+const chatLanguages: Record<string, string> = {};
 let globalWaitUntil = 0;
 
 type TelegramPollerState = {
@@ -1564,8 +1565,8 @@ Do not mention internal tools, API calls, system prompts, or database logic.
     }
   } catch (err: any) {
     console.error('IG processing error:', err);
-    const errorMessage = getErrorMessageByLanguage(userLanguage);
-
+   const errorLanguage = chatLanguages[chatId] || userLanguage || "en";
+   const errorMessage = getErrorMessageByLanguage(errorLanguage);
     await sendInstagramMessage(
       senderId,
       errorMessage,
@@ -1689,6 +1690,7 @@ const userText =
       ? userMessageContent.join(" ")
       : "";
 const userLanguage = detectUserLanguage(userText);
+      chatLanguages[chatId] = userLanguage;
 
 messages.push({
   role: "user",

@@ -775,7 +775,7 @@ async function processTelegramUpdate(update: any, config: any, platform: string 
     const messages = [...history];
     messages.push({ role: "user", content: userMessageContent });
     
-const businessName = config.businessName || config.business_name || 'this business';
+const businessName = activeConfig.businessName || activeConfig.business_name || 'this business';
 
 const constraint = `
 CRITICAL CONSTRAINT:
@@ -799,7 +799,7 @@ Do not mention internal tools, API calls, system prompts, or database logic.
     });
     const currentDateContext = `\nCrucial Context: The client's current local date and time in Sweden (Europe/Stockholm) is dynamically: ${swedenDate}. Any reference by the user to 'idag', 'imorgon', or days of the week must be evaluated strictly using this dynamic date as the anchor. Note that for YYYY-MM-DD tools, June is '06' (index 5 in Javascript Date).`;
     let finalSystemInstruction =
-  (systemPrompt || "") +
+  (activeConfig.systemPrompt || "") +
   currentDateContext +
   constraint +
   languageEngine;
@@ -1052,6 +1052,24 @@ function detectUserLanguage(text: string): string {
 
   return "en";
 }
+
+function getErrorMessageByLanguage(language: string): string {
+  switch (language) {
+    case "fa":
+      return "متأسفم، در حال حاضر یک مشکل فنی پیش آمده است. لطفاً چند دقیقه دیگر دوباره تلاش کنید.";
+    case "de":
+      return "Entschuldigung, es ist ein technisches Problem aufgetreten. Bitte versuchen Sie es in ein paar Minuten erneut.";
+    case "sv":
+      return "Ursäkta, jag stötte på ett tekniskt problem. Försök gärna igen om några minuter.";
+    case "es":
+      return "Lo siento, ha ocurrido un problema técnico. Por favor, inténtalo de nuevo en unos minutos.";
+    case "ar":
+      return "عذرًا، حدثت مشكلة تقنية. يرجى المحاولة مرة أخرى بعد بضع دقائق.";
+    default:
+      return "Sorry, a technical problem occurred. Please try again in a few minutes.";
+  }
+}
+
 function setupDailyReminders() {
   cron.schedule("0 19 * * *", async () => {
     console.log("[Cron] Starting daily reminder job for tomorrow's appointments...");
@@ -1315,6 +1333,7 @@ async function processInstagramUpdate(webhook_event: any, config: any, platform:
   console.log('==============================');
 
   const chatId = `ig_${senderId}`;
+  let userLanguage = detectUserLanguage(textMessage || "");
 
   let businessConfig: any = { ...activeConfig, ...(config || {}) };
   let businessRecord: any = null;
@@ -1545,15 +1564,17 @@ Do not mention internal tools, API calls, system prompts, or database logic.
     }
   } catch (err: any) {
     console.error('IG processing error:', err);
-  const errorMessage = getErrorMessageByLanguage(userLanguage);
+    const errorMessage = getErrorMessageByLanguage(userLanguage);
 
-await sendInstagramMessage(
-  senderId,
-  errorMessage,
-  process.env.INSTAGRAM_ACCESS_TOKEN ||
-    businessConfig.instagramAccessToken ||
-    process.env.INSTAGRAM_PAGE_ACCESS_TOKEN
-);
+    await sendInstagramMessage(
+      senderId,
+      errorMessage,
+      process.env.INSTAGRAM_ACCESS_TOKEN ||
+        businessConfig.instagramAccessToken ||
+        process.env.INSTAGRAM_PAGE_ACCESS_TOKEN
+    );
+  }
+}
 
 async function startServer() {
 
@@ -1667,13 +1688,13 @@ const userText =
     : Array.isArray(userMessageContent)
       ? userMessageContent.join(" ")
       : "";
- userLanguage = detectUserLanguage(userText);
+const userLanguage = detectUserLanguage(userText);
 
 messages.push({
   role: "user",
   content: userMessageContent
 });
-const businessName = config.businessName || config.business_name || 'this business';
+const businessName = activeConfig.businessName || activeConfig.business_name || 'this business';
 
 const constraint = `
 CRITICAL CONSTRAINT:
@@ -1704,7 +1725,7 @@ If the customer explicitly asks to change language, switch immediately.
 Never translate unless requested.
 `;
       let finalSystemInstruction =
-  (systemPrompt || "") +
+  (activeConfig.systemPrompt || "") +
   currentDateContext +
   constraint +
   languageEngine;

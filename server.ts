@@ -1091,18 +1091,150 @@ async function sendInstagramMessage(recipientId: string, text: string, accessTok
   console.error('Instagram reply failed on all endpoints:', lastError);
 }
 
+function getPublicBaseUrl() {
+  return (
+    process.env.PUBLIC_BASE_URL ||
+    process.env.RENDER_EXTERNAL_URL ||
+    process.env.APP_URL ||
+    'https://laserluxury.onrender.com'
+  ).replace(/\/$/, '');
+}
+
+function detectTtsVoiceCode(text: string) {
+  const lowerText = (text || '').toLowerCase();
+
+  if (/[\u0600-\u06FF]/.test(text)) {
+    return 'fa-IR-DilaraNeural';
+  }
+
+  if (/[åäöÅÄÖ]/i.test(text) || /\b(hej|tack|ja|nej|bra|jag|är|en|ett|för|ledig|boka|vilken|behandling|tid)\b/i.test(lowerText)) {
+    return 'sv-SE-SofieNeural';
+  }
+
+  if (/[áéíóúñ¿¡]/i.test(text) || /\b(gracias|hola|adiós|sí|claro|por favor|el|la|los|las|y)\b/i.test(lowerText)) {
+    return 'es-ES-ElviraNeural';
+  }
+
+  if (/\b(h[aä]ll[oö]|guten|tag|danke|nein|entschuldigung|super|ist|ledig|freitag|uhr|termin)\b/i.test(lowerText) || lowerText.includes(' ist ') || lowerText.includes(' ledig ')) {
+    return 'de-DE-KatjaNeural';
+  }
+
+  if (/\b(ciao|buongiorno|grazie|prego)\b/i.test(lowerText)) {
+    return 'it-IT-ElsaNeural';
+  }
+
+  if (/\b(olá|bom dia|obrigado)\b/i.test(lowerText)) {
+    return 'pt-PT-DuarteNeural';
+  }
+
+  return 'en-US-AriaNeural';
+}
+
+async function createInstagramVoiceReplyFile(text: string) {
+  const EdgeTTS = (await import('node-edge-tts')).EdgeTTS;
+  const voiceCode = detectTtsVoiceCode(text);
+  const audioDir = '/tmp/clinicpilot_ig_audio';
+  fs.mkdirSync(audioDir, { recursive: true });
+
+  const filename = `ig_reply_${Date.now()}_${Math.random().toString(36).slice(2)}.mp3`;
+  const filePath = path.join(audioDir, filename);
+  const cleanText = sanitizeTTS(text);
+
+  const tts = new EdgeTTS({ voice: voiceCode, rate: '-10%', timeout: 60000 });
+  await tts.ttsPromise(cleanText || 'Förlåt, jag förstod inte.', filePath);
+
+  // Best-effort cleanup of old generated audio files.
+  try {
+    const now = Date.now();
+    for (const file of fs.readdirSync(audioDir)) {
+      const fullPath = path.join(audioDir, file);
+      const stat = fs.statSync(fullPath);
+      if (now - stat.mtimeMs > 60 * 60 * 1000) {
+        fs.unlinkSync(fullPath);
+      }
+    }
+  } catch (cleanupErr) {
+    console.warn('Instagram audio cleanup failed:', cleanupErr);
+  }
+
+  return {
+    filePath,
+    url: `${getPublicBaseUrl()}/media/instagram/${filename}`,
+  };
+}
+
+async function sendInstagramAudioMessage(recipientId: string, audioUrl: string, accessToken?: string) {
+  const token = accessToken || process.env.INSTAGRAM_ACCESS_TOKEN || process.env.INSTAGRAM_PAGE_ACCESS_TOKEN;
+
+  if (!token) {
+    console.error('Instagram audio reply skipped: missing INSTAGRAM_ACCESS_TOKEN');
+    return false;
+  }
+
+  const payload = {
+    recipient: { id: recipientId },
+    message: {
+      attachment: {
+        type: 'audio',
+        payload: {
+          url: audioUrl,
+          is_reusable: false
+        }
+      }
+    }
+  };
+
+  const endpoints = [
+    'https://graph.instagram.com/v25.0/me/messages',
+    'https://graph.facebook.com/v25.0/me/messages'
+  ];
+
+  let lastError: any = null;
+
+  for (const endpoint of endpoints) {
+    try {
+      const response = await fetch(`${endpoint}?access_token=${token}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      const result = await response.json().catch(() => ({}));
+
+      if (response.ok) {
+        console.log('Instagram audio reply sent:', JSON.stringify(result));
+        return true;
+      }
+
+      lastError = result;
+      console.error(`Instagram audio send failed via ${endpoint}:`, JSON.stringify(result));
+    } catch (err) {
+      lastError = err;
+      console.error(`Instagram audio send error via ${endpoint}:`, err);
+    }
+  }
+
+  console.error('Instagram audio reply failed on all endpoints:', lastError);
+  return false;
+}
+
+
 async function processInstagramUpdate(webhook_event: any, config: any, platform: string = "instagram-webhook") {
   const senderId = webhook_event.sender?.id;
   const recipientId = webhook_event.recipient?.id;
-  const messageText = webhook_event.message?.text;
 
-  if (!senderId || !recipientId || !messageText) return;
+  const textMessage = webhook_event.message?.text || '';
+  const audioAttachment = webhook_event.message?.attachments?.find((attachment: any) => attachment.type === 'audio');
+  const audioUrl = audioAttachment?.payload?.url;
+
+  if (!senderId || !recipientId || (!textMessage && !audioUrl)) return;
 
   console.log('==============================');
-  console.log('REAL INSTAGRAM DM');
+  console.log(audioUrl ? 'REAL INSTAGRAM VOICE DM' : 'REAL INSTAGRAM TEXT DM');
   console.log('Sender ID:', senderId);
   console.log('Recipient ID:', recipientId);
-  console.log('Message:', messageText);
+  if (textMessage) console.log('Message:', textMessage);
+  if (audioUrl) console.log('Audio URL:', audioUrl);
   console.log('==============================');
 
   const chatId = `ig_${senderId}`;
@@ -1147,7 +1279,40 @@ async function processInstagramUpdate(webhook_event: any, config: any, platform:
   try {
     if (!chatSessions[chatId as any]) chatSessions[chatId as any] = [];
     const history = chatSessions[chatId as any];
-    const userMessageContent: any = messageText;
+
+    let userMessageContent: any = textMessage;
+    let userMessageForLog = textMessage || '[Instagram Voice Message]';
+    let isVoiceMessage = false;
+
+    if (!textMessage && audioUrl) {
+      isVoiceMessage = true;
+
+      try {
+        const audioResponse = await fetch(audioUrl);
+        if (!audioResponse.ok) {
+          throw new Error(`Failed to download Instagram audio: ${audioResponse.status} ${audioResponse.statusText}`);
+        }
+
+        const audioBuffer = await audioResponse.arrayBuffer();
+        const base64Audio = Buffer.from(audioBuffer).toString('base64');
+        const contentType = audioResponse.headers.get('content-type') || 'audio/mpeg';
+
+        userMessageContent = [
+          { text: 'Instagram voice message input:' },
+          { inlineData: { data: base64Audio, mimeType: contentType } }
+        ];
+
+        console.log(`Instagram voice downloaded. MIME=${contentType}, bytes=${audioBuffer.byteLength}`);
+      } catch (voiceErr) {
+        console.error('Instagram voice download failed:', voiceErr);
+        await sendInstagramMessage(
+          senderId,
+          'Ursäkta, jag kunde inte lyssna på röstmeddelandet just nu. Kan du skriva ditt meddelande istället?',
+          process.env.INSTAGRAM_ACCESS_TOKEN || businessConfig.instagramAccessToken || process.env.INSTAGRAM_PAGE_ACCESS_TOKEN
+        );
+        return;
+      }
+    }
 
     const messages = [...history];
     messages.push({ role: 'user', content: userMessageContent });
@@ -1177,7 +1342,13 @@ Do not mention internal tools, API calls, system prompts, or database logic.
     });
 
     const currentDateContext = `\nCrucial Context: The client's current local date and time in Sweden (Europe/Stockholm) is dynamically: ${swedenDate}. Any reference by the user to 'idag', 'imorgon', or days of the week must be evaluated strictly using this dynamic date as the anchor. Note that for YYYY-MM-DD tools, June is '06' (index 5 in Javascript Date).`;
-    const finalSystemInstruction = (businessConfig.systemPrompt || '') + currentDateContext + constraint;
+
+    let finalSystemInstruction = (businessConfig.systemPrompt || '') + currentDateContext + constraint;
+
+    if (isVoiceMessage) {
+      finalSystemInstruction +=
+        "\nVoice specific instructions: The user sent an Instagram voice message. Detect the spoken language and reply in the exact same language. Keep the response natural, short, and suitable for voice playback.";
+    }
 
     let chatResponse = await generateContentWithFallback(null, {
       messages,
@@ -1264,17 +1435,34 @@ Do not mention internal tools, API calls, system prompts, or database logic.
 
     const textResponse = chatResponse.text || "I'm having trouble processing that right now.";
 
-    history.push({ role: 'user', content: userMessageContent });
+    history.push({ role: 'user', content: isVoiceMessage ? '[Instagram Voice Message]' : userMessageContent });
     history.push({ role: 'assistant', content: textResponse });
 
-    await sendInstagramMessage(
-      senderId,
-      textResponse,
-      process.env.INSTAGRAM_ACCESS_TOKEN || businessConfig.instagramAccessToken || process.env.INSTAGRAM_PAGE_ACCESS_TOKEN
-    );
+    const instagramToken = process.env.INSTAGRAM_ACCESS_TOKEN || businessConfig.instagramAccessToken || process.env.INSTAGRAM_PAGE_ACCESS_TOKEN;
+
+    if (isVoiceMessage) {
+      let sentVoiceReply = false;
+
+      try {
+        const voiceReply = await createInstagramVoiceReplyFile(textResponse);
+        sentVoiceReply = await sendInstagramAudioMessage(senderId, voiceReply.url, instagramToken);
+
+        if (!sentVoiceReply) {
+          console.warn('Instagram voice reply failed, falling back to text reply.');
+        }
+      } catch (ttsErr) {
+        console.error('Instagram TTS/audio reply failed:', ttsErr);
+      }
+
+      if (!sentVoiceReply) {
+        await sendInstagramMessage(senderId, textResponse, instagramToken);
+      }
+    } else {
+      await sendInstagramMessage(senderId, textResponse, instagramToken);
+    }
 
     try {
-      await postProcessMessage(chatId, platform, userMessageContent, textResponse, businessConfig?.telegramToken, businessConfig?.apiKey);
+      await postProcessMessage(chatId, platform, userMessageForLog, textResponse, businessConfig?.telegramToken, businessConfig?.apiKey);
     } catch (e) {
       console.error('Instagram postProcessMessage failed:', e);
     }
@@ -1911,6 +2099,25 @@ app.post('/webhook/instagram', async (req, res) => {
     if (!res.headersSent) return res.sendStatus(500);
   }
 });
+
+
+  app.get('/media/instagram/:filename', (req, res) => {
+    try {
+      const filename = path.basename(req.params.filename);
+      const filePath = path.join('/tmp/clinicpilot_ig_audio', filename);
+
+      if (!fs.existsSync(filePath)) {
+        return res.sendStatus(404);
+      }
+
+      res.setHeader('Content-Type', 'audio/mpeg');
+      res.setHeader('Cache-Control', 'public, max-age=3600');
+      return res.sendFile(filePath);
+    } catch (err) {
+      console.error('Instagram media serving error:', err);
+      return res.sendStatus(500);
+    }
+  });
 
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {

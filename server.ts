@@ -798,14 +798,22 @@ Do not mention internal tools, API calls, system prompts, or database logic.
       day: 'numeric'
     });
     const currentDateContext = `\nCrucial Context: The client's current local date and time in Sweden (Europe/Stockholm) is dynamically: ${swedenDate}. Any reference by the user to 'idag', 'imorgon', or days of the week must be evaluated strictly using this dynamic date as the anchor. Note that for YYYY-MM-DD tools, June is '06' (index 5 in Javascript Date).`;
-    
-    let finalSystemInstruction = (systemPrompt || "") + currentDateContext + constraint;
-    if (voice) {
-        finalSystemInstruction += 
-          "\nVoice specific instructions: You officially support 4 languages: Swedish, Persian (Farsi), English, and Spanish.\n" +
-          "CRITICAL: Detect the language the user is speaking, and you MUST reply in that exact same language.\n" +
-          "CRITICAL CONSTRAINT: Keep response max 60 words, use memory of checked slots if applicable, otherwise use `checkSlots` immediately!!";
-    }
+    let finalSystemInstruction =
+  (systemPrompt || "") +
+  currentDateContext +
+  constraint +
+  languageEngine;
+  if (voice) {
+    finalSystemInstruction +=
+    "\nVOICE ENGINE:\n" +
+    "You support Swedish, English, Persian (Farsi), German, Spanish and Arabic.\n" +
+    "Detect the spoken language automatically.\n" +
+    "Reply using the exact same language.\n" +
+    "If the user speaks Persian using Latin letters, reply in Persian script.\n" +
+    "Your response must be suitable for natural TTS.\n" +
+    "Keep responses under 60 words unless more detail is required.\n";
+}
+      
     
     let chatResponse = await generateContentWithFallback(null, {
       messages,
@@ -1104,30 +1112,41 @@ function getPublicBaseUrl() {
 function detectTtsVoiceCode(text: string) {
   const lowerText = (text || '').toLowerCase();
 
-  if (/[\u0600-\u06FF]/.test(text)) {
+  // Persian / Farsi
+  if (/[\u0600-\u06FF]/.test(text) && !/[\u0750-\u077F]/.test(text)) {
     return 'fa-IR-DilaraNeural';
   }
 
-  if (/[åäöÅÄÖ]/i.test(text) || /\b(hej|tack|ja|nej|bra|jag|är|en|ett|för|ledig|boka|vilken|behandling|tid)\b/i.test(lowerText)) {
+  // Arabic
+  if (/[\u0600-\u06FF]/.test(text) && /\b(مرحبا|أهلا|السلام|شكرا|موعد|حجز|كيف|نعم|لا)\b/.test(text)) {
+    return 'ar-SA-ZariyahNeural';
+  }
+
+  // Swedish default
+  if (
+    /[åäöÅÄÖ]/.test(text) ||
+    /\b(hej|tack|ja|nej|bra|jag|är|för|boka|tid|ledig|behandling|nästa|vecka)\b/i.test(lowerText)
+  ) {
     return 'sv-SE-SofieNeural';
   }
 
-  if (/[áéíóúñ¿¡]/i.test(text) || /\b(gracias|hola|adiós|sí|claro|por favor|el|la|los|las|y)\b/i.test(lowerText)) {
-    return 'es-ES-ElviraNeural';
-  }
-
-  if (/\b(h[aä]ll[oö]|guten|tag|danke|nein|entschuldigung|super|ist|ledig|freitag|uhr|termin)\b/i.test(lowerText) || lowerText.includes(' ist ') || lowerText.includes(' ledig ')) {
+  // German
+  if (
+    /[äöüßÄÖÜ]/.test(text) ||
+    /\b(hallo|guten|danke|termin|buchen|nächste|woche|uhr|behandlung|möchte|können)\b/i.test(lowerText)
+  ) {
     return 'de-DE-KatjaNeural';
   }
 
-  if (/\b(ciao|buongiorno|grazie|prego)\b/i.test(lowerText)) {
-    return 'it-IT-ElsaNeural';
+  // Spanish
+  if (
+    /[áéíóúñ¿¡]/i.test(text) ||
+    /\b(hola|gracias|quiero|cita|reservar|tratamiento|semana|puedo|por favor|sí)\b/i.test(lowerText)
+  ) {
+    return 'es-ES-ElviraNeural';
   }
 
-  if (/\b(olá|bom dia|obrigado)\b/i.test(lowerText)) {
-    return 'pt-PT-DuarteNeural';
-  }
-
+  // English 
   return 'en-US-AriaNeural';
 }
 

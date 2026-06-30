@@ -905,14 +905,7 @@ Do not mention internal tools, API calls, system prompts, or database logic.
       try {
          const EdgeTTS = (await import('node-edge-tts')).EdgeTTS;
          let voiceCode = 'en-US-AriaNeural'; // default English
-         const lowerText = textResponse.toLowerCase();
-         if (/[\u0600-\u06FF]/.test(textResponse)) {
-             voiceCode = 'fa-IR-DilaraNeural'; // Persian
-         } else if (/[åäöÅÄÖ]/i.test(textResponse) || /\b(hej|tack|ja|nej|bra|jag|är|en|ett|för)\b/i.test(textResponse)) {
-             voiceCode = 'sv-SE-SofieNeural'; // Swedish
-         } else if (/[áéíóúñ¿¡]/i.test(textResponse) || /\b(gracias|hola|adiós|sí|claro|por favor|el|la|los|las|y)\b/i.test(textResponse)) {
-             voiceCode = 'es-ES-ElviraNeural'; // Spanish
-         }
+         const voiceCode = detectTtsVoiceCode(textResponse);
 
          const outName = `/tmp/bot_tts_${Date.now()}.mp3`;
          const cleanText = sanitizeTTS(textResponse);
@@ -977,7 +970,42 @@ function sanitizeTTS(text: string) {
   cleaned = cleaned.replace(/[\p{Emoji_Presentation}\p{Extended_Pictographic}]/gu, "");
   return cleaned.trim();
 }
+function detectTtsVoiceCode(text: string): string {
+  const lower = (text || "").toLowerCase();
 
+  // Persian
+  if (/[\u0600-\u06FF]/.test(text)) {
+    return "fa-IR-DilaraNeural";
+  }
+
+  // Arabic
+  if (/[\u0600-\u06FF]/.test(text) &&
+      /\b(مرحبا|السلام|شكرا|أهلا|موعد|حجز)\b/i.test(text)) {
+    return "ar-SA-ZariyahNeural";
+  }
+
+  // German
+  if (/\b(hallo|guten|danke|bitte|termin|möchte|buchen|tschüss)\b/i.test(lower)) {
+    return "de-DE-KatjaNeural";
+  }
+
+  // Swedish
+  if (/\b(hej|tack|boka|tid|behandling|jag|är|har|vill)\b/i.test(lower)) {
+    return "sv-SE-SofieNeural";
+  }
+
+  // Spanish
+  if (/\b(hola|gracias|cita|quiero|reservar|tratamiento|adiós)\b/i.test(lower)) {
+    return "es-ES-ElviraNeural";
+  }
+
+  // English
+  if (/\b(hello|thanks|appointment|book|today|tomorrow|please)\b/i.test(lower)) {
+    return "en-US-AriaNeural";
+  }
+
+  return "en-US-AriaNeural";
+}
 
 function setupDailyReminders() {
   cron.schedule("0 19 * * *", async () => {

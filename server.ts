@@ -989,7 +989,7 @@ function detectTtsVoiceCode(text: string): string {
     return "de-DE-KatjaNeural";
   }
 
-  // Swedish
+  // Swedish default
   if (/\b(hej|tack|boka|tid|behandling|jag|är|har|vill)\b/i.test(lower)) {
     return "sv-SE-SofieNeural";
   }
@@ -1180,47 +1180,6 @@ function getPublicBaseUrl() {
     process.env.APP_URL ||
     'https://laserluxury.onrender.com'
   ).replace(/\/$/, '');
-}
-
-function detectTtsVoiceCode(text: string) {
-  const lowerText = (text || '').toLowerCase();
-
-  // Persian / Farsi
-  if (/[\u0600-\u06FF]/.test(text) && !/[\u0750-\u077F]/.test(text)) {
-    return 'fa-IR-DilaraNeural';
-  }
-
-  // Arabic
-  if (/[\u0600-\u06FF]/.test(text) && /\b(مرحبا|أهلا|السلام|شكرا|موعد|حجز|كيف|نعم|لا)\b/.test(text)) {
-    return 'ar-SA-ZariyahNeural';
-  }
-
-  // Swedish default
-  if (
-    /[åäöÅÄÖ]/.test(text) ||
-    /\b(hej|tack|ja|nej|bra|jag|är|för|boka|tid|ledig|behandling|nästa|vecka)\b/i.test(lowerText)
-  ) {
-    return 'sv-SE-SofieNeural';
-  }
-
-  // German
-  if (
-    /[äöüßÄÖÜ]/.test(text) ||
-    /\b(hallo|guten|danke|termin|buchen|nächste|woche|uhr|behandlung|möchte|können)\b/i.test(lowerText)
-  ) {
-    return 'de-DE-KatjaNeural';
-  }
-
-  // Spanish
-  if (
-    /[áéíóúñ¿¡]/i.test(text) ||
-    /\b(hola|gracias|quiero|cita|reservar|tratamiento|semana|puedo|por favor|sí)\b/i.test(lowerText)
-  ) {
-    return 'es-ES-ElviraNeural';
-  }
-
-  // English 
-  return 'en-US-AriaNeural';
 }
 
 async function createInstagramVoiceReplyFile(text: string) {

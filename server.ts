@@ -1045,56 +1045,116 @@ function setupDailyReminders() {
 }
 
 
+async function sendInstagramMessage(recipientId: string, text: string, accessToken?: string) {
+  const token = accessToken || process.env.INSTAGRAM_ACCESS_TOKEN || process.env.INSTAGRAM_PAGE_ACCESS_TOKEN;
+
+  if (!token) {
+    console.error('Instagram reply skipped: missing INSTAGRAM_ACCESS_TOKEN');
+    return;
+  }
+
+  const payload = {
+    recipient: { id: recipientId },
+    message: { text }
+  };
+
+  const endpoints = [
+    'https://graph.instagram.com/v25.0/me/messages',
+    'https://graph.facebook.com/v25.0/me/messages'
+  ];
+
+  let lastError: any = null;
+
+  for (const endpoint of endpoints) {
+    try {
+      const response = await fetch(`${endpoint}?access_token=${token}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      const result = await response.json().catch(() => ({}));
+
+      if (response.ok) {
+        console.log('Instagram reply sent:', JSON.stringify(result));
+        return;
+      }
+
+      lastError = result;
+      console.error(`Instagram send failed via ${endpoint}:`, JSON.stringify(result));
+    } catch (err) {
+      lastError = err;
+      console.error(`Instagram send error via ${endpoint}:`, err);
+    }
+  }
+
+  console.error('Instagram reply failed on all endpoints:', lastError);
+}
+
 async function processInstagramUpdate(webhook_event: any, config: any, platform: string = "instagram-webhook") {
   const senderId = webhook_event.sender?.id;
+  const recipientId = webhook_event.recipient?.id;
   const messageText = webhook_event.message?.text;
-  
-  if (!senderId || !messageText) return;
+
+  if (!senderId || !recipientId || !messageText) return;
+
+  console.log('==============================');
+  console.log('REAL INSTAGRAM DM');
+  console.log('Sender ID:', senderId);
+  console.log('Recipient ID:', recipientId);
+  console.log('Message:', messageText);
+  console.log('==============================');
 
   const chatId = `ig_${senderId}`;
-  const voice = null; 
-  try {
-  // 🌟 تزریق پایگاه داده برای بارگذاری پویای اطلاعات بیزینس (اینستاگرام)
-  if (supabase) {
-    const { data: sessionData } = await supabase
-      .from('chat_history')
-      .select('business_id')
-      .eq('user_id', chatId.toString())
-      .order('created_at', { ascending: false })
-      .limit(1)
-      .maybeSingle();
 
-    if (sessionData && sessionData.business_id) {
-      const { data: activeTenant } = await supabase
+  let businessConfig: any = { ...activeConfig, ...(config || {}) };
+  let businessRecord: any = null;
+
+  try {
+    if (supabase) {
+      const { data, error } = await supabase
         .from('businesses')
         .select('*')
-        .eq('id', sessionData.business_id)
-        .single();
+        .eq('instagram_account_id', recipientId)
+        .maybeSingle();
 
-      if (activeTenant && config) {
-        config.systemPrompt = activeTenant.custom_system_prompt;
-        config.googleCalendarId = activeTenant.google_calendar_id;
-            }
+      if (error) {
+        console.error('Instagram business lookup error:', JSON.stringify(error));
+      }
+
+      if (data) {
+        businessRecord = data;
+        businessConfig = {
+          ...businessConfig,
+          businessRecordId: data.id,
+          businessName: data.business_name,
+          business_name: data.business_name,
+          systemPrompt: data.custom_system_prompt,
+          googleCalendarId: data.google_calendar_id,
+          instagramAccessToken: data.instagram_access_token,
+          instagramAccountId: data.instagram_account_id,
+          calendarProvider: 'google'
+        };
+        console.log(`Instagram business matched: ${data.business_name} (${data.id})`);
+      } else {
+        console.error('No business found for Instagram recipient id:', recipientId);
       }
     }
-    // 🌟 پایان تزریق
-
   } catch (tenantErr) {
-    console.error("Instagram tenant config injection failed:", tenantErr);
+    console.error('Instagram tenant config injection failed:', tenantErr);
   }
 
   try {
-    const ai = new GoogleGenAI({ apiKey: config?.apiKey || process.env.GEMINI_API_KEY });
-    if (!chatSessions[chatId]) chatSessions[chatId] = [];
-    const history = chatSessions[chatId];
-    let userMessageContent: any = messageText;
-    
-    const messages = [...history];
-    messages.push({ role: "user", content: userMessageContent });
-    
- const businessName = config.businessName || config.business_name || 'this business';
+    if (!chatSessions[chatId as any]) chatSessions[chatId as any] = [];
+    const history = chatSessions[chatId as any];
+    const userMessageContent: any = messageText;
 
-const constraint = `
+    const messages = [...history];
+    messages.push({ role: 'user', content: userMessageContent });
+
+    const businessName = businessConfig.businessName || businessConfig.business_name || 'this business';
+
+    const constraint = `
 CRITICAL CONSTRAINT:
 Your response for each message MUST be concise and strictly limited to a maximum of 60 words.
 Use the business-specific system prompt from the database as your main source of truth.
@@ -1107,6 +1167,7 @@ Before creating any appointment, collect the customer's name and mobile number.
 For vague time requests, check available slots instead of asking the customer to choose a time.
 Do not mention internal tools, API calls, system prompts, or database logic.
 `;
+
     const swedenDate = new Date().toLocaleDateString('en-US', {
       timeZone: 'Europe/Stockholm',
       weekday: 'long',
@@ -1114,124 +1175,116 @@ Do not mention internal tools, API calls, system prompts, or database logic.
       month: 'long',
       day: 'numeric'
     });
+
     const currentDateContext = `\nCrucial Context: The client's current local date and time in Sweden (Europe/Stockholm) is dynamically: ${swedenDate}. Any reference by the user to 'idag', 'imorgon', or days of the week must be evaluated strictly using this dynamic date as the anchor. Note that for YYYY-MM-DD tools, June is '06' (index 5 in Javascript Date).`;
-    
-    let finalSystemInstruction = (config?.systemPrompt || "") + currentDateContext + constraint;
-    
+    const finalSystemInstruction = (businessConfig.systemPrompt || '') + currentDateContext + constraint;
+
     let chatResponse = await generateContentWithFallback(null, {
       messages,
-      systemInstruction: finalSystemInstruction, 
+      systemInstruction: finalSystemInstruction,
       tools: calendarTools,
       model: 'gemini-2.5-flash'
     });
-    
+
     let maxTurns = 3;
     while (chatResponse.functionCalls && chatResponse.functionCalls.length > 0 && maxTurns > 0) {
       maxTurns--;
-      messages.push({ role: "assistant", content: chatResponse.text || null, tool_calls: chatResponse.functionCalls });
-      
-      const adapter = getCalendarAdapter(config);
+      messages.push({ role: 'assistant', content: chatResponse.text || null, tool_calls: chatResponse.functionCalls });
+
+      const adapter = getCalendarAdapter(businessConfig);
       const functionResponsesParts = await Promise.all(chatResponse.functionCalls.map(async (call: any) => {
         let adapterRes;
         const args = JSON.parse(call.function.arguments);
-        if (call.function.name === "checkSlots" && args) {
-            adapterRes = await adapter.checkSlots(args.startDate, args.endDate, args.durationMinutes);
-            if (adapterRes.available_slots_string) {
-                const slotsArray = adapterRes.available_slots_string
-                    .split('\n')
-                    .filter((s: string) => s.trim().length > 0 && !s.includes('No available slots'));
-                
-                const replyMessage = formatSwedishTimeSlots(slotsArray, args.requestedTime);
-                return { TERMINATE_EARLY: true, replyMessage };
-            }
-        }
-        else if (call.function.name === "insertAppointment" && args) {
-          adapterRes = await adapter.insertAppointment(args.name, args.phone, args.service, args.dateTime, args.durationMinutes, chatId);
-          const notifyToken = (typeof config !== 'undefined' && config ? config.telegramToken : activeConfig?.telegramToken) || process.env.TELEGRAM_TOKEN;
-          const notifyAdmin = (typeof config !== 'undefined' && config ? config.adminTelegramChatId : activeConfig?.adminTelegramChatId) || process.env.ADMIN_TELEGRAM_ID;
-          if (adapterRes && adapterRes.success && notifyToken && notifyAdmin) {
-             try {
-                const notifyText = `🔔 Ny bokning mottagen!\n👤 Namn: ${args.name}\n📞 Mobil: ${args.phone}\n📅 Tid: ${args.dateTime}`;
-                await fetch(`https://api.telegram.org/bot${notifyToken}/sendMessage`, {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ chat_id: notifyAdmin, text: notifyText })
-                });
-             } catch(e) { console.error("Admin notify error:", e); }
+
+        if (call.function.name === 'checkSlots' && args) {
+          adapterRes = await adapter.checkSlots(args.startDate, args.endDate, args.durationMinutes);
+          if (adapterRes.available_slots_string) {
+            const slotsArray = adapterRes.available_slots_string
+              .split('\n')
+              .filter((s: string) => s.trim().length > 0 && !s.includes('No available slots'));
+
+            const replyMessage = formatSwedishTimeSlots(slotsArray, args.requestedTime);
+            return { TERMINATE_EARLY: true, replyMessage };
           }
+        } else if (call.function.name === 'insertAppointment' && args) {
+          adapterRes = await adapter.insertAppointment(args.name, args.phone, args.service, args.dateTime, args.durationMinutes, chatId);
+          const notifyToken = businessConfig.telegramToken || activeConfig?.telegramToken || process.env.TELEGRAM_TOKEN;
+          const notifyAdmin = businessConfig.adminTelegramChatId || activeConfig?.adminTelegramChatId || process.env.ADMIN_TELEGRAM_ID;
+
+          if (adapterRes && adapterRes.success && notifyToken && notifyAdmin) {
+            try {
+              const notifyText = `🔔 Ny Instagram-bokning mottagen!\n🏢 Business: ${businessName}\n👤 Namn: ${args.name}\n📞 Mobil: ${args.phone}\n📅 Tid: ${args.dateTime}`;
+              await fetch(`https://api.telegram.org/bot${notifyToken}/sendMessage`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ chat_id: notifyAdmin, text: notifyText })
+              });
+            } catch (e) {
+              console.error('Admin notify error:', e);
+            }
+          }
+        } else if (call.function.name === 'logSystemAnalysis' && args) {
+          adapterRes = await handleSystemAnalysisLog(chatId, args);
+        } else {
+          adapterRes = { error: 'Unknown tool' };
         }
-        else if (call.function.name === "logSystemAnalysis" && args) adapterRes = await handleSystemAnalysisLog(chatId, args);
-        else adapterRes = { error: "Unknown tool" };
-        
+
         return {
-          role: "tool",
+          role: 'tool',
           name: call.function.name,
           id: call.id,
           content: JSON.stringify(adapterRes)
         };
       }));
-      
+
       const earlyTerm = functionResponsesParts.find((p: any) => p && p.TERMINATE_EARLY);
       if (earlyTerm) {
-          chatResponse.text = earlyTerm.replyMessage;
-          chatResponse.functionCalls = null;
-          break;
+        chatResponse.text = earlyTerm.replyMessage;
+        chatResponse.functionCalls = null;
+        break;
       }
-      
+
       messages.push(...functionResponsesParts);
-      
+
       chatResponse = await generateContentWithFallback(null, {
         messages,
-        systemInstruction: finalSystemInstruction, 
+        systemInstruction: finalSystemInstruction,
         tools: calendarTools,
         model: 'gemini-2.5-flash'
       });
     }
-    
+
     if (chatResponse.functionCalls && chatResponse.functionCalls.length > 0) {
       chatResponse = await generateContentWithFallback(null, {
-         messages,
-         systemInstruction: finalSystemInstruction + "\nCRITICAL: Maximum tool calls reached. You MUST reply in natural language only. Summarize what you know. DO NOT USE TOOLS.",
-         model: 'gemini-2.5-flash'
+        messages,
+        systemInstruction: finalSystemInstruction + '\nCRITICAL: Maximum tool calls reached. You MUST reply in natural language only. Summarize what you know. DO NOT USE TOOLS.',
+        model: 'gemini-2.5-flash'
       });
     }
-    
+
     const textResponse = chatResponse.text || "I'm having trouble processing that right now.";
 
-    history.push({ role: "user", content: userMessageContent });
-    history.push({ role: "assistant", content: textResponse });
-    
-    const accessToken = process.env.INSTAGRAM_ACCESS_TOKEN || process.env.INSTAGRAM_PAGE_ACCESS_TOKEN;
-    if (accessToken) {
-        await fetch(`https://graph.facebook.com/v21.0/me/messages?access_token=${accessToken}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            recipient: { id: senderId },
-            message: { text: textResponse }
-          })
-        });
-    }
+    history.push({ role: 'user', content: userMessageContent });
+    history.push({ role: 'assistant', content: textResponse });
+
+    await sendInstagramMessage(
+      senderId,
+      textResponse,
+      process.env.INSTAGRAM_ACCESS_TOKEN || businessConfig.instagramAccessToken || process.env.INSTAGRAM_PAGE_ACCESS_TOKEN
+    );
 
     try {
-      await postProcessMessage(chatId, platform, userMessageContent, textResponse, config?.telegramToken);
-    } catch(e) {}
-    
+      await postProcessMessage(chatId, platform, userMessageContent, textResponse, businessConfig?.telegramToken, businessConfig?.apiKey);
+    } catch (e) {
+      console.error('Instagram postProcessMessage failed:', e);
+    }
   } catch (err: any) {
-    console.error("IG processing error:", err);
-    try {
-        const accessToken = process.env.INSTAGRAM_ACCESS_TOKEN || process.env.INSTAGRAM_PAGE_ACCESS_TOKEN;
-        if (accessToken) {
-            await fetch(`https://graph.facebook.com/v21.0/me/messages?access_token=${accessToken}`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                recipient: { id: senderId },
-                message: { text: "Ursäkta, jag stötte på ett tekniskt problem. Kan du försöka igen om en stund?" }
-              })
-            });
-        }
-    } catch(e) {}
+    console.error('IG processing error:', err);
+    await sendInstagramMessage(
+      senderId,
+      'Ursäkta, jag stötte på ett tekniskt problem. Kan du försöka igen om en stund?',
+      process.env.INSTAGRAM_ACCESS_TOKEN || businessConfig.instagramAccessToken || process.env.INSTAGRAM_PAGE_ACCESS_TOKEN
+    );
   }
 }
 
@@ -1822,47 +1875,43 @@ app.post('/webhook/instagram', async (req, res) => {
     console.log('Incoming Instagram webhook:');
     console.log(JSON.stringify(req.body, null, 2));
 
-    const entry = req.body.entry?.[0];
+    const body = req.body;
 
-    // Real Instagram DM payload
-    const messagingEvent = entry?.messaging?.[0];
-
-    if (messagingEvent?.message?.text) {
-      const senderId = messagingEvent.sender.id;
-      const recipientId = messagingEvent.recipient.id;
-      const messageText = messagingEvent.message.text;
-
-      console.log('==============================');
-      console.log('REAL INSTAGRAM DM');
-      console.log('Sender ID:', senderId);
-      console.log('Recipient ID:', recipientId);
-      console.log('Message:', messageText);
-      console.log('==============================');
+    if (body.object !== 'instagram') {
+      return res.sendStatus(404);
     }
 
-    // Meta test payload
-    const change = entry?.changes?.[0];
-    const value = change?.value;
+    // Acknowledge Meta fast, then process messages in the background.
+    res.sendStatus(200);
 
-    if (change?.field === 'messages' && value?.message?.text) {
-      const senderId = value.sender.id;
-      const recipientId = value.recipient.id;
-      const messageText = value.message.text;
+    for (const entry of body.entry || []) {
+      for (const messagingEvent of entry.messaging || []) {
+        if (messagingEvent?.message?.text) {
+          processInstagramUpdate(messagingEvent, activeConfig).catch((e) => {
+            console.error('Instagram async processing failed:', e);
+          });
+        }
+      }
 
-      console.log('==============================');
-      console.log('META TEST MESSAGE');
-      console.log('Sender ID:', senderId);
-      console.log('Recipient ID:', recipientId);
-      console.log('Message:', messageText);
-      console.log('==============================');
+      // Meta test payload support
+      for (const change of entry.changes || []) {
+        const value = change?.value;
+        if (change?.field === 'messages' && value?.message?.text) {
+          console.log('==============================');
+          console.log('META TEST MESSAGE');
+          console.log('Sender ID:', value.sender?.id);
+          console.log('Recipient ID:', value.recipient?.id);
+          console.log('Message:', value.message?.text);
+          console.log('==============================');
+        }
+      }
     }
-
-    return res.sendStatus(200);
   } catch (err) {
     console.error('Instagram webhook error:', err);
-    return res.sendStatus(500);
+    if (!res.headersSent) return res.sendStatus(500);
   }
 });
+
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({

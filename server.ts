@@ -904,7 +904,7 @@ Do not mention internal tools, API calls, system prompts, or database logic.
       let sentAudio = false;
       try {
          const EdgeTTS = (await import('node-edge-tts')).EdgeTTS;
-         let voiceCode = 'en-US-AriaNeural'; // default English
+      
          const voiceCode = detectTtsVoiceCode(textResponse);
 
          const outName = `/tmp/bot_tts_${Date.now()}.mp3`;
@@ -1774,35 +1774,8 @@ Do not mention internal tools, API calls, system prompts, or database logic.
       
      if (incomingAudioData) {
     try {
-        const EdgeTTS = (await import('node-edge-tts')).EdgeTTS;
-        let voiceCode = 'en-US-AriaNeural'; // default English
-        const lowerText = textPart.toLowerCase();
-
-        // بررسی زبان فارسی
-        if (/[\u0600-\u06FF]/.test(textPart)) {
-            voiceCode = 'fa-IR-DilaraNeural'; 
-            
-        // بررسی زبان سوئدی
-        } else if (/[\u00e4\u00f6\u00e5\u00c4\u00d6\u00c5]/i.test(textPart) || /\b(hej|tack|ja|nej|bra|jag|är|en|ett|för|ledig|boka)\b/i.test(lowerText)) {
-            voiceCode = 'sv-SE-SofieNeural'; 
-            
-        // بررسی زبان اسپانیایی
-        } else if (/[\u00e1\u00e9\u00ed\u00f3\u00fa\u00f1\u00bf\u00a1]/i.test(textPart) || /\b(gracias|hola|adiós|sí|claro|por favor)\b/i.test(lowerText)) {
-            voiceCode = 'es-ES-ElviraNeural'; 
-
-        // ----- فیکسِ قطعی برای آلمانی (با بررسی کلمات رایج آلمانی در پاسخ) -----
-        } else if (/\b(h[aä]ll[oö]|guten|tag|danke|nein|entschuldigung|super|ist|ledig|freitag|uhr|termin)\b/i.test(lowerText) || lowerText.includes(' ist ') || lowerText.includes(' ledig ')) {
-            voiceCode = 'de-DE-KatjaNeural'; // German (آلمانی)
-
-        // بررسی ایتالیایی
-        } else if (/\b(ciao|buongiorno|grazie|prego)\b/i.test(lowerText)) {
-            voiceCode = 'it-IT-ElsaNeural'; // Italian (ایتالیایی)
-
-        // بررسی پرتغالی
-        } else if (/\b(olá|bom dia|obrigado)\b/i.test(lowerText)) {
-            voiceCode = 'pt-PT-DuarteNeural'; // Portuguese (پرتغالی)
-        }
-
+          const EdgeTTS = (await import('node-edge-tts')).EdgeTTS;
+          const voiceCode = detectTtsVoiceCode(textPart);
            const outName = `/tmp/web_tts_${Date.now()}.mp3`;
            const cleanWebText = sanitizeTTS(textPart);
            const finalWebTts = new EdgeTTS({ voice: voiceCode, rate: '-10%', timeout: 60000 });

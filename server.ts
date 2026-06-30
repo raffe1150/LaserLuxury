@@ -1545,13 +1545,15 @@ Do not mention internal tools, API calls, system prompts, or database logic.
     }
   } catch (err: any) {
     console.error('IG processing error:', err);
-    await sendInstagramMessage(
-      senderId,
-      'Ursäkta, jag stötte på ett tekniskt problem. Kan du försöka igen om en stund?',
-      process.env.INSTAGRAM_ACCESS_TOKEN || businessConfig.instagramAccessToken || process.env.INSTAGRAM_PAGE_ACCESS_TOKEN
-    );
-  }
-}
+  const errorMessage = getErrorMessageByLanguage(userLanguage);
+
+await sendInstagramMessage(
+  senderId,
+  errorMessage,
+  process.env.INSTAGRAM_ACCESS_TOKEN ||
+    businessConfig.instagramAccessToken ||
+    process.env.INSTAGRAM_PAGE_ACCESS_TOKEN
+);
 
 async function startServer() {
 
@@ -1665,8 +1667,7 @@ const userText =
     : Array.isArray(userMessageContent)
       ? userMessageContent.join(" ")
       : "";
-
-const userLanguage = detectUserLanguage(userText);
+ userLanguage = detectUserLanguage(userText);
 
 messages.push({
   role: "user",

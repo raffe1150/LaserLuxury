@@ -1218,7 +1218,32 @@ async function sendInstagramAudioMessage(recipientId: string, audioUrl: string, 
   console.error('Instagram audio reply failed on all endpoints:', lastError);
   return false;
 }
+const languageEngine = `
+LANGUAGE ENGINE:
+Always identify the customer's language from their latest message.
+Reply in the same language as the customer’s latest message.
 
+Supported languages:
+- Swedish
+- English
+- Persian/Farsi
+- Spanish
+- German
+- Arabic
+
+Persian/Farsi rule:
+If the customer writes Persian/Farsi with Latin letters, reply in Persian using Persian script.
+
+Arabic rule:
+If the customer writes Arabic, reply in Arabic script.
+
+Mixed language rule:
+If the customer mixes languages, choose the language that carries the main request. If the user explicitly asks for a language, use that language.
+
+Never say "I can only speak Swedish" or "I only communicate in Swedish".
+Never refuse a supported language.
+Keep the same warm,friendly,human tone, professional receptionist tone in every language.
+`;
 
 async function processInstagramUpdate(webhook_event: any, config: any, platform: string = "instagram-webhook") {
   const senderId = webhook_event.sender?.id;

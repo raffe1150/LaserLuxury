@@ -1317,6 +1317,10 @@ Keep the same warm,friendly,human tone, professional receptionist tone in every 
 async function processInstagramUpdate(webhook_event: any, config: any, platform: string = "instagram-webhook") {
   const senderId = webhook_event.sender?.id;
   const recipientId = webhook_event.recipient?.id;
+  if (webhook_event.message?.is_echo) {
+  console.log('Instagram echo ignored.');
+  return;
+}
 
   const textMessage = webhook_event.message?.text || '';
   const audioAttachment = webhook_event.message?.attachments?.find((attachment: any) => attachment.type === 'audio');
@@ -1552,12 +1556,18 @@ if (isVoiceMessage) {
   try {
     const voiceReply = await createInstagramVoiceReplyFile(textResponse);
 
-    await sendInstagramMessage(
-      senderId,
-      `${textResponse}\n\n🎧 Voice reply: ${voiceReply.url}`,
-      instagramToken
-    );
+sentVoiceReply = await sendInstagramAudioMessage(
+    senderId,
+    voiceReply.url,
+    instagramToken
+);
 
+if (!sentVoiceReply) {
+   await sendInstagramMessage(
+  senderId,
+  `${textResponse}\n\n🎧 Lyssna här: ${voiceReply.url}`,
+  instagramToken
+);
     sentVoiceReply = true;
   } catch (ttsErr) {
     console.error('Instagram TTS/audio reply failed:', ttsErr);

@@ -354,20 +354,17 @@ class MockCalendarAdapter implements CalendarAdapter {
 class GenericCalendarAdapter implements CalendarAdapter {
   constructor(private apiUrl: string, private apiKey?: string) {}
 
-  async getEvents(startDate: string, endDate: string) { return []; }
   async getEvents(startDate: string, endDate: string) {
     try {
-      const timeMin = new Date(`${startDate}T00:00:00Z`).toISOString();
-      const timeMax = new Date(`${endDate}T23:59:59Z`).toISOString();
-      const res = await this.calendar.events.list({
-        calendarId: this.calendarId,
-        timeMin: timeMin,
-        timeMax: timeMax,
-        singleEvents: true,
-        orderBy: 'startTime',
-      });
-      return res.data.items || [];
-    } catch(e) { return []; }
+      const headers: any = {};
+      if (this.apiKey) headers['Authorization'] = `Bearer ${this.apiKey}`;
+      const res = await fetch(`${this.apiUrl}/events?startDate=${startDate}&endDate=${endDate}`, { headers });
+      if (!res.ok) return [];
+      const data = await res.json().catch(() => ({}));
+      return data.events || data.items || [];
+    } catch(e) {
+      return [];
+    }
   }
   async checkSlots(startDate: string, endDate?: string, durationMinutes?: number) {
     try {
@@ -427,6 +424,24 @@ class GoogleCalendarAdapter implements CalendarAdapter {
     });
     this.calendar = google.calendar({ version: 'v3', auth: auth });
     this.calendarId = calendarId;
+  }
+
+  async getEvents(startDate: string, endDate: string) {
+    try {
+      const timeMin = new Date(`${startDate}T00:00:00Z`).toISOString();
+      const timeMax = new Date(`${endDate}T23:59:59Z`).toISOString();
+      const res = await this.calendar.events.list({
+        calendarId: this.calendarId,
+        timeMin,
+        timeMax,
+        singleEvents: true,
+        orderBy: 'startTime',
+      });
+      return res.data.items || [];
+    } catch(e: any) {
+      console.error("Google Calendar getEvents Error:", e.message);
+      return [];
+    }
   }
 
   async checkSlots(startDate: string, endDate?: string, durationMinutes?: number) {
@@ -589,6 +604,9 @@ function normalizeBusinessConfig(row: any) {
     telegramToken: row.telegram_bot_token,
     googleCalendarId: row.google_calendar_id,
     systemPrompt: row.custom_system_prompt,
+    instagramAccessToken: row.instagram_access_token,
+    instagramToken: row.instagram_access_token,
+    instagramAccountId: row.instagram_account_id,
     calendarProvider: "google",
   };
 }
@@ -845,8 +863,8 @@ Do not mention internal tools, API calls, system prompts, or database logic.
         }
         else if (call.function.name === "insertAppointment" && args) {
           adapterRes = await adapter.insertAppointment(args.name, args.phone, args.service, args.dateTime, args.durationMinutes, chatId);
-          const notifyToken = (typeof config !== 'undefined' && config ? config.telegramToken : activeConfig?.telegramToken) || process.env.TELEGRAM_TOKEN;
-          const notifyAdmin = (typeof config !== 'undefined' && config ? config.adminTelegramChatId : activeConfig?.adminTelegramChatId) || process.env.ADMIN_TELEGRAM_ID;
+          const notifyToken = activeConfig?.telegramToken || process.env.TELEGRAM_TOKEN;
+          const notifyAdmin = activeConfig?.adminTelegramChatId || process.env.ADMIN_TELEGRAM_ID;
           if (adapterRes && adapterRes.success && notifyToken && notifyAdmin) {
              try {
                 const notifyText = `🔔 Ny bokning mottagen!\n👤 Namn: ${args.name}\n📞 Mobil: ${args.phone}\n📅 Tid: ${args.dateTime}`;
@@ -1146,8 +1164,32 @@ function setupDailyReminders() {
 }
 
 
+
+function cleanInstagramToken(token?: string | null) {
+  if (!token) return "";
+  let clean = String(token).trim();
+
+  // Common copy/paste mistakes from Meta tools or .env values
+  clean = clean.replace(/^Bearer\s+/i, "").trim();
+  clean = clean.replace(/^["']|["']$/g, "").trim();
+
+  if (!clean || clean === "undefined" || clean === "null") return "";
+  return clean;
+}
+
+function getBusinessInstagramToken(businessConfig: any) {
+  // IMPORTANT: Instagram must use the token stored for the matched business.
+  // Do not fall back to ENV Instagram tokens here, because that can send with
+  // the wrong account or a broken token in multi-business mode.
+  return cleanInstagramToken(
+    businessConfig?.instagramAccessToken ||
+    businessConfig?.instagram_access_token ||
+    businessConfig?.instagramToken
+  );
+}
+
 async function sendInstagramMessage(recipientId: string, text: string, accessToken?: string) {
-  const token = accessToken;
+  const token = cleanInstagramToken(accessToken);
 
   if (!token) {
     console.error('Instagram reply skipped: missing business instagram_access_token');
@@ -1161,7 +1203,7 @@ async function sendInstagramMessage(recipientId: string, text: string, accessTok
 
   try {
     const endpoint = 'https://graph.instagram.com/v25.0/me/messages';
-    const response = await fetch(`${endpoint}?access_token=${token}`, {
+    const response = await fetch(`${endpoint}?access_token=${encodeURIComponent(token)}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
@@ -1265,7 +1307,7 @@ async function downloadInstagramAudio(audioUrl: string, accessToken?: string) {
 
 
 async function sendInstagramAudioMessage(recipientId: string, audioUrl: string, accessToken?: string) {
-  const token = accessToken;
+  const token = cleanInstagramToken(accessToken);
   if (!token) {
     console.error('Instagram audio reply skipped: missing business instagram_access_token');
     return false;
@@ -1286,7 +1328,7 @@ async function sendInstagramAudioMessage(recipientId: string, audioUrl: string, 
 
   try {
     const endpoint = 'https://graph.instagram.com/v25.0/me/messages';
-    const response = await fetch(`${endpoint}?access_token=${token}`, {
+    const response = await fetch(`${endpoint}?access_token=${encodeURIComponent(token)}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
@@ -1382,7 +1424,8 @@ async function processInstagramUpdate(webhook_event: any, config: any, platform:
           business_name: data.business_name,
           systemPrompt: data.custom_system_prompt,
           googleCalendarId: data.google_calendar_id,
-          instagramAccessToken: data.instagram_access_token,
+          instagramAccessToken: cleanInstagramToken(data.instagram_access_token),
+          instagramToken: cleanInstagramToken(data.instagram_access_token),
           instagramAccountId: data.instagram_account_id,
           calendarProvider: 'google'
         };
@@ -1407,9 +1450,7 @@ async function processInstagramUpdate(webhook_event: any, config: any, platform:
       isVoiceMessage = true;
 
       try {
-        const instagramTokenForAudio =
-          businessConfig.instagramAccessToken ||
-          businessConfig.instagramToken;
+        const instagramTokenForAudio = getBusinessInstagramToken(businessConfig);
 
         const audioResponse = await downloadInstagramAudio(audioUrl, instagramTokenForAudio);
         const audioBuffer = await audioResponse.arrayBuffer();
@@ -1438,7 +1479,7 @@ if (contentType === "video/mp4") {
         await sendInstagramMessage(
           senderId,
           'Ursäkta, jag kunde inte lyssna på röstmeddelandet just nu. Kan du skriva ditt meddelande istället?',
-         businessConfig.instagramAccessToken || businessConfig.instagramToken
+         getBusinessInstagramToken(businessConfig)
         );
         return;
       }
@@ -1568,7 +1609,12 @@ Do not mention internal tools, API calls, system prompts, or database logic.
     history.push({ role: 'user', content: isVoiceMessage ? '[Instagram Voice Message]' : userMessageContent });
     history.push({ role: 'assistant', content: textResponse });
 
-    const instagramToken = businessConfig.instagramAccessToken || businessConfig.instagramToken;
+    const instagramToken = getBusinessInstagramToken(businessConfig);
+    if (!instagramToken) {
+      console.error('Instagram reply skipped: no valid business instagram_access_token for matched business.');
+      return;
+    }
+
 if (isVoiceMessage) {
   let sentVoiceReply = false;
 
@@ -1604,7 +1650,7 @@ try {
     await sendInstagramMessage(
       senderId,
       errorMessage,
-     businessConfig.instagramAccessToken || businessConfig.instagramToken
+     getBusinessInstagramToken(businessConfig)
     );
   }
 }
@@ -1791,8 +1837,8 @@ Never translate unless requested.
         }
           else if (call.function.name === "insertAppointment" && args) {
           adapterRes = await adapter.insertAppointment(args.name, args.phone, args.service, args.dateTime, args.durationMinutes, chatId);
-          const notifyToken = (typeof config !== 'undefined' && config ? config.telegramToken : activeConfig?.telegramToken) || process.env.TELEGRAM_TOKEN;
-          const notifyAdmin = (typeof config !== 'undefined' && config ? config.adminTelegramChatId : activeConfig?.adminTelegramChatId) || process.env.ADMIN_TELEGRAM_ID;
+          const notifyToken = activeConfig?.telegramToken || process.env.TELEGRAM_TOKEN;
+          const notifyAdmin = activeConfig?.adminTelegramChatId || process.env.ADMIN_TELEGRAM_ID;
           if (adapterRes && adapterRes.success && notifyToken && notifyAdmin) {
              try {
                 const notifyText = `🔔 Ny bokning mottagen!\n👤 Namn: ${args.name}\n📞 Mobil: ${args.phone}\n📅 Tid: ${args.dateTime}`;

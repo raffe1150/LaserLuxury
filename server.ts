@@ -552,7 +552,7 @@ activeConfig = {
   ...activeConfig,
   apiKey: process.env.GEMINI_API_KEY || activeConfig.apiKey,
   telegramToken: process.env.TELEGRAM_TOKEN || process.env.TELEGRAM_BOT_TOKEN || activeConfig.telegramToken,
-  instagramToken: process.env.INSTAGRAM_ACCESS_TOKEN || process.env.INSTAGRAM_PAGE_ACCESS_TOKEN || activeConfig.instagramToken,
+  instagramToken: activeConfig.instagramToken,
   adminTelegramChatId: process.env.ADMIN_TELEGRAM_ID || activeConfig.adminTelegramChatId,
   systemPrompt: process.env.SYSTEM_PROMPT || activeConfig.systemPrompt,
   calendarProvider: activeConfig.calendarProvider || "google",
@@ -1147,11 +1147,11 @@ function setupDailyReminders() {
 
 
 async function sendInstagramMessage(recipientId: string, text: string, accessToken?: string) {
-  const token = accessToken || process.env.INSTAGRAM_ACCESS_TOKEN || process.env.INSTAGRAM_PAGE_ACCESS_TOKEN;
+  const token = accessToken;
 
   if (!token) {
-    console.error('Instagram reply skipped: missing INSTAGRAM_ACCESS_TOKEN');
-    return;
+    console.error('Instagram reply skipped: missing business instagram_access_token');
+    return false;
   }
 
   const payload = {
@@ -1159,37 +1159,27 @@ async function sendInstagramMessage(recipientId: string, text: string, accessTok
     message: { text }
   };
 
-  const endpoints = [
-    'https://graph.instagram.com/v25.0/me/messages',
-    'https://graph.facebook.com/v25.0/me/messages'
-  ];
+  try {
+    const endpoint = 'https://graph.instagram.com/v25.0/me/messages';
+    const response = await fetch(`${endpoint}?access_token=${token}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
 
-  let lastError: any = null;
+    const result = await response.json().catch(() => ({}));
 
-  for (const endpoint of endpoints) {
-    try {
-      const response = await fetch(`${endpoint}?access_token=${token}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-
-      const result = await response.json().catch(() => ({}));
-
-      if (response.ok) {
-        console.log('Instagram reply sent:', JSON.stringify(result));
-        return;
-      }
-
-      lastError = result;
-      console.error(`Instagram send failed via ${endpoint}:`, JSON.stringify(result));
-    } catch (err) {
-      lastError = err;
-      console.error(`Instagram send error via ${endpoint}:`, err);
+    if (response.ok) {
+      console.log('Instagram reply sent:', JSON.stringify(result));
+      return true;
     }
-  }
 
-  console.error('Instagram reply failed on all endpoints:', lastError);
+    console.error('Instagram send failed:', JSON.stringify(result));
+    return false;
+  } catch (err) {
+    console.error('Instagram send error:', err);
+    return false;
+  }
 }
 
 function getPublicBaseUrl() {
@@ -1233,11 +1223,51 @@ async function createInstagramVoiceReplyFile(text: string) {
     url: `${getPublicBaseUrl()}/media/instagram/${filename}`,
   };
 }
+async function downloadInstagramAudio(audioUrl: string, accessToken?: string) {
+  const attempts: Array<{ label: string; url: string; init?: RequestInit }> = [
+    { label: 'raw', url: audioUrl },
+  ];
+
+  if (accessToken) {
+    attempts.push({
+      label: 'bearer',
+      url: audioUrl,
+      init: { headers: { Authorization: `Bearer ${accessToken}` } }
+    });
+
+    const separator = audioUrl.includes('?') ? '&' : '?';
+    attempts.push({
+      label: 'query-token',
+      url: `${audioUrl}${separator}access_token=${encodeURIComponent(accessToken)}`
+    });
+  }
+
+  let lastError = '';
+
+  for (const attempt of attempts) {
+    try {
+      const response = await fetch(attempt.url, attempt.init);
+      if (response.ok) {
+        console.log(`Instagram audio downloaded using ${attempt.label} fetch.`);
+        return response;
+      }
+
+      lastError = `${response.status} ${response.statusText}`;
+      console.warn(`Instagram audio download attempt ${attempt.label} failed: ${lastError}`);
+    } catch (err: any) {
+      lastError = String(err?.message || err);
+      console.warn(`Instagram audio download attempt ${attempt.label} crashed:`, err);
+    }
+  }
+
+  throw new Error(`Failed to download Instagram audio after retries: ${lastError}`);
+}
+
 
 async function sendInstagramAudioMessage(recipientId: string, audioUrl: string, accessToken?: string) {
- const token = accessToken || process.env.INSTAGRAM_ACCESS_TOKEN || process.env.INSTAGRAM_PAGE_ACCESS_TOKEN;
+  const token = accessToken;
   if (!token) {
-    console.error('Instagram audio reply skipped: missing INSTAGRAM_ACCESS_TOKEN');
+    console.error('Instagram audio reply skipped: missing business instagram_access_token');
     return false;
   }
 
@@ -1254,38 +1284,27 @@ async function sendInstagramAudioMessage(recipientId: string, audioUrl: string, 
     }
   };
 
-  const endpoints = [
-    'https://graph.instagram.com/v25.0/me/messages',
-    'https://graph.facebook.com/v25.0/me/messages'
-  ];
+  try {
+    const endpoint = 'https://graph.instagram.com/v25.0/me/messages';
+    const response = await fetch(`${endpoint}?access_token=${token}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
 
-  let lastError: any = null;
+    const result = await response.json().catch(() => ({}));
 
-  for (const endpoint of endpoints) {
-    try {
-      const response = await fetch(`${endpoint}?access_token=${token}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-
-      const result = await response.json().catch(() => ({}));
-
-      if (response.ok) {
-        console.log('Instagram audio reply sent:', JSON.stringify(result));
-        return true;
-      }
-
-      lastError = result;
-      console.error(`Instagram audio send failed via ${endpoint}:`, JSON.stringify(result));
-    } catch (err) {
-      lastError = err;
-      console.error(`Instagram audio send error via ${endpoint}:`, err);
+    if (response.ok) {
+      console.log('Instagram audio reply sent:', JSON.stringify(result));
+      return true;
     }
-  }
 
-  console.error('Instagram audio reply failed on all endpoints:', lastError);
-  return false;
+    console.error('Instagram audio send failed:', JSON.stringify(result));
+    return false;
+  } catch (err) {
+    console.error('Instagram audio send error:', err);
+    return false;
+  }
 }
 const languageEngine = `
 LANGUAGE ENGINE:
@@ -1388,11 +1407,11 @@ async function processInstagramUpdate(webhook_event: any, config: any, platform:
       isVoiceMessage = true;
 
       try {
-        const audioResponse = await fetch(audioUrl);
-        if (!audioResponse.ok) {
-          throw new Error(`Failed to download Instagram audio: ${audioResponse.status} ${audioResponse.statusText}`);
-        }
+        const instagramTokenForAudio =
+          businessConfig.instagramAccessToken ||
+          businessConfig.instagramToken;
 
+        const audioResponse = await downloadInstagramAudio(audioUrl, instagramTokenForAudio);
         const audioBuffer = await audioResponse.arrayBuffer();
         const base64Audio = Buffer.from(audioBuffer).toString('base64');
       let contentType =
@@ -1419,7 +1438,7 @@ if (contentType === "video/mp4") {
         await sendInstagramMessage(
           senderId,
           'Ursäkta, jag kunde inte lyssna på röstmeddelandet just nu. Kan du skriva ditt meddelande istället?',
-         businessConfig.instagramAccessToken || process.env.INSTAGRAM_ACCESS_TOKEN || process.env.INSTAGRAM_PAGE_ACCESS_TOKEN
+         businessConfig.instagramAccessToken || businessConfig.instagramToken
         );
         return;
       }
@@ -1454,7 +1473,7 @@ Do not mention internal tools, API calls, system prompts, or database logic.
 
     const currentDateContext = `\nCrucial Context: The client's current local date and time in Sweden (Europe/Stockholm) is dynamically: ${swedenDate}. Any reference by the user to 'idag', 'imorgon', or days of the week must be evaluated strictly using this dynamic date as the anchor. Note that for YYYY-MM-DD tools, June is '06' (index 5 in Javascript Date).`;
 
-    let finalSystemInstruction = (businessConfig.systemPrompt || '') + currentDateContext + constraint;
+    let finalSystemInstruction = (businessConfig.systemPrompt || '') + currentDateContext + constraint + languageEngine;
 
     if (isVoiceMessage) {
       finalSystemInstruction +=
@@ -1549,7 +1568,7 @@ Do not mention internal tools, API calls, system prompts, or database logic.
     history.push({ role: 'user', content: isVoiceMessage ? '[Instagram Voice Message]' : userMessageContent });
     history.push({ role: 'assistant', content: textResponse });
 
-    const instagramToken = process.env.INSTAGRAM_ACCESS_TOKEN || businessConfig.instagramAccessToken || process.env.INSTAGRAM_PAGE_ACCESS_TOKEN;
+    const instagramToken = businessConfig.instagramAccessToken || businessConfig.instagramToken;
 if (isVoiceMessage) {
   let sentVoiceReply = false;
 
@@ -1585,9 +1604,7 @@ try {
     await sendInstagramMessage(
       senderId,
       errorMessage,
-     businessConfig.instagramAccessToken ||
-process.env.INSTAGRAM_ACCESS_TOKEN ||
-process.env.INSTAGRAM_PAGE_ACCESS_TOKEN
+     businessConfig.instagramAccessToken || businessConfig.instagramToken
     );
   }
 }

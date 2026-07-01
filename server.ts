@@ -1392,14 +1392,25 @@ async function processInstagramUpdate(webhook_event: any, config: any, platform:
 
         const audioBuffer = await audioResponse.arrayBuffer();
         const base64Audio = Buffer.from(audioBuffer).toString('base64');
-        const contentType = audioResponse.headers.get('content-type') || 'audio/mpeg';
+      let contentType =
+  audioResponse.headers.get("content-type") || "audio/mpeg";
 
-        userMessageContent = [
-          { text: 'Instagram voice message input:' },
-          { inlineData: { data: base64Audio, mimeType: contentType } }
-        ];
-
+if (contentType === "video/mp4") {
+  console.log(
+    "Instagram returned video/mp4 for voice. Treating as audio/mp4."
+  );
+  contentType = "audio/mp4";
+}
         console.log(`Instagram voice downloaded. MIME=${contentType}, bytes=${audioBuffer.byteLength}`);
+        userMessageContent = [
+  { text: "Instagram voice message input:" },
+  {
+    inlineData: {
+      data: base64Audio,
+      mimeType: contentType,
+    }
+  }
+];
       } catch (voiceErr) {
         console.error('Instagram voice download failed:', voiceErr);
         await sendInstagramMessage(

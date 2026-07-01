@@ -1416,7 +1416,7 @@ if (contentType === "video/mp4") {
         await sendInstagramMessage(
           senderId,
           'Ursäkta, jag kunde inte lyssna på röstmeddelandet just nu. Kan du skriva ditt meddelande istället?',
-          process.env.INSTAGRAM_ACCESS_TOKEN || businessConfig.instagramAccessToken || process.env.INSTAGRAM_PAGE_ACCESS_TOKEN
+         businessConfig.instagramAccessToken || process.env.INSTAGRAM_ACCESS_TOKEN || process.env.INSTAGRAM_PAGE_ACCESS_TOKEN
         );
         return;
       }
@@ -1581,9 +1581,9 @@ Do not mention internal tools, API calls, system prompts, or database logic.
     await sendInstagramMessage(
       senderId,
       errorMessage,
-      process.env.INSTAGRAM_ACCESS_TOKEN ||
-        businessConfig.instagramAccessToken ||
-        process.env.INSTAGRAM_PAGE_ACCESS_TOKEN
+     businessConfig.instagramAccessToken ||
+process.env.INSTAGRAM_ACCESS_TOKEN ||
+process.env.INSTAGRAM_PAGE_ACCESS_TOKEN
     );
   }
 }

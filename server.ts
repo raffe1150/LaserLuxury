@@ -1235,8 +1235,7 @@ async function createInstagramVoiceReplyFile(text: string) {
 }
 
 async function sendInstagramAudioMessage(recipientId: string, audioUrl: string, accessToken?: string) {
-  const token = accessToken || process.env.INSTAGRAM_ACCESS_TOKEN || process.env.INSTAGRAM_PAGE_ACCESS_TOKEN;
-
+ const token = accessToken || process.env.INSTAGRAM_ACCESS_TOKEN || process.env.INSTAGRAM_PAGE_ACCESS_TOKEN;
   if (!token) {
     console.error('Instagram audio reply skipped: missing INSTAGRAM_ACCESS_TOKEN');
     return false;
@@ -1249,7 +1248,7 @@ async function sendInstagramAudioMessage(recipientId: string, audioUrl: string, 
         type: 'audio',
         payload: {
           url: audioUrl,
-          is_reusable: false
+          is_reusable: true
         }
       }
     }

@@ -1556,18 +1556,12 @@ if (isVoiceMessage) {
   try {
     const voiceReply = await createInstagramVoiceReplyFile(textResponse);
 
-sentVoiceReply = await sendInstagramAudioMessage(
-    senderId,
-    voiceReply.url,
-    instagramToken
-);
+    await sendInstagramMessage(
+      senderId,
+      `${textResponse}\n\n🎧 Lyssna här: ${voiceReply.url}`,
+      instagramToken
+    );
 
-if (!sentVoiceReply) {
-   await sendInstagramMessage(
-  senderId,
-  `${textResponse}\n\n🎧 Lyssna här: ${voiceReply.url}`,
-  instagramToken
-);
     sentVoiceReply = true;
   } catch (ttsErr) {
     console.error('Instagram TTS/audio reply failed:', ttsErr);
@@ -1579,7 +1573,6 @@ if (!sentVoiceReply) {
 } else {
   await sendInstagramMessage(senderId, textResponse, instagramToken);
 }
-
 try {
   await postProcessMessage(chatId, platform, userMessageForLog, textResponse, businessConfig?.telegramToken, businessConfig?.apiKey);
 } catch (e) {

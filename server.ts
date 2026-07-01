@@ -1167,13 +1167,49 @@ function setupDailyReminders() {
 
 function cleanInstagramToken(token?: string | null) {
   if (!token) return "";
+
   let clean = String(token).trim();
 
-  // Common copy/paste mistakes from Meta tools or .env values
+  // Remove surrounding quotes/backticks and invisible copy/paste characters.
+  clean = clean
+    .replace(/[\u200B-\u200D\uFEFF]/g, "")
+    .replace(/^["'`]+|["'`]+$/g, "")
+    .trim();
+
+  // If someone pasted "Bearer TOKEN".
   clean = clean.replace(/^Bearer\s+/i, "").trim();
-  clean = clean.replace(/^["']|["']$/g, "").trim();
+
+  // If someone pasted "INSTAGRAM_ACCESS_TOKEN=TOKEN" or "instagram_access_token: TOKEN".
+  const assignmentMatch = clean.match(/(?:INSTAGRAM_ACCESS_TOKEN|INSTAGRAM_PAGE_ACCESS_TOKEN|instagram_access_token|access_token)\s*[:=]\s*["']?([^"'\s&]+)/i);
+  if (assignmentMatch?.[1]) {
+    clean = assignmentMatch[1].trim();
+  }
+
+  // If someone pasted a URL containing ?access_token=TOKEN.
+  try {
+    const decoded = decodeURIComponent(clean);
+    const urlTokenMatch = decoded.match(/[?&]access_token=([^&\s"']+)/i);
+    if (urlTokenMatch?.[1]) {
+      clean = urlTokenMatch[1].trim();
+    }
+  } catch {
+    // ignore decode errors
+  }
+
+  // If the value still contains spaces/new lines, keep the longest token-like part.
+  const tokenLikeParts = clean.split(/\s+/).filter(Boolean);
+  if (tokenLikeParts.length > 1) {
+    clean = tokenLikeParts.sort((a, b) => b.length - a.length)[0];
+  }
+
+  // Remove trailing commas/semicolons accidentally copied from code/env files.
+  clean = clean.replace(/[;,]+$/g, "").trim();
 
   if (!clean || clean === "undefined" || clean === "null") return "";
+
+  // Meta access tokens are usually long and should not contain whitespace.
+  if (/\s/.test(clean)) return "";
+
   return clean;
 }
 
@@ -1610,6 +1646,8 @@ Do not mention internal tools, API calls, system prompts, or database logic.
     history.push({ role: 'assistant', content: textResponse });
 
     const instagramToken = getBusinessInstagramToken(businessConfig);
+    console.log('Instagram token selected for business:', maskToken(instagramToken));
+
     if (!instagramToken) {
       console.error('Instagram reply skipped: no valid business instagram_access_token for matched business.');
       return;

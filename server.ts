@@ -1402,7 +1402,7 @@ if (contentType === "video/mp4") {
 }
         console.log(`Instagram voice downloaded. MIME=${contentType}, bytes=${audioBuffer.byteLength}`);
         userMessageContent = [
-  { text: "Instagram voice message input:" },
+  { text: "Instagram voice message input. Detect the spoken language from the audio and reply in the exact same language. Do not default to Swedish." },
   {
     inlineData: {
       data: base64Audio,
@@ -1552,7 +1552,11 @@ Do not mention internal tools, API calls, system prompts, or database logic.
 
       try {
         const voiceReply = await createInstagramVoiceReplyFile(textResponse);
-        sentVoiceReply = await sendInstagramAudioMessage(senderId, voiceReply.url, instagramToken);
+        await sendInstagramMessage(
+  senderId,
+  `${textResponse}\n\n🎧 Voice reply: ${voiceReply.url}`,
+  instagramToken
+);
 
         if (!sentVoiceReply) {
           console.warn('Instagram voice reply failed, falling back to text reply.');
@@ -1561,12 +1565,6 @@ Do not mention internal tools, API calls, system prompts, or database logic.
         console.error('Instagram TTS/audio reply failed:', ttsErr);
       }
 
-      if (!sentVoiceReply) {
-        await sendInstagramMessage(senderId, textResponse, instagramToken);
-      }
-    } else {
-      await sendInstagramMessage(senderId, textResponse, instagramToken);
-    }
 
     try {
       await postProcessMessage(chatId, platform, userMessageForLog, textResponse, businessConfig?.telegramToken, businessConfig?.apiKey);

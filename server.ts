@@ -1546,31 +1546,35 @@ Do not mention internal tools, API calls, system prompts, or database logic.
     history.push({ role: 'assistant', content: textResponse });
 
     const instagramToken = process.env.INSTAGRAM_ACCESS_TOKEN || businessConfig.instagramAccessToken || process.env.INSTAGRAM_PAGE_ACCESS_TOKEN;
+if (isVoiceMessage) {
+  let sentVoiceReply = false;
 
-    if (isVoiceMessage) {
-      let sentVoiceReply = false;
+  try {
+    const voiceReply = await createInstagramVoiceReplyFile(textResponse);
 
-      try {
-        const voiceReply = await createInstagramVoiceReplyFile(textResponse);
-        await sendInstagramMessage(
-  senderId,
-  `${textResponse}\n\n🎧 Voice reply: ${voiceReply.url}`,
-  instagramToken
-);
+    await sendInstagramMessage(
+      senderId,
+      `${textResponse}\n\n🎧 Voice reply: ${voiceReply.url}`,
+      instagramToken
+    );
 
-        if (!sentVoiceReply) {
-          console.warn('Instagram voice reply failed, falling back to text reply.');
-        }
-      } catch (ttsErr) {
-        console.error('Instagram TTS/audio reply failed:', ttsErr);
-      }
+    sentVoiceReply = true;
+  } catch (ttsErr) {
+    console.error('Instagram TTS/audio reply failed:', ttsErr);
+  }
 
+  if (!sentVoiceReply) {
+    await sendInstagramMessage(senderId, textResponse, instagramToken);
+  }
+} else {
+  await sendInstagramMessage(senderId, textResponse, instagramToken);
+}
 
-    try {
-      await postProcessMessage(chatId, platform, userMessageForLog, textResponse, businessConfig?.telegramToken, businessConfig?.apiKey);
-    } catch (e) {
-      console.error('Instagram postProcessMessage failed:', e);
-    }
+try {
+  await postProcessMessage(chatId, platform, userMessageForLog, textResponse, businessConfig?.telegramToken, businessConfig?.apiKey);
+} catch (e) {
+  console.error('Instagram postProcessMessage failed:', e);
+}
   } catch (err: any) {
     console.error('IG processing error:', err);
    const errorLanguage = chatLanguages[chatId] || userLanguage || "en";

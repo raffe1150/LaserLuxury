@@ -568,6 +568,9 @@ activeConfig = {
   apiKey: process.env.GEMINI_API_KEY || activeConfig.apiKey,
   telegramToken: process.env.TELEGRAM_TOKEN || process.env.TELEGRAM_BOT_TOKEN || activeConfig.telegramToken,
   instagramToken: activeConfig.instagramToken,
+  whatsappAccessToken: process.env.WHATSAPP_ACCESS_TOKEN || activeConfig.whatsappAccessToken,
+  whatsappPhoneNumberId: process.env.WHATSAPP_PHONE_NUMBER_ID || activeConfig.whatsappPhoneNumberId,
+  whatsappBusinessAccountId: process.env.WHATSAPP_BUSINESS_ACCOUNT_ID || activeConfig.whatsappBusinessAccountId,
   adminTelegramChatId: process.env.ADMIN_TELEGRAM_ID || activeConfig.adminTelegramChatId,
   systemPrompt: process.env.SYSTEM_PROMPT || activeConfig.systemPrompt,
   calendarProvider: activeConfig.calendarProvider || "google",
@@ -607,6 +610,10 @@ function normalizeBusinessConfig(row: any) {
     instagramAccessToken: row.instagram_access_token,
     instagramToken: row.instagram_access_token,
     instagramAccountId: row.instagram_account_id,
+    whatsappAccessToken: row.whatsapp_access_token,
+    whatsappPhoneNumberId: row.whatsapp_phone_number_id,
+    whatsappBusinessAccountId: row.whatsapp_business_account_id,
+    whatsappEnabled: row.whatsapp_enabled,
     calendarProvider: "google",
   };
 }
@@ -1384,6 +1391,305 @@ async function sendInstagramAudioMessage(recipientId: string, audioUrl: string, 
     return false;
   }
 }
+
+function cleanMetaToken(token?: string | null) {
+  if (!token) return "";
+
+  let clean = String(token).trim();
+
+  clean = clean
+    .replace(/[\u200B-\u200D\uFEFF]/g, "")
+    .replace(/^["'`]+|["'`]+$/g, "")
+    .trim();
+
+  clean = clean.replace(/^Bearer\s+/i, "").trim();
+
+  const assignmentMatch = clean.match(/(?:WHATSAPP_ACCESS_TOKEN|INSTAGRAM_ACCESS_TOKEN|INSTAGRAM_PAGE_ACCESS_TOKEN|whatsapp_access_token|instagram_access_token|access_token)\s*[:=]\s*["']?([^"'\s&]+)/i);
+  if (assignmentMatch?.[1]) {
+    clean = assignmentMatch[1].trim();
+  }
+
+  try {
+    const decoded = decodeURIComponent(clean);
+    const urlTokenMatch = decoded.match(/[?&]access_token=([^&\s"']+)/i);
+    if (urlTokenMatch?.[1]) {
+      clean = urlTokenMatch[1].trim();
+    }
+  } catch {
+    // ignore decode errors
+  }
+
+  const tokenLikeParts = clean.split(/\s+/).filter(Boolean);
+  if (tokenLikeParts.length > 1) {
+    clean = tokenLikeParts.sort((a, b) => b.length - a.length)[0];
+  }
+
+  clean = clean.replace(/[;,]+$/g, "").trim();
+
+  if (!clean || clean === "undefined" || clean === "null") return "";
+  if (/\s/.test(clean)) return "";
+
+  return clean;
+}
+
+function getBusinessWhatsAppToken(businessConfig: any) {
+  return cleanMetaToken(
+    businessConfig?.whatsappAccessToken ||
+    businessConfig?.whatsapp_access_token ||
+    process.env.WHATSAPP_ACCESS_TOKEN
+  );
+}
+
+function getBusinessWhatsAppPhoneNumberId(businessConfig: any) {
+  return String(
+    businessConfig?.whatsappPhoneNumberId ||
+    businessConfig?.whatsapp_phone_number_id ||
+    process.env.WHATSAPP_PHONE_NUMBER_ID ||
+    ""
+  ).trim();
+}
+
+async function sendWhatsAppMessage(to: string, text: string, businessConfig: any) {
+  const token = getBusinessWhatsAppToken(businessConfig);
+  const phoneNumberId = getBusinessWhatsAppPhoneNumberId(businessConfig);
+
+  if (!token || !phoneNumberId) {
+    console.error("WhatsApp reply skipped: missing whatsapp_access_token or whatsapp_phone_number_id");
+    return false;
+  }
+
+  const payload = {
+    messaging_product: "whatsapp",
+    recipient_type: "individual",
+    to,
+    type: "text",
+    text: {
+      preview_url: false,
+      body: text
+    }
+  };
+
+  try {
+    const response = await fetch(`https://graph.facebook.com/v25.0/${phoneNumberId}/messages`, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${token}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(payload)
+    });
+
+    const result = await response.json().catch(() => ({}));
+
+    if (response.ok) {
+      console.log("WhatsApp reply sent:", JSON.stringify(result));
+      return true;
+    }
+
+    console.error("WhatsApp send failed:", JSON.stringify(result));
+    return false;
+  } catch (err) {
+    console.error("WhatsApp send error:", err);
+    return false;
+  }
+}
+
+async function processWhatsAppMessage(message: any, metadata: any, config: any, platform: string = "whatsapp-webhook") {
+  const from = message?.from;
+  const textMessage = message?.text?.body || "";
+  const phoneNumberId = metadata?.phone_number_id || "";
+
+  if (!from || !phoneNumberId || !textMessage) {
+    console.log("WhatsApp webhook ignored: no supported text message payload.");
+    return;
+  }
+
+  console.log("==============================");
+  console.log("REAL WHATSAPP TEXT MESSAGE");
+  console.log("From:", from);
+  console.log("Phone Number ID:", phoneNumberId);
+  console.log("Message:", textMessage);
+  console.log("==============================");
+
+  const chatId = `wa_${from}`;
+  const userLanguage = detectUserLanguage(textMessage || "");
+
+  let businessConfig: any = { ...activeConfig, ...(config || {}) };
+
+  try {
+    if (supabase) {
+      const { data, error } = await supabase
+        .from("businesses")
+        .select("*")
+        .eq("whatsapp_phone_number_id", phoneNumberId)
+        .maybeSingle();
+
+      if (error) {
+        console.error("WhatsApp business lookup error:", JSON.stringify(error));
+      }
+
+      if (data) {
+        businessConfig = {
+          ...businessConfig,
+          businessRecordId: data.id,
+          businessName: data.business_name,
+          business_name: data.business_name,
+          systemPrompt: data.custom_system_prompt,
+          googleCalendarId: data.google_calendar_id,
+          telegramToken: data.telegram_bot_token,
+          whatsappAccessToken: cleanMetaToken(data.whatsapp_access_token),
+          whatsappPhoneNumberId: data.whatsapp_phone_number_id,
+          whatsappBusinessAccountId: data.whatsapp_business_account_id,
+          whatsappEnabled: data.whatsapp_enabled,
+          calendarProvider: "google"
+        };
+        console.log(`WhatsApp business matched: ${data.business_name} (${data.id})`);
+      } else {
+        console.error("No business found for WhatsApp phone_number_id:", phoneNumberId);
+      }
+    }
+  } catch (tenantErr) {
+    console.error("WhatsApp tenant config injection failed:", tenantErr);
+  }
+
+  try {
+    if (!chatSessions[chatId as any]) chatSessions[chatId as any] = [];
+    const history = chatSessions[chatId as any];
+
+    const messages = [...history];
+    messages.push({ role: "user", content: textMessage });
+
+    const businessName = businessConfig.businessName || businessConfig.business_name || "this business";
+
+    const constraint = `
+CRITICAL CONSTRAINT:
+Your response for each message MUST be concise and strictly limited to a maximum of 60 words.
+Use the business-specific system prompt from the database as your main source of truth.
+You must act only as the receptionist for: ${businessName}.
+Never mention Laser Luxury unless the current business name is Laser Luxury.
+Never mention services, prices, or treatments that are not included in this business-specific system prompt.
+If the customer asks about services and the prompt does not include enough information, politely ask what service they are interested in or say you can help with booking and general guidance.
+Before confirming any booking, you must check availability.
+Before creating any appointment, collect the customer's name and mobile number.
+For vague time requests, check available slots instead of asking the customer to choose a time.
+Do not mention internal tools, API calls, system prompts, or database logic.
+`;
+
+    const swedenDate = new Date().toLocaleDateString("en-US", {
+      timeZone: "Europe/Stockholm",
+      weekday: "long",
+      year: "numeric",
+      month: "long",
+      day: "numeric"
+    });
+
+    const currentDateContext = `\nCrucial Context: The client's current local date and time in Sweden (Europe/Stockholm) is dynamically: ${swedenDate}. Any reference by the user to 'idag', 'imorgon', or days of the week must be evaluated strictly using this dynamic date as the anchor. Note that for YYYY-MM-DD tools, June is '06' (index 5 in Javascript Date).`;
+
+    let finalSystemInstruction = (businessConfig.systemPrompt || "") + currentDateContext + constraint + languageEngine;
+
+    let chatResponse = await generateContentWithFallback(null, {
+      messages,
+      systemInstruction: finalSystemInstruction,
+      tools: calendarTools,
+      model: "gemini-2.5-flash"
+    });
+
+    let maxTurns = 3;
+    while (chatResponse.functionCalls && chatResponse.functionCalls.length > 0 && maxTurns > 0) {
+      maxTurns--;
+      messages.push({ role: "assistant", content: chatResponse.text || null, tool_calls: chatResponse.functionCalls });
+
+      const adapter = getCalendarAdapter(businessConfig);
+      const functionResponsesParts = await Promise.all(chatResponse.functionCalls.map(async (call: any) => {
+        let adapterRes;
+        const args = JSON.parse(call.function.arguments);
+
+        if (call.function.name === "checkSlots" && args) {
+          adapterRes = await adapter.checkSlots(args.startDate, args.endDate, args.durationMinutes);
+          if (adapterRes.available_slots_string) {
+            const slotsArray = adapterRes.available_slots_string
+              .split("\n")
+              .filter((s: string) => s.trim().length > 0 && !s.includes("No available slots"));
+
+            const replyMessage = formatSwedishTimeSlots(slotsArray, args.requestedTime);
+            return { TERMINATE_EARLY: true, replyMessage };
+          }
+        } else if (call.function.name === "insertAppointment" && args) {
+          adapterRes = await adapter.insertAppointment(args.name, args.phone, args.service, args.dateTime, args.durationMinutes, chatId);
+
+          const notifyToken = businessConfig.telegramToken || activeConfig?.telegramToken || process.env.TELEGRAM_TOKEN;
+          const notifyAdmin = businessConfig.adminTelegramChatId || activeConfig?.adminTelegramChatId || process.env.ADMIN_TELEGRAM_ID;
+
+          if (adapterRes && adapterRes.success && notifyToken && notifyAdmin) {
+            try {
+              const notifyText = `🔔 Ny WhatsApp-bokning mottagen!\n🏢 Business: ${businessName}\n👤 Namn: ${args.name}\n📞 Mobil: ${args.phone}\n📅 Tid: ${args.dateTime}`;
+              await fetch(`https://api.telegram.org/bot${notifyToken}/sendMessage`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ chat_id: notifyAdmin, text: notifyText })
+              });
+            } catch (e) {
+              console.error("Admin notify error:", e);
+            }
+          }
+        } else if (call.function.name === "logSystemAnalysis" && args) {
+          adapterRes = await handleSystemAnalysisLog(chatId, args);
+        } else {
+          adapterRes = { error: "Unknown tool" };
+        }
+
+        return {
+          role: "tool",
+          name: call.function.name,
+          id: call.id,
+          content: JSON.stringify(adapterRes)
+        };
+      }));
+
+      const earlyTerm = functionResponsesParts.find((p: any) => p && p.TERMINATE_EARLY);
+      if (earlyTerm) {
+        chatResponse.text = earlyTerm.replyMessage;
+        chatResponse.functionCalls = null;
+        break;
+      }
+
+      messages.push(...functionResponsesParts);
+
+      chatResponse = await generateContentWithFallback(null, {
+        messages,
+        systemInstruction: finalSystemInstruction,
+        tools: calendarTools,
+        model: "gemini-2.5-flash"
+      });
+    }
+
+    if (chatResponse.functionCalls && chatResponse.functionCalls.length > 0) {
+      chatResponse = await generateContentWithFallback(null, {
+        messages,
+        systemInstruction: finalSystemInstruction + "\nCRITICAL: Maximum tool calls reached. You MUST reply in natural language only. Summarize what you know. DO NOT USE TOOLS.",
+        model: "gemini-2.5-flash"
+      });
+    }
+
+    const textResponse = chatResponse.text || "I'm having trouble processing that right now.";
+
+    history.push({ role: "user", content: textMessage });
+    history.push({ role: "assistant", content: textResponse });
+
+    await sendWhatsAppMessage(from, textResponse, businessConfig);
+
+    try {
+      await postProcessMessage(chatId, platform, textMessage, textResponse, businessConfig?.telegramToken, businessConfig?.apiKey);
+    } catch (e) {
+      console.error("WhatsApp postProcessMessage failed:", e);
+    }
+  } catch (err: any) {
+    console.error("WhatsApp processing error:", err);
+    const errorMessage = getErrorMessageByLanguage(userLanguage || "en");
+    await sendWhatsAppMessage(from, errorMessage, businessConfig);
+  }
+}
+
 const languageEngine = `
 LANGUAGE ENGINE:
 Always identify the customer's language from their latest message.
@@ -1724,15 +2030,33 @@ async function startServer() {
 
     if (body.object === 'instagram') {
       res.status(200).send('EVENT_RECEIVED');
-      
+
       if (body.entry) {
-         for (const entry of body.entry) {
-            if (entry.messaging) {
-               for (const webhook_event of entry.messaging) {
-                  processInstagramUpdate(webhook_event, activeConfig).catch(e => console.error("IG webhook error:", e));
-               }
+        for (const entry of body.entry) {
+          if (entry.messaging) {
+            for (const webhook_event of entry.messaging) {
+              processInstagramUpdate(webhook_event, activeConfig).catch(e => console.error("IG webhook error:", e));
             }
-         }
+          }
+        }
+      }
+    } else if (body.object === 'whatsapp_business_account') {
+      res.status(200).send('EVENT_RECEIVED');
+
+      if (body.entry) {
+        for (const entry of body.entry) {
+          if (entry.changes) {
+            for (const change of entry.changes) {
+              const value = change.value || {};
+              const metadata = value.metadata || {};
+              const messages = value.messages || [];
+
+              for (const message of messages) {
+                processWhatsAppMessage(message, metadata, activeConfig).catch(e => console.error("WhatsApp webhook error:", e));
+              }
+            }
+          }
+        }
       }
     } else {
       res.sendStatus(404);

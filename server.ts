@@ -2024,6 +2024,20 @@ async function startServer() {
     res.sendStatus(400);
   }
 });
+  app.get("/webhook", (req, res) => {
+  const verify_token = process.env.INSTAGRAM_VERIFY_TOKEN;
+
+  const mode = req.query["hub.mode"];
+  const token = req.query["hub.verify_token"];
+  const challenge = req.query["hub.challenge"];
+
+  if (mode === "subscribe" && token === verify_token) {
+    console.log("WEBHOOK_WHATSAPP_VERIFIED");
+    return res.status(200).send(challenge);
+  }
+
+  return res.sendStatus(403);
+});
 
   app.post("/webhook", async (req, res) => {
     const body = req.body;

@@ -2006,24 +2006,24 @@ async function startServer() {
   app.use(express.json({ limit: '50mb' }));
 
   
-  app.get("/webhook", (req, res) => {
-    const verify_token = process.env.INSTAGRAM_VERIFY_TOKEN;
-    
-    let mode = req.query['hub.mode'];
-    let token = req.query['hub.verify_token'];
-    let challenge = req.query['hub.challenge'];
-      
-    if (mode && token) {
-      if (mode === 'subscribe' && token === verify_token) {
-        console.log('WEBHOOK_VERIFIED');
-        res.status(200).send(challenge);
-      } else {
-        res.sendStatus(403);      
-      }
+ app.get("/webhook/instagram", (req, res) => {
+  const verify_token = process.env.INSTAGRAM_VERIFY_TOKEN;
+
+  let mode = req.query['hub.mode'];
+  let token = req.query['hub.verify_token'];
+  let challenge = req.query['hub.challenge'];
+
+  if (mode && token) {
+    if (mode === 'subscribe' && token === verify_token) {
+      console.log('WEBHOOK_INSTAGRAM_VERIFIED');
+      res.status(200).send(challenge);
     } else {
-      res.sendStatus(400);
+      res.sendStatus(403);
     }
-  });
+  } else {
+    res.sendStatus(400);
+  }
+});
 
   app.post("/webhook", async (req, res) => {
     const body = req.body;
@@ -2062,6 +2062,27 @@ async function startServer() {
       res.sendStatus(404);
     }
   });
+  app.post("/webhook/instagram", async (req, res) => {
+  const body = req.body;
+
+  if (body.object !== "instagram") {
+    return res.sendStatus(404);
+  }
+
+  res.status(200).send("EVENT_RECEIVED");
+
+  if (body.entry) {
+    for (const entry of body.entry) {
+      if (entry.messaging) {
+        for (const webhook_event of entry.messaging) {
+          processInstagramUpdate(webhook_event, activeConfig).catch(e =>
+            console.error("IG webhook instagram route error:", e)
+          );
+        }
+      }
+    }
+  }
+});
 
   app.post("/api/setup-telegram", async (req, res) => {
     try {

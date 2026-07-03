@@ -1796,6 +1796,33 @@ async function downloadMessengerAudio(audioUrl: string, accessToken?: string) {
   throw new Error(`Failed to download Messenger audio after retries: ${lastError}`);
 }
 
+
+function getMessengerPublicBaseUrl() {
+  // Messenger/Facebook must be able to fetch the generated audio file from the internet.
+  // On Render, RENDER_EXTERNAL_URL is usually the safest value. If you set
+  // MESSENGER_PUBLIC_BASE_URL manually, it will override everything.
+  return (
+    process.env.MESSENGER_PUBLIC_BASE_URL ||
+    process.env.RENDER_EXTERNAL_URL ||
+    process.env.PUBLIC_BASE_URL ||
+    process.env.APP_URL ||
+    'https://laserluxury.onrender.com'
+  ).replace(/\/$/, '');
+}
+
+async function debugPublicAudioUrl(audioUrl: string) {
+  try {
+    const response = await fetch(audioUrl, { method: 'GET' });
+    const contentType = response.headers.get('content-type');
+    const contentLength = response.headers.get('content-length');
+    console.log(`Messenger public audio self-check: status=${response.status}, content-type=${contentType}, content-length=${contentLength}, url=${audioUrl}`);
+    return response.ok;
+  } catch (err) {
+    console.error('Messenger public audio self-check failed:', err, 'url=', audioUrl);
+    return false;
+  }
+}
+
 async function createMessengerVoiceReplyFile(text: string) {
   const EdgeTTS = (await import("node-edge-tts")).EdgeTTS;
   const voiceCode = detectTtsVoiceCode(text);
@@ -1824,7 +1851,7 @@ async function createMessengerVoiceReplyFile(text: string) {
 
   return {
     filePath,
-    url: `${getPublicBaseUrl()}/media/messenger/${filename}`
+    url: `${getMessengerPublicBaseUrl()}/media/messenger/${filename}`
   };
 }
 
@@ -1836,35 +1863,52 @@ async function sendMessengerAudioMessage(recipientId: string, audioUrl: string, 
     return false;
   }
 
-  const payload = {
+  console.log("Messenger audio reply public URL:", audioUrl);
+  await debugPublicAudioUrl(audioUrl);
+
+  const buildPayload = (attachmentType: "audio" | "file") => ({
     recipient: { id: recipientId },
     messaging_type: "RESPONSE",
     message: {
       attachment: {
-        type: "audio",
+        type: attachmentType,
         payload: {
           url: audioUrl,
           is_reusable: true
         }
       }
     }
-  };
+  });
 
-  try {
+  async function sendAttachmentPayload(attachmentType: "audio" | "file") {
     const response = await fetch(`https://graph.facebook.com/v25.0/me/messages?access_token=${encodeURIComponent(token)}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
+      body: JSON.stringify(buildPayload(attachmentType))
     });
 
     const result = await response.json().catch(() => ({}));
 
     if (response.ok) {
-      console.log("Messenger audio reply sent:", JSON.stringify(result));
+      console.log(`Messenger ${attachmentType} reply sent:`, JSON.stringify(result));
       return true;
     }
 
-    console.error("Messenger audio send failed:", JSON.stringify(result));
+    console.error(`Messenger ${attachmentType} send failed:`, JSON.stringify(result));
+    return false;
+  }
+
+  try {
+    // First try proper Messenger audio attachment.
+    const audioSent = await sendAttachmentPayload("audio");
+    if (audioSent) return true;
+
+    // Some Messenger accounts reject audio upload from generated URLs.
+    // Try file attachment as a fallback; Messenger can still deliver/play it in many clients.
+    console.log("Messenger audio failed, trying file attachment fallback...");
+    const fileSent = await sendAttachmentPayload("file");
+    if (fileSent) return true;
+
     return false;
   } catch (err) {
     console.error("Messenger audio send error:", err);
@@ -3211,7 +3255,10 @@ app.post('/webhook/instagram', async (req, res) => {
         return res.sendStatus(404);
       }
 
+      const stat = fs.statSync(filePath);
       res.setHeader('Content-Type', 'audio/mpeg');
+      res.setHeader('Content-Length', String(stat.size));
+      res.setHeader('Accept-Ranges', 'bytes');
       res.setHeader('Cache-Control', 'public, max-age=3600');
       return res.sendFile(filePath);
     } catch (err) {

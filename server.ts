@@ -2056,6 +2056,13 @@ console.log(JSON.stringify(req.body, null, 2));
           }
         }
       }
+      } else if (body.object === "page") {
+  res.status(200).send("EVENT_RECEIVED");
+
+  console.log("========== MESSENGER WEBHOOK ==========");
+  console.log(JSON.stringify(body, null, 2));
+
+  // فعلاً فقط لاگ می‌گیریم، هنوز جواب AI نمی‌فرستیم
     } else if (body.object === 'whatsapp_business_account') {
       res.status(200).send('EVENT_RECEIVED');
 

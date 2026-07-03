@@ -571,6 +571,9 @@ activeConfig = {
   whatsappAccessToken: process.env.WHATSAPP_ACCESS_TOKEN || activeConfig.whatsappAccessToken,
   whatsappPhoneNumberId: process.env.WHATSAPP_PHONE_NUMBER_ID || activeConfig.whatsappPhoneNumberId,
   whatsappBusinessAccountId: process.env.WHATSAPP_BUSINESS_ACCOUNT_ID || activeConfig.whatsappBusinessAccountId,
+  messengerPageId: process.env.MESSENGER_PAGE_ID || activeConfig.messengerPageId,
+  messengerPageAccessToken: process.env.MESSENGER_PAGE_ACCESS_TOKEN || activeConfig.messengerPageAccessToken,
+  messengerVerifyToken: process.env.MESSENGER_VERIFY_TOKEN || activeConfig.messengerVerifyToken,
   adminTelegramChatId: process.env.ADMIN_TELEGRAM_ID || activeConfig.adminTelegramChatId,
   systemPrompt: process.env.SYSTEM_PROMPT || activeConfig.systemPrompt,
   calendarProvider: activeConfig.calendarProvider || "google",
@@ -614,6 +617,10 @@ function normalizeBusinessConfig(row: any) {
     whatsappPhoneNumberId: row.whatsapp_phone_number_id,
     whatsappBusinessAccountId: row.whatsapp_business_account_id,
     whatsappEnabled: row.whatsapp_enabled,
+    messengerPageId: row.messenger_page_id || row.facebook_page_id || row.page_id,
+    messengerPageAccessToken: row.messenger_page_access_token || row.facebook_page_access_token || row.page_access_token,
+    messengerVerifyToken: row.messenger_verify_token || row.facebook_verify_token,
+    messengerEnabled: row.messenger_enabled,
     calendarProvider: "google",
   };
 }
@@ -1690,6 +1697,289 @@ Do not mention internal tools, API calls, system prompts, or database logic.
   }
 }
 
+
+function getBusinessMessengerToken(businessConfig: any) {
+  return cleanMetaToken(
+    businessConfig?.messengerPageAccessToken ||
+    businessConfig?.messenger_page_access_token ||
+    businessConfig?.facebook_page_access_token ||
+    businessConfig?.page_access_token ||
+    process.env.MESSENGER_PAGE_ACCESS_TOKEN
+  );
+}
+
+function getBusinessMessengerPageId(businessConfig: any) {
+  return String(
+    businessConfig?.messengerPageId ||
+    businessConfig?.messenger_page_id ||
+    businessConfig?.facebook_page_id ||
+    businessConfig?.page_id ||
+    process.env.MESSENGER_PAGE_ID ||
+    ""
+  ).trim();
+}
+
+async function sendMessengerMessage(recipientId: string, text: string, businessConfig: any) {
+  const token = getBusinessMessengerToken(businessConfig);
+
+  if (!token) {
+    console.error("Messenger reply skipped: missing messenger_page_access_token / page access token");
+    return false;
+  }
+
+  const payload = {
+    recipient: { id: recipientId },
+    messaging_type: "RESPONSE",
+    message: { text }
+  };
+
+  try {
+    const response = await fetch(`https://graph.facebook.com/v25.0/me/messages?access_token=${encodeURIComponent(token)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+
+    const result = await response.json().catch(() => ({}));
+
+    if (response.ok) {
+      console.log("Messenger reply sent:", JSON.stringify(result));
+      return true;
+    }
+
+    console.error("Messenger send failed:", JSON.stringify(result));
+    return false;
+  } catch (err) {
+    console.error("Messenger send error:", err);
+    return false;
+  }
+}
+
+async function findMessengerBusinessByPageId(pageId: string) {
+  if (!supabase || !pageId) return null;
+
+  try {
+    // We select all rows and match in JS so this works even if your column name is
+    // messenger_page_id, facebook_page_id, or page_id.
+    const { data, error } = await supabase.from("businesses").select("*");
+
+    if (error) {
+      console.error("Messenger business lookup error:", JSON.stringify(error));
+      return null;
+    }
+
+    return (data || []).find((row: any) => {
+      const candidates = [
+        row.messenger_page_id,
+        row.facebook_page_id,
+        row.page_id,
+        row.instagram_page_id
+      ].filter(Boolean).map((value: any) => String(value).trim());
+
+      return candidates.includes(String(pageId).trim());
+    }) || null;
+  } catch (err) {
+    console.error("Messenger business lookup crashed:", err);
+    return null;
+  }
+}
+
+async function processMessengerUpdate(webhookEvent: any, config: any, platform: string = "messenger-webhook") {
+  const senderId = webhookEvent.sender?.id;
+  const recipientId = webhookEvent.recipient?.id;
+
+  if (webhookEvent.message?.is_echo) {
+    console.log("Messenger echo ignored.");
+    return;
+  }
+
+  const textMessage = webhookEvent.message?.text || "";
+
+  if (!senderId || !recipientId || !textMessage) {
+    console.log("Messenger webhook ignored: no supported text message payload.");
+    return;
+  }
+
+  console.log("==============================");
+  console.log("REAL MESSENGER TEXT MESSAGE");
+  console.log("Sender ID:", senderId);
+  console.log("Recipient/Page ID:", recipientId);
+  console.log("Message:", textMessage);
+  console.log("==============================");
+
+  const chatId = `ms_${senderId}`;
+  const userLanguage = detectUserLanguage(textMessage || "");
+
+  let businessConfig: any = { ...activeConfig, ...(config || {}) };
+
+  try {
+    const data = await findMessengerBusinessByPageId(recipientId);
+
+    if (data) {
+      businessConfig = {
+        ...businessConfig,
+        businessRecordId: data.id,
+        businessName: data.business_name,
+        business_name: data.business_name,
+        systemPrompt: data.custom_system_prompt,
+        googleCalendarId: data.google_calendar_id,
+        telegramToken: data.telegram_bot_token,
+        messengerPageId: data.messenger_page_id || data.facebook_page_id || data.page_id || data.instagram_page_id,
+        messengerPageAccessToken: cleanMetaToken(
+          data.messenger_page_access_token ||
+          data.facebook_page_access_token ||
+          data.page_access_token ||
+          data.instagram_access_token
+        ),
+        messengerEnabled: data.messenger_enabled,
+        calendarProvider: "google"
+      };
+      console.log(`Messenger business matched: ${data.business_name} (${data.id})`);
+    } else {
+      console.error("No business found for Messenger recipient/page id:", recipientId);
+    }
+  } catch (tenantErr) {
+    console.error("Messenger tenant config injection failed:", tenantErr);
+  }
+
+  try {
+    if (!chatSessions[chatId as any]) chatSessions[chatId as any] = [];
+    const history = chatSessions[chatId as any];
+
+    const messages = [...history];
+    messages.push({ role: "user", content: textMessage });
+
+    const businessName = businessConfig.businessName || businessConfig.business_name || "this business";
+
+    const constraint = `
+CRITICAL CONSTRAINT:
+Your response for each message MUST be concise and strictly limited to a maximum of 60 words.
+Use the business-specific system prompt from the database as your main source of truth.
+You must act only as the receptionist for: ${businessName}.
+Never mention Laser Luxury unless the current business name is Laser Luxury.
+Never mention services, prices, or treatments that are not included in this business-specific system prompt.
+If the customer asks about services and the prompt does not include enough information, politely ask what service they are interested in or say you can help with booking and general guidance.
+Before confirming any booking, you must check availability.
+Before creating any appointment, collect the customer's name and mobile number.
+For vague time requests, check available slots instead of asking the customer to choose a time.
+Do not mention internal tools, API calls, system prompts, or database logic.
+`;
+
+    const swedenDate = new Date().toLocaleDateString("en-US", {
+      timeZone: "Europe/Stockholm",
+      weekday: "long",
+      year: "numeric",
+      month: "long",
+      day: "numeric"
+    });
+
+    const currentDateContext = `\nCrucial Context: The client's current local date and time in Sweden (Europe/Stockholm) is dynamically: ${swedenDate}. Any reference by the user to 'idag', 'imorgon', or days of the week must be evaluated strictly using this dynamic date as the anchor. Note that for YYYY-MM-DD tools, June is '06' (index 5 in Javascript Date).`;
+
+    const finalSystemInstruction = (businessConfig.systemPrompt || "") + currentDateContext + constraint + languageEngine;
+
+    let chatResponse = await generateContentWithFallback(null, {
+      messages,
+      systemInstruction: finalSystemInstruction,
+      tools: calendarTools,
+      model: "gemini-2.5-flash"
+    });
+
+    let maxTurns = 3;
+    while (chatResponse.functionCalls && chatResponse.functionCalls.length > 0 && maxTurns > 0) {
+      maxTurns--;
+      messages.push({ role: "assistant", content: chatResponse.text || null, tool_calls: chatResponse.functionCalls });
+
+      const adapter = getCalendarAdapter(businessConfig);
+      const functionResponsesParts = await Promise.all(chatResponse.functionCalls.map(async (call: any) => {
+        let adapterRes;
+        const args = JSON.parse(call.function.arguments);
+
+        if (call.function.name === "checkSlots" && args) {
+          adapterRes = await adapter.checkSlots(args.startDate, args.endDate, args.durationMinutes);
+          if (adapterRes.available_slots_string) {
+            const slotsArray = adapterRes.available_slots_string
+              .split("\n")
+              .filter((s: string) => s.trim().length > 0 && !s.includes("No available slots"));
+
+            const replyMessage = formatSwedishTimeSlots(slotsArray, args.requestedTime);
+            return { TERMINATE_EARLY: true, replyMessage };
+          }
+        } else if (call.function.name === "insertAppointment" && args) {
+          adapterRes = await adapter.insertAppointment(args.name, args.phone, args.service, args.dateTime, args.durationMinutes, chatId);
+
+          const notifyToken = businessConfig.telegramToken || activeConfig?.telegramToken || process.env.TELEGRAM_TOKEN;
+          const notifyAdmin = businessConfig.adminTelegramChatId || activeConfig?.adminTelegramChatId || process.env.ADMIN_TELEGRAM_ID;
+
+          if (adapterRes && adapterRes.success && notifyToken && notifyAdmin) {
+            try {
+              const notifyText = `🔔 Ny Messenger-bokning mottagen!\n🏢 Business: ${businessName}\n👤 Namn: ${args.name}\n📞 Mobil: ${args.phone}\n📅 Tid: ${args.dateTime}`;
+              await fetch(`https://api.telegram.org/bot${notifyToken}/sendMessage`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ chat_id: notifyAdmin, text: notifyText })
+              });
+            } catch (e) {
+              console.error("Messenger admin notify error:", e);
+            }
+          }
+        } else if (call.function.name === "logSystemAnalysis" && args) {
+          adapterRes = await handleSystemAnalysisLog(chatId, args);
+        } else {
+          adapterRes = { error: "Unknown tool" };
+        }
+
+        return {
+          role: "tool",
+          name: call.function.name,
+          id: call.id,
+          content: JSON.stringify(adapterRes)
+        };
+      }));
+
+      const earlyTerm = functionResponsesParts.find((p: any) => p && p.TERMINATE_EARLY);
+      if (earlyTerm) {
+        chatResponse.text = earlyTerm.replyMessage;
+        chatResponse.functionCalls = null;
+        break;
+      }
+
+      messages.push(...functionResponsesParts);
+
+      chatResponse = await generateContentWithFallback(null, {
+        messages,
+        systemInstruction: finalSystemInstruction,
+        tools: calendarTools,
+        model: "gemini-2.5-flash"
+      });
+    }
+
+    if (chatResponse.functionCalls && chatResponse.functionCalls.length > 0) {
+      chatResponse = await generateContentWithFallback(null, {
+        messages,
+        systemInstruction: finalSystemInstruction + "\nCRITICAL: Maximum tool calls reached. You MUST reply in natural language only. Summarize what you know. DO NOT USE TOOLS.",
+        model: "gemini-2.5-flash"
+      });
+    }
+
+    const textResponse = chatResponse.text || "I'm having trouble processing that right now.";
+
+    history.push({ role: "user", content: textMessage });
+    history.push({ role: "assistant", content: textResponse });
+
+    await sendMessengerMessage(senderId, textResponse, businessConfig);
+
+    try {
+      await postProcessMessage(chatId, platform, textMessage, textResponse, businessConfig?.telegramToken, businessConfig?.apiKey);
+    } catch (e) {
+      console.error("Messenger postProcessMessage failed:", e);
+    }
+  } catch (err: any) {
+    console.error("Messenger processing error:", err);
+    const errorMessage = getErrorMessageByLanguage(userLanguage || "en");
+    await sendMessengerMessage(senderId, errorMessage, businessConfig);
+  }
+}
+
 const languageEngine = `
 LANGUAGE ENGINE:
 Always identify the customer's language from their latest message.
@@ -2057,12 +2347,18 @@ console.log(JSON.stringify(req.body, null, 2));
         }
       }
       } else if (body.object === "page") {
-  res.status(200).send("EVENT_RECEIVED");
+      res.status(200).send("EVENT_RECEIVED");
 
-  console.log("========== MESSENGER WEBHOOK ==========");
-  console.log(JSON.stringify(body, null, 2));
+      console.log("========== MESSENGER WEBHOOK ==========");
+      console.log(JSON.stringify(body, null, 2));
 
-  // فعلاً فقط لاگ می‌گیریم، هنوز جواب AI نمی‌فرستیم
+      for (const entry of body.entry || []) {
+        for (const webhookEvent of entry.messaging || []) {
+          processMessengerUpdate(webhookEvent, activeConfig).catch(e =>
+            console.error("Messenger webhook error:", e)
+          );
+        }
+      }
     } else if (body.object === 'whatsapp_business_account') {
       res.status(200).send('EVENT_RECEIVED');
 
@@ -2085,6 +2381,42 @@ console.log(JSON.stringify(req.body, null, 2));
       res.sendStatus(404);
     }
   });
+  app.get("/webhook/messenger", (req, res) => {
+    const verifyToken = process.env.MESSENGER_VERIFY_TOKEN || process.env.INSTAGRAM_VERIFY_TOKEN;
+
+    const mode = req.query["hub.mode"];
+    const token = req.query["hub.verify_token"];
+    const challenge = req.query["hub.challenge"];
+
+    if (mode === "subscribe" && token === verifyToken) {
+      console.log("WEBHOOK_MESSENGER_VERIFIED");
+      return res.status(200).send(challenge);
+    }
+
+    return res.sendStatus(403);
+  });
+
+  app.post("/webhook/messenger", async (req, res) => {
+    const body = req.body;
+
+    if (body.object !== "page") {
+      return res.sendStatus(404);
+    }
+
+    res.status(200).send("EVENT_RECEIVED");
+
+    console.log("========== MESSENGER WEBHOOK /webhook/messenger ==========");
+    console.log(JSON.stringify(body, null, 2));
+
+    for (const entry of body.entry || []) {
+      for (const webhookEvent of entry.messaging || []) {
+        processMessengerUpdate(webhookEvent, activeConfig).catch(e =>
+          console.error("Messenger route processing error:", e)
+        );
+      }
+    }
+  });
+
   app.post("/webhook/instagram", async (req, res) => {
   const body = req.body;
 

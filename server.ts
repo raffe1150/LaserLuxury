@@ -496,7 +496,7 @@ function getCalendarAdapter(config: any): CalendarAdapter {
       (!config.calendarProvider && process.env.GOOGLE_CLIENT_EMAIL && process.env.GOOGLE_PRIVATE_KEY && process.env.GOOGLE_CALENDAR_ID)) {
     const email = process.env.GOOGLE_CLIENT_EMAIL || config.googleClientEmail;
     const key = process.env.GOOGLE_PRIVATE_KEY || config.googlePrivateKey;
-    const id = process.env.GOOGLE_CALENDAR_ID || config.googleCalendarId;
+    const id = config.googleCalendarId || process.env.GOOGLE_CALENDAR_ID;
     if (email && key && id) {
       return new GoogleCalendarAdapter(email, key, id);
     } else {
@@ -582,7 +582,7 @@ activeConfig = {
   googlePrivateKey: process.env.GOOGLE_PRIVATE_KEY || activeConfig.googlePrivateKey,
 };
 
-const chatSessions: Record<number, any[]> = {};
+const chatSessions: Record<string, any[]> = {};
 const chatLanguages: Record<string, string> = {};
 let globalWaitUntil = 0;
 
@@ -734,6 +734,7 @@ async function processTelegramUpdate(update: any, config: any, platform: string 
   if (!update.message.chat) return;
 
   const chatId = update.message.chat.id;
+  const telegramSessionId = `${telegramToken}:${chatId}`;
   console.log(`Processing Telegram message for ${config.businessName || "business"} (${maskToken(telegramToken)}), chatId=${chatId}`);
   try {
     // 🌟 تزریق پایگاه داده برای بارگذاری پویای اطلاعات بیزینس
@@ -772,8 +773,8 @@ async function processTelegramUpdate(update: any, config: any, platform: string 
     
     
     const ai = new GoogleGenAI({ apiKey: apiKey || process.env.GEMINI_API_KEY });
-    if (!chatSessions[chatId]) chatSessions[chatId] = [];
-    const history = chatSessions[chatId];
+    if (!chatSessions[telegramSessionId]) chatSessions[telegramSessionId] = [];
+    const history = chatSessions[telegramSessionId];
     let userMessageContent: any = "";
     
     if (text) {
@@ -808,7 +809,14 @@ async function processTelegramUpdate(update: any, config: any, platform: string 
     const messages = [...history];
     messages.push({ role: "user", content: userMessageContent });
     
-const businessName = activeConfig.businessName || activeConfig.business_name || 'this business';
+const businessName =
+  config.businessName ||
+  config.business_name ||
+  activeConfig.businessName ||
+  activeConfig.business_name ||
+  'this business';
+
+console.log(`Telegram AI config: business=${businessName}, hasSystemPrompt=${Boolean(config.systemPrompt)}`);
 
 const constraint = `
 CRITICAL CONSTRAINT:
@@ -832,7 +840,7 @@ Do not mention internal tools, API calls, system prompts, or database logic.
     });
     const currentDateContext = `\nCrucial Context: The client's current local date and time in Sweden (Europe/Stockholm) is dynamically: ${swedenDate}. Any reference by the user to 'idag', 'imorgon', or days of the week must be evaluated strictly using this dynamic date as the anchor. Note that for YYYY-MM-DD tools, June is '06' (index 5 in Javascript Date).`;
     let finalSystemInstruction =
-  (activeConfig.systemPrompt || "") +
+  (config.systemPrompt || activeConfig.systemPrompt || "") +
   currentDateContext +
   constraint +
   languageEngine;
@@ -877,8 +885,8 @@ Do not mention internal tools, API calls, system prompts, or database logic.
         }
         else if (call.function.name === "insertAppointment" && args) {
           adapterRes = await adapter.insertAppointment(args.name, args.phone, args.service, args.dateTime, args.durationMinutes, chatId);
-          const notifyToken = activeConfig?.telegramToken || process.env.TELEGRAM_TOKEN;
-          const notifyAdmin = activeConfig?.adminTelegramChatId || process.env.ADMIN_TELEGRAM_ID;
+          const notifyToken = config?.telegramToken || activeConfig?.telegramToken || process.env.TELEGRAM_TOKEN;
+          const notifyAdmin = config?.adminTelegramChatId || activeConfig?.adminTelegramChatId || process.env.ADMIN_TELEGRAM_ID;
           if (adapterRes && adapterRes.success && notifyToken && notifyAdmin) {
              try {
                 const notifyText = `🔔 Ny bokning mottagen!\n👤 Namn: ${args.name}\n📞 Mobil: ${args.phone}\n📅 Tid: ${args.dateTime}`;

@@ -1755,6 +1755,123 @@ async function sendMessengerMessage(recipientId: string, text: string, businessC
   }
 }
 
+
+async function downloadMessengerAudio(audioUrl: string, accessToken?: string) {
+  const attempts: Array<{ label: string; url: string; init?: RequestInit }> = [
+    { label: "raw", url: audioUrl }
+  ];
+
+  if (accessToken) {
+    attempts.push({
+      label: "bearer",
+      url: audioUrl,
+      init: { headers: { Authorization: `Bearer ${accessToken}` } }
+    });
+
+    const separator = audioUrl.includes("?") ? "&" : "?";
+    attempts.push({
+      label: "query-token",
+      url: `${audioUrl}${separator}access_token=${encodeURIComponent(accessToken)}`
+    });
+  }
+
+  let lastError = "";
+
+  for (const attempt of attempts) {
+    try {
+      const response = await fetch(attempt.url, attempt.init);
+      if (response.ok) {
+        console.log(`Messenger audio downloaded using ${attempt.label} fetch.`);
+        return response;
+      }
+
+      lastError = `${response.status} ${response.statusText}`;
+      console.warn(`Messenger audio download attempt ${attempt.label} failed: ${lastError}`);
+    } catch (err: any) {
+      lastError = String(err?.message || err);
+      console.warn(`Messenger audio download attempt ${attempt.label} crashed:`, err);
+    }
+  }
+
+  throw new Error(`Failed to download Messenger audio after retries: ${lastError}`);
+}
+
+async function createMessengerVoiceReplyFile(text: string) {
+  const EdgeTTS = (await import("node-edge-tts")).EdgeTTS;
+  const voiceCode = detectTtsVoiceCode(text);
+  const audioDir = "/tmp/clinicpilot_messenger_audio";
+  fs.mkdirSync(audioDir, { recursive: true });
+
+  const filename = `messenger_reply_${Date.now()}_${Math.random().toString(36).slice(2)}.mp3`;
+  const filePath = path.join(audioDir, filename);
+  const cleanText = sanitizeTTS(text);
+
+  const tts = new EdgeTTS({ voice: voiceCode, rate: "-10%", timeout: 60000 });
+  await tts.ttsPromise(cleanText || "Förlåt, jag förstod inte.", filePath);
+
+  try {
+    const now = Date.now();
+    for (const file of fs.readdirSync(audioDir)) {
+      const fullPath = path.join(audioDir, file);
+      const stat = fs.statSync(fullPath);
+      if (now - stat.mtimeMs > 60 * 60 * 1000) {
+        fs.unlinkSync(fullPath);
+      }
+    }
+  } catch (cleanupErr) {
+    console.warn("Messenger audio cleanup failed:", cleanupErr);
+  }
+
+  return {
+    filePath,
+    url: `${getPublicBaseUrl()}/media/messenger/${filename}`
+  };
+}
+
+async function sendMessengerAudioMessage(recipientId: string, audioUrl: string, businessConfig: any) {
+  const token = getBusinessMessengerToken(businessConfig);
+
+  if (!token) {
+    console.error("Messenger audio reply skipped: missing messenger_page_access_token / page access token");
+    return false;
+  }
+
+  const payload = {
+    recipient: { id: recipientId },
+    messaging_type: "RESPONSE",
+    message: {
+      attachment: {
+        type: "audio",
+        payload: {
+          url: audioUrl,
+          is_reusable: true
+        }
+      }
+    }
+  };
+
+  try {
+    const response = await fetch(`https://graph.facebook.com/v25.0/me/messages?access_token=${encodeURIComponent(token)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+
+    const result = await response.json().catch(() => ({}));
+
+    if (response.ok) {
+      console.log("Messenger audio reply sent:", JSON.stringify(result));
+      return true;
+    }
+
+    console.error("Messenger audio send failed:", JSON.stringify(result));
+    return false;
+  } catch (err) {
+    console.error("Messenger audio send error:", err);
+    return false;
+  }
+}
+
 async function findMessengerBusinessByPageId(pageId: string) {
   if (!supabase || !pageId) return null;
 
@@ -1794,17 +1911,21 @@ async function processMessengerUpdate(webhookEvent: any, config: any, platform: 
   }
 
   const textMessage = webhookEvent.message?.text || "";
+  const audioAttachment = webhookEvent.message?.attachments?.find((attachment: any) => attachment.type === "audio");
+  const audioUrl = audioAttachment?.payload?.url;
+  const isVoiceMessage = Boolean(audioUrl && !textMessage);
 
-  if (!senderId || !recipientId || !textMessage) {
-    console.log("Messenger webhook ignored: no supported text message payload.");
+  if (!senderId || !recipientId || (!textMessage && !audioUrl)) {
+    console.log("Messenger webhook ignored: no supported text/audio message payload.");
     return;
   }
 
   console.log("==============================");
-  console.log("REAL MESSENGER TEXT MESSAGE");
+  console.log(isVoiceMessage ? "REAL MESSENGER VOICE MESSAGE" : "REAL MESSENGER TEXT MESSAGE");
   console.log("Sender ID:", senderId);
   console.log("Recipient/Page ID:", recipientId);
-  console.log("Message:", textMessage);
+  if (textMessage) console.log("Message:", textMessage);
+  if (audioUrl) console.log("Audio URL:", audioUrl);
   console.log("==============================");
 
   const chatId = `ms_${senderId}`;
@@ -1846,8 +1967,28 @@ async function processMessengerUpdate(webhookEvent: any, config: any, platform: 
     if (!chatSessions[chatId as any]) chatSessions[chatId as any] = [];
     const history = chatSessions[chatId as any];
 
+    let userMessageContent: any = textMessage;
+    let userMessageForLog = textMessage;
+
+    if (isVoiceMessage && audioUrl) {
+      const messengerToken = getBusinessMessengerToken(businessConfig);
+      const audioRes = await downloadMessengerAudio(audioUrl, messengerToken);
+      const audioBuffer = await audioRes.arrayBuffer();
+      const base64Audio = Buffer.from(audioBuffer).toString("base64");
+      const contentType = audioRes.headers.get("content-type") || "audio/ogg";
+      const mimeType = contentType.includes(";") ? contentType.split(";")[0].trim() : contentType;
+
+      console.log(`Messenger voice downloaded. MIME=${mimeType}, bytes=${audioBuffer.byteLength}`);
+
+      userMessageContent = [
+        { text: "Voice message input from Messenger:" },
+        { inlineData: { data: base64Audio, mimeType } }
+      ];
+      userMessageForLog = "[Messenger Voice Message]";
+    }
+
     const messages = [...history];
-    messages.push({ role: "user", content: textMessage });
+    messages.push({ role: "user", content: userMessageContent });
 
     const businessName = businessConfig.businessName || businessConfig.business_name || "this business";
 
@@ -1875,7 +2016,18 @@ Do not mention internal tools, API calls, system prompts, or database logic.
 
     const currentDateContext = `\nCrucial Context: The client's current local date and time in Sweden (Europe/Stockholm) is dynamically: ${swedenDate}. Any reference by the user to 'idag', 'imorgon', or days of the week must be evaluated strictly using this dynamic date as the anchor. Note that for YYYY-MM-DD tools, June is '06' (index 5 in Javascript Date).`;
 
-    const finalSystemInstruction = (businessConfig.systemPrompt || "") + currentDateContext + constraint + languageEngine;
+    let finalSystemInstruction = (businessConfig.systemPrompt || "") + currentDateContext + constraint + languageEngine;
+
+    if (isVoiceMessage) {
+      finalSystemInstruction +=
+        "\nVOICE ENGINE:\n" +
+        "You support Swedish, English, Persian (Farsi), German, Spanish and Arabic.\n" +
+        "Detect the spoken language automatically.\n" +
+        "Reply using the exact same language.\n" +
+        "If the user speaks Persian using Latin letters, reply in Persian script.\n" +
+        "Your response must be suitable for natural TTS.\n" +
+        "Keep responses under 60 words unless more detail is required.\n";
+    }
 
     let chatResponse = await generateContentWithFallback(null, {
       messages,
@@ -1963,13 +2115,28 @@ Do not mention internal tools, API calls, system prompts, or database logic.
 
     const textResponse = chatResponse.text || "I'm having trouble processing that right now.";
 
-    history.push({ role: "user", content: textMessage });
+    history.push({ role: "user", content: isVoiceMessage ? "[Messenger Voice Message]" : userMessageContent });
     history.push({ role: "assistant", content: textResponse });
 
-    await sendMessengerMessage(senderId, textResponse, businessConfig);
+    if (isVoiceMessage) {
+      let sentVoiceReply = false;
+
+      try {
+        const voiceReply = await createMessengerVoiceReplyFile(textResponse);
+        sentVoiceReply = await sendMessengerAudioMessage(senderId, voiceReply.url, businessConfig);
+      } catch (ttsErr) {
+        console.error("Messenger TTS/audio reply failed:", ttsErr);
+      }
+
+      if (!sentVoiceReply) {
+        await sendMessengerMessage(senderId, textResponse, businessConfig);
+      }
+    } else {
+      await sendMessengerMessage(senderId, textResponse, businessConfig);
+    }
 
     try {
-      await postProcessMessage(chatId, platform, textMessage, textResponse, businessConfig?.telegramToken, businessConfig?.apiKey);
+      await postProcessMessage(chatId, platform, userMessageForLog, textResponse, businessConfig?.telegramToken, businessConfig?.apiKey);
     } catch (e) {
       console.error("Messenger postProcessMessage failed:", e);
     }
@@ -3030,6 +3197,25 @@ app.post('/webhook/instagram', async (req, res) => {
       return res.sendFile(filePath);
     } catch (err) {
       console.error('Instagram media serving error:', err);
+      return res.sendStatus(500);
+    }
+  });
+
+
+  app.get('/media/messenger/:filename', (req, res) => {
+    try {
+      const filename = path.basename(req.params.filename);
+      const filePath = path.join('/tmp/clinicpilot_messenger_audio', filename);
+
+      if (!fs.existsSync(filePath)) {
+        return res.sendStatus(404);
+      }
+
+      res.setHeader('Content-Type', 'audio/mpeg');
+      res.setHeader('Cache-Control', 'public, max-age=3600');
+      return res.sendFile(filePath);
+    } catch (err) {
+      console.error('Messenger media serving error:', err);
       return res.sendStatus(500);
     }
   });

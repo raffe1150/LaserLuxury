@@ -2878,6 +2878,9 @@ console.log(JSON.stringify(req.body, null, 2));
 
   res.status(200).send("EVENT_RECEIVED");
 
+  console.log("========== INSTAGRAM WEBHOOK /webhook/instagram ==========");
+  console.log(JSON.stringify(body, null, 2));
+
   if (body.entry) {
     for (const entry of body.entry) {
       if (entry.messaging) {
@@ -2885,6 +2888,22 @@ console.log(JSON.stringify(req.body, null, 2));
           processInstagramUpdate(webhook_event, activeConfig).catch(e =>
             console.error("IG webhook instagram route error:", e)
           );
+        }
+      }
+
+      // Instagram comment events from Meta arrive here as entry.changes.
+      // Meta sample structure:
+      // change.field === "comments"
+      // change.value.id = comment id
+      // change.value.text = comment text
+      // change.value.media.id = post/media id
+      if (entry.changes) {
+        for (const change of entry.changes) {
+          if (change.field === "comments" || change.field === "live_comments") {
+            processMetaCommentUpdate(entry, change, activeConfig, "instagram").catch(e =>
+              console.error("IG comment instagram route error:", e)
+            );
+          }
         }
       }
     }

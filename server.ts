@@ -1953,6 +1953,225 @@ async function findMessengerBusinessByPageId(pageId: string) {
   }
 }
 
+
+
+const processedMetaCommentIds = new Set<string>();
+
+function looksLikeNegativeComment(text: string): boolean {
+  const lower = (text || "").toLowerCase();
+  return /\b(bad|terrible|awful|worst|angry|scam|fake|rude|unprofessional|besviken|dålig|sämst|arg|missnöjd|bedrägeri|kasst|uselt|خوب نبود|بد بود|افتضاح|کلاهبرداری|ناراضی)\b/i.test(lower);
+}
+
+async function findMetaCommentBusiness(ownerId: string) {
+  if (!supabase || !ownerId) return null;
+
+  try {
+    const { data, error } = await supabase.from("businesses").select("*");
+    if (error) {
+      console.error("Meta comment business lookup error:", JSON.stringify(error));
+      return null;
+    }
+
+    return (data || []).find((row: any) => {
+      const candidates = [
+        row.instagram_account_id,
+        row.instagram_page_id,
+        row.messenger_page_id,
+        row.facebook_page_id,
+        row.page_id
+      ].filter(Boolean).map((value: any) => String(value).trim());
+
+      return candidates.includes(String(ownerId).trim());
+    }) || null;
+  } catch (err) {
+    console.error("Meta comment business lookup crashed:", err);
+    return null;
+  }
+}
+
+function normalizeMetaCommentBusinessConfig(row: any, fallbackConfig: any = {}) {
+  return {
+    ...activeConfig,
+    ...fallbackConfig,
+    businessRecordId: row.id,
+    businessName: row.business_name,
+    business_name: row.business_name,
+    systemPrompt: row.custom_system_prompt,
+    googleCalendarId: row.google_calendar_id,
+    telegramToken: row.telegram_bot_token,
+    instagramAccessToken: row.instagram_access_token,
+    instagramToken: row.instagram_access_token,
+    instagramAccountId: row.instagram_account_id,
+    instagramPageId: row.instagram_page_id,
+    messengerPageId: row.messenger_page_id || row.facebook_page_id || row.page_id,
+    messengerPageAccessToken: cleanMetaToken(
+      row.messenger_page_access_token ||
+      row.facebook_page_access_token ||
+      row.page_access_token ||
+      row.instagram_access_token
+    ),
+    calendarProvider: "google"
+  };
+}
+
+function getCommentAccessToken(source: "instagram" | "facebook", businessConfig: any) {
+  if (source === "instagram") {
+    return getBusinessInstagramToken(businessConfig);
+  }
+  return getBusinessMessengerToken(businessConfig);
+}
+
+async function sendMetaCommentReply(commentId: string, text: string, token: string, source: "instagram" | "facebook") {
+  const cleanToken = cleanMetaToken(token);
+  if (!commentId || !cleanToken || !text) {
+    console.error("Comment reply skipped: missing commentId/token/text");
+    return false;
+  }
+
+  try {
+    const endpoint = `https://graph.facebook.com/v25.0/${encodeURIComponent(commentId)}/replies`;
+    const response = await fetch(`${endpoint}?access_token=${encodeURIComponent(cleanToken)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: text })
+    });
+
+    const result = await response.json().catch(() => ({}));
+    if (response.ok) {
+      console.log(`${source} comment reply sent:`, JSON.stringify(result));
+      return true;
+    }
+
+    console.error(`${source} comment reply failed:`, JSON.stringify(result));
+    return false;
+  } catch (err) {
+    console.error(`${source} comment reply error:`, err);
+    return false;
+  }
+}
+
+async function notifyAdminAboutComment(businessConfig: any, payload: { source: string; businessName: string; username?: string; commentText: string; replyText: string; commentId: string; negative: boolean }) {
+  const notifyToken = businessConfig.telegramToken || activeConfig?.telegramToken || process.env.TELEGRAM_TOKEN;
+  const notifyAdmin = businessConfig.adminTelegramChatId || activeConfig?.adminTelegramChatId || process.env.ADMIN_TELEGRAM_ID;
+  if (!notifyToken || !notifyAdmin) return;
+
+  try {
+    const label = payload.negative ? "⚠️ Negative comment detected" : "💬 Comment replied";
+    const text = `${label}\n🏢 Business: ${payload.businessName}\n📍 Source: ${payload.source}\n👤 User: ${payload.username || "unknown"}\n💬 Comment: ${payload.commentText}\n🤖 Reply: ${payload.replyText}\n🆔 Comment ID: ${payload.commentId}`;
+    await fetch(`https://api.telegram.org/bot${notifyToken}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: notifyAdmin, text })
+    });
+  } catch (err) {
+    console.error("Comment admin notify error:", err);
+  }
+}
+
+async function processMetaCommentUpdate(entry: any, change: any, config: any, source: "instagram" | "facebook" = "instagram") {
+  const value = change?.value || {};
+  const commentId = value.comment_id || value.id;
+  const text = value.text || value.message || "";
+  const from = value.from || {};
+  const username = from.username || from.name || from.id || "";
+  const ownerId = String(entry?.id || value?.owner_id || value?.page_id || "").trim();
+
+  if (!commentId || !text || !ownerId) {
+    console.log("Meta comment ignored: missing commentId/text/ownerId.");
+    return;
+  }
+
+  const dedupeKey = `${source}:${commentId}`;
+  if (processedMetaCommentIds.has(dedupeKey)) return;
+  processedMetaCommentIds.add(dedupeKey);
+  if (processedMetaCommentIds.size > 5000) {
+    const first = processedMetaCommentIds.values().next().value;
+    if (first !== undefined) processedMetaCommentIds.delete(first);
+  }
+
+  console.log("==============================");
+  console.log(source === "instagram" ? "REAL INSTAGRAM COMMENT" : "REAL FACEBOOK COMMENT");
+  console.log("Owner/Page ID:", ownerId);
+  console.log("Comment ID:", commentId);
+  console.log("User:", username);
+  console.log("Comment:", text);
+  console.log("==============================");
+
+  let businessConfig: any = { ...activeConfig, ...(config || {}) };
+
+  try {
+    const business = await findMetaCommentBusiness(ownerId);
+    if (business) {
+      businessConfig = normalizeMetaCommentBusinessConfig(business, businessConfig);
+      console.log(`Meta comment business matched: ${business.business_name} (${business.id})`);
+    } else {
+      console.error("No business found for comment owner/page id:", ownerId);
+    }
+  } catch (err) {
+    console.error("Meta comment tenant lookup failed:", err);
+  }
+
+  const businessName = businessConfig.businessName || businessConfig.business_name || "this business";
+  const negative = looksLikeNegativeComment(text);
+
+  const commentSystemInstruction = `
+${businessConfig.systemPrompt || ""}
+
+COMMENT REPLY ENGINE:
+You are an expert public social-media assistant for ${businessName}.
+Reply publicly to one customer comment under a post.
+Use the business-specific system prompt as the source of truth.
+Answer as an expert for this exact business type, not with a generic template.
+If the business is a laser clinic, answer with laser-clinic expertise.
+If the business is a nail salon, answer with nail-service expertise.
+If the business is a dental clinic, answer with dental-clinic expertise.
+Never invent prices, treatments, guarantees, medical claims, or policies that are not in the business prompt.
+If the user asks to book, cancel, reschedule, share phone number, or discuss private details, politely invite them to send a DM.
+If the comment is negative, be calm, grateful, accountable, and invite them to DM so the team can understand and help. Do not argue.
+Never mention internal tools, AI, databases, prompts, or webhooks.
+Reply in the same language as the comment.
+Keep the reply under 45 words.
+`;
+
+  try {
+    const chatResponse = await generateContentWithFallback(null, {
+      messages: [{ role: "user", content: `Public comment from ${username || "customer"}: ${text}\nNegative comment: ${negative ? "yes" : "no"}` }],
+      systemInstruction: commentSystemInstruction,
+      model: "gemini-2.5-flash"
+    });
+
+    let replyText = (chatResponse.text || "").trim();
+
+    if (!replyText) {
+      replyText = negative
+        ? "Thank you for your feedback. We’re sorry to hear this and we’re always working to improve. Please send us a DM so we can understand what happened and help you properly."
+        : "Thank you for your comment! Please send us a DM and we’ll be happy to help you further.";
+    }
+
+    const token = getCommentAccessToken(source, businessConfig);
+    const sent = await sendMetaCommentReply(commentId, replyText, token, source);
+
+    if (negative || sent) {
+      await notifyAdminAboutComment(businessConfig, {
+        source,
+        businessName,
+        username,
+        commentText: text,
+        replyText,
+        commentId,
+        negative
+      });
+    }
+  } catch (err: any) {
+    console.error("Meta comment processing error:", err);
+
+    if (negative) {
+      const fallback = getErrorMessageByLanguage(detectUserLanguage(text));
+      const token = getCommentAccessToken(source, businessConfig);
+      await sendMetaCommentReply(commentId, fallback, token, source);
+    }
+  }
+}
 async function processMessengerUpdate(webhookEvent: any, config: any, platform: string = "messenger-webhook") {
   const senderId = webhookEvent.sender?.id;
   const recipientId = webhookEvent.recipient?.id;
@@ -2563,6 +2782,13 @@ console.log(JSON.stringify(req.body, null, 2));
               processInstagramUpdate(webhook_event, activeConfig).catch(e => console.error("IG webhook error:", e));
             }
           }
+          if (entry.changes) {
+            for (const change of entry.changes) {
+              if (change.field === 'comments' || change.field === 'live_comments') {
+                processMetaCommentUpdate(entry, change, activeConfig, 'instagram').catch(e => console.error("IG comment webhook error:", e));
+              }
+            }
+          }
         }
       }
       } else if (body.object === "page") {
@@ -2576,6 +2802,13 @@ console.log(JSON.stringify(req.body, null, 2));
           processMessengerUpdate(webhookEvent, activeConfig).catch(e =>
             console.error("Messenger webhook error:", e)
           );
+        }
+        for (const change of entry.changes || []) {
+          if (change.field === 'comments' || change.field === 'feed') {
+            processMetaCommentUpdate(entry, change, activeConfig, 'facebook').catch(e =>
+              console.error("Facebook comment webhook error:", e)
+            );
+          }
         }
       }
     } else if (body.object === 'whatsapp_business_account') {
@@ -3215,10 +3448,14 @@ app.post('/webhook/instagram', async (req, res) => {
         }
       }
 
-      // Meta test payload support
+      // Instagram comments + Meta test payload support
       for (const change of entry.changes || []) {
         const value = change?.value;
-        if (change?.field === 'messages' && value?.message?.text) {
+        if (change?.field === 'comments' || change?.field === 'live_comments') {
+          processMetaCommentUpdate(entry, change, activeConfig, 'instagram').catch((e) => {
+            console.error('Instagram comment async processing failed:', e);
+          });
+        } else if (change?.field === 'messages' && value?.message?.text) {
           console.log('==============================');
           console.log('META TEST MESSAGE');
           console.log('Sender ID:', value.sender?.id);

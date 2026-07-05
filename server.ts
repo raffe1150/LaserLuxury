@@ -1955,11 +1955,87 @@ async function findMessengerBusinessByPageId(pageId: string) {
 
 
 
+
 const processedMetaCommentIds = new Set<string>();
 
 function looksLikeNegativeComment(text: string): boolean {
   const lower = (text || "").toLowerCase();
   return /\b(bad|terrible|awful|worst|angry|scam|fake|rude|unprofessional|besviken|dålig|sämst|arg|missnöjd|bedrägeri|kasst|uselt|خوب نبود|بد بود|افتضاح|کلاهبرداری|ناراضی)\b/i.test(lower);
+}
+
+function normalizeCommentText(text: string): string {
+  return String(text || "").replace(/\s+/g, " ").trim();
+}
+
+function truncateWords(text: string, maxWords: number = 20): string {
+  const cleaned = normalizeCommentText(text);
+  const words = cleaned.split(" ").filter(Boolean);
+  if (words.length <= maxWords) return cleaned;
+  return words.slice(0, maxWords).join(" ").replace(/[,.!?،؛:]+$/g, "") + "…";
+}
+
+function isSimplePositiveComment(text: string): boolean {
+  const lower = normalizeCommentText(text).toLowerCase();
+
+  if (!lower) return false;
+  if (lower.length > 80) return false;
+  if (/[?؟]/.test(lower)) return false;
+
+  const positiveRegex = /\b(nice|great|good|amazing|perfect|love|thanks|thank you|well done|awesome|bra|snyggt|fint|tack|toppen|jättebra|super|grymt|خوب|عالی|مرسی|ممنون|قشنگ|زیبا|خیلی خوب)\b/i;
+  return positiveRegex.test(lower) || /[👍😍❤️✨🔥👏]/u.test(lower);
+}
+
+function getQuickPositiveReply(commentText: string): string {
+  const lang = detectUserLanguage(commentText);
+
+  if (lang === "fa") return "خیلی ممنون از لطف شما! ✨";
+  if (lang === "sv") return "Tusen tack, vad roligt att höra! ✨";
+  if (lang === "de") return "Vielen Dank, das freut uns sehr! ✨";
+  if (lang === "es") return "¡Muchas gracias, nos alegra mucho! ✨";
+  if (lang === "ar") return "شكرًا جزيلًا، يسعدنا سماع ذلك! ✨";
+
+  return "Thank you so much, glad to hear that! ✨";
+}
+
+function isProbablyBusinessOwnComment(username: string, fromId: string, ownerId: string, businessConfig: any): boolean {
+  const user = normalizeCommentText(username).toLowerCase().replace(/^@/, "");
+  const from = String(fromId || "").trim();
+  const owner = String(ownerId || "").trim();
+
+  const candidateIds = [
+    owner,
+    businessConfig?.instagramAccountId,
+    businessConfig?.instagram_account_id,
+    businessConfig?.instagramPageId,
+    businessConfig?.instagram_page_id,
+    businessConfig?.messengerPageId,
+    businessConfig?.messenger_page_id,
+    businessConfig?.facebook_page_id,
+    businessConfig?.page_id
+  ].filter(Boolean).map((v: any) => String(v).trim());
+
+  if (from && candidateIds.includes(from)) return true;
+
+  const candidateUsernames = [
+    businessConfig?.instagramUsername,
+    businessConfig?.instagram_username,
+    businessConfig?.businessInstagramUsername,
+    businessConfig?.business_instagram_username,
+    businessConfig?.pageUsername,
+    businessConfig?.page_username,
+    businessConfig?.businessName,
+    businessConfig?.business_name
+  ]
+    .filter(Boolean)
+    .map((v: any) => String(v).toLowerCase().replace(/^@/, "").replace(/\s+/g, ""));
+
+  const normalizedUser = user.replace(/\s+/g, "");
+  if (normalizedUser && candidateUsernames.includes(normalizedUser)) return true;
+
+  // Current test page handle used in this project. This prevents the bot from replying to its own public replies.
+  if (normalizedUser === "admotionstudio.1" || normalizedUser === "laserluxury" || normalizedUser === "laser_luxury") return true;
+
+  return false;
 }
 
 async function findMetaCommentBusiness(ownerId: string) {
@@ -2004,6 +2080,9 @@ function normalizeMetaCommentBusinessConfig(row: any, fallbackConfig: any = {}) 
     instagramToken: row.instagram_access_token,
     instagramAccountId: row.instagram_account_id,
     instagramPageId: row.instagram_page_id,
+    instagramUsername: row.instagram_username || row.page_username || row.business_instagram_username,
+    instagram_username: row.instagram_username,
+    pageUsername: row.page_username,
     instagramPageAccessToken: row.instagram_page_access_token || row.facebook_page_access_token || row.page_access_token,
     instagramCommentAccessToken: row.instagram_comment_access_token || row.instagram_page_access_token || row.facebook_page_access_token || row.page_access_token,
     messengerPageId: row.messenger_page_id || row.facebook_page_id || row.page_id,
@@ -2133,18 +2212,23 @@ async function notifyAdminAboutComment(businessConfig: any, payload: { source: s
 async function processMetaCommentUpdate(entry: any, change: any, config: any, source: "instagram" | "facebook" = "instagram") {
   const value = change?.value || {};
   const commentId = value.comment_id || value.id;
-  const text = value.text || value.message || "";
+  const commentText = normalizeCommentText(value.text || value.message || "");
   const from = value.from || {};
   const username = from.username || from.name || from.id || "";
+  const fromId = String(from.id || "").trim();
   const ownerId = String(entry?.id || value?.owner_id || value?.page_id || "").trim();
+  const parentId = String(value.parent_id || "").trim();
 
-  if (!commentId || !text || !ownerId) {
+  if (!commentId || !commentText || !ownerId) {
     console.log("Meta comment ignored: missing commentId/text/ownerId.");
     return;
   }
 
   const dedupeKey = `${source}:${commentId}`;
-  if (processedMetaCommentIds.has(dedupeKey)) return;
+  if (processedMetaCommentIds.has(dedupeKey)) {
+    console.log("Meta comment ignored: duplicate comment id:", dedupeKey);
+    return;
+  }
   processedMetaCommentIds.add(dedupeKey);
   if (processedMetaCommentIds.size > 5000) {
     const first = processedMetaCommentIds.values().next().value;
@@ -2155,8 +2239,9 @@ async function processMetaCommentUpdate(entry: any, change: any, config: any, so
   console.log(source === "instagram" ? "REAL INSTAGRAM COMMENT" : "REAL FACEBOOK COMMENT");
   console.log("Owner/Page ID:", ownerId);
   console.log("Comment ID:", commentId);
+  console.log("Parent ID:", parentId || "none");
   console.log("User:", username);
-  console.log("Comment:", text);
+  console.log("Comment:", commentText);
   console.log("==============================");
 
   let businessConfig: any = { ...activeConfig, ...(config || {}) };
@@ -2174,52 +2259,70 @@ async function processMetaCommentUpdate(entry: any, change: any, config: any, so
   }
 
   const businessName = businessConfig.businessName || businessConfig.business_name || "this business";
-  const negative = looksLikeNegativeComment(text);
 
-  const commentSystemInstruction = `
+  // Anti-loop: never reply to comments/replies written by the business account itself.
+  // This prevents the bot from answering its own public replies again and again.
+  if (isProbablyBusinessOwnComment(username, fromId, ownerId, businessConfig)) {
+    console.log("Meta comment ignored: own business/page comment.");
+    return;
+  }
+
+  const negative = looksLikeNegativeComment(commentText);
+  const isSimplePositive = isSimplePositiveComment(commentText);
+
+  let replyText = "";
+
+  try {
+    if (isSimplePositive && !negative) {
+      // Cheap and safe path: no Gemini call for simple praise like "Nice job 👍".
+      replyText = getQuickPositiveReply(commentText);
+      console.log("Meta comment quick positive reply selected:", replyText);
+    } else {
+      const commentSystemInstruction = `
 ${businessConfig.systemPrompt || ""}
 
 COMMENT REPLY ENGINE:
 You are an expert public social-media assistant for ${businessName}.
-Reply publicly to one customer comment under a post.
+Reply publicly to ONE customer comment under a post.
+Reply in the SAME language as the customer's comment.
+Maximum 18 words. One short sentence only.
+Do not over-thank. Do not write long marketing text.
+Do not repeat the customer's comment.
+Do not reply to yourself or to bot-generated replies.
 Use the business-specific system prompt as the source of truth.
-Answer as an expert for this exact business type, not with a generic template.
-If the business is a laser clinic, answer with laser-clinic expertise.
-If the business is a nail salon, answer with nail-service expertise.
-If the business is a dental clinic, answer with dental-clinic expertise.
-Never invent prices, treatments, guarantees, medical claims, or policies that are not in the business prompt.
-If the user asks to book, cancel, reschedule, share phone number, or discuss private details, politely invite them to send a DM.
-If the comment is negative, be calm, grateful, accountable, and invite them to DM so the team can understand and help. Do not argue.
+If the customer asks to book, cancel, reschedule, share phone number, or discuss private details, invite them to DM.
+If the comment is negative, be calm, grateful, accountable, and invite them to DM.
 Never mention internal tools, AI, databases, prompts, or webhooks.
-Reply in the same language as the comment.
-Keep the reply under 45 words.
 `;
 
-  try {
-    const chatResponse = await generateContentWithFallback(null, {
-      messages: [{ role: "user", content: `Public comment from ${username || "customer"}: ${text}\nNegative comment: ${negative ? "yes" : "no"}` }],
-      systemInstruction: commentSystemInstruction,
-      model: "gemini-2.5-flash"
-    });
+      const chatResponse = await generateContentWithFallback(null, {
+        messages: [{ role: "user", content: `Public comment from ${username || "customer"}: ${commentText}\nNegative comment: ${negative ? "yes" : "no"}` }],
+        systemInstruction: commentSystemInstruction,
+        model: "gemini-2.5-flash"
+      });
 
-    let replyText = (chatResponse.text || "").trim();
+      replyText = truncateWords((chatResponse.text || "").trim(), 18);
+    }
 
     if (!replyText) {
       replyText = negative
-        ? "Thank you for your feedback. We’re sorry to hear this and we’re always working to improve. Please send us a DM so we can understand what happened and help you properly."
-        : "Thank you for your comment! Please send us a DM and we’ll be happy to help you further.";
+        ? (detectUserLanguage(commentText) === "sv" ? "Tack för din feedback. Skicka gärna DM så hjälper vi dig vidare." :
+           detectUserLanguage(commentText) === "fa" ? "ممنون از بازخوردتان. لطفاً دایرکت بدهید تا بهتر کمک کنیم." :
+           "Thank you for your feedback. Please DM us so we can help.")
+        : getQuickPositiveReply(commentText);
     }
 
     const tokens = getCommentAccessTokens(source, businessConfig);
     console.log(`Meta comment token candidates: count=${tokens.length}, first=${tokens[0] ? maskToken(tokens[0]) : "none"}`);
     const sent = await sendMetaCommentReply(commentId, replyText, tokens, source);
 
+    // Notify admin only once for the original customer comment. Own replies are ignored above.
     if (negative || sent) {
       await notifyAdminAboutComment(businessConfig, {
         source,
         businessName,
         username,
-        commentText: text,
+        commentText,
         replyText,
         commentId,
         negative
@@ -2227,14 +2330,9 @@ Keep the reply under 45 words.
     }
   } catch (err: any) {
     console.error("Meta comment processing error:", err);
-
-    if (negative) {
-      const fallback = getErrorMessageByLanguage(detectUserLanguage(text));
-      const tokens = getCommentAccessTokens(source, businessConfig);
-      await sendMetaCommentReply(commentId, fallback, tokens, source);
-    }
   }
 }
+
 async function processMessengerUpdate(webhookEvent: any, config: any, platform: string = "messenger-webhook") {
   const senderId = webhookEvent.sender?.id;
   const recipientId = webhookEvent.recipient?.id;

@@ -2000,9 +2000,12 @@ function normalizeMetaCommentBusinessConfig(row: any, fallbackConfig: any = {}) 
     googleCalendarId: row.google_calendar_id,
     telegramToken: row.telegram_bot_token,
     instagramAccessToken: row.instagram_access_token,
+    instagram_access_token: row.instagram_access_token,
     instagramToken: row.instagram_access_token,
     instagramAccountId: row.instagram_account_id,
     instagramPageId: row.instagram_page_id,
+    instagramPageAccessToken: row.instagram_page_access_token || row.facebook_page_access_token || row.page_access_token,
+    instagramCommentAccessToken: row.instagram_comment_access_token || row.instagram_page_access_token || row.facebook_page_access_token || row.page_access_token,
     messengerPageId: row.messenger_page_id || row.facebook_page_id || row.page_id,
     messengerPageAccessToken: cleanMetaToken(
       row.messenger_page_access_token ||
@@ -2010,44 +2013,103 @@ function normalizeMetaCommentBusinessConfig(row: any, fallbackConfig: any = {}) 
       row.page_access_token ||
       row.instagram_access_token
     ),
+    facebook_page_access_token: row.facebook_page_access_token,
+    page_access_token: row.page_access_token,
+    messenger_page_access_token: row.messenger_page_access_token,
     calendarProvider: "google"
   };
 }
 
-function getCommentAccessToken(source: "instagram" | "facebook", businessConfig: any) {
-  if (source === "instagram") {
-    return getBusinessInstagramToken(businessConfig);
+function uniqueNonEmpty(values: any[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const value of values) {
+    const clean = cleanMetaToken(value) || cleanInstagramToken(value);
+    if (!clean || seen.has(clean)) continue;
+    seen.add(clean);
+    out.push(clean);
   }
-  return getBusinessMessengerToken(businessConfig);
+  return out;
 }
 
-async function sendMetaCommentReply(commentId: string, text: string, token: string, source: "instagram" | "facebook") {
-  const cleanToken = cleanMetaToken(token);
-  if (!commentId || !cleanToken || !text) {
-    console.error("Comment reply skipped: missing commentId/token/text");
+function getCommentAccessTokens(source: "instagram" | "facebook", businessConfig: any): string[] {
+  // Comment replies are sent through Meta Graph /{comment-id}/replies.
+  // Depending on the app setup, Meta may require the Page access token, while DMs may work with the IG token.
+  // So we try the business Page token first, then the Instagram token as fallback.
+  if (source === "instagram") {
+    return uniqueNonEmpty([
+      businessConfig?.instagramCommentAccessToken,
+      businessConfig?.instagram_comment_access_token,
+      businessConfig?.instagramPageAccessToken,
+      businessConfig?.instagram_page_access_token,
+      businessConfig?.messengerPageAccessToken,
+      businessConfig?.messenger_page_access_token,
+      businessConfig?.facebook_page_access_token,
+      businessConfig?.page_access_token,
+      businessConfig?.instagramAccessToken,
+      businessConfig?.instagram_access_token,
+      businessConfig?.instagramToken,
+      process.env.INSTAGRAM_COMMENT_ACCESS_TOKEN,
+      process.env.INSTAGRAM_PAGE_ACCESS_TOKEN,
+      process.env.MESSENGER_PAGE_ACCESS_TOKEN,
+      process.env.INSTAGRAM_ACCESS_TOKEN
+    ]);
+  }
+
+  return uniqueNonEmpty([
+    businessConfig?.messengerPageAccessToken,
+    businessConfig?.messenger_page_access_token,
+    businessConfig?.facebook_page_access_token,
+    businessConfig?.page_access_token,
+    process.env.MESSENGER_PAGE_ACCESS_TOKEN
+  ]);
+}
+
+async function sendMetaCommentReply(commentId: string, text: string, tokens: string[] | string, source: "instagram" | "facebook") {
+  const tokenList = Array.isArray(tokens) ? tokens : uniqueNonEmpty([tokens]);
+  if (!commentId || !text || tokenList.length === 0) {
+    console.error(`Comment reply skipped: missing commentId/text/token. commentId=${commentId || "missing"}, hasText=${Boolean(text)}, tokenCount=${tokenList.length}`);
     return false;
   }
 
-  try {
-    const endpoint = `https://graph.facebook.com/v25.0/${encodeURIComponent(commentId)}/replies`;
-    const response = await fetch(`${endpoint}?access_token=${encodeURIComponent(cleanToken)}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: text })
-    });
+  const endpoints = source === "instagram"
+    ? [
+        `https://graph.facebook.com/v25.0/${encodeURIComponent(commentId)}/replies`,
+        `https://graph.instagram.com/v25.0/${encodeURIComponent(commentId)}/replies`
+      ]
+    : [`https://graph.facebook.com/v25.0/${encodeURIComponent(commentId)}/comments`];
 
-    const result = await response.json().catch(() => ({}));
-    if (response.ok) {
-      console.log(`${source} comment reply sent:`, JSON.stringify(result));
-      return true;
+  let lastError: any = null;
+
+  for (const endpoint of endpoints) {
+    for (let i = 0; i < tokenList.length; i++) {
+      const cleanToken = tokenList[i];
+      try {
+        console.log(`${source} comment reply attempt: endpoint=${endpoint.includes('instagram.com') ? 'graph.instagram' : 'graph.facebook'}, tokenIndex=${i}, token=${maskToken(cleanToken)}`);
+
+        const response = await fetch(`${endpoint}?access_token=${encodeURIComponent(cleanToken)}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message: text })
+        });
+
+        const result = await response.json().catch(() => ({}));
+        if (response.ok) {
+          console.log(`${source} comment reply sent:`, JSON.stringify(result));
+          return true;
+        }
+
+        lastError = result;
+        console.error(`${source} comment reply failed with tokenIndex=${i}:`, JSON.stringify(result));
+      } catch (err) {
+        lastError = err;
+        console.error(`${source} comment reply error with tokenIndex=${i}:`, err);
+      }
     }
-
-    console.error(`${source} comment reply failed:`, JSON.stringify(result));
-    return false;
-  } catch (err) {
-    console.error(`${source} comment reply error:`, err);
-    return false;
   }
+
+  console.error(`${source} comment reply failed after all token/endpoint attempts:`, JSON.stringify(lastError));
+  return false;
 }
 
 async function notifyAdminAboutComment(businessConfig: any, payload: { source: string; businessName: string; username?: string; commentText: string; replyText: string; commentId: string; negative: boolean }) {
@@ -2148,8 +2210,9 @@ Keep the reply under 45 words.
         : "Thank you for your comment! Please send us a DM and we’ll be happy to help you further.";
     }
 
-    const token = getCommentAccessToken(source, businessConfig);
-    const sent = await sendMetaCommentReply(commentId, replyText, token, source);
+    const tokens = getCommentAccessTokens(source, businessConfig);
+    console.log(`Meta comment token candidates: count=${tokens.length}, first=${tokens[0] ? maskToken(tokens[0]) : "none"}`);
+    const sent = await sendMetaCommentReply(commentId, replyText, tokens, source);
 
     if (negative || sent) {
       await notifyAdminAboutComment(businessConfig, {
@@ -2167,8 +2230,8 @@ Keep the reply under 45 words.
 
     if (negative) {
       const fallback = getErrorMessageByLanguage(detectUserLanguage(text));
-      const token = getCommentAccessToken(source, businessConfig);
-      await sendMetaCommentReply(commentId, fallback, token, source);
+      const tokens = getCommentAccessTokens(source, businessConfig);
+      await sendMetaCommentReply(commentId, fallback, tokens, source);
     }
   }
 }

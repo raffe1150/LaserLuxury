@@ -11,8 +11,12 @@ import { google } from "googleapis";
 import { createClient } from "@supabase/supabase-js";
 
 let supabase: any = null;
-if (process.env.SUPABASE_URL && process.env.SUPABASE_ANON_KEY) {
-  supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
+if (process.env.SUPABASE_URL && (process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY)) {
+  // Server-side code should prefer SERVICE_ROLE for internal writes such as appointments/reminders.
+  // If only ANON is available, reads may work but inserts into new RLS-protected tables can fail.
+  const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
+  supabase = createClient(process.env.SUPABASE_URL, supabaseKey);
+  console.log(`Supabase configured with ${process.env.SUPABASE_SERVICE_ROLE_KEY ? "SERVICE_ROLE" : "ANON"} key.`);
 }
 
 let currentKeyIndex = 0;
@@ -851,6 +855,7 @@ async function processTelegramUpdate(update: any, config: any, platform: string 
     
     if (text) {
       userMessageContent = text;
+      rememberConversationLanguage(telegramSessionId, text);
     } else if (voice) {
       try {
         const fileRes = await fetch(`https://api.telegram.org/bot${telegramToken}/getFile?file_id=${voice.file_id}`);
@@ -915,7 +920,8 @@ Do not mention internal tools, API calls, system prompts, or database logic.
   (config.systemPrompt || activeConfig.systemPrompt || "") +
   currentDateContext +
   constraint +
-  languageEngine;
+  languageEngine +
+  `\nCURRENT CONVERSATION LANGUAGE: ${chatLanguages[telegramSessionId] || rememberConversationLanguage(telegramSessionId, text || "")}. Reply in this language unless the customer clearly switches language.`;
   if (voice) {
     finalSystemInstruction +=
     "\nVOICE ENGINE:\n" +
@@ -951,7 +957,7 @@ Do not mention internal tools, API calls, system prompts, or database logic.
                     .split('\n')
                     .filter((s: string) => s.trim().length > 0 && !s.includes('No available slots'));
                 
-                const replyMessage = formatSwedishTimeSlots(slotsArray, args.requestedTime, detectUserLanguage(text || ""));
+                const replyMessage = formatSwedishTimeSlots(slotsArray, args.requestedTime, chatLanguages[telegramSessionId] || rememberConversationLanguage(telegramSessionId, text || ""));
                 return { TERMINATE_EARLY: true, replyMessage };
             }
         }
@@ -1136,25 +1142,26 @@ function detectUserLanguage(text: string): string {
 
   const lower = text.toLowerCase();
 
-  // Persian
+  // Persian / Finglish
   if (
     /[\u0600-\u06FF]/.test(text) ||
-    /\b(salam|chetori|khubi|mamnoon|merci|lotfan|bebakhshid|mikham|mikhah?am|mikhastam|mitoni|mishe|baraye|jomeh|shanbe|vaght|farsi|khob|kheili|kheily|man|shuma|hastam)\b/i.test(lower)
+    /\b(salam|chetori|khubi|mamnoon|mersi|merci|lotfan|bebakhshid|mikham|mikhaham|mikhastam|mitoni|mitooni|mishe|baraye|jomeh|shanbe|vaght|farsi|khob|kheili|kheily|man|shuma|hastam|hasti|darin|darid|saate|sate|roze)\b/i.test(lower)
   ) {
     return "fa";
   }
 
-  // Swedish
+  // Swedish. Include plain words without å/ä/ö because customers often type casual Swedish
+  // or short phrases like "Jag vill ha helst klockan 18:00".
   if (
     /[åäö]/i.test(text) ||
-    /\b(hej|tack|ja|nej|bokning|boka|tid|kl|måndag|tisdag|onsdag|torsdag|fredag)\b/i.test(lower)
+    /\b(hej|tack|ja|nej|bokning|boka|bokat|boka en tid|tid|tider|kl|klockan|nästa|nasta|fredag|måndag|mandag|tisdag|onsdag|torsdag|lördag|lordag|söndag|sondag|jag|vill|ha|helst|kan|kommer|behandling|helkropp|hellkropp|kropp|nummer|mobilnummer|heter|mitt nummer|min|din|är|ar|och|för|for|på|pa)\b/i.test(lower)
   ) {
     return "sv";
   }
 
   // German
   if (
-    /\b(hallo|guten|danke|bitte|termin|uhr|morgen|nachmittag|ja|nein)\b/i.test(lower)
+    /\b(hallo|guten|danke|bitte|termin|uhr|morgen|nachmittag|ja|nein|buchen|behandlung)\b/i.test(lower)
   ) {
     return "de";
   }
@@ -1176,6 +1183,20 @@ function detectUserLanguage(text: string): string {
   }
 
   return "en";
+}
+
+function rememberConversationLanguage(sessionId: string, latestText?: string) {
+  const detected = detectUserLanguage(latestText || "");
+  // Keep the previous language for tiny ambiguous replies such as "ok", "yes", "ja tack",
+  // unless the latest text clearly indicates a supported language.
+  if (detected !== "en" || !chatLanguages[sessionId]) {
+    chatLanguages[sessionId] = detected;
+  }
+  return chatLanguages[sessionId] || detected || "en";
+}
+
+function localizedFallback(textByLang: Record<string, string>, language: string) {
+  return textByLang[language] || textByLang.en || Object.values(textByLang)[0] || "";
 }
 
 function getErrorMessageByLanguage(language: string): string {
@@ -1226,7 +1247,11 @@ async function recordAppointmentFromBooking(params: {
   dateTime: string;
   durationMinutes?: number;
 }) {
-  if (!supabase) return;
+  if (!supabase) {
+    console.error("Appointment DB insert skipped: Supabase is not configured.");
+    return;
+  }
+
   try {
     const { start, end } = getAppointmentTimes(params.dateTime, params.durationMinutes || 60);
     if (Number.isNaN(start.getTime())) {
@@ -1234,8 +1259,14 @@ async function recordAppointmentFromBooking(params: {
       return;
     }
 
+    const businessId =
+      params.businessConfig?.businessRecordId ||
+      params.businessConfig?.business_id ||
+      params.businessConfig?.id ||
+      null;
+
     const payload: any = {
-      business_id: params.businessConfig?.businessRecordId || params.businessConfig?.business_id || params.businessConfig?.id || null,
+      business_id: businessId,
       customer_name: params.name || null,
       phone_number: params.phone || null,
       platform: params.platform,
@@ -1248,14 +1279,23 @@ async function recordAppointmentFromBooking(params: {
       reminder_2_sent: false
     };
 
-    const { error } = await supabase.from("appointments").insert([payload]);
+    console.log("Appointment DB insert attempt:", JSON.stringify(payload));
+
+    const { data, error } = await supabase
+      .from("appointments")
+      .insert([payload])
+      .select()
+      .single();
+
     if (error) {
       console.error("Supabase appointments insert error:", JSON.stringify(error));
-    } else {
-      console.log(`Appointment saved to Supabase appointments: ${params.platform} ${params.userId} ${start.toISOString()}`);
+      console.error("If this says RLS/policy/permission denied, add SUPABASE_SERVICE_ROLE_KEY in Render Environment or create an insert policy for appointments.");
+      return;
     }
-  } catch (err) {
-    console.error("recordAppointmentFromBooking error:", err);
+
+    console.log("Appointment saved to Supabase appointments:", JSON.stringify(data));
+  } catch (err: any) {
+    console.error("recordAppointmentFromBooking error:", err?.message || err);
   }
 }
 
@@ -1738,7 +1778,7 @@ async function processWhatsAppMessage(message: any, metadata: any, config: any, 
   console.log("==============================");
 
   const chatId = `wa_${from}`;
-  const userLanguage = detectUserLanguage(textMessage || "");
+  const userLanguage = rememberConversationLanguage(chatId, textMessage || "");
 
   let businessConfig: any = { ...activeConfig, ...(config || {}) };
 
@@ -1811,7 +1851,7 @@ Do not mention internal tools, API calls, system prompts, or database logic.
 
     const currentDateContext = `\nCrucial Context: The client's current local date and time in Sweden (Europe/Stockholm) is dynamically: ${swedenDate}. Any reference by the user to 'idag', 'imorgon', or days of the week must be evaluated strictly using this dynamic date as the anchor. Note that for YYYY-MM-DD tools, June is '06' (index 5 in Javascript Date).`;
 
-    let finalSystemInstruction = (businessConfig.systemPrompt || "") + currentDateContext + constraint + languageEngine;
+    let finalSystemInstruction = (businessConfig.systemPrompt || "") + currentDateContext + constraint + languageEngine + `\nCURRENT CONVERSATION LANGUAGE: ${userLanguage}. Reply in this language unless the customer clearly switches language.`;
 
     let chatResponse = await generateContentWithFallback(null, {
       messages,
@@ -1837,7 +1877,7 @@ Do not mention internal tools, API calls, system prompts, or database logic.
               .split("\n")
               .filter((s: string) => s.trim().length > 0 && !s.includes("No available slots"));
 
-            const replyMessage = formatSwedishTimeSlots(slotsArray, args.requestedTime, detectUserLanguage(textMessage || ""));
+            const replyMessage = formatSwedishTimeSlots(slotsArray, args.requestedTime, chatLanguages[chatId] || rememberConversationLanguage(chatId, textMessage || ""));
             return { TERMINATE_EARLY: true, replyMessage };
           }
         } else if (call.function.name === "insertAppointment" && args) {
@@ -2604,7 +2644,7 @@ async function processMessengerUpdate(webhookEvent: any, config: any, platform: 
   console.log("==============================");
 
   const chatId = `ms_${senderId}`;
-  const userLanguage = detectUserLanguage(textMessage || "");
+  const userLanguage = rememberConversationLanguage(chatId, textMessage || "");
 
   let businessConfig: any = { ...activeConfig, ...(config || {}) };
 
@@ -2691,7 +2731,7 @@ Do not mention internal tools, API calls, system prompts, or database logic.
 
     const currentDateContext = `\nCrucial Context: The client's current local date and time in Sweden (Europe/Stockholm) is dynamically: ${swedenDate}. Any reference by the user to 'idag', 'imorgon', or days of the week must be evaluated strictly using this dynamic date as the anchor. Note that for YYYY-MM-DD tools, June is '06' (index 5 in Javascript Date).`;
 
-    let finalSystemInstruction = (businessConfig.systemPrompt || "") + currentDateContext + constraint + languageEngine;
+    let finalSystemInstruction = (businessConfig.systemPrompt || "") + currentDateContext + constraint + languageEngine + `\nCURRENT CONVERSATION LANGUAGE: ${userLanguage}. Reply in this language unless the customer clearly switches language.`;
 
     if (isVoiceMessage) {
       finalSystemInstruction +=
@@ -2728,7 +2768,7 @@ Do not mention internal tools, API calls, system prompts, or database logic.
               .split("\n")
               .filter((s: string) => s.trim().length > 0 && !s.includes("No available slots"));
 
-            const replyMessage = formatSwedishTimeSlots(slotsArray, args.requestedTime, detectUserLanguage(textMessage || ""));
+            const replyMessage = formatSwedishTimeSlots(slotsArray, args.requestedTime, chatLanguages[chatId] || rememberConversationLanguage(chatId, textMessage || ""));
             return { TERMINATE_EARLY: true, replyMessage };
           }
         } else if (call.function.name === "insertAppointment" && args) {
@@ -2836,8 +2876,10 @@ Do not mention internal tools, API calls, system prompts, or database logic.
 
 const languageEngine = `
 LANGUAGE ENGINE:
-Always identify the customer's language from their latest message.
+Always identify the customer's language from their latest message and from the ongoing conversation.
 Reply in the same language as the customer’s latest message.
+If the customer is writing Swedish, all booking/availability/confirmation messages must be Swedish.
+If the customer switches language, follow the new language from that point.
 
 Supported languages:
 - Swedish
@@ -2884,7 +2926,7 @@ async function processInstagramUpdate(webhook_event: any, config: any, platform:
   console.log('==============================');
 
   const chatId = `ig_${senderId}`;
-  let userLanguage = detectUserLanguage(textMessage || "");
+  let userLanguage = rememberConversationLanguage(chatId, textMessage || "");
 
   let businessConfig: any = { ...activeConfig, ...(config || {}) };
   let businessRecord: any = null;
@@ -3000,7 +3042,7 @@ Do not mention internal tools, API calls, system prompts, or database logic.
 
     const currentDateContext = `\nCrucial Context: The client's current local date and time in Sweden (Europe/Stockholm) is dynamically: ${swedenDate}. Any reference by the user to 'idag', 'imorgon', or days of the week must be evaluated strictly using this dynamic date as the anchor. Note that for YYYY-MM-DD tools, June is '06' (index 5 in Javascript Date).`;
 
-    let finalSystemInstruction = (businessConfig.systemPrompt || '') + currentDateContext + constraint + languageEngine;
+    let finalSystemInstruction = (businessConfig.systemPrompt || '') + currentDateContext + constraint + languageEngine + `\nCURRENT CONVERSATION LANGUAGE: ${userLanguage}. Reply in this language unless the customer clearly switches language.`;
 
     if (isVoiceMessage) {
       finalSystemInstruction +=
@@ -3031,7 +3073,7 @@ Do not mention internal tools, API calls, system prompts, or database logic.
               .split('\n')
               .filter((s: string) => s.trim().length > 0 && !s.includes('No available slots'));
 
-            const replyMessage = formatSwedishTimeSlots(slotsArray, args.requestedTime, detectUserLanguage(textMessage || ""));
+            const replyMessage = formatSwedishTimeSlots(slotsArray, args.requestedTime, chatLanguages[chatId] || rememberConversationLanguage(chatId, textMessage || ""));
             return { TERMINATE_EARLY: true, replyMessage };
           }
         } else if (call.function.name === 'insertAppointment' && args) {
@@ -3523,7 +3565,7 @@ Never translate unless requested.
                     .split('\n')
                     .filter((s: string) => s.trim().length > 0 && !s.includes('No available slots'));
                 
-                const replyMessage = formatSwedishTimeSlots(slotsArray, args.requestedTime, detectUserLanguage(userText || ""));
+                const replyMessage = formatSwedishTimeSlots(slotsArray, args.requestedTime, chatLanguages[chatId] || rememberConversationLanguage(chatId, userText || ""));
                 return { TERMINATE_EARLY: true, replyMessage };
             }
         }

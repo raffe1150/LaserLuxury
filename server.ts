@@ -332,6 +332,15 @@ function getDailySlots(startDateStr: string, endDateStr: string, events: any[], 
   const slots: string[] = [];
   const normalizedRequestedTime = normalizeRequestedTime(requestedTime || "");
   const endString = endDateStr || startDateStr;
+
+  // ClinicPilot availability window.
+  // Previous version used 18:00 as hard closing time, so a real free request like
+  // Friday 18:00 was rejected if the treatment duration ended after 18:00.
+  // We allow appointments to start at 18:00 and finish later, as long as they fit
+  // before BUSINESS_CLOSE_MINUTES. Adjust these two constants later from Dashboard.
+  const BUSINESS_OPEN_MINUTES = 10 * 60;
+  const BUSINESS_CLOSE_MINUTES = 20 * 60;
+
   const formatter = new Intl.DateTimeFormat('en-US', { timeZone: 'Europe/Stockholm', hour: '2-digit', minute: '2-digit', hour12: false });
   const dayFormatter = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Stockholm', weekday: 'long' });
 
@@ -359,21 +368,21 @@ function getDailySlots(startDateStr: string, endDateStr: string, events: any[], 
       if (exactOnly && normalizedRequestedTime) {
         const [h, min] = normalizedRequestedTime.split(':').map(Number);
         const requested = makeSlot(dStr, h, min);
-        const endHour = h + Math.floor((min + durationMinutes) / 60);
-        const endMinute = (min + durationMinutes) % 60;
-        const endsWithinBusinessHours = endHour < 18 || (endHour === 18 && endMinute === 0);
-        if (h >= 10 && endsWithinBusinessHours && isSlotFree(requested.slotD.getTime(), durationMinutes, events)) {
+        const requestedStartTotal = h * 60 + min;
+        const requestedEndTotal = requestedStartTotal + durationMinutes;
+        const endsWithinBusinessHours = requestedStartTotal >= BUSINESS_OPEN_MINUTES && requestedEndTotal <= BUSINESS_CLOSE_MINUTES;
+        if (endsWithinBusinessHours && isSlotFree(requested.slotD.getTime(), durationMinutes, events)) {
           slots.push(requested.label);
         }
         continue;
       }
 
       // Alternative slots every 15 minutes, not only whole hours.
-      for (let totalMin = 10 * 60; totalMin <= 17 * 60 + 45; totalMin += 15) {
+      for (let totalMin = BUSINESS_OPEN_MINUTES; totalMin <= BUSINESS_CLOSE_MINUTES - 15; totalMin += 15) {
         const h = Math.floor(totalMin / 60);
         const min = totalMin % 60;
         const endTotal = totalMin + durationMinutes;
-        if (endTotal > 18 * 60) continue;
+        if (endTotal > BUSINESS_CLOSE_MINUTES) continue;
         const slot = makeSlot(dStr, h, min);
         if (isSlotFree(slot.slotD.getTime(), durationMinutes, events)) slots.push(slot.label);
         if (slots.length >= 3) return;

@@ -790,6 +790,7 @@ const pendingBookings: Record<string, any> = {};
 function inferServiceFromText(text?: string): string {
   const raw = String(text || "").toLowerCase();
   if (raw.includes("bikini")) return "Bikinilinjebehandling";
+  if (raw.includes("helkropp") || raw.includes("hel kropp") || raw.includes("full body") || raw.includes("hellkropp")) return "Helkropp laserbehandling";
   if (raw.includes("laser")) return "Laserbehandling";
   if (raw.includes("ansikte")) return "Ansiktsbehandling";
   if (raw.includes("ben")) return "Benbehandling";
@@ -812,8 +813,11 @@ function extractNameAndPhone(text?: string): { name: string; phone: string } | n
   const phone = phoneMatch[0].replace(/[^\d+]/g, "");
   if (phone.replace(/\D/g, "").length < 7) return null;
 
-  let namePart = raw
-    .replace(phoneMatch[0], " ")
+  // Prefer the text before the phone number for name extraction.
+  let beforePhone = raw.slice(0, phoneMatch.index).trim();
+
+  // Swedish / English / Persian written with Latin letters.
+  let namePart = beforePhone
     .replace(/mitt\s+namn\s+är/ig, " ")
     .replace(/jag\s+heter/ig, " ")
     .replace(/mitt\s+nummer\s+är/ig, " ")
@@ -823,17 +827,139 @@ function extractNameAndPhone(text?: string): { name: string; phone: string } | n
     .replace(/name\s+is/ig, " ")
     .replace(/my\s+name\s+is/ig, " ")
     .replace(/phone\s+(?:number\s+)?is/ig, " ")
-    .replace(/och/ig, " ")
-    .replace(/and/ig, " ")
+    .replace(/\besm(?:am)?\b/ig, " ")
+    .replace(/\bnaam(?:am)?\b/ig, " ")
+    .replace(/\bnam(?:am)?\b/ig, " ")
+    .replace(/\bman\b/ig, " ")
+    .replace(/\bhast(?:am)?\b/ig, " ")
+    .replace(/\btelefon(?:am|an)?\b/ig, " ")
+    .replace(/\bshomare(?:am)?\b/ig, " ")
+    .replace(/\bmobile(?:am)?\b/ig, " ")
+    .replace(/\boch\b/ig, " ")
+    .replace(/\band\b/ig, " ")
+    .replace(/\bva\b/ig, " ")
     .replace(/[,:;.]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
 
-  const words = namePart.split(" ").filter(w => /^[A-Za-zÅÄÖåäöÉéÜüÖöÄä\s'-]+$/.test(w));
-  const name = words.slice(0, 3).join(" ").trim();
+  const stop = new Set(["mitt", "namn", "är", "nummer", "telefon", "mobil", "hast", "man", "esmam", "esme", "esmem", "namam", "telephone", "phone"]);
+  const words = namePart
+    .split(" ")
+    .map(w => w.trim())
+    .filter(Boolean)
+    .filter(w => /^[A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]+$/.test(w))
+    .filter(w => !stop.has(w.toLowerCase()));
 
+  const name = words.slice(-2).join(" ").trim();
   if (!name) return null;
   return { name, phone };
+}
+
+async function savePendingBooking(chatId: string, platform: string, pending: any) {
+  pendingBookings[chatId] = pending;
+  if (!supabase) return;
+  try {
+    const minimal = {
+      type: "pending_booking",
+      platform,
+      service: pending.service,
+      dateTime: pending.dateTime,
+      durationMinutes: pending.durationMinutes,
+      status: pending.status,
+      business_id: getBusinessIdFromConfig(pending.businessConfig)
+    };
+    const updateData: any = {
+      user_id: chatId,
+      platform,
+      ai_summary: JSON.stringify(minimal)
+    };
+    const { data: existing, error: selectError } = await supabase
+      .from("appointments_leads")
+      .select("user_id")
+      .eq("user_id", chatId)
+      .maybeSingle();
+
+    if (selectError) console.error("Pending booking lead lookup error:", JSON.stringify(selectError));
+
+    if (existing?.user_id) {
+      const { error } = await supabase.from("appointments_leads").update(updateData).eq("user_id", chatId);
+      if (error) console.error("Pending booking lead update error:", JSON.stringify(error));
+    } else {
+      const { error } = await supabase.from("appointments_leads").insert([updateData]);
+      if (error) console.error("Pending booking lead insert error:", JSON.stringify(error));
+    }
+  } catch (err) {
+    console.error("savePendingBooking crashed:", err);
+  }
+}
+
+async function loadPendingBooking(chatId: string, platform: string, businessConfig: any) {
+  if (pendingBookings[chatId]) return pendingBookings[chatId];
+  if (!supabase) return null;
+  try {
+    const { data, error } = await supabase
+      .from("appointments_leads")
+      .select("ai_summary")
+      .eq("user_id", chatId)
+      .maybeSingle();
+    if (error) {
+      console.error("Pending booking load error:", JSON.stringify(error));
+      return null;
+    }
+    if (!data?.ai_summary) return null;
+    const parsed = JSON.parse(data.ai_summary);
+    if (parsed?.type !== "pending_booking") return null;
+    if (parsed?.platform && parsed.platform !== platform) return null;
+    const pending = {
+      businessConfig,
+      platform,
+      service: parsed.service || "Bokning",
+      dateTime: parsed.dateTime,
+      durationMinutes: Number(parsed.durationMinutes || 60),
+      status: parsed.status || "awaiting_contact"
+    };
+    if (!pending.dateTime) return null;
+    pendingBookings[chatId] = pending;
+    console.log(`[DeterministicBooking] Pending booking restored from DB. chatId=${chatId}, dateTime=${pending.dateTime}`);
+    return pending;
+  } catch (err) {
+    console.error("loadPendingBooking crashed:", err);
+    return null;
+  }
+}
+
+async function clearPendingBooking(chatId: string) {
+  delete pendingBookings[chatId];
+  if (!supabase) return;
+  try {
+    const { error } = await supabase
+      .from("appointments_leads")
+      .update({ ai_summary: null })
+      .eq("user_id", chatId);
+    if (error) console.error("Pending booking clear error:", JSON.stringify(error));
+  } catch (err) {
+    console.error("clearPendingBooking crashed:", err);
+  }
+}
+
+async function notifyAdminAboutBooking(businessConfig: any, platformLabel: string, businessName: string, name: string, phone: string, dateTime: string) {
+  const notifyToken = businessConfig.telegramToken || activeConfig?.telegramToken || process.env.TELEGRAM_TOKEN || process.env.TELEGRAM_BOT_TOKEN;
+  const notifyAdmin = businessConfig.adminTelegramChatId || activeConfig?.adminTelegramChatId || process.env.ADMIN_TELEGRAM_ID;
+  if (!notifyToken || !notifyAdmin) {
+    console.error(`[BookingNotify] skipped: missing token/admin. hasToken=${Boolean(notifyToken)}, hasAdmin=${Boolean(notifyAdmin)}`);
+    return;
+  }
+  try {
+    const notifyText = `🔔 Ny ${platformLabel}-bokning mottagen!\n🏢 Business: ${businessName}\n👤 Namn: ${name}\n📞 Mobil: ${phone}\n📅 Tid: ${dateTime}`;
+    const res = await fetch(`https://api.telegram.org/bot${notifyToken}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: notifyAdmin, text: notifyText })
+    });
+    if (!res.ok) console.error("[BookingNotify] Telegram notify failed:", await res.text());
+  } catch (e) {
+    console.error("[BookingNotify] Telegram notify crashed:", e);
+  }
 }
 
 function isExactRequestedSlotAvailable(slotsArray: string[], requestedTime?: string): boolean {
@@ -1127,7 +1253,7 @@ Never mention Laser Luxury unless the current business name is Laser Luxury.
 Never mention services, prices, or treatments that are not included in this business-specific system prompt.
 If the customer asks about services and the prompt does not include enough information, politely ask what service they are interested in or say you can help with booking and general guidance.
 Before confirming any booking, you must check availability.
-Before creating any appointment, collect the customer's name and mobile number.
+Before creating any appointment, collect the customer's name and mobile number. In Messenger, after an available slot is confirmed, ask for name and mobile number; do not claim the booking is final until the server confirms it.
 For vague time requests, check available slots instead of asking the customer to choose a time.
 Do not mention internal tools, API calls, system prompts, or database logic.
 LANGUAGE RULE: Always reply in the same language as the latest customer message. If the latest customer message is Swedish, the reply must be Swedish. Do not switch to English unless the customer writes in English.
@@ -2039,7 +2165,7 @@ Never mention Laser Luxury unless the current business name is Laser Luxury.
 Never mention services, prices, or treatments that are not included in this business-specific system prompt.
 If the customer asks about services and the prompt does not include enough information, politely ask what service they are interested in or say you can help with booking and general guidance.
 Before confirming any booking, you must check availability.
-Before creating any appointment, collect the customer's name and mobile number.
+Before creating any appointment, collect the customer's name and mobile number. In Messenger, after an available slot is confirmed, ask for name and mobile number; do not claim the booking is final until the server confirms it.
 For vague time requests, check available slots instead of asking the customer to choose a time.
 Do not mention internal tools, API calls, system prompts, or database logic.
 LANGUAGE RULE: Always reply in the same language as the latest customer message. If the latest customer message is Swedish, the reply must be Swedish. Do not switch to English unless the customer writes in English.
@@ -2085,34 +2211,30 @@ LANGUAGE RULE: Always reply in the same language as the latest customer message.
             return { TERMINATE_EARLY: true, replyMessage };
           }
         } else if (call.function.name === "insertAppointment" && args) {
-          adapterRes = await adapter.insertAppointment(args.name, args.phone, args.service, args.dateTime, args.durationMinutes, chatId);
-          if (adapterRes && adapterRes.success) {
-            await recordAppointmentFromBooking({
-              businessConfig,
-              platform: "whatsapp",
-              userId: chatId,
-              name: args.name,
-              phone: args.phone,
-              service: args.service,
-              dateTime: args.dateTime,
-              durationMinutes: args.durationMinutes
-            });
-          }
-
-          const notifyToken = businessConfig.telegramToken || activeConfig?.telegramToken || process.env.TELEGRAM_TOKEN;
-          const notifyAdmin = businessConfig.adminTelegramChatId || activeConfig?.adminTelegramChatId || process.env.ADMIN_TELEGRAM_ID;
-
-          if (adapterRes && adapterRes.success && notifyToken && notifyAdmin) {
-            try {
-              const notifyText = `🔔 Ny WhatsApp-bokning mottagen!\n🏢 Business: ${businessName}\n👤 Namn: ${args.name}\n📞 Mobil: ${args.phone}\n📅 Tid: ${args.dateTime}`;
-              await fetch(`https://api.telegram.org/bot${notifyToken}/sendMessage`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ chat_id: notifyAdmin, text: notifyText })
+          // Messenger bookings are finalized by deterministic server logic only.
+          // Gemini may choose the wrong name/service/time, so we route this safely.
+          const restoredPending = await loadPendingBooking(chatId, "messenger", businessConfig);
+          const contactFromMessage = extractNameAndPhone(textMessage || "");
+          if (restoredPending && contactFromMessage) {
+            console.log(`[DeterministicBooking] Gemini tried insertAppointment, routing to deterministic booking. chatId=${chatId}`);
+            adapterRes = await adapter.insertAppointment(contactFromMessage.name, contactFromMessage.phone, restoredPending.service, restoredPending.dateTime, restoredPending.durationMinutes, chatId);
+            if (adapterRes && adapterRes.success) {
+              await recordAppointmentFromBooking({
+                businessConfig,
+                platform: "messenger",
+                userId: chatId,
+                name: contactFromMessage.name,
+                phone: contactFromMessage.phone,
+                service: restoredPending.service,
+                dateTime: restoredPending.dateTime,
+                durationMinutes: restoredPending.durationMinutes
               });
-            } catch (e) {
-              console.error("Admin notify error:", e);
+              await clearPendingBooking(chatId);
+              await notifyAdminAboutBooking(businessConfig, "Messenger", businessName, contactFromMessage.name, contactFromMessage.phone, restoredPending.dateTime);
             }
+          } else {
+            console.log(`[DeterministicBooking] Blocked Messenger Gemini insertAppointment. No reliable pending/contact found. args=${JSON.stringify(args)}`);
+            adapterRes = { success: false, message: "Booking was not finalized. Ask the customer for name and mobile number after confirming the exact available time." };
           }
         } else if (call.function.name === "logSystemAnalysis" && args) {
           adapterRes = await handleSystemAnalysisLog(chatId, args);
@@ -2883,12 +3005,12 @@ async function processMessengerUpdate(webhookEvent: any, config: any, platform: 
   }
 
   try {
-    const pending = pendingBookings[chatId];
+    let pending = await loadPendingBooking(chatId, "messenger", businessConfig);
     const detectedLang = detectUserLanguage(textMessage || "");
 
     if (pending && textMessage && isAffirmativeBookingText(textMessage) && pending.status === "awaiting_confirmation") {
       pending.status = "awaiting_contact";
-      pendingBookings[chatId] = pending;
+      await savePendingBooking(chatId, "messenger", pending);
       const askText = formatAskContactMessage(detectedLang);
       console.log(`[DeterministicBooking] Messenger confirmation received. Awaiting contact. chatId=${chatId}`);
       await sendMessengerMessage(senderId, askText, businessConfig);
@@ -2913,7 +3035,8 @@ async function processMessengerUpdate(webhookEvent: any, config: any, platform: 
           dateTime: pending.dateTime,
           durationMinutes: pending.durationMinutes
         });
-        delete pendingBookings[chatId];
+        await clearPendingBooking(chatId);
+        await notifyAdminAboutBooking(businessConfig, "Messenger", businessConfig.businessName || businessConfig.business_name || "business", contact.name, contact.phone, pending.dateTime);
 
         const bookedText = formatBookingSavedMessage(detectedLang, contact.name, pending.service, pending.dateTime);
         await sendMessengerMessage(senderId, bookedText, businessConfig);
@@ -2971,7 +3094,7 @@ Never mention Laser Luxury unless the current business name is Laser Luxury.
 Never mention services, prices, or treatments that are not included in this business-specific system prompt.
 If the customer asks about services and the prompt does not include enough information, politely ask what service they are interested in or say you can help with booking and general guidance.
 Before confirming any booking, you must check availability.
-Before creating any appointment, collect the customer's name and mobile number.
+Before creating any appointment, collect the customer's name and mobile number. In Messenger, after an available slot is confirmed, ask for name and mobile number; do not claim the booking is final until the server confirms it.
 For vague time requests, check available slots instead of asking the customer to choose a time.
 Do not mention internal tools, API calls, system prompts, or database logic.
 LANGUAGE RULE: Always reply in the same language as the latest customer message. If the latest customer message is Swedish, the reply must be Swedish. Do not switch to English unless the customer writes in English.
@@ -3028,7 +3151,7 @@ LANGUAGE RULE: Always reply in the same language as the latest customer message.
             const requestedTime = args.requestedTime || inferRequestedTimeFromText(textMessage || "");
             const exactIso = getExactSlotIso(slotsArray, requestedTime);
             if (requestedTime && exactIso && isExactRequestedSlotAvailable(slotsArray, requestedTime)) {
-              pendingBookings[chatId] = {
+              const newPending = {
                 businessConfig,
                 platform: "messenger",
                 service: args.service || inferServiceFromText(textMessage || ""),
@@ -3036,7 +3159,8 @@ LANGUAGE RULE: Always reply in the same language as the latest customer message.
                 durationMinutes: Number(args.durationMinutes || 60),
                 status: "awaiting_confirmation"
               };
-              console.log(`[DeterministicBooking] Pending Messenger booking saved: ${JSON.stringify({ chatId, service: pendingBookings[chatId].service, dateTime: exactIso, durationMinutes: pendingBookings[chatId].durationMinutes, business_id: getBusinessIdFromConfig(businessConfig) })}`);
+              await savePendingBooking(chatId, "messenger", newPending);
+              console.log(`[DeterministicBooking] Pending Messenger booking saved: ${JSON.stringify({ chatId, service: newPending.service, dateTime: exactIso, durationMinutes: newPending.durationMinutes, business_id: getBusinessIdFromConfig(businessConfig) })}`);
             }
 
             const replyMessage = formatSwedishTimeSlots(slotsArray, requestedTime, detectUserLanguage(textMessage || ""));
@@ -3296,7 +3420,7 @@ Never mention Laser Luxury unless the current business name is Laser Luxury.
 Never mention services, prices, or treatments that are not included in this business-specific system prompt.
 If the customer asks about services and the prompt does not include enough information, politely ask what service they are interested in or say you can help with booking and general guidance.
 Before confirming any booking, you must check availability.
-Before creating any appointment, collect the customer's name and mobile number.
+Before creating any appointment, collect the customer's name and mobile number. In Messenger, after an available slot is confirmed, ask for name and mobile number; do not claim the booking is final until the server confirms it.
 For vague time requests, check available slots instead of asking the customer to choose a time.
 Do not mention internal tools, API calls, system prompts, or database logic.
 LANGUAGE RULE: Always reply in the same language as the latest customer message. If the latest customer message is Swedish, the reply must be Swedish. Do not switch to English unless the customer writes in English.
@@ -3789,7 +3913,7 @@ Never mention Laser Luxury unless the current business name is Laser Luxury.
 Never mention services, prices, or treatments that are not included in this business-specific system prompt.
 If the customer asks about services and the prompt does not include enough information, politely ask what service they are interested in or say you can help with booking and general guidance.
 Before confirming any booking, you must check availability.
-Before creating any appointment, collect the customer's name and mobile number.
+Before creating any appointment, collect the customer's name and mobile number. In Messenger, after an available slot is confirmed, ask for name and mobile number; do not claim the booking is final until the server confirms it.
 For vague time requests, check available slots instead of asking the customer to choose a time.
 Do not mention internal tools, API calls, system prompts, or database logic.
 LANGUAGE RULE: Always reply in the same language as the latest customer message. If the latest customer message is Swedish, the reply must be Swedish. Do not switch to English unless the customer writes in English.

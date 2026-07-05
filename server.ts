@@ -204,124 +204,187 @@ async function postProcessMessage(chatId: string, platform: string, userMessage:
 
 // Unified Calendar Adapter Interface
 interface CalendarAdapter {
-  checkSlots(startDate: string, endDate?: string, durationMinutes?: number): Promise<any> | any;
+  checkSlots(startDate: string, endDate?: string, durationMinutes?: number, requestedTime?: string): Promise<any> | any;
   insertAppointment(name: string, phone: string, service: string, dateTime: string, durationMinutes?: number, chatId?: string): Promise<any> | any;
   getEvents(startDate: string, endDate: string): Promise<any> | any;
 }
 
-function formatSwedishTimeSlots(slotsArray: string[], specificTime?: string): string {
-    const dayMap = new Map<string, string[]>();
-    let foundSpecificSlot = null;
-
-    slotsArray.forEach(slot => {
-        const match = slot.match(/\(ISO:\s(.*?)\)/);
-        if (match && match[1]) {
-            const iso = match[1];
-            const d = new Date(iso);
-            const months = ["januari", "februari", "mars", "april", "maj", "juni", "juli", "augusti", "september", "oktober", "november", "december"];
-            const days = ["söndag", "måndag", "tisdag", "onsdag", "torsdag", "fredag", "lördag"];
-            const dayName = days[d.getDay()];
-            const dateStr = `${dayName} den ${d.getDate()} ${months[d.getMonth()]}`;
-            const timeStr = d.toLocaleTimeString('sv-SE', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Stockholm' });
-            
-            if (specificTime && timeStr.includes(specificTime)) {
-                foundSpecificSlot = { dateStr, timeStr };
-            }
-
-            if (!dayMap.has(dateStr)) dayMap.set(dateStr, []);
-            dayMap.get(dateStr)!.push(timeStr);
-        } else {
-             const basicSlot = slot.split(' (ISO')[0];
-             const dateStr = "Vissa dagar";
-             if (!dayMap.has(dateStr)) dayMap.set(dateStr, []);
-             dayMap.get(dateStr)!.push(basicSlot);
-        }
-    });
-
-    if (specificTime && foundSpecificSlot) {
-        return `Ja, ${(foundSpecificSlot as any).dateStr} kl ${(foundSpecificSlot as any).timeStr} är ledig! Ska jag boka den åt dig?`;
-    }
-
-    let sentences = [];
-    for (const [dateStr, times] of dayMap.entries()) {
-        if (times.length === 1) {
-            sentences.push(`${dateStr} kl ${times[0]}`);
-        } else if (times.length === 2) {
-            sentences.push(`${dateStr} kl ${times[0]} och ${times[1]}`);
-        } else {
-            const last = times.pop();
-            sentences.push(`${dateStr} kl ${times.join(', ')} och ${last}`);
-        }
-    }
-
-    if (specificTime && !foundSpecificSlot) {
-        if (sentences.length === 0) return `Tyvärr är kl ${specificTime} redan bokat, och jag hittade inga andra lediga tider för den perioden. Har du något annat datum i åtanke? 😊`;
-        return `Tyvärr är kl ${specificTime} redan bokat. Men jag hittade lediga tider ${sentences.join(', samt ')}. Vilken av dessa tider passar dig bäst? 😊`;
-    }
-
-    if (sentences.length === 0) return "Jag hittade tyvärr inga lediga tider för den perioden. Har du något annat datum i åtanke? 😊";
-    
-    return `Jag hittade lediga tider ${sentences.join(', samt ')}. Vilken av dessa tider passar dig bäst? 😊`;
+function normalizeRequestedTime(input?: string): string | null {
+  if (!input) return null;
+  const raw = String(input).trim().toLowerCase();
+  const match = raw.match(/(\d{1,2})\s*[\.:]?\s*(\d{2})?/);
+  if (!match) return null;
+  const hour = Number(match[1]);
+  const minute = match[2] ? Number(match[2]) : 0;
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
+  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
 }
 
-function getDailySlots(startDateStr: string, endDateStr: string, events: any[], durationMinutes: number = 60) {
-  const slots: string[] = [];
-  
-  // We parse the dates explicitly without assuming local timezone
-  const startParts = startDateStr.split('-');
-  const startD = new Date(Date.UTC(Number(startParts[0]), Number(startParts[1])-1, Number(startParts[2])));
-  
-  const endString = endDateStr || startDateStr;
-  const endParts = endString.split('-');
-  const endD = new Date(Date.UTC(Number(endParts[0]), Number(endParts[1])-1, Number(endParts[2])));
-  
-  const formatter = new Intl.DateTimeFormat('en-US', { timeZone: 'Europe/Stockholm', hour: 'numeric', minute: 'numeric', hour12: false });
-  const dayFormatter = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Stockholm', weekday: 'long' });
+function parseSlotIso(slot: string): string | null {
+  const match = slot.match(/\(ISO:\s(.*?)\)/);
+  return match?.[1] || null;
+}
 
-  for (let d = new Date(startD); d <= endD; d.setUTCDate(d.getUTCDate() + 1)) {
-    // Skip weekends (0=Sunday, 6=Saturday)
-    if (d.getUTCDay() === 0 || d.getUTCDay() === 6) continue;
-    
-    // Format YYYY-MM-DD
-    const y = d.getUTCFullYear();
-    const m = String(d.getUTCMonth() + 1).padStart(2, '0');
-    const day = String(d.getUTCDate()).padStart(2, '0');
-    const dStr = `${y}-${m}-${day}`;
-    
-    // Check from 10:00 to 18:00 (10 to 17 start times) per business hours
-    for (let i = 10; i <= 17; i++) {
-      const startHour = String(i).padStart(2, '0');
-      const isoString = `${dStr}T${startHour}:00:00+02:00`;
-      const slotD = new Date(isoString);
-      const requestedStartTime = slotD.getTime();
-      const requestedEndTime = requestedStartTime + durationMinutes * 60 * 1000;
-      
-      // Skip slots in the past
-      if (requestedStartTime < Date.now()) continue;
+function buildLocalizedSlotReply(slotsArray: string[], specificTime?: string, language: string = "sv"): string {
+  const normalizedSpecificTime = normalizeRequestedTime(specificTime || "") || undefined;
+  const dayMap = new Map<string, string[]>();
+  let foundSpecificSlot: any = null;
 
-      let isBooked = false;
-      for (const e of events) {
-        if (!e.start && !e.startTime) continue;
-        const startIso = e.start?.dateTime || e.start?.date || e.startTime;
-        const endIso = e.end?.dateTime || e.end?.date || e.endTime;
-        
-        const eventStartTime = new Date(startIso).getTime();
-        const eventEndTime = new Date(endIso).getTime() || (eventStartTime + 60*60*1000);
-        
-        if ((requestedStartTime < eventEndTime) && (requestedEndTime > eventStartTime)) {
-          isBooked = true;
-          break;
-        }
-      }
-      
-      if (!isBooked) {
-        let weekday = dayFormatter.format(slotD);
-        weekday = weekday.charAt(0).toUpperCase() + weekday.slice(1);
-        slots.push(`${weekday} kl ${formatter.format(slotD)} (ISO: ${isoString})`);
-      }
+  const labels: any = {
+    sv: {
+      months: ["januari", "februari", "mars", "april", "maj", "juni", "juli", "augusti", "september", "oktober", "november", "december"],
+      days: ["söndag", "måndag", "tisdag", "onsdag", "torsdag", "fredag", "lördag"],
+      yes: (d: string, t: string) => `Ja, ${d} kl ${t} är ledig! Ska jag boka den åt dig?`,
+      none: "Jag hittade tyvärr inga lediga tider för den perioden. Har du något annat datum i åtanke? 😊",
+      busyNone: (t: string) => `Tyvärr är kl ${t} redan bokat, och jag hittade inga andra lediga tider för den perioden. Har du något annat datum i åtanke? 😊`,
+      busyAlternatives: (t: string, slots: string) => `Tyvärr är kl ${t} inte ledig. Men jag hittade lediga tider ${slots}. Vilken passar dig bäst? 😊`,
+      found: (slots: string) => `Jag hittade lediga tider ${slots}. Vilken av dessa tider passar dig bäst? 😊`,
+      at: "kl", and: "och", also: "samt"
+    },
+    fa: {
+      months: ["ژانویه", "فوریه", "مارس", "آوریل", "مه", "ژوئن", "ژوئیه", "اوت", "سپتامبر", "اکتبر", "نوامبر", "دسامبر"],
+      days: ["یکشنبه", "دوشنبه", "سه‌شنبه", "چهارشنبه", "پنجشنبه", "جمعه", "شنبه"],
+      yes: (d: string, t: string) => `بله، ${d} ساعت ${t} خالی است. می‌خواهید برایتان رزرو کنم؟`,
+      none: "متأسفانه برای این بازه زمان خالی پیدا نکردم. تاریخ دیگری مدنظرتان هست؟ 😊",
+      busyNone: (t: string) => `متأسفانه ساعت ${t} پر است و زمان خالی دیگری پیدا نکردم. تاریخ دیگری مدنظرتان هست؟ 😊`,
+      busyAlternatives: (t: string, slots: string) => `متأسفانه ساعت ${t} خالی نیست. این زمان‌ها خالی هستند: ${slots}. کدام مناسب شماست؟ 😊`,
+      found: (slots: string) => `این زمان‌ها خالی هستند: ${slots}. کدام برای شما مناسب‌تر است؟ 😊`,
+      at: "ساعت", and: "و", also: "همچنین"
+    },
+    es: {
+      months: ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"],
+      days: ["domingo", "lunes", "martes", "miércoles", "jueves", "viernes", "sábado"],
+      yes: (d: string, t: string) => `Sí, ${d} a las ${t} está libre. ¿Quieres que lo reserve?`,
+      none: "Lo siento, no encontré horas libres en ese período. ¿Tienes otra fecha en mente? 😊",
+      busyNone: (t: string) => `Lo siento, las ${t} ya están ocupadas y no encontré otras horas libres. ¿Tienes otra fecha? 😊`,
+      busyAlternatives: (t: string, slots: string) => `Lo siento, las ${t} no están libres. Tengo estas horas: ${slots}. ¿Cuál te va mejor? 😊`,
+      found: (slots: string) => `Tengo estas horas libres: ${slots}. ¿Cuál te va mejor? 😊`,
+      at: "a las", and: "y", also: "también"
+    },
+    en: {
+      months: ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"],
+      days: ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"],
+      yes: (d: string, t: string) => `Yes, ${d} at ${t} is available. Would you like me to book it?`,
+      none: "Sorry, I couldn’t find any available times for that period. Do you have another date in mind? 😊",
+      busyNone: (t: string) => `Sorry, ${t} is already booked and I couldn’t find other available times. Do you have another date? 😊`,
+      busyAlternatives: (t: string, slots: string) => `Sorry, ${t} is not available. I found these times: ${slots}. Which one suits you best? 😊`,
+      found: (slots: string) => `I found these available times: ${slots}. Which one suits you best? 😊`,
+      at: "at", and: "and", also: "also"
+    }
+  };
+
+  const lang = labels[language] ? language : "en";
+  const l = labels[lang];
+
+  slotsArray.forEach(slot => {
+    const iso = parseSlotIso(slot);
+    if (iso) {
+      const d = new Date(iso);
+      const dateStr = `${l.days[d.getDay()]} ${d.getDate()} ${l.months[d.getMonth()]}`;
+      const timeStr = d.toLocaleTimeString('sv-SE', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Stockholm' });
+      if (normalizedSpecificTime && timeStr === normalizedSpecificTime) foundSpecificSlot = { dateStr, timeStr };
+      if (!dayMap.has(dateStr)) dayMap.set(dateStr, []);
+      dayMap.get(dateStr)!.push(timeStr);
+    }
+  });
+
+  if (normalizedSpecificTime && foundSpecificSlot) return l.yes(foundSpecificSlot.dateStr, foundSpecificSlot.timeStr);
+
+  const sentences: string[] = [];
+  for (const [dateStr, timesRaw] of dayMap.entries()) {
+    const times = [...timesRaw];
+    if (times.length === 1) sentences.push(`${dateStr} ${l.at} ${times[0]}`);
+    else if (times.length === 2) sentences.push(`${dateStr} ${l.at} ${times[0]} ${l.and} ${times[1]}`);
+    else {
+      const last = times.pop();
+      sentences.push(`${dateStr} ${l.at} ${times.join(', ')} ${l.and} ${last}`);
     }
   }
-  
+
+  const slotsText = sentences.join(`, ${l.also} `);
+  if (normalizedSpecificTime && !foundSpecificSlot) {
+    if (!slotsText) return l.busyNone(normalizedSpecificTime);
+    return l.busyAlternatives(normalizedSpecificTime, slotsText);
+  }
+  if (!slotsText) return l.none;
+  return l.found(slotsText);
+}
+
+function formatSwedishTimeSlots(slotsArray: string[], specificTime?: string, language: string = "sv"): string {
+  return buildLocalizedSlotReply(slotsArray, specificTime, language);
+}
+
+function isSlotFree(startMs: number, durationMinutes: number, events: any[]): boolean {
+  const endMs = startMs + durationMinutes * 60 * 1000;
+  if (startMs < Date.now()) return false;
+  for (const e of events) {
+    if (!e.start && !e.startTime) continue;
+    const startIso = e.start?.dateTime || e.start?.date || e.startTime;
+    const endIso = e.end?.dateTime || e.end?.date || e.endTime;
+    const eventStart = new Date(startIso).getTime();
+    const eventEnd = new Date(endIso).getTime() || (eventStart + 60 * 60 * 1000);
+    if ((startMs < eventEnd) && (endMs > eventStart)) return false;
+  }
+  return true;
+}
+
+function getDailySlots(startDateStr: string, endDateStr: string, events: any[], durationMinutes: number = 60, requestedTime?: string) {
+  const slots: string[] = [];
+  const normalizedRequestedTime = normalizeRequestedTime(requestedTime || "");
+  const endString = endDateStr || startDateStr;
+  const formatter = new Intl.DateTimeFormat('en-US', { timeZone: 'Europe/Stockholm', hour: '2-digit', minute: '2-digit', hour12: false });
+  const dayFormatter = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Stockholm', weekday: 'long' });
+
+  const makeSlot = (dStr: string, hour: number, minute: number) => {
+    const isoString = `${dStr}T${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:00+02:00`;
+    const slotD = new Date(isoString);
+    let weekday = dayFormatter.format(slotD);
+    weekday = weekday.charAt(0).toUpperCase() + weekday.slice(1);
+    return { isoString, slotD, label: `${weekday} kl ${formatter.format(slotD)} (ISO: ${isoString})` };
+  };
+
+  const collectRange = (exactOnly: boolean) => {
+    const startParts = startDateStr.split('-');
+    const startD = new Date(Date.UTC(Number(startParts[0]), Number(startParts[1]) - 1, Number(startParts[2])));
+    const endParts = endString.split('-');
+    const endD = new Date(Date.UTC(Number(endParts[0]), Number(endParts[1]) - 1, Number(endParts[2])));
+
+    for (let d = new Date(startD); d <= endD; d.setUTCDate(d.getUTCDate() + 1)) {
+      if (d.getUTCDay() === 0 || d.getUTCDay() === 6) continue;
+      const y = d.getUTCFullYear();
+      const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+      const day = String(d.getUTCDate()).padStart(2, '0');
+      const dStr = `${y}-${m}-${day}`;
+
+      if (exactOnly && normalizedRequestedTime) {
+        const [h, min] = normalizedRequestedTime.split(':').map(Number);
+        const requested = makeSlot(dStr, h, min);
+        const endHour = h + Math.floor((min + durationMinutes) / 60);
+        const endMinute = (min + durationMinutes) % 60;
+        const endsWithinBusinessHours = endHour < 18 || (endHour === 18 && endMinute === 0);
+        if (h >= 10 && endsWithinBusinessHours && isSlotFree(requested.slotD.getTime(), durationMinutes, events)) {
+          slots.push(requested.label);
+        }
+        continue;
+      }
+
+      // Alternative slots every 15 minutes, not only whole hours.
+      for (let totalMin = 10 * 60; totalMin <= 17 * 60 + 45; totalMin += 15) {
+        const h = Math.floor(totalMin / 60);
+        const min = totalMin % 60;
+        const endTotal = totalMin + durationMinutes;
+        if (endTotal > 18 * 60) continue;
+        const slot = makeSlot(dStr, h, min);
+        if (isSlotFree(slot.slotD.getTime(), durationMinutes, events)) slots.push(slot.label);
+        if (slots.length >= 3) return;
+      }
+    }
+  };
+
+  // First check the exact time the customer requested. Only if unavailable, offer alternatives.
+  if (normalizedRequestedTime) collectRange(true);
+  if (slots.length === 0) collectRange(false);
+
   const topSlots = slots.slice(0, 3);
   if (topSlots.length === 0) return "No available slots found for this period.";
   return topSlots.join("\n");
@@ -333,9 +396,9 @@ class MockCalendarAdapter implements CalendarAdapter {
     { id: '1', summary: 'Meeting with Bob', startTime: '2026-06-06T10:00:00Z', endTime: '2026-06-06T11:00:00Z' }
   ];
 
-  checkSlots(startDate: string, endDate?: string, durationMinutes?: number) {
+  checkSlots(startDate: string, endDate?: string, durationMinutes?: number, requestedTime?: string) {
     const events = this.events;
-    const slots = getDailySlots(startDate, endDate || startDate, events, durationMinutes);
+    const slots = getDailySlots(startDate, endDate || startDate, events, durationMinutes, requestedTime);
     return { available_slots_string: slots };
   }
 
@@ -366,7 +429,7 @@ class GenericCalendarAdapter implements CalendarAdapter {
       return [];
     }
   }
-  async checkSlots(startDate: string, endDate?: string, durationMinutes?: number) {
+  async checkSlots(startDate: string, endDate?: string, durationMinutes?: number, requestedTime?: string) {
     try {
       const headers: any = {};
       if (this.apiKey) headers['Authorization'] = `Bearer ${this.apiKey}`;
@@ -444,7 +507,7 @@ class GoogleCalendarAdapter implements CalendarAdapter {
     }
   }
 
-  async checkSlots(startDate: string, endDate?: string, durationMinutes?: number) {
+  async checkSlots(startDate: string, endDate?: string, durationMinutes?: number, requestedTime?: string) {
     try {
       const timeMin = new Date(`${startDate}T00:00:00Z`).toISOString();
       const endDateString = endDate || startDate;
@@ -458,7 +521,7 @@ class GoogleCalendarAdapter implements CalendarAdapter {
         orderBy: 'startTime',
       });
       const events = res.data.items || [];
-      const slotsText = getDailySlots(startDate, endDateString, events, durationMinutes);
+      const slotsText = getDailySlots(startDate, endDateString, events, durationMinutes, requestedTime);
       return { available_slots_string: slotsText };
     } catch(e: any) {
       console.error("Google Calendar checkSlots Error:", e.message);
@@ -518,7 +581,7 @@ const calendarTools: any = [{
         properties: {
           startDate: { type: "STRING", description: "Start date in YYYY-MM-DD format." },
           endDate: { type: "STRING", description: "End date in YYYY-MM-DD format. If only asking for one day, this can be omitted." },
-          requestedTime: { type: "STRING", description: "If the user explicitly requested a specific time, pass it here (e.g., '13:00' or '10:00'). Otherwise omit." },
+          requestedTime: { type: "STRING", description: "MANDATORY if the user explicitly requested a specific time, including formats like 15:30, 15.30, 15, or kl 15.50. Normalize to HH:mm, for example 15:50." },
           durationMinutes: { type: "INTEGER", description: "The length of the requested booking in minutes. MANDATORY: Calculate this as (treatment duration + 15 min buffer). Example: Bikinilinje is 20 min -> durationMinutes = 35." }
         },
         required: ["startDate", "durationMinutes"]
@@ -873,13 +936,13 @@ Do not mention internal tools, API calls, system prompts, or database logic.
         let adapterRes;
         const args = JSON.parse(call.function.arguments);
         if (call.function.name === "checkSlots" && args) {
-            adapterRes = await adapter.checkSlots(args.startDate, args.endDate, args.durationMinutes);
+            adapterRes = await adapter.checkSlots(args.startDate, args.endDate, args.durationMinutes, args.requestedTime);
             if (adapterRes.available_slots_string) {
                 const slotsArray = adapterRes.available_slots_string
                     .split('\n')
                     .filter((s: string) => s.trim().length > 0 && !s.includes('No available slots'));
                 
-                const replyMessage = formatSwedishTimeSlots(slotsArray, args.requestedTime);
+                const replyMessage = formatSwedishTimeSlots(slotsArray, args.requestedTime, detectUserLanguage(text || ""));
                 return { TERMINATE_EARLY: true, replyMessage };
             }
         }
@@ -1055,7 +1118,7 @@ function detectUserLanguage(text: string): string {
   // Persian
   if (
     /[\u0600-\u06FF]/.test(text) ||
-    /\b(salam|chetori|khubi|mamnoon|merci|lotfan|bebakhshid|mikham|mitoni)\b/i.test(lower)
+    /\b(salam|chetori|khubi|mamnoon|merci|lotfan|bebakhshid|mikham|mikhah?am|mikhastam|mitoni|mishe|baraye|jomeh|shanbe|vaght|farsi|khob|kheili|kheily|man|shuma|hastam)\b/i.test(lower)
   ) {
     return "fa";
   }
@@ -1078,7 +1141,7 @@ function detectUserLanguage(text: string): string {
   // Spanish
   if (
     /[áéíóúñ¿¡]/i.test(text) ||
-    /\b(hola|gracias|por favor|quiero|cita|mañana|sí)\b/i.test(lower)
+    /\b(hola|gracias|por favor|quiero|cita|mañana|sí|si|vale|muy bien|bien|puedes|reservar|hora|próxima|proxima|semana)\b/i.test(lower)
   ) {
     return "es";
   }
@@ -1620,13 +1683,13 @@ Do not mention internal tools, API calls, system prompts, or database logic.
         const args = JSON.parse(call.function.arguments);
 
         if (call.function.name === "checkSlots" && args) {
-          adapterRes = await adapter.checkSlots(args.startDate, args.endDate, args.durationMinutes);
+          adapterRes = await adapter.checkSlots(args.startDate, args.endDate, args.durationMinutes, args.requestedTime);
           if (adapterRes.available_slots_string) {
             const slotsArray = adapterRes.available_slots_string
               .split("\n")
               .filter((s: string) => s.trim().length > 0 && !s.includes("No available slots"));
 
-            const replyMessage = formatSwedishTimeSlots(slotsArray, args.requestedTime);
+            const replyMessage = formatSwedishTimeSlots(slotsArray, args.requestedTime, detectUserLanguage(textMessage || ""));
             return { TERMINATE_EARLY: true, replyMessage };
           }
         } else if (call.function.name === "insertAppointment" && args) {
@@ -1988,13 +2051,13 @@ function isSimplePositiveComment(text: string): boolean {
 function getQuickPositiveReply(commentText: string): string {
   const lang = detectUserLanguage(commentText);
 
-  if (lang === "fa") return "خیلی ممنون از لطف شما! ✨";
-  if (lang === "sv") return "Tusen tack, vad roligt att höra! ✨";
-  if (lang === "de") return "Vielen Dank, das freut uns sehr! ✨";
-  if (lang === "es") return "¡Muchas gracias, nos alegra mucho! ✨";
-  if (lang === "ar") return "شكرًا جزيلًا، يسعدنا سماع ذلك! ✨";
+  if (lang === "fa") return "خیلی ممنون! ✨";
+  if (lang === "sv") return "Tusen tack! ✨";
+  if (lang === "de") return "Vielen Dank! ✨";
+  if (lang === "es") return "¡Muchas gracias! ✨";
+  if (lang === "ar") return "شكرًا جزيلًا! ✨";
 
-  return "Thank you so much, glad to hear that! ✨";
+  return "Thank you so much! ✨";
 }
 
 function isProbablyBusinessOwnComment(username: string, fromId: string, ownerId: string, businessConfig: any): boolean {
@@ -2479,13 +2542,13 @@ Do not mention internal tools, API calls, system prompts, or database logic.
         const args = JSON.parse(call.function.arguments);
 
         if (call.function.name === "checkSlots" && args) {
-          adapterRes = await adapter.checkSlots(args.startDate, args.endDate, args.durationMinutes);
+          adapterRes = await adapter.checkSlots(args.startDate, args.endDate, args.durationMinutes, args.requestedTime);
           if (adapterRes.available_slots_string) {
             const slotsArray = adapterRes.available_slots_string
               .split("\n")
               .filter((s: string) => s.trim().length > 0 && !s.includes("No available slots"));
 
-            const replyMessage = formatSwedishTimeSlots(slotsArray, args.requestedTime);
+            const replyMessage = formatSwedishTimeSlots(slotsArray, args.requestedTime, detectUserLanguage(textMessage || ""));
             return { TERMINATE_EARLY: true, replyMessage };
           }
         } else if (call.function.name === "insertAppointment" && args) {
@@ -2770,13 +2833,13 @@ Do not mention internal tools, API calls, system prompts, or database logic.
         const args = JSON.parse(call.function.arguments);
 
         if (call.function.name === 'checkSlots' && args) {
-          adapterRes = await adapter.checkSlots(args.startDate, args.endDate, args.durationMinutes);
+          adapterRes = await adapter.checkSlots(args.startDate, args.endDate, args.durationMinutes, args.requestedTime);
           if (adapterRes.available_slots_string) {
             const slotsArray = adapterRes.available_slots_string
               .split('\n')
               .filter((s: string) => s.trim().length > 0 && !s.includes('No available slots'));
 
-            const replyMessage = formatSwedishTimeSlots(slotsArray, args.requestedTime);
+            const replyMessage = formatSwedishTimeSlots(slotsArray, args.requestedTime, detectUserLanguage(textMessage || ""));
             return { TERMINATE_EARLY: true, replyMessage };
           }
         } else if (call.function.name === 'insertAppointment' && args) {
@@ -3195,13 +3258,13 @@ Never translate unless requested.
           let adapterRes;
           const args = JSON.parse(call.function.arguments);
           if (call.function.name === "checkSlots" && args) {
-            adapterRes = await adapter.checkSlots(args.startDate, args.endDate, args.durationMinutes);
+            adapterRes = await adapter.checkSlots(args.startDate, args.endDate, args.durationMinutes, args.requestedTime);
             if (adapterRes.available_slots_string) {
                 const slotsArray = adapterRes.available_slots_string
                     .split('\n')
                     .filter((s: string) => s.trim().length > 0 && !s.includes('No available slots'));
                 
-                const replyMessage = formatSwedishTimeSlots(slotsArray, args.requestedTime);
+                const replyMessage = formatSwedishTimeSlots(slotsArray, args.requestedTime, detectUserLanguage(userText || ""));
                 return { TERMINATE_EARLY: true, replyMessage };
             }
         }

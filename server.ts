@@ -12,11 +12,15 @@ import { createClient } from "@supabase/supabase-js";
 
 let supabase: any = null;
 if (process.env.SUPABASE_URL && (process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY)) {
-  // Server-side code should prefer SERVICE_ROLE for internal writes such as appointments/reminders.
-  // If only ANON is available, reads may work but inserts into new RLS-protected tables can fail.
+  // Prefer SERVICE_ROLE for server-side writes. This is needed when RLS blocks inserts
+  // into tables such as appointments. Falls back to ANON only if service role is missing.
   const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
-  supabase = createClient(process.env.SUPABASE_URL, supabaseKey);
-  console.log(`Supabase configured with ${process.env.SUPABASE_SERVICE_ROLE_KEY ? "SERVICE_ROLE" : "ANON"} key.`);
+  supabase = createClient(process.env.SUPABASE_URL, supabaseKey as string, {
+    auth: { persistSession: false, autoRefreshToken: false }
+  });
+  console.log(`Supabase client initialized with ${process.env.SUPABASE_SERVICE_ROLE_KEY ? "SERVICE_ROLE" : "ANON"} key.`);
+} else {
+  console.warn("Supabase not configured: missing SUPABASE_URL and key.");
 }
 
 let currentKeyIndex = 0;
@@ -224,9 +228,48 @@ function normalizeRequestedTime(input?: string): string | null {
   return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
 }
 
+function inferRequestedTimeFromText(text?: string): string | null {
+  if (!text) return null;
+  const raw = String(text).toLowerCase();
+
+  // Prefer explicit clock words so phone numbers like 0738... are not mistaken for times.
+  const patterns = [
+    /(?:kl|klockan|clock|saat|saate|hora|las|at)\s*(\d{1,2})(?:[\.:](\d{2}))?/i,
+    /(?:^|\s)(\d{1,2})[\.:](\d{2})(?:\s|$)/i,
+    /(?:^|\s)(\d{1,2})\s*(?:am|pm)(?:\s|$)/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = raw.match(pattern);
+    if (!match) continue;
+    let hour = Number(match[1]);
+    const minute = match[2] ? Number(match[2]) : 0;
+    if (/pm\b/i.test(match[0]) && hour < 12) hour += 12;
+    if (/am\b/i.test(match[0]) && hour === 12) hour = 0;
+    if (hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59) {
+      return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+    }
+  }
+  return null;
+}
+
 function parseSlotIso(slot: string): string | null {
   const match = slot.match(/\(ISO:\s(.*?)\)/);
   return match?.[1] || null;
+}
+
+function extractAvailableSlotTimes(slotsString?: string): Set<string> {
+  const times = new Set<string>();
+  if (!slotsString) return times;
+  const matches = String(slotsString).matchAll(/ISO:\s*([^\)]+)/g);
+  for (const match of matches) {
+    const iso = match[1];
+    const d = new Date(iso);
+    if (!Number.isNaN(d.getTime())) {
+      times.add(d.toLocaleTimeString('sv-SE', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Stockholm' }));
+    }
+  }
+  return times;
 }
 
 function buildLocalizedSlotReply(slotsArray: string[], specificTime?: string, language: string = "sv"): string {
@@ -318,10 +361,25 @@ function formatSwedishTimeSlots(slotsArray: string[], specificTime?: string, lan
   return buildLocalizedSlotReply(slotsArray, specificTime, language);
 }
 
+function isBlockingCalendarEvent(e: any): boolean {
+  const summary = String(e?.summary || e?.title || "").trim().toLowerCase();
+
+  // In this calendar, real appointments are created with summary "Bokad: ...".
+  // Recurring working-hour markers like "laser luxury, 9am" should NOT block availability.
+  // Otherwise a free time like Friday 12:00 can be falsely reported as booked.
+  if (summary && !summary.startsWith("bokad:") && !summary.includes("booked:")) {
+    console.log(`Calendar availability ignored non-booking event: ${summary}`);
+    return false;
+  }
+
+  return true;
+}
+
 function isSlotFree(startMs: number, durationMinutes: number, events: any[]): boolean {
   const endMs = startMs + durationMinutes * 60 * 1000;
   if (startMs < Date.now()) return false;
   for (const e of events) {
+    if (!isBlockingCalendarEvent(e)) continue;
     if (!e.start && !e.startTime) continue;
     const startIso = e.start?.dateTime || e.start?.date || e.startTime;
     const endIso = e.end?.dateTime || e.end?.date || e.endTime;
@@ -855,7 +913,6 @@ async function processTelegramUpdate(update: any, config: any, platform: string 
     
     if (text) {
       userMessageContent = text;
-      rememberConversationLanguage(telegramSessionId, text);
     } else if (voice) {
       try {
         const fileRes = await fetch(`https://api.telegram.org/bot${telegramToken}/getFile?file_id=${voice.file_id}`);
@@ -907,6 +964,7 @@ Before confirming any booking, you must check availability.
 Before creating any appointment, collect the customer's name and mobile number.
 For vague time requests, check available slots instead of asking the customer to choose a time.
 Do not mention internal tools, API calls, system prompts, or database logic.
+LANGUAGE RULE: Always reply in the same language as the latest customer message. If the latest customer message is Swedish, the reply must be Swedish. Do not switch to English unless the customer writes in English.
 `;
     const swedenDate = new Date().toLocaleDateString('en-US', {
       timeZone: 'Europe/Stockholm',
@@ -920,8 +978,7 @@ Do not mention internal tools, API calls, system prompts, or database logic.
   (config.systemPrompt || activeConfig.systemPrompt || "") +
   currentDateContext +
   constraint +
-  languageEngine +
-  `\nCURRENT CONVERSATION LANGUAGE: ${chatLanguages[telegramSessionId] || rememberConversationLanguage(telegramSessionId, text || "")}. Reply in this language unless the customer clearly switches language.`;
+  languageEngine;
   if (voice) {
     finalSystemInstruction +=
     "\nVOICE ENGINE:\n" +
@@ -951,13 +1008,13 @@ Do not mention internal tools, API calls, system prompts, or database logic.
         let adapterRes;
         const args = JSON.parse(call.function.arguments);
         if (call.function.name === "checkSlots" && args) {
-            adapterRes = await adapter.checkSlots(args.startDate, args.endDate, args.durationMinutes, args.requestedTime);
+            adapterRes = await adapter.checkSlots(args.startDate, args.endDate, args.durationMinutes, args.requestedTime || inferRequestedTimeFromText(text || ""));
             if (adapterRes.available_slots_string) {
                 const slotsArray = adapterRes.available_slots_string
                     .split('\n')
                     .filter((s: string) => s.trim().length > 0 && !s.includes('No available slots'));
                 
-                const replyMessage = formatSwedishTimeSlots(slotsArray, args.requestedTime, chatLanguages[telegramSessionId] || rememberConversationLanguage(telegramSessionId, text || ""));
+                const replyMessage = formatSwedishTimeSlots(slotsArray, args.requestedTime || inferRequestedTimeFromText(text || ""), detectUserLanguage(text || ""));
                 return { TERMINATE_EARLY: true, replyMessage };
             }
         }
@@ -1142,26 +1199,25 @@ function detectUserLanguage(text: string): string {
 
   const lower = text.toLowerCase();
 
-  // Persian / Finglish
+  // Persian
   if (
     /[\u0600-\u06FF]/.test(text) ||
-    /\b(salam|chetori|khubi|mamnoon|mersi|merci|lotfan|bebakhshid|mikham|mikhaham|mikhastam|mitoni|mitooni|mishe|baraye|jomeh|shanbe|vaght|farsi|khob|kheili|kheily|man|shuma|hastam|hasti|darin|darid|saate|sate|roze)\b/i.test(lower)
+    /\b(salam|chetori|khubi|mamnoon|merci|lotfan|bebakhshid|mikham|mikhah?am|mikhastam|mitoni|mishe|baraye|jomeh|shanbe|vaght|farsi|khob|kheili|kheily|man|shuma|hastam)\b/i.test(lower)
   ) {
     return "fa";
   }
 
-  // Swedish. Include plain words without å/ä/ö because customers often type casual Swedish
-  // or short phrases like "Jag vill ha helst klockan 18:00".
+  // Swedish
   if (
     /[åäö]/i.test(text) ||
-    /\b(hej|tack|ja|nej|bokning|boka|bokat|boka en tid|tid|tider|kl|klockan|nästa|nasta|fredag|måndag|mandag|tisdag|onsdag|torsdag|lördag|lordag|söndag|sondag|jag|vill|ha|helst|kan|kommer|behandling|helkropp|hellkropp|kropp|nummer|mobilnummer|heter|mitt nummer|min|din|är|ar|och|för|for|på|pa)\b/i.test(lower)
+    /\b(hej|tack|ja|nej|bokning|boka|tid|kl|måndag|tisdag|onsdag|torsdag|fredag)\b/i.test(lower)
   ) {
     return "sv";
   }
 
   // German
   if (
-    /\b(hallo|guten|danke|bitte|termin|uhr|morgen|nachmittag|ja|nein|buchen|behandlung)\b/i.test(lower)
+    /\b(hallo|guten|danke|bitte|termin|uhr|morgen|nachmittag|ja|nein)\b/i.test(lower)
   ) {
     return "de";
   }
@@ -1183,20 +1239,6 @@ function detectUserLanguage(text: string): string {
   }
 
   return "en";
-}
-
-function rememberConversationLanguage(sessionId: string, latestText?: string) {
-  const detected = detectUserLanguage(latestText || "");
-  // Keep the previous language for tiny ambiguous replies such as "ok", "yes", "ja tack",
-  // unless the latest text clearly indicates a supported language.
-  if (detected !== "en" || !chatLanguages[sessionId]) {
-    chatLanguages[sessionId] = detected;
-  }
-  return chatLanguages[sessionId] || detected || "en";
-}
-
-function localizedFallback(textByLang: Record<string, string>, language: string) {
-  return textByLang[language] || textByLang.en || Object.values(textByLang)[0] || "";
 }
 
 function getErrorMessageByLanguage(language: string): string {
@@ -1248,7 +1290,7 @@ async function recordAppointmentFromBooking(params: {
   durationMinutes?: number;
 }) {
   if (!supabase) {
-    console.error("Appointment DB insert skipped: Supabase is not configured.");
+    console.error("Appointment DB insert skipped: Supabase client is not configured.");
     return;
   }
 
@@ -1259,12 +1301,7 @@ async function recordAppointmentFromBooking(params: {
       return;
     }
 
-    const businessId =
-      params.businessConfig?.businessRecordId ||
-      params.businessConfig?.business_id ||
-      params.businessConfig?.id ||
-      null;
-
+    const businessId = params.businessConfig?.businessRecordId || params.businessConfig?.business_id || params.businessConfig?.id || null;
     const payload: any = {
       business_id: businessId,
       customer_name: params.name || null,
@@ -1284,18 +1321,17 @@ async function recordAppointmentFromBooking(params: {
     const { data, error } = await supabase
       .from("appointments")
       .insert([payload])
-      .select()
+      .select("id,business_id,customer_name,start_time")
       .single();
 
     if (error) {
       console.error("Supabase appointments insert error:", JSON.stringify(error));
-      console.error("If this says RLS/policy/permission denied, add SUPABASE_SERVICE_ROLE_KEY in Render Environment or create an insert policy for appointments.");
-      return;
+      console.error("If this says RLS/policy/permission, add SUPABASE_SERVICE_ROLE_KEY to Render Environment or temporarily disable RLS on appointments while testing.");
+    } else {
+      console.log("Appointment saved to Supabase appointments:", JSON.stringify(data));
     }
-
-    console.log("Appointment saved to Supabase appointments:", JSON.stringify(data));
-  } catch (err: any) {
-    console.error("recordAppointmentFromBooking error:", err?.message || err);
+  } catch (err) {
+    console.error("recordAppointmentFromBooking error:", err);
   }
 }
 
@@ -1778,7 +1814,7 @@ async function processWhatsAppMessage(message: any, metadata: any, config: any, 
   console.log("==============================");
 
   const chatId = `wa_${from}`;
-  const userLanguage = rememberConversationLanguage(chatId, textMessage || "");
+  const userLanguage = detectUserLanguage(textMessage || "");
 
   let businessConfig: any = { ...activeConfig, ...(config || {}) };
 
@@ -1839,6 +1875,7 @@ Before confirming any booking, you must check availability.
 Before creating any appointment, collect the customer's name and mobile number.
 For vague time requests, check available slots instead of asking the customer to choose a time.
 Do not mention internal tools, API calls, system prompts, or database logic.
+LANGUAGE RULE: Always reply in the same language as the latest customer message. If the latest customer message is Swedish, the reply must be Swedish. Do not switch to English unless the customer writes in English.
 `;
 
     const swedenDate = new Date().toLocaleDateString("en-US", {
@@ -1851,7 +1888,7 @@ Do not mention internal tools, API calls, system prompts, or database logic.
 
     const currentDateContext = `\nCrucial Context: The client's current local date and time in Sweden (Europe/Stockholm) is dynamically: ${swedenDate}. Any reference by the user to 'idag', 'imorgon', or days of the week must be evaluated strictly using this dynamic date as the anchor. Note that for YYYY-MM-DD tools, June is '06' (index 5 in Javascript Date).`;
 
-    let finalSystemInstruction = (businessConfig.systemPrompt || "") + currentDateContext + constraint + languageEngine + `\nCURRENT CONVERSATION LANGUAGE: ${userLanguage}. Reply in this language unless the customer clearly switches language.`;
+    let finalSystemInstruction = (businessConfig.systemPrompt || "") + currentDateContext + constraint + languageEngine;
 
     let chatResponse = await generateContentWithFallback(null, {
       messages,
@@ -1871,13 +1908,13 @@ Do not mention internal tools, API calls, system prompts, or database logic.
         const args = JSON.parse(call.function.arguments);
 
         if (call.function.name === "checkSlots" && args) {
-          adapterRes = await adapter.checkSlots(args.startDate, args.endDate, args.durationMinutes, args.requestedTime);
+          adapterRes = await adapter.checkSlots(args.startDate, args.endDate, args.durationMinutes, args.requestedTime || inferRequestedTimeFromText(textMessage || ""));
           if (adapterRes.available_slots_string) {
             const slotsArray = adapterRes.available_slots_string
               .split("\n")
               .filter((s: string) => s.trim().length > 0 && !s.includes("No available slots"));
 
-            const replyMessage = formatSwedishTimeSlots(slotsArray, args.requestedTime, chatLanguages[chatId] || rememberConversationLanguage(chatId, textMessage || ""));
+            const replyMessage = formatSwedishTimeSlots(slotsArray, args.requestedTime || inferRequestedTimeFromText(textMessage || ""), detectUserLanguage(textMessage || ""));
             return { TERMINATE_EARLY: true, replyMessage };
           }
         } else if (call.function.name === "insertAppointment" && args) {
@@ -2644,7 +2681,7 @@ async function processMessengerUpdate(webhookEvent: any, config: any, platform: 
   console.log("==============================");
 
   const chatId = `ms_${senderId}`;
-  const userLanguage = rememberConversationLanguage(chatId, textMessage || "");
+  const userLanguage = detectUserLanguage(textMessage || "");
 
   let businessConfig: any = { ...activeConfig, ...(config || {}) };
 
@@ -2719,6 +2756,7 @@ Before confirming any booking, you must check availability.
 Before creating any appointment, collect the customer's name and mobile number.
 For vague time requests, check available slots instead of asking the customer to choose a time.
 Do not mention internal tools, API calls, system prompts, or database logic.
+LANGUAGE RULE: Always reply in the same language as the latest customer message. If the latest customer message is Swedish, the reply must be Swedish. Do not switch to English unless the customer writes in English.
 `;
 
     const swedenDate = new Date().toLocaleDateString("en-US", {
@@ -2731,7 +2769,7 @@ Do not mention internal tools, API calls, system prompts, or database logic.
 
     const currentDateContext = `\nCrucial Context: The client's current local date and time in Sweden (Europe/Stockholm) is dynamically: ${swedenDate}. Any reference by the user to 'idag', 'imorgon', or days of the week must be evaluated strictly using this dynamic date as the anchor. Note that for YYYY-MM-DD tools, June is '06' (index 5 in Javascript Date).`;
 
-    let finalSystemInstruction = (businessConfig.systemPrompt || "") + currentDateContext + constraint + languageEngine + `\nCURRENT CONVERSATION LANGUAGE: ${userLanguage}. Reply in this language unless the customer clearly switches language.`;
+    let finalSystemInstruction = (businessConfig.systemPrompt || "") + currentDateContext + constraint + languageEngine;
 
     if (isVoiceMessage) {
       finalSystemInstruction +=
@@ -2762,13 +2800,13 @@ Do not mention internal tools, API calls, system prompts, or database logic.
         const args = JSON.parse(call.function.arguments);
 
         if (call.function.name === "checkSlots" && args) {
-          adapterRes = await adapter.checkSlots(args.startDate, args.endDate, args.durationMinutes, args.requestedTime);
+          adapterRes = await adapter.checkSlots(args.startDate, args.endDate, args.durationMinutes, args.requestedTime || inferRequestedTimeFromText(textMessage || ""));
           if (adapterRes.available_slots_string) {
             const slotsArray = adapterRes.available_slots_string
               .split("\n")
               .filter((s: string) => s.trim().length > 0 && !s.includes("No available slots"));
 
-            const replyMessage = formatSwedishTimeSlots(slotsArray, args.requestedTime, chatLanguages[chatId] || rememberConversationLanguage(chatId, textMessage || ""));
+            const replyMessage = formatSwedishTimeSlots(slotsArray, args.requestedTime || inferRequestedTimeFromText(textMessage || ""), detectUserLanguage(textMessage || ""));
             return { TERMINATE_EARLY: true, replyMessage };
           }
         } else if (call.function.name === "insertAppointment" && args) {
@@ -2876,10 +2914,8 @@ Do not mention internal tools, API calls, system prompts, or database logic.
 
 const languageEngine = `
 LANGUAGE ENGINE:
-Always identify the customer's language from their latest message and from the ongoing conversation.
+Always identify the customer's language from their latest message.
 Reply in the same language as the customer’s latest message.
-If the customer is writing Swedish, all booking/availability/confirmation messages must be Swedish.
-If the customer switches language, follow the new language from that point.
 
 Supported languages:
 - Swedish
@@ -2926,7 +2962,7 @@ async function processInstagramUpdate(webhook_event: any, config: any, platform:
   console.log('==============================');
 
   const chatId = `ig_${senderId}`;
-  let userLanguage = rememberConversationLanguage(chatId, textMessage || "");
+  let userLanguage = detectUserLanguage(textMessage || "");
 
   let businessConfig: any = { ...activeConfig, ...(config || {}) };
   let businessRecord: any = null;
@@ -3030,6 +3066,7 @@ Before confirming any booking, you must check availability.
 Before creating any appointment, collect the customer's name and mobile number.
 For vague time requests, check available slots instead of asking the customer to choose a time.
 Do not mention internal tools, API calls, system prompts, or database logic.
+LANGUAGE RULE: Always reply in the same language as the latest customer message. If the latest customer message is Swedish, the reply must be Swedish. Do not switch to English unless the customer writes in English.
 `;
 
     const swedenDate = new Date().toLocaleDateString('en-US', {
@@ -3042,7 +3079,7 @@ Do not mention internal tools, API calls, system prompts, or database logic.
 
     const currentDateContext = `\nCrucial Context: The client's current local date and time in Sweden (Europe/Stockholm) is dynamically: ${swedenDate}. Any reference by the user to 'idag', 'imorgon', or days of the week must be evaluated strictly using this dynamic date as the anchor. Note that for YYYY-MM-DD tools, June is '06' (index 5 in Javascript Date).`;
 
-    let finalSystemInstruction = (businessConfig.systemPrompt || '') + currentDateContext + constraint + languageEngine + `\nCURRENT CONVERSATION LANGUAGE: ${userLanguage}. Reply in this language unless the customer clearly switches language.`;
+    let finalSystemInstruction = (businessConfig.systemPrompt || '') + currentDateContext + constraint + languageEngine;
 
     if (isVoiceMessage) {
       finalSystemInstruction +=
@@ -3067,13 +3104,13 @@ Do not mention internal tools, API calls, system prompts, or database logic.
         const args = JSON.parse(call.function.arguments);
 
         if (call.function.name === 'checkSlots' && args) {
-          adapterRes = await adapter.checkSlots(args.startDate, args.endDate, args.durationMinutes, args.requestedTime);
+          adapterRes = await adapter.checkSlots(args.startDate, args.endDate, args.durationMinutes, args.requestedTime || inferRequestedTimeFromText(textMessage || ""));
           if (adapterRes.available_slots_string) {
             const slotsArray = adapterRes.available_slots_string
               .split('\n')
               .filter((s: string) => s.trim().length > 0 && !s.includes('No available slots'));
 
-            const replyMessage = formatSwedishTimeSlots(slotsArray, args.requestedTime, chatLanguages[chatId] || rememberConversationLanguage(chatId, textMessage || ""));
+            const replyMessage = formatSwedishTimeSlots(slotsArray, args.requestedTime || inferRequestedTimeFromText(textMessage || ""), detectUserLanguage(textMessage || ""));
             return { TERMINATE_EARLY: true, replyMessage };
           }
         } else if (call.function.name === 'insertAppointment' && args) {
@@ -3522,6 +3559,7 @@ Before confirming any booking, you must check availability.
 Before creating any appointment, collect the customer's name and mobile number.
 For vague time requests, check available slots instead of asking the customer to choose a time.
 Do not mention internal tools, API calls, system prompts, or database logic.
+LANGUAGE RULE: Always reply in the same language as the latest customer message. If the latest customer message is Swedish, the reply must be Swedish. Do not switch to English unless the customer writes in English.
 `;
       const swedenDate = new Date().toLocaleDateString('en-US', {
         timeZone: 'Europe/Stockholm',
@@ -3559,13 +3597,13 @@ Never translate unless requested.
           let adapterRes;
           const args = JSON.parse(call.function.arguments);
           if (call.function.name === "checkSlots" && args) {
-            adapterRes = await adapter.checkSlots(args.startDate, args.endDate, args.durationMinutes, args.requestedTime);
+            adapterRes = await adapter.checkSlots(args.startDate, args.endDate, args.durationMinutes, args.requestedTime || inferRequestedTimeFromText(userText || ""));
             if (adapterRes.available_slots_string) {
                 const slotsArray = adapterRes.available_slots_string
                     .split('\n')
                     .filter((s: string) => s.trim().length > 0 && !s.includes('No available slots'));
                 
-                const replyMessage = formatSwedishTimeSlots(slotsArray, args.requestedTime, chatLanguages[chatId] || rememberConversationLanguage(chatId, userText || ""));
+                const replyMessage = formatSwedishTimeSlots(slotsArray, args.requestedTime || inferRequestedTimeFromText(userText || ""), detectUserLanguage(userText || ""));
                 return { TERMINATE_EARLY: true, replyMessage };
             }
         }

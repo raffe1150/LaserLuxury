@@ -948,6 +948,18 @@ Do not mention internal tools, API calls, system prompts, or database logic.
         }
         else if (call.function.name === "insertAppointment" && args) {
           adapterRes = await adapter.insertAppointment(args.name, args.phone, args.service, args.dateTime, args.durationMinutes, chatId);
+          if (adapterRes && adapterRes.success) {
+            await recordAppointmentFromBooking({
+              businessConfig: config,
+              platform: "telegram",
+              userId: chatId.toString(),
+              name: args.name,
+              phone: args.phone,
+              service: args.service,
+              dateTime: args.dateTime,
+              durationMinutes: args.durationMinutes
+            });
+          }
           const notifyToken = config?.telegramToken || activeConfig?.telegramToken || process.env.TELEGRAM_TOKEN;
           const notifyAdmin = config?.adminTelegramChatId || activeConfig?.adminTelegramChatId || process.env.ADMIN_TELEGRAM_ID;
           if (adapterRes && adapterRes.success && notifyToken && notifyAdmin) {
@@ -1174,78 +1186,205 @@ function getErrorMessageByLanguage(language: string): string {
   }
 }
 
-function setupDailyReminders() {
-  cron.schedule("0 19 * * *", async () => {
-    console.log("[Cron] Starting daily reminder job for tomorrow's appointments...");
-    try {
-      const adapter = getCalendarAdapter(activeConfig);
-      
-      const swedenFormatter = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Stockholm', year: 'numeric', month: '2-digit', day: '2-digit' });
-      const tomorrowMs = Date.now() + 24 * 60 * 60 * 1000;
-      const tomorrowDateStr = swedenFormatter.format(tomorrowMs);
-      
-      const events = await adapter.getEvents(tomorrowDateStr, tomorrowDateStr);
-      let dispatched = 0;
-      
-      if (!events || events.length === 0) {
-        console.log("[Cron] No events found for tomorrow.");
-        return;
-      }
 
-      const telegramToken = activeConfig.telegramToken || process.env.TELEGRAM_TOKEN;
-      if (!telegramToken) {
-        console.log("[Cron] No Telegram token configured. Aborting reminders.");
-        return;
-      }
-      
-      const months = ["januari", "februari", "mars", "april", "maj", "juni", "juli", "augusti", "september", "oktober", "november", "december"];
-      const days = ["söndag", "måndag", "tisdag", "onsdag", "torsdag", "fredag", "lördag"];
-      
-      for (const event of events) {
-         if (!event.start || !event.start.dateTime) continue;
-         const startIso = event.start.dateTime;
-         const eventDate = new Date(startIso);
-         
-         const dayName = days[eventDate.getDay()];
-         const dayNum = eventDate.getDate();
-         const monthName = months[eventDate.getMonth()];
-         const tStr = eventDate.toLocaleTimeString('sv-SE', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Stockholm' });
-         
-         const summary = event.summary || '';
-         const matchName = summary.match(/Bokad:\s(.*?)\s-/);
-         const name = matchName ? matchName[1] : 'kära kund';
-         
-         const desc = event.description || '';
-         const matchChatId = desc.match(/TelegramChatId:\s(\d+)/);
-         if (matchChatId && matchChatId[1]) {
-            const chatId = matchChatId[1];
-           const reminderBusinessName = activeConfig.businessName || activeConfig.business_name || 'oss';
+function normalizePlatformUserId(platform: string, userId: string) {
+  const raw = String(userId || "").trim();
+  if (!raw) return "";
+  if (platform === "telegram") return raw.replace(/^telegram_/, "");
+  if (platform === "whatsapp") return raw.replace(/^wa_/, "");
+  if (platform === "instagram") return raw.replace(/^ig_/, "");
+  if (platform === "messenger") return raw.replace(/^ms_/, "");
+  return raw;
+}
 
-           const msg = `Hej ${name}! Det här är en påminnelse från ${reminderBusinessName}. Du har en bokad tid för behandling imorgon, ${dayName} den ${dayNum} ${monthName}, klockan ${tStr}. Vi ser fram emot att träffa dig! Varmt välkommen! 😊`;
-            try {
-              const fetchResult = await fetch(`https://api.telegram.org/bot${telegramToken}/sendMessage`, {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ chat_id: chatId, text: msg })
-              });
-              if(fetchResult.ok) {
-                 dispatched++;
-              } else {
-                 console.log(`[Cron] Failed to send to ${chatId}: ${fetchResult.statusText}`);
-              }
-            } catch(e: any) {
-               console.error(`[Cron] Fetch error sending to ${chatId}:`, e.message);
-            }
-         }
-      }
-      console.log(`[Cron] Successfully dispatched ${dispatched} reminders.`);
-    } catch(err: any) {
-      console.error("[Cron] Daily reminder job encountered an error:", err.message);
+function getAppointmentTimes(dateTime: string, durationMinutes: number = 60) {
+  const safeDateTime = String(dateTime || "").includes("Z") || /[+-]\d{2}:?\d{2}$/.test(String(dateTime || ""))
+    ? String(dateTime)
+    : String(dateTime) + "+02:00";
+  const start = new Date(safeDateTime);
+  const duration = Number(durationMinutes || 60);
+  const end = new Date(start.getTime() + duration * 60 * 1000);
+  return { start, end };
+}
+
+async function recordAppointmentFromBooking(params: {
+  businessConfig: any;
+  platform: string;
+  userId: string;
+  name: string;
+  phone: string;
+  service: string;
+  dateTime: string;
+  durationMinutes?: number;
+}) {
+  if (!supabase) return;
+  try {
+    const { start, end } = getAppointmentTimes(params.dateTime, params.durationMinutes || 60);
+    if (Number.isNaN(start.getTime())) {
+      console.error("Appointment DB insert skipped: invalid start_time", params.dateTime);
+      return;
     }
-  }, {
-    timezone: "Europe/Stockholm"
+
+    const payload: any = {
+      business_id: params.businessConfig?.businessRecordId || params.businessConfig?.business_id || params.businessConfig?.id || null,
+      customer_name: params.name || null,
+      phone_number: params.phone || null,
+      platform: params.platform,
+      user_id: params.userId ? String(params.userId) : null,
+      service: params.service || null,
+      start_time: start.toISOString(),
+      end_time: end.toISOString(),
+      status: "booked",
+      reminder_24_sent: false,
+      reminder_2_sent: false
+    };
+
+    const { error } = await supabase.from("appointments").insert([payload]);
+    if (error) {
+      console.error("Supabase appointments insert error:", JSON.stringify(error));
+    } else {
+      console.log(`Appointment saved to Supabase appointments: ${params.platform} ${params.userId} ${start.toISOString()}`);
+    }
+  } catch (err) {
+    console.error("recordAppointmentFromBooking error:", err);
+  }
+}
+
+async function loadBusinessConfigById(businessId: any) {
+  if (!supabase || !businessId) return { ...activeConfig };
+  try {
+    const { data, error } = await supabase.from("businesses").select("*").eq("id", businessId).maybeSingle();
+    if (error) console.error("Reminder business lookup error:", JSON.stringify(error));
+    if (data) return normalizeBusinessConfig(data);
+  } catch (err) {
+    console.error("Reminder business lookup crashed:", err);
+  }
+  return { ...activeConfig };
+}
+
+function formatReminderMessage(appointment: any, businessConfig: any, reminderType: "24h" | "2h") {
+  const name = appointment.customer_name || "";
+  const service = appointment.service || "din behandling";
+  const businessName = businessConfig.businessName || businessConfig.business_name || "oss";
+  const start = new Date(appointment.start_time);
+  const dateText = start.toLocaleDateString("sv-SE", {
+    timeZone: "Europe/Stockholm",
+    weekday: "long",
+    day: "numeric",
+    month: "long"
   });
-  console.log("[Cron] Daily reminder job scheduled at 19:00 Europe/Stockholm time.");
+  const timeText = start.toLocaleTimeString("sv-SE", {
+    timeZone: "Europe/Stockholm",
+    hour: "2-digit",
+    minute: "2-digit"
+  });
+
+  if (reminderType === "2h") {
+    return `Hej ${name || ""}! En vänlig påminnelse från ${businessName}: du har tid för ${service} idag kl ${timeText}. Vi ses snart! 😊`.trim();
+  }
+
+  return `Hej ${name || ""}! En vänlig påminnelse från ${businessName}: du har tid för ${service} imorgon, ${dateText} kl ${timeText}. Varmt välkommen! 😊`.trim();
+}
+
+async function sendAppointmentReminder(appointment: any, reminderType: "24h" | "2h") {
+  const businessConfig = await loadBusinessConfigById(appointment.business_id);
+  const platform = String(appointment.platform || "").toLowerCase();
+  const rawUserId = String(appointment.user_id || "");
+  const recipient = normalizePlatformUserId(platform, rawUserId);
+  const message = formatReminderMessage(appointment, businessConfig, reminderType);
+
+  if (!recipient) {
+    console.log(`[Reminder] Skipped appointment ${appointment.id}: missing recipient`);
+    return false;
+  }
+
+  try {
+    if (platform === "telegram") {
+      const token = businessConfig.telegramToken || activeConfig.telegramToken || process.env.TELEGRAM_TOKEN || process.env.TELEGRAM_BOT_TOKEN;
+      if (!token) throw new Error("Missing Telegram token");
+      const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chat_id: recipient, text: message })
+      });
+      return res.ok;
+    }
+
+    if (platform === "whatsapp") {
+      return await sendWhatsAppMessage(recipient, message, businessConfig);
+    }
+
+    if (platform === "messenger") {
+      return await sendMessengerMessage(recipient, message, businessConfig);
+    }
+
+    if (platform === "instagram") {
+      const token = getBusinessInstagramToken(businessConfig);
+      return await sendInstagramMessage(recipient, message, token);
+    }
+
+    console.log(`[Reminder] Unsupported platform for appointment ${appointment.id}: ${platform}`);
+    return false;
+  } catch (err) {
+    console.error(`[Reminder] Send failed for appointment ${appointment.id}:`, err);
+    return false;
+  }
+}
+
+function setupDailyReminders() {
+  // Runs every 5 minutes and sends reminders from the Supabase appointments table.
+  cron.schedule("*/5 * * * *", async () => {
+    if (!supabase) {
+      console.log("[Reminder] Supabase not configured. Skipping reminder worker.");
+      return;
+    }
+
+    const now = new Date();
+    const in24hStart = new Date(now.getTime() + 23.5 * 60 * 60 * 1000);
+    const in24hEnd = new Date(now.getTime() + 24.5 * 60 * 60 * 1000);
+    const in2hStart = new Date(now.getTime() + 1.75 * 60 * 60 * 1000);
+    const in2hEnd = new Date(now.getTime() + 2.25 * 60 * 60 * 1000);
+
+    console.log("[Reminder] Checking appointments for 24h and 2h reminders...");
+
+    const processWindow = async (reminderType: "24h" | "2h", from: Date, to: Date, sentColumn: string) => {
+      const { data, error } = await supabase
+        .from("appointments")
+        .select("*")
+        .eq("status", "booked")
+        .eq(sentColumn, false)
+        .gte("start_time", from.toISOString())
+        .lte("start_time", to.toISOString())
+        .limit(25);
+
+      if (error) {
+        console.error(`[Reminder] Query error for ${reminderType}:`, JSON.stringify(error));
+        return;
+      }
+
+      for (const appointment of data || []) {
+        const sent = await sendAppointmentReminder(appointment, reminderType);
+        if (sent) {
+          const { error: updateError } = await supabase
+            .from("appointments")
+            .update({ [sentColumn]: true })
+            .eq("id", appointment.id);
+
+          if (updateError) console.error(`[Reminder] Failed to mark ${reminderType} sent:`, JSON.stringify(updateError));
+          else console.log(`[Reminder] ${reminderType} sent for appointment ${appointment.id}`);
+        }
+      }
+    };
+
+    try {
+      await processWindow("24h", in24hStart, in24hEnd, "reminder_24_sent");
+      await processWindow("2h", in2hStart, in2hEnd, "reminder_2_sent");
+    } catch (err) {
+      console.error("[Reminder] Worker crashed:", err);
+    }
+  }, { timezone: "Europe/Stockholm" });
+
+  console.log("[Reminder] Appointment reminder worker scheduled every 5 minutes.");
 }
 
 
@@ -1694,6 +1833,18 @@ Do not mention internal tools, API calls, system prompts, or database logic.
           }
         } else if (call.function.name === "insertAppointment" && args) {
           adapterRes = await adapter.insertAppointment(args.name, args.phone, args.service, args.dateTime, args.durationMinutes, chatId);
+          if (adapterRes && adapterRes.success) {
+            await recordAppointmentFromBooking({
+              businessConfig,
+              platform: "whatsapp",
+              userId: chatId,
+              name: args.name,
+              phone: args.phone,
+              service: args.service,
+              dateTime: args.dateTime,
+              durationMinutes: args.durationMinutes
+            });
+          }
 
           const notifyToken = businessConfig.telegramToken || activeConfig?.telegramToken || process.env.TELEGRAM_TOKEN;
           const notifyAdmin = businessConfig.adminTelegramChatId || activeConfig?.adminTelegramChatId || process.env.ADMIN_TELEGRAM_ID;
@@ -2573,6 +2724,18 @@ Do not mention internal tools, API calls, system prompts, or database logic.
           }
         } else if (call.function.name === "insertAppointment" && args) {
           adapterRes = await adapter.insertAppointment(args.name, args.phone, args.service, args.dateTime, args.durationMinutes, chatId);
+          if (adapterRes && adapterRes.success) {
+            await recordAppointmentFromBooking({
+              businessConfig,
+              platform: "messenger",
+              userId: chatId,
+              name: args.name,
+              phone: args.phone,
+              service: args.service,
+              dateTime: args.dateTime,
+              durationMinutes: args.durationMinutes
+            });
+          }
 
           const notifyToken = businessConfig.telegramToken || activeConfig?.telegramToken || process.env.TELEGRAM_TOKEN;
           const notifyAdmin = businessConfig.adminTelegramChatId || activeConfig?.adminTelegramChatId || process.env.ADMIN_TELEGRAM_ID;
@@ -2864,6 +3027,18 @@ Do not mention internal tools, API calls, system prompts, or database logic.
           }
         } else if (call.function.name === 'insertAppointment' && args) {
           adapterRes = await adapter.insertAppointment(args.name, args.phone, args.service, args.dateTime, args.durationMinutes, chatId);
+          if (adapterRes && adapterRes.success) {
+            await recordAppointmentFromBooking({
+              businessConfig,
+              platform: "instagram",
+              userId: chatId,
+              name: args.name,
+              phone: args.phone,
+              service: args.service,
+              dateTime: args.dateTime,
+              durationMinutes: args.durationMinutes
+            });
+          }
           const notifyToken = businessConfig.telegramToken || activeConfig?.telegramToken || process.env.TELEGRAM_TOKEN;
           const notifyAdmin = businessConfig.adminTelegramChatId || activeConfig?.adminTelegramChatId || process.env.ADMIN_TELEGRAM_ID;
 
@@ -3345,6 +3520,18 @@ Never translate unless requested.
         }
           else if (call.function.name === "insertAppointment" && args) {
           adapterRes = await adapter.insertAppointment(args.name, args.phone, args.service, args.dateTime, args.durationMinutes, chatId);
+          if (adapterRes && adapterRes.success) {
+            await recordAppointmentFromBooking({
+              businessConfig: activeConfig,
+              platform: "web",
+              userId: chatId.toString(),
+              name: args.name,
+              phone: args.phone,
+              service: args.service,
+              dateTime: args.dateTime,
+              durationMinutes: args.durationMinutes
+            });
+          }
           const notifyToken = activeConfig?.telegramToken || process.env.TELEGRAM_TOKEN;
           const notifyAdmin = activeConfig?.adminTelegramChatId || process.env.ADMIN_TELEGRAM_ID;
           if (adapterRes && adapterRes.success && notifyToken && notifyAdmin) {

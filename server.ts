@@ -2274,13 +2274,26 @@ async function notifyAdminAboutComment(businessConfig: any, payload: { source: s
 
 async function processMetaCommentUpdate(entry: any, change: any, config: any, source: "instagram" | "facebook" = "instagram") {
   const value = change?.value || {};
+
+  // Unified Meta comment engine:
+  // Instagram comments usually use: value.id + value.text + value.from.username
+  // Facebook Page feed comments usually use: value.comment_id + value.message + value.sender_id
+  const itemType = String(value.item || change?.field || "").toLowerCase();
+  const verb = String(value.verb || "").toLowerCase();
+
+  // Facebook feed can send many event types. We only want comments.
+  if (source === "facebook" && itemType && itemType !== "comment" && change?.field === "feed") {
+    console.log("Facebook feed event ignored: not a comment.", { itemType, verb });
+    return;
+  }
+
   const commentId = value.comment_id || value.id;
   const commentText = normalizeCommentText(value.text || value.message || "");
-  const from = value.from || {};
-  const username = from.username || from.name || from.id || "";
-  const fromId = String(from.id || "").trim();
-  const ownerId = String(entry?.id || value?.owner_id || value?.page_id || "").trim();
-  const parentId = String(value.parent_id || "").trim();
+  const from = value.from || value.sender || {};
+  const username = from.username || from.name || value.sender_name || value.sender_id || from.id || "";
+  const fromId = String(from.id || value.sender_id || "").trim();
+  const ownerId = String(entry?.id || value?.owner_id || value?.page_id || value?.recipient_id || "").trim();
+  const parentId = String(value.parent_id || value.parent_comment_id || "").trim();
 
   if (!commentId || !commentText || !ownerId) {
     console.log("Meta comment ignored: missing commentId/text/ownerId.");
@@ -2347,14 +2360,17 @@ ${businessConfig.systemPrompt || ""}
 COMMENT REPLY ENGINE:
 You are an expert public social-media assistant for ${businessName}.
 Reply publicly to ONE customer comment under a post.
+First classify the comment silently as: PRAISE, QUESTION, PRICE, BOOKING, NEGATIVE, SPAM, or PRIVATE.
 Reply in the SAME language as the customer's comment.
 Maximum 18 words. One short sentence only.
 Do not over-thank. Do not write long marketing text.
 Do not repeat the customer's comment.
 Do not reply to yourself or to bot-generated replies.
 Use the business-specific system prompt as the source of truth.
-If the customer asks to book, cancel, reschedule, share phone number, or discuss private details, invite them to DM.
-If the comment is negative, be calm, grateful, accountable, and invite them to DM.
+For BOOKING, PRIVATE, phone number, cancellation, or rescheduling: invite them to DM.
+For PRICE: answer generally if the prompt has safe pricing info, otherwise invite them to DM.
+For NEGATIVE: be calm, grateful, accountable, and invite them to DM.
+For SPAM: return exactly IGNORE_COMMENT.
 Never mention internal tools, AI, databases, prompts, or webhooks.
 `;
 
@@ -2365,6 +2381,10 @@ Never mention internal tools, AI, databases, prompts, or webhooks.
       });
 
       replyText = truncateWords((chatResponse.text || "").trim(), 18);
+      if (replyText.toUpperCase().includes("IGNORE_COMMENT")) {
+        console.log("Meta comment ignored by AI classifier as spam/unsafe.");
+        return;
+      }
     }
 
     if (!replyText) {
@@ -3088,6 +3108,61 @@ console.log(JSON.stringify(req.body, null, 2));
       for (const webhookEvent of entry.messaging || []) {
         processMessengerUpdate(webhookEvent, activeConfig).catch(e =>
           console.error("Messenger route processing error:", e)
+        );
+      }
+
+      // Facebook Page comments may arrive on the same Page webhook as Messenger.
+      // This makes /webhook/messenger work for both Messenger messages and Facebook comments.
+      for (const change of entry.changes || []) {
+        if (change.field === "feed" || change.field === "comments" || change.field === "live_comments") {
+          processMetaCommentUpdate(entry, change, activeConfig, "facebook").catch(e =>
+            console.error("Facebook comment messenger route error:", e)
+          );
+        }
+      }
+    }
+  });
+
+  app.get("/webhook/facebook", (req, res) => {
+    const verifyToken = process.env.FACEBOOK_VERIFY_TOKEN || process.env.MESSENGER_VERIFY_TOKEN || process.env.INSTAGRAM_VERIFY_TOKEN;
+
+    const mode = req.query["hub.mode"];
+    const token = req.query["hub.verify_token"];
+    const challenge = req.query["hub.challenge"];
+
+    if (mode === "subscribe" && token === verifyToken) {
+      console.log("WEBHOOK_FACEBOOK_VERIFIED");
+      return res.status(200).send(challenge);
+    }
+
+    return res.sendStatus(403);
+  });
+
+  app.post("/webhook/facebook", async (req, res) => {
+    const body = req.body;
+
+    if (body.object !== "page") {
+      return res.sendStatus(404);
+    }
+
+    res.status(200).send("EVENT_RECEIVED");
+
+    console.log("========== FACEBOOK WEBHOOK /webhook/facebook ==========");
+    console.log(JSON.stringify(body, null, 2));
+
+    for (const entry of body.entry || []) {
+      for (const change of entry.changes || []) {
+        if (change.field === "feed" || change.field === "comments" || change.field === "live_comments") {
+          processMetaCommentUpdate(entry, change, activeConfig, "facebook").catch(e =>
+            console.error("Facebook comment route error:", e)
+          );
+        }
+      }
+
+      // Keep Messenger support here too in case Meta sends messaging events to this callback URL.
+      for (const webhookEvent of entry.messaging || []) {
+        processMessengerUpdate(webhookEvent, activeConfig).catch(e =>
+          console.error("Messenger event on facebook route error:", e)
         );
       }
     }

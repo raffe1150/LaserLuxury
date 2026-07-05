@@ -178,7 +178,7 @@ async function handleSystemAnalysisLog(chatId: string, analysis: any) {
         return { success: false, error: e.message };
     }
 }
-async function postProcessMessage(chatId: string, platform: string, userMessage: string, agentResponse: string, tgToken?: string, aiConfigKey?: string) {
+async function postProcessMessage(chatId: string, platform: string, userMessage: string, agentResponse: string, tgToken?: string, aiConfigKey?: string, businessId?: string | null) {
   if (!supabase) return;
   try {
     const payload = [
@@ -186,13 +186,15 @@ async function postProcessMessage(chatId: string, platform: string, userMessage:
         user_id: chatId.toString(),
         platform,
         sender: "user",
-        message: userMessage
+        message: userMessage,
+        business_id: businessId || null
       },
       {
         user_id: chatId.toString(),
         platform,
         sender: "bot",
-        message: agentResponse
+        message: agentResponse,
+        business_id: businessId || null
       }
     ];
     const { error } = await supabase.from('chat_history').insert(payload).select();
@@ -215,6 +217,55 @@ interface CalendarAdapter {
   checkSlots(startDate: string, endDate?: string, durationMinutes?: number, requestedTime?: string): Promise<any> | any;
   insertAppointment(name: string, phone: string, service: string, dateTime: string, durationMinutes?: number, chatId?: string): Promise<any> | any;
   getEvents(startDate: string, endDate: string): Promise<any> | any;
+}
+
+
+function getLastSundayOfMonth(year: number, monthIndex: number): number {
+  const d = new Date(Date.UTC(year, monthIndex + 1, 0));
+  return d.getUTCDate() - d.getUTCDay();
+}
+
+function getStockholmUtcOffset(dateStr?: string): string {
+  const safeDate = String(dateStr || "").match(/\d{4}-\d{2}-\d{2}/)?.[0];
+  if (!safeDate) return "+02:00";
+  const [year, month, day] = safeDate.split("-").map(Number);
+  const marchLastSunday = getLastSundayOfMonth(year, 2);
+  const octoberLastSunday = getLastSundayOfMonth(year, 9);
+  const numericDay = month * 100 + day;
+  const dstStart = 3 * 100 + marchLastSunday;
+  const dstEnd = 10 * 100 + octoberLastSunday;
+  return numericDay >= dstStart && numericDay < dstEnd ? "+02:00" : "+01:00";
+}
+
+function ensureStockholmOffset(dateTime: string): string {
+  const raw = String(dateTime || "").trim();
+  if (!raw) return raw;
+  if (raw.includes("Z") || /[+-]\d{2}:?\d{2}$/.test(raw)) return raw;
+  const datePart = raw.match(/\d{4}-\d{2}-\d{2}/)?.[0];
+  return raw + getStockholmUtcOffset(datePart);
+}
+
+function localStockholmDateBoundary(dateStr: string, endOfDay = false): string {
+  const timePart = endOfDay ? "23:59:59" : "00:00:00";
+  return `${dateStr}T${timePart}${getStockholmUtcOffset(dateStr)}`;
+}
+
+function getBusinessIdFromConfig(config: any): string | null {
+  return config?.businessRecordId || config?.business_id || config?.id || null;
+}
+
+function isLikelyWorkingHoursMarker(e: any): boolean {
+  const summary = String(e?.summary || e?.title || "").trim().toLowerCase();
+  const description = String(e?.description || "").trim().toLowerCase();
+  const text = `${summary} ${description}`;
+
+  if (!summary) return false;
+
+  return (
+    /working\s*hours|business\s*hours|opening\s*hours|öppettider|arbetstid|schema/.test(text) ||
+    /\b\d{1,2}\s*(am|pm)\b/.test(text) ||
+    /^laser\s+luxury\s*,?\s*\d{1,2}/i.test(summary)
+  );
 }
 
 function normalizeRequestedTime(input?: string): string | null {
@@ -362,13 +413,19 @@ function formatSwedishTimeSlots(slotsArray: string[], specificTime?: string, lan
 }
 
 function isBlockingCalendarEvent(e: any): boolean {
-  const summary = String(e?.summary || e?.title || "").trim().toLowerCase();
+  const summary = String(e?.summary || e?.title || "").trim();
+  const transparency = String(e?.transparency || "").toLowerCase();
+  const eventType = String(e?.eventType || "").toLowerCase();
+  const status = String(e?.status || "").toLowerCase();
 
-  // In this calendar, real appointments are created with summary "Bokad: ...".
-  // Recurring working-hour markers like "laser luxury, 9am" should NOT block availability.
-  // Otherwise a free time like Friday 12:00 can be falsely reported as booked.
-  if (summary && !summary.startsWith("bokad:") && !summary.includes("booked:")) {
-    console.log(`Calendar availability ignored non-booking event: ${summary}`);
+  if (status === "cancelled") return false;
+  if (transparency === "transparent") return false;
+  if (eventType === "workinglocation" || eventType === "outofoffice") return false;
+
+  // Working-hour markers must not block the whole day. Real customer events still block,
+  // even if they were not created by this bot and do not start with "Bokad:".
+  if (isLikelyWorkingHoursMarker(e)) {
+    console.log(`[Availability] Ignored working-hours marker: "${summary}"`);
     return false;
   }
 
@@ -400,14 +457,14 @@ function getDailySlots(startDateStr: string, endDateStr: string, events: any[], 
   // Friday 18:00 was rejected if the treatment duration ended after 18:00.
   // We allow appointments to start at 18:00 and finish later, as long as they fit
   // before BUSINESS_CLOSE_MINUTES. Adjust these two constants later from Dashboard.
-  const BUSINESS_OPEN_MINUTES = 10 * 60;
+  const BUSINESS_OPEN_MINUTES = 9 * 60;
   const BUSINESS_CLOSE_MINUTES = 20 * 60;
 
   const formatter = new Intl.DateTimeFormat('en-US', { timeZone: 'Europe/Stockholm', hour: '2-digit', minute: '2-digit', hour12: false });
   const dayFormatter = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Stockholm', weekday: 'long' });
 
   const makeSlot = (dStr: string, hour: number, minute: number) => {
-    const isoString = `${dStr}T${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:00+02:00`;
+    const isoString = `${dStr}T${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:00${getStockholmUtcOffset(dStr)}`;
     const slotD = new Date(isoString);
     let weekday = dayFormatter.format(slotD);
     weekday = weekday.charAt(0).toUpperCase() + weekday.slice(1);
@@ -562,8 +619,8 @@ class GoogleCalendarAdapter implements CalendarAdapter {
 
   async getEvents(startDate: string, endDate: string) {
     try {
-      const timeMin = new Date(`${startDate}T00:00:00Z`).toISOString();
-      const timeMax = new Date(`${endDate}T23:59:59Z`).toISOString();
+      const timeMin = new Date(localStockholmDateBoundary(startDate, false)).toISOString();
+      const timeMax = new Date(localStockholmDateBoundary(endDate, true)).toISOString();
       const res = await this.calendar.events.list({
         calendarId: this.calendarId,
         timeMin,
@@ -580,9 +637,9 @@ class GoogleCalendarAdapter implements CalendarAdapter {
 
   async checkSlots(startDate: string, endDate?: string, durationMinutes?: number, requestedTime?: string) {
     try {
-      const timeMin = new Date(`${startDate}T00:00:00Z`).toISOString();
+      const timeMin = new Date(localStockholmDateBoundary(startDate, false)).toISOString();
       const endDateString = endDate || startDate;
-      const timeMax = new Date(`${endDateString}T23:59:59Z`).toISOString();
+      const timeMax = new Date(localStockholmDateBoundary(endDateString, true)).toISOString();
 
       const res = await this.calendar.events.list({
         calendarId: this.calendarId,
@@ -592,7 +649,14 @@ class GoogleCalendarAdapter implements CalendarAdapter {
         orderBy: 'startTime',
       });
       const events = res.data.items || [];
+      console.log(`[Availability] start=${startDate}, end=${endDateString}, requestedTime=${requestedTime || "none"}, duration=${durationMinutes || 60}, rawEvents=${events.length}`);
+      for (const ev of events) {
+        const evStart = ev.start?.dateTime || ev.start?.date || ev.startTime;
+        const evEnd = ev.end?.dateTime || ev.end?.date || ev.endTime;
+        console.log(`[Availability] event summary="${ev.summary || ""}" start=${evStart} end=${evEnd} blocking=${isBlockingCalendarEvent(ev)}`);
+      }
       const slotsText = getDailySlots(startDate, endDateString, events, durationMinutes, requestedTime);
+      console.log(`[Availability] result=${JSON.stringify(slotsText)}`);
       return { available_slots_string: slotsText };
     } catch(e: any) {
       console.error("Google Calendar checkSlots Error:", e.message);
@@ -604,7 +668,7 @@ class GoogleCalendarAdapter implements CalendarAdapter {
     try {
       // Container runs in UTC, so parsing "T15:00:00" assumes UTC, which is 17:00 in Sweden.
       // We explicitly append Europe/Stockholm offset if not provided.
-      const safeDateTime = dateTime.includes('Z') || dateTime.includes('+') ? dateTime : dateTime + "+02:00";
+      const safeDateTime = ensureStockholmOffset(dateTime);
       const startTime = new Date(safeDateTime);
       const endTime = new Date(startTime.getTime() + durationMinutes * 60 * 1000); // dynamic duration
 
@@ -627,11 +691,12 @@ class GoogleCalendarAdapter implements CalendarAdapter {
 
 function getCalendarAdapter(config: any): CalendarAdapter {
   if (config.calendarProvider === 'google' || 
-      (!config.calendarProvider && process.env.GOOGLE_CLIENT_EMAIL && process.env.GOOGLE_PRIVATE_KEY && process.env.GOOGLE_CALENDAR_ID)) {
-    const email = process.env.GOOGLE_CLIENT_EMAIL || config.googleClientEmail;
-    const key = process.env.GOOGLE_PRIVATE_KEY || config.googlePrivateKey;
+      (!config.calendarProvider && process.env.GOOGLE_CLIENT_EMAIL && process.env.GOOGLE_PRIVATE_KEY && (config.googleCalendarId || process.env.GOOGLE_CALENDAR_ID))) {
+    const email = config.googleClientEmail || process.env.GOOGLE_CLIENT_EMAIL;
+    const key = config.googlePrivateKey || process.env.GOOGLE_PRIVATE_KEY;
     const id = config.googleCalendarId || process.env.GOOGLE_CALENDAR_ID;
     if (email && key && id) {
+      console.log(`[Calendar] Using Google calendar for business=${config.businessName || config.business_name || "unknown"}, business_id=${getBusinessIdFromConfig(config) || "missing"}, calendar_id=${id}`);
       return new GoogleCalendarAdapter(email, key, id);
     } else {
       console.warn("Google Calendar adapter requested but credentials missing. Falling back to Mock.");
@@ -639,6 +704,7 @@ function getCalendarAdapter(config: any): CalendarAdapter {
   } else if (config.calendarProvider === 'custom' && config.calendarApiUrl) {
     return new GenericCalendarAdapter(config.calendarApiUrl, config.calendarApiKey);
   }
+  console.warn("[Calendar] Falling back to MockCalendarAdapter. This should not happen in production.");
   return new MockCalendarAdapter();
 }
 
@@ -1123,7 +1189,7 @@ LANGUAGE RULE: Always reply in the same language as the latest customer message.
           body: JSON.stringify({ chat_id: chatId, text: textResponse })
         });
       }
-      postProcessMessage(chatId.toString(), platform, userMessageContent, textResponse, telegramToken, apiKey);
+      postProcessMessage(chatId.toString(), platform, userMessageContent, textResponse, telegramToken, apiKey, getBusinessIdFromConfig(config));
     } else {
       await fetch(`https://api.telegram.org/bot${telegramToken}/sendMessage`, {
         method: 'POST',
@@ -1131,7 +1197,7 @@ LANGUAGE RULE: Always reply in the same language as the latest customer message.
         body: JSON.stringify({ chat_id: chatId, text: textResponse })
       });
       
-      postProcessMessage(chatId.toString(), platform, userMessageContent, textResponse, telegramToken, apiKey);
+      postProcessMessage(chatId.toString(), platform, userMessageContent, textResponse, telegramToken, apiKey, getBusinessIdFromConfig(config));
     }
   } catch (error: any) {
     console.error("Webhook processing error:", error);
@@ -1270,9 +1336,7 @@ function normalizePlatformUserId(platform: string, userId: string) {
 }
 
 function getAppointmentTimes(dateTime: string, durationMinutes: number = 60) {
-  const safeDateTime = String(dateTime || "").includes("Z") || /[+-]\d{2}:?\d{2}$/.test(String(dateTime || ""))
-    ? String(dateTime)
-    : String(dateTime) + "+02:00";
+  const safeDateTime = ensureStockholmOffset(String(dateTime || ""));
   const start = new Date(safeDateTime);
   const duration = Number(durationMinutes || 60);
   const end = new Date(start.getTime() + duration * 60 * 1000);
@@ -1301,7 +1365,7 @@ async function recordAppointmentFromBooking(params: {
       return;
     }
 
-    const businessId = params.businessConfig?.businessRecordId || params.businessConfig?.business_id || params.businessConfig?.id || null;
+    const businessId = getBusinessIdFromConfig(params.businessConfig);
     const payload: any = {
       business_id: businessId,
       customer_name: params.name || null,
@@ -1317,6 +1381,9 @@ async function recordAppointmentFromBooking(params: {
     };
 
     console.log("Appointment DB insert attempt:", JSON.stringify(payload));
+    if (!businessId) {
+      console.error("Appointment DB insert warning: business_id is missing. Check tenant lookup before booking. businessConfig=", JSON.stringify({ businessName: params.businessConfig?.businessName || params.businessConfig?.business_name, googleCalendarId: params.businessConfig?.googleCalendarId, instagramAccountId: params.businessConfig?.instagramAccountId, messengerPageId: params.businessConfig?.messengerPageId, whatsappPhoneNumberId: params.businessConfig?.whatsappPhoneNumberId }));
+    }
 
     const { data, error } = await supabase
       .from("appointments")
@@ -1994,7 +2061,7 @@ LANGUAGE RULE: Always reply in the same language as the latest customer message.
     await sendWhatsAppMessage(from, textResponse, businessConfig);
 
     try {
-      await postProcessMessage(chatId, platform, textMessage, textResponse, businessConfig?.telegramToken, businessConfig?.apiKey);
+      await postProcessMessage(chatId, platform, textMessage, textResponse, businessConfig?.telegramToken, businessConfig?.apiKey, getBusinessIdFromConfig(businessConfig));
     } catch (e) {
       console.error("WhatsApp postProcessMessage failed:", e);
     }
@@ -2901,7 +2968,7 @@ LANGUAGE RULE: Always reply in the same language as the latest customer message.
     }
 
     try {
-      await postProcessMessage(chatId, platform, userMessageForLog, textResponse, businessConfig?.telegramToken, businessConfig?.apiKey);
+      await postProcessMessage(chatId, platform, userMessageForLog, textResponse, businessConfig?.telegramToken, businessConfig?.apiKey, getBusinessIdFromConfig(businessConfig));
     } catch (e) {
       console.error("Messenger postProcessMessage failed:", e);
     }
@@ -3218,7 +3285,7 @@ if (isVoiceMessage) {
   await sendInstagramMessage(senderId, textResponse, instagramToken);
 }
 try {
-  await postProcessMessage(chatId, platform, userMessageForLog, textResponse, businessConfig?.telegramToken, businessConfig?.apiKey);
+  await postProcessMessage(chatId, platform, userMessageForLog, textResponse, businessConfig?.telegramToken, businessConfig?.apiKey, getBusinessIdFromConfig(businessConfig));
 } catch (e) {
   console.error('Instagram postProcessMessage failed:', e);
 }

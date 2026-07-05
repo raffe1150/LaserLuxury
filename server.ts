@@ -784,6 +784,106 @@ activeConfig = {
 
 const chatSessions: Record<string, any[]> = {};
 const chatLanguages: Record<string, string> = {};
+
+const pendingBookings: Record<string, any> = {};
+
+function inferServiceFromText(text?: string): string {
+  const raw = String(text || "").toLowerCase();
+  if (raw.includes("bikini")) return "Bikinilinjebehandling";
+  if (raw.includes("laser")) return "Laserbehandling";
+  if (raw.includes("ansikte")) return "Ansiktsbehandling";
+  if (raw.includes("ben")) return "Benbehandling";
+  if (raw.includes("arm")) return "Armbehandling";
+  return "Bokning";
+}
+
+function isAffirmativeBookingText(text?: string): boolean {
+  const raw = String(text || "").trim().toLowerCase();
+  return /\b(ja|japp|yes|yep|ok|okej|absolut|boka|boka den|gör det|tack|ja tack)\b/i.test(raw);
+}
+
+function extractNameAndPhone(text?: string): { name: string; phone: string } | null {
+  const raw = String(text || "").trim();
+  if (!raw) return null;
+
+  const phoneMatch = raw.match(/(?:\+?\d[\d\s\-()]{6,}\d)/);
+  if (!phoneMatch) return null;
+
+  const phone = phoneMatch[0].replace(/[^\d+]/g, "");
+  if (phone.replace(/\D/g, "").length < 7) return null;
+
+  let namePart = raw
+    .replace(phoneMatch[0], " ")
+    .replace(/mitt\s+namn\s+är/ig, " ")
+    .replace(/jag\s+heter/ig, " ")
+    .replace(/mitt\s+nummer\s+är/ig, " ")
+    .replace(/nummer\s+är/ig, " ")
+    .replace(/telefon(?:nummer)?\s+är/ig, " ")
+    .replace(/mobil(?:nummer)?\s+är/ig, " ")
+    .replace(/name\s+is/ig, " ")
+    .replace(/my\s+name\s+is/ig, " ")
+    .replace(/phone\s+(?:number\s+)?is/ig, " ")
+    .replace(/och/ig, " ")
+    .replace(/and/ig, " ")
+    .replace(/[,:;.]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const words = namePart.split(" ").filter(w => /^[A-Za-zÅÄÖåäöÉéÜüÖöÄä\s'-]+$/.test(w));
+  const name = words.slice(0, 3).join(" ").trim();
+
+  if (!name) return null;
+  return { name, phone };
+}
+
+function isExactRequestedSlotAvailable(slotsArray: string[], requestedTime?: string): boolean {
+  const normalized = normalizeRequestedTime(requestedTime || "");
+  if (!normalized) return false;
+  for (const slot of slotsArray) {
+    const iso = parseSlotIso(slot);
+    if (!iso) continue;
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) continue;
+    const t = d.toLocaleTimeString("sv-SE", { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Stockholm" });
+    if (t === normalized) return true;
+  }
+  return false;
+}
+
+function getExactSlotIso(slotsArray: string[], requestedTime?: string): string | null {
+  const normalized = normalizeRequestedTime(requestedTime || "");
+  for (const slot of slotsArray) {
+    const iso = parseSlotIso(slot);
+    if (!iso) continue;
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) continue;
+    const t = d.toLocaleTimeString("sv-SE", { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Stockholm" });
+    if (!normalized || t === normalized) return iso;
+  }
+  return null;
+}
+
+function formatAskContactMessage(language: string = "sv"): string {
+  if (language === "fa") return "حتماً 😊 برای رزرو، لطفاً نام و شماره موبایل‌تان را بفرستید.";
+  if (language === "es") return "Perfecto 😊 Para reservar, necesito tu nombre y número de móvil.";
+  if (language === "de") return "Sehr gern 😊 Für die Buchung brauche ich bitte Ihren Namen und Ihre Mobilnummer.";
+  if (language === "ar") return "تمام 😊 لإتمام الحجز، أحتاج اسمك ورقم هاتفك.";
+  if (language === "en") return "Perfect 😊 To book it, I just need your name and mobile number.";
+  return "Toppen! Innan jag bokar din tid behöver jag ditt namn och mobilnummer. 😊";
+}
+
+function formatBookingSavedMessage(language: string, name: string, service: string, dateTime: string): string {
+  const start = new Date(ensureStockholmOffset(dateTime));
+  const dateText = start.toLocaleDateString("sv-SE", { timeZone: "Europe/Stockholm", weekday: "long", day: "numeric", month: "long" });
+  const timeText = start.toLocaleTimeString("sv-SE", { timeZone: "Europe/Stockholm", hour: "2-digit", minute: "2-digit" });
+  if (language === "fa") return `عالی ${name}! وقت شما برای ${service} در ${dateText} ساعت ${timeText} رزرو شد. 😊`;
+  if (language === "es") return `Perfecto ${name}! Tu cita para ${service} está reservada el ${dateText} a las ${timeText}. 😊`;
+  if (language === "de") return `Perfekt ${name}! Ihr Termin für ${service} ist am ${dateText} um ${timeText} gebucht. 😊`;
+  if (language === "ar") return `تمام ${name}! تم حجز موعدك لـ ${service} يوم ${dateText} الساعة ${timeText}. 😊`;
+  if (language === "en") return `Perfect ${name}! Your appointment for ${service} is booked on ${dateText} at ${timeText}. 😊`;
+  return `Härligt ${name}! Din tid för ${service} är nu bokad ${dateText} kl ${timeText}. Vi ser fram emot att träffa dig! 😊`;
+}
+
 let globalWaitUntil = 0;
 
 type TelegramPollerState = {
@@ -2783,6 +2883,57 @@ async function processMessengerUpdate(webhookEvent: any, config: any, platform: 
   }
 
   try {
+    const pending = pendingBookings[chatId];
+    const detectedLang = detectUserLanguage(textMessage || "");
+
+    if (pending && textMessage && isAffirmativeBookingText(textMessage) && pending.status === "awaiting_confirmation") {
+      pending.status = "awaiting_contact";
+      pendingBookings[chatId] = pending;
+      const askText = formatAskContactMessage(detectedLang);
+      console.log(`[DeterministicBooking] Messenger confirmation received. Awaiting contact. chatId=${chatId}`);
+      await sendMessengerMessage(senderId, askText, businessConfig);
+      await postProcessMessage(chatId, platform, textMessage, askText, businessConfig?.telegramToken, businessConfig?.apiKey, getBusinessIdFromConfig(businessConfig));
+      return;
+    }
+
+    const contact = extractNameAndPhone(textMessage || "");
+    if (pending && contact && (pending.status === "awaiting_contact" || pending.status === "awaiting_confirmation")) {
+      console.log(`[DeterministicBooking] Messenger contact received. Booking now. chatId=${chatId}, pending=${JSON.stringify({ service: pending.service, dateTime: pending.dateTime, durationMinutes: pending.durationMinutes })}`);
+      const adapter = getCalendarAdapter(businessConfig);
+      const adapterRes = await adapter.insertAppointment(contact.name, contact.phone, pending.service, pending.dateTime, pending.durationMinutes, chatId);
+
+      if (adapterRes && adapterRes.success) {
+        await recordAppointmentFromBooking({
+          businessConfig,
+          platform: "messenger",
+          userId: chatId,
+          name: contact.name,
+          phone: contact.phone,
+          service: pending.service,
+          dateTime: pending.dateTime,
+          durationMinutes: pending.durationMinutes
+        });
+        delete pendingBookings[chatId];
+
+        const bookedText = formatBookingSavedMessage(detectedLang, contact.name, pending.service, pending.dateTime);
+        await sendMessengerMessage(senderId, bookedText, businessConfig);
+        await postProcessMessage(chatId, platform, textMessage, bookedText, businessConfig?.telegramToken, businessConfig?.apiKey, getBusinessIdFromConfig(businessConfig));
+        return;
+      }
+
+      console.error("[DeterministicBooking] Messenger calendar insert failed:", JSON.stringify(adapterRes));
+      const failText = detectedLang === "sv"
+        ? "Ursäkta, jag kunde inte slutföra bokningen just nu. Försök gärna igen om en liten stund."
+        : getErrorMessageByLanguage(detectedLang);
+      await sendMessengerMessage(senderId, failText, businessConfig);
+      await postProcessMessage(chatId, platform, textMessage, failText, businessConfig?.telegramToken, businessConfig?.apiKey, getBusinessIdFromConfig(businessConfig));
+      return;
+    }
+  } catch (bookingFallbackErr) {
+    console.error("[DeterministicBooking] Messenger fallback crashed:", bookingFallbackErr);
+  }
+
+  try {
     if (!chatSessions[chatId as any]) chatSessions[chatId as any] = [];
     const history = chatSessions[chatId as any];
 
@@ -2858,6 +3009,7 @@ LANGUAGE RULE: Always reply in the same language as the latest customer message.
 
     let maxTurns = 3;
     while (chatResponse.functionCalls && chatResponse.functionCalls.length > 0 && maxTurns > 0) {
+      console.log("[MessengerTools] functionCalls:", JSON.stringify(chatResponse.functionCalls.map((c: any) => ({ name: c.function?.name, arguments: c.function?.arguments }))));
       maxTurns--;
       messages.push({ role: "assistant", content: chatResponse.text || null, tool_calls: chatResponse.functionCalls });
 
@@ -2873,7 +3025,21 @@ LANGUAGE RULE: Always reply in the same language as the latest customer message.
               .split("\n")
               .filter((s: string) => s.trim().length > 0 && !s.includes("No available slots"));
 
-            const replyMessage = formatSwedishTimeSlots(slotsArray, args.requestedTime || inferRequestedTimeFromText(textMessage || ""), detectUserLanguage(textMessage || ""));
+            const requestedTime = args.requestedTime || inferRequestedTimeFromText(textMessage || "");
+            const exactIso = getExactSlotIso(slotsArray, requestedTime);
+            if (requestedTime && exactIso && isExactRequestedSlotAvailable(slotsArray, requestedTime)) {
+              pendingBookings[chatId] = {
+                businessConfig,
+                platform: "messenger",
+                service: args.service || inferServiceFromText(textMessage || ""),
+                dateTime: exactIso,
+                durationMinutes: Number(args.durationMinutes || 60),
+                status: "awaiting_confirmation"
+              };
+              console.log(`[DeterministicBooking] Pending Messenger booking saved: ${JSON.stringify({ chatId, service: pendingBookings[chatId].service, dateTime: exactIso, durationMinutes: pendingBookings[chatId].durationMinutes, business_id: getBusinessIdFromConfig(businessConfig) })}`);
+            }
+
+            const replyMessage = formatSwedishTimeSlots(slotsArray, requestedTime, detectUserLanguage(textMessage || ""));
             return { TERMINATE_EARLY: true, replyMessage };
           }
         } else if (call.function.name === "insertAppointment" && args) {

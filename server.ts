@@ -1779,7 +1779,7 @@ function detectUserLanguage(text: string): string {
   // Strong phrase signals.
   add("fa", /\b(salam|khubi|khub|khubam|khub hastin|mikham|mikhastam|baraye|vaght|saat|sate|doshanbe|seshanbe|chaharshanbe|panjshanbe|jome|shanbe|yekshanbe|emrooz|farda|bale|baleh|are|khube|chi|che|migin|migirin|shohar|shoharam|esm|esme|esmam|nam|name|shomare|shomaram|telefon|telefonam|mobail|mobile|mobilesh|ham hast|hastam|hast|sepas|mersi|merci|mamnoon|mamnun)\b/g, 3);
   add("de", /\b(hallo|guten|danke|bitte|termin|uhr|morgen|nachmittag|buchen|buchung|behandlung|ganzkörper|ganzkoerper|körper|koerper|ich möchte|ich moechte|ich will|mein name|meine nummer|telefonnummer|nummer ist|montag|dienstag|mittwoch|donnerstag|freitag|samstag|sonntag)\b/g, 4);
-  add("en", /\b(hi|hello|hey|thanks|thank you|yes|no|please|appointment|book|booking|available|next week|today|tomorrow|friday|thursday|wednesday|tuesday|monday|saturday|sunday|treatment|bikini|fullbody|full body|my name is|my phone is|phone|number|i want|i would like|can i|could i)\b/g, 2);
+  add("en", /\b(hi|hello|hey|thanks|thank you|yes|no|please|appointment|book|booking|available|next week|today|tomorrow|friday|thursday|wednesday|tuesday|monday|saturday|sunday|treatment|bikini|fullbody|full body|my name is|my phone is|phone|number|i want|i would like|i can|can i|could i)\b/g, 2);
   add("sv", /\b(hej|hejsan|tack|tusen tack|ja tack|nej|jag|vill|ska|ha|boka|bokning|tid|ledig|behandling|klockan|kl|mitt namn|mitt nummer|mobilnummer|telefonnummer|måndag|tisdag|onsdag|torsdag|fredag|lördag|söndag|idag|imorgon)\b/g, 2);
   add("es", /\b(hola|gracias|por favor|quiero|cita|reservar|reserva|tratamiento|mañana|manana|hora|semana|lunes|martes|miércoles|miercoles|jueves|viernes|sábado|sabado|domingo|mi nombre|mi teléfono|telefono)\b/g, 3);
   add("ar", /\b(marhaba|salam|shukran|maw3ed|maw'ed|hajz|bukra|alyawm|naam|la)\b/g, 2);
@@ -1822,6 +1822,53 @@ function isExplicitLanguageSwitch(text?: string): string | null {
   return null;
 }
 
+
+function hasStrongLanguageEvidence(language: string, text?: string): boolean {
+  const raw = String(text || "").trim();
+  const lower = raw.toLowerCase();
+  if (!raw) return false;
+
+  // These patterns are intentionally stronger than the normal detector. They are used
+  // to allow a new real message to override an old chat language, even when the message
+  // also contains a time like 16:30. Short replies like "yes", "ok", "tack", "merci"
+  // are handled elsewhere and must not switch the conversation language.
+  if (language === "en") {
+    return /\b(hi|hello|hey|i\s+want|i\s+would\s+like|i\s+can|can\s+i|could\s+i|appointment|book|booking|available|next\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday|week)|my\s+name\s+is|my\s+phone\s+is|pedicure|treatment|quick\s+refresh)\b/i.test(lower);
+  }
+  if (language === "sv") {
+    return /\b(hej|hejsan|jag\s+vill|jag\s+ska|jag\s+kan|boka|bokning|ledig|behandling|nästa\s+(måndag|tisdag|onsdag|torsdag|fredag|lördag|söndag)|mitt\s+namn|mitt\s+nummer|mobilnummer)\b/i.test(lower);
+  }
+  if (language === "de") {
+    return /\b(hallo|guten|ich\s+möchte|ich\s+moechte|ich\s+will|termin|buchen|buchung|behandlung|ganzkörper|ganzkoerper|mein\s+name|meine\s+nummer|telefonnummer|nächsten|naechsten)\b/i.test(lower);
+  }
+  if (language === "es") {
+    return /\b(hola|quiero|me\s+gustaría|me\s+gustaria|cita|reservar|reserva|tratamiento|mi\s+nombre|mi\s+teléfono|mi\s+telefono|la\s+próxima|la\s+proxima)\b/i.test(lower);
+  }
+  if (language === "fa") {
+    return /[پچژگۀک‌ی]/u.test(raw) || /\b(salam|mikham|mikhastam|baraye|vaght|saat|sate|doshanbe|seshanbe|chaharshanbe|panjshanbe|jome|shanbe|yekshanbe|esme|esmam|shomare|shomaram|telefonam)\b/i.test(lower);
+  }
+  if (language === "ar") {
+    return /(مرحب|أهلا|اهلا|السلام|موعد|حجز|احجز|أحجز|علاج|جلسة|الساعة|الخميس|الاثنين|الثلاثاء|الأربعاء|الاربعاء|الجمعة|السبت|الأحد|الاحد|اسمي|هاتفي|رقمي)/u.test(raw);
+  }
+  return false;
+}
+
+function shouldAllowLatestLanguageOverride(chatId: string, previous: string | undefined, detected: string, latestText?: string): boolean {
+  const text = String(latestText || "").trim();
+  if (!previous || !detected || detected === previous || !text) return false;
+  if (isAmbiguousShortReply(text)) return false;
+  if (isThanksOnlyText(text)) return false;
+  if (isAffirmativeBookingText(text)) return false;
+
+  // While a booking is waiting for name/phone, keep the already chosen language.
+  // A customer may provide contact info in English even if the conversation started in Swedish.
+  if (pendingBookings[chatId]) return false;
+  if (getRecentCompletedBooking(chatId)) return false;
+  if (extractNameAndPhone(text)) return false;
+
+  return hasStrongLanguageEvidence(detected, text);
+}
+
 function shouldKeepPreviousConversationLanguage(chatId: string, latestText?: string): boolean {
   const text = String(latestText || "").trim();
   if (!text) return true;
@@ -1856,11 +1903,25 @@ function getConversationLanguage(chatId: string, latestText?: string): string {
 
   if (completed && isThanksOnlyText(text)) return completed.language || previous || "en";
 
+  const detected = detectUserLanguage(text || "");
+
+  // Important production fix:
+  // Old Telegram/Instagram chats can already have a previous language locked from an older test.
+  // If the next message is a full, strong message in another language AND includes a time,
+  // the old code kept the previous language because inferRequestedTimeFromText(text) returned true.
+  // That caused English conversations to receive Swedish deterministic replies like:
+  // "Ja, fredag 17 juli kl 16:30 är ledig".
+  // Strong new messages must be allowed to reset/override the old session language.
+  if (shouldAllowLatestLanguageOverride(chatId, previous, detected, text)) {
+    chatLanguages[chatId] = detected;
+    console.log(`[LanguageLock] overriding previous=${previous} with detected=${detected} for chatId=${chatId}`);
+    return detected;
+  }
+
   if (previous && shouldKeepPreviousConversationLanguage(chatId, text)) {
     return previous;
   }
 
-  const detected = detectUserLanguage(text || "");
   if (text) {
     chatLanguages[chatId] = detected;
     return detected;

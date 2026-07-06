@@ -25,6 +25,27 @@ if (process.env.SUPABASE_URL && (process.env.SUPABASE_SERVICE_ROLE_KEY || proces
 
 let currentKeyIndex = 0;
 
+// Simple in-process AI request queue. This prevents too many simultaneous Gemini calls
+// when many customers message different businesses at the same time.
+const MAX_CONCURRENT_AI_REQUESTS = Number(process.env.MAX_CONCURRENT_AI_REQUESTS || 3);
+let activeAiRequests = 0;
+const aiRequestQueue: Array<() => void> = [];
+
+async function runWithAiQueue<T>(job: () => Promise<T>): Promise<T> {
+  if (activeAiRequests >= MAX_CONCURRENT_AI_REQUESTS) {
+    await new Promise<void>((resolve) => aiRequestQueue.push(resolve));
+  }
+
+  activeAiRequests++;
+  try {
+    return await job();
+  } finally {
+    activeAiRequests = Math.max(0, activeAiRequests - 1);
+    const next = aiRequestQueue.shift();
+    if (next) next();
+  }
+}
+
 function getApiKeys(): string[] {
     const keys: string[] = [];
     if (process.env.GEMINI_API_KEY) {
@@ -93,7 +114,7 @@ async function generateContentWithFallback(ai: GoogleGenAI | null, options: { me
   let maxRetries = Math.max(retries, allKeys.length * 2);
   while (true) {
     try {
-       response = await activeAi.models.generateContent(params);
+       response = await runWithAiQueue(() => activeAi.models.generateContent(params));
        break;
     } catch(e: any) {
        console.warn("API Error in generateContentWithFallback:", String(e.message || e));
@@ -805,6 +826,83 @@ activeConfig = {
 const chatSessions: Record<string, any[]> = {};
 const chatLanguages: Record<string, string> = {};
 
+// Daily customer message limit. One counter per business + platform + customer + Stockholm date.
+const DAILY_CUSTOMER_MESSAGE_LIMIT = Number(process.env.DAILY_CUSTOMER_MESSAGE_LIMIT || 15);
+
+function getStockholmUsageDate(): string {
+  return new Intl.DateTimeFormat('sv-SE', {
+    timeZone: 'Europe/Stockholm',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).format(new Date());
+}
+
+function formatDailyLimitMessage(language: string = 'en'): string {
+  if (language === 'sv') return 'Dagens samtalsgräns är nådd 😊 Skriv gärna igen imorgon så hjälper vi dig vidare.';
+  if (language === 'fa') return 'ظرفیت گفتگوی امروز شما پر شده است 😊 لطفاً فردا دوباره پیام بدهید تا ادامه بدهیم.';
+  if (language === 'de') return 'Das heutige Gesprächslimit ist erreicht 😊 Schreiben Sie uns bitte morgen wieder, dann helfen wir Ihnen weiter.';
+  if (language === 'es') return 'El límite de conversación de hoy se ha alcanzado 😊 Escríbenos de nuevo mañana y seguimos ayudándote.';
+  if (language === 'ar') return 'تم الوصول إلى حد المحادثة لهذا اليوم 😊 يرجى مراسلتنا غدًا وسنكمل مساعدتك.';
+  return 'Today’s chat limit has been reached 😊 Please message us again tomorrow and we’ll continue helping you.';
+}
+
+async function checkAndIncrementDailyUsage(params: { businessId?: string | number | null; platform: string; userId: string; language?: string; limit?: number; }) {
+  const limit = Number(params.limit || DAILY_CUSTOMER_MESSAGE_LIMIT || 15);
+  const businessId = params.businessId ? String(params.businessId) : '0';
+  const platform = String(params.platform || 'unknown');
+  const userId = String(params.userId || 'unknown');
+  const usageDate = getStockholmUsageDate();
+
+  if (!supabase) {
+    return { allowed: true, count: 0, limit, reason: 'supabase_not_configured' };
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from('message_usage')
+      .select('id,message_count')
+      .eq('business_id', businessId)
+      .eq('platform', platform)
+      .eq('user_id', userId)
+      .eq('usage_date', usageDate)
+      .maybeSingle();
+
+    if (error) {
+      console.error('[UsageLimit] lookup error. Allowing message so production does not break:', JSON.stringify(error));
+      return { allowed: true, count: 0, limit, reason: 'lookup_error' };
+    }
+
+    const currentCount = Number(data?.message_count || 0);
+    if (currentCount >= limit) {
+      console.log(`[UsageLimit] blocked business=${businessId}, platform=${platform}, user=${userId}, date=${usageDate}, count=${currentCount}, limit=${limit}`);
+      return { allowed: false, count: currentCount, limit, reason: 'limit_reached' };
+    }
+
+    if (data?.id) {
+      const { error: updateError } = await supabase
+        .from('message_usage')
+        .update({ message_count: currentCount + 1, updated_at: new Date().toISOString() })
+        .eq('id', data.id);
+      if (updateError) console.error('[UsageLimit] update error:', JSON.stringify(updateError));
+      return { allowed: true, count: currentCount + 1, limit };
+    }
+
+    const { error: insertError } = await supabase.from('message_usage').insert([{
+      business_id: businessId,
+      platform,
+      user_id: userId,
+      usage_date: usageDate,
+      message_count: 1
+    }]);
+    if (insertError) console.error('[UsageLimit] insert error:', JSON.stringify(insertError));
+    return { allowed: true, count: 1, limit };
+  } catch (err) {
+    console.error('[UsageLimit] crashed. Allowing message so production does not break:', err);
+    return { allowed: true, count: 0, limit, reason: 'crashed' };
+  }
+}
+
 const pendingBookings: Record<string, any> = {};
 const recentlyCompletedBookings: Record<string, { completedAt: number; language: string; name?: string }> = {};
 
@@ -1364,6 +1462,25 @@ async function processTelegramUpdate(update: any, config: any, platform: string 
       });
       appendLocalHistory(telegramSessionId, text || "", thanksText);
       await postProcessMessage(chatId.toString(), platform, text || "", thanksText, telegramToken, apiKey, getBusinessIdFromConfig(config));
+      return;
+    }
+
+    const usageLanguage = getConversationLanguage(telegramSessionId, text || "");
+    const usage = await checkAndIncrementDailyUsage({
+      businessId: getBusinessIdFromConfig(config),
+      platform,
+      userId: telegramSessionId,
+      language: usageLanguage
+    });
+    if (!usage.allowed) {
+      const limitText = formatDailyLimitMessage(usageLanguage);
+      await fetch(`https://api.telegram.org/bot${telegramToken}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: chatId, text: limitText })
+      });
+      appendLocalHistory(telegramSessionId, text || '[voice]', limitText);
+      await postProcessMessage(chatId.toString(), platform, text || '[voice]', limitText, telegramToken, apiKey, getBusinessIdFromConfig(config));
       return;
     }
 
@@ -2401,6 +2518,20 @@ async function processWhatsAppMessage(message: any, metadata: any, config: any, 
     if (!chatSessions[chatId as any]) chatSessions[chatId as any] = [];
     const history = chatSessions[chatId as any];
 
+    const usage = await checkAndIncrementDailyUsage({
+      businessId: getBusinessIdFromConfig(businessConfig),
+      platform,
+      userId: chatId,
+      language: userLanguage
+    });
+    if (!usage.allowed) {
+      const limitText = formatDailyLimitMessage(userLanguage);
+      await sendWhatsAppMessage(from, limitText, businessConfig);
+      appendLocalHistory(chatId, textMessage, limitText);
+      await postProcessMessage(chatId, platform, textMessage, limitText, businessConfig?.telegramToken, businessConfig?.apiKey, getBusinessIdFromConfig(businessConfig));
+      return;
+    }
+
     const messages = [...history];
     messages.push({ role: "user", content: textMessage });
 
@@ -3343,6 +3474,20 @@ async function processMessengerUpdate(webhookEvent: any, config: any, platform: 
       userMessageForLog = "[Messenger Voice Message]";
     }
 
+    const usage = await checkAndIncrementDailyUsage({
+      businessId: getBusinessIdFromConfig(businessConfig),
+      platform,
+      userId: chatId,
+      language: userLanguage
+    });
+    if (!usage.allowed) {
+      const limitText = formatDailyLimitMessage(userLanguage);
+      await sendMessengerMessage(senderId, limitText, businessConfig);
+      appendLocalHistory(chatId, textMessage || userMessageForLog, limitText);
+      await postProcessMessage(chatId, platform, userMessageForLog, limitText, businessConfig?.telegramToken, businessConfig?.apiKey, getBusinessIdFromConfig(businessConfig));
+      return;
+    }
+
     const messages = [...history];
     messages.push({ role: "user", content: userMessageContent });
 
@@ -3680,6 +3825,20 @@ if (contentType === "video/mp4") {
         );
         return;
       }
+    }
+
+    const usage = await checkAndIncrementDailyUsage({
+      businessId: getBusinessIdFromConfig(businessConfig),
+      platform,
+      userId: chatId,
+      language: userLanguage
+    });
+    if (!usage.allowed) {
+      const limitText = formatDailyLimitMessage(userLanguage);
+      await sendInstagramMessage(senderId, limitText, getBusinessInstagramToken(businessConfig));
+      appendLocalHistory(chatId, textMessage || userMessageForLog, limitText);
+      await postProcessMessage(chatId, platform, userMessageForLog, limitText, businessConfig?.telegramToken, businessConfig?.apiKey, getBusinessIdFromConfig(businessConfig));
+      return;
     }
 
     const messages = [...history];

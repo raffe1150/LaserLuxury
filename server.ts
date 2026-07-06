@@ -874,6 +874,7 @@ function cleanCustomerNameCandidate(candidate?: string): string {
     .replace(/\b(my|mein|meine|mitt|min|mi|esme|esm|esmam|namn|name|nombre|نام|اسم)\b/ig, " ")
     .replace(/\b(is|ist|är|hast|hastam|am|is)\b/ig, " ")
     .replace(/\b(phone|telefon|telephone|telefonam|telefonnummer|number|nummer|numret|shomare|shomaram|mobile|mobil|mobilesh)\b.*$/ig, " ")
+    .replace(/(?:^|\s)(?:و?رقم(?:ي)?|و?هاتفي|و?الهاتف|و?الجوال|هاتف(?:ي)?|رقم(?:ي)?|المحمول)\b.*$/u, " ")
     .replace(/[0-9+()\-]/g, " ")
     .replace(/[,:;.]/g, " ")
     .replace(/\s+/g, " ")
@@ -881,14 +882,14 @@ function cleanCustomerNameCandidate(candidate?: string): string {
 
   const stop = new Set([
     "mitt","min","namn","name","mein","meine","nombre","är","ist","is","hast","hastam","man","my",
-    "telefon","telefonam","phone","nummer","number","shomare","shomaram","mobile","mobil","och","and","und","va"
+    "telefon","telefonam","phone","nummer","number","shomare","shomaram","mobile","mobil","och","and","und","va","اسمي","إسمي","انا","أنا","رقمي","هاتفي","الهاتف","الجوال","هو"
   ]);
 
   const words = s
     .split(" ")
     .map(w => w.trim())
     .filter(Boolean)
-    .filter(w => /^[A-Za-zÅÄÖåäöÉéÜüÖöÄäÁáÍíÓóÚúÑñÇçŞşĞğ'-]+$/.test(w))
+    .filter(w => /^[A-Za-zÅÄÖåäöÉéÜüÖöÄäÁáÍíÓóÚúÑñÇçŞşĞğ'\-\u0600-\u06FF]+$/.test(w))
     .filter(w => !stop.has(w.toLowerCase()));
 
   return words.slice(0, 2).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ").trim();
@@ -914,7 +915,8 @@ function extractNameAndPhone(text?: string): { name: string; phone: string } | n
     /(?:mein\s+name\s+ist|ich\s+hei(?:ß|ss)e)\s+([A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,}(?:\s+[A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,})?)/i,
     /(?:mi\s+nombre\s+es|me\s+llamo)\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ'-]{2,}(?:\s+[A-Za-zÁÉÍÓÚÜÑáéíóúüñ'-]{2,})?)/i,
     /(?:esme?\s+man|esmam|namam|name\s+man)\s+([A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,}(?:\s+[A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,})?)/i,
-    /(?:نام(?:م)?|اسم(?:م)?)\s+([\u0600-\u06FF]{2,}(?:\s+[\u0600-\u06FF]{2,})?)/u
+    /(?:نام(?:م)?|اسم(?:م)?)\s+([\u0600-\u06FF]{2,}(?:\s+[\u0600-\u06FF]{2,})?)/u,
+    /(?:اسمي|إسمي|انا اسمي|أنا اسمي|الاسم)\s+([\u0600-\u06FF]{2,})(?=\s+(?:و|ورقم|وهاتفي|رقمي|هاتفي|هو)|\s*$)/u
   ];
 
   for (const pattern of patterns) {
@@ -1354,7 +1356,7 @@ async function processTelegramUpdate(update: any, config: any, platform: string 
     
     const completedBooking = getRecentCompletedBooking(telegramSessionId);
     if (text && completedBooking && isThanksOnlyText(text || "")) {
-      const thanksText = formatThanksReply(completedBooking.language || chatLanguages[telegramSessionId] || detectUserLanguage(text), completedBooking.name);
+      const thanksText = formatThanksReply(completedBooking.language || getLockedReplyLanguage(telegramSessionId, text), completedBooking.name);
       await fetch(`https://api.telegram.org/bot${telegramToken}/sendMessage`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1404,7 +1406,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
   currentDateContext +
   constraint +
   languageEngine +
-  buildLanguageLockInstruction(chatLanguages[telegramSessionId] || detectUserLanguage(text || ""));
+  buildLanguageLockInstruction(getConversationLanguage(telegramSessionId, text || ""));
   if (voice) {
     finalSystemInstruction +=
     "\nVOICE ENGINE:\n" +
@@ -1440,7 +1442,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
                     .split('\n')
                     .filter((s: string) => s.trim().length > 0 && !s.includes('No available slots'));
                 
-                const replyMessage = formatSwedishTimeSlots(slotsArray, args.requestedTime || inferRequestedTimeFromText(text || ""), detectUserLanguage(text || ""));
+                const replyMessage = formatSwedishTimeSlots(slotsArray, args.requestedTime || inferRequestedTimeFromText(text || ""), getLockedReplyLanguage(telegramSessionId, text || ""));
                 return { TERMINATE_EARLY: true, replyMessage };
             }
         }
@@ -1460,7 +1462,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
               dateTime: args.dateTime,
               durationMinutes: args.durationMinutes
             });
-            rememberCompletedBooking(chatId.toString(), chatLanguages[telegramSessionId] || detectUserLanguage(text || ""), safeName);
+            rememberCompletedBooking(telegramSessionId, getLockedReplyLanguage(telegramSessionId, text || ""), safeName);
           }
           const notifyToken = config?.telegramToken || activeConfig?.telegramToken || process.env.TELEGRAM_TOKEN;
           const notifyAdmin = config?.adminTelegramChatId || activeConfig?.adminTelegramChatId || process.env.ADMIN_TELEGRAM_ID;
@@ -1631,10 +1633,19 @@ function detectUserLanguage(text: string): string {
   if (!raw) return "en";
   const lower = raw.toLowerCase();
 
-  // Explicit script checks first.
+  // Explicit Arabic/Persian script checks first.
+  // Important: Arabic and Persian share Unicode ranges, so we must not default all Arabic-script
+  // messages to Persian. This was causing Arabic conversations to flip into Persian after tool calls.
   if (/[\u0600-\u06FF]/.test(raw)) {
-    if (/\b(مرحبا|السلام|شكرا|موعد|حجز|اليوم|غدا|غداً|نعم|لا)\b/u.test(raw)) return "ar";
-    return "fa";
+    const hasPersianSpecificChars = /[پچژگۀک‌ی]/u.test(raw);
+    const hasPersianWords = /(سلام|ممنون|مرسی|سپاس|میخوام|می‌خوام|رزرو|وقت|شنبه|دوشنبه|سه‌شنبه|چهارشنبه|پنجشنبه|جمعه|شماره|موبایل|اسمم|نامم|برای|خوبه|بله|آره)/u.test(raw);
+    const hasArabicSpecificWords = /(مرحب|أهلا|اهلا|السلام|شكرا|شكرًا|موعد|حجز|احجز|أحجز|علاج|جلسة|الجسم|كامل|الساعة|مساء|صباح|نعم|لا|الخميس|الاثنين|الثلاثاء|الأربعاء|الاربعاء|الجمعة|السبت|الأحد|الاحد|القادم|هاتفي|رقمي|اسمي|إسمي|اسمه|جوال|المحمول)/u.test(raw);
+
+    if (hasArabicSpecificWords && !hasPersianSpecificChars) return "ar";
+    if (hasPersianSpecificChars || hasPersianWords) return "fa";
+    // If the text is Arabic-script but not clearly Persian, prefer Arabic.
+    // The conversation lock will preserve Persian for existing Persian chats.
+    return "ar";
   }
 
   const scores: Record<string, number> = { en: 0, sv: 0, de: 0, es: 0, fa: 0, ar: 0 };
@@ -1654,10 +1665,10 @@ function detectUserLanguage(text: string): string {
   add("en", /\b(hi|hello|hey|thanks|thank you|yes|no|please|appointment|book|booking|available|next week|today|tomorrow|friday|thursday|wednesday|tuesday|monday|saturday|sunday|treatment|bikini|fullbody|full body|my name is|my phone is|phone|number|i want|i would like|can i|could i)\b/g, 2);
   add("sv", /\b(hej|hejsan|tack|tusen tack|ja tack|nej|jag|vill|ska|ha|boka|bokning|tid|ledig|behandling|klockan|kl|mitt namn|mitt nummer|mobilnummer|telefonnummer|måndag|tisdag|onsdag|torsdag|fredag|lördag|söndag|idag|imorgon)\b/g, 2);
   add("es", /\b(hola|gracias|por favor|quiero|cita|reservar|reserva|tratamiento|mañana|manana|hora|semana|lunes|martes|miércoles|miercoles|jueves|viernes|sábado|sabado|domingo|mi nombre|mi teléfono|telefono)\b/g, 3);
-  add("ar", /\b(marhaba|shukran|maw3ed|maw'ed|hajz|bukra|alyawm|naam|la)\b/g, 2);
+  add("ar", /\b(marhaba|salam|shukran|maw3ed|maw'ed|hajz|bukra|alyawm|naam|la)\b/g, 2);
 
   // Some short replies are ambiguous. Do not let a single "ja" beat an existing language elsewhere.
-  if (/^\s*(ja|ok|okej|yes|bale|si|sí|bitte|merci|mersi|thanks|tack|danke)\s*[!.؟?]*\s*$/i.test(raw)) {
+  if (/^\s*(ja|ok|okej|yes|bale|si|sí|bitte|merci|mersi|thanks|tack|danke|gracias)\s*[!.؟?]*\s*$/i.test(raw)) {
     if (/\b(bittee?|danke)\b/i.test(lower)) return "de";
     if (/\b(si|sí|gracias)\b/i.test(lower)) return "es";
     if (/\b(bale|merci|mersi|mamnoon|sepas)\b/i.test(lower)) return "fa";
@@ -1680,22 +1691,55 @@ function isAmbiguousShortReply(text?: string): boolean {
   return /^(ja|ja tack|ok|okej|yes|yep|bale|baleh|are|si|sí|bitte|merci|mersi|thanks|thank you|tack|tusen tack|danke|gracias|mamnoon|mamnun|sepas|مرسی|ممنون|سپاس|شكرا|شكرًا|نعم)$/.test(raw);
 }
 
+function isExplicitLanguageSwitch(text?: string): string | null {
+  const raw = String(text || "").trim().toLowerCase();
+  if (!raw) return null;
+
+  if (/\b(english|in english|speak english|reply in english|can we continue in english)\b/.test(raw)) return "en";
+  if (/\b(svenska|på svenska|prata svenska|svara på svenska)\b/.test(raw)) return "sv";
+  if (/\b(deutsch|auf deutsch|sprechen sie deutsch|bitte deutsch)\b/.test(raw)) return "de";
+  if (/\b(español|espanol|en español|habla español|responde en español)\b/.test(raw)) return "es";
+  if (/\b(farsi|persian|فارسی|به فارسی|فارسی صحبت کنیم)\b/u.test(raw)) return "fa";
+  if (/\b(arabic|عربي|العربية|بالعربية|تكلم عربي|تحدث العربية)\b/u.test(raw)) return "ar";
+
+  return null;
+}
+
+function shouldKeepPreviousConversationLanguage(chatId: string, latestText?: string): boolean {
+  const text = String(latestText || "").trim();
+  if (!text) return true;
+
+  // During an active booking, keep the language stable. Name/phone messages,
+  // confirmations, thanks, and time-only changes are not language-switch requests.
+  if (pendingBookings[chatId]) return true;
+  if (getRecentCompletedBooking(chatId)) return true;
+  if (isThanksOnlyText(text)) return true;
+  if (isAffirmativeBookingText(text)) return true;
+  if (isAmbiguousShortReply(text)) return true;
+  if (inferRequestedTimeFromText(text)) return true;
+  if (extractNameAndPhone(text)) return true;
+
+  // If previous language is Arabic/Persian and the new message uses Arabic script,
+  // don't flip between ar/fa unless the user explicitly asks for it.
+  if (/[\u0600-\u06FF]/.test(text)) return true;
+
+  return false;
+}
+
 function getConversationLanguage(chatId: string, latestText?: string): string {
   const text = String(latestText || "").trim();
   const previous = chatLanguages[chatId];
   const completed = getRecentCompletedBooking(chatId);
+  const explicitSwitch = isExplicitLanguageSwitch(text);
+
+  if (explicitSwitch) {
+    chatLanguages[chatId] = explicitSwitch;
+    return explicitSwitch;
+  }
 
   if (completed && isThanksOnlyText(text)) return completed.language || previous || "en";
 
-  // Short confirmations/thanks are often language-ambiguous:
-  // "ja", "ok", "yes", "bale", "merci", "bitte".
-  // Keep the already active language unless the phrase has a strong language marker.
-  if (previous && text && isAmbiguousShortReply(text)) {
-    const strong = detectUserLanguage(text);
-    if (strong === "de" || strong === "fa" || strong === "es" || strong === "ar") {
-      chatLanguages[chatId] = strong;
-      return strong;
-    }
+  if (previous && shouldKeepPreviousConversationLanguage(chatId, text)) {
     return previous;
   }
 
@@ -1709,6 +1753,11 @@ function getConversationLanguage(chatId: string, latestText?: string): string {
 
 function getEffectiveReplyLanguage(chatId: string, latestText?: string): string {
   return getConversationLanguage(chatId, latestText);
+}
+
+function getLockedReplyLanguage(chatId: string, fallbackText?: string): string {
+  if (chatLanguages[chatId]) return chatLanguages[chatId];
+  return getConversationLanguage(chatId, fallbackText || "");
 }
 
 function getLanguageName(language: string): string {
@@ -4191,7 +4240,7 @@ Never translate unless requested.
                     .split('\n')
                     .filter((s: string) => s.trim().length > 0 && !s.includes('No available slots'));
                 
-                const replyMessage = formatSwedishTimeSlots(slotsArray, args.requestedTime || inferRequestedTimeFromText(userText || ""), detectUserLanguage(userText || ""));
+                const replyMessage = formatSwedishTimeSlots(slotsArray, args.requestedTime || inferRequestedTimeFromText(userText || ""), getLockedReplyLanguage(chatId, userText || ""));
                 return { TERMINATE_EARLY: true, replyMessage };
             }
         }
@@ -4211,7 +4260,7 @@ Never translate unless requested.
               dateTime: args.dateTime,
               durationMinutes: args.durationMinutes
             });
-            rememberCompletedBooking(chatId.toString(), detectUserLanguage(userText || ""), safeName);
+            rememberCompletedBooking(chatId.toString(), getLockedReplyLanguage(chatId, userText || ""), safeName);
           }
           const notifyToken = activeConfig?.telegramToken || process.env.TELEGRAM_TOKEN;
           const notifyAdmin = activeConfig?.adminTelegramChatId || process.env.ADMIN_TELEGRAM_ID;

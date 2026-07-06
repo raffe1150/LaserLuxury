@@ -362,12 +362,22 @@ function buildLocalizedSlotReply(slotsArray: string[], specificTime?: string, la
     de: {
       months: ["Januar", "Februar", "März", "April", "Mai", "Juni", "Juli", "August", "September", "Oktober", "November", "Dezember"],
       days: ["Sonntag", "Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag"],
-      yes: (d: string, t: string) => `Ja, ${d} um ${t} Uhr ist verfügbar. Soll ich den Termin für Sie buchen?`,
-      none: "Leider habe ich in diesem Zeitraum keine freien Termine gefunden. Haben Sie ein anderes Datum im Sinn? 😊",
-      busyNone: (t: string) => `Leider ist ${t} Uhr bereits gebucht und ich habe keine anderen freien Zeiten gefunden. Haben Sie ein anderes Datum? 😊`,
+      yes: (d: string, t: string) => `Ja, ${d} um ${t} Uhr ist verfügbar. Möchten Sie den Termin buchen?`,
+      none: "Leider habe ich für diesen Zeitraum keine freien Zeiten gefunden. Haben Sie ein anderes Datum im Sinn? 😊",
+      busyNone: (t: string) => `Leider ist ${t} Uhr nicht verfügbar und ich habe keine anderen freien Zeiten gefunden. Haben Sie ein anderes Datum im Sinn? 😊`,
       busyAlternatives: (t: string, slots: string) => `Leider ist ${t} Uhr nicht verfügbar. Ich habe diese freien Zeiten gefunden: ${slots}. Welche passt Ihnen am besten? 😊`,
       found: (slots: string) => `Ich habe diese freien Zeiten gefunden: ${slots}. Welche passt Ihnen am besten? 😊`,
       at: "um", and: "und", also: "sowie"
+    },
+    ar: {
+      months: ["يناير", "فبراير", "مارس", "أبريل", "مايو", "يونيو", "يوليو", "أغسطس", "سبتمبر", "أكتوبر", "نوفمبر", "ديسمبر"],
+      days: ["الأحد", "الاثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت"],
+      yes: (d: string, t: string) => `نعم، ${d} الساعة ${t} متاح. هل تريد أن أحجزه لك؟`,
+      none: "للأسف لم أجد مواعيد متاحة في هذه الفترة. هل لديك تاريخ آخر؟ 😊",
+      busyNone: (t: string) => `للأسف الساعة ${t} غير متاحة ولم أجد مواعيد أخرى. هل لديك تاريخ آخر؟ 😊`,
+      busyAlternatives: (t: string, slots: string) => `للأسف الساعة ${t} غير متاحة. هذه المواعيد متاحة: ${slots}. أي وقت يناسبك؟ 😊`,
+      found: (slots: string) => `هذه المواعيد متاحة: ${slots}. أي وقت يناسبك؟ 😊`,
+      at: "الساعة", and: "و", also: "وأيضًا"
     },
     en: {
       months: ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"],
@@ -796,11 +806,27 @@ const chatSessions: Record<string, any[]> = {};
 const chatLanguages: Record<string, string> = {};
 
 const pendingBookings: Record<string, any> = {};
+const recentlyCompletedBookings: Record<string, { completedAt: number; language: string; name?: string }> = {};
+
+function rememberCompletedBooking(chatId: string, language: string, name?: string) {
+  recentlyCompletedBookings[chatId] = { completedAt: Date.now(), language, name };
+}
+
+function getRecentCompletedBooking(chatId: string) {
+  const item = recentlyCompletedBookings[chatId];
+  if (!item) return null;
+  // Keep this short: it is only used so a post-booking “thanks/merci/tack” does not restart booking.
+  if (Date.now() - item.completedAt > 30 * 60 * 1000) {
+    delete recentlyCompletedBookings[chatId];
+    return null;
+  }
+  return item;
+}
 
 function inferServiceFromText(text?: string): string {
   const raw = String(text || "").toLowerCase();
   if (raw.includes("bikini")) return "Bikinilinjebehandling";
-  if (raw.includes("helkropp") || raw.includes("hel kropp") || raw.includes("full body") || raw.includes("fullbody") || raw.includes("ganzkörper") || raw.includes("ganzkorper") || raw.includes("hellkropp")) return "Helkropp laserbehandling";
+  if (raw.includes("helkropp") || raw.includes("hel kropp") || raw.includes("full body") || raw.includes("fullbody") || raw.includes("full-body") || raw.includes("hellkropp") || raw.includes("helkrop")) return "Helkropp laserbehandling";
   if (raw.includes("laser")) return "Laserbehandling";
   if (raw.includes("ansikte")) return "Ansiktsbehandling";
   if (raw.includes("ben")) return "Benbehandling";
@@ -810,14 +836,62 @@ function inferServiceFromText(text?: string): string {
 
 function isAffirmativeBookingText(text?: string): boolean {
   const raw = String(text || "").trim().toLowerCase();
-  if (isGratitudeOnly(raw)) return false;
-  return /\b(ja|japp|yes|yep|ok|okej|absolut|boka|boka den|gör det|ja tack|ja bitte|bitte|bale|بله|حتما|sí|si)\b/i.test(raw);
+  if (!raw) return false;
+  // Important: pure thanks words (tack, tusen tack, merci, mersi, thanks) must NOT restart booking.
+  if (isThanksOnlyText(raw)) return false;
+  return /\b(ja|japp|yes|yep|ok|okej|absolut|boka|boka den|gör det|ja tack|bale|baleh|are|آره|بله|باشه|حتما|حتماً)\b/i.test(raw);
 }
 
-function isGratitudeOnly(text?: string): boolean {
+function isThanksOnlyText(text?: string): boolean {
   const raw = String(text || "").trim().toLowerCase();
   if (!raw) return false;
-  return /^(tack|tusen tack|thanks|thank you|thx|danke|vielen dank|merci|mersi|مرسی|ممنون|سپاس|gracias|شكرا|shukran)[!.😊🙏\s]*$/i.test(raw);
+  const compact = raw.replace(/[!?.،,؛\s]+/g, " ").trim();
+  return /^(tack|tusen tack|tack så mycket|thanks|thank you|merci|mersi|mamnoon|mamnun|sepas|sepas gozar|sepas gozaram|مرسی|ممنون|سپاس|تشکر)$/.test(compact);
+}
+
+function formatThanksReply(language: string = "en", name?: string): string {
+  if (language === "fa") return name ? `خواهش می‌کنم ${name} جان! روز خوبی داشته باشید 😊` : "خواهش می‌کنم! روز خوبی داشته باشید 😊";
+  if (language === "sv") return name ? `Varsågod ${name}! Ha en fin dag 😊` : "Varsågod! Ha en fin dag 😊";
+  if (language === "de") return name ? `Sehr gern, ${name}! Ich wünsche Ihnen einen schönen Tag 😊` : "Sehr gern! Ich wünsche Ihnen einen schönen Tag 😊";
+  if (language === "es") return name ? `De nada, ${name}. Que tengas un buen día 😊` : "De nada. Que tengas un buen día 😊";
+  if (language === "ar") return name ? `على الرحب والسعة ${name}! أتمنى لك يومًا جميلًا 😊` : "على الرحب والسعة! أتمنى لك يومًا جميلًا 😊";
+  return name ? `You're welcome, ${name}! Have a lovely day 😊` : "You're welcome! Have a lovely day 😊";
+}
+
+function appendLocalHistory(chatId: string, userMessage: string, botMessage: string) {
+  if (!chatSessions[chatId]) chatSessions[chatId] = [];
+  chatSessions[chatId].push({ role: "user", content: userMessage || "" });
+  chatSessions[chatId].push({ role: "assistant", content: botMessage || "" });
+}
+
+function cleanCustomerNameCandidate(candidate?: string): string {
+  let s = String(candidate || "").trim();
+  if (!s) return "";
+
+  s = s
+    .replace(/^[\s:,\-.؛،]+|[\s:,\-.؛،]+$/g, "")
+    .replace(/\b(och|and|und|y|و|va)\b.*$/i, " ")
+    .replace(/\b(my|mein|meine|mitt|min|mi|esme|esm|esmam|namn|name|nombre|نام|اسم)\b/ig, " ")
+    .replace(/\b(is|ist|är|hast|hastam|am|is)\b/ig, " ")
+    .replace(/\b(phone|telefon|telephone|telefonam|telefonnummer|number|nummer|numret|shomare|shomaram|mobile|mobil|mobilesh)\b.*$/ig, " ")
+    .replace(/[0-9+()\-]/g, " ")
+    .replace(/[,:;.]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const stop = new Set([
+    "mitt","min","namn","name","mein","meine","nombre","är","ist","is","hast","hastam","man","my",
+    "telefon","telefonam","phone","nummer","number","shomare","shomaram","mobile","mobil","och","and","und","va"
+  ]);
+
+  const words = s
+    .split(" ")
+    .map(w => w.trim())
+    .filter(Boolean)
+    .filter(w => /^[A-Za-zÅÄÖåäöÉéÜüÖöÄäÁáÍíÓóÚúÑñÇçŞşĞğ'-]+$/.test(w))
+    .filter(w => !stop.has(w.toLowerCase()));
+
+  return words.slice(0, 2).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ").trim();
 }
 
 function extractNameAndPhone(text?: string): { name: string; phone: string } | null {
@@ -830,52 +904,33 @@ function extractNameAndPhone(text?: string): { name: string; phone: string } | n
   const phone = phoneMatch[0].replace(/[^\d+]/g, "");
   if (phone.replace(/\D/g, "").length < 7) return null;
 
-  // Prefer the text before the phone number for name extraction.
-  let beforePhone = raw.slice(0, phoneMatch.index).trim();
+  const beforePhone = raw.slice(0, phoneMatch.index).trim();
 
-  // Swedish / English / Persian written with Latin letters.
-  let namePart = beforePhone
-    .replace(/mitt\s+namn\s+är/ig, " ")
-    .replace(/jag\s+heter/ig, " ")
-    .replace(/mitt\s+nummer\s+är/ig, " ")
-    .replace(/nummer\s+är/ig, " ")
-    .replace(/telefon(?:nummer)?\s+är/ig, " ")
-    .replace(/mobil(?:nummer)?\s+är/ig, " ")
-    .replace(/name\s+is/ig, " ")
-    .replace(/my\s+name\s+is/ig, " ")
-    .replace(/phone\s+(?:number\s+)?is/ig, " ")
-    .replace(/mein\s+name\s+ist/ig, " ")
-    .replace(/meine\s+nummer\s+ist/ig, " ")
-    .replace(/telefonnummer\s+ist/ig, " ")
-    .replace(/mi\s+nombre\s+es/ig, " ")
-    .replace(/mi\s+n[uú]mero\s+es/ig, " ")
-    .replace(/\besm(?:am)?\b/ig, " ")
-    .replace(/\bnaam(?:am)?\b/ig, " ")
-    .replace(/\bnam(?:am)?\b/ig, " ")
-    .replace(/\bman\b/ig, " ")
-    .replace(/\bhast(?:am)?\b/ig, " ")
-    .replace(/\btelefon(?:am|an)?\b/ig, " ")
-    .replace(/\bshomare(?:am)?\b/ig, " ")
-    .replace(/\bmobile(?:am)?\b/ig, " ")
-    .replace(/\boch\b/ig, " ")
-    .replace(/\band\b/ig, " ")
-    .replace(/\bund\b/ig, " ")
-    .replace(/\bva\b/ig, " ")
-    .replace(/[,:;.]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+  // Strong pattern extraction, in priority order. This avoids names like
+  // "shumare ham" or "meine ist" being saved from contact phrases.
+  const patterns: RegExp[] = [
+    /(?:mitt\s+namn\s+är|jag\s+heter)\s+([A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,}(?:\s+[A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,})?)/i,
+    /(?:my\s+name\s+is|name\s+is)\s+([A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,}(?:\s+[A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,})?)/i,
+    /(?:mein\s+name\s+ist|ich\s+hei(?:ß|ss)e)\s+([A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,}(?:\s+[A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,})?)/i,
+    /(?:mi\s+nombre\s+es|me\s+llamo)\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ'-]{2,}(?:\s+[A-Za-zÁÉÍÓÚÜÑáéíóúüñ'-]{2,})?)/i,
+    /(?:esme?\s+man|esmam|namam|name\s+man)\s+([A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,}(?:\s+[A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,})?)/i,
+    /(?:نام(?:م)?|اسم(?:م)?)\s+([\u0600-\u06FF]{2,}(?:\s+[\u0600-\u06FF]{2,})?)/u
+  ];
 
-  const stop = new Set(["mitt", "namn", "är", "nummer", "telefon", "mobil", "hast", "man", "esmam", "esme", "esmem", "namam", "telephone", "phone", "mein", "meine", "name", "ist", "und", "nummer", "telefonnummer", "mi", "nombre", "es"]);
-  const words = namePart
-    .split(" ")
-    .map(w => w.trim())
-    .filter(Boolean)
-    .filter(w => /^[A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]+$/.test(w))
-    .filter(w => !stop.has(w.toLowerCase()));
+  for (const pattern of patterns) {
+    const match = beforePhone.match(pattern) || raw.match(pattern);
+    if (match?.[1]) {
+      const cleaned = cleanCustomerNameCandidate(match[1]);
+      if (cleaned) return { name: cleaned, phone };
+      if (/[\u0600-\u06FF]/.test(match[1])) return { name: match[1].trim(), phone };
+    }
+  }
 
-  const name = words.slice(-2).join(" ").trim();
-  if (!name) return null;
-  return { name, phone };
+  // Fallback: remove common contact words and use the remaining person-like word before phone.
+  const fallback = cleanCustomerNameCandidate(beforePhone);
+  if (fallback) return { name: fallback, phone };
+
+  return null;
 }
 
 async function savePendingBooking(chatId: string, platform: string, pending: any) {
@@ -1021,87 +1076,58 @@ function formatAskContactMessage(language: string = "sv"): string {
   return "Toppen! Innan jag bokar din tid behöver jag ditt namn och mobilnummer. 😊";
 }
 
-function getLocaleForLanguage(language: string): string {
-  if (language === "de") return "de-DE";
-  if (language === "en") return "en-GB";
-  if (language === "es") return "es-ES";
-  if (language === "fa") return "fa-IR";
-  if (language === "ar") return "ar";
-  return "sv-SE";
-}
-
 function localizeServiceName(service: string, language: string): string {
-  const raw = String(service || "Bokning").toLowerCase();
-  const isFullBody = raw.includes("helkropp") || raw.includes("full") || raw.includes("ganz");
+  const raw = String(service || "").toLowerCase();
   const isBikini = raw.includes("bikini");
-  if (language === "de") {
-    if (isFullBody) return "Ganzkörperbehandlung";
-    if (isBikini) return "Bikinibehandlung";
-    return "Behandlung";
-  }
+  const isFullBody = raw.includes("helkropp") || raw.includes("fullbody") || raw.includes("full body");
   if (language === "fa") {
+    if (isBikini) return "بیکینی";
     if (isFullBody) return "لیزر فول بادی";
-    if (isBikini) return "لیزر بیکینی";
-    return "درمان";
+    if (raw.includes("laser")) return "لیزر";
+    return "وقت";
   }
   if (language === "en") {
-    if (isFullBody) return "full-body treatment";
     if (isBikini) return "bikini treatment";
-    return "treatment";
+    if (isFullBody) return "full body laser treatment";
+    return service || "appointment";
+  }
+  if (language === "sv") return service || "bokning";
+  if (language === "de") {
+    if (isBikini) return "Bikini-Behandlung";
+    if (isFullBody) return "Ganzkörper-Laserbehandlung";
+    return service || "Termin";
   }
   if (language === "es") {
-    if (isFullBody) return "tratamiento de cuerpo completo";
     if (isBikini) return "tratamiento de bikini";
-    return "tratamiento";
+    if (isFullBody) return "tratamiento láser de cuerpo completo";
+    return service || "cita";
   }
-  if (isFullBody) return "helkroppsbehandling";
-  if (isBikini) return "bikinibehandling";
-  return service || "behandling";
+  if (language === "ar") {
+    if (isBikini) return "علاج البكيني";
+    if (isFullBody) return "ليزر الجسم الكامل";
+    return "موعد";
+  }
+  return service || "appointment";
+}
+
+function formatLocalizedDateTime(dateTime: string, language: string) {
+  const start = new Date(ensureStockholmOffset(dateTime));
+  const localeMap: Record<string, string> = { fa: "fa-IR", sv: "sv-SE", en: "en-GB", de: "de-DE", es: "es-ES", ar: "ar-SA" };
+  const locale = localeMap[language] || "en-GB";
+  const dateText = start.toLocaleDateString(locale, { timeZone: "Europe/Stockholm", weekday: "long", day: "numeric", month: "long" });
+  const timeText = start.toLocaleTimeString("sv-SE", { timeZone: "Europe/Stockholm", hour: "2-digit", minute: "2-digit" });
+  return { dateText, timeText };
 }
 
 function formatBookingSavedMessage(language: string, name: string, service: string, dateTime: string): string {
-  const start = new Date(ensureStockholmOffset(dateTime));
-  const locale = getLocaleForLanguage(language);
-  const dateText = start.toLocaleDateString(locale, { timeZone: "Europe/Stockholm", weekday: "long", day: "numeric", month: "long" });
-  const timeText = start.toLocaleTimeString("sv-SE", { timeZone: "Europe/Stockholm", hour: "2-digit", minute: "2-digit" });
-  const serviceText = localizeServiceName(service, language);
-  if (language === "fa") return `عالی ${name}! وقت شما برای ${serviceText} در ${dateText} ساعت ${timeText} رزرو شد. 😊`;
-  if (language === "es") return `Perfecto ${name}! Tu cita para ${serviceText} está reservada el ${dateText} a las ${timeText}. 😊`;
-  if (language === "de") return `Perfekt, ${name}! Ihr Termin für die ${serviceText} ist am ${dateText} um ${timeText} Uhr gebucht. 😊`;
-  if (language === "ar") return `تمام ${name}! تم حجز موعدك لـ ${serviceText} يوم ${dateText} الساعة ${timeText}. 😊`;
-  if (language === "en") return `Perfect, ${name}! Your appointment for ${serviceText} is booked on ${dateText} at ${timeText}. 😊`;
-  return `Härligt ${name}! Din tid för ${serviceText} är nu bokad ${dateText} kl ${timeText}. Vi ser fram emot att träffa dig! 😊`;
-}
-
-function formatThanksAfterBookingMessage(language: string, name?: string): string {
-  if (language === "fa") return name ? `خواهش می‌کنم ${name}! روز خوبی داشته باشید 😊` : "خواهش می‌کنم! روز خوبی داشته باشید 😊";
-  if (language === "de") return name ? `Sehr gern, ${name}! Ich wünsche Ihnen einen schönen Tag 😊` : "Sehr gern! Ich wünsche Ihnen einen schönen Tag 😊";
-  if (language === "es") return name ? `De nada, ${name}! Que tengas un buen día 😊` : "De nada! Que tengas un buen día 😊";
-  if (language === "ar") return name ? `على الرحب والسعة ${name}! أتمنى لك يوماً جميلاً 😊` : "على الرحب والسعة! أتمنى لك يوماً جميلاً 😊";
-  if (language === "en") return name ? `You're welcome, ${name}! Have a lovely day 😊` : "You're welcome! Have a lovely day 😊";
-  return name ? `Varsågod, ${name}! Ha en fin dag 😊` : "Varsågod! Ha en fin dag 😊";
-}
-
-async function getLatestBookedAppointmentForUser(userId: string) {
-  if (!supabase) return null;
-  try {
-    const { data, error } = await supabase
-      .from("appointments")
-      .select("customer_name,start_time,status")
-      .eq("user_id", userId)
-      .eq("status", "booked")
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-    if (error) {
-      console.error("Latest booked appointment lookup error:", JSON.stringify(error));
-      return null;
-    }
-    return data || null;
-  } catch (err) {
-    console.error("getLatestBookedAppointmentForUser crashed:", err);
-    return null;
-  }
+  const { dateText, timeText } = formatLocalizedDateTime(dateTime, language);
+  const localizedService = localizeServiceName(service, language);
+  if (language === "fa") return `عالی ${name}! وقت شما برای ${localizedService} در ${dateText} ساعت ${timeText} رزرو شد. 😊`;
+  if (language === "es") return `Perfecto ${name}! Tu cita para ${localizedService} está reservada el ${dateText} a las ${timeText}. 😊`;
+  if (language === "de") return `Perfekt ${name}! Ihr Termin für ${localizedService} ist am ${dateText} um ${timeText} gebucht. 😊`;
+  if (language === "ar") return `تمام ${name}! تم حجز موعدك لـ ${localizedService} يوم ${dateText} الساعة ${timeText}. 😊`;
+  if (language === "en") return `Perfect ${name}! Your appointment for ${localizedService} is booked on ${dateText} at ${timeText}. 😊`;
+  return `Härligt ${name}! Din tid för ${localizedService} är nu bokad ${dateText} kl ${timeText}. Vi ser fram emot att träffa dig! 😊`;
 }
 
 let globalWaitUntil = 0;
@@ -1326,6 +1352,19 @@ async function processTelegramUpdate(update: any, config: any, platform: string 
       return; // Ignore other types
     }
     
+    const completedBooking = getRecentCompletedBooking(telegramSessionId);
+    if (text && completedBooking && isThanksOnlyText(text || "")) {
+      const thanksText = formatThanksReply(completedBooking.language || chatLanguages[telegramSessionId] || detectUserLanguage(text), completedBooking.name);
+      await fetch(`https://api.telegram.org/bot${telegramToken}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: chatId, text: thanksText })
+      });
+      appendLocalHistory(telegramSessionId, text || "", thanksText);
+      await postProcessMessage(chatId.toString(), platform, text || "", thanksText, telegramToken, apiKey, getBusinessIdFromConfig(config));
+      return;
+    }
+
     const messages = [...history];
     messages.push({ role: "user", content: userMessageContent });
     
@@ -1401,29 +1440,33 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
                     .split('\n')
                     .filter((s: string) => s.trim().length > 0 && !s.includes('No available slots'));
                 
-                const replyMessage = formatSwedishTimeSlots(slotsArray, args.requestedTime || inferRequestedTimeFromText(text || ""), getConversationLanguage(telegramSessionId, text || ""));
+                const replyMessage = formatSwedishTimeSlots(slotsArray, args.requestedTime || inferRequestedTimeFromText(text || ""), detectUserLanguage(text || ""));
                 return { TERMINATE_EARLY: true, replyMessage };
             }
         }
         else if (call.function.name === "insertAppointment" && args) {
-          adapterRes = await adapter.insertAppointment(args.name, args.phone, args.service, args.dateTime, args.durationMinutes, chatId);
+          const contactOverride = extractNameAndPhone(text || "");
+          const safeName = contactOverride?.name || cleanCustomerNameCandidate(args.name) || args.name;
+          const safePhone = contactOverride?.phone || args.phone;
+          adapterRes = await adapter.insertAppointment(safeName, safePhone, args.service, args.dateTime, args.durationMinutes, chatId);
           if (adapterRes && adapterRes.success) {
             await recordAppointmentFromBooking({
               businessConfig: config,
               platform: "telegram",
               userId: chatId.toString(),
-              name: args.name,
-              phone: args.phone,
+              name: safeName,
+              phone: safePhone,
               service: args.service,
               dateTime: args.dateTime,
               durationMinutes: args.durationMinutes
             });
+            rememberCompletedBooking(chatId.toString(), chatLanguages[telegramSessionId] || detectUserLanguage(text || ""), safeName);
           }
           const notifyToken = config?.telegramToken || activeConfig?.telegramToken || process.env.TELEGRAM_TOKEN;
           const notifyAdmin = config?.adminTelegramChatId || activeConfig?.adminTelegramChatId || process.env.ADMIN_TELEGRAM_ID;
           if (adapterRes && adapterRes.success && notifyToken && notifyAdmin) {
              try {
-                const notifyText = `🔔 Ny bokning mottagen!\n👤 Namn: ${args.name}\n📞 Mobil: ${args.phone}\n📅 Tid: ${args.dateTime}`;
+                const notifyText = `🔔 Ny bokning mottagen!\n👤 Namn: ${safeName}\n📞 Mobil: ${safePhone}\n📅 Tid: ${args.dateTime}`;
                 await fetch(`https://api.telegram.org/bot${notifyToken}/sendMessage`, {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
@@ -1582,13 +1625,15 @@ function detectTtsVoiceCode(text: string): string {
   return "en-US-AriaNeural";
 }
 function detectUserLanguage(text: string): string {
-  const raw = String(text || "").trim();
+  if (!text) return "en";
+
+  const raw = String(text).trim();
   if (!raw) return "en";
   const lower = raw.toLowerCase();
 
+  // Explicit script checks first.
   if (/[\u0600-\u06FF]/.test(raw)) {
-    if (/\b(سلام|مرسی|ممنون|لطفا|لطفاً|وقت|رزرو|شماره|اسم|نوبت)\b/u.test(raw)) return "fa";
-    if (/\b(مرحبا|السلام|شكرا|موعد|حجز|اليوم|غدا)\b/u.test(raw)) return "ar";
+    if (/\b(مرحبا|السلام|شكرا|موعد|حجز|اليوم|غدا|غداً|نعم|لا)\b/u.test(raw)) return "ar";
     return "fa";
   }
 
@@ -1598,42 +1643,72 @@ function detectUserLanguage(text: string): string {
     if (matches) scores[lang] += matches.length * weight;
   };
 
-  // Strong phrase-level signals first.
-  add("de", /\b(ja\s*,?\s*bitte|ich\s+(möchte|wuerde|würde|will)|mein\s+name\s+ist|meine\s+nummer\s+ist|um\s+\d{1,2}(:\d{2})?\s*uhr|ganzkörper|ganzkorper)\b/g, 5);
-  add("en", /\b(my\s+name\s+is|my\s+phone\s+is|i\s+(want|would\s+like|need)|can\s+i|could\s+i|thank\s+you|next\s+week)\b/g, 5);
-  add("sv", /\b(mitt\s+namn\s+är|mitt\s+nummer\s+är|jag\s+(vill|ska|heter)|kl\s*\d{1,2}|klockan\s*\d{1,2}|ja\s+tack)\b/g, 5);
-  add("fa", /\b(salam|bale|mikham|mikhastam|baraye|sate|saat|vaght|shomare|esm[eai]?|hast|mersi|merci|sepas|gozaram|khube|chi|cheghadr|doshanbe|seshanbe|chaharshanbe|panjshanbe|jome|shanbe|yekshanbe)\b/g, 4);
-  add("es", /\b(mi\s+nombre\s+es|mi\s+n[uú]mero\s+es|quiero|me\s+gustar[ií]a|por\s+favor)\b/g, 5);
+  // Character signals. Important: ä/ö are also German, so they must NOT force Swedish.
+  if (/[å]/i.test(raw)) scores.sv += 3;
+  if (/[ñáéíóú¿¡]/i.test(raw)) scores.es += 3;
+  if (/[ßü]/i.test(raw)) scores.de += 3;
 
-  if (/[áéíóúñ¿¡]/i.test(raw)) scores.es += 3;
-  if (/[åäö]/i.test(raw)) scores.sv += 3;
-  if (/[äöüß]/i.test(raw)) scores.de += 4;
+  // Strong phrase signals.
+  add("fa", /\b(salam|khubi|khub|khubam|khub hastin|mikham|mikhastam|baraye|vaght|saat|sate|doshanbe|seshanbe|chaharshanbe|panjshanbe|jome|shanbe|yekshanbe|emrooz|farda|bale|baleh|are|khube|chi|che|migin|migirin|shohar|shoharam|esm|esme|esmam|nam|name|shomare|shomaram|telefon|telefonam|mobail|mobile|mobilesh|ham hast|hastam|hast|sepas|mersi|merci|mamnoon|mamnun)\b/g, 3);
+  add("de", /\b(hallo|guten|danke|bitte|termin|uhr|morgen|nachmittag|buchen|buchung|behandlung|ganzkörper|ganzkoerper|körper|koerper|ich möchte|ich moechte|ich will|mein name|meine nummer|telefonnummer|nummer ist|montag|dienstag|mittwoch|donnerstag|freitag|samstag|sonntag)\b/g, 4);
+  add("en", /\b(hi|hello|hey|thanks|thank you|yes|no|please|appointment|book|booking|available|next week|today|tomorrow|friday|thursday|wednesday|tuesday|monday|saturday|sunday|treatment|bikini|fullbody|full body|my name is|my phone is|phone|number|i want|i would like|can i|could i)\b/g, 2);
+  add("sv", /\b(hej|hejsan|tack|tusen tack|ja tack|nej|jag|vill|ska|ha|boka|bokning|tid|ledig|behandling|klockan|kl|mitt namn|mitt nummer|mobilnummer|telefonnummer|måndag|tisdag|onsdag|torsdag|fredag|lördag|söndag|idag|imorgon)\b/g, 2);
+  add("es", /\b(hola|gracias|por favor|quiero|cita|reservar|reserva|tratamiento|mañana|manana|hora|semana|lunes|martes|miércoles|miercoles|jueves|viernes|sábado|sabado|domingo|mi nombre|mi teléfono|telefono)\b/g, 3);
+  add("ar", /\b(marhaba|shukran|maw3ed|maw'ed|hajz|bukra|alyawm|naam|la)\b/g, 2);
 
-  add("en", /\b(hi|hello|hey|thanks|thank you|yes|no|please|appointment|book|booking|available|today|tomorrow|friday|thursday|wednesday|tuesday|monday|saturday|sunday|treatment|bikini|phone|number)\b/g, 2);
-  add("sv", /\b(hej|hejsan|tack|tusen tack|ja|nej|jag|vill|ska|ha|boka|bokning|tid|ledig|behandling|klockan|kl|mobilnummer|telefonnummer|måndag|tisdag|onsdag|torsdag|fredag|lördag|söndag|idag|imorgon)\b/g, 2);
-  add("de", /\b(hallo|guten|danke|bitte|termin|uhr|morgen|nachmittag|buchen|behandlung|montag|dienstag|mittwoch|donnerstag|freitag|samstag|sonntag|nummer|telefonnummer|name)\b/g, 2);
-  add("es", /\b(hola|gracias|cita|reservar|tratamiento|mañana|manana|hora|semana|lunes|martes|miércoles|miercoles|jueves|viernes|sábado|sabado|domingo)\b/g, 2);
-  add("fa", /\b(chetori|khubi|mamnoon|lotfan|bebakhshid|mitoni|mishe|farsi|telefonam|mobile|mobail|hastam|hast)\b/g, 2);
-  add("ar", /\b(marhaba|shukran|maw3ed|hajz|bukra|alyawm)\b/g, 2);
+  // Some short replies are ambiguous. Do not let a single "ja" beat an existing language elsewhere.
+  if (/^\s*(ja|ok|okej|yes|bale|si|sí|bitte|merci|mersi|thanks|tack|danke)\s*[!.؟?]*\s*$/i.test(raw)) {
+    if (/\b(bittee?|danke)\b/i.test(lower)) return "de";
+    if (/\b(si|sí|gracias)\b/i.test(lower)) return "es";
+    if (/\b(bale|merci|mersi|mamnoon|sepas)\b/i.test(lower)) return "fa";
+  }
+
+  // If the text is clearly Persian transliteration, do not let English filler words win.
+  if (scores.fa >= 3 && scores.fa >= Math.max(scores.en, scores.sv, scores.de, scores.es, scores.ar)) return "fa";
 
   const ranked = Object.entries(scores).sort((a, b) => b[1] - a[1]);
   if (ranked[0][1] > 0) {
-    console.log(`[LanguageDetect] text=${JSON.stringify(raw.slice(0, 80))}, scores=${JSON.stringify(scores)}, selected=${ranked[0][0]}`);
+    console.log(`[LanguageDetect] text=${JSON.stringify(raw)}, scores=${JSON.stringify(scores)}, selected=${ranked[0][0]}`);
     return ranked[0][0];
   }
 
   return "en";
 }
 
+function isAmbiguousShortReply(text?: string): boolean {
+  const raw = String(text || "").trim().toLowerCase().replace(/[!?.،,؛\s]+/g, " ");
+  return /^(ja|ja tack|ok|okej|yes|yep|bale|baleh|are|si|sí|bitte|merci|mersi|thanks|thank you|tack|tusen tack|danke|gracias|mamnoon|mamnun|sepas|مرسی|ممنون|سپاس|شكرا|شكرًا|نعم)$/.test(raw);
+}
+
 function getConversationLanguage(chatId: string, latestText?: string): string {
-  const detected = detectUserLanguage(latestText || "");
-  // Always allow the latest clear customer message to switch language.
-  // This prevents an old Swedish "Hej" from locking a new English conversation into Swedish.
-  if (latestText && String(latestText).trim()) {
+  const text = String(latestText || "").trim();
+  const previous = chatLanguages[chatId];
+  const completed = getRecentCompletedBooking(chatId);
+
+  if (completed && isThanksOnlyText(text)) return completed.language || previous || "en";
+
+  // Short confirmations/thanks are often language-ambiguous:
+  // "ja", "ok", "yes", "bale", "merci", "bitte".
+  // Keep the already active language unless the phrase has a strong language marker.
+  if (previous && text && isAmbiguousShortReply(text)) {
+    const strong = detectUserLanguage(text);
+    if (strong === "de" || strong === "fa" || strong === "es" || strong === "ar") {
+      chatLanguages[chatId] = strong;
+      return strong;
+    }
+    return previous;
+  }
+
+  const detected = detectUserLanguage(text || "");
+  if (text) {
     chatLanguages[chatId] = detected;
     return detected;
   }
-  return chatLanguages[chatId] || detected || "en";
+  return previous || detected || "en";
+}
+
+function getEffectiveReplyLanguage(chatId: string, latestText?: string): string {
+  return getConversationLanguage(chatId, latestText);
 }
 
 function getLanguageName(language: string): string {
@@ -2356,6 +2431,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
                 durationMinutes: restoredPending.durationMinutes
               });
               await clearPendingBooking(chatId);
+              rememberCompletedBooking(chatId, getConversationLanguage(chatId, textMessage || ""), contactFromMessage.name);
               await notifyAdminAboutBooking(businessConfig, "Messenger", businessName, contactFromMessage.name, contactFromMessage.phone, restoredPending.dateTime);
             }
           } else {
@@ -3134,16 +3210,13 @@ async function processMessengerUpdate(webhookEvent: any, config: any, platform: 
     let pending = await loadPendingBooking(chatId, "messenger", businessConfig);
     const detectedLang = getConversationLanguage(chatId, textMessage || "");
 
-    if (textMessage && isGratitudeOnly(textMessage)) {
-      const latestBooked = await getLatestBookedAppointmentForUser(chatId);
-      if (latestBooked) {
-        await clearPendingBooking(chatId);
-        const thanksText = formatThanksAfterBookingMessage(detectedLang, latestBooked.customer_name);
-        console.log(`[DeterministicBooking] Gratitude after completed booking. chatId=${chatId}`);
-        await sendMessengerMessage(senderId, thanksText, businessConfig);
-        await postProcessMessage(chatId, platform, textMessage, thanksText, businessConfig?.telegramToken, businessConfig?.apiKey, getBusinessIdFromConfig(businessConfig));
-        return;
-      }
+    const completedBooking = getRecentCompletedBooking(chatId);
+    if (!pending && completedBooking && isThanksOnlyText(textMessage || "")) {
+      const thanksText = formatThanksReply(completedBooking.language || detectedLang, completedBooking.name);
+      await sendMessengerMessage(senderId, thanksText, businessConfig);
+      appendLocalHistory(chatId, textMessage || "", thanksText);
+      await postProcessMessage(chatId, platform, textMessage, thanksText, businessConfig?.telegramToken, businessConfig?.apiKey, getBusinessIdFromConfig(businessConfig));
+      return;
     }
 
     if (pending && textMessage && isAffirmativeBookingText(textMessage) && pending.status === "awaiting_confirmation") {
@@ -3152,6 +3225,7 @@ async function processMessengerUpdate(webhookEvent: any, config: any, platform: 
       const askText = formatAskContactMessage(detectedLang);
       console.log(`[DeterministicBooking] Messenger confirmation received. Awaiting contact. chatId=${chatId}`);
       await sendMessengerMessage(senderId, askText, businessConfig);
+      appendLocalHistory(chatId, textMessage || "", askText);
       await postProcessMessage(chatId, platform, textMessage, askText, businessConfig?.telegramToken, businessConfig?.apiKey, getBusinessIdFromConfig(businessConfig));
       return;
     }
@@ -3174,10 +3248,12 @@ async function processMessengerUpdate(webhookEvent: any, config: any, platform: 
           durationMinutes: pending.durationMinutes
         });
         await clearPendingBooking(chatId);
+        rememberCompletedBooking(chatId, detectedLang, contact.name);
         await notifyAdminAboutBooking(businessConfig, "Messenger", businessConfig.businessName || businessConfig.business_name || "business", contact.name, contact.phone, pending.dateTime);
 
         const bookedText = formatBookingSavedMessage(detectedLang, contact.name, pending.service, pending.dateTime);
         await sendMessengerMessage(senderId, bookedText, businessConfig);
+        appendLocalHistory(chatId, textMessage || "", bookedText);
         await postProcessMessage(chatId, platform, textMessage, bookedText, businessConfig?.telegramToken, businessConfig?.apiKey, getBusinessIdFromConfig(businessConfig));
         return;
       }
@@ -3305,18 +3381,22 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
             return { TERMINATE_EARLY: true, replyMessage };
           }
         } else if (call.function.name === "insertAppointment" && args) {
-          adapterRes = await adapter.insertAppointment(args.name, args.phone, args.service, args.dateTime, args.durationMinutes, chatId);
+          const contactOverride = extractNameAndPhone(textMessage || "");
+          const safeName = contactOverride?.name || cleanCustomerNameCandidate(args.name) || args.name;
+          const safePhone = contactOverride?.phone || args.phone;
+          adapterRes = await adapter.insertAppointment(safeName, safePhone, args.service, args.dateTime, args.durationMinutes, chatId);
           if (adapterRes && adapterRes.success) {
             await recordAppointmentFromBooking({
               businessConfig,
               platform: "messenger",
               userId: chatId,
-              name: args.name,
-              phone: args.phone,
+              name: safeName,
+              phone: safePhone,
               service: args.service,
               dateTime: args.dateTime,
               durationMinutes: args.durationMinutes
             });
+            rememberCompletedBooking(chatId, getConversationLanguage(chatId, textMessage || ""), safeName);
           }
 
           const notifyToken = businessConfig.telegramToken || activeConfig?.telegramToken || process.env.TELEGRAM_TOKEN;
@@ -3324,7 +3404,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
 
           if (adapterRes && adapterRes.success && notifyToken && notifyAdmin) {
             try {
-              const notifyText = `🔔 Ny Messenger-bokning mottagen!\n🏢 Business: ${businessName}\n👤 Namn: ${args.name}\n📞 Mobil: ${args.phone}\n📅 Tid: ${args.dateTime}`;
+              const notifyText = `🔔 Ny Messenger-bokning mottagen!\n🏢 Business: ${businessName}\n👤 Namn: ${safeName}\n📞 Mobil: ${safePhone}\n📅 Tid: ${args.dateTime}`;
               await fetch(`https://api.telegram.org/bot${notifyToken}/sendMessage`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
@@ -3505,6 +3585,15 @@ async function processInstagramUpdate(webhook_event: any, config: any, platform:
     let userMessageForLog = textMessage || '[Instagram Voice Message]';
     let isVoiceMessage = false;
 
+    const completedBooking = getRecentCompletedBooking(chatId);
+    if (textMessage && completedBooking && isThanksOnlyText(textMessage || "")) {
+      const thanksText = formatThanksReply(completedBooking.language || userLanguage, completedBooking.name);
+      await sendInstagramMessage(senderId, thanksText, getBusinessInstagramToken(businessConfig));
+      appendLocalHistory(chatId, textMessage || "", thanksText);
+      await postProcessMessage(chatId, platform, userMessageForLog, thanksText, businessConfig?.telegramToken, businessConfig?.apiKey, getBusinessIdFromConfig(businessConfig));
+      return;
+    }
+
     if (!textMessage && audioUrl) {
       isVoiceMessage = true;
 
@@ -3609,25 +3698,29 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
             return { TERMINATE_EARLY: true, replyMessage };
           }
         } else if (call.function.name === 'insertAppointment' && args) {
-          adapterRes = await adapter.insertAppointment(args.name, args.phone, args.service, args.dateTime, args.durationMinutes, chatId);
+          const contactOverride = extractNameAndPhone(textMessage || "");
+          const safeName = contactOverride?.name || cleanCustomerNameCandidate(args.name) || args.name;
+          const safePhone = contactOverride?.phone || args.phone;
+          adapterRes = await adapter.insertAppointment(safeName, safePhone, args.service, args.dateTime, args.durationMinutes, chatId);
           if (adapterRes && adapterRes.success) {
             await recordAppointmentFromBooking({
               businessConfig,
               platform: "instagram",
               userId: chatId,
-              name: args.name,
-              phone: args.phone,
+              name: safeName,
+              phone: safePhone,
               service: args.service,
               dateTime: args.dateTime,
               durationMinutes: args.durationMinutes
             });
+            rememberCompletedBooking(chatId, getConversationLanguage(chatId, textMessage || ""), safeName);
           }
           const notifyToken = businessConfig.telegramToken || activeConfig?.telegramToken || process.env.TELEGRAM_TOKEN;
           const notifyAdmin = businessConfig.adminTelegramChatId || activeConfig?.adminTelegramChatId || process.env.ADMIN_TELEGRAM_ID;
 
           if (adapterRes && adapterRes.success && notifyToken && notifyAdmin) {
             try {
-              const notifyText = `🔔 Ny Instagram-bokning mottagen!\n🏢 Business: ${businessName}\n👤 Namn: ${args.name}\n📞 Mobil: ${args.phone}\n📅 Tid: ${args.dateTime}`;
+              const notifyText = `🔔 Ny Instagram-bokning mottagen!\n🏢 Business: ${businessName}\n👤 Namn: ${safeName}\n📞 Mobil: ${safePhone}\n📅 Tid: ${args.dateTime}`;
               await fetch(`https://api.telegram.org/bot${notifyToken}/sendMessage`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -4098,29 +4191,33 @@ Never translate unless requested.
                     .split('\n')
                     .filter((s: string) => s.trim().length > 0 && !s.includes('No available slots'));
                 
-                const replyMessage = formatSwedishTimeSlots(slotsArray, args.requestedTime || inferRequestedTimeFromText(userText || ""), getConversationLanguage(chatId, userText || ""));
+                const replyMessage = formatSwedishTimeSlots(slotsArray, args.requestedTime || inferRequestedTimeFromText(userText || ""), detectUserLanguage(userText || ""));
                 return { TERMINATE_EARLY: true, replyMessage };
             }
         }
           else if (call.function.name === "insertAppointment" && args) {
-          adapterRes = await adapter.insertAppointment(args.name, args.phone, args.service, args.dateTime, args.durationMinutes, chatId);
+          const contactOverride = extractNameAndPhone(userText || "");
+          const safeName = contactOverride?.name || cleanCustomerNameCandidate(args.name) || args.name;
+          const safePhone = contactOverride?.phone || args.phone;
+          adapterRes = await adapter.insertAppointment(safeName, safePhone, args.service, args.dateTime, args.durationMinutes, chatId);
           if (adapterRes && adapterRes.success) {
             await recordAppointmentFromBooking({
               businessConfig: activeConfig,
               platform: "web",
               userId: chatId.toString(),
-              name: args.name,
-              phone: args.phone,
+              name: safeName,
+              phone: safePhone,
               service: args.service,
               dateTime: args.dateTime,
               durationMinutes: args.durationMinutes
             });
+            rememberCompletedBooking(chatId.toString(), detectUserLanguage(userText || ""), safeName);
           }
           const notifyToken = activeConfig?.telegramToken || process.env.TELEGRAM_TOKEN;
           const notifyAdmin = activeConfig?.adminTelegramChatId || process.env.ADMIN_TELEGRAM_ID;
           if (adapterRes && adapterRes.success && notifyToken && notifyAdmin) {
              try {
-                const notifyText = `🔔 Ny bokning mottagen!\n👤 Namn: ${args.name}\n📞 Mobil: ${args.phone}\n📅 Tid: ${args.dateTime}`;
+                const notifyText = `🔔 Ny bokning mottagen!\n👤 Namn: ${safeName}\n📞 Mobil: ${safePhone}\n📅 Tid: ${args.dateTime}`;
                 await fetch(`https://api.telegram.org/bot${notifyToken}/sendMessage`, {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },

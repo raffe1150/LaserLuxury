@@ -786,11 +786,27 @@ const chatSessions: Record<string, any[]> = {};
 const chatLanguages: Record<string, string> = {};
 
 const pendingBookings: Record<string, any> = {};
+const recentlyCompletedBookings: Record<string, { completedAt: number; language: string; name?: string }> = {};
+
+function rememberCompletedBooking(chatId: string, language: string, name?: string) {
+  recentlyCompletedBookings[chatId] = { completedAt: Date.now(), language, name };
+}
+
+function getRecentCompletedBooking(chatId: string) {
+  const item = recentlyCompletedBookings[chatId];
+  if (!item) return null;
+  // Keep this short: it is only used so a post-booking “thanks/merci/tack” does not restart booking.
+  if (Date.now() - item.completedAt > 30 * 60 * 1000) {
+    delete recentlyCompletedBookings[chatId];
+    return null;
+  }
+  return item;
+}
 
 function inferServiceFromText(text?: string): string {
   const raw = String(text || "").toLowerCase();
   if (raw.includes("bikini")) return "Bikinilinjebehandling";
-  if (raw.includes("helkropp") || raw.includes("hel kropp") || raw.includes("full body") || raw.includes("hellkropp")) return "Helkropp laserbehandling";
+  if (raw.includes("helkropp") || raw.includes("hel kropp") || raw.includes("full body") || raw.includes("fullbody") || raw.includes("full-body") || raw.includes("hellkropp") || raw.includes("helkrop")) return "Helkropp laserbehandling";
   if (raw.includes("laser")) return "Laserbehandling";
   if (raw.includes("ansikte")) return "Ansiktsbehandling";
   if (raw.includes("ben")) return "Benbehandling";
@@ -801,13 +817,31 @@ function inferServiceFromText(text?: string): string {
 function isAffirmativeBookingText(text?: string): boolean {
   const raw = String(text || "").trim().toLowerCase();
   if (!raw) return false;
+  // Important: pure thanks words (tack, tusen tack, merci, mersi, thanks) must NOT restart booking.
+  if (isThanksOnlyText(raw)) return false;
+  return /\b(ja|japp|yes|yep|ok|okej|absolut|boka|boka den|gör det|ja tack|bale|baleh|are|آره|بله|باشه|حتما|حتماً)\b/i.test(raw);
+}
 
-  // Do NOT treat plain thanks as a booking confirmation.
-  // Customers often write "tack", "tusen tack", "thanks" after a booking is completed.
-  // That must not restart the booking flow or ask for name/phone again.
-  if (isPureThanksText(raw)) return false;
+function isThanksOnlyText(text?: string): boolean {
+  const raw = String(text || "").trim().toLowerCase();
+  if (!raw) return false;
+  const compact = raw.replace(/[!?.،,؛\s]+/g, " ").trim();
+  return /^(tack|tusen tack|tack så mycket|thanks|thank you|merci|mersi|mamnoon|mamnun|sepas|sepas gozar|sepas gozaram|مرسی|ممنون|سپاس|تشکر)$/.test(compact);
+}
 
-  return /\b(ja|japp|yes|yep|ok|okej|absolut|boka|boka den|gör det|ja tack|yes please|confirm|confirm it|bale|bale mikham|mikham|mikhastam|lotfan)\b/i.test(raw);
+function formatThanksReply(language: string = "en", name?: string): string {
+  if (language === "fa") return name ? `خواهش می‌کنم ${name} جان! روز خوبی داشته باشید 😊` : "خواهش می‌کنم! روز خوبی داشته باشید 😊";
+  if (language === "sv") return name ? `Varsågod ${name}! Ha en fin dag 😊` : "Varsågod! Ha en fin dag 😊";
+  if (language === "de") return name ? `Sehr gern, ${name}! Ich wünsche Ihnen einen schönen Tag 😊` : "Sehr gern! Ich wünsche Ihnen einen schönen Tag 😊";
+  if (language === "es") return name ? `De nada, ${name}. Que tengas un buen día 😊` : "De nada. Que tengas un buen día 😊";
+  if (language === "ar") return name ? `على الرحب والسعة ${name}! أتمنى لك يومًا جميلًا 😊` : "على الرحب والسعة! أتمنى لك يومًا جميلًا 😊";
+  return name ? `You're welcome, ${name}! Have a lovely day 😊` : "You're welcome! Have a lovely day 😊";
+}
+
+function appendLocalHistory(chatId: string, userMessage: string, botMessage: string) {
+  if (!chatSessions[chatId]) chatSessions[chatId] = [];
+  chatSessions[chatId].push({ role: "user", content: userMessage || "" });
+  chatSessions[chatId].push({ role: "assistant", content: botMessage || "" });
 }
 
 function extractNameAndPhone(text?: string): { name: string; phone: string } | null {
@@ -1005,16 +1039,58 @@ function formatAskContactMessage(language: string = "sv"): string {
   return "Toppen! Innan jag bokar din tid behöver jag ditt namn och mobilnummer. 😊";
 }
 
-function formatBookingSavedMessage(language: string, name: string, service: string, dateTime: string): string {
+function localizeServiceName(service: string, language: string): string {
+  const raw = String(service || "").toLowerCase();
+  const isBikini = raw.includes("bikini");
+  const isFullBody = raw.includes("helkropp") || raw.includes("fullbody") || raw.includes("full body");
+  if (language === "fa") {
+    if (isBikini) return "بیکینی";
+    if (isFullBody) return "لیزر فول بادی";
+    if (raw.includes("laser")) return "لیزر";
+    return "وقت";
+  }
+  if (language === "en") {
+    if (isBikini) return "bikini treatment";
+    if (isFullBody) return "full body laser treatment";
+    return service || "appointment";
+  }
+  if (language === "sv") return service || "bokning";
+  if (language === "de") {
+    if (isBikini) return "Bikini-Behandlung";
+    if (isFullBody) return "Ganzkörper-Laserbehandlung";
+    return service || "Termin";
+  }
+  if (language === "es") {
+    if (isBikini) return "tratamiento de bikini";
+    if (isFullBody) return "tratamiento láser de cuerpo completo";
+    return service || "cita";
+  }
+  if (language === "ar") {
+    if (isBikini) return "علاج البكيني";
+    if (isFullBody) return "ليزر الجسم الكامل";
+    return "موعد";
+  }
+  return service || "appointment";
+}
+
+function formatLocalizedDateTime(dateTime: string, language: string) {
   const start = new Date(ensureStockholmOffset(dateTime));
-  const dateText = start.toLocaleDateString("sv-SE", { timeZone: "Europe/Stockholm", weekday: "long", day: "numeric", month: "long" });
+  const localeMap: Record<string, string> = { fa: "fa-IR", sv: "sv-SE", en: "en-GB", de: "de-DE", es: "es-ES", ar: "ar-SA" };
+  const locale = localeMap[language] || "en-GB";
+  const dateText = start.toLocaleDateString(locale, { timeZone: "Europe/Stockholm", weekday: "long", day: "numeric", month: "long" });
   const timeText = start.toLocaleTimeString("sv-SE", { timeZone: "Europe/Stockholm", hour: "2-digit", minute: "2-digit" });
-  if (language === "fa") return `عالی ${name}! وقت شما برای ${service} در ${dateText} ساعت ${timeText} رزرو شد. 😊`;
-  if (language === "es") return `Perfecto ${name}! Tu cita para ${service} está reservada el ${dateText} a las ${timeText}. 😊`;
-  if (language === "de") return `Perfekt ${name}! Ihr Termin für ${service} ist am ${dateText} um ${timeText} gebucht. 😊`;
-  if (language === "ar") return `تمام ${name}! تم حجز موعدك لـ ${service} يوم ${dateText} الساعة ${timeText}. 😊`;
-  if (language === "en") return `Perfect ${name}! Your appointment for ${service} is booked on ${dateText} at ${timeText}. 😊`;
-  return `Härligt ${name}! Din tid för ${service} är nu bokad ${dateText} kl ${timeText}. Vi ser fram emot att träffa dig! 😊`;
+  return { dateText, timeText };
+}
+
+function formatBookingSavedMessage(language: string, name: string, service: string, dateTime: string): string {
+  const { dateText, timeText } = formatLocalizedDateTime(dateTime, language);
+  const localizedService = localizeServiceName(service, language);
+  if (language === "fa") return `عالی ${name}! وقت شما برای ${localizedService} در ${dateText} ساعت ${timeText} رزرو شد. 😊`;
+  if (language === "es") return `Perfecto ${name}! Tu cita para ${localizedService} está reservada el ${dateText} a las ${timeText}. 😊`;
+  if (language === "de") return `Perfekt ${name}! Ihr Termin für ${localizedService} ist am ${dateText} um ${timeText} gebucht. 😊`;
+  if (language === "ar") return `تمام ${name}! تم حجز موعدك لـ ${localizedService} يوم ${dateText} الساعة ${timeText}. 😊`;
+  if (language === "en") return `Perfect ${name}! Your appointment for ${localizedService} is booked on ${dateText} at ${timeText}. 😊`;
+  return `Härligt ${name}! Din tid för ${localizedService} är nu bokad ${dateText} kl ${timeText}. Vi ser fram emot att träffa dig! 😊`;
 }
 
 let globalWaitUntil = 0;
@@ -1297,8 +1373,6 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       tools: calendarTools,
       model: 'gemini-2.5-flash'
     });
-
-    chatResponse = await forceCalendarToolIfNeeded(telegramSessionId, text || "", messages, chatResponse, finalSystemInstruction, calendarTools);
     
     let maxTurns = 3;
     while (chatResponse.functionCalls && chatResponse.functionCalls.length > 0 && maxTurns > 0) {
@@ -1505,8 +1579,6 @@ function detectUserLanguage(text: string): string {
 
   // Explicit script checks first.
   if (/[\u0600-\u06FF]/.test(raw)) {
-    // Persian/Farsi common words beat Arabic if present.
-    if (/\b(سلام|مرسی|ممنون|لطفا|وقت|رزرو|شماره|اسم)\b/u.test(raw)) return "fa";
     if (/\b(مرحبا|السلام|شكرا|موعد|حجز|اليوم|غدا)\b/u.test(raw)) return "ar";
     return "fa";
   }
@@ -1520,25 +1592,16 @@ function detectUserLanguage(text: string): string {
     if (matches) scores[lang] += matches.length * weight;
   };
 
-  // English. Keep this strong so an English customer never gets Swedish because the salon is in Sweden.
-  add("en", /\b(hi|hello|hey|thanks|thank you|yes|no|please|appointment|book|booking|available|next week|today|tomorrow|friday|thursday|wednesday|tuesday|monday|saturday|sunday|treatment|bikini|my name is|my phone is|phone|number|i want|i would like|can i|could i)\b/g, 2);
-
-  // Swedish.
+  // Strong phrase signals.
+  add("fa", /\b(salam|khubi|khub hastin|mikham|mikhastam|baraye|vaght|saat|sate|doshanbe|seshanbe|chaharshanbe|panjshanbe|jome|shanbe|yekshanbe|emrooz|farda|bale|baleh|are|khube|chi|che|migin|migirin|shohar|shoharam|esm|esme|esmam|shomare|telefon|telefonam|mobilesh|ham hast|sepas|mersi|merci|mamnoon|mamnun)\b/g, 3);
+  add("en", /\b(hi|hello|hey|thanks|thank you|yes|no|please|appointment|book|booking|available|next week|today|tomorrow|friday|thursday|wednesday|tuesday|monday|saturday|sunday|treatment|bikini|fullbody|full body|my name is|my phone is|phone|number|i want|i would like|can i|could i)\b/g, 2);
   add("sv", /\b(hej|hejsan|tack|tusen tack|ja|nej|jag|vill|ska|ha|boka|bokning|tid|ledig|behandling|klockan|kl|mitt namn|mitt nummer|mobilnummer|telefonnummer|måndag|tisdag|onsdag|torsdag|fredag|lördag|söndag|idag|imorgon)\b/g, 2);
-
-  // German.
   add("de", /\b(hallo|guten|danke|bitte|termin|uhr|morgen|nachmittag|buchen|behandlung|ich möchte|mein name|telefonnummer|montag|dienstag|mittwoch|donnerstag|freitag)\b/g, 2);
-
-  // Spanish.
   add("es", /\b(hola|gracias|por favor|quiero|cita|reservar|tratamiento|mañana|manana|hora|semana|lunes|martes|miércoles|miercoles|jueves|viernes|sábado|sabado|domingo)\b/g, 2);
-
-  // Persian written with Latin letters (Finglish). Do not let single words like "man" override English.
-  // These words are common in the user's target customer messages, e.g.
-  // "sate 13:30 chi?", "bale mikham", "baraye shoharam", "doshanbe vaght darin".
-  add("fa", /\b(salam|chetori|khubi|mamnoon|merci|lotfan|bebakhshid|mikham|mikhastam|mitoni|mishe|baraye|bara|baray|jomeh|shanbe|yekshanbe|doshanbe|seshanbe|chaharshanbe|panjshanbe|vaght|vaghtesh|darin|darid|dari|daram|farsi|esmam|esmesh|telefonam|telefon|shomare|shomareh|mobile|mobilesh|hastam|hast|bale|na|khob|khube|chi|che|cheghadr|migirin|migin|migirid|shohar|shoharam|zan|zanam|saat|saate|sate|emrooz|farda|in hafte|hafte|mikhaham|mikhad|mikhay?m)\b/g, 2);
-
-  // Arabic written with Latin letters, plus a few transliterations.
   add("ar", /\b(marhaba|shukran|maw3ed|hajz|bukra|alyawm)\b/g, 2);
+
+  // If the text is mostly Persian transliteration, do not let English filler words win.
+  if (scores.fa >= 3) return "fa";
 
   const ranked = Object.entries(scores).sort((a, b) => b[1] - a[1]);
   if (ranked[0][1] > 0) return ranked[0][0];
@@ -1547,10 +1610,14 @@ function detectUserLanguage(text: string): string {
 }
 
 function getConversationLanguage(chatId: string, latestText?: string): string {
-  const detected = detectUserLanguage(latestText || "");
-  // Always allow the latest clear customer message to switch language.
-  // This prevents an old Swedish "Hej" from locking a new English conversation into Swedish.
-  if (latestText && String(latestText).trim()) {
+  const text = String(latestText || "").trim();
+  const completed = getRecentCompletedBooking(chatId);
+  if (completed && isThanksOnlyText(text)) return completed.language || chatLanguages[chatId] || "en";
+
+  const detected = detectUserLanguage(text || "");
+  // Always allow the latest clear non-thanks customer message to switch language.
+  // This prevents an old Swedish "Hej" from locking a new English/Finglish conversation into Swedish.
+  if (text) {
     chatLanguages[chatId] = detected;
     return detected;
   }
@@ -1578,62 +1645,6 @@ Do not answer in Swedish unless ACTIVE CONVERSATION LANGUAGE is Swedish.
 Do not let the business location, calendar locale, service names, or previous messages override this.
 If the latest customer message is in a different supported language, follow that latest customer language.
 `;
-}
-
-function isPureThanksText(text?: string): boolean {
-  const raw = String(text || "").trim().toLowerCase();
-  if (!raw) return false;
-  return /^(tack|tusen tack|tack så mycket|thanks|thank you|thx|merci|mamnoon|mersi|متشکرم|ممنون|شكرا|gracias|danke)[!.😊🙏 ]*$/i.test(raw);
-}
-
-function customerMentionsTimeOrDate(text?: string): boolean {
-  const raw = String(text || "").trim().toLowerCase();
-  if (!raw) return false;
-
-  // Explicit times: 13:15, 13.30, 3pm, kl 15, klockan 15, sate 13:30, ساعت ۱۵.
-  if (/\b(?:kl|klockan|saat|saate|sate|at|clock|uhr|hora|las|ساعت)\s*\d{1,2}(?:[\.:]\d{2})?\b/i.test(raw)) return true;
-  if (/\b\d{1,2}[\.:]\d{2}\b/.test(raw)) return true;
-  if (/\b\d{1,2}\s*(?:am|pm)\b/i.test(raw)) return true;
-
-  // Date/day/availability language in supported languages and Finglish.
-  return /\b(idag|imorgon|måndag|tisdag|onsdag|torsdag|fredag|lördag|söndag|today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|next week|this week|available|ledig|vaght|vaghtesh|darin|darid|doshanbe|seshanbe|chaharshanbe|panjshanbe|jomeh|shanbe|yekshanbe|emrooz|farda|in hafte|hafte|chi|خالی|وقت|امروز|فردا|دوشنبه|سه.?شنبه|چهارشنبه|پنجشنبه|جمعه|شنبه|یکشنبه)\b/i.test(raw);
-}
-
-function shouldForceCalendarToolForMessage(text?: string): boolean {
-  const raw = String(text || "").trim();
-  if (!raw) return false;
-  if (isPureThanksText(raw)) return false;
-  if (extractNameAndPhone(raw)) return false;
-  if (isAffirmativeBookingText(raw) && !customerMentionsTimeOrDate(raw)) return false;
-  return customerMentionsTimeOrDate(raw);
-}
-
-function buildForcedCalendarToolInstruction(language: string): string {
-  const name = getLanguageName(language);
-  return `
-MANDATORY CALENDAR TOOL RULE:
-The latest customer message mentions a time, date, weekday, or asks if another time is possible.
-You MUST call checkSlots now before answering.
-Do not answer from memory. Do not guess availability.
-Use the existing conversation context to infer service, duration, date and requested time.
-If the customer gives only a new time like "13:30?", reuse the most recent requested date/service from the conversation and call checkSlots with that new requestedTime.
-After the tool result, reply only in ${name}.
-`;
-}
-
-async function forceCalendarToolIfNeeded(chatId: string, latestText: string, messages: any[], chatResponse: any, finalSystemInstruction: string, tools: any[]) {
-  if (chatResponse?.functionCalls && chatResponse.functionCalls.length > 0) return chatResponse;
-  if (!shouldForceCalendarToolForMessage(latestText)) return chatResponse;
-
-  const language = getConversationLanguage(chatId, latestText || "");
-  console.log(`[ToolGuard] Forcing checkSlots because latest message mentions time/date. chatId=${chatId}, language=${language}, text=${JSON.stringify(latestText)}`);
-
-  return await generateContentWithFallback(null, {
-    messages,
-    systemInstruction: finalSystemInstruction + buildForcedCalendarToolInstruction(language),
-    tools,
-    model: "gemini-2.5-flash"
-  });
 }
 
 function getErrorMessageByLanguage(language: string): string {
@@ -2292,8 +2303,6 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       tools: calendarTools,
       model: "gemini-2.5-flash"
     });
-
-    chatResponse = await forceCalendarToolIfNeeded(chatId, textMessage || "", messages, chatResponse, finalSystemInstruction, calendarTools);
 
     let maxTurns = 3;
     while (chatResponse.functionCalls && chatResponse.functionCalls.length > 0 && maxTurns > 0) {
@@ -3113,12 +3122,22 @@ async function processMessengerUpdate(webhookEvent: any, config: any, platform: 
     let pending = await loadPendingBooking(chatId, "messenger", businessConfig);
     const detectedLang = getConversationLanguage(chatId, textMessage || "");
 
+    const completedBooking = getRecentCompletedBooking(chatId);
+    if (!pending && completedBooking && isThanksOnlyText(textMessage || "")) {
+      const thanksText = formatThanksReply(completedBooking.language || detectedLang, completedBooking.name);
+      await sendMessengerMessage(senderId, thanksText, businessConfig);
+      appendLocalHistory(chatId, textMessage || "", thanksText);
+      await postProcessMessage(chatId, platform, textMessage, thanksText, businessConfig?.telegramToken, businessConfig?.apiKey, getBusinessIdFromConfig(businessConfig));
+      return;
+    }
+
     if (pending && textMessage && isAffirmativeBookingText(textMessage) && pending.status === "awaiting_confirmation") {
       pending.status = "awaiting_contact";
       await savePendingBooking(chatId, "messenger", pending);
       const askText = formatAskContactMessage(detectedLang);
       console.log(`[DeterministicBooking] Messenger confirmation received. Awaiting contact. chatId=${chatId}`);
       await sendMessengerMessage(senderId, askText, businessConfig);
+      appendLocalHistory(chatId, textMessage || "", askText);
       await postProcessMessage(chatId, platform, textMessage, askText, businessConfig?.telegramToken, businessConfig?.apiKey, getBusinessIdFromConfig(businessConfig));
       return;
     }
@@ -3141,10 +3160,12 @@ async function processMessengerUpdate(webhookEvent: any, config: any, platform: 
           durationMinutes: pending.durationMinutes
         });
         await clearPendingBooking(chatId);
+        rememberCompletedBooking(chatId, detectedLang, contact.name);
         await notifyAdminAboutBooking(businessConfig, "Messenger", businessConfig.businessName || businessConfig.business_name || "business", contact.name, contact.phone, pending.dateTime);
 
         const bookedText = formatBookingSavedMessage(detectedLang, contact.name, pending.service, pending.dateTime);
         await sendMessengerMessage(senderId, bookedText, businessConfig);
+        appendLocalHistory(chatId, textMessage || "", bookedText);
         await postProcessMessage(chatId, platform, textMessage, bookedText, businessConfig?.telegramToken, businessConfig?.apiKey, getBusinessIdFromConfig(businessConfig));
         return;
       }
@@ -3234,8 +3255,6 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       tools: calendarTools,
       model: "gemini-2.5-flash"
     });
-
-    chatResponse = await forceCalendarToolIfNeeded(chatId, textMessage || "", messages, chatResponse, finalSystemInstruction, calendarTools);
 
     let maxTurns = 3;
     while (chatResponse.functionCalls && chatResponse.functionCalls.length > 0 && maxTurns > 0) {
@@ -3556,8 +3575,6 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       tools: calendarTools,
       model: 'gemini-2.5-flash'
     });
-
-    chatResponse = await forceCalendarToolIfNeeded(chatId, textMessage || "", messages, chatResponse, finalSystemInstruction, calendarTools);
 
     let maxTurns = 3;
     while (chatResponse.functionCalls && chatResponse.functionCalls.length > 0 && maxTurns > 0) {
@@ -4053,8 +4070,6 @@ Never translate unless requested.
         tools: calendarTools,
         model: 'gemini-2.5-flash'
       });
-
-      chatResponse = await forceCalendarToolIfNeeded(chatId, userText || "", messages, chatResponse, finalSystemInstruction, calendarTools);
       
       let maxWebTurns = 3;
       while (chatResponse.functionCalls && chatResponse.functionCalls.length > 0 && maxWebTurns > 0) {

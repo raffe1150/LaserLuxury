@@ -1338,8 +1338,12 @@ function normalizeBusinessConfig(row: any) {
   return {
     ...activeConfig,
     businessRecordId: row.id,
+    business_id: row.id,
+    id: row.id,
     businessName: row.business_name,
+    business_name: row.business_name,
     telegramToken: row.telegram_bot_token,
+    adminTelegramChatId: row.admin_telegram_chat_id || row.adminTelegramChatId || activeConfig.adminTelegramChatId,
     googleCalendarId: row.google_calendar_id,
     systemPrompt: row.custom_system_prompt,
     instagramAccessToken: row.instagram_access_token,
@@ -1355,6 +1359,57 @@ function normalizeBusinessConfig(row: any) {
     messengerEnabled: row.messenger_enabled,
     calendarProvider: "google",
   };
+}
+
+const businessConfigVersions: Record<string, string> = {};
+
+function makeBusinessConfigVersion(config: any): string {
+  const businessId = getBusinessIdFromConfig(config) || "no-business";
+  const businessName = config?.businessName || config?.business_name || "";
+  const prompt = config?.systemPrompt || "";
+  const calendarId = config?.googleCalendarId || "";
+  return crypto.createHash("sha1").update(`${businessId}|${businessName}|${calendarId}|${prompt}`).digest("hex");
+}
+
+function resetSessionIfBusinessConfigChanged(sessionId: string, config: any) {
+  const nextVersion = makeBusinessConfigVersion(config);
+  const previousVersion = businessConfigVersions[sessionId];
+  if (previousVersion && previousVersion !== nextVersion) {
+    console.log(`[BusinessConfig] Config changed for session=${sessionId}. Clearing in-memory chat history so old business identity cannot leak.`);
+    chatSessions[sessionId] = [];
+    delete pendingBookings[sessionId];
+    delete recentlyCompletedBookings[sessionId];
+  }
+  businessConfigVersions[sessionId] = nextVersion;
+}
+
+async function loadFreshBusinessConfigByTelegramToken(token: string, fallbackConfig: any = {}) {
+  let freshConfig = { ...activeConfig, ...(fallbackConfig || {}), telegramToken: token };
+  if (!supabase || !token) return freshConfig;
+
+  try {
+    const { data, error } = await supabase
+      .from("businesses")
+      .select("*")
+      .eq("telegram_bot_token", token)
+      .maybeSingle();
+
+    if (error) {
+      console.error("Telegram business live lookup error:", JSON.stringify(error));
+      return freshConfig;
+    }
+
+    if (data) {
+      freshConfig = normalizeBusinessConfig(data);
+      console.log(`[BusinessConfig] Fresh Telegram config loaded: business=${freshConfig.businessName || "unknown"}, business_id=${getBusinessIdFromConfig(freshConfig)}, calendar_id=${freshConfig.googleCalendarId || "missing"}`);
+    } else {
+      console.warn(`[BusinessConfig] No Supabase business found for Telegram token ${maskToken(token)}. Using fallback config.`);
+    }
+  } catch (err) {
+    console.error("Telegram business live lookup crashed:", err);
+  }
+
+  return freshConfig;
 }
 
 async function startTelegramPolling(config: any) {
@@ -1461,43 +1516,19 @@ async function processTelegramUpdate(update: any, config: any, platform: string 
     }
   }
 
-  const { apiKey, systemPrompt } = config;
   if (!update.message) return;
   if (!update.message.chat) return;
 
   const chatId = update.message.chat.id;
   const telegramSessionId = `${telegramToken}:${chatId}`;
+
+  // Always load the latest business config directly from Supabase for this token.
+  // Do not use old chat_history to decide the tenant; history can be stale after a business edits its name/prompt.
+  config = await loadFreshBusinessConfigByTelegramToken(telegramToken, config);
+  resetSessionIfBusinessConfigChanged(telegramSessionId, config);
+
+  const { apiKey } = config;
   console.log(`Processing Telegram message for ${config.businessName || "business"} (${maskToken(telegramToken)}), chatId=${chatId}`);
-  try {
-    // 🌟 تزریق پایگاه داده برای بارگذاری پویای اطلاعات بیزینس
-    if (supabase) {
-      const { data: sessionData } = await supabase
-        .from('chat_history')
-        .select('business_id')
-        .eq('user_id', chatId.toString())
-        .order('created_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
-
-      if (sessionData && sessionData.business_id) {
-        const { data: activeTenant } = await supabase
-          .from('businesses')
-          .select('*')
-          .eq('id', sessionData.business_id)
-          .single();
-
-        if (activeTenant) {
-          config.telegramToken = activeTenant.telegram_bot_token;
-          config.googleCalendarId = activeTenant.google_calendar_id;
-          config.systemPrompt = activeTenant.custom_system_prompt;
-         }
-      }
-    }
-    // 🌟 پایان تزریق
-
-  } catch (tenantErr) {
-    console.error("Tenant config injection failed:", tenantErr);
-  }
 
   try {
     const text = update.message.text;
@@ -2661,6 +2692,8 @@ async function processWhatsAppMessage(message: any, metadata: any, config: any, 
     console.error("WhatsApp tenant config injection failed:", tenantErr);
   }
 
+  resetSessionIfBusinessConfigChanged(chatId, businessConfig);
+
   try {
     if (!chatSessions[chatId as any]) chatSessions[chatId as any] = [];
     const history = chatSessions[chatId as any];
@@ -3533,6 +3566,8 @@ async function processMessengerUpdate(webhookEvent: any, config: any, platform: 
     console.error("Messenger tenant config injection failed:", tenantErr);
   }
 
+  resetSessionIfBusinessConfigChanged(chatId, businessConfig);
+
   try {
     let pending = await loadPendingBooking(chatId, "messenger", businessConfig);
     const detectedLang = getConversationLanguage(chatId, textMessage || "");
@@ -3929,6 +3964,8 @@ async function processInstagramUpdate(webhook_event: any, config: any, platform:
   } catch (tenantErr) {
     console.error('Instagram tenant config injection failed:', tenantErr);
   }
+
+  resetSessionIfBusinessConfigChanged(chatId, businessConfig);
 
   try {
     if (!chatSessions[chatId as any]) chatSessions[chatId as any] = [];

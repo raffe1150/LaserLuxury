@@ -10,6 +10,11 @@ import fs from "fs";
 import { google } from "googleapis";
 import { createClient } from "@supabase/supabase-js";
 
+// Optional globals used only inside safe typeof guards for analytics metadata injection.
+declare const businessConfig: any;
+declare const config: any;
+declare const platform: any;
+
 let supabase: any = null;
 if (process.env.SUPABASE_URL && (process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY)) {
   // Prefer SERVICE_ROLE for server-side writes. This is needed when RLS blocks inserts
@@ -70,7 +75,7 @@ function rotateKey(keys: string[]) {
     }
 }
 
-async function generateContentWithFallback(ai: GoogleGenAI | null, options: { messages: any[], tools?: any[], systemInstruction?: string, model?: string }, retries = 3, retryDelay = 2000): Promise<any> {
+async function generateContentWithFallback(ai: GoogleGenAI | null, options: { messages: any[], tools?: any[], systemInstruction?: string, model?: string, businessId?: string | number | null, platform?: string }, retries = 3, retryDelay = 2000): Promise<any> {
   const allKeys = getApiKeys();
   let activeAi = ai || new GoogleGenAI({ apiKey: allKeys[currentKeyIndex] || process.env.GEMINI_API_KEY });
 
@@ -157,9 +162,24 @@ async function generateContentWithFallback(ai: GoogleGenAI | null, options: { me
      safeText = parts.map((p:any) => p.text || "").join("");
   }
   
+  const usageMetadata = response.usageMetadata || response.candidates?.[0]?.usageMetadata || {};
+  const inputTokens = Number(usageMetadata.promptTokenCount || usageMetadata.inputTokenCount || 0);
+  const outputTokens = Number(usageMetadata.candidatesTokenCount || usageMetadata.outputTokenCount || 0);
+  const totalTokens = Number(usageMetadata.totalTokenCount || (inputTokens + outputTokens) || 0);
+
+  if (options.businessId && totalTokens > 0) {
+    updateBusinessUsageStats({
+      businessId: options.businessId,
+      inputTokens,
+      outputTokens,
+      totalTokens
+    }).catch((err) => console.error("[BusinessStats] token update failed:", err));
+  }
+
   return {
     text: safeText || "",
-    functionCalls
+    functionCalls,
+    usageMetadata: { inputTokens, outputTokens, totalTokens, raw: usageMetadata }
   };
 }
 
@@ -230,6 +250,11 @@ async function postProcessMessage(chatId: string, platform: string, userMessage:
       }
     }
   } catch(e) { console.error('Supabase chat_history error:', e); }
+
+  if (businessId) {
+    await trackConversationStarted({ businessId, platform, userId: chatId.toString() });
+    await updateBusinessUsageStats({ businessId, aiMessages: 1 });
+  }
 
 }
 
@@ -836,6 +861,122 @@ function getStockholmUsageDate(): string {
     month: '2-digit',
     day: '2-digit'
   }).format(new Date());
+}
+
+
+function getBusinessStatsMonth(): string {
+  return new Intl.DateTimeFormat('sv-SE', {
+    timeZone: 'Europe/Stockholm',
+    year: 'numeric',
+    month: '2-digit'
+  }).format(new Date());
+}
+
+const GEMINI_INPUT_PRICE_PER_1M_USD = Number(process.env.GEMINI_INPUT_PRICE_PER_1M_USD || 0.30);
+const GEMINI_OUTPUT_PRICE_PER_1M_USD = Number(process.env.GEMINI_OUTPUT_PRICE_PER_1M_USD || 2.50);
+
+function estimateGeminiCostUsd(inputTokens: number = 0, outputTokens: number = 0): number {
+  const inputCost = (Number(inputTokens || 0) / 1_000_000) * GEMINI_INPUT_PRICE_PER_1M_USD;
+  const outputCost = (Number(outputTokens || 0) / 1_000_000) * GEMINI_OUTPUT_PRICE_PER_1M_USD;
+  return Number((inputCost + outputCost).toFixed(8));
+}
+
+async function updateBusinessUsageStats(params: {
+  businessId?: string | number | null;
+  totalConversations?: number;
+  aiMessages?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  estimatedCostUsd?: number;
+  completedBookings?: number;
+}) {
+  if (!supabase || !params.businessId) return;
+
+  const businessId = String(params.businessId);
+  const usageMonth = getBusinessStatsMonth();
+  const inputTokens = Number(params.inputTokens || 0);
+  const outputTokens = Number(params.outputTokens || 0);
+  const totalTokens = Number(params.totalTokens || (inputTokens + outputTokens) || 0);
+  const estimatedCost = Number(params.estimatedCostUsd ?? estimateGeminiCostUsd(inputTokens, outputTokens));
+
+  const delta = {
+    total_conversations: Number(params.totalConversations || 0),
+    ai_messages: Number(params.aiMessages || 0),
+    gemini_input_tokens: inputTokens,
+    gemini_output_tokens: outputTokens,
+    gemini_total_tokens: totalTokens,
+    estimated_ai_cost: estimatedCost,
+    completed_bookings: Number(params.completedBookings || 0)
+  };
+
+  try {
+    const { data: existing, error: lookupError } = await supabase
+      .from('business_usage_stats')
+      .select('id,total_conversations,ai_messages,gemini_input_tokens,gemini_output_tokens,gemini_total_tokens,estimated_ai_cost,completed_bookings')
+      .eq('business_id', businessId)
+      .eq('usage_month', usageMonth)
+      .maybeSingle();
+
+    if (lookupError) {
+      console.error('[BusinessStats] lookup error:', JSON.stringify(lookupError));
+      return;
+    }
+
+    if (existing?.id) {
+      const updatePayload = {
+        total_conversations: Number(existing.total_conversations || 0) + delta.total_conversations,
+        ai_messages: Number(existing.ai_messages || 0) + delta.ai_messages,
+        gemini_input_tokens: Number(existing.gemini_input_tokens || 0) + delta.gemini_input_tokens,
+        gemini_output_tokens: Number(existing.gemini_output_tokens || 0) + delta.gemini_output_tokens,
+        gemini_total_tokens: Number(existing.gemini_total_tokens || 0) + delta.gemini_total_tokens,
+        estimated_ai_cost: Number(existing.estimated_ai_cost || 0) + delta.estimated_ai_cost,
+        completed_bookings: Number(existing.completed_bookings || 0) + delta.completed_bookings,
+        updated_at: new Date().toISOString()
+      };
+      const { error } = await supabase.from('business_usage_stats').update(updatePayload).eq('id', existing.id);
+      if (error) console.error('[BusinessStats] update error:', JSON.stringify(error));
+      return;
+    }
+
+    const insertPayload = {
+      business_id: businessId,
+      usage_month: usageMonth,
+      ...delta
+    };
+    const { error } = await supabase.from('business_usage_stats').insert([insertPayload]);
+    if (error) console.error('[BusinessStats] insert error:', JSON.stringify(error));
+  } catch (err) {
+    console.error('[BusinessStats] crashed:', err);
+  }
+}
+
+async function trackConversationStarted(params: { businessId?: string | number | null; platform: string; userId: string; }) {
+  if (!supabase || !params.businessId || !params.userId) return;
+
+  const businessId = String(params.businessId);
+  const usageMonth = getBusinessStatsMonth();
+  const platform = String(params.platform || 'unknown');
+  const userId = String(params.userId || 'unknown');
+
+  try {
+    const { data, error } = await supabase
+      .from('business_conversation_sessions')
+      .insert([{ business_id: businessId, usage_month: usageMonth, platform, user_id: userId }])
+      .select('id')
+      .single();
+
+    if (error) {
+      if (error.code !== '23505') console.error('[BusinessStats] conversation session insert error:', JSON.stringify(error));
+      return;
+    }
+
+    if (data?.id) {
+      await updateBusinessUsageStats({ businessId, totalConversations: 1 });
+    }
+  } catch (err) {
+    console.error('[BusinessStats] conversation tracking crashed:', err);
+  }
 }
 
 function formatDailyLimitMessage(language: string = 'en'): string {
@@ -1540,7 +1681,9 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       messages,
       systemInstruction: finalSystemInstruction, 
       tools: calendarTools,
-      model: 'gemini-2.5-flash'
+      model: 'gemini-2.5-flash',
+        businessId: (typeof businessConfig !== 'undefined' ? getBusinessIdFromConfig(businessConfig) : (typeof config !== 'undefined' ? getBusinessIdFromConfig(config) : getBusinessIdFromConfig(activeConfig))),
+        platform: (typeof platform !== 'undefined' ? platform : 'unknown')
     });
     
     let maxTurns = 3;
@@ -1618,7 +1761,9 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
         messages,
         systemInstruction: finalSystemInstruction, 
         tools: calendarTools,
-        model: 'gemini-2.5-flash'
+        model: 'gemini-2.5-flash',
+        businessId: (typeof businessConfig !== 'undefined' ? getBusinessIdFromConfig(businessConfig) : (typeof config !== 'undefined' ? getBusinessIdFromConfig(config) : getBusinessIdFromConfig(activeConfig))),
+        platform: (typeof platform !== 'undefined' ? platform : 'unknown')
       });
     }
     
@@ -1627,7 +1772,9 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       chatResponse = await generateContentWithFallback(null, {
          messages,
          systemInstruction: finalSystemInstruction + "\nCRITICAL: Maximum tool calls reached. You MUST reply in natural language only. Summarize what you know. DO NOT USE TOOLS.",
-         model: 'gemini-2.5-flash'
+         model: 'gemini-2.5-flash',
+        businessId: (typeof businessConfig !== 'undefined' ? getBusinessIdFromConfig(businessConfig) : (typeof config !== 'undefined' ? getBusinessIdFromConfig(config) : getBusinessIdFromConfig(activeConfig))),
+        platform: (typeof platform !== 'undefined' ? platform : 'unknown')
       });
     }
     
@@ -2050,6 +2197,7 @@ async function recordAppointmentFromBooking(params: {
       console.error("If this says RLS/policy/permission, add SUPABASE_SERVICE_ROLE_KEY to Render Environment or temporarily disable RLS on appointments while testing.");
     } else {
       console.log("Appointment saved to Supabase appointments:", JSON.stringify(data));
+      await updateBusinessUsageStats({ businessId, completedBookings: 1 });
     }
   } catch (err) {
     console.error("recordAppointmentFromBooking error:", err);
@@ -2629,7 +2777,9 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       messages,
       systemInstruction: finalSystemInstruction,
       tools: calendarTools,
-      model: "gemini-2.5-flash"
+      model: "gemini-2.5-flash",
+        businessId: (typeof businessConfig !== 'undefined' ? getBusinessIdFromConfig(businessConfig) : (typeof config !== 'undefined' ? getBusinessIdFromConfig(config) : getBusinessIdFromConfig(activeConfig))),
+        platform: (typeof platform !== 'undefined' ? platform : 'unknown')
     });
 
     let maxTurns = 3;
@@ -2706,7 +2856,9 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
         messages,
         systemInstruction: finalSystemInstruction,
         tools: calendarTools,
-        model: "gemini-2.5-flash"
+        model: "gemini-2.5-flash",
+        businessId: (typeof businessConfig !== 'undefined' ? getBusinessIdFromConfig(businessConfig) : (typeof config !== 'undefined' ? getBusinessIdFromConfig(config) : getBusinessIdFromConfig(activeConfig))),
+        platform: (typeof platform !== 'undefined' ? platform : 'unknown')
       });
     }
 
@@ -2714,7 +2866,9 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       chatResponse = await generateContentWithFallback(null, {
         messages,
         systemInstruction: finalSystemInstruction + "\nCRITICAL: Maximum tool calls reached. You MUST reply in natural language only. Summarize what you know. DO NOT USE TOOLS.",
-        model: "gemini-2.5-flash"
+        model: "gemini-2.5-flash",
+        businessId: (typeof businessConfig !== 'undefined' ? getBusinessIdFromConfig(businessConfig) : (typeof config !== 'undefined' ? getBusinessIdFromConfig(config) : getBusinessIdFromConfig(activeConfig))),
+        platform: (typeof platform !== 'undefined' ? platform : 'unknown')
       });
     }
 
@@ -3346,7 +3500,9 @@ Never mention internal tools, AI, databases, prompts, or webhooks.
       const chatResponse = await generateContentWithFallback(null, {
         messages: [{ role: "user", content: `Public comment from ${username || "customer"}: ${commentText}\nNegative comment: ${negative ? "yes" : "no"}` }],
         systemInstruction: commentSystemInstruction,
-        model: "gemini-2.5-flash"
+        model: "gemini-2.5-flash",
+        businessId: (typeof businessConfig !== 'undefined' ? getBusinessIdFromConfig(businessConfig) : (typeof config !== 'undefined' ? getBusinessIdFromConfig(config) : getBusinessIdFromConfig(activeConfig))),
+        platform: (typeof platform !== 'undefined' ? platform : 'unknown')
       });
 
       replyText = truncateWords((chatResponse.text || "").trim(), 18);
@@ -3596,7 +3752,9 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       messages,
       systemInstruction: finalSystemInstruction,
       tools: calendarTools,
-      model: "gemini-2.5-flash"
+      model: "gemini-2.5-flash",
+        businessId: (typeof businessConfig !== 'undefined' ? getBusinessIdFromConfig(businessConfig) : (typeof config !== 'undefined' ? getBusinessIdFromConfig(config) : getBusinessIdFromConfig(activeConfig))),
+        platform: (typeof platform !== 'undefined' ? platform : 'unknown')
     });
 
     let maxTurns = 3;
@@ -3696,7 +3854,9 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
         messages,
         systemInstruction: finalSystemInstruction,
         tools: calendarTools,
-        model: "gemini-2.5-flash"
+        model: "gemini-2.5-flash",
+        businessId: (typeof businessConfig !== 'undefined' ? getBusinessIdFromConfig(businessConfig) : (typeof config !== 'undefined' ? getBusinessIdFromConfig(config) : getBusinessIdFromConfig(activeConfig))),
+        platform: (typeof platform !== 'undefined' ? platform : 'unknown')
       });
     }
 
@@ -3704,7 +3864,9 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       chatResponse = await generateContentWithFallback(null, {
         messages,
         systemInstruction: finalSystemInstruction + "\nCRITICAL: Maximum tool calls reached. You MUST reply in natural language only. Summarize what you know. DO NOT USE TOOLS.",
-        model: "gemini-2.5-flash"
+        model: "gemini-2.5-flash",
+        businessId: (typeof businessConfig !== 'undefined' ? getBusinessIdFromConfig(businessConfig) : (typeof config !== 'undefined' ? getBusinessIdFromConfig(config) : getBusinessIdFromConfig(activeConfig))),
+        platform: (typeof platform !== 'undefined' ? platform : 'unknown')
       });
     }
 
@@ -3943,7 +4105,9 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       messages,
       systemInstruction: finalSystemInstruction,
       tools: calendarTools,
-      model: 'gemini-2.5-flash'
+      model: 'gemini-2.5-flash',
+        businessId: (typeof businessConfig !== 'undefined' ? getBusinessIdFromConfig(businessConfig) : (typeof config !== 'undefined' ? getBusinessIdFromConfig(config) : getBusinessIdFromConfig(activeConfig))),
+        platform: (typeof platform !== 'undefined' ? platform : 'unknown')
     });
 
     let maxTurns = 3;
@@ -4026,7 +4190,9 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
         messages,
         systemInstruction: finalSystemInstruction,
         tools: calendarTools,
-        model: 'gemini-2.5-flash'
+        model: 'gemini-2.5-flash',
+        businessId: (typeof businessConfig !== 'undefined' ? getBusinessIdFromConfig(businessConfig) : (typeof config !== 'undefined' ? getBusinessIdFromConfig(config) : getBusinessIdFromConfig(activeConfig))),
+        platform: (typeof platform !== 'undefined' ? platform : 'unknown')
       });
     }
 
@@ -4034,7 +4200,9 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       chatResponse = await generateContentWithFallback(null, {
         messages,
         systemInstruction: finalSystemInstruction + '\nCRITICAL: Maximum tool calls reached. You MUST reply in natural language only. Summarize what you know. DO NOT USE TOOLS.',
-        model: 'gemini-2.5-flash'
+        model: 'gemini-2.5-flash',
+        businessId: (typeof businessConfig !== 'undefined' ? getBusinessIdFromConfig(businessConfig) : (typeof config !== 'undefined' ? getBusinessIdFromConfig(config) : getBusinessIdFromConfig(activeConfig))),
+        platform: (typeof platform !== 'undefined' ? platform : 'unknown')
       });
     }
 
@@ -4442,7 +4610,9 @@ Never translate unless requested.
         messages,
         systemInstruction: finalSystemInstruction, 
         tools: calendarTools,
-        model: 'gemini-2.5-flash'
+        model: 'gemini-2.5-flash',
+        businessId: (typeof businessConfig !== 'undefined' ? getBusinessIdFromConfig(businessConfig) : (typeof config !== 'undefined' ? getBusinessIdFromConfig(config) : getBusinessIdFromConfig(activeConfig))),
+        platform: (typeof platform !== 'undefined' ? platform : 'unknown')
       });
       
       let maxWebTurns = 3;
@@ -4519,7 +4689,9 @@ Never translate unless requested.
           messages,
           systemInstruction: finalSystemInstruction, 
           tools: calendarTools,
-          model: 'gemini-2.5-flash'
+          model: 'gemini-2.5-flash',
+        businessId: (typeof businessConfig !== 'undefined' ? getBusinessIdFromConfig(businessConfig) : (typeof config !== 'undefined' ? getBusinessIdFromConfig(config) : getBusinessIdFromConfig(activeConfig))),
+        platform: (typeof platform !== 'undefined' ? platform : 'unknown')
         });
       }
       
@@ -4528,7 +4700,9 @@ Never translate unless requested.
         chatResponse = await generateContentWithFallback(null, {
            messages,
            systemInstruction: finalSystemInstruction + "\nCRITICAL: Maximum tool calls reached. You MUST reply in natural language only. Summarize what you know. DO NOT USE TOOLS.",
-           model: 'gemini-2.5-flash'
+           model: 'gemini-2.5-flash',
+        businessId: (typeof businessConfig !== 'undefined' ? getBusinessIdFromConfig(businessConfig) : (typeof config !== 'undefined' ? getBusinessIdFromConfig(config) : getBusinessIdFromConfig(activeConfig))),
+        platform: (typeof platform !== 'undefined' ? platform : 'unknown')
         });
       }
       

@@ -489,15 +489,11 @@ function isSlotFree(startMs: number, durationMinutes: number, events: any[]): bo
 }
 
 function getDailySlots(startDateStr: string, endDateStr: string, events: any[], durationMinutes: number = 60, requestedTime?: string) {
-  const slots: string[] = [];
   const normalizedRequestedTime = normalizeRequestedTime(requestedTime || "");
   const endString = endDateStr || startDateStr;
 
   // ClinicPilot availability window.
-  // Previous version used 18:00 as hard closing time, so a real free request like
-  // Friday 18:00 was rejected if the treatment duration ended after 18:00.
-  // We allow appointments to start at 18:00 and finish later, as long as they fit
-  // before BUSINESS_CLOSE_MINUTES. Adjust these two constants later from Dashboard.
+  // Keep this dynamic later from the business dashboard/businesses table.
   const BUSINESS_OPEN_MINUTES = 9 * 60;
   const BUSINESS_CLOSE_MINUTES = 20 * 60;
 
@@ -509,54 +505,98 @@ function getDailySlots(startDateStr: string, endDateStr: string, events: any[], 
     const slotD = new Date(isoString);
     let weekday = dayFormatter.format(slotD);
     weekday = weekday.charAt(0).toUpperCase() + weekday.slice(1);
-    return { isoString, slotD, label: `${weekday} kl ${formatter.format(slotD)} (ISO: ${isoString})` };
+    return {
+      isoString,
+      slotD,
+      totalMin: hour * 60 + minute,
+      label: `${weekday} kl ${formatter.format(slotD)} (ISO: ${isoString})`
+    };
   };
 
-  const collectRange = (exactOnly: boolean) => {
-    const startParts = startDateStr.split('-');
-    const startD = new Date(Date.UTC(Number(startParts[0]), Number(startParts[1]) - 1, Number(startParts[2])));
-    const endParts = endString.split('-');
-    const endD = new Date(Date.UTC(Number(endParts[0]), Number(endParts[1]) - 1, Number(endParts[2])));
+  const parseDateUtc = (dateStr: string) => {
+    const parts = dateStr.split('-');
+    return new Date(Date.UTC(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2])));
+  };
 
-    for (let d = new Date(startD); d <= endD; d.setUTCDate(d.getUTCDate() + 1)) {
+  const getAllFreeCandidates = () => {
+    const candidates: Array<{ isoString: string; slotD: Date; totalMin: number; label: string; dayIndex: number }> = [];
+    const startD = parseDateUtc(startDateStr);
+    const endD = parseDateUtc(endString);
+
+    let dayIndex = 0;
+    for (let d = new Date(startD); d <= endD; d.setUTCDate(d.getUTCDate() + 1), dayIndex++) {
+      // Do not suggest weekends unless the business later explicitly enables them.
       if (d.getUTCDay() === 0 || d.getUTCDay() === 6) continue;
       const y = d.getUTCFullYear();
       const m = String(d.getUTCMonth() + 1).padStart(2, '0');
       const day = String(d.getUTCDate()).padStart(2, '0');
       const dStr = `${y}-${m}-${day}`;
 
-      if (exactOnly && normalizedRequestedTime) {
-        const [h, min] = normalizedRequestedTime.split(':').map(Number);
-        const requested = makeSlot(dStr, h, min);
-        const requestedStartTotal = h * 60 + min;
-        const requestedEndTotal = requestedStartTotal + durationMinutes;
-        const endsWithinBusinessHours = requestedStartTotal >= BUSINESS_OPEN_MINUTES && requestedEndTotal <= BUSINESS_CLOSE_MINUTES;
-        if (endsWithinBusinessHours && isSlotFree(requested.slotD.getTime(), durationMinutes, events)) {
-          slots.push(requested.label);
-        }
-        continue;
-      }
-
-      // Alternative slots every 15 minutes, not only whole hours.
+      // Alternative slots every 15 minutes, but every candidate is still checked against
+      // real calendar events. Nothing is suggested without isSlotFree() returning true.
       for (let totalMin = BUSINESS_OPEN_MINUTES; totalMin <= BUSINESS_CLOSE_MINUTES - 15; totalMin += 15) {
-        const h = Math.floor(totalMin / 60);
-        const min = totalMin % 60;
         const endTotal = totalMin + durationMinutes;
         if (endTotal > BUSINESS_CLOSE_MINUTES) continue;
+
+        const h = Math.floor(totalMin / 60);
+        const min = totalMin % 60;
         const slot = makeSlot(dStr, h, min);
-        if (isSlotFree(slot.slotD.getTime(), durationMinutes, events)) slots.push(slot.label);
-        if (slots.length >= 3) return;
+        if (isSlotFree(slot.slotD.getTime(), durationMinutes, events)) {
+          candidates.push({ ...slot, dayIndex });
+        }
       }
     }
+    return candidates;
   };
 
-  // First check the exact time the customer requested. Only if unavailable, offer alternatives.
-  if (normalizedRequestedTime) collectRange(true);
-  if (slots.length === 0) collectRange(false);
+  const allCandidates = getAllFreeCandidates();
 
-  const topSlots = slots.slice(0, 3);
-  if (topSlots.length === 0) return "No available slots found for this period.";
-  return topSlots.join("\n");
+  // If the customer requested an exact time, that exact time must win if it is actually free.
+  if (normalizedRequestedTime) {
+    const [reqH, reqM] = normalizedRequestedTime.split(':').map(Number);
+    const reqTotal = reqH * 60 + reqM;
+    const exact = allCandidates.find(c => c.totalMin === reqTotal);
+    if (exact) return exact.label;
+
+    // If exact time is busy, do NOT fall back to the first morning slots.
+    // Offer closest real free slots around the requested time instead.
+    const alternatives = allCandidates
+      .map(c => ({ ...c, score: Math.abs(c.totalMin - reqTotal) + c.dayIndex * 1000 }))
+      .sort((a, b) => a.score - b.score || a.slotD.getTime() - b.slotD.getTime())
+      .slice(0, 3)
+      .map(c => c.label);
+
+    if (alternatives.length === 0) return "No available slots found for this period.";
+    return alternatives.join("\n");
+  }
+
+  // If no exact time was requested, do not always suggest 09:00/09:15/09:30.
+  // Suggest more human-friendly times first, while still only returning slots that are actually free.
+  const preferredMinutes = [
+    14 * 60,        // 14:00
+    14 * 60 + 30,   // 14:30
+    15 * 60,        // 15:00
+    13 * 60,        // 13:00
+    16 * 60,        // 16:00
+    12 * 60 + 30,   // 12:30
+    11 * 60,        // 11:00
+    17 * 60,        // 17:00
+    10 * 60,        // 10:00
+    18 * 60,        // 18:00
+    9 * 60          // 09:00, only as a later fallback
+  ];
+
+  const ranked = allCandidates
+    .map(c => {
+      const preferenceScore = Math.min(...preferredMinutes.map((p, i) => Math.abs(c.totalMin - p) + i * 20));
+      return { ...c, score: preferenceScore + c.dayIndex * 1000 };
+    })
+    .sort((a, b) => a.score - b.score || a.slotD.getTime() - b.slotD.getTime())
+    .slice(0, 3)
+    .map(c => c.label);
+
+  if (ranked.length === 0) return "No available slots found for this period.";
+  return ranked.join("\n");
 }
 
 // Default Mock implementation

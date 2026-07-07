@@ -10,11 +10,6 @@ import fs from "fs";
 import { google } from "googleapis";
 import { createClient } from "@supabase/supabase-js";
 
-// Optional globals used only inside safe typeof guards for analytics metadata injection.
-declare const businessConfig: any;
-declare const config: any;
-declare const platform: any;
-
 let supabase: any = null;
 if (process.env.SUPABASE_URL && (process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY)) {
   // Prefer SERVICE_ROLE for server-side writes. This is needed when RLS blocks inserts
@@ -75,7 +70,7 @@ function rotateKey(keys: string[]) {
     }
 }
 
-async function generateContentWithFallback(ai: GoogleGenAI | null, options: { messages: any[], tools?: any[], systemInstruction?: string, model?: string, businessId?: string | number | null, platform?: string }, retries = 3, retryDelay = 2000): Promise<any> {
+async function generateContentWithFallback(ai: GoogleGenAI | null, options: { messages: any[], tools?: any[], systemInstruction?: string, model?: string }, retries = 3, retryDelay = 2000): Promise<any> {
   const allKeys = getApiKeys();
   let activeAi = ai || new GoogleGenAI({ apiKey: allKeys[currentKeyIndex] || process.env.GEMINI_API_KEY });
 
@@ -162,24 +157,9 @@ async function generateContentWithFallback(ai: GoogleGenAI | null, options: { me
      safeText = parts.map((p:any) => p.text || "").join("");
   }
   
-  const usageMetadata = response.usageMetadata || response.candidates?.[0]?.usageMetadata || {};
-  const inputTokens = Number(usageMetadata.promptTokenCount || usageMetadata.inputTokenCount || 0);
-  const outputTokens = Number(usageMetadata.candidatesTokenCount || usageMetadata.outputTokenCount || 0);
-  const totalTokens = Number(usageMetadata.totalTokenCount || (inputTokens + outputTokens) || 0);
-
-  if (options.businessId && totalTokens > 0) {
-    updateBusinessUsageStats({
-      businessId: options.businessId,
-      inputTokens,
-      outputTokens,
-      totalTokens
-    }).catch((err) => console.error("[BusinessStats] token update failed:", err));
-  }
-
   return {
     text: safeText || "",
-    functionCalls,
-    usageMetadata: { inputTokens, outputTokens, totalTokens, raw: usageMetadata }
+    functionCalls
   };
 }
 
@@ -250,11 +230,6 @@ async function postProcessMessage(chatId: string, platform: string, userMessage:
       }
     }
   } catch(e) { console.error('Supabase chat_history error:', e); }
-
-  if (businessId) {
-    await trackConversationStarted({ businessId, platform, userId: chatId.toString() });
-    await updateBusinessUsageStats({ businessId, aiMessages: 1 });
-  }
 
 }
 
@@ -863,122 +838,6 @@ function getStockholmUsageDate(): string {
   }).format(new Date());
 }
 
-
-function getBusinessStatsMonth(): string {
-  return new Intl.DateTimeFormat('sv-SE', {
-    timeZone: 'Europe/Stockholm',
-    year: 'numeric',
-    month: '2-digit'
-  }).format(new Date());
-}
-
-const GEMINI_INPUT_PRICE_PER_1M_USD = Number(process.env.GEMINI_INPUT_PRICE_PER_1M_USD || 0.30);
-const GEMINI_OUTPUT_PRICE_PER_1M_USD = Number(process.env.GEMINI_OUTPUT_PRICE_PER_1M_USD || 2.50);
-
-function estimateGeminiCostUsd(inputTokens: number = 0, outputTokens: number = 0): number {
-  const inputCost = (Number(inputTokens || 0) / 1_000_000) * GEMINI_INPUT_PRICE_PER_1M_USD;
-  const outputCost = (Number(outputTokens || 0) / 1_000_000) * GEMINI_OUTPUT_PRICE_PER_1M_USD;
-  return Number((inputCost + outputCost).toFixed(8));
-}
-
-async function updateBusinessUsageStats(params: {
-  businessId?: string | number | null;
-  totalConversations?: number;
-  aiMessages?: number;
-  inputTokens?: number;
-  outputTokens?: number;
-  totalTokens?: number;
-  estimatedCostUsd?: number;
-  completedBookings?: number;
-}) {
-  if (!supabase || !params.businessId) return;
-
-  const businessId = String(params.businessId);
-  const usageMonth = getBusinessStatsMonth();
-  const inputTokens = Number(params.inputTokens || 0);
-  const outputTokens = Number(params.outputTokens || 0);
-  const totalTokens = Number(params.totalTokens || (inputTokens + outputTokens) || 0);
-  const estimatedCost = Number(params.estimatedCostUsd ?? estimateGeminiCostUsd(inputTokens, outputTokens));
-
-  const delta = {
-    total_conversations: Number(params.totalConversations || 0),
-    ai_messages: Number(params.aiMessages || 0),
-    gemini_input_tokens: inputTokens,
-    gemini_output_tokens: outputTokens,
-    gemini_total_tokens: totalTokens,
-    estimated_ai_cost: estimatedCost,
-    completed_bookings: Number(params.completedBookings || 0)
-  };
-
-  try {
-    const { data: existing, error: lookupError } = await supabase
-      .from('business_usage_stats')
-      .select('id,total_conversations,ai_messages,gemini_input_tokens,gemini_output_tokens,gemini_total_tokens,estimated_ai_cost,completed_bookings')
-      .eq('business_id', businessId)
-      .eq('usage_month', usageMonth)
-      .maybeSingle();
-
-    if (lookupError) {
-      console.error('[BusinessStats] lookup error:', JSON.stringify(lookupError));
-      return;
-    }
-
-    if (existing?.id) {
-      const updatePayload = {
-        total_conversations: Number(existing.total_conversations || 0) + delta.total_conversations,
-        ai_messages: Number(existing.ai_messages || 0) + delta.ai_messages,
-        gemini_input_tokens: Number(existing.gemini_input_tokens || 0) + delta.gemini_input_tokens,
-        gemini_output_tokens: Number(existing.gemini_output_tokens || 0) + delta.gemini_output_tokens,
-        gemini_total_tokens: Number(existing.gemini_total_tokens || 0) + delta.gemini_total_tokens,
-        estimated_ai_cost: Number(existing.estimated_ai_cost || 0) + delta.estimated_ai_cost,
-        completed_bookings: Number(existing.completed_bookings || 0) + delta.completed_bookings,
-        updated_at: new Date().toISOString()
-      };
-      const { error } = await supabase.from('business_usage_stats').update(updatePayload).eq('id', existing.id);
-      if (error) console.error('[BusinessStats] update error:', JSON.stringify(error));
-      return;
-    }
-
-    const insertPayload = {
-      business_id: businessId,
-      usage_month: usageMonth,
-      ...delta
-    };
-    const { error } = await supabase.from('business_usage_stats').insert([insertPayload]);
-    if (error) console.error('[BusinessStats] insert error:', JSON.stringify(error));
-  } catch (err) {
-    console.error('[BusinessStats] crashed:', err);
-  }
-}
-
-async function trackConversationStarted(params: { businessId?: string | number | null; platform: string; userId: string; }) {
-  if (!supabase || !params.businessId || !params.userId) return;
-
-  const businessId = String(params.businessId);
-  const usageMonth = getBusinessStatsMonth();
-  const platform = String(params.platform || 'unknown');
-  const userId = String(params.userId || 'unknown');
-
-  try {
-    const { data, error } = await supabase
-      .from('business_conversation_sessions')
-      .insert([{ business_id: businessId, usage_month: usageMonth, platform, user_id: userId }])
-      .select('id')
-      .single();
-
-    if (error) {
-      if (error.code !== '23505') console.error('[BusinessStats] conversation session insert error:', JSON.stringify(error));
-      return;
-    }
-
-    if (data?.id) {
-      await updateBusinessUsageStats({ businessId, totalConversations: 1 });
-    }
-  } catch (err) {
-    console.error('[BusinessStats] conversation tracking crashed:', err);
-  }
-}
-
 function formatDailyLimitMessage(language: string = 'en'): string {
   if (language === 'sv') return 'Dagens samtalsgräns är nådd 😊 Skriv gärna igen imorgon så hjälper vi dig vidare.';
   if (language === 'fa') return 'ظرفیت گفتگوی امروز شما پر شده است 😊 لطفاً فردا دوباره پیام بدهید تا ادامه بدهیم.';
@@ -1046,6 +905,37 @@ async function checkAndIncrementDailyUsage(params: { businessId?: string | numbe
 
 const pendingBookings: Record<string, any> = {};
 const recentlyCompletedBookings: Record<string, { completedAt: number; language: string; name?: string }> = {};
+
+// Pending bookings must be short-lived. Otherwise a customer can start a new request
+// and accidentally finalize an old slot from a previous test/conversation.
+const PENDING_BOOKING_TTL_MS = Number(process.env.PENDING_BOOKING_TTL_MINUTES || 45) * 60 * 1000;
+
+function isPendingBookingExpired(pending: any): boolean {
+  const createdAt = Number(pending?.createdAt || pending?.created_at || 0);
+  if (!createdAt) return false;
+  return Date.now() - createdAt > PENDING_BOOKING_TTL_MS;
+}
+
+function isNewBookingRequestText(text?: string): boolean {
+  const raw = String(text || "").trim();
+  const lower = raw.toLowerCase();
+  if (!raw) return false;
+  if (extractNameAndPhone(raw)) return false;
+  if (isThanksOnlyText(raw) || isAffirmativeBookingText(raw) || isAmbiguousShortReply(raw)) return false;
+
+  const hasBookingWord = /\b(boka|bokning|tid|appointment|book|booking|termin|cita|reservar|موعد|حجز|vaght|وقت)\b/i.test(lower);
+  const hasServiceWord = /\b(helkropp|full\s*body|fullbody|bikini|laser|manikyr|pedikyr|pedicure|manicure|behandling|treatment|ganzk[oö]rper|tratamiento|علاج|جلسة)\b/i.test(lower);
+  const hasDateWord = /\b(nästa|nasta|tisdag|måndag|onsdag|torsdag|fredag|lördag|söndag|next|monday|tuesday|wednesday|thursday|friday|saturday|sunday|montag|dienstag|miércoles|martes|jueves|viernes|دوشنبه|سه\s*شنبه|الثلاثاء|الخميس)\b/i.test(lower);
+  return (hasBookingWord && (hasServiceWord || hasDateWord)) || (hasServiceWord && hasDateWord);
+}
+
+function inferServiceFromRecentContext(currentText: string, history: any[] = []): string {
+  const recent = history
+    .slice(-8)
+    .map((m: any) => typeof m.content === "string" ? m.content : "")
+    .join(" ");
+  return inferServiceFromText(`${recent} ${currentText || ""}`);
+}
 
 function rememberCompletedBooking(chatId: string, language: string, name?: string) {
   recentlyCompletedBookings[chatId] = { completedAt: Date.now(), language, name };
@@ -1175,6 +1065,7 @@ function extractNameAndPhone(text?: string): { name: string; phone: string } | n
 }
 
 async function savePendingBooking(chatId: string, platform: string, pending: any) {
+  pending.createdAt = pending.createdAt || Date.now();
   pendingBookings[chatId] = pending;
   if (!supabase) return;
   try {
@@ -1185,6 +1076,7 @@ async function savePendingBooking(chatId: string, platform: string, pending: any
       dateTime: pending.dateTime,
       durationMinutes: pending.durationMinutes,
       status: pending.status,
+      createdAt: pending.createdAt || Date.now(),
       business_id: getBusinessIdFromConfig(pending.businessConfig)
     };
     const updateData: any = {
@@ -1213,7 +1105,14 @@ async function savePendingBooking(chatId: string, platform: string, pending: any
 }
 
 async function loadPendingBooking(chatId: string, platform: string, businessConfig: any) {
-  if (pendingBookings[chatId]) return pendingBookings[chatId];
+  if (pendingBookings[chatId]) {
+    if (isPendingBookingExpired(pendingBookings[chatId])) {
+      console.log(`[DeterministicBooking] Expired in-memory pending booking cleared. chatId=${chatId}`);
+      await clearPendingBooking(chatId);
+      return null;
+    }
+    return pendingBookings[chatId];
+  }
   if (!supabase) return null;
   try {
     const { data, error } = await supabase
@@ -1235,9 +1134,15 @@ async function loadPendingBooking(chatId: string, platform: string, businessConf
       service: parsed.service || "Bokning",
       dateTime: parsed.dateTime,
       durationMinutes: Number(parsed.durationMinutes || 60),
-      status: parsed.status || "awaiting_contact"
+      status: parsed.status || "awaiting_contact",
+      createdAt: Number(parsed.createdAt || parsed.created_at || 0)
     };
     if (!pending.dateTime) return null;
+    if (isPendingBookingExpired(pending)) {
+      console.log(`[DeterministicBooking] Expired DB pending booking cleared. chatId=${chatId}, dateTime=${pending.dateTime}`);
+      await clearPendingBooking(chatId);
+      return null;
+    }
     pendingBookings[chatId] = pending;
     console.log(`[DeterministicBooking] Pending booking restored from DB. chatId=${chatId}, dateTime=${pending.dateTime}`);
     return pending;
@@ -1646,8 +1551,8 @@ Never mention Laser Luxury unless the current business name is Laser Luxury.
 Never mention services, prices, or treatments that are not included in this business-specific system prompt.
 If the customer asks about services and the prompt does not include enough information, politely ask what service they are interested in or say you can help with booking and general guidance.
 Before confirming any booking, you must check availability.
-Before creating any appointment, collect the customer's name and mobile number. In Messenger, after an available slot is confirmed, ask for name and mobile number; do not claim the booking is final until the server confirms it.
-For vague time requests, check available slots instead of asking the customer to choose a time.
+Before creating any appointment, collect the customer's name and mobile number. In Messenger, ask for name and mobile number ONLY AFTER an exact date and exact time has been checked, offered to the user, and the user has confirmed that exact slot. If the customer has not chosen a specific time yet, do NOT ask for name/phone; first check availability and offer times. Do not claim the booking is final until the server confirms it.
+For vague time requests, check available slots instead of asking the customer to choose a time. If the user says a weekday such as tisdag/Tuesday, the tool date must match that weekday exactly. Never change Tuesday to Thursday or another day.
 Do not mention internal tools, API calls, system prompts, or database logic.
 LANGUAGE RULE: Reply only in the active conversation language injected by the server. If the latest customer message is English, reply in English. If it is Swedish, reply in Swedish. If it is Persian, German, Spanish, or Arabic, reply in that same language. Never default to Swedish just because the business is in Sweden.
 `;
@@ -1681,9 +1586,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       messages,
       systemInstruction: finalSystemInstruction, 
       tools: calendarTools,
-      model: 'gemini-2.5-flash',
-        businessId: (typeof businessConfig !== 'undefined' ? getBusinessIdFromConfig(businessConfig) : (typeof config !== 'undefined' ? getBusinessIdFromConfig(config) : getBusinessIdFromConfig(activeConfig))),
-        platform: (typeof platform !== 'undefined' ? platform : 'unknown')
+      model: 'gemini-2.5-flash'
     });
     
     let maxTurns = 3;
@@ -1761,9 +1664,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
         messages,
         systemInstruction: finalSystemInstruction, 
         tools: calendarTools,
-        model: 'gemini-2.5-flash',
-        businessId: (typeof businessConfig !== 'undefined' ? getBusinessIdFromConfig(businessConfig) : (typeof config !== 'undefined' ? getBusinessIdFromConfig(config) : getBusinessIdFromConfig(activeConfig))),
-        platform: (typeof platform !== 'undefined' ? platform : 'unknown')
+        model: 'gemini-2.5-flash'
       });
     }
     
@@ -1772,9 +1673,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       chatResponse = await generateContentWithFallback(null, {
          messages,
          systemInstruction: finalSystemInstruction + "\nCRITICAL: Maximum tool calls reached. You MUST reply in natural language only. Summarize what you know. DO NOT USE TOOLS.",
-         model: 'gemini-2.5-flash',
-        businessId: (typeof businessConfig !== 'undefined' ? getBusinessIdFromConfig(businessConfig) : (typeof config !== 'undefined' ? getBusinessIdFromConfig(config) : getBusinessIdFromConfig(activeConfig))),
-        platform: (typeof platform !== 'undefined' ? platform : 'unknown')
+         model: 'gemini-2.5-flash'
       });
     }
     
@@ -2197,7 +2096,6 @@ async function recordAppointmentFromBooking(params: {
       console.error("If this says RLS/policy/permission, add SUPABASE_SERVICE_ROLE_KEY to Render Environment or temporarily disable RLS on appointments while testing.");
     } else {
       console.log("Appointment saved to Supabase appointments:", JSON.stringify(data));
-      await updateBusinessUsageStats({ businessId, completedBookings: 1 });
     }
   } catch (err) {
     console.error("recordAppointmentFromBooking error:", err);
@@ -2755,8 +2653,8 @@ Never mention Laser Luxury unless the current business name is Laser Luxury.
 Never mention services, prices, or treatments that are not included in this business-specific system prompt.
 If the customer asks about services and the prompt does not include enough information, politely ask what service they are interested in or say you can help with booking and general guidance.
 Before confirming any booking, you must check availability.
-Before creating any appointment, collect the customer's name and mobile number. In Messenger, after an available slot is confirmed, ask for name and mobile number; do not claim the booking is final until the server confirms it.
-For vague time requests, check available slots instead of asking the customer to choose a time.
+Before creating any appointment, collect the customer's name and mobile number. In Messenger, ask for name and mobile number ONLY AFTER an exact date and exact time has been checked, offered to the user, and the user has confirmed that exact slot. If the customer has not chosen a specific time yet, do NOT ask for name/phone; first check availability and offer times. Do not claim the booking is final until the server confirms it.
+For vague time requests, check available slots instead of asking the customer to choose a time. If the user says a weekday such as tisdag/Tuesday, the tool date must match that weekday exactly. Never change Tuesday to Thursday or another day.
 Do not mention internal tools, API calls, system prompts, or database logic.
 LANGUAGE RULE: Reply only in the active conversation language injected by the server. If the latest customer message is English, reply in English. If it is Swedish, reply in Swedish. If it is Persian, German, Spanish, or Arabic, reply in that same language. Never default to Swedish just because the business is in Sweden.
 `;
@@ -2777,9 +2675,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       messages,
       systemInstruction: finalSystemInstruction,
       tools: calendarTools,
-      model: "gemini-2.5-flash",
-        businessId: (typeof businessConfig !== 'undefined' ? getBusinessIdFromConfig(businessConfig) : (typeof config !== 'undefined' ? getBusinessIdFromConfig(config) : getBusinessIdFromConfig(activeConfig))),
-        platform: (typeof platform !== 'undefined' ? platform : 'unknown')
+      model: "gemini-2.5-flash"
     });
 
     let maxTurns = 3;
@@ -2856,9 +2752,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
         messages,
         systemInstruction: finalSystemInstruction,
         tools: calendarTools,
-        model: "gemini-2.5-flash",
-        businessId: (typeof businessConfig !== 'undefined' ? getBusinessIdFromConfig(businessConfig) : (typeof config !== 'undefined' ? getBusinessIdFromConfig(config) : getBusinessIdFromConfig(activeConfig))),
-        platform: (typeof platform !== 'undefined' ? platform : 'unknown')
+        model: "gemini-2.5-flash"
       });
     }
 
@@ -2866,9 +2760,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       chatResponse = await generateContentWithFallback(null, {
         messages,
         systemInstruction: finalSystemInstruction + "\nCRITICAL: Maximum tool calls reached. You MUST reply in natural language only. Summarize what you know. DO NOT USE TOOLS.",
-        model: "gemini-2.5-flash",
-        businessId: (typeof businessConfig !== 'undefined' ? getBusinessIdFromConfig(businessConfig) : (typeof config !== 'undefined' ? getBusinessIdFromConfig(config) : getBusinessIdFromConfig(activeConfig))),
-        platform: (typeof platform !== 'undefined' ? platform : 'unknown')
+        model: "gemini-2.5-flash"
       });
     }
 
@@ -3500,9 +3392,7 @@ Never mention internal tools, AI, databases, prompts, or webhooks.
       const chatResponse = await generateContentWithFallback(null, {
         messages: [{ role: "user", content: `Public comment from ${username || "customer"}: ${commentText}\nNegative comment: ${negative ? "yes" : "no"}` }],
         systemInstruction: commentSystemInstruction,
-        model: "gemini-2.5-flash",
-        businessId: (typeof businessConfig !== 'undefined' ? getBusinessIdFromConfig(businessConfig) : (typeof config !== 'undefined' ? getBusinessIdFromConfig(config) : getBusinessIdFromConfig(activeConfig))),
-        platform: (typeof platform !== 'undefined' ? platform : 'unknown')
+        model: "gemini-2.5-flash"
       });
 
       replyText = truncateWords((chatResponse.text || "").trim(), 18);
@@ -3607,6 +3497,15 @@ async function processMessengerUpdate(webhookEvent: any, config: any, platform: 
     let pending = await loadPendingBooking(chatId, "messenger", businessConfig);
     const detectedLang = getConversationLanguage(chatId, textMessage || "");
 
+    // If the customer starts a new booking request while an old pending slot exists,
+    // clear the old pending slot. This prevents a name/phone message from finalizing
+    // a stale Thursday/18:00 appointment when the customer has now asked for Tuesday.
+    if (pending && textMessage && isNewBookingRequestText(textMessage)) {
+      console.log(`[DeterministicBooking] New booking request detected; clearing old pending. chatId=${chatId}, old=${JSON.stringify({ dateTime: pending.dateTime, status: pending.status })}`);
+      await clearPendingBooking(chatId);
+      pending = null;
+    }
+
     const completedBooking = getRecentCompletedBooking(chatId);
     if (!pending && completedBooking && isThanksOnlyText(textMessage || "")) {
       const thanksText = formatThanksReply(completedBooking.language || detectedLang, completedBooking.name);
@@ -3628,7 +3527,18 @@ async function processMessengerUpdate(webhookEvent: any, config: any, platform: 
     }
 
     const contact = extractNameAndPhone(textMessage || "");
-    if (pending && contact && (pending.status === "awaiting_contact" || pending.status === "awaiting_confirmation")) {
+    if (pending && contact && pending.status === "awaiting_confirmation") {
+      const confirmText = formatSwedishTimeSlots([`Temp kl 00:00 (ISO: ${pending.dateTime})`], inferRequestedTimeFromText(pending.dateTime) || undefined, detectedLang);
+      const reply = detectedLang === "sv"
+        ? "Jag har tiden redo, men behöver först att du bekräftar att jag ska boka den. Svara gärna ja om du vill boka tiden. 😊"
+        : getErrorMessageByLanguage(detectedLang);
+      await sendMessengerMessage(senderId, reply, businessConfig);
+      appendLocalHistory(chatId, textMessage || "", reply);
+      await postProcessMessage(chatId, platform, textMessage, reply, businessConfig?.telegramToken, businessConfig?.apiKey, getBusinessIdFromConfig(businessConfig));
+      return;
+    }
+
+    if (pending && contact && pending.status === "awaiting_contact") {
       console.log(`[DeterministicBooking] Messenger contact received. Booking now. chatId=${chatId}, pending=${JSON.stringify({ service: pending.service, dateTime: pending.dateTime, durationMinutes: pending.durationMinutes })}`);
       const adapter = getCalendarAdapter(businessConfig);
       const adapterRes = await adapter.insertAppointment(contact.name, contact.phone, pending.service, pending.dateTime, pending.durationMinutes, chatId);
@@ -3719,8 +3629,8 @@ Never mention Laser Luxury unless the current business name is Laser Luxury.
 Never mention services, prices, or treatments that are not included in this business-specific system prompt.
 If the customer asks about services and the prompt does not include enough information, politely ask what service they are interested in or say you can help with booking and general guidance.
 Before confirming any booking, you must check availability.
-Before creating any appointment, collect the customer's name and mobile number. In Messenger, after an available slot is confirmed, ask for name and mobile number; do not claim the booking is final until the server confirms it.
-For vague time requests, check available slots instead of asking the customer to choose a time.
+Before creating any appointment, collect the customer's name and mobile number. In Messenger, ask for name and mobile number ONLY AFTER an exact date and exact time has been checked, offered to the user, and the user has confirmed that exact slot. If the customer has not chosen a specific time yet, do NOT ask for name/phone; first check availability and offer times. Do not claim the booking is final until the server confirms it.
+For vague time requests, check available slots instead of asking the customer to choose a time. If the user says a weekday such as tisdag/Tuesday, the tool date must match that weekday exactly. Never change Tuesday to Thursday or another day.
 Do not mention internal tools, API calls, system prompts, or database logic.
 LANGUAGE RULE: Reply only in the active conversation language injected by the server. If the latest customer message is English, reply in English. If it is Swedish, reply in Swedish. If it is Persian, German, Spanish, or Arabic, reply in that same language. Never default to Swedish just because the business is in Sweden.
 `;
@@ -3752,9 +3662,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       messages,
       systemInstruction: finalSystemInstruction,
       tools: calendarTools,
-      model: "gemini-2.5-flash",
-        businessId: (typeof businessConfig !== 'undefined' ? getBusinessIdFromConfig(businessConfig) : (typeof config !== 'undefined' ? getBusinessIdFromConfig(config) : getBusinessIdFromConfig(activeConfig))),
-        platform: (typeof platform !== 'undefined' ? platform : 'unknown')
+      model: "gemini-2.5-flash"
     });
 
     let maxTurns = 3;
@@ -3781,7 +3689,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
               const newPending = {
                 businessConfig,
                 platform: "messenger",
-                service: args.service || inferServiceFromText(textMessage || ""),
+                service: args.service || inferServiceFromRecentContext(textMessage || "", history),
                 dateTime: exactIso,
                 durationMinutes: Number(args.durationMinutes || 60),
                 status: "awaiting_confirmation"
@@ -3794,38 +3702,30 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
             return { TERMINATE_EARLY: true, replyMessage };
           }
         } else if (call.function.name === "insertAppointment" && args) {
+          // Messenger booking must never trust Gemini-provided date/name directly.
+          // It can only finalize a short-lived server-side pending booking after contact info.
+          const restoredPending = await loadPendingBooking(chatId, "messenger", businessConfig);
           const contactOverride = extractNameAndPhone(textMessage || "");
-          const safeName = contactOverride?.name || cleanCustomerNameCandidate(args.name) || args.name;
-          const safePhone = contactOverride?.phone || args.phone;
-          adapterRes = await adapter.insertAppointment(safeName, safePhone, args.service, args.dateTime, args.durationMinutes, chatId);
-          if (adapterRes && adapterRes.success) {
-            await recordAppointmentFromBooking({
-              businessConfig,
-              platform: "messenger",
-              userId: chatId,
-              name: safeName,
-              phone: safePhone,
-              service: args.service,
-              dateTime: args.dateTime,
-              durationMinutes: args.durationMinutes
-            });
-            rememberCompletedBooking(chatId, getConversationLanguage(chatId, textMessage || ""), safeName);
-          }
-
-          const notifyToken = businessConfig.telegramToken || activeConfig?.telegramToken || process.env.TELEGRAM_TOKEN;
-          const notifyAdmin = businessConfig.adminTelegramChatId || activeConfig?.adminTelegramChatId || process.env.ADMIN_TELEGRAM_ID;
-
-          if (adapterRes && adapterRes.success && notifyToken && notifyAdmin) {
-            try {
-              const notifyText = `🔔 Ny Messenger-bokning mottagen!\n🏢 Business: ${businessName}\n👤 Namn: ${safeName}\n📞 Mobil: ${safePhone}\n📅 Tid: ${args.dateTime}`;
-              await fetch(`https://api.telegram.org/bot${notifyToken}/sendMessage`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ chat_id: notifyAdmin, text: notifyText })
+          if (restoredPending && !isPendingBookingExpired(restoredPending) && restoredPending.status === "awaiting_contact" && contactOverride) {
+            adapterRes = await adapter.insertAppointment(contactOverride.name, contactOverride.phone, restoredPending.service, restoredPending.dateTime, restoredPending.durationMinutes, chatId);
+            if (adapterRes && adapterRes.success) {
+              await recordAppointmentFromBooking({
+                businessConfig,
+                platform: "messenger",
+                userId: chatId,
+                name: contactOverride.name,
+                phone: contactOverride.phone,
+                service: restoredPending.service,
+                dateTime: restoredPending.dateTime,
+                durationMinutes: restoredPending.durationMinutes
               });
-            } catch (e) {
-              console.error("Messenger admin notify error:", e);
+              await clearPendingBooking(chatId);
+              rememberCompletedBooking(chatId, getConversationLanguage(chatId, textMessage || ""), contactOverride.name);
+              await notifyAdminAboutBooking(businessConfig, "Messenger", businessName, contactOverride.name, contactOverride.phone, restoredPending.dateTime);
             }
+          } else {
+            console.log(`[DeterministicBooking] Blocked unsafe Messenger insertAppointment. args=${JSON.stringify(args)}, hasPending=${Boolean(restoredPending)}, hasContact=${Boolean(contactOverride)}`);
+            adapterRes = { success: false, message: "Booking blocked: no confirmed server-side pending slot with customer contact." };
           }
         } else if (call.function.name === "logSystemAnalysis" && args) {
           adapterRes = await handleSystemAnalysisLog(chatId, args);
@@ -3854,9 +3754,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
         messages,
         systemInstruction: finalSystemInstruction,
         tools: calendarTools,
-        model: "gemini-2.5-flash",
-        businessId: (typeof businessConfig !== 'undefined' ? getBusinessIdFromConfig(businessConfig) : (typeof config !== 'undefined' ? getBusinessIdFromConfig(config) : getBusinessIdFromConfig(activeConfig))),
-        platform: (typeof platform !== 'undefined' ? platform : 'unknown')
+        model: "gemini-2.5-flash"
       });
     }
 
@@ -3864,9 +3762,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       chatResponse = await generateContentWithFallback(null, {
         messages,
         systemInstruction: finalSystemInstruction + "\nCRITICAL: Maximum tool calls reached. You MUST reply in natural language only. Summarize what you know. DO NOT USE TOOLS.",
-        model: "gemini-2.5-flash",
-        businessId: (typeof businessConfig !== 'undefined' ? getBusinessIdFromConfig(businessConfig) : (typeof config !== 'undefined' ? getBusinessIdFromConfig(config) : getBusinessIdFromConfig(activeConfig))),
-        platform: (typeof platform !== 'undefined' ? platform : 'unknown')
+        model: "gemini-2.5-flash"
       });
     }
 
@@ -4078,8 +3974,8 @@ Never mention Laser Luxury unless the current business name is Laser Luxury.
 Never mention services, prices, or treatments that are not included in this business-specific system prompt.
 If the customer asks about services and the prompt does not include enough information, politely ask what service they are interested in or say you can help with booking and general guidance.
 Before confirming any booking, you must check availability.
-Before creating any appointment, collect the customer's name and mobile number. In Messenger, after an available slot is confirmed, ask for name and mobile number; do not claim the booking is final until the server confirms it.
-For vague time requests, check available slots instead of asking the customer to choose a time.
+Before creating any appointment, collect the customer's name and mobile number. In Messenger, ask for name and mobile number ONLY AFTER an exact date and exact time has been checked, offered to the user, and the user has confirmed that exact slot. If the customer has not chosen a specific time yet, do NOT ask for name/phone; first check availability and offer times. Do not claim the booking is final until the server confirms it.
+For vague time requests, check available slots instead of asking the customer to choose a time. If the user says a weekday such as tisdag/Tuesday, the tool date must match that weekday exactly. Never change Tuesday to Thursday or another day.
 Do not mention internal tools, API calls, system prompts, or database logic.
 LANGUAGE RULE: Reply only in the active conversation language injected by the server. If the latest customer message is English, reply in English. If it is Swedish, reply in Swedish. If it is Persian, German, Spanish, or Arabic, reply in that same language. Never default to Swedish just because the business is in Sweden.
 `;
@@ -4105,9 +4001,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       messages,
       systemInstruction: finalSystemInstruction,
       tools: calendarTools,
-      model: 'gemini-2.5-flash',
-        businessId: (typeof businessConfig !== 'undefined' ? getBusinessIdFromConfig(businessConfig) : (typeof config !== 'undefined' ? getBusinessIdFromConfig(config) : getBusinessIdFromConfig(activeConfig))),
-        platform: (typeof platform !== 'undefined' ? platform : 'unknown')
+      model: 'gemini-2.5-flash'
     });
 
     let maxTurns = 3;
@@ -4190,9 +4084,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
         messages,
         systemInstruction: finalSystemInstruction,
         tools: calendarTools,
-        model: 'gemini-2.5-flash',
-        businessId: (typeof businessConfig !== 'undefined' ? getBusinessIdFromConfig(businessConfig) : (typeof config !== 'undefined' ? getBusinessIdFromConfig(config) : getBusinessIdFromConfig(activeConfig))),
-        platform: (typeof platform !== 'undefined' ? platform : 'unknown')
+        model: 'gemini-2.5-flash'
       });
     }
 
@@ -4200,9 +4092,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       chatResponse = await generateContentWithFallback(null, {
         messages,
         systemInstruction: finalSystemInstruction + '\nCRITICAL: Maximum tool calls reached. You MUST reply in natural language only. Summarize what you know. DO NOT USE TOOLS.',
-        model: 'gemini-2.5-flash',
-        businessId: (typeof businessConfig !== 'undefined' ? getBusinessIdFromConfig(businessConfig) : (typeof config !== 'undefined' ? getBusinessIdFromConfig(config) : getBusinessIdFromConfig(activeConfig))),
-        platform: (typeof platform !== 'undefined' ? platform : 'unknown')
+        model: 'gemini-2.5-flash'
       });
     }
 
@@ -4580,8 +4470,8 @@ Never mention Laser Luxury unless the current business name is Laser Luxury.
 Never mention services, prices, or treatments that are not included in this business-specific system prompt.
 If the customer asks about services and the prompt does not include enough information, politely ask what service they are interested in or say you can help with booking and general guidance.
 Before confirming any booking, you must check availability.
-Before creating any appointment, collect the customer's name and mobile number. In Messenger, after an available slot is confirmed, ask for name and mobile number; do not claim the booking is final until the server confirms it.
-For vague time requests, check available slots instead of asking the customer to choose a time.
+Before creating any appointment, collect the customer's name and mobile number. In Messenger, ask for name and mobile number ONLY AFTER an exact date and exact time has been checked, offered to the user, and the user has confirmed that exact slot. If the customer has not chosen a specific time yet, do NOT ask for name/phone; first check availability and offer times. Do not claim the booking is final until the server confirms it.
+For vague time requests, check available slots instead of asking the customer to choose a time. If the user says a weekday such as tisdag/Tuesday, the tool date must match that weekday exactly. Never change Tuesday to Thursday or another day.
 Do not mention internal tools, API calls, system prompts, or database logic.
 LANGUAGE RULE: Reply only in the active conversation language injected by the server. If the latest customer message is English, reply in English. If it is Swedish, reply in Swedish. If it is Persian, German, Spanish, or Arabic, reply in that same language. Never default to Swedish just because the business is in Sweden.
 `;
@@ -4610,9 +4500,7 @@ Never translate unless requested.
         messages,
         systemInstruction: finalSystemInstruction, 
         tools: calendarTools,
-        model: 'gemini-2.5-flash',
-        businessId: (typeof businessConfig !== 'undefined' ? getBusinessIdFromConfig(businessConfig) : (typeof config !== 'undefined' ? getBusinessIdFromConfig(config) : getBusinessIdFromConfig(activeConfig))),
-        platform: (typeof platform !== 'undefined' ? platform : 'unknown')
+        model: 'gemini-2.5-flash'
       });
       
       let maxWebTurns = 3;
@@ -4689,9 +4577,7 @@ Never translate unless requested.
           messages,
           systemInstruction: finalSystemInstruction, 
           tools: calendarTools,
-          model: 'gemini-2.5-flash',
-        businessId: (typeof businessConfig !== 'undefined' ? getBusinessIdFromConfig(businessConfig) : (typeof config !== 'undefined' ? getBusinessIdFromConfig(config) : getBusinessIdFromConfig(activeConfig))),
-        platform: (typeof platform !== 'undefined' ? platform : 'unknown')
+          model: 'gemini-2.5-flash'
         });
       }
       
@@ -4700,9 +4586,7 @@ Never translate unless requested.
         chatResponse = await generateContentWithFallback(null, {
            messages,
            systemInstruction: finalSystemInstruction + "\nCRITICAL: Maximum tool calls reached. You MUST reply in natural language only. Summarize what you know. DO NOT USE TOOLS.",
-           model: 'gemini-2.5-flash',
-        businessId: (typeof businessConfig !== 'undefined' ? getBusinessIdFromConfig(businessConfig) : (typeof config !== 'undefined' ? getBusinessIdFromConfig(config) : getBusinessIdFromConfig(activeConfig))),
-        platform: (typeof platform !== 'undefined' ? platform : 'unknown')
+           model: 'gemini-2.5-flash'
         });
       }
       

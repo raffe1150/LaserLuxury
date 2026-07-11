@@ -1,6 +1,6 @@
-import landingMarkup from '../components/landing/LandingMarkup';
-import useLandingInteractions from '../components/landing/useLandingInteractions';
-
+import landingMarkup from '../components/Landing/LandingMarkup';
+import useLandingInteractions from '../components/Landing/useLandingInteractions';
+import '../styles/landing.css';
 interface LandingProps {
   onNavigate: (path: '/' | '/login' | '/dashboard') => void;
 }

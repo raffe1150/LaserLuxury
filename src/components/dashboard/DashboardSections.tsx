@@ -9,6 +9,9 @@ import type {
   UsageInfo,
 } from '../../types/dashboard';
 import { ChannelIcon, StatusDot } from './Icons';
+import GeneratePromptModal, {
+  type GeneratePromptFormData,
+} from './GeneratePromptModal';
 
 interface BusinessSettingsProps {
   business: Business;
@@ -107,6 +110,11 @@ export function SystemPromptEditor({ business, onSaved }: BusinessSettingsProps)
     }
   };
 
+  const handleGeneratePrompt = (data: GeneratePromptFormData) => {
+    console.log('Generate prompt data:', data);
+    setModalOpen(false);
+  };
+
   return (
     <section id="prompt-editor" className="card dashboard-section">
       <div className="card-header">
@@ -122,15 +130,15 @@ export function SystemPromptEditor({ business, onSaved }: BusinessSettingsProps)
             Generate with AI
           </button>
           <span className="prompt-char-count">{prompt.length} / 10000</span>
-        </div>
-        <textarea
-          className="form-input"
-          maxLength={2000}
-          rows={6}
-          value={prompt}
-          onChange={(event) => setPrompt(event.target.value)}
-          placeholder="Describe this business, booking rules, tone and escalation policy."
-        />
+
+<textarea
+  className="form-input"
+  maxLength={10000}
+  rows={6}
+  value={prompt}
+  onChange={(event) => setPrompt(event.target.value)}
+  placeholder="Describe this business, booking rules, tone and escalation policy."
+/>
         <div className="form-hint">This prompt is saved for the selected business only.</div>
       </div>
       <div className="save-row">
@@ -138,79 +146,16 @@ export function SystemPromptEditor({ business, onSaved }: BusinessSettingsProps)
           {saving ? 'Saving...' : 'Save Prompt'}
         </button>
       </div>
-      {modalOpen && (
-        <PromptModal
-          businessName={business.name}
-          onClose={() => setModalOpen(false)}
-          onGenerated={(generated) => {
-            setPrompt(generated);
-            setModalOpen(false);
-          }}
-        />
-      )}
+      <GeneratePromptModal
+        open={modalOpen}
+        initialBusinessName={business.name}
+        onClose={() => setModalOpen(false)}
+        onGenerate={handleGeneratePrompt}
+      />
     </section>
   );
 }
 
-function PromptModal({
-  businessName,
-  onClose,
-  onGenerated,
-}: {
-  businessName: string;
-  onClose: () => void;
-  onGenerated: (prompt: string) => void;
-}) {
-  const [services, setServices] = useState('');
-  const [hours, setHours] = useState('');
-  const [tone, setTone] = useState('Professional and warm');
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
-
-  const generate = async () => {
-    setLoading(true);
-    setError('');
-    try {
-      const result = await api.generatePrompt({ name: businessName, services, hours, tone });
-      onGenerated(result.prompt);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Prompt generation endpoint is not available yet');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  return (
-    <div className="ai-modal-overlay show" role="dialog" aria-modal="true">
-      <div className="ai-modal">
-        <button className="ai-modal-close" type="button" onClick={onClose}>×</button>
-        <div className="ai-modal-title">Generate AI Prompt</div>
-        <div className="ai-modal-desc">Prompt generation is handled by the backend, never from browser secrets.</div>
-        <div className="form-grid-2">
-          <div className="form-group">
-            <label className="form-label">Services</label>
-            <input className="form-input" value={services} onChange={(event) => setServices(event.target.value)} />
-          </div>
-          <div className="form-group">
-            <label className="form-label">Hours</label>
-            <input className="form-input" value={hours} onChange={(event) => setHours(event.target.value)} />
-          </div>
-          <div className="form-group form-full">
-            <label className="form-label">Tone</label>
-            <input className="form-input" value={tone} onChange={(event) => setTone(event.target.value)} />
-          </div>
-        </div>
-        {error && <div className="api-mini-warning">{error}</div>}
-        <div className="save-row">
-          <button className="btn btn-ghost" type="button" onClick={onClose}>Cancel</button>
-          <button className="btn btn-primary" type="button" onClick={generate} disabled={loading}>
-            {loading ? 'Generating...' : 'Generate'}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
 
 export function ChannelSettings({
   business,

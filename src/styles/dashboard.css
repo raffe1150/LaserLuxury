@@ -23,7 +23,19 @@
 
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
 html,body{height:100%;}
-body{background:var(--bg);color:var(--white);font-family:'Inter',sans-serif;display:flex;overflow:hidden;-webkit-font-smoothing:antialiased;}
+body{
+  background:var(--bg);
+  color:var(--white);
+  font-family:'Inter',sans-serif;
+  overflow:hidden;
+  -webkit-font-smoothing:antialiased;
+}
+
+#root{
+  width:100%;
+  min-width:0;
+  min-height:100%;
+}
 ::selection{background:var(--green);color:#060a07;}
 
 /* ── SIDEBAR ── */
@@ -544,7 +556,26 @@ textarea.form-input{resize:vertical;min-height:140px;line-height:1.7;}
 }
 
 /* React dashboard adapter: keep the original dashboard.html visual system on the app wrapper. */
-.dashboard-page{min-height:100vh;background:var(--bg);color:var(--white);font-family:'Inter',sans-serif;display:flex;overflow:hidden;-webkit-font-smoothing:antialiased;}
+.dashboard-page{
+  width:100%;
+  min-width:0;
+  min-height:100vh;
+  background:var(--bg);
+  color:var(--white);
+  font-family:'Inter',sans-serif;
+  display:flex;
+  overflow:hidden;
+  -webkit-font-smoothing:antialiased;
+}
+
+.dashboard-page .main{
+  min-width:0;
+  width:calc(100% - var(--sidebar-w));
+}
+
+.dashboard-page .content{
+  width:100%;
+}
 .dashboard-page .shell-button{border:0;color:var(--white);cursor:pointer;text-align:left;}
 .dashboard-page .topbar-search select{flex:1;border:none;outline:none;background:transparent;color:var(--white);font-size:13px;font-family:'Inter',sans-serif;min-width:0;}
 .dashboard-page .topbar-search option{background:var(--bg2);color:var(--white);}

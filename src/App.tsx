@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import Landing from './pages/Landing';
 import Login from './pages/Login';
-import Dashboard from './pages/Dashboard';
+import Dashboard from './pages/dashboard';
 
 type Route = '/' | '/login' | '/dashboard';
 

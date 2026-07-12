@@ -4843,6 +4843,179 @@ app.get('/api/businesses', async (req, res) => {
 
 
 // API: دریافت رزروهای بیزینس برای داشبورد
+app.get('/api/businesses/:businessId/conversations', async (req, res) => {
+  try {
+    if (!supabase) {
+      return res.status(500).json({
+        success: false,
+        message: 'Supabase is not configured.',
+      });
+    }
+
+    const businessId = String(req.params.businessId || '').trim();
+    if (!businessId) {
+      return res.status(400).json({
+        success: false,
+        message: 'A valid businessId is required.',
+      });
+    }
+
+    const rawLimit = Number(req.query.limit || 1000);
+    const limit = Math.min(
+      2000,
+      Math.max(1, Number.isFinite(rawLimit) ? Math.floor(rawLimit) : 1000),
+    );
+
+    const { data: messageRows, error: messageError } = await supabase
+      .from('chat_history')
+      .select('id,business_id,user_id,platform,sender,message,created_at')
+      .eq('business_id', businessId)
+      .order('created_at', { ascending: true })
+      .limit(limit);
+
+    if (messageError) throw messageError;
+
+    const { data: appointmentRows, error: appointmentError } = await supabase
+      .from('appointments')
+      .select('id,business_id,user_id,platform,customer_name,status,created_at')
+      .eq('business_id', businessId)
+      .order('created_at', { ascending: false })
+      .limit(1000);
+
+    if (appointmentError) {
+      console.warn(
+        'Conversation customer-name lookup from appointments failed:',
+        JSON.stringify(appointmentError),
+      );
+    }
+
+    const normalizeChannel = (value: unknown) => {
+      const channel = String(value || '').trim().toLowerCase();
+
+      if (
+        channel === 'facebook' ||
+        channel === 'facebook_messenger' ||
+        channel === 'messenger-api'
+      ) {
+        return 'messenger';
+      }
+
+      if (
+        channel === 'telegram-polling' ||
+        channel === 'telegram_webhook' ||
+        channel === 'telegram-webhook'
+      ) {
+        return 'telegram';
+      }
+
+      if (channel.startsWith('instagram')) return 'instagram';
+      if (channel.startsWith('messenger')) return 'messenger';
+      if (channel.startsWith('telegram')) return 'telegram';
+      if (channel.startsWith('whatsapp')) return 'whatsapp';
+
+      if (
+        channel === 'instagram' ||
+        channel === 'messenger' ||
+        channel === 'telegram' ||
+        channel === 'whatsapp' ||
+        channel === 'google_calendar'
+      ) {
+        return channel;
+      }
+
+      return 'messenger';
+    };
+
+    const customerByConversation = new Map<string, { name: string; status: string }>();
+
+    for (const row of appointmentRows || []) {
+      const userId = String(row.user_id || '').trim();
+      if (!userId) continue;
+
+      const channel = normalizeChannel(row.platform);
+      const key = `${channel}:${userId}`;
+
+      if (!customerByConversation.has(key)) {
+        customerByConversation.set(key, {
+          name: String(row.customer_name || '').trim(),
+          status: String(row.status || '').trim().toLowerCase(),
+        });
+      }
+    }
+
+    const grouped = new Map<string, any>();
+
+    for (const row of messageRows || []) {
+      const userId = String(row.user_id || '').trim();
+      if (!userId) continue;
+
+      const channel = normalizeChannel(row.platform);
+      const key = `${channel}:${userId}`;
+      const createdAt = row.created_at || new Date().toISOString();
+      const sender = String(row.sender || '').trim().toLowerCase();
+      const author = sender === 'user' || sender === 'customer'
+        ? 'customer'
+        : sender === 'human' || sender === 'admin'
+          ? 'human'
+          : sender === 'system'
+            ? 'system'
+            : 'ai';
+
+      if (!grouped.has(key)) {
+        const appointment = customerByConversation.get(key);
+        const appointmentStatus = appointment?.status || '';
+        const status = appointmentStatus === 'booked' || appointmentStatus === 'confirmed'
+          ? 'booked'
+          : appointmentStatus === 'pending'
+            ? 'pending'
+            : 'handled';
+
+        grouped.set(key, {
+          id: key,
+          customerName: appointment?.name || `Customer ${userId.slice(-6)}`,
+          channel,
+          status,
+          preview: '',
+          updatedAt: createdAt,
+          messages: [],
+        });
+      }
+
+      const conversation = grouped.get(key);
+      const messageText = String(row.message || '').trim();
+
+      conversation.messages.push({
+        id: String(row.id),
+        author,
+        text: messageText,
+        createdAt,
+      });
+
+      if (messageText) conversation.preview = messageText;
+      conversation.updatedAt = createdAt;
+    }
+
+    const conversations = Array.from(grouped.values())
+      .map((conversation: any) => ({
+        ...conversation,
+        preview: conversation.preview || 'No message preview available.',
+      }))
+      .sort(
+        (a: any, b: any) =>
+          new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
+      );
+
+    res.setHeader('Cache-Control', 'no-store');
+    return res.status(200).json(conversations);
+  } catch (err: any) {
+    console.error('Error fetching business conversations:', err);
+    return res.status(500).json({
+      success: false,
+      message: err?.message || 'Could not fetch conversations.',
+    });
+  }
+});
+
 app.get('/api/businesses/:businessId/bookings', async (req, res) => {
   try {
     if (!supabase) {

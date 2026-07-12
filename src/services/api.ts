@@ -98,9 +98,14 @@ export const api = {
       `/api/businesses/${businessId}/integrations/${integration}/test`,
       { method: 'POST' },
     ),
-  // TODO backend: implement prompt generation server-side. Never call model providers with secrets from the browser.
-  generatePrompt: (payload: { name: string; services: string; hours: string; tone: string }) =>
-    request<{ prompt: string }>('/api/ai/prompt', {
+  generateSystemPrompt: (payload: {
+    businessName: string;
+    businessType: string;
+    tone: string;
+    bookingRules: string;
+    escalationRules: string;
+  }) =>
+    request<{ success: boolean; prompt: string }>('/api/ai/generate-system-prompt', {
       method: 'POST',
       body: JSON.stringify(payload),
     }),

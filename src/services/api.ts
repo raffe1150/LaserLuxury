@@ -98,16 +98,20 @@ export const api = {
       `/api/businesses/${businessId}/integrations/${integration}/test`,
       { method: 'POST' },
     ),
-  generateSystemPrompt: (payload: {
-    businessName: string;
-    businessType: string;
-    tone: string;
-    bookingRules: string;
-    escalationRules: string;
-  }) =>
+  generateSystemPrompt: (
+    payload: {
+      businessName: string;
+      businessType: string;
+      tone: string;
+      bookingRules: string;
+      escalationRules: string;
+    },
+    signal?: AbortSignal,
+  ) =>
     request<{ success: boolean; prompt: string }>('/api/ai/generate-system-prompt', {
       method: 'POST',
       body: JSON.stringify(payload),
+      signal,
     }),
 };
 

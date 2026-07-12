@@ -164,40 +164,88 @@ async function generateContentWithFallback(ai: GoogleGenAI | null, options: { me
 }
 
 
-async function handleSystemAnalysisLog(chatId: string, analysis: any) {
-    if (!supabase) return { success: false, message: "No database configured" };
-    try {
-        if (analysis.name || analysis.phone || analysis.booked_appointment || analysis.feedback_left) {
-           const updateData: any = {
-              user_id: chatId.toString()
-           };
-           if (analysis.name) updateData.customer_name = analysis.name;
-           if (analysis.phone) updateData.phone_number = analysis.phone;
-           
-           const { data: existing } = await supabase.from('appointments_leads').select('user_id').eq('user_id', chatId.toString()).single();
-           if (existing && existing.user_id) {
-               await supabase.from('appointments_leads').update(updateData).eq('user_id', existing.user_id);
-           } else {
-               await supabase.from('appointments_leads').insert([updateData]);
-           }
-           
-           if (analysis.feedback_left && analysis.feedback_summary && activeConfig?.telegramToken && activeConfig?.adminTelegramChatId) {
-               await fetch(`https://api.telegram.org/bot${activeConfig.telegramToken}/sendMessage`, {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({
-                     chat_id: activeConfig.adminTelegramChatId,
-                     text: `New Feedback from ${analysis.name || chatId.toString()}:\n${analysis.feedback_summary}`
-                  })
-               });
-           }
-           return { success: true, message: "Logged analysis successfully" };
+async function handleSystemAnalysisLog(
+  chatId: string,
+  analysis: any,
+  platform?: string,
+  businessId?: string | number | null,
+) {
+  if (!supabase) return { success: false, message: "No database configured" };
+
+  try {
+    if (analysis.name || analysis.phone || analysis.booked_appointment || analysis.feedback_left) {
+      const normalizedBusinessId = businessId ? String(businessId).trim() : null;
+      const normalizedPlatform = String(platform || '').trim().toLowerCase() || null;
+
+      const updateData: any = {
+        user_id: chatId.toString(),
+      };
+
+      if (normalizedBusinessId) updateData.business_id = normalizedBusinessId;
+      if (normalizedPlatform) updateData.platform = normalizedPlatform;
+      if (analysis.name) updateData.customer_name = analysis.name;
+      if (analysis.phone) updateData.phone_number = analysis.phone;
+
+      let existingQuery = supabase
+        .from('appointments_leads')
+        .select('id,user_id')
+        .eq('user_id', chatId.toString());
+
+      if (normalizedBusinessId) {
+        existingQuery = existingQuery.eq('business_id', normalizedBusinessId);
+      }
+
+      if (normalizedPlatform) {
+        existingQuery = existingQuery.eq('platform', normalizedPlatform);
+      }
+
+      const { data: existing, error: existingError } = await existingQuery
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (existingError) {
+        console.error('appointments_leads lookup failed:', JSON.stringify(existingError));
+      }
+
+      if (existing?.id) {
+        const { error: updateError } = await supabase
+          .from('appointments_leads')
+          .update(updateData)
+          .eq('id', existing.id);
+
+        if (updateError) {
+          console.error('appointments_leads update failed:', JSON.stringify(updateError));
         }
-        return { success: true, message: "Nothing to log" };
-    } catch(e: any) {
-        console.error("handleSystemAnalysisLog err:", e);
-        return { success: false, error: e.message };
+      } else {
+        const { error: insertError } = await supabase
+          .from('appointments_leads')
+          .insert([updateData]);
+
+        if (insertError) {
+          console.error('appointments_leads insert failed:', JSON.stringify(insertError));
+        }
+      }
+
+      if (analysis.feedback_left && analysis.feedback_summary && activeConfig?.telegramToken && activeConfig?.adminTelegramChatId) {
+        await fetch(`https://api.telegram.org/bot${activeConfig.telegramToken}/sendMessage`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            chat_id: activeConfig.adminTelegramChatId,
+            text: `New Feedback from ${analysis.name || chatId.toString()}:\n${analysis.feedback_summary}`
+          })
+        });
+      }
+
+      return { success: true, message: "Logged analysis successfully" };
     }
+
+    return { success: true, message: "Nothing to log" };
+  } catch (e: any) {
+    console.error("handleSystemAnalysisLog err:", e);
+    return { success: false, error: e.message };
+  }
 }
 async function postProcessMessage(chatId: string, platform: string, userMessage: string, agentResponse: string, tgToken?: string, aiConfigKey?: string, businessId?: string | null) {
   if (!supabase) return;
@@ -1119,21 +1167,33 @@ async function savePendingBooking(chatId: string, platform: string, pending: any
       createdAt: pending.createdAt || Date.now(),
       business_id: getBusinessIdFromConfig(pending.businessConfig)
     };
+    const businessId = getBusinessIdFromConfig(pending.businessConfig);
     const updateData: any = {
       user_id: chatId,
       platform,
+      business_id: businessId,
       ai_summary: JSON.stringify(minimal)
     };
-    const { data: existing, error: selectError } = await supabase
+
+    let existingQuery = supabase
       .from("appointments_leads")
-      .select("user_id")
+      .select("id,user_id")
       .eq("user_id", chatId)
+      .eq("platform", platform);
+
+    if (businessId) {
+      existingQuery = existingQuery.eq("business_id", businessId);
+    }
+
+    const { data: existing, error: selectError } = await existingQuery
+      .order("created_at", { ascending: false })
+      .limit(1)
       .maybeSingle();
 
     if (selectError) console.error("Pending booking lead lookup error:", JSON.stringify(selectError));
 
-    if (existing?.user_id) {
-      const { error } = await supabase.from("appointments_leads").update(updateData).eq("user_id", chatId);
+    if (existing?.id) {
+      const { error } = await supabase.from("appointments_leads").update(updateData).eq("id", existing.id);
       if (error) console.error("Pending booking lead update error:", JSON.stringify(error));
     } else {
       const { error } = await supabase.from("appointments_leads").insert([updateData]);
@@ -1711,7 +1771,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
              } catch(e) { console.error("Admin notify error:", e); }
           }
         }
-        else if (call.function.name === "logSystemAnalysis" && args) adapterRes = await handleSystemAnalysisLog(chatId, args);
+        else if (call.function.name === "logSystemAnalysis" && args) adapterRes = await handleSystemAnalysisLog(chatId, args, platform, getBusinessIdFromConfig(config));
         else adapterRes = { error: "Unknown tool" };
         
         return {
@@ -2799,7 +2859,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
             adapterRes = { success: false, message: "Booking was not finalized. Ask the customer for name and mobile number after confirming the exact available time." };
           }
         } else if (call.function.name === "logSystemAnalysis" && args) {
-          adapterRes = await handleSystemAnalysisLog(chatId, args);
+          adapterRes = await handleSystemAnalysisLog(chatId, args, platform, getBusinessIdFromConfig(businessConfig));
         } else {
           adapterRes = { error: "Unknown tool" };
         }
@@ -3803,7 +3863,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
             adapterRes = { success: false, message: "Booking blocked: no confirmed server-side pending slot with customer contact." };
           }
         } else if (call.function.name === "logSystemAnalysis" && args) {
-          adapterRes = await handleSystemAnalysisLog(chatId, args);
+          adapterRes = await handleSystemAnalysisLog(chatId, args, platform, getBusinessIdFromConfig(businessConfig));
         } else {
           adapterRes = { error: "Unknown tool" };
         }
@@ -4135,7 +4195,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
             }
           }
         } else if (call.function.name === 'logSystemAnalysis' && args) {
-          adapterRes = await handleSystemAnalysisLog(chatId, args);
+          adapterRes = await handleSystemAnalysisLog(chatId, args, platform, getBusinessIdFromConfig(businessConfig));
         } else {
           adapterRes = { error: 'Unknown tool' };
         }
@@ -4630,7 +4690,7 @@ Never translate unless requested.
              } catch(e) { console.error("Admin notify error:", e); }
           }
         }
-        else if (call.function.name === "logSystemAnalysis" && args) adapterRes = await handleSystemAnalysisLog(chatId, args);
+        else if (call.function.name === "logSystemAnalysis" && args) adapterRes = await handleSystemAnalysisLog(chatId, args, "web", getBusinessIdFromConfig(activeConfig));
           else adapterRes = { error: "Unknown tool" };
           
           return {
@@ -4889,6 +4949,20 @@ app.get('/api/businesses/:businessId/conversations', async (req, res) => {
       );
     }
 
+    const { data: leadRows, error: leadError } = await supabase
+      .from('appointments_leads')
+      .select('id,business_id,user_id,platform,customer_name,created_at')
+      .eq('business_id', businessId)
+      .order('created_at', { ascending: false })
+      .limit(1000);
+
+    if (leadError) {
+      console.warn(
+        'Conversation customer-name lookup from appointments_leads failed:',
+        JSON.stringify(leadError),
+      );
+    }
+
     const normalizeChannel = (value: unknown) => {
       const channel = String(value || '').trim().toLowerCase();
 
@@ -4926,19 +5000,73 @@ app.get('/api/businesses/:businessId/conversations', async (req, res) => {
       return 'messenger';
     };
 
+    const normalizeUserId = (value: unknown, channel: string) => {
+      let userId = String(value || '').trim();
+      if (!userId) return '';
+
+      const lower = userId.toLowerCase();
+      const prefixes = channel === 'instagram'
+        ? ['instagram_', 'ig_']
+        : channel === 'messenger'
+          ? ['messenger_', 'ms_']
+          : channel === 'telegram'
+            ? ['telegram_']
+            : channel === 'whatsapp'
+              ? ['whatsapp_', 'wa_']
+              : [];
+
+      for (const prefix of prefixes) {
+        if (lower.startsWith(prefix)) {
+          userId = userId.slice(prefix.length);
+          break;
+        }
+      }
+
+      return userId.trim();
+    };
+
+    const makeConversationKey = (platform: unknown, userIdValue: unknown) => {
+      const channel = normalizeChannel(platform);
+      const normalizedUserId = normalizeUserId(userIdValue, channel);
+      return {
+        channel,
+        normalizedUserId,
+        key: normalizedUserId ? `${channel}:${normalizedUserId}` : '',
+      };
+    };
+
+    const getUsableCustomerName = (value: unknown) => {
+      const name = String(value || '').trim();
+      if (!name || name.toLowerCase() === 'unknown') return '';
+      return name;
+    };
+
     const customerByConversation = new Map<string, { name: string; status: string }>();
 
     for (const row of appointmentRows || []) {
-      const userId = String(row.user_id || '').trim();
-      if (!userId) continue;
+      const identity = makeConversationKey(row.platform, row.user_id);
+      if (!identity.key) continue;
 
-      const channel = normalizeChannel(row.platform);
-      const key = `${channel}:${userId}`;
+      const name = getUsableCustomerName(row.customer_name);
+      const status = String(row.status || '').trim().toLowerCase();
 
-      if (!customerByConversation.has(key)) {
-        customerByConversation.set(key, {
-          name: String(row.customer_name || '').trim(),
-          status: String(row.status || '').trim().toLowerCase(),
+      if (!customerByConversation.has(identity.key) || name) {
+        customerByConversation.set(identity.key, { name, status });
+      }
+    }
+
+    for (const row of leadRows || []) {
+      const identity = makeConversationKey(row.platform, row.user_id);
+      if (!identity.key) continue;
+
+      const name = getUsableCustomerName(row.customer_name);
+      if (!name) continue;
+
+      const current = customerByConversation.get(identity.key);
+      if (!current?.name) {
+        customerByConversation.set(identity.key, {
+          name,
+          status: current?.status || '',
         });
       }
     }
@@ -4946,11 +5074,9 @@ app.get('/api/businesses/:businessId/conversations', async (req, res) => {
     const grouped = new Map<string, any>();
 
     for (const row of messageRows || []) {
-      const userId = String(row.user_id || '').trim();
-      if (!userId) continue;
+      const identity = makeConversationKey(row.platform, row.user_id);
+      if (!identity.key) continue;
 
-      const channel = normalizeChannel(row.platform);
-      const key = `${channel}:${userId}`;
       const createdAt = row.created_at || new Date().toISOString();
       const sender = String(row.sender || '').trim().toLowerCase();
       const author = sender === 'user' || sender === 'customer'
@@ -4961,19 +5087,21 @@ app.get('/api/businesses/:businessId/conversations', async (req, res) => {
             ? 'system'
             : 'ai';
 
-      if (!grouped.has(key)) {
-        const appointment = customerByConversation.get(key);
-        const appointmentStatus = appointment?.status || '';
+      if (!grouped.has(identity.key)) {
+        const customer = customerByConversation.get(identity.key);
+        const appointmentStatus = customer?.status || '';
         const status = appointmentStatus === 'booked' || appointmentStatus === 'confirmed'
           ? 'booked'
           : appointmentStatus === 'pending'
             ? 'pending'
             : 'handled';
 
-        grouped.set(key, {
-          id: key,
-          customerName: appointment?.name || `Customer ${userId.slice(-6)}`,
-          channel,
+        const originalUserId = String(row.user_id || '').trim();
+
+        grouped.set(identity.key, {
+          id: identity.key,
+          customerName: customer?.name || `Customer ${originalUserId.slice(-6)}`,
+          channel: identity.channel,
           status,
           preview: '',
           updatedAt: createdAt,
@@ -4981,7 +5109,7 @@ app.get('/api/businesses/:businessId/conversations', async (req, res) => {
         });
       }
 
-      const conversation = grouped.get(key);
+      const conversation = grouped.get(identity.key);
       const messageText = String(row.message || '').trim();
 
       conversation.messages.push({

@@ -110,14 +110,26 @@ export function SystemPromptEditor({ business, onSaved }: BusinessSettingsProps)
     }
   };
 
-  const handleGeneratePrompt = async (data: GeneratePromptFormData) => {
+  const handleGeneratePrompt = async (
+    data: GeneratePromptFormData,
+    signal: AbortSignal,
+  ) => {
     try {
-      const result = await api.generateSystemPrompt(data);
+      const result = await api.generateSystemPrompt(data, signal);
+
+      if (signal.aborted) return;
 
       setPrompt(result.prompt);
       setModalOpen(false);
       onSaved('Prompt generated successfully');
     } catch (error) {
+      if (
+        signal.aborted ||
+        (error instanceof DOMException && error.name === 'AbortError')
+      ) {
+        return;
+      }
+
       onSaved(
         error instanceof Error
           ? error.message

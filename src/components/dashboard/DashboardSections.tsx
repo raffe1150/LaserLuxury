@@ -110,9 +110,20 @@ export function SystemPromptEditor({ business, onSaved }: BusinessSettingsProps)
     }
   };
 
-  const handleGeneratePrompt = (data: GeneratePromptFormData) => {
-    console.log('Generate prompt data:', data);
-    setModalOpen(false);
+  const handleGeneratePrompt = async (data: GeneratePromptFormData) => {
+    try {
+      const result = await api.generateSystemPrompt(data);
+
+      setPrompt(result.prompt);
+      setModalOpen(false);
+      onSaved('Prompt generated successfully');
+    } catch (error) {
+      onSaved(
+        error instanceof Error
+          ? error.message
+          : 'Could not generate system prompt',
+      );
+    }
   };
 
   return (

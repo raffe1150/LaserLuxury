@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { Conversation } from '../../types/dashboard';
 import { ChannelIcon } from './Icons';
 
@@ -8,25 +8,52 @@ interface ConversationsPanelProps {
 
 export default function ConversationsPanel({ conversations }: ConversationsPanelProps) {
   const [query, setQuery] = useState('');
-  const [selectedId, setSelectedId] = useState(conversations[0]?.id);
+  const [selectedId, setSelectedId] = useState<string | undefined>(
+    conversations[0]?.id,
+  );
+
+  useEffect(() => {
+    if (conversations.length === 0) {
+      setSelectedId(undefined);
+      return;
+    }
+
+    const selectedStillExists = conversations.some(
+      (conversation) => conversation.id === selectedId,
+    );
+
+    if (!selectedStillExists) {
+      setSelectedId(conversations[0].id);
+    }
+  }, [conversations, selectedId]);
 
   const filtered = useMemo(() => {
     const term = query.trim().toLowerCase();
+
     if (!term) return conversations;
+
     return conversations.filter((item) =>
-      `${item.customerName} ${item.preview} ${item.status}`.toLowerCase().includes(term),
+      `${item.customerName} ${item.preview} ${item.status} ${item.channel}`
+        .toLowerCase()
+        .includes(term),
     );
   }, [conversations, query]);
 
-  const selected = conversations.find((item) => item.id === selectedId) || filtered[0];
+  const selected =
+    filtered.find((item) => item.id === selectedId) ||
+    conversations.find((item) => item.id === selectedId) ||
+    filtered[0];
 
   return (
     <section id="conversations" className="card dashboard-section">
       <div className="card-header">
         <div>
           <div className="card-title">Conversations</div>
-          <div className="card-desc">Search customers and review full AI-handled chats.</div>
+          <div className="card-desc">
+            Search customers and review full AI-handled chats.
+          </div>
         </div>
+
         <input
           className="form-input dashboard-search"
           value={query}
@@ -34,12 +61,20 @@ export default function ConversationsPanel({ conversations }: ConversationsPanel
           placeholder="Search customer..."
         />
       </div>
+
       <div className="conversation-layout">
         <div className="conversation-list">
-          {filtered.length === 0 && <div className="empty-state">No conversations found.</div>}
+          {filtered.length === 0 && (
+            <div className="empty-state">No conversations found.</div>
+          )}
+
           {filtered.map((conversation) => (
             <button
-              className={conversation.id === selected?.id ? 'conversation-item active' : 'conversation-item'}
+              className={
+                conversation.id === selected?.id
+                  ? 'conversation-item active'
+                  : 'conversation-item'
+              }
               key={conversation.id}
               type="button"
               onClick={() => setSelectedId(conversation.id)}
@@ -47,29 +82,47 @@ export default function ConversationsPanel({ conversations }: ConversationsPanel
               <div className="conversation-avatar">
                 <ChannelIcon channel={conversation.channel} />
               </div>
+
               <div className="conversation-main">
                 <div className="conversation-title">
                   <span>{conversation.customerName}</span>
                   <small>{formatTime(conversation.updatedAt)}</small>
                 </div>
-                <div className="conversation-preview">{conversation.preview}</div>
-                <div className="conversation-meta">{conversation.status}</div>
+
+                <div className="conversation-preview">
+                  {conversation.preview}
+                </div>
+
+                <div className="conversation-meta">
+                  {conversation.status}
+                </div>
               </div>
             </button>
           ))}
         </div>
+
         <div className="conversation-detail">
           {selected ? (
             <>
               <div className="conversation-detail-head">
                 <div>
-                  <div className="conversation-detail-name">{selected.customerName}</div>
-                  <div className="conversation-detail-sub">{selected.status}</div>
+                  <div className="conversation-detail-name">
+                    {selected.customerName}
+                  </div>
+                  <div className="conversation-detail-sub">
+                    {selected.status}
+                  </div>
                 </div>
               </div>
+
               <div className="chat-transcript">
                 {selected.messages.map((message) => (
-                  <div className={`transcript-bubble ${message.author === 'customer' ? 'customer' : 'ai'}`} key={message.id}>
+                  <div
+                    className={`transcript-bubble ${
+                      message.author === 'customer' ? 'customer' : 'ai'
+                    }`}
+                    key={message.id}
+                  >
                     {message.text}
                   </div>
                 ))}
@@ -86,7 +139,13 @@ export default function ConversationsPanel({ conversations }: ConversationsPanel
 
 function formatTime(value: string) {
   if (!value) return '';
-  return new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' }).format(
-    new Date(value),
-  );
+
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) return '';
+
+  return new Intl.DateTimeFormat(undefined, {
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(date);
 }

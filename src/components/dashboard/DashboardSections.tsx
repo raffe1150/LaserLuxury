@@ -130,16 +130,20 @@ export function SystemPromptEditor({ business, onSaved }: BusinessSettingsProps)
             Generate with AI
           </button>
           <span className="prompt-char-count">{prompt.length} / 10000</span>
+        </div>
 
-<textarea
-  className="form-input"
-  maxLength={10000}
-  rows={6}
-  value={prompt}
-  onChange={(event) => setPrompt(event.target.value)}
-  placeholder="Describe this business, booking rules, tone and escalation policy."
-/>
-        <div className="form-hint">This prompt is saved for the selected business only.</div>
+        <textarea
+          className="form-input"
+          maxLength={10000}
+          rows={6}
+          value={prompt}
+          onChange={(event) => setPrompt(event.target.value)}
+          placeholder="Describe this business, booking rules, tone and escalation policy."
+        />
+
+        <div className="form-hint">
+          This prompt is saved for the selected business only.
+        </div>
       </div>
       <div className="save-row">
         <button className="btn btn-primary" type="button" onClick={save} disabled={saving}>

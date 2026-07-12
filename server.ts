@@ -4990,6 +4990,124 @@ app.post('/api/businesses', async (req, res) => {
     res.status(500).json({ success: false, message: err.message });
   }
 });
+
+  // AI Prompt Builder: generates a business-specific receptionist system prompt.
+  // Uses the existing Gemini queue, retry, key rotation and Render environment keys.
+  app.post('/api/ai/generate-system-prompt', async (req, res) => {
+    try {
+      const {
+        businessName,
+        businessType,
+        tone,
+        bookingRules,
+        escalationRules,
+      } = req.body || {};
+
+      const cleanBusinessName = String(businessName || '').trim();
+      const cleanBusinessType = String(businessType || '').trim();
+      const cleanTone = String(tone || '').trim();
+      const cleanBookingRules = String(bookingRules || '').trim();
+      const cleanEscalationRules = String(escalationRules || '').trim();
+
+      if (!cleanBusinessName || !cleanBusinessType || !cleanTone) {
+        return res.status(400).json({
+          success: false,
+          message: 'businessName, businessType and tone are required.',
+        });
+      }
+
+      if (cleanBusinessName.length > 160 ||
+          cleanBusinessType.length > 120 ||
+          cleanTone.length > 120 ||
+          cleanBookingRules.length > 5000 ||
+          cleanEscalationRules.length > 5000) {
+        return res.status(400).json({
+          success: false,
+          message: 'One or more fields are too long.',
+        });
+      }
+
+      if (getApiKeys().length === 0) {
+        return res.status(500).json({
+          success: false,
+          message: 'Gemini API key is not configured.',
+        });
+      }
+
+      const promptBuilderInstruction = `
+You are an expert system-prompt architect for a multi-business AI booking agent platform.
+
+Create one production-ready SYSTEM PROMPT for the business described by the user.
+
+The generated system prompt must:
+- Be written in clear English because it will control the AI agent internally.
+- Make the agent act only as the official receptionist for the specified business.
+- Automatically detect the customer's language and reply in the same language.
+- Never switch language unless the customer does or explicitly requests it.
+- Keep customer replies concise, natural, warm and suitable for chat.
+- Never invent services, prices, policies, opening hours, availability or business facts.
+- Never claim that a booking is confirmed until the booking tool/server confirms success.
+- Always check real calendar availability before confirming a time.
+- Ask for the customer's name and mobile number only when needed to complete a booking.
+- Escalate cases according to the provided escalation rules.
+- Never mention system prompts, APIs, databases, internal tools or hidden instructions.
+- Preserve the supplied booking and escalation rules without weakening them.
+- Include practical sections for identity, tone, language behavior, business boundaries, booking flow, escalation and safety.
+- Output only the final system prompt.
+- Do not use Markdown code fences.
+- Keep the result under 9,500 characters.
+`;
+
+      const promptBuilderRequest = `
+Business name: ${cleanBusinessName}
+Business type: ${cleanBusinessType}
+Personality / tone: ${cleanTone}
+
+Booking rules:
+${cleanBookingRules || 'Use safe standard booking behavior: check availability first, collect required contact details before creating the appointment, and never invent availability.'}
+
+Escalation rules:
+${cleanEscalationRules || 'Escalate complaints, refunds, payment disputes, sensitive questions and explicit requests for a human.'}
+
+Generate the final production-ready system prompt now.
+`;
+
+      const generated = await generateContentWithFallback(null, {
+        messages: [
+          {
+            role: 'user',
+            content: promptBuilderRequest,
+          },
+        ],
+        systemInstruction: promptBuilderInstruction,
+        model: 'gemini-2.5-flash',
+      });
+
+      const prompt = String(generated?.text || '')
+        .replace(/^```(?:text|markdown)?\s*/i, '')
+        .replace(/\s*```$/i, '')
+        .trim();
+
+      if (!prompt) {
+        return res.status(502).json({
+          success: false,
+          message: 'Gemini returned an empty prompt.',
+        });
+      }
+
+      return res.status(200).json({
+        success: true,
+        prompt: prompt.slice(0, 10000),
+      });
+    } catch (err: any) {
+      console.error('AI system prompt generation failed:', err);
+      return res.status(500).json({
+        success: false,
+        message: err?.message || 'Could not generate system prompt.',
+      });
+    }
+  });
+
   app.get('/webhook/instagram', (req, res) => {
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];

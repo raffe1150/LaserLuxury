@@ -225,7 +225,13 @@ export default function GeneratePromptModal({
                 type="submit"
                 disabled={generating}
               >
-                {generating ? 'Generating...' : 'Generate Prompt'}
+                {generating ? (
+  <span className="generating-label">
+    Generating<span className="generating-dots" aria-hidden="true" />
+  </span>
+) : (
+  'Generate Prompt'
+)}
               </button>
             </div>
           </fieldset>

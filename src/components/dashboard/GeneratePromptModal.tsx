@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 export interface GeneratePromptFormData {
   businessName: string;
@@ -12,7 +12,10 @@ interface GeneratePromptModalProps {
   open: boolean;
   initialBusinessName?: string;
   onClose: () => void;
-  onGenerate: (data: GeneratePromptFormData) => Promise<void> | void;
+  onGenerate: (
+    data: GeneratePromptFormData,
+    signal: AbortSignal,
+  ) => Promise<void> | void;
 }
 
 const BUSINESS_TYPES = [
@@ -54,20 +57,28 @@ export default function GeneratePromptModal({
   const [bookingRules, setBookingRules] = useState('');
   const [escalationRules, setEscalationRules] = useState('');
   const [generating, setGenerating] = useState(false);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     if (open) {
       setBusinessName(initialBusinessName);
       setGenerating(false);
+      abortControllerRef.current = null;
     }
+
+    return () => {
+      abortControllerRef.current?.abort();
+      abortControllerRef.current = null;
+    };
   }, [open, initialBusinessName]);
 
   if (!open) return null;
 
   const handleClose = () => {
-    if (!generating) {
-      onClose();
-    }
+    abortControllerRef.current?.abort();
+    abortControllerRef.current = null;
+    setGenerating(false);
+    onClose();
   };
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -75,18 +86,26 @@ export default function GeneratePromptModal({
 
     if (generating) return;
 
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
     setGenerating(true);
 
     try {
-      await onGenerate({
-        businessName: businessName.trim(),
-        businessType,
-        tone,
-        bookingRules: bookingRules.trim(),
-        escalationRules: escalationRules.trim(),
-      });
+      await onGenerate(
+        {
+          businessName: businessName.trim(),
+          businessType,
+          tone,
+          bookingRules: bookingRules.trim(),
+          escalationRules: escalationRules.trim(),
+        },
+        controller.signal,
+      );
     } finally {
-      setGenerating(false);
+      if (abortControllerRef.current === controller) {
+        abortControllerRef.current = null;
+        setGenerating(false);
+      }
     }
   };
 
@@ -116,16 +135,18 @@ export default function GeneratePromptModal({
           <button
             className="modal-close-btn"
             type="button"
-            aria-label="Close"
+            aria-label={generating ? 'Cancel generation and close' : 'Close'}
             onClick={handleClose}
-            disabled={generating}
           >
             ×
           </button>
         </div>
 
         <form onSubmit={handleSubmit}>
-          <fieldset disabled={generating} style={{ border: 0, padding: 0, margin: 0 }}>
+          <fieldset
+            disabled={generating}
+            style={{ border: 0, padding: 0, margin: 0 }}
+          >
             <div className="modal-form-grid">
               <div className="form-group">
                 <label className="form-label" htmlFor="prompt-business-name">
@@ -209,38 +230,36 @@ export default function GeneratePromptModal({
                 />
               </div>
             </div>
-
-            <div className="dashboard-modal-actions">
-              <button
-                className="btn btn-secondary"
-                type="button"
-                onClick={handleClose}
-                disabled={generating}
-              >
-                Cancel
-              </button>
-
-              <button
-                className="btn btn-primary"
-                type="submit"
-                disabled={generating}
-              >
-  {generating? (
-  <span className="generating-label">
-    <span>Generating</span>
-
-    <span className="loading-dots">
-      <span>.</span>
-      <span>.</span>
-      <span>.</span>
-    </span>
-  </span>
-) : (
-  'Generate Prompt'
-)}
-              </button>
-            </div>
           </fieldset>
+
+          <div className="dashboard-modal-actions">
+            <button
+              className="btn btn-secondary"
+              type="button"
+              onClick={handleClose}
+            >
+              {generating ? 'Cancel Generation' : 'Cancel'}
+            </button>
+
+            <button
+              className="btn btn-primary"
+              type="submit"
+              disabled={generating}
+            >
+              {generating ? (
+                <span className="generating-label">
+                  <span>Generating</span>
+                  <span className="loading-dots" aria-hidden="true">
+                    <span>.</span>
+                    <span>.</span>
+                    <span>.</span>
+                  </span>
+                </span>
+              ) : (
+                'Generate Prompt'
+              )}
+            </button>
+          </div>
         </form>
       </div>
     </div>

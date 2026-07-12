@@ -4841,6 +4841,115 @@ app.get('/api/businesses', async (req, res) => {
   }
 });
 
+
+// API: دریافت رزروهای بیزینس برای داشبورد
+app.get('/api/businesses/:businessId/bookings', async (req, res) => {
+  try {
+    if (!supabase) {
+      return res.status(500).json({
+        success: false,
+        message: 'Supabase is not configured.',
+      });
+    }
+
+    const businessId = Number(req.params.businessId);
+
+    if (!Number.isInteger(businessId) || businessId <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'A valid businessId is required.',
+      });
+    }
+
+    const rawLimit = Number(req.query.limit || 250);
+    const limit = Math.min(
+      500,
+      Math.max(1, Number.isFinite(rawLimit) ? Math.floor(rawLimit) : 250),
+    );
+
+    const { data, error } = await supabase
+      .from('appointments')
+      .select(
+        'id,business_id,customer_name,phone_number,platform,user_id,service,start_time,end_time,status,reminder_24_sent,reminder_2_sent,created_at',
+      )
+      .eq('business_id', businessId)
+      .order('start_time', { ascending: false })
+      .limit(limit);
+
+    if (error) throw error;
+
+    const normalizeChannel = (value: unknown) => {
+      const channel = String(value || '').trim().toLowerCase();
+
+      if (channel === 'facebook' || channel === 'facebook_messenger') {
+        return 'messenger';
+      }
+
+      if (
+        channel === 'instagram' ||
+        channel === 'messenger' ||
+        channel === 'telegram' ||
+        channel === 'whatsapp' ||
+        channel === 'google_calendar'
+      ) {
+        return channel;
+      }
+
+      return 'google_calendar';
+    };
+
+    const normalizeStatus = (value: unknown) => {
+      const status = String(value || '').trim().toLowerCase();
+
+      if (
+        status === 'cancelled' ||
+        status === 'canceled' ||
+        status === 'cancel'
+      ) {
+        return 'cancelled';
+      }
+
+      if (
+        status === 'completed' ||
+        status === 'complete' ||
+        status === 'done'
+      ) {
+        return 'completed';
+      }
+
+      if (
+        status === 'pending' ||
+        status === 'awaiting' ||
+        status === 'awaiting_confirmation'
+      ) {
+        return 'pending';
+      }
+
+      // Existing appointment rows use "booked". The dashboard calls this "confirmed".
+      return 'confirmed';
+    };
+
+    const bookings = (data || []).map((row: any) => ({
+      id: String(row.id),
+      customerName: String(row.customer_name || 'Unknown customer'),
+      serviceName: row.service ? String(row.service) : undefined,
+      channel: normalizeChannel(row.platform),
+      status: normalizeStatus(row.status),
+      startsAt: row.start_time || row.created_at || new Date().toISOString(),
+      endsAt: row.end_time || undefined,
+    }));
+
+    res.setHeader('Cache-Control', 'no-store');
+    return res.status(200).json(bookings);
+  } catch (err: any) {
+    console.error('Error fetching business bookings:', err);
+    return res.status(500).json({
+      success: false,
+      message: err?.message || 'Could not fetch bookings.',
+    });
+  }
+});
+
 app.put('/api/businesses/:id', async (req, res) => {
   try {
     if (!supabase) {

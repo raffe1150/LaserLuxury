@@ -5361,24 +5361,16 @@ app.post('/api/businesses/:businessId/integrations/:integration/test', async (re
     }
 
     if (integration === 'instagram') {
-      const accessToken =
-        config.instagramAccessToken ||
-        config.instagramToken ||
-        '';
-
-      const accountId =
-        config.instagramAccountId ||
-        businessRow.instagram_account_id ||
-        businessRow.instagram_page_id ||
-        'me';
+      // Use the same Instagram API/token flow as the working webhook sender.
+      // Instagram login/user access tokens (often starting with IGA...) are
+      // validated through graph.instagram.com, not graph.facebook.com.
+      const accessToken = getBusinessInstagramToken(config);
 
       if (!accessToken) {
         return fail(400, 'Instagram access token is missing for this business.');
       }
 
-      const instagramUrl = new URL(
-        `https://graph.facebook.com/v22.0/${encodeURIComponent(String(accountId))}`,
-      );
+      const instagramUrl = new URL('https://graph.instagram.com/v25.0/me');
       instagramUrl.searchParams.set('fields', 'id,username,name');
       instagramUrl.searchParams.set('access_token', accessToken);
 
@@ -5388,16 +5380,25 @@ app.post('/api/businesses/:businessId/integrations/:integration/test', async (re
       if (!instagramResponse.ok || instagramData?.error) {
         const instagramMessage =
           instagramData?.error?.message ||
-          `Meta returned HTTP ${instagramResponse.status}.`;
+          instagramData?.error?.error_user_msg ||
+          `Instagram returned HTTP ${instagramResponse.status}.`;
 
         return fail(400, `Instagram connection failed: ${instagramMessage}`);
       }
 
+      const savedAccountId = String(
+        config.instagramAccountId || businessRow.instagram_account_id || '',
+      ).trim();
+
       return succeed('Instagram connection successful.', {
         businessName,
-        accountId: instagramData?.id || accountId,
+        accountId: instagramData?.id || savedAccountId || undefined,
         username: instagramData?.username,
         name: instagramData?.name,
+        accountIdMatches:
+          savedAccountId && instagramData?.id
+            ? String(instagramData.id) === savedAccountId
+            : undefined,
       });
     }
 

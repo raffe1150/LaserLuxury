@@ -5197,6 +5197,321 @@ app.get('/api/businesses/:businessId/bookings', async (req, res) => {
   }
 });
 
+
+// Tests a saved integration for one business and always returns JSON.
+// Frontend endpoint:
+// POST /api/businesses/:businessId/integrations/:integration/test
+app.post('/api/businesses/:businessId/integrations/:integration/test', async (req, res) => {
+  const businessId = String(req.params.businessId || '').trim();
+  const integration = String(req.params.integration || '').trim().toLowerCase();
+
+  const fail = (status: number, message: string, details?: unknown) =>
+    res.status(status).json({
+      ok: false,
+      success: false,
+      integration,
+      status: 'error',
+      message,
+      ...(details ? { details } : {}),
+    });
+
+  const succeed = (message: string, details?: unknown) =>
+    res.status(200).json({
+      ok: true,
+      success: true,
+      integration,
+      status: integration === 'google_calendar' ? 'synced' : 'connected',
+      message,
+      ...(details ? { details } : {}),
+    });
+
+  try {
+    if (!supabase) {
+      return fail(500, 'Supabase is not configured.');
+    }
+
+    if (!businessId) {
+      return fail(400, 'A valid businessId is required.');
+    }
+
+    const supportedIntegrations = new Set([
+      'google_calendar',
+      'instagram',
+      'messenger',
+      'telegram',
+      'whatsapp',
+    ]);
+
+    if (!supportedIntegrations.has(integration)) {
+      return fail(400, `Unsupported integration: ${integration}`);
+    }
+
+    const { data: businessRow, error: businessError } = await supabase
+      .from('businesses')
+      .select('*')
+      .eq('id', businessId)
+      .maybeSingle();
+
+    if (businessError) {
+      console.error('[IntegrationTest] Business lookup failed:', JSON.stringify(businessError));
+      return fail(500, 'Could not load the selected business.');
+    }
+
+    if (!businessRow) {
+      return fail(404, 'Business not found.');
+    }
+
+    const config = normalizeBusinessConfig(businessRow);
+    const businessName =
+      config.businessName ||
+      config.business_name ||
+      `Business ${businessId}`;
+
+    if (integration === 'google_calendar') {
+      const calendarId =
+        config.googleCalendarId ||
+        process.env.GOOGLE_CALENDAR_ID ||
+        '';
+
+      const clientEmail =
+        config.googleClientEmail ||
+        process.env.GOOGLE_CLIENT_EMAIL ||
+        '';
+
+      let privateKey =
+        config.googlePrivateKey ||
+        process.env.GOOGLE_PRIVATE_KEY ||
+        '';
+
+      if (!calendarId) {
+        return fail(400, 'Google Calendar ID is missing for this business.');
+      }
+
+      if (!clientEmail || !privateKey) {
+        return fail(
+          400,
+          'Google Calendar service-account credentials are missing on the server.',
+        );
+      }
+
+      if (privateKey.trim().startsWith('{')) {
+        try {
+          const parsed = JSON.parse(privateKey);
+          privateKey = parsed.private_key || privateKey;
+        } catch {
+          // Keep the original value. The JWT call below will return the real error.
+        }
+      }
+
+      if (privateKey.startsWith('"') && privateKey.endsWith('"')) {
+        privateKey = privateKey.slice(1, -1);
+      }
+
+      privateKey = privateKey.replace(/\\n/g, '\n');
+
+      const auth = new google.auth.JWT({
+        email: clientEmail,
+        key: privateKey,
+        scopes: ['https://www.googleapis.com/auth/calendar'],
+      });
+
+      const calendar = google.calendar({ version: 'v3', auth });
+
+      const calendarResponse = await calendar.calendars.get({
+        calendarId,
+      });
+
+      return succeed('Google Calendar connection successful.', {
+        businessName,
+        calendarId,
+        summary: calendarResponse.data.summary || calendarId,
+      });
+    }
+
+    if (integration === 'telegram') {
+      const token =
+        config.telegramToken ||
+        process.env.TELEGRAM_TOKEN ||
+        process.env.TELEGRAM_BOT_TOKEN ||
+        '';
+
+      if (!token) {
+        return fail(400, 'Telegram bot token is missing for this business.');
+      }
+
+      const telegramResponse = await fetch(
+        `https://api.telegram.org/bot${token}/getMe`,
+      );
+
+      const telegramData: any = await telegramResponse.json().catch(() => null);
+
+      if (!telegramResponse.ok || !telegramData?.ok) {
+        const telegramMessage =
+          telegramData?.description ||
+          `Telegram returned HTTP ${telegramResponse.status}.`;
+
+        return fail(400, `Telegram connection failed: ${telegramMessage}`);
+      }
+
+      return succeed('Telegram connection successful.', {
+        businessName,
+        botId: telegramData.result?.id,
+        username: telegramData.result?.username,
+      });
+    }
+
+    if (integration === 'instagram') {
+      const accessToken =
+        config.instagramAccessToken ||
+        config.instagramToken ||
+        '';
+
+      const accountId =
+        config.instagramAccountId ||
+        businessRow.instagram_account_id ||
+        businessRow.instagram_page_id ||
+        'me';
+
+      if (!accessToken) {
+        return fail(400, 'Instagram access token is missing for this business.');
+      }
+
+      const instagramUrl = new URL(
+        `https://graph.facebook.com/v22.0/${encodeURIComponent(String(accountId))}`,
+      );
+      instagramUrl.searchParams.set('fields', 'id,username,name');
+      instagramUrl.searchParams.set('access_token', accessToken);
+
+      const instagramResponse = await fetch(instagramUrl);
+      const instagramData: any = await instagramResponse.json().catch(() => null);
+
+      if (!instagramResponse.ok || instagramData?.error) {
+        const instagramMessage =
+          instagramData?.error?.message ||
+          `Meta returned HTTP ${instagramResponse.status}.`;
+
+        return fail(400, `Instagram connection failed: ${instagramMessage}`);
+      }
+
+      return succeed('Instagram connection successful.', {
+        businessName,
+        accountId: instagramData?.id || accountId,
+        username: instagramData?.username,
+        name: instagramData?.name,
+      });
+    }
+
+    if (integration === 'messenger') {
+      const pageId =
+        config.messengerPageId ||
+        businessRow.messenger_page_id ||
+        businessRow.facebook_page_id ||
+        '';
+
+      const accessToken =
+        config.messengerPageAccessToken ||
+        businessRow.messenger_page_access_token ||
+        businessRow.messenger_access_token ||
+        businessRow.facebook_page_access_token ||
+        '';
+
+      if (!pageId) {
+        return fail(400, 'Facebook Page ID is missing for this business.');
+      }
+
+      if (!accessToken) {
+        return fail(400, 'Messenger page access token is missing for this business.');
+      }
+
+      const messengerUrl = new URL(
+        `https://graph.facebook.com/v22.0/${encodeURIComponent(String(pageId))}`,
+      );
+      messengerUrl.searchParams.set('fields', 'id,name');
+      messengerUrl.searchParams.set('access_token', accessToken);
+
+      const messengerResponse = await fetch(messengerUrl);
+      const messengerData: any = await messengerResponse.json().catch(() => null);
+
+      if (!messengerResponse.ok || messengerData?.error) {
+        const messengerMessage =
+          messengerData?.error?.message ||
+          `Meta returned HTTP ${messengerResponse.status}.`;
+
+        return fail(400, `Messenger connection failed: ${messengerMessage}`);
+      }
+
+      return succeed('Facebook Messenger connection successful.', {
+        businessName,
+        pageId: messengerData?.id || pageId,
+        pageName: messengerData?.name,
+      });
+    }
+
+    if (integration === 'whatsapp') {
+      const phoneNumberId =
+        config.whatsappPhoneNumberId ||
+        businessRow.whatsapp_phone_number_id ||
+        '';
+
+      const accessToken =
+        config.whatsappAccessToken ||
+        businessRow.whatsapp_access_token ||
+        '';
+
+      if (!phoneNumberId) {
+        return fail(400, 'WhatsApp Phone Number ID is missing for this business.');
+      }
+
+      if (!accessToken) {
+        return fail(400, 'WhatsApp access token is missing for this business.');
+      }
+
+      const whatsappUrl = new URL(
+        `https://graph.facebook.com/v22.0/${encodeURIComponent(String(phoneNumberId))}`,
+      );
+      whatsappUrl.searchParams.set(
+        'fields',
+        'id,display_phone_number,verified_name,quality_rating',
+      );
+      whatsappUrl.searchParams.set('access_token', accessToken);
+
+      const whatsappResponse = await fetch(whatsappUrl);
+      const whatsappData: any = await whatsappResponse.json().catch(() => null);
+
+      if (!whatsappResponse.ok || whatsappData?.error) {
+        const whatsappMessage =
+          whatsappData?.error?.message ||
+          `Meta returned HTTP ${whatsappResponse.status}.`;
+
+        return fail(400, `WhatsApp connection failed: ${whatsappMessage}`);
+      }
+
+      return succeed('WhatsApp connection successful.', {
+        businessName,
+        phoneNumberId: whatsappData?.id || phoneNumberId,
+        displayPhoneNumber: whatsappData?.display_phone_number,
+        verifiedName: whatsappData?.verified_name,
+        qualityRating: whatsappData?.quality_rating,
+      });
+    }
+
+    return fail(400, `Unsupported integration: ${integration}`);
+  } catch (err: any) {
+    console.error(
+      `[IntegrationTest] ${integration} failed for business ${businessId}:`,
+      err,
+    );
+
+    const remoteMessage =
+      err?.response?.data?.error?.message ||
+      err?.errors?.[0]?.message ||
+      err?.message ||
+      'Integration test failed.';
+
+    return fail(500, remoteMessage);
+  }
+});
+
 app.put('/api/businesses/:id', async (req, res) => {
   try {
     if (!supabase) {

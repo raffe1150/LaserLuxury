@@ -240,7 +240,7 @@ export function ChannelSettings({
         return (
           <div className="integration-shell" key={channel.key}>
             <div className="channel-header">
-              <div className="channel-icon"><ChannelIcon channel={channel.key} /></div>
+              <ChannelIcon channel={item.key} /><ChannelIcon channel={channel.key} /></div>
               <div className="channel-info">
                 <h3>{channel.title}</h3>
                 <p>{channel.copy}</p>

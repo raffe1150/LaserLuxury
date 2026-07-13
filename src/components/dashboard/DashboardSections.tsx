@@ -110,32 +110,9 @@ export function SystemPromptEditor({ business, onSaved }: BusinessSettingsProps)
     }
   };
 
-  const handleGeneratePrompt = async (
-    data: GeneratePromptFormData,
-    signal: AbortSignal,
-  ) => {
-    try {
-      const result = await api.generateSystemPrompt(data, signal);
-
-      if (signal.aborted) return;
-
-      setPrompt(result.prompt);
-      setModalOpen(false);
-      onSaved('Prompt generated successfully');
-    } catch (error) {
-      if (
-        signal.aborted ||
-        (error instanceof DOMException && error.name === 'AbortError')
-      ) {
-        return;
-      }
-
-      onSaved(
-        error instanceof Error
-          ? error.message
-          : 'Could not generate system prompt',
-      );
-    }
+  const handleGeneratePrompt = (data: GeneratePromptFormData) => {
+    console.log('Generate prompt data:', data);
+    setModalOpen(false);
   };
 
   return (
@@ -152,21 +129,17 @@ export function SystemPromptEditor({ business, onSaved }: BusinessSettingsProps)
           <button className="ai-gen-btn" type="button" onClick={() => setModalOpen(true)}>
             Generate with AI
           </button>
-          <span className="prompt-char-count">{prompt.length} / 10000</span>
+          <span className="prompt-char-count">{prompt.length} / 2000</span>
         </div>
-
         <textarea
           className="form-input"
-          maxLength={10000}
+          maxLength={2000}
           rows={6}
           value={prompt}
           onChange={(event) => setPrompt(event.target.value)}
           placeholder="Describe this business, booking rules, tone and escalation policy."
         />
-
-        <div className="form-hint">
-          This prompt is saved for the selected business only.
-        </div>
+        <div className="form-hint">This prompt is saved for the selected business only.</div>
       </div>
       <div className="save-row">
         <button className="btn btn-primary" type="button" onClick={save} disabled={saving}>
@@ -240,7 +213,7 @@ export function ChannelSettings({
         return (
           <div className="integration-shell" key={channel.key}>
             <div className="channel-header">
-              <ChannelIcon channel={item.key} /><ChannelIcon channel={channel.key} /></div>
+              <div className="channel-icon"><ChannelIcon channel={channel.key} /></div>
               <div className="channel-info">
                 <h3>{channel.title}</h3>
                 <p>{channel.copy}</p>

@@ -4,7 +4,7 @@ const CHANNEL_LOGOS: Record<IntegrationKey, string> = {
   instagram: '/logos/instagram.webp',
   messenger: '/logos/messenger.webp',
   telegram: '/logos/telegram.webp',
-  whatsapp: '/logos/whatsapp.webp',
+  whatsapp: '/logos/whatsapp-logo.webp',
   google_calendar: '/logos/google-calendar.webp',
 };
 

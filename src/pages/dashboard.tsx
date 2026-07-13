@@ -14,7 +14,7 @@ import HealthStatus from '../components/dashboard/HealthStatus';
 import OverviewCards from '../components/dashboard/OverviewCards';
 import { api, loadDashboardData } from '../services/api';
 import dashboardCss from '../styles/dashboard.css?raw';
-import type { Business, DashboardData } from '../types/dashboard';
+import type { Business, DashboardData, IntegrationKey } from '../types/dashboard';
 
 interface DashboardProps {
   onNavigate: (path: '/' | '/login' | '/dashboard') => void;
@@ -79,12 +79,67 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
 
   const testIntegration = async (integration: string) => {
     if (!selectedBusiness) return;
+
+    const integrationKey = integration as IntegrationKey;
     setToast('Testing connection...');
+
     try {
-      const result = await api.testIntegration(selectedBusiness.id, integration);
-      setToast(result.message || 'Connection test completed');
+      const result = await api.testIntegration(
+        selectedBusiness.id,
+        integrationKey,
+      );
+
+      if (!result.ok) {
+        throw new Error(result.message || 'Connection test failed');
+      }
+
+      setData((current) => {
+        if (!current) return current;
+
+        return {
+          ...current,
+          health: current.health.map((item) =>
+            item.key === integrationKey
+              ? {
+                  ...item,
+                  status:
+                    integrationKey === 'google_calendar'
+                      ? 'synced'
+                      : 'connected',
+                  detail:
+                    integrationKey === 'google_calendar'
+                      ? 'Synced'
+                      : 'Connected',
+                }
+              : item,
+          ),
+        };
+      });
+
+      setToast(null);
     } catch (err) {
-      setToast(err instanceof Error ? err.message : 'Connection test failed');
+      const message = getReadableApiError(
+        err instanceof Error ? err.message : 'Connection test failed',
+      );
+
+      setData((current) => {
+        if (!current) return current;
+
+        return {
+          ...current,
+          health: current.health.map((item) =>
+            item.key === integrationKey
+              ? {
+                  ...item,
+                  status: 'error',
+                  detail: 'Connection failed',
+                }
+              : item,
+          ),
+        };
+      });
+
+      setToast(message);
     }
   };
 
@@ -185,6 +240,22 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
       )}
     </div>
   );
+}
+
+
+function getReadableApiError(rawMessage: string) {
+  const message = String(rawMessage || '').trim();
+
+  try {
+    const parsed = JSON.parse(message) as {
+      message?: string;
+      error?: string;
+    };
+
+    return parsed.message || parsed.error || 'Connection test failed';
+  } catch {
+    return message || 'Connection test failed';
+  }
 }
 
 function BusinessesCard({

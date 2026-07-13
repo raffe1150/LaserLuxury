@@ -5515,51 +5515,159 @@ app.post('/api/businesses/:businessId/integrations/:integration/test', async (re
 app.put('/api/businesses/:id', async (req, res) => {
   try {
     if (!supabase) {
-      return res.status(500).json({ success: false, message: 'Supabase is not configured.' });
+      return res.status(500).json({
+        success: false,
+        message: 'Supabase is not configured.',
+      });
     }
 
-    const { id } = req.params;
+    const businessId = Number(req.params.id);
+    if (!Number.isFinite(businessId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'A valid business id is required.',
+      });
+    }
 
-    const {
-      businessName,
-      telegramToken,
-      calendarId,
-      systemPrompt,
-      instagramPageId,
-      instagramAccountId,
-      instagramAccessToken,
-      instagramVerifyToken,
-      instagramEnabled,
-    } = req.body;
+    const body = req.body || {};
+    const payload: Record<string, unknown> = {};
+
+    const has = (key: string) =>
+      Object.prototype.hasOwnProperty.call(body, key);
+
+    const setText = (
+      requestKeys: string[],
+      databaseKey: string,
+      options: { secret?: boolean } = {},
+    ) => {
+      const requestKey = requestKeys.find((key) => has(key));
+      if (!requestKey) return;
+
+      const value = String(body[requestKey] ?? '').trim();
+
+      // Empty password/token fields mean "keep the existing credential".
+      if (options.secret && !value) return;
+
+      payload[databaseKey] = value;
+    };
+
+    const setBoolean = (requestKeys: string[], databaseKey: string) => {
+      const requestKey = requestKeys.find((key) => has(key));
+      if (!requestKey) return;
+      payload[databaseKey] = Boolean(body[requestKey]);
+    };
+
+    // General business settings
+    setText(['businessName', 'name'], 'business_name');
+    setText(['industry'], 'industry');
+    setText(['timezone'], 'timezone');
+    setText(['language'], 'language');
+    setText(['systemPrompt'], 'custom_system_prompt');
+
+    // Google Calendar
+    setText(['calendarId', 'googleCalendarId'], 'google_calendar_id');
+
+    // Telegram
+    setText(['telegramToken'], 'telegram_bot_token', { secret: true });
+    setText(
+      ['telegramAdminChatId', 'adminTelegramChatId'],
+      'admin_telegram_chat_id',
+    );
+
+    // Instagram
+    setText(['instagramPageId'], 'instagram_page_id');
+    setText(['instagramAccountId'], 'instagram_account_id');
+    setText(
+      ['instagramAccessToken', 'instagramToken'],
+      'instagram_access_token',
+      { secret: true },
+    );
+    setText(
+      ['instagramWebhookVerifyToken', 'instagramVerifyToken'],
+      'instagram_verify_token',
+      { secret: true },
+    );
+    setBoolean(['instagramEnabled'], 'instagram_enabled');
+
+    // Facebook Messenger
+    setText(['messengerPageId'], 'messenger_page_id');
+    setText(
+      ['messengerAccessToken', 'messengerPageAccessToken'],
+      'messenger_page_access_token',
+      { secret: true },
+    );
+    setText(
+      ['messengerAppSecret'],
+      'messenger_app_secret',
+      { secret: true },
+    );
+    setText(
+      ['messengerWebhookVerifyToken', 'messengerVerifyToken'],
+      'messenger_verify_token',
+      { secret: true },
+    );
+    setBoolean(['messengerEnabled'], 'messenger_enabled');
+
+    // WhatsApp
+    setText(['whatsappPhoneNumberId'], 'whatsapp_phone_number_id');
+    setText(
+      ['whatsappBusinessAccountId'],
+      'whatsapp_business_account_id',
+    );
+    setText(
+      ['whatsappAccessToken'],
+      'whatsapp_access_token',
+      { secret: true },
+    );
+    setText(
+      ['whatsappWebhookVerifyToken', 'whatsappVerifyToken'],
+      'whatsapp_verify_token',
+      { secret: true },
+    );
+    setBoolean(['whatsappEnabled'], 'whatsapp_enabled');
+
+    if (Object.keys(payload).length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'No valid business fields were provided.',
+      });
+    }
 
     const { data, error } = await supabase
       .from('businesses')
-      .update({
-        business_name: businessName,
-        telegram_bot_token: telegramToken || '',
-        google_calendar_id: calendarId || '',
-        custom_system_prompt: systemPrompt || '',
-
-        instagram_page_id: instagramPageId || '',
-        instagram_account_id: instagramAccountId || '',
-        instagram_access_token: instagramAccessToken || '',
-        instagram_verify_token: instagramVerifyToken || '',
-        instagram_enabled: Boolean(instagramEnabled),
-      })
-      .eq('id', Number(id))
-      .select();
+      .update(payload)
+      .eq('id', businessId)
+      .select()
+      .maybeSingle();
 
     if (error) throw error;
 
-    res.status(200).json({
+    if (!data) {
+      return res.status(404).json({
+        success: false,
+        message: 'Business not found.',
+      });
+    }
+
+    // Start or refresh Telegram polling when a new token was saved.
+    if (payload.telegram_bot_token) {
+      await startTelegramPolling(normalizeBusinessConfig(data));
+    }
+
+    return res.status(200).json({
       success: true,
-      data: data || [],
+      data,
+      message: 'Business settings saved successfully.',
     });
   } catch (err: any) {
     console.error('Error updating business:', err);
-    res.status(500).json({ success: false, message: err.message });
+    return res.status(500).json({
+      success: false,
+      message: err?.message || 'Could not update business.',
+    });
   }
 });
+
   app.delete('/api/businesses/:id', async (req, res) => {
   try {
     if (!supabase) {

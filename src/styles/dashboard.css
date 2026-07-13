@@ -789,3 +789,6 @@ textarea.form-input{resize:vertical;min-height:140px;line-height:1.7;}
     justify-content:center;
   }
 }
+.channel-mark.whatsapp {
+  background: transparent;
+}

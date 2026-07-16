@@ -203,21 +203,23 @@ async function postProcessMessage(chatId: string, platform: string, userMessage:
   if (!supabase) return;
   try {
     const payload = [
-      {
-        user_id: chatId.toString(),
-        platform,
-        sender: "user",
-        message: userMessage,
-        business_id: businessId || null
-      },
-      {
-        user_id: chatId.toString(),
-        platform,
-        sender: "bot",
-        message: agentResponse,
-        business_id: businessId || null
-      }
-    ];
+  {
+    user_id: chatId.toString(),
+    platform,
+    sender: "user",
+    message: userMessage,
+    business_id: businessId || null,
+    is_read: false
+  },
+  {
+    user_id: chatId.toString(),
+    platform,
+    sender: "bot",
+    message: agentResponse,
+    business_id: businessId || null,
+    is_read: true
+  }
+];
     const { error } = await supabase.from('chat_history').insert(payload).select();
     if (error) {
       console.error('Supabase chat_history error:', JSON.stringify(error));

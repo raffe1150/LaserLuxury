@@ -6,8 +6,19 @@ interface ConversationsPanelProps {
   conversations: Conversation[];
 }
 
-export default function ConversationsPanel({ conversations }: ConversationsPanelProps) {
+const channelTabs = [
+  { id: 'all', label: 'All' },
+  { id: 'whatsapp', label: 'WhatsApp' },
+  { id: 'instagram', label: 'Instagram' },
+  { id: 'messenger', label: 'Messenger' },
+  { id: 'telegram', label: 'Telegram' },
+];
+
+export default function ConversationsPanel({
+  conversations,
+}: ConversationsPanelProps) {
   const [query, setQuery] = useState('');
+  const [activeChannel, setActiveChannel] = useState('all');
   const [selectedId, setSelectedId] = useState<string | undefined>(
     conversations[0]?.id,
   );
@@ -27,16 +38,40 @@ export default function ConversationsPanel({ conversations }: ConversationsPanel
     }
   }, [conversations, selectedId]);
 
+  const channelCounts = useMemo(() => {
+    return conversations.reduce<Record<string, number>>(
+      (counts, conversation) => {
+        const channel = normalizeChannel(conversation.channel);
+
+        counts.all += 1;
+        counts[channel] = (counts[channel] || 0) + 1;
+
+        return counts;
+      },
+      {
+        all: 0,
+        whatsapp: 0,
+        instagram: 0,
+        messenger: 0,
+        telegram: 0,
+      },
+    );
+  }, [conversations]);
+
   const filtered = useMemo(() => {
     const term = query.trim().toLowerCase();
 
-    if (!term) return conversations;
+    return conversations.filter((item) => {
+      const matchesSearch =
+        !term ||
+        `${item.customerName} ${item.preview} ${item.status} ${item.channel}`
+          .toLowerCase()
+          .includes(term);
 
-    return conversations.filter((item) =>
-      `${item.customerName} ${item.preview} ${item.status} ${item.channel}`
-        .toLowerCase()
-        .includes(term),
-    );
+      // فعلاً فقط ظاهر تب‌ها را داریم.
+      // فیلتر واقعی را در مرحله بعد فعال می‌کنیم.
+      return matchesSearch;
+    });
   }, [conversations, query]);
 
   const selected =
@@ -60,6 +95,33 @@ export default function ConversationsPanel({ conversations }: ConversationsPanel
           onChange={(event) => setQuery(event.target.value)}
           placeholder="Search customer..."
         />
+      </div>
+
+      <div className="conversation-channel-tabs">
+        {channelTabs.map((tab) => (
+          <button
+            className={
+              activeChannel === tab.id
+                ? 'conversation-channel-tab active'
+                : 'conversation-channel-tab'
+            }
+            key={tab.id}
+            type="button"
+            onClick={() => setActiveChannel(tab.id)}
+          >
+            {tab.id !== 'all' && (
+              <span className="conversation-channel-icon">
+                <ChannelIcon channel={tab.id} />
+              </span>
+            )}
+
+            <span>{tab.label}</span>
+
+            <span className="conversation-channel-count">
+              {channelCounts[tab.id] || 0}
+            </span>
+          </button>
+        ))}
       </div>
 
       <div className="conversation-layout">
@@ -135,6 +197,19 @@ export default function ConversationsPanel({ conversations }: ConversationsPanel
       </div>
     </section>
   );
+}
+
+function normalizeChannel(channel: string) {
+  const value = String(channel || '').toLowerCase();
+
+  if (value.includes('whatsapp')) return 'whatsapp';
+  if (value.includes('instagram')) return 'instagram';
+  if (value.includes('messenger') || value.includes('facebook')) {
+    return 'messenger';
+  }
+  if (value.includes('telegram')) return 'telegram';
+
+  return value;
 }
 
 function formatTime(value: string) {

@@ -76,6 +76,7 @@ export interface Conversation {
   status: ConversationStatus;
   preview: string;
   updatedAt: string;
+  unreadCount?: number;
   messages: ConversationMessage[];
 }
 

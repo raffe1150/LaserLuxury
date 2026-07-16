@@ -61,19 +61,21 @@ export default function ConversationsPanel({
   const filtered = useMemo(() => {
     const term = query.trim().toLowerCase();
 
-    return conversations.filter((item) => {
-      const matchesSearch =
-        !term ||
-        `${item.customerName} ${item.preview} ${item.status} ${item.channel}`
-          .toLowerCase()
-          .includes(term);
+   return conversations.filter((item) => {
+  const itemChannel = normalizeChannel(item.channel);
 
-      // فعلاً فقط ظاهر تب‌ها را داریم.
-      // فیلتر واقعی را در مرحله بعد فعال می‌کنیم.
-      return matchesSearch;
-    });
-  }, [conversations, query]);
+  const matchesSearch =
+    !term ||
+    `${item.customerName} ${item.preview} ${item.status} ${item.channel}`
+      .toLowerCase()
+      .includes(term);
 
+  const matchesChannel =
+    activeChannel === 'all' || itemChannel === activeChannel;
+
+  return matchesSearch && matchesChannel;
+});
+  }, [conversations, query, activeChannel]);
   const selected =
     filtered.find((item) => item.id === selectedId) ||
     conversations.find((item) => item.id === selectedId) ||

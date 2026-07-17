@@ -76,23 +76,27 @@ export const api = {
     request<{ ok: boolean }>(`/api/businesses/${businessId}`, {
       method: 'DELETE',
     }),
-  // TODO backend: confirm exact endpoint for business_usage_stats.
   getBusinessStats: (businessId: string) =>
     request<BusinessStats>(`/api/businesses/${businessId}/stats`),
-  // TODO backend: confirm exact endpoint for channel connection health.
   getIntegrationHealth: (businessId: string) =>
     request<IntegrationHealth[]>(`/api/businesses/${businessId}/integrations/health`),
-  // TODO backend: confirm exact endpoint for derived platform performance.
   getPlatformPerformance: (businessId: string) =>
     request<PlatformPerformance>(`/api/businesses/${businessId}/performance`),
-  // TODO backend: confirm exact endpoint for chat_history.
   getConversations: (businessId: string) =>
     request<Conversation[]>(`/api/businesses/${businessId}/conversations`),
-  // TODO backend: confirm exact endpoint for appointments/bookings.
-  getBookings: (businessId: string) => request<Booking[]>(`/api/businesses/${businessId}/bookings`),
-  // TODO backend: confirm exact endpoint for message_usage.
-  getUsage: (businessId: string) => request<UsageInfo>(`/api/businesses/${businessId}/usage`),
-  // TODO backend: credential updates should be accepted server-side and stored securely.
+  markConversationRead: (businessId: string, conversationId: string) =>
+    request<{ success: boolean; updatedCount?: number }>(
+      `/api/businesses/${businessId}/conversations/${encodeURIComponent(
+        conversationId,
+      )}/read`,
+      {
+        method: 'PUT',
+      },
+    ),
+  getBookings: (businessId: string) =>
+    request<Booking[]>(`/api/businesses/${businessId}/bookings`),
+  getUsage: (businessId: string) =>
+    request<UsageInfo>(`/api/businesses/${businessId}/usage`),
   testIntegration: (businessId: string, integration: string) =>
     request<{ ok: boolean; message: string }>(
       `/api/businesses/${businessId}/integrations/${integration}/test`,

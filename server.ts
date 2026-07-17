@@ -5122,6 +5122,147 @@ app.get('/api/businesses/:businessId/conversations', async (req, res) => {
   }
 });
 
+
+// API: mark all unread customer messages in one conversation as read
+app.put('/api/businesses/:businessId/conversations/:conversationId/read', async (req, res) => {
+  try {
+    if (!supabase) {
+      return res.status(500).json({
+        success: false,
+        message: 'Supabase is not configured.',
+      });
+    }
+
+    const businessId = String(req.params.businessId || '').trim();
+    const conversationId = String(req.params.conversationId || '').trim();
+
+    if (!businessId || !conversationId) {
+      return res.status(400).json({
+        success: false,
+        message: 'A valid businessId and conversationId are required.',
+      });
+    }
+
+    const separatorIndex = conversationId.indexOf(':');
+    if (separatorIndex <= 0 || separatorIndex === conversationId.length - 1) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid conversationId format.',
+      });
+    }
+
+    const requestedChannel = conversationId.slice(0, separatorIndex).trim().toLowerCase();
+    const requestedUserId = conversationId.slice(separatorIndex + 1).trim();
+
+    const normalizeChannel = (value: unknown) => {
+      const channel = String(value || '').trim().toLowerCase();
+
+      if (
+        channel === 'facebook' ||
+        channel === 'facebook_messenger' ||
+        channel === 'messenger-api'
+      ) {
+        return 'messenger';
+      }
+
+      if (
+        channel === 'telegram-polling' ||
+        channel === 'telegram_webhook' ||
+        channel === 'telegram-webhook'
+      ) {
+        return 'telegram';
+      }
+
+      if (channel.startsWith('instagram')) return 'instagram';
+      if (channel.startsWith('messenger')) return 'messenger';
+      if (channel.startsWith('telegram')) return 'telegram';
+      if (channel.startsWith('whatsapp')) return 'whatsapp';
+
+      return channel;
+    };
+
+    const normalizeUserId = (value: unknown, channel: string) => {
+      let userId = String(value || '').trim();
+      if (!userId) return '';
+
+      const lower = userId.toLowerCase();
+      const prefixes = [
+        `${channel}_`,
+        `${channel}-`,
+        channel === 'messenger' ? 'ms_' : '',
+        channel === 'instagram' ? 'ig_' : '',
+        channel === 'telegram' ? 'telegram_' : '',
+        channel === 'whatsapp' ? 'whatsapp_' : '',
+      ].filter(Boolean);
+
+      for (const prefix of prefixes) {
+        if (lower.startsWith(prefix)) {
+          userId = userId.slice(prefix.length);
+          break;
+        }
+      }
+
+      return userId.trim();
+    };
+
+    const normalizedRequestedChannel = normalizeChannel(requestedChannel);
+    const normalizedRequestedUserId = normalizeUserId(
+      requestedUserId,
+      normalizedRequestedChannel,
+    );
+
+    const { data: unreadRows, error: unreadError } = await supabase
+      .from('chat_history')
+      .select('id,user_id,platform,sender')
+      .eq('business_id', businessId)
+      .eq('is_read', false)
+      .in('sender', ['user', 'customer'])
+      .limit(2000);
+
+    if (unreadError) throw unreadError;
+
+    const matchingIds = (unreadRows || [])
+      .filter((row: any) => {
+        const rowChannel = normalizeChannel(row.platform);
+        const rowUserId = normalizeUserId(row.user_id, rowChannel);
+
+        return (
+          rowChannel === normalizedRequestedChannel &&
+          rowUserId === normalizedRequestedUserId
+        );
+      })
+      .map((row: any) => row.id)
+      .filter((id: unknown) => id !== undefined && id !== null);
+
+    if (matchingIds.length === 0) {
+      res.setHeader('Cache-Control', 'no-store');
+      return res.status(200).json({
+        success: true,
+        updatedCount: 0,
+      });
+    }
+
+    const { error: updateError } = await supabase
+      .from('chat_history')
+      .update({ is_read: true })
+      .in('id', matchingIds);
+
+    if (updateError) throw updateError;
+
+    res.setHeader('Cache-Control', 'no-store');
+    return res.status(200).json({
+      success: true,
+      updatedCount: matchingIds.length,
+    });
+  } catch (err: any) {
+    console.error('Error marking conversation as read:', err);
+    return res.status(500).json({
+      success: false,
+      message: err?.message || 'Could not mark conversation as read.',
+    });
+  }
+});
+
 app.get('/api/businesses/:businessId/bookings', async (req, res) => {
   try {
     if (!supabase) {

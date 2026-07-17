@@ -67,6 +67,46 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
 
   const selectedBusiness = data?.selectedBusiness;
 
+  useEffect(() => {
+    if (!selectedBusiness) return;
+
+    let active = true;
+    let requestInFlight = false;
+
+    const refreshConversations = async () => {
+      if (requestInFlight) return;
+      requestInFlight = true;
+
+      try {
+        const conversations = await api.getConversations(selectedBusiness.id);
+
+        if (!active) return;
+
+        setData((current) => {
+          if (!current || current.selectedBusiness?.id !== selectedBusiness.id) {
+            return current;
+          }
+
+          return {
+            ...current,
+            conversations,
+          };
+        });
+      } catch (error) {
+        console.error('Conversation auto refresh failed:', error);
+      } finally {
+        requestInFlight = false;
+      }
+    };
+
+    const intervalId = window.setInterval(refreshConversations, 5000);
+
+    return () => {
+      active = false;
+      window.clearInterval(intervalId);
+    };
+  }, [selectedBusiness?.id]);
+
   const handleBusinessChange = (businessId: string) => {
     setSelectedBusinessId(businessId);
     localStorage.setItem('odinlink_selected_business', businessId);

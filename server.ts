@@ -1,7 +1,7 @@
 
 import "dotenv/config";
 import express from "express";
-import cron from "node-cron"; 
+import cron from "node-cron";
 import path from "path";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
@@ -5118,6 +5118,241 @@ app.get('/api/businesses/:businessId/conversations', async (req, res) => {
     return res.status(500).json({
       success: false,
       message: err?.message || 'Could not fetch conversations.',
+    });
+  }
+});
+
+
+// API: send a manual dashboard reply to an existing conversation
+app.post('/api/businesses/:businessId/conversations/:conversationId/messages', async (req, res) => {
+  try {
+    if (!supabase) {
+      return res.status(500).json({
+        success: false,
+        message: 'Supabase is not configured.',
+      });
+    }
+
+    const businessId = String(req.params.businessId || '').trim();
+    const conversationId = String(req.params.conversationId || '').trim();
+    const text = String(req.body?.text || '').trim();
+
+    if (!businessId || !conversationId) {
+      return res.status(400).json({
+        success: false,
+        message: 'A valid businessId and conversationId are required.',
+      });
+    }
+
+    if (!text) {
+      return res.status(400).json({
+        success: false,
+        message: 'Message text is required.',
+      });
+    }
+
+    if (text.length > 4000) {
+      return res.status(400).json({
+        success: false,
+        message: 'Message is too long. Maximum length is 4000 characters.',
+      });
+    }
+
+    const separatorIndex = conversationId.indexOf(':');
+    if (separatorIndex <= 0 || separatorIndex === conversationId.length - 1) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid conversationId format.',
+      });
+    }
+
+    const normalizeChannel = (value: unknown) => {
+      const channel = String(value || '').trim().toLowerCase();
+
+      if (
+        channel === 'facebook' ||
+        channel === 'facebook_messenger' ||
+        channel === 'messenger-api'
+      ) {
+        return 'messenger';
+      }
+
+      if (
+        channel === 'telegram-polling' ||
+        channel === 'telegram_webhook' ||
+        channel === 'telegram-webhook'
+      ) {
+        return 'telegram';
+      }
+
+      if (channel.startsWith('instagram')) return 'instagram';
+      if (channel.startsWith('messenger')) return 'messenger';
+      if (channel.startsWith('telegram')) return 'telegram';
+      if (channel.startsWith('whatsapp')) return 'whatsapp';
+
+      return channel;
+    };
+
+    const normalizeUserId = (value: unknown, channel: string) => {
+      let userId = String(value || '').trim();
+      if (!userId) return '';
+
+      const lower = userId.toLowerCase();
+      const prefixes = [
+        `${channel}_`,
+        `${channel}-`,
+        channel === 'messenger' ? 'ms_' : '',
+        channel === 'instagram' ? 'ig_' : '',
+        channel === 'telegram' ? 'telegram_' : '',
+        channel === 'whatsapp' ? 'whatsapp_' : '',
+        channel === 'whatsapp' ? 'wa_' : '',
+      ].filter(Boolean);
+
+      for (const prefix of prefixes) {
+        if (lower.startsWith(prefix)) {
+          userId = userId.slice(prefix.length);
+          break;
+        }
+      }
+
+      return userId.trim();
+    };
+
+    const requestedChannel = normalizeChannel(
+      conversationId.slice(0, separatorIndex),
+    );
+    const requestedUserId = normalizeUserId(
+      conversationId.slice(separatorIndex + 1),
+      requestedChannel,
+    );
+
+    if (!['whatsapp', 'instagram', 'messenger', 'telegram'].includes(requestedChannel)) {
+      return res.status(400).json({
+        success: false,
+        message: `Manual replies are not supported for channel: ${requestedChannel}`,
+      });
+    }
+
+    if (!requestedUserId) {
+      return res.status(400).json({
+        success: false,
+        message: 'The conversation recipient could not be resolved.',
+      });
+    }
+
+    // Resolve the exact raw user_id/platform already stored for this business.
+    // This prevents sending to a similarly formatted ID from another channel.
+    const { data: recentRows, error: recentRowsError } = await supabase
+      .from('chat_history')
+      .select('id,user_id,platform,created_at')
+      .eq('business_id', businessId)
+      .order('created_at', { ascending: false })
+      .limit(1000);
+
+    if (recentRowsError) throw recentRowsError;
+
+    const matchingRow = (recentRows || []).find((row: any) => {
+      const rowChannel = normalizeChannel(row.platform);
+      const rowUserId = normalizeUserId(row.user_id, rowChannel);
+
+      return (
+        rowChannel === requestedChannel &&
+        rowUserId === requestedUserId
+      );
+    });
+
+    if (!matchingRow) {
+      return res.status(404).json({
+        success: false,
+        message: 'Conversation was not found for this business.',
+      });
+    }
+
+    const recipient = normalizeUserId(matchingRow.user_id, requestedChannel);
+    const businessConfig = await loadBusinessConfigById(businessId);
+    let sent = false;
+
+    if (requestedChannel === 'whatsapp') {
+      sent = await sendWhatsAppMessage(recipient, text, businessConfig);
+    } else if (requestedChannel === 'messenger') {
+      sent = await sendMessengerMessage(recipient, text, businessConfig);
+    } else if (requestedChannel === 'instagram') {
+      const token = getBusinessInstagramToken(businessConfig);
+      sent = await sendInstagramMessage(recipient, text, token);
+    } else if (requestedChannel === 'telegram') {
+      const token =
+        businessConfig?.telegramToken ||
+        businessConfig?.telegram_bot_token ||
+        activeConfig?.telegramToken ||
+        process.env.TELEGRAM_TOKEN ||
+        process.env.TELEGRAM_BOT_TOKEN;
+
+      if (!token) {
+        return res.status(400).json({
+          success: false,
+          message: 'Telegram token is not configured for this business.',
+        });
+      }
+
+      const telegramResponse = await fetch(
+        `https://api.telegram.org/bot${token}/sendMessage`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chat_id: recipient, text }),
+        },
+      );
+
+      const telegramResult: any = await telegramResponse.json().catch(() => ({}));
+      sent = telegramResponse.ok && telegramResult?.ok !== false;
+
+      if (!sent) {
+        console.error('Telegram manual send failed:', JSON.stringify(telegramResult));
+      }
+    }
+
+    if (!sent) {
+      return res.status(502).json({
+        success: false,
+        message: `The message could not be sent through ${requestedChannel}. Check the channel credentials and platform response logs.`,
+      });
+    }
+
+    const createdAt = new Date().toISOString();
+    const { data: savedMessage, error: saveError } = await supabase
+      .from('chat_history')
+      .insert([{
+        business_id: businessId,
+        user_id: String(matchingRow.user_id || recipient),
+        platform: String(matchingRow.platform || requestedChannel),
+        sender: 'human',
+        message: text,
+        is_read: true,
+        created_at: createdAt,
+      }])
+      .select('id,created_at')
+      .single();
+
+    if (saveError) {
+      console.error('Manual message was sent but could not be saved:', JSON.stringify(saveError));
+      return res.status(500).json({
+        success: false,
+        sent: true,
+        message: 'The message was sent, but it could not be saved in chat history.',
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      messageId: String(savedMessage?.id || ''),
+      createdAt: savedMessage?.created_at || createdAt,
+      channel: requestedChannel,
+    });
+  } catch (err: any) {
+    console.error('Manual conversation send error:', err);
+    return res.status(500).json({
+      success: false,
+      message: err?.message || 'Could not send the message.',
     });
   }
 });

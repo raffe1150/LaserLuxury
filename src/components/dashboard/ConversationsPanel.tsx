@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { Conversation } from '../../types/dashboard';
+import { api } from '../../services/api';
 import { ChannelIcon } from './Icons';
 
 interface ConversationsPanelProps {
   conversations: Conversation[];
+  businessId?: string;
 }
 
 const channelTabs = [
@@ -16,30 +18,37 @@ const channelTabs = [
 
 export default function ConversationsPanel({
   conversations,
+  businessId,
 }: ConversationsPanelProps) {
   const [query, setQuery] = useState('');
   const [activeChannel, setActiveChannel] = useState('all');
+  const [localConversations, setLocalConversations] =
+    useState<Conversation[]>(conversations);
   const [selectedId, setSelectedId] = useState<string | undefined>(
     conversations[0]?.id,
   );
 
   useEffect(() => {
-    if (conversations.length === 0) {
+    setLocalConversations(conversations);
+  }, [conversations]);
+
+  useEffect(() => {
+    if (localConversations.length === 0) {
       setSelectedId(undefined);
       return;
     }
 
-    const selectedStillExists = conversations.some(
+    const selectedStillExists = localConversations.some(
       (conversation) => conversation.id === selectedId,
     );
 
     if (!selectedStillExists) {
-      setSelectedId(conversations[0].id);
+      setSelectedId(localConversations[0].id);
     }
-  }, [conversations, selectedId]);
+  }, [localConversations, selectedId]);
 
   const unreadCounts = useMemo(() => {
-    return conversations.reduce<Record<string, number>>(
+    return localConversations.reduce<Record<string, number>>(
       (counts, conversation) => {
         const channel = normalizeChannel(conversation.channel);
         const unread = Number(conversation.unreadCount || 0);
@@ -57,12 +66,12 @@ export default function ConversationsPanel({
         telegram: 0,
       },
     );
-  }, [conversations]);
+  }, [localConversations]);
 
   const filtered = useMemo(() => {
     const term = query.trim().toLowerCase();
 
-    return conversations
+    return localConversations
       .filter((item) => {
         const itemChannel = normalizeChannel(item.channel);
 
@@ -90,12 +99,50 @@ export default function ConversationsPanel({
           new Date(a.updatedAt).getTime()
         );
       });
-  }, [conversations, query, activeChannel]);
+  }, [localConversations, query, activeChannel]);
 
   const selected =
     filtered.find((item) => item.id === selectedId) ||
-    conversations.find((item) => item.id === selectedId) ||
+    localConversations.find((item) => item.id === selectedId) ||
     filtered[0];
+
+  const handleSelectConversation = async (conversation: Conversation) => {
+    setSelectedId(conversation.id);
+
+    const unread = Number(conversation.unreadCount || 0);
+
+    if (!businessId || unread === 0) {
+      return;
+    }
+
+    setLocalConversations((current) =>
+      current.map((item) =>
+        item.id === conversation.id
+          ? {
+              ...item,
+              unreadCount: 0,
+            }
+          : item,
+      ),
+    );
+
+    try {
+      await api.markConversationRead(businessId, conversation.id);
+    } catch (error) {
+      console.error('Could not mark conversation as read:', error);
+
+      setLocalConversations((current) =>
+        current.map((item) =>
+          item.id === conversation.id
+            ? {
+                ...item,
+                unreadCount: unread,
+              }
+            : item,
+        ),
+      );
+    }
+  };
 
   return (
     <section id="conversations" className="card dashboard-section">
@@ -169,7 +216,7 @@ export default function ConversationsPanel({
                   .join(' ')}
                 key={conversation.id}
                 type="button"
-                onClick={() => setSelectedId(conversation.id)}
+                onClick={() => handleSelectConversation(conversation)}
               >
                 <div className="conversation-avatar">
                   <ChannelIcon channel={conversation.channel} />

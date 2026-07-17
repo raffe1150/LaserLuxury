@@ -214,7 +214,10 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
             <BusinessSettings business={selectedBusiness} onSaved={handleSaved} />
             <SystemPromptEditor business={selectedBusiness} onSaved={handleSaved} />
             <ChannelSettings business={selectedBusiness} health={data.health} onSaved={handleSaved} onTest={testIntegration} />
-            <ConversationsPanel conversations={data.conversations} />
+            <ConversationsPanel
+  conversations={data.conversations}
+  businessId={selectedBusiness.id}
+/>
             <BookingsPanel bookings={data.bookings} />
             <Activity conversations={data.conversations} bookings={data.bookings} health={data.health} />
           </>

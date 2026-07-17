@@ -93,6 +93,20 @@ export const api = {
         method: 'PUT',
       },
     ),
+  sendConversationMessage: (
+    businessId: string,
+    conversationId: string,
+    text: string,
+  ) =>
+    request<{ success: boolean; messageId?: string }>(
+      `/api/businesses/${businessId}/conversations/${encodeURIComponent(
+        conversationId,
+      )}/messages`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ text }),
+      },
+    ),
   getBookings: (businessId: string) =>
     request<Booking[]>(`/api/businesses/${businessId}/bookings`),
   getUsage: (businessId: string) =>

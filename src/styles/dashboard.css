@@ -1312,4 +1312,11 @@ textarea.form-input{resize:vertical;min-height:140px;line-height:1.7;}
     right: 10px;
   }
 }
-
+#conversations .conversation-reply-actions .btn:disabled {
+  background: rgba(238, 242, 238, 0.08);
+  color: rgba(238, 242, 238, 0.3);
+  border: 1px solid rgba(238, 242, 238, 0.06);
+  opacity: 1;
+  box-shadow: none;
+  cursor: not-allowed;
+}

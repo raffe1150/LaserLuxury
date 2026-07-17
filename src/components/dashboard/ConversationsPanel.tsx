@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { KeyboardEvent, useEffect, useMemo, useState } from 'react';
 import type { Conversation } from '../../types/dashboard';
 import { api } from '../../services/api';
 import { ChannelIcon } from './Icons';
@@ -27,6 +27,9 @@ export default function ConversationsPanel({
   const [selectedId, setSelectedId] = useState<string | undefined>(
     conversations[0]?.id,
   );
+  const [replyText, setReplyText] = useState('');
+  const [sending, setSending] = useState(false);
+  const [sendError, setSendError] = useState<string | null>(null);
 
   useEffect(() => {
     setLocalConversations(conversations);
@@ -46,6 +49,11 @@ export default function ConversationsPanel({
       setSelectedId(localConversations[0].id);
     }
   }, [localConversations, selectedId]);
+
+  useEffect(() => {
+    setReplyText('');
+    setSendError(null);
+  }, [selectedId]);
 
   const unreadCounts = useMemo(() => {
     return localConversations.reduce<Record<string, number>>(
@@ -141,6 +149,69 @@ export default function ConversationsPanel({
             : item,
         ),
       );
+    }
+  };
+
+  const sendReply = async () => {
+    const text = replyText.trim();
+
+    if (!businessId || !selected || !text || sending) {
+      return;
+    }
+
+    const conversationId = selected.id;
+    const previousConversation = selected;
+    const optimisticMessage = {
+      id: `optimistic-${Date.now()}`,
+      author: 'ai',
+      text,
+    } as Conversation['messages'][number];
+
+    setSending(true);
+    setSendError(null);
+    setReplyText('');
+
+    setLocalConversations((current) =>
+      current.map((conversation) =>
+        conversation.id === conversationId
+          ? {
+              ...conversation,
+              preview: text,
+              updatedAt: new Date().toISOString(),
+              messages: [...conversation.messages, optimisticMessage],
+            }
+          : conversation,
+      ),
+    );
+
+    try {
+      await api.sendConversationMessage(businessId, conversationId, text);
+    } catch (error) {
+      console.error('Could not send message:', error);
+
+      setLocalConversations((current) =>
+        current.map((conversation) =>
+          conversation.id === conversationId
+            ? previousConversation
+            : conversation,
+        ),
+      );
+
+      setReplyText(text);
+      setSendError(
+        error instanceof Error ? error.message : 'Could not send message.',
+      );
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const handleReplyKeyDown = (
+    event: KeyboardEvent<HTMLTextAreaElement>,
+  ) => {
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
+      void sendReply();
     }
   };
 
@@ -276,6 +347,37 @@ export default function ConversationsPanel({
                     {message.text}
                   </div>
                 ))}
+              </div>
+
+              <div className="conversation-reply-box">
+                <textarea
+                  className="form-input conversation-reply-input"
+                  value={replyText}
+                  onChange={(event) => setReplyText(event.target.value)}
+                  onKeyDown={handleReplyKeyDown}
+                  placeholder={`Reply via ${selected.channel}...`}
+                  rows={3}
+                  disabled={sending || !businessId}
+                />
+
+                <div className="conversation-reply-actions">
+                  <span className="conversation-reply-hint">
+                    Enter to send · Shift+Enter for a new line
+                  </span>
+
+                  <button
+                    className="btn btn-primary"
+                    type="button"
+                    onClick={() => void sendReply()}
+                    disabled={sending || !businessId || !replyText.trim()}
+                  >
+                    {sending ? 'Sending...' : 'Send'}
+                  </button>
+                </div>
+
+                {sendError && (
+                  <div className="conversation-send-error">{sendError}</div>
+                )}
               </div>
             </>
           ) : (

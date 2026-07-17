@@ -891,3 +891,70 @@ textarea.form-input{resize:vertical;min-height:140px;line-height:1.7;}
     flex-shrink: 0;
   }
 }
+/* ── CONVERSATION UNREAD STATE ── */
+
+.conversation-item.unread {
+  background: rgba(61, 220, 132, 0.045);
+}
+
+.conversation-item.unread .conversation-title > span {
+  color: var(--white);
+  font-weight: 800;
+}
+
+.conversation-title-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.conversation-unread-badge {
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: var(--green);
+  color: #060a07;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+  box-shadow: 0 0 12px rgba(61, 220, 132, 0.28);
+}
+
+.conversation-channel-count.unread {
+  background: rgba(61, 220, 132, 0.18);
+  color: var(--green);
+  border: 1px solid rgba(61, 220, 132, 0.2);
+  font-weight: 800;
+}
+
+.conversation-item.unread::before {
+  content: '';
+  width: 3px;
+  align-self: stretch;
+  flex-shrink: 0;
+  border-radius: 999px;
+  background: var(--green);
+  box-shadow: 0 0 10px rgba(61, 220, 132, 0.35);
+}
+
+.conversation-item.active.unread {
+  background: rgba(61, 220, 132, 0.075);
+}
+
+@media (max-width: 768px) {
+  .conversation-title-right {
+    gap: 6px;
+  }
+
+  .conversation-unread-badge {
+    min-width: 18px;
+    height: 18px;
+    font-size: 9px;
+  }
+}

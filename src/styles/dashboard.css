@@ -1288,3 +1288,28 @@ textarea.form-input{resize:vertical;min-height:140px;line-height:1.7;}
   }
 }
 
+/* ── REPLY COMPOSER OVERFLOW FIX ── */
+#conversations .conversation-reply-box {
+  padding: 12px 14px;
+  overflow: hidden;
+}
+
+#conversations .conversation-reply-actions .conversation-reply-hint {
+  display: none;
+}
+
+#conversations .conversation-reply-actions {
+  inset: 12px 14px auto auto;
+}
+
+@media (max-width: 768px) {
+  #conversations .conversation-reply-box {
+    padding: 10px;
+  }
+
+  #conversations .conversation-reply-actions {
+    top: 10px;
+    right: 10px;
+  }
+}
+

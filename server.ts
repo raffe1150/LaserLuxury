@@ -4870,7 +4870,7 @@ app.get('/api/businesses/:businessId/conversations', async (req, res) => {
 
     const { data: messageRows, error: messageError } = await supabase
       .from('chat_history')
-      .select('id,business_id,user_id,platform,sender,message,created_at')
+      .select('id,business_id,user_id,platform,sender,message,created_at,is_read')
       .eq('business_id', businessId)
       .order('created_at', { ascending: true })
       .limit(limit);
@@ -4971,6 +4971,29 @@ app.get('/api/businesses/:businessId/conversations', async (req, res) => {
       return !/^(unknown|null|undefined|customer)$/i.test(name);
     };
 
+    const formatCustomerFallback = (rawUserId: string, normalizedUserId: string, channel: string) => {
+      const cleanId = String(normalizedUserId || rawUserId || '').trim();
+
+      if (channel === 'whatsapp') {
+        const digits = cleanId.replace(/\D/g, '');
+        return digits ? `+${digits}` : cleanId || 'WhatsApp customer';
+      }
+
+      if (channel === 'telegram') {
+        return cleanId ? `Telegram ${cleanId}` : 'Telegram customer';
+      }
+
+      if (channel === 'instagram') {
+        return cleanId ? `Instagram ${cleanId}` : 'Instagram customer';
+      }
+
+      if (channel === 'messenger') {
+        return cleanId ? `Messenger ${cleanId}` : 'Messenger customer';
+      }
+
+      return cleanId || 'Customer';
+    };
+
     type CustomerLookup = { name: string; status: string };
     const leadByConversation = new Map<string, CustomerLookup>();
     const legacyLeadByConversation = new Map<string, CustomerLookup>();
@@ -5048,17 +5071,24 @@ app.get('/api/businesses/:businessId/conversations', async (req, res) => {
 
         grouped.set(key, {
           id: key,
-          customerName: customer?.name || `Customer ${rawUserId.slice(-6)}`,
+          customerName:
+            customer?.name ||
+            formatCustomerFallback(rawUserId, normalizedUserId, channel),
           channel,
           status,
           preview: '',
           updatedAt: createdAt,
+          unreadCount: 0,
           messages: [],
         });
       }
 
       const conversation = grouped.get(key);
       const messageText = String(row.message || '').trim();
+
+      if (author === 'customer' && row.is_read === false) {
+        conversation.unreadCount += 1;
+      }
 
       conversation.messages.push({
         id: String(row.id),

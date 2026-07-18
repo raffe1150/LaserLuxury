@@ -3419,3 +3419,13 @@ textarea.form-input{resize:vertical;min-height:140px;line-height:1.7;}
     display:none;
   }
 }
+
+
+/* SMART INBOX — REMOVE REDUNDANT CHANNEL BADGE */
+.conversation-detail-head{
+  justify-content:flex-start;
+}
+
+.conversation-detail-identity{
+  width:100%;
+}

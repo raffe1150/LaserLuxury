@@ -483,10 +483,10 @@ function MissionControl({
             detail={bookingCount > 0 ? 'Created directly by OdinLink' : 'No appointments booked yet'}
           />
           <ImpactMetric
-            eyebrow="ESTIMATED VALUE"
+            eyebrow="BUSINESS VALUE"
             value={estimatedStaffValue.toLocaleString('sv-SE')}
-            label="Estimated value today"
-            detail={`${estimatedStaffValue.toLocaleString('sv-SE')} SEK · ${formatMinutes(estimatedMinutesSaved)} staff time saved`}
+            label="Value created today"
+            detail={`≈ ${formatMinutesLong(estimatedMinutesSaved)} returned to your team`}
             accent
           />
         </div>
@@ -494,12 +494,12 @@ function MissionControl({
         <div className="mission-value-strip compact">
           <div className="mission-value-icon">↗</div>
           <div className="mission-value-main">
-            <span>Estimated value created today</span>
+            <span>Value created today</span>
             <strong>{estimatedStaffValue.toLocaleString('sv-SE')} <em>SEK</em></strong>
           </div>
           <div className="mission-value-detail">
-            <span>{formatMinutes(estimatedMinutesSaved)} staff time saved</span>
-            <small>Calculated at 300 SEK/hour</small>
+            <span>≈ {formatMinutesLong(estimatedMinutesSaved)} back</span>
+            <small>Calculated using your hourly value</small>
           </div>
         </div>
       </div>

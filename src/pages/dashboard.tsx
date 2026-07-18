@@ -408,9 +408,9 @@ function MissionControl({
           <div className="hero-results-block">
             <div className="hero-results-label">TODAY’S RESULTS</div>
             <div className="hero-result-grid">
-              <HeroResult value={String(totalConversations)} label="Customers helped" />
-              <HeroResult value={String(bookingCount)} label="Appointments booked" />
-              <HeroResult value={formatMinutes(estimatedMinutesSaved)} label="Team time saved" />
+              <HeroResult icon="customers" value={String(totalConversations)} label="Customers helped" />
+              <HeroResult icon="bookings" value={String(bookingCount)} label="Appointments booked" />
+              <HeroResult icon="time" value={formatMinutesLong(estimatedMinutesSaved)} label="Staff time saved" />
             </div>
           </div>
         </div>
@@ -531,11 +531,24 @@ function MissionControl({
   );
 }
 
-function HeroResult({ value, label }: { value: string; label: string }) {
+function HeroResult({
+  icon,
+  value,
+  label,
+}: {
+  icon: 'customers' | 'bookings' | 'time';
+  value: string;
+  label: string;
+}) {
   return (
     <div className="hero-result-item">
-      <strong>{value}</strong>
-      <span>{label}</span>
+      <div className={`hero-result-icon ${icon}`} aria-hidden="true">
+        {icon === 'customers' ? '●●' : icon === 'bookings' ? '□' : '◷'}
+      </div>
+      <div className="hero-result-copy">
+        <strong>{value}</strong>
+        <span>{label}</span>
+      </div>
     </div>
   );
 }
@@ -622,6 +635,13 @@ function formatMinutes(minutes: number) {
   const hours = Math.floor(minutes / 60);
   const remaining = minutes % 60;
   return remaining ? `${hours}h ${remaining}m` : `${hours}h`;
+}
+
+function formatMinutesLong(minutes: number) {
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  const remaining = minutes % 60;
+  return remaining ? `${hours} hr ${remaining} min` : `${hours} hr`;
 }
 
 function BusinessesCard({

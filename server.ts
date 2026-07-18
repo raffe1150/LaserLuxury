@@ -1856,6 +1856,298 @@ async function startAllBusinessTelegramPollers() {
   }
 }
 
+
+type UnifiedBookingSend = (text: string) => Promise<any>;
+
+async function handleUnifiedBookingEngine(params: {
+  sessionId: string;
+  platformName: "whatsapp" | "messenger" | "instagram" | "telegram";
+  platformLogName: string;
+  recipientUserId: string;
+  text: string;
+  history: any[];
+  businessConfig: any;
+  send: UnifiedBookingSend;
+  postProcessPlatform: string;
+}): Promise<boolean> {
+  const {
+    sessionId,
+    platformName,
+    platformLogName,
+    recipientUserId,
+    text,
+    history,
+    businessConfig,
+    send,
+    postProcessPlatform
+  } = params;
+
+  if (!text) return false;
+
+  const language = getConversationLanguage(sessionId, text);
+  let pending = await loadPendingBooking(sessionId, platformName, businessConfig);
+
+  const replyAndRecord = async (reply: string) => {
+    await send(reply);
+    appendLocalHistory(sessionId, text, reply);
+    await postProcessMessage(
+      recipientUserId,
+      postProcessPlatform,
+      text,
+      reply,
+      businessConfig?.telegramToken,
+      businessConfig?.apiKey,
+      getBusinessIdFromConfig(businessConfig)
+    );
+  };
+
+  try {
+    if (pending && isNewBookingRequestText(text)) {
+      console.log(`[UnifiedBooking] Clearing stale pending platform=${platformName}, session=${sessionId}`);
+      await clearPendingBooking(sessionId);
+      pending = null;
+    }
+
+    if (!pending && isExistingAppointmentLookupIntent(text)) {
+      const adapter = getCalendarAdapter(businessConfig);
+      const lookupResult = await findCustomerAppointments(
+        adapter,
+        {},
+        recipientUserId,
+        platformName
+      );
+      const reply = formatAppointmentLookupReply(lookupResult, language);
+      console.log(`[UnifiedBooking] Lookup platform=${platformName}, found=${Boolean(lookupResult?.found)}`);
+      await replyAndRecord(reply);
+      return true;
+    }
+
+    const completed = getRecentCompletedBooking(sessionId);
+    if (!pending && completed && isThanksOnlyText(text)) {
+      await replyAndRecord(formatThanksReply(completed.language || language, completed.name));
+      return true;
+    }
+
+    const explicitDate = resolveExplicitBookingDate(text);
+    if (explicitDate && isBookingConversationContext(text, history)) {
+      const adapter = getCalendarAdapter(businessConfig);
+      const durationMinutes = inferBookingDurationFromContext(text, history);
+      const requestedTime = inferRequestedTimeFromText(text) || undefined;
+
+      console.log(
+        `[UnifiedBooking] Date resolved platform=${platformName}, text=${JSON.stringify(text)}, date=${explicitDate}, duration=${durationMinutes}, time=${requestedTime || "none"}`
+      );
+
+      const result = await adapter.checkSlots(
+        explicitDate,
+        explicitDate,
+        durationMinutes,
+        requestedTime
+      );
+      const slots = getSlotsArray(result);
+      const reply = formatSwedishTimeSlots(slots, requestedTime, language);
+
+      if (slots.length > 0) {
+        const exactIso = requestedTime ? findOfferedSlotIso(slots, requestedTime) : null;
+        await savePendingBooking(sessionId, platformName, {
+          businessConfig,
+          platform: platformName,
+          service: inferServiceFromRecentContext(text, history),
+          selectedDate: explicitDate,
+          offeredSlots: slots,
+          dateTime: exactIso,
+          durationMinutes,
+          language,
+          status: exactIso ? "awaiting_confirmation" : "awaiting_time_selection"
+        });
+      } else {
+        await clearPendingBooking(sessionId);
+      }
+
+      await replyAndRecord(reply);
+      return true;
+    }
+
+    if (pending?.status === "awaiting_time_selection") {
+      const selectedTime = inferRequestedTimeFromText(text);
+      const selectedIso = findOfferedSlotIso(
+        Array.isArray(pending.offeredSlots) ? pending.offeredSlots : [],
+        selectedTime || undefined
+      );
+
+      if (selectedTime && selectedIso) {
+        const adapter = getCalendarAdapter(businessConfig);
+        const selectedDate = String(pending.selectedDate || selectedIso.slice(0, 10));
+        const fresh = await adapter.checkSlots(
+          selectedDate,
+          selectedDate,
+          Number(pending.durationMinutes || 60),
+          selectedTime
+        );
+        const freshSlots = getSlotsArray(fresh);
+        const freshIso = findOfferedSlotIso(freshSlots, selectedTime);
+
+        if (!freshIso) {
+          pending.offeredSlots = freshSlots;
+          await savePendingBooking(sessionId, platformName, pending);
+          await replyAndRecord(
+            formatSwedishTimeSlots(
+              freshSlots,
+              selectedTime,
+              pending.language || language
+            )
+          );
+          return true;
+        }
+
+        pending.dateTime = freshIso;
+        pending.offeredSlots = freshSlots;
+        pending.language = pending.language || language;
+        pending.status = "awaiting_contact";
+        await savePendingBooking(sessionId, platformName, pending);
+
+        console.log(`[UnifiedBooking] Slot revalidated platform=${platformName}, iso=${freshIso}`);
+        await replyAndRecord(formatAskContactMessage(pending.language || language));
+        return true;
+      }
+    }
+
+    if (pending && isPendingSlotConfirmation(text, pending)) {
+      // Recheck once more before requesting personal details.
+      const dateTime = String(pending.dateTime || "");
+      const selectedTime = inferRequestedTimeFromText(dateTime);
+      const selectedDate = String(pending.selectedDate || dateTime.slice(0, 10));
+
+      if (dateTime && selectedTime && selectedDate) {
+        const adapter = getCalendarAdapter(businessConfig);
+        const fresh = await adapter.checkSlots(
+          selectedDate,
+          selectedDate,
+          Number(pending.durationMinutes || 60),
+          selectedTime
+        );
+        const freshIso = findOfferedSlotIso(getSlotsArray(fresh), selectedTime);
+
+        if (!freshIso) {
+          const freshSlots = getSlotsArray(fresh);
+          pending.status = "awaiting_time_selection";
+          pending.offeredSlots = freshSlots;
+          pending.dateTime = null;
+          await savePendingBooking(sessionId, platformName, pending);
+          await replyAndRecord(
+            formatSwedishTimeSlots(
+              freshSlots,
+              selectedTime,
+              pending.language || language
+            )
+          );
+          return true;
+        }
+
+        pending.dateTime = freshIso;
+      }
+
+      pending.status = "awaiting_contact";
+      pending.language = pending.language || language;
+      await savePendingBooking(sessionId, platformName, pending);
+      await replyAndRecord(formatAskContactMessage(pending.language || language));
+      return true;
+    }
+
+    const contact = extractNameAndPhone(text);
+    if (pending && contact && pending.status === "awaiting_contact") {
+      if (!pending.dateTime) {
+        console.error(`[UnifiedBooking] Missing dateTime before insert platform=${platformName}`);
+        await clearPendingBooking(sessionId);
+        await replyAndRecord(getErrorMessageByLanguage(pending.language || language));
+        return true;
+      }
+
+      const adapter = getCalendarAdapter(businessConfig);
+      const selectedTime = inferRequestedTimeFromText(pending.dateTime);
+      const selectedDate = String(pending.selectedDate || String(pending.dateTime).slice(0, 10));
+
+      // Final race-condition check immediately before insert.
+      const fresh = await adapter.checkSlots(
+        selectedDate,
+        selectedDate,
+        Number(pending.durationMinutes || 60),
+        selectedTime || undefined
+      );
+      const finalIso = selectedTime
+        ? findOfferedSlotIso(getSlotsArray(fresh), selectedTime)
+        : null;
+
+      if (!finalIso) {
+        pending.status = "awaiting_time_selection";
+        pending.offeredSlots = getSlotsArray(fresh);
+        pending.dateTime = null;
+        await savePendingBooking(sessionId, platformName, pending);
+        await replyAndRecord(
+          formatSwedishTimeSlots(
+            pending.offeredSlots,
+            selectedTime || undefined,
+            pending.language || language
+          )
+        );
+        return true;
+      }
+
+      const result = await adapter.insertAppointment(
+        contact.name,
+        contact.phone,
+        pending.service || "Booking",
+        finalIso,
+        Number(pending.durationMinutes || 60),
+        recipientUserId
+      );
+
+      if (!result?.success) {
+        console.error(`[UnifiedBooking] Calendar insert failed platform=${platformName}:`, JSON.stringify(result));
+        await replyAndRecord(getErrorMessageByLanguage(pending.language || language));
+        return true;
+      }
+
+      await recordAppointmentFromBooking({
+        businessConfig,
+        platform: platformName,
+        userId: recipientUserId,
+        name: contact.name,
+        phone: contact.phone,
+        service: pending.service || "Booking",
+        dateTime: finalIso,
+        durationMinutes: Number(pending.durationMinutes || 60)
+      });
+
+      await clearPendingBooking(sessionId);
+      rememberCompletedBooking(sessionId, pending.language || language, contact.name);
+      await notifyAdminAboutBooking(
+        businessConfig,
+        platformLogName,
+        businessConfig.businessName || businessConfig.business_name || "business",
+        contact.name,
+        contact.phone,
+        finalIso
+      );
+
+      await replyAndRecord(
+        formatBookingSavedMessage(
+          pending.language || language,
+          contact.name,
+          pending.service || "Booking",
+          finalIso
+        )
+      );
+      return true;
+    }
+
+    return false;
+  } catch (error) {
+    console.error(`[UnifiedBooking] crashed platform=${platformName}:`, error);
+    return false;
+  }
+}
+
 async function processTelegramUpdate(update: any, config: any, platform: string = "telegram-polling") {
   const telegramToken = config?.telegramToken;
   if (!telegramToken) return;
@@ -1923,6 +2215,28 @@ async function processTelegramUpdate(update: any, config: any, platform: string 
       return; // Ignore other types
     }
     
+    if (text) {
+      const unifiedHandled = await handleUnifiedBookingEngine({
+        sessionId: telegramSessionId,
+        platformName: "telegram",
+        platformLogName: "Telegram",
+        recipientUserId: chatId.toString(),
+        text,
+        history,
+        businessConfig: config,
+        send: async (reply) => {
+          const response = await fetch(`https://api.telegram.org/bot${telegramToken}/sendMessage`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ chat_id: chatId, text: reply })
+          });
+          return response.ok;
+        },
+        postProcessPlatform: platform
+      });
+      if (unifiedHandled) return;
+    }
+
     const completedBooking = getRecentCompletedBooking(telegramSessionId);
     if (text && completedBooking && isThanksOnlyText(text || "")) {
       const thanksText = formatThanksReply(completedBooking.language || getLockedReplyLanguage(telegramSessionId, text), completedBooking.name);
@@ -3075,6 +3389,19 @@ async function processWhatsAppMessage(message: any, metadata: any, config: any, 
       return;
     }
 
+    const unifiedHandled = await handleUnifiedBookingEngine({
+      sessionId: chatId,
+      platformName: "whatsapp",
+      platformLogName: "WhatsApp",
+      recipientUserId: from,
+      text: textMessage,
+      history,
+      businessConfig,
+      send: (reply) => sendWhatsAppMessage(from, reply, businessConfig),
+      postProcessPlatform: platform
+    });
+    if (unifiedHandled) return;
+
     const messages = [...history];
     messages.push({ role: "user", content: textMessage });
 
@@ -3940,6 +4267,22 @@ async function processMessengerUpdate(webhookEvent: any, config: any, platform: 
   resetSessionIfBusinessConfigChanged(chatId, businessConfig);
 
   try {
+    if (textMessage) {
+      if (!chatSessions[chatId as any]) chatSessions[chatId as any] = [];
+      const unifiedHandled = await handleUnifiedBookingEngine({
+        sessionId: chatId,
+        platformName: "messenger",
+        platformLogName: "Messenger",
+        recipientUserId: senderId,
+        text: textMessage,
+        history: chatSessions[chatId as any],
+        businessConfig,
+        send: (reply) => sendMessengerMessage(senderId, reply, businessConfig),
+        postProcessPlatform: platform
+      });
+      if (unifiedHandled) return;
+    }
+
     let pending = await loadPendingBooking(chatId, "messenger", businessConfig);
     const detectedLang = getConversationLanguage(chatId, textMessage || "");
 
@@ -4527,6 +4870,25 @@ async function processInstagramUpdate(webhook_event: any, config: any, platform:
     let userMessageContent: any = textMessage;
     let userMessageForLog = textMessage || '[Instagram Voice Message]';
     let isVoiceMessage = false;
+
+    if (textMessage) {
+      const unifiedHandled = await handleUnifiedBookingEngine({
+        sessionId: chatId,
+        platformName: "instagram",
+        platformLogName: "Instagram",
+        recipientUserId: senderId,
+        text: textMessage,
+        history,
+        businessConfig,
+        send: (reply) => sendInstagramMessage(
+          senderId,
+          reply,
+          getBusinessInstagramToken(businessConfig)
+        ),
+        postProcessPlatform: platform
+      });
+      if (unifiedHandled) return;
+    }
 
     const completedBooking = getRecentCompletedBooking(chatId);
     if (textMessage && completedBooking && isThanksOnlyText(textMessage || "")) {

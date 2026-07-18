@@ -217,32 +217,23 @@ export default function ConversationsPanel({
 
   return (
     <section id="conversations" className="card dashboard-section">
-      <div className="card-header">
-        <div>
-          <div className="conversation-panel-heading">
-            <div className="conversation-panel-kicker">LIVE CUSTOMER ACTIVITY</div>
-            <div className="card-title">OdinLink Inbox</div>
-            <div className="card-desc">
-              Review conversations handled by OdinLink and step in only when needed.
-            </div>
-          </div>
+      <div className="conversation-toolbar">
+        <div className="conversation-toolbar-stats">
+          <span className="conversation-toolbar-stat active">
+            <i aria-hidden="true" />
+            {localConversations.length} active
+          </span>
+          <span className="conversation-toolbar-stat">
+            {unreadCounts.all} unread
+          </span>
         </div>
 
-        <div className="conversation-header-actions">
-          <div className="conversation-overview-chip">
-            <span className="conversation-overview-dot" />
-            {localConversations.length} active
-          </div>
-          <div className="conversation-overview-chip muted">
-            {unreadCounts.all} unread
-          </div>
-          <input
+        <input
           className="form-input dashboard-search"
           value={query}
           onChange={(event) => setQuery(event.target.value)}
           placeholder="Search customers..."
         />
-        </div>
       </div>
 
       <div className="conversation-channel-tabs">

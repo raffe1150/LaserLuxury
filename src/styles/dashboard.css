@@ -1803,3 +1803,8 @@ textarea.form-input{resize:vertical;min-height:140px;line-height:1.7;}
   .action-center{grid-template-columns:1fr;}
   .mission-action-button{padding-left:0;}
 }
+
+/* Sidebar scroll navigation: prevent section headings from hiding under the top bar. */
+.dashboard-page [id] {
+  scroll-margin-top: 24px;
+}

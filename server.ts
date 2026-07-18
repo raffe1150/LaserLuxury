@@ -1242,6 +1242,11 @@ function getRecentCompletedBooking(chatId: string) {
 
 function inferServiceFromText(text?: string): string {
   const raw = String(text || "").toLowerCase();
+
+  if (
+    /\b(konsultation|consultation|consulting|consult|konsultasjon|konsultasion|konsiltation|konstitution|knstilution|moshavere|mashavere|مشاوره)\b/i.test(raw)
+  ) return "Konsultation";
+
   if (raw.includes("bikini")) return "Bikinilinjebehandling";
   if (raw.includes("helkropp") || raw.includes("hel kropp") || raw.includes("full body") || raw.includes("fullbody") || raw.includes("full-body") || raw.includes("hellkropp") || raw.includes("helkrop")) return "Helkropp laserbehandling";
   if (raw.includes("laser")) return "Laserbehandling";
@@ -1352,6 +1357,121 @@ function extractNameAndPhone(text?: string): { name: string; phone: string } | n
   return null;
 }
 
+
+function extractPhoneOnly(text?: string): string | null {
+  const raw = String(text || "").trim();
+  if (!raw) return null;
+
+  const match = raw.match(/(?:\+?\d[\d\s\-()]{6,}\d)/);
+  if (!match) return null;
+
+  const phone = match[0].replace(/[^\d+]/g, "");
+  return phone.replace(/\D/g, "").length >= 7 ? phone : null;
+}
+
+function extractNameOnly(text?: string): string | null {
+  const raw = String(text || "").trim();
+  if (!raw) return null;
+
+  const patterns: RegExp[] = [
+    /(?:mitt\s+namn\s+är|jag\s+heter)\s+([A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,}(?:\s+[A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,})?)/i,
+    /(?:my\s+name\s+is|name\s+is)\s+([A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,}(?:\s+[A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,})?)/i,
+    /(?:mein\s+name\s+ist|ich\s+hei(?:ß|ss)e)\s+([A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,}(?:\s+[A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,})?)/i,
+    /(?:mi\s+nombre\s+es|me\s+llamo)\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ'-]{2,}(?:\s+[A-Za-zÁÉÍÓÚÜÑáéíóúüñ'-]{2,})?)/i,
+    /(?:esme?\s+man|esmam|namam|name\s+man)\s+([A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,}(?:\s+[A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,})?)/i,
+    /(?:نام(?:م)?|اسم(?:م)?)\s+([\u0600-\u06FF]{2,}(?:\s+[\u0600-\u06FF]{2,})?)/u,
+    /(?:اسمي|إسمي|انا اسمي|أنا اسمي|الاسم)\s+([\u0600-\u06FF]{2,})(?=\s+(?:و|ورقم|وهاتفي|رقمي|هاتفي|هو)|\s*$)/u
+  ];
+
+  for (const pattern of patterns) {
+    const match = raw.match(pattern);
+    if (!match?.[1]) continue;
+    const cleaned = cleanCustomerNameCandidate(match[1]);
+    if (cleaned) return cleaned;
+    if (/[\u0600-\u06FF]/.test(match[1])) return match[1].trim();
+  }
+
+  // Accept a short standalone person name while collecting contact details.
+  if (
+    /^[A-Za-zÅÄÖåäöÉéÜüÖöÄäÁáÍíÓóÚúÑñÇçŞşĞğ'\-]{2,}(?:\s+[A-Za-zÅÄÖåäöÉéÜüÖöÄäÁáÍíÓóÚúÑñÇçŞşĞğ'\-]{2,})?$/.test(raw)
+  ) {
+    const blocked = /^(konsultation|consultation|bokning|booking|laser|bikini|ja|nej|yes|no|tack|thanks)$/i;
+    if (!blocked.test(raw)) {
+      return raw
+        .split(/\s+/)
+        .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+        .join(" ");
+    }
+  }
+
+  return null;
+}
+
+function normalizeBookingService(text?: string, fallback?: string): string {
+  const inferred = inferServiceFromText(text);
+  if (inferred !== "Bokning") return inferred;
+
+  const existing = String(fallback || "").trim();
+  return existing || "Bokning";
+}
+
+function getWhatsAppConversationPhone(platformName: string, recipientUserId: string): string | null {
+  if (platformName !== "whatsapp") return null;
+  const digits = String(recipientUserId || "").replace(/\D/g, "");
+  return digits.length >= 7 ? `+${digits}` : null;
+}
+
+function formatMissingBookingDetailsMessage(
+  language: string,
+  missing: Array<"name" | "phone" | "service">
+): string {
+  const needsName = missing.includes("name");
+  const needsPhone = missing.includes("phone");
+  const needsService = missing.includes("service");
+
+  if (language === "fa") {
+    if (needsName && needsPhone) return "برای نهایی‌کردن رزرو فقط نام و شماره موبایل‌تان را بفرستید. 😊";
+    if (needsName) return "فقط نام‌تان را بفرستید تا رزرو را نهایی کنم. 😊";
+    if (needsPhone) return "فقط شماره موبایل‌تان را بفرستید تا رزرو را نهایی کنم. 😊";
+    if (needsService) return "لطفاً بفرمایید کدام خدمت را می‌خواهید رزرو کنید. 😊";
+  }
+
+  if (language === "en") {
+    if (needsName && needsPhone) return "To finish the booking, I only need your name and mobile number. 😊";
+    if (needsName) return "I only need your name to finish the booking. 😊";
+    if (needsPhone) return "I only need your mobile number to finish the booking. 😊";
+    if (needsService) return "Which service would you like to book? 😊";
+  }
+
+  if (language === "de") {
+    if (needsName && needsPhone) return "Zum Abschluss brauche ich nur Ihren Namen und Ihre Mobilnummer. 😊";
+    if (needsName) return "Ich brauche nur noch Ihren Namen. 😊";
+    if (needsPhone) return "Ich brauche nur noch Ihre Mobilnummer. 😊";
+    if (needsService) return "Welche Behandlung möchten Sie buchen? 😊";
+  }
+
+  if (language === "es") {
+    if (needsName && needsPhone) return "Para finalizar, solo necesito tu nombre y número de móvil. 😊";
+    if (needsName) return "Solo necesito tu nombre para finalizar la reserva. 😊";
+    if (needsPhone) return "Solo necesito tu número de móvil para finalizar la reserva. 😊";
+    if (needsService) return "¿Qué servicio quieres reservar? 😊";
+  }
+
+  if (language === "ar") {
+    if (needsName && needsPhone) return "لإتمام الحجز، أحتاج فقط اسمك ورقم هاتفك. 😊";
+    if (needsName) return "أحتاج فقط اسمك لإتمام الحجز. 😊";
+    if (needsPhone) return "أحتاج فقط رقم هاتفك لإتمام الحجز. 😊";
+    if (needsService) return "ما الخدمة التي تريد حجزها؟ 😊";
+  }
+
+  if (needsName && needsPhone) return "För att slutföra bokningen behöver jag bara ditt namn och mobilnummer. 😊";
+  if (needsName) return "Jag behöver bara ditt namn för att slutföra bokningen. 😊";
+  if (needsPhone) return "Jag behöver bara ditt mobilnummer för att slutföra bokningen. 😊";
+  if (needsService) return "Vilken tjänst vill du boka? 😊";
+
+  return "Jag har allt jag behöver för att slutföra bokningen. 😊";
+}
+
 async function savePendingBooking(chatId: string, platform: string, pending: any) {
   pending.createdAt = pending.createdAt || Date.now();
   pendingBookings[chatId] = pending;
@@ -1365,6 +1485,8 @@ async function savePendingBooking(chatId: string, platform: string, pending: any
       selectedDate: pending.selectedDate || null,
       offeredSlots: Array.isArray(pending.offeredSlots) ? pending.offeredSlots : [],
       language: pending.language || null,
+      customerName: pending.customerName || null,
+      customerPhone: pending.customerPhone || null,
       durationMinutes: pending.durationMinutes,
       status: pending.status,
       createdAt: pending.createdAt || Date.now(),
@@ -1427,6 +1549,8 @@ async function loadPendingBooking(chatId: string, platform: string, businessConf
       selectedDate: parsed.selectedDate || null,
       offeredSlots: Array.isArray(parsed.offeredSlots) ? parsed.offeredSlots : [],
       language: parsed.language || null,
+      customerName: parsed.customerName || null,
+      customerPhone: parsed.customerPhone || null,
       durationMinutes: Number(parsed.durationMinutes || 60),
       status: parsed.status || "awaiting_contact",
       createdAt: Number(parsed.createdAt || parsed.created_at || 0)
@@ -1559,13 +1683,18 @@ function inferBookingDurationFromContext(text: string, history: any[]): number {
     text || ""
   ].join(" ").toLowerCase();
 
+  // AdMotion Studio consultations always have a fixed 30-minute duration.
+  // This rule intentionally wins over any generic duration question or guessed value.
+  if (
+    /\b(konsultation|consultation|consulting|consult|konsultasjon|konsultasion|konsiltation|konstitution|knstilution|moshavere|mashavere|مشاوره)\b/i.test(combined)
+  ) return 30;
+
   const minuteMatch = combined.match(/(\d{1,3})\s*(?:min|minuter|minutes|دقیقه)/i);
   if (minuteMatch) {
     const value = Number(minuteMatch[1]);
     if (value >= 10 && value <= 240) return value;
   }
 
-  if (/\b(konsultation|consultation|consulting|مشاوره|moshavere)\b/i.test(combined)) return 30;
   return 60;
 }
 
@@ -1998,11 +2127,17 @@ async function handleUnifiedBookingEngine(params: {
         await savePendingBooking(sessionId, platformName, {
           businessConfig,
           platform: platformName,
-          service: inferServiceFromRecentContext(text, history),
+          service: normalizeBookingService(
+            [text, ...(history || []).slice(-10).map((item: any) => item?.content || "")].join(" "),
+            "Bokning"
+          ),
           selectedDate: explicitDate,
           offeredSlots: slots,
           dateTime: exactIso,
-          durationMinutes,
+          durationMinutes: normalizeBookingService(
+            [text, ...(history || []).slice(-10).map((item: any) => item?.content || "")].join(" "),
+            "Bokning"
+          ) === "Konsultation" ? 30 : durationMinutes,
           language,
           status: exactIso ? "awaiting_confirmation" : "awaiting_time_selection"
         });
@@ -2100,19 +2235,50 @@ async function handleUnifiedBookingEngine(params: {
       return true;
     }
 
-    const contact = extractNameAndPhone(text);
+    if (pending?.status === "awaiting_contact") {
+      const combinedContact = extractNameAndPhone(text);
+      const nameFromMessage = combinedContact?.name || extractNameOnly(text);
+      const phoneFromMessage = combinedContact?.phone || extractPhoneOnly(text);
+      const serviceFromMessage = normalizeBookingService(text, pending.service);
+      const phoneFromChannel = getWhatsAppConversationPhone(platformName, recipientUserId);
 
-    if (contact && (!pending || pending.status !== "awaiting_contact")) {
-      console.warn("[UnifiedBooking] Contact received without ready booking state", {
-        platform: platformName,
-        sessionId,
-        hasPending: Boolean(pending),
-        pendingStatus: pending?.status || null,
-        pendingDateTime: pending?.dateTime || null
-      });
-    }
+      if (nameFromMessage) pending.customerName = nameFromMessage;
+      if (phoneFromMessage) pending.customerPhone = phoneFromMessage;
+      if (!pending.customerPhone && phoneFromChannel) pending.customerPhone = phoneFromChannel;
+      if (serviceFromMessage !== "Bokning") pending.service = serviceFromMessage;
 
-    if (pending && contact && pending.status === "awaiting_contact") {
+      // Consultation is a fixed product: service and duration are deterministic.
+      const contextService = normalizeBookingService(
+        [
+          ...(history || []).slice(-10).map((item: any) =>
+            typeof item?.content === "string" ? item.content : ""
+          ),
+          text
+        ].join(" "),
+        pending.service
+      );
+
+      if (contextService === "Konsultation") {
+        pending.service = "Konsultation";
+        pending.durationMinutes = 30;
+      }
+
+      const missing: Array<"name" | "phone" | "service"> = [];
+      if (!pending.customerName) missing.push("name");
+      if (!pending.customerPhone) missing.push("phone");
+      if (!pending.service || pending.service === "Bokning") missing.push("service");
+
+      if (missing.length > 0) {
+        await savePendingBooking(sessionId, platformName, pending);
+        await replyAndRecord(
+          formatMissingBookingDetailsMessage(
+            pending.language || language,
+            missing
+          )
+        );
+        return true;
+      }
+
       if (!pending.dateTime) {
         console.error(`[UnifiedBooking] Missing dateTime before insert platform=${platformName}`);
         await clearPendingBooking(sessionId);
@@ -2122,13 +2288,15 @@ async function handleUnifiedBookingEngine(params: {
 
       const adapter = getCalendarAdapter(businessConfig);
       const selectedTime = inferRequestedTimeFromText(pending.dateTime);
-      const selectedDate = String(pending.selectedDate || String(pending.dateTime).slice(0, 10));
+      const selectedDate = String(
+        pending.selectedDate || String(pending.dateTime).slice(0, 10)
+      );
 
       // Final race-condition check immediately before insert.
       const fresh = await adapter.checkSlots(
         selectedDate,
         selectedDate,
-        Number(pending.durationMinutes || 60),
+        Number(pending.durationMinutes || 30),
         selectedTime || undefined
       );
       const finalIso = selectedTime
@@ -2151,16 +2319,19 @@ async function handleUnifiedBookingEngine(params: {
       }
 
       const result = await adapter.insertAppointment(
-        contact.name,
-        contact.phone,
-        pending.service || "Booking",
+        pending.customerName,
+        pending.customerPhone,
+        pending.service,
         finalIso,
-        Number(pending.durationMinutes || 60),
+        Number(pending.durationMinutes || 30),
         recipientUserId
       );
 
       if (!result?.success) {
-        console.error(`[UnifiedBooking] Calendar insert failed platform=${platformName}:`, JSON.stringify(result));
+        console.error(
+          `[UnifiedBooking] Calendar insert failed platform=${platformName}:`,
+          JSON.stringify(result)
+        );
         await replyAndRecord(getErrorMessageByLanguage(pending.language || language));
         return true;
       }
@@ -2169,29 +2340,33 @@ async function handleUnifiedBookingEngine(params: {
         businessConfig,
         platform: platformName,
         userId: recipientUserId,
-        name: contact.name,
-        phone: contact.phone,
-        service: pending.service || "Booking",
+        name: pending.customerName,
+        phone: pending.customerPhone,
+        service: pending.service,
         dateTime: finalIso,
-        durationMinutes: Number(pending.durationMinutes || 60)
+        durationMinutes: Number(pending.durationMinutes || 30)
       });
 
       await clearPendingBooking(sessionId);
-      rememberCompletedBooking(sessionId, pending.language || language, contact.name);
+      rememberCompletedBooking(
+        sessionId,
+        pending.language || language,
+        pending.customerName
+      );
       await notifyAdminAboutBooking(
         businessConfig,
         platformLogName,
         businessConfig.businessName || businessConfig.business_name || "business",
-        contact.name,
-        contact.phone,
+        pending.customerName,
+        pending.customerPhone,
         finalIso
       );
 
       await replyAndRecord(
         formatBookingSavedMessage(
           pending.language || language,
-          contact.name,
-          pending.service || "Booking",
+          pending.customerName,
+          pending.service,
           finalIso
         )
       );

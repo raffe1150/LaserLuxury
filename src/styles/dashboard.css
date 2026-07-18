@@ -2210,3 +2210,365 @@ textarea.form-input{resize:vertical;min-height:140px;line-height:1.7;}
   }
 }
 
+/* ─────────────────────────────────────────────────────────────
+   SPRINT 2 — COMPLETE MISSION CONTROL REDESIGN
+   Hero = what happened. Impact = why it matters.
+   ───────────────────────────────────────────────────────────── */
+
+.mission-control{
+  gap:18px;
+}
+
+.mission-hero{
+  align-items:stretch;
+  padding:28px 30px 27px;
+}
+
+.mission-hero-content{
+  display:flex;
+  min-width:0;
+  flex:1;
+  flex-direction:column;
+}
+
+.mission-greeting{
+  margin-bottom:4px;
+}
+
+.mission-hero h1{
+  max-width:900px;
+}
+
+.hero-results-block{
+  position:relative;
+  z-index:1;
+  width:min(720px,100%);
+  margin-top:20px;
+  padding-top:15px;
+  border-top:1px solid rgba(238,242,238,.075);
+}
+
+.hero-results-label{
+  margin-bottom:11px;
+  color:rgba(238,242,238,.38);
+  font-size:9.5px;
+  font-weight:800;
+  letter-spacing:.14em;
+}
+
+.hero-result-grid{
+  display:grid;
+  grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:10px;
+}
+
+.hero-result-item{
+  position:relative;
+  min-width:0;
+  padding:0 16px;
+  border-left:1px solid rgba(238,242,238,.075);
+}
+
+.hero-result-item:first-child{
+  padding-left:0;
+  border-left:0;
+}
+
+.hero-result-item strong{
+  display:block;
+  margin-bottom:3px;
+  font-family:'Syne',sans-serif;
+  color:var(--white);
+  font-size:24px;
+  font-weight:800;
+  line-height:1;
+  letter-spacing:-.035em;
+}
+
+.hero-result-item span{
+  display:block;
+  color:rgba(238,242,238,.55);
+  font-size:11.5px;
+  line-height:1.35;
+}
+
+.mission-hero-summary{
+  align-self:center;
+}
+
+.mission-impact-card{
+  padding:25px;
+  border-color:rgba(238,242,238,.075);
+  background:
+    radial-gradient(circle at 95% 0%,rgba(61,220,132,.045),transparent 28%),
+    linear-gradient(180deg,rgba(11,16,9,.96),rgba(8,13,9,.98));
+}
+
+.mission-impact-head{
+  display:grid;
+  grid-template-columns:minmax(0,1fr) auto;
+  align-items:center;
+  gap:26px;
+  margin-bottom:22px;
+}
+
+.mission-impact-copy{
+  max-width:650px;
+}
+
+.mission-impact-copy h2{
+  margin-top:5px;
+  font-size:24px;
+}
+
+.mission-impact-copy p{
+  margin-top:7px;
+  color:rgba(238,242,238,.45);
+  font-size:12.5px;
+  line-height:1.55;
+}
+
+.automation-score-card{
+  display:flex;
+  align-items:center;
+  gap:14px;
+  min-width:300px;
+  padding:12px 14px 12px 12px;
+  border:1px solid rgba(61,220,132,.14);
+  border-radius:16px;
+  background:rgba(61,220,132,.035);
+}
+
+.automation-score-card .automation-ring{
+  width:76px;
+  height:76px;
+  flex:0 0 76px;
+}
+
+.automation-score-card .automation-ring::before{
+  inset:7px;
+}
+
+.automation-score-card .automation-ring strong{
+  font-size:18px;
+}
+
+.automation-score-copy{
+  min-width:0;
+}
+
+.automation-score-copy > span{
+  display:block;
+  margin-bottom:4px;
+  color:rgba(238,242,238,.38);
+  font-size:8.75px;
+  font-weight:800;
+  letter-spacing:.13em;
+}
+
+.automation-score-copy > strong{
+  display:block;
+  margin-bottom:4px;
+  color:var(--green);
+  font-family:'Syne',sans-serif;
+  font-size:16px;
+  line-height:1.1;
+}
+
+.automation-score-copy > small{
+  display:block;
+  max-width:190px;
+  color:rgba(238,242,238,.48);
+  font-size:10px;
+  line-height:1.45;
+}
+
+.mission-metrics{
+  gap:10px;
+}
+
+.impact-metric{
+  min-height:164px;
+  padding:18px 17px;
+}
+
+.impact-metric-eyebrow{
+  margin-bottom:13px;
+}
+
+.impact-metric > strong{
+  margin-bottom:9px;
+  font-size:clamp(31px,2.6vw,39px);
+  white-space:nowrap;
+}
+
+.impact-metric.accent > strong{
+  font-size:clamp(32px,2.8vw,42px);
+}
+
+.impact-metric > span{
+  font-size:12px;
+}
+
+.impact-metric > small{
+  font-size:10.5px;
+}
+
+.mission-value-strip.compact{
+  display:grid;
+  grid-template-columns:auto minmax(0,1fr) auto;
+  align-items:center;
+  gap:12px;
+  margin-top:12px;
+  padding:11px 13px;
+  border-radius:12px;
+  background:
+    linear-gradient(90deg,rgba(61,220,132,.065),rgba(61,220,132,.018));
+}
+
+.mission-value-strip.compact .mission-value-icon{
+  width:34px;
+  height:34px;
+  border-radius:10px;
+}
+
+.mission-value-main{
+  min-width:0;
+}
+
+.mission-value-main > span{
+  display:block;
+  margin-bottom:2px;
+  color:rgba(238,242,238,.45);
+  font-size:9.5px;
+  font-weight:700;
+  letter-spacing:.05em;
+  text-transform:uppercase;
+}
+
+.mission-value-main > strong{
+  display:block;
+  color:var(--green);
+  font-family:'Syne',sans-serif;
+  font-size:18px;
+  line-height:1.1;
+}
+
+.mission-value-main > strong em{
+  color:rgba(61,220,132,.68);
+  font-size:10px;
+  font-style:normal;
+  font-weight:700;
+  letter-spacing:.08em;
+}
+
+.mission-value-detail{
+  text-align:right;
+}
+
+.mission-value-detail > span{
+  display:block;
+  margin-bottom:2px;
+  color:rgba(238,242,238,.67);
+  font-size:10.5px;
+  font-weight:600;
+}
+
+.mission-value-detail > small{
+  display:block;
+  color:rgba(238,242,238,.33);
+  font-size:9.5px;
+}
+
+@media(max-width:1050px){
+  .mission-impact-head{
+    grid-template-columns:1fr;
+  }
+
+  .automation-score-card{
+    width:100%;
+    min-width:0;
+  }
+}
+
+@media(max-width:760px){
+  .mission-hero{
+    padding:22px;
+  }
+
+  .hero-results-block{
+    margin-top:18px;
+  }
+
+  .hero-result-grid{
+    gap:0;
+  }
+
+  .hero-result-item{
+    padding:0 10px;
+  }
+
+  .hero-result-item strong{
+    font-size:21px;
+  }
+
+  .hero-result-item span{
+    font-size:10px;
+  }
+
+  .mission-impact-card{
+    padding:20px;
+  }
+
+  .mission-value-strip.compact{
+    grid-template-columns:auto 1fr;
+  }
+
+  .mission-value-detail{
+    grid-column:2;
+    text-align:left;
+  }
+}
+
+@media(max-width:520px){
+  .hero-result-grid{
+    grid-template-columns:1fr;
+    gap:10px;
+  }
+
+  .hero-result-item{
+    padding:0;
+    border-left:0;
+  }
+
+  .hero-result-item{
+    display:flex;
+    align-items:baseline;
+    justify-content:space-between;
+    gap:14px;
+    padding-bottom:9px;
+    border-bottom:1px solid rgba(238,242,238,.06);
+  }
+
+  .hero-result-item:last-child{
+    padding-bottom:0;
+    border-bottom:0;
+  }
+
+  .automation-score-card{
+    align-items:flex-start;
+  }
+
+  .mission-value-strip.compact{
+    grid-template-columns:1fr;
+  }
+
+  .mission-value-strip.compact .mission-value-icon{
+    display:none;
+  }
+
+  .mission-value-detail{
+    grid-column:auto;
+  }
+}
+

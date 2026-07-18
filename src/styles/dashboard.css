@@ -3429,3 +3429,58 @@ textarea.form-input{resize:vertical;min-height:140px;line-height:1.7;}
 .conversation-detail-identity{
   width:100%;
 }
+
+
+/* ─────────────────────────────────────────────────────────────
+   SMART INBOX — TRANSCRIPT SCROLL FIX
+   Keeps header/composer fixed and guarantees message scrolling
+   ───────────────────────────────────────────────────────────── */
+
+.conversation-layout{
+  min-height:0;
+}
+
+.conversation-detail{
+  display:flex !important;
+  flex-direction:column !important;
+  height:510px !important;
+  min-height:0 !important;
+  max-height:510px !important;
+  overflow:hidden !important;
+}
+
+.conversation-detail-head{
+  flex:0 0 auto !important;
+}
+
+.chat-transcript,
+#conversations .chat-transcript{
+  display:flex !important;
+  flex:1 1 0 !important;
+  flex-direction:column !important;
+  min-height:0 !important;
+  max-height:none !important;
+  overflow-x:hidden !important;
+  overflow-y:scroll !important;
+  overscroll-behavior-y:contain;
+  -webkit-overflow-scrolling:touch;
+  touch-action:pan-y;
+}
+
+.conversation-reply-box{
+  flex:0 0 auto !important;
+}
+
+@media(max-width:900px){
+  .conversation-detail{
+    height:520px !important;
+    max-height:520px !important;
+  }
+}
+
+@media(max-width:600px){
+  .conversation-detail{
+    height:500px !important;
+    max-height:500px !important;
+  }
+}

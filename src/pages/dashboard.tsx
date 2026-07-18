@@ -242,9 +242,9 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
             <section id="conversations" className="mission-section">
               <div className="mission-section-head">
                 <div>
-                  <div className="mission-eyebrow">SMART INBOX</div>
-                  <h2>Recent conversations</h2>
-                  <p>Only the four most recent customers are shown here, so the dashboard stays focused.</p>
+                  <div className="mission-eyebrow">ODINLINK INBOX</div>
+                  <h2>Customer conversations</h2>
+                  <p>See who OdinLink helped, what needs attention and the latest customer activity.</p>
                 </div>
                 <div className="mission-total-pill">
                   {data.conversations.length} total
@@ -260,7 +260,7 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
                 <div className="more-conversations-card">
                   <div>
                     <strong>+{data.conversations.length - 4} more conversations</strong>
-                    <span>Your full customer history is safely available in OdinLink.</span>
+                    <span>Open the full inbox to review every customer interaction.</span>
                   </div>
                   <button
                     className="mission-link-button"

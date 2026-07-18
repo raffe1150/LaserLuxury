@@ -1455,6 +1455,54 @@ function getExactSlotIso(slotsArray: string[], requestedTime?: string): string |
   return null;
 }
 
+
+function isExistingAppointmentLookupIntent(text?: string): boolean {
+  const raw = String(text || "").trim().toLowerCase();
+  if (!raw) return false;
+
+  const lookupPatterns = [
+    /\b(do i|did i|have i|can you check|check if i).*(appointment|booking|booked)\b/i,
+    /\b(when is|what time is).*(appointment|booking)\b/i,
+    /\b(jag har|har jag|kan du kolla|kan du kontrollera).*(tid|bokning|bokat)\b/i,
+    /\b(har jag en tid|har jag bokat|när är min tid|när är min bokning)\b/i,
+    /\b(aya|آیا|میشه|می‌شود|میتونی|می‌تونی|mitoni|mishe).*(vaght|وقت|رزرو|booking|boka).*(daram|دارم|kardam|کردم|ya na|یا نه)\b/i,
+    /\b(nemidonam|نمی.?دونم|motmaen nistam|مطمئن نیستم).*(vaght|وقت|رزرو|booking|boka)\b/i,
+    /\b(habe ich|kannst du prüfen|wann ist).*(termin|buchung)\b/i,
+    /\b(tengo|puedes comprobar|cuándo es).*(cita|reserva)\b/i,
+    /(هل لدي|هل حجزت|متى موعدي|تحقق من موعدي)/i
+  ];
+
+  return lookupPatterns.some((pattern) => pattern.test(raw));
+}
+
+function isPendingSlotConfirmation(text: string | undefined, pending: any): boolean {
+  if (!pending || pending.status !== "awaiting_confirmation") return false;
+
+  const raw = String(text || "").trim();
+  if (!raw) return false;
+
+  if (isAffirmativeBookingText(raw)) return true;
+
+  const selectedTime = inferRequestedTimeFromText(raw);
+  if (!selectedTime) return false;
+
+  const pendingDate = new Date(ensureStockholmOffset(pending.dateTime));
+  if (Number.isNaN(pendingDate.getTime())) return false;
+
+  const pendingTime = pendingDate.toLocaleTimeString("sv-SE", {
+    timeZone: "Europe/Stockholm",
+    hour: "2-digit",
+    minute: "2-digit"
+  });
+
+  if (selectedTime !== pendingTime) return false;
+
+  // A customer repeating the offered time with normal confirmation wording
+  // must count as confirmation, even without words such as "yes" or "ok".
+  return /\b(khube|khob|good|works|fine|passar|bra|går bra|okej|ok|mitonam|می.?تونم|خوبه|مناسبه|باشه|بله|آره|yes|ja|vale|bien|gut)\b/i.test(raw)
+    || raw.replace(/\s+/g, "") === selectedTime.replace(":", "");
+}
+
 function formatAskContactMessage(language: string = "sv"): string {
   if (language === "fa") return "حتماً 😊 برای رزرو، لطفاً نام و شماره موبایل‌تان را بفرستید.";
   if (language === "es") return "Perfecto 😊 Para reservar, necesito tu nombre y número de móvil.";
@@ -3800,6 +3848,37 @@ async function processMessengerUpdate(webhookEvent: any, config: any, platform: 
       pending = null;
     }
 
+    // Existing-booking questions are handled deterministically.
+    // This prevents the assistant from sending "please wait" and then never delivering
+    // the calendar result until the customer messages again.
+    if (!pending && textMessage && isExistingAppointmentLookupIntent(textMessage)) {
+      const adapter = getCalendarAdapter(businessConfig);
+      const lookupResult = await findCustomerAppointments(
+        adapter,
+        {},
+        chatId.toString(),
+        "messenger"
+      );
+      const lookupReply = formatAppointmentLookupReply(lookupResult, detectedLang);
+
+      console.log(
+        `[AppointmentLookup] Messenger deterministic result chatId=${chatId}, found=${Boolean(lookupResult?.found)}, count=${lookupResult?.appointments?.length || 0}`
+      );
+
+      await sendMessengerMessage(senderId, lookupReply, businessConfig);
+      appendLocalHistory(chatId, textMessage || "", lookupReply);
+      await postProcessMessage(
+        chatId,
+        platform,
+        textMessage,
+        lookupReply,
+        businessConfig?.telegramToken,
+        businessConfig?.apiKey,
+        getBusinessIdFromConfig(businessConfig)
+      );
+      return;
+    }
+
     const completedBooking = getRecentCompletedBooking(chatId);
     if (!pending && completedBooking && isThanksOnlyText(textMessage || "")) {
       const thanksText = formatThanksReply(completedBooking.language || detectedLang, completedBooking.name);
@@ -3809,11 +3888,11 @@ async function processMessengerUpdate(webhookEvent: any, config: any, platform: 
       return;
     }
 
-    if (pending && textMessage && isAffirmativeBookingText(textMessage) && pending.status === "awaiting_confirmation") {
+    if (pending && textMessage && isPendingSlotConfirmation(textMessage, pending)) {
       pending.status = "awaiting_contact";
       await savePendingBooking(chatId, "messenger", pending);
       const askText = formatAskContactMessage(detectedLang);
-      console.log(`[DeterministicBooking] Messenger confirmation received. Awaiting contact. chatId=${chatId}`);
+      console.log(`[DeterministicBooking] Messenger slot confirmed. Awaiting contact. chatId=${chatId}, dateTime=${pending.dateTime}`);
       await sendMessengerMessage(senderId, askText, businessConfig);
       appendLocalHistory(chatId, textMessage || "", askText);
       await postProcessMessage(chatId, platform, textMessage, askText, businessConfig?.telegramToken, businessConfig?.apiKey, getBusinessIdFromConfig(businessConfig));

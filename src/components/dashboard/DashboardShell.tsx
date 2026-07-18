@@ -11,10 +11,10 @@ interface DashboardShellProps {
   children: ReactNode;
 }
 
-const navigationItems = [
-  { id: 'overview', label: 'Dashboard' },
+const NAV_ITEMS = [
+  { id: 'overview', label: 'Dashboard', group: 'Overview' },
   { id: 'health', label: 'Health' },
-  { id: 'conversations', label: 'Conversations' },
+  { id: 'conversations', label: 'Conversations', group: 'Management' },
   { id: 'bookings', label: 'Bookings' },
   { id: 'businesses', label: 'Businesses' },
   { id: 'business-settings', label: 'Business Settings' },
@@ -37,65 +37,53 @@ export default function DashboardShell({
   const [activeSection, setActiveSection] = useState('overview');
 
   useEffect(() => {
-    const scrollContainer = document.querySelector<HTMLElement>('.dashboard-page .content');
+    // A previous URL hash must not leave Health (or another item) selected after reload.
+    if (window.location.hash) {
+      window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
+    }
 
-    if (!scrollContainer) return;
-
-    const sections = navigationItems
-      .map((item) => document.getElementById(item.id))
-      .filter((section): section is HTMLElement => Boolean(section));
-
-    if (sections.length === 0) return;
+    const content = document.querySelector<HTMLElement>('.dashboard-page .content');
+    if (!content) return;
 
     const updateActiveSection = () => {
-      const containerTop = scrollContainer.getBoundingClientRect().top;
-      const activationPoint = containerTop + Math.min(180, scrollContainer.clientHeight * 0.28);
-      let currentSection = sections[0].id;
+      const contentTop = content.getBoundingClientRect().top;
+      const activationLine = contentTop + 150;
+      let current = 'overview';
 
-      for (const section of sections) {
-        if (section.getBoundingClientRect().top <= activationPoint) {
-          currentSection = section.id;
-        } else {
-          break;
+      for (const item of NAV_ITEMS) {
+        const section = document.getElementById(item.id);
+        if (!section) continue;
+
+        if (section.getBoundingClientRect().top <= activationLine) {
+          current = item.id;
         }
       }
 
-      setActiveSection(currentSection);
+      setActiveSection(current);
     };
 
     updateActiveSection();
-    scrollContainer.addEventListener('scroll', updateActiveSection, { passive: true });
+    content.addEventListener('scroll', updateActiveSection, { passive: true });
     window.addEventListener('resize', updateActiveSection);
 
     return () => {
-      scrollContainer.removeEventListener('scroll', updateActiveSection);
+      content.removeEventListener('scroll', updateActiveSection);
       window.removeEventListener('resize', updateActiveSection);
     };
-  }, [children]);
+  }, []);
 
-  const handleSectionClick = (
-    event: MouseEvent<HTMLAnchorElement>,
-    sectionId: string,
-  ) => {
+  const handleSectionClick = (event: MouseEvent<HTMLAnchorElement>, sectionId: string) => {
     event.preventDefault();
+
     const section = document.getElementById(sectionId);
     if (!section) return;
 
     setActiveSection(sectionId);
     section.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  };
 
-  const renderNavigationItem = (item: (typeof navigationItems)[number]) => (
-    <a
-      key={item.id}
-      href={`#${item.id}`}
-      className={`nav-item ${activeSection === item.id ? 'active' : ''}`}
-      onClick={(event) => handleSectionClick(event, item.id)}
-      aria-current={activeSection === item.id ? 'page' : undefined}
-    >
-      {item.label}
-    </a>
-  );
+    // Keep the URL clean so a stale #health hash cannot control the next page load.
+    window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
+  };
 
   return (
     <>
@@ -103,7 +91,14 @@ export default function DashboardShell({
         <button className="sidebar-logo shell-button" type="button" onClick={() => onNavigate('/')}>
           <svg width="30" height="30" viewBox="0 0 36 36" fill="none">
             <rect width="36" height="36" rx="10" fill="#3ddc84" />
-            <path d="M10 22 L18 10 L26 22" stroke="#060a07" strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+            <path
+              d="M10 22 L18 10 L26 22"
+              stroke="#060a07"
+              strokeWidth="2.8"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              fill="none"
+            />
             <circle cx="18" cy="26" r="2.5" fill="#060a07" />
             <path d="M14 22 L22 22" stroke="#060a07" strokeWidth="2.8" strokeLinecap="round" />
           </svg>
@@ -111,11 +106,26 @@ export default function DashboardShell({
         </button>
 
         <nav className="sidebar-nav" aria-label="Dashboard sections">
-          <div className="nav-group-label">Overview</div>
-          {navigationItems.slice(0, 2).map(renderNavigationItem)}
-
-          <div className="nav-group-label" style={{ marginTop: 8 }}>Management</div>
-          {navigationItems.slice(2).map(renderNavigationItem)}
+          {NAV_ITEMS.map((item, index) => (
+            <div key={item.id}>
+              {item.group && (
+                <div
+                  className="nav-group-label"
+                  style={index > 0 ? { marginTop: 8 } : undefined}
+                >
+                  {item.group}
+                </div>
+              )}
+              <a
+                className={activeSection === item.id ? 'nav-item active' : 'nav-item'}
+                href={`#${item.id}`}
+                aria-current={activeSection === item.id ? 'page' : undefined}
+                onClick={(event) => handleSectionClick(event, item.id)}
+              >
+                {item.label}
+              </a>
+            </div>
+          ))}
         </nav>
 
         <div className="sidebar-footer">
@@ -130,28 +140,33 @@ export default function DashboardShell({
       <div className="main">
         <div className="topbar">
           <span className="topbar-title">{title}</span>
-
           <div className="topbar-search">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9">
               <circle cx="11" cy="11" r="6" />
               <path d="M20 20L16.65 16.65" />
             </svg>
-            <select aria-label="Selected business" value={selectedBusinessId || ''} onChange={(event) => onBusinessChange?.(event.target.value)}>
+            <select
+              aria-label="Selected business"
+              value={selectedBusinessId || ''}
+              onChange={(event) => onBusinessChange?.(event.target.value)}
+            >
               {businesses.length === 0 ? (
                 <option value="">No businesses</option>
               ) : (
                 businesses.map((business) => (
-                  <option key={business.id} value={business.id}>{business.name}</option>
+                  <option key={business.id} value={business.id}>
+                    {business.name}
+                  </option>
                 ))
               )}
             </select>
           </div>
-
           <div className="topbar-right">
-            <button className="topbar-btn ghost" type="button" onClick={() => onNavigate('/')}>Landing</button>
+            <button className="topbar-btn ghost" type="button" onClick={() => onNavigate('/')}>
+              Landing
+            </button>
           </div>
         </div>
-
         <div className="content">{children}</div>
       </div>
     </>

@@ -505,26 +505,42 @@ function MissionControl({
       </div>
 
       <div className={attentionCount > 0 ? 'action-center needs-attention' : 'action-center all-clear'}>
-        <div className="action-center-icon">{attentionCount > 0 ? '!' : '✓'}</div>
-        <div className="action-center-copy">
-          <div className="mission-eyebrow">ACTION CENTER</div>
-          <h3>
-            {attentionCount > 0
-              ? `${attentionCount} ${attentionCount === 1 ? 'conversation needs' : 'conversations need'} your attention`
-              : 'OdinLink is handling your customers'}
-          </h3>
-          <p>
-            {attentionCount > 0
-              ? 'Review the conversations where OdinLink has requested human assistance.'
-              : 'There are no conversations currently marked for human attention.'}
-          </p>
+        <div className="action-center-status">
+          <div className="action-center-icon" aria-hidden="true">
+            {attentionCount > 0 ? '!' : '✓'}
+          </div>
+          <div className="action-center-copy">
+            <div className="mission-eyebrow">ACTION CENTER</div>
+            <h3>
+              {attentionCount > 0
+                ? `${attentionCount} ${attentionCount === 1 ? 'conversation needs' : 'conversations need'} your attention`
+                : 'Everything is handled'}
+            </h3>
+            <p>
+              {attentionCount > 0
+                ? 'OdinLink has flagged conversations that need a human response.'
+                : 'OdinLink is actively serving customers. No action is required right now.'}
+            </p>
+          </div>
         </div>
+
+        <div className="action-center-summary">
+          <div className="action-center-summary-item">
+            <span>STATUS</span>
+            <strong>{attentionCount > 0 ? 'Needs attention' : 'All clear'}</strong>
+          </div>
+          <div className="action-center-summary-item">
+            <span>HUMAN ACTIONS</span>
+            <strong>{attentionCount}</strong>
+          </div>
+        </div>
+
         <button
           className="mission-action-button"
           type="button"
           onClick={() => document.getElementById('conversations')?.scrollIntoView({ behavior: 'smooth' })}
         >
-          {attentionCount > 0 ? 'Review conversations' : 'View recent activity'} →
+          {attentionCount > 0 ? 'Review now' : 'Open inbox'} →
         </button>
       </div>
     </section>

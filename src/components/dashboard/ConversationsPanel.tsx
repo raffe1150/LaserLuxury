@@ -353,8 +353,9 @@ export default function ConversationsPanel({
                     </div>
                   </div>
                 </div>
-                <div className="conversation-detail-badge">
-                  OdinLink handled
+                <div className="conversation-detail-badge channel">
+                  <ChannelIcon channel={selected.channel} />
+                  <span>{formatChannelName(selected.channel)}</span>
                 </div>
               </div>
 

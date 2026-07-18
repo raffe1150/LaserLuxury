@@ -373,26 +373,53 @@ function MissionControl({
   const estimatedStaffValue = Math.round((estimatedMinutesSaved / 60) * 300);
   const bookingCount = data.bookings.length;
   const greeting = getGreeting();
+  const connectedChannelCount = data.health.filter((item) =>
+    ['connected', 'synced', 'healthy', 'active'].includes(String(item.status).toLowerCase()),
+  ).length;
+  const monitoringCopy = connectedChannelCount > 0
+    ? `Monitoring ${connectedChannelCount} connected ${connectedChannelCount === 1 ? 'channel' : 'channels'}`
+    : 'Monitoring connected customer channels';
 
   return (
     <section id="overview" className="mission-control">
       <div className="mission-hero">
-        <div>
-          <div className="mission-live-badge">
-            <span />
-            OdinLink is active
+        <div className="mission-hero-content">
+          <div className="mission-live-status">
+            <div className="mission-live-badge">
+              <span />
+              OdinLink Active
+            </div>
+            <span className="mission-monitoring-copy">{monitoringCopy}</span>
           </div>
-          <h1>{greeting}, {business.name}.</h1>
-          <p>OdinLink has been working while you were away.</p>
+
+          <p className="mission-greeting">{greeting} <span aria-hidden="true">👋</span></p>
+          <h1>{business.name}</h1>
+          <p className="mission-hero-intro">Here’s what OdinLink has accomplished today.</p>
+
+          <div className="mission-daily-summary" aria-label="Today’s OdinLink results">
+            <div className="mission-daily-item">
+              <span className="mission-check" aria-hidden="true">✓</span>
+              <span>Handled <strong>{handledByOdinLink}</strong> customer {handledByOdinLink === 1 ? 'conversation' : 'conversations'}</span>
+            </div>
+            <div className="mission-daily-item">
+              <span className="mission-check" aria-hidden="true">✓</span>
+              <span>Booked <strong>{bookingCount}</strong> {bookingCount === 1 ? 'appointment' : 'appointments'}</span>
+            </div>
+            <div className="mission-daily-item">
+              <span className="mission-check" aria-hidden="true">✓</span>
+              <span>Saved approximately <strong>{formatMinutes(estimatedMinutesSaved)}</strong></span>
+            </div>
+          </div>
         </div>
 
-        <div className="mission-hero-summary">
-          <span>Today’s focus</span>
+        <div className={attentionCount > 0 ? 'mission-hero-summary attention' : 'mission-hero-summary clear'}>
+          <span>Today</span>
           <strong>
             {attentionCount > 0
-              ? `${attentionCount} ${attentionCount === 1 ? 'customer needs' : 'customers need'} you`
+              ? `${attentionCount} ${attentionCount === 1 ? 'conversation needs' : 'conversations need'} your attention`
               : 'Everything is running smoothly'}
           </strong>
+          <small>{attentionCount > 0 ? 'Open the inbox to review.' : 'No action required.'}</small>
         </div>
       </div>
 

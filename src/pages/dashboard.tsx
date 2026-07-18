@@ -239,7 +239,7 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
               data={data}
             />
 
-            <section id="recent-conversations" className="mission-section">
+            <section id="conversations" className="mission-section">
               <div className="mission-section-head">
                 <div>
                   <div className="mission-eyebrow">SMART INBOX</div>
@@ -273,7 +273,7 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
               )}
             </section>
 
-            <section className="mission-section">
+            <section id="bookings" className="mission-section">
               <div className="mission-section-head">
                 <div>
                   <div className="mission-eyebrow">TODAY</div>
@@ -375,7 +375,7 @@ function MissionControl({
   const greeting = getGreeting();
 
   return (
-    <section className="mission-control">
+    <section id="overview" className="mission-control">
       <div className="mission-hero">
         <div>
           <div className="mission-live-badge">

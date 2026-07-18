@@ -1243,8 +1243,14 @@ function getRecentCompletedBooking(chatId: string) {
 function inferServiceFromText(text?: string): string {
   const raw = String(text || "").toLowerCase();
 
+  const compactService = raw
+    .normalize("NFKD")
+    .replace(/[^a-z0-9\u0600-\u06FF]+/g, "");
+
   if (
-    /\b(konsultation|consultation|consulting|consult|konsultasjon|konsultasion|konsiltation|konstitution|knstilution|moshavere|mashavere|مشاوره)\b/i.test(raw)
+    /\b(konsultation|consultation|consulting|consult|konsultasjon|konsultasion|konsiltation|konstitution|knstilution|konstlution|konstultion|konslutation|moshavere|moshavereh|mashavere|mashavereh|مشاوره)\b/i.test(raw) ||
+    /^(?:kons|cons|konst|knst).*(?:ult|lult|lut).*(?:ation|tion|ion)?$/i.test(compactService) ||
+    /^m[ao]sh?aver(?:e|eh)?$/i.test(compactService)
   ) return "Konsultation";
 
   if (raw.includes("bikini")) return "Bikinilinjebehandling";
@@ -1269,6 +1275,45 @@ function isThanksOnlyText(text?: string): boolean {
   if (!raw) return false;
   const compact = raw.replace(/[!?.،,؛\s]+/g, " ").trim();
   return /^(tack|tusen tack|tack så mycket|thanks|thank you|merci|mersi|mamnoon|mamnun|sepas|sepas gozar|sepas gozaram|مرسی|ممنون|سپاس|تشکر)$/.test(compact);
+}
+
+
+function isGreetingOnlyText(text?: string): boolean {
+  const raw = String(text || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[!?.،,؛]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!raw) return false;
+
+  return /^(hej|hejsan|hallå|halla|hello|hi|hey|salam|salaam|slm|سلام|درود|god morgon|god kväll|god kvall|good morning|good evening|khob hastin|khoobi|خوب هستین|خوبی)$/.test(raw);
+}
+
+function getDefaultBookingServiceForBusiness(config: any): string | null {
+  const explicit = String(
+    config?.defaultBookingService ||
+    config?.default_booking_service ||
+    ""
+  ).trim();
+
+  if (explicit) return normalizeBookingService(explicit, explicit);
+
+  const businessName = String(
+    config?.businessName ||
+    config?.business_name ||
+    ""
+  ).toLowerCase();
+
+  // AdMotion Studio currently offers one bookable meeting type.
+  if (businessName.includes("admotion")) return "Konsultation";
+
+  return null;
+}
+
+function getDefaultBookingDurationForService(service?: string): number | null {
+  return normalizeBookingService(service, service) === "Konsultation" ? 30 : null;
 }
 
 function formatThanksReply(language: string = "en", name?: string): string {
@@ -1395,7 +1440,7 @@ function extractNameOnly(text?: string): string | null {
   if (
     /^[A-Za-zÅÄÖåäöÉéÜüÖöÄäÁáÍíÓóÚúÑñÇçŞşĞğ'\-]{2,}(?:\s+[A-Za-zÅÄÖåäöÉéÜüÖöÄäÁáÍíÓóÚúÑñÇçŞşĞğ'\-]{2,})?$/.test(raw)
   ) {
-    const blocked = /^(konsultation|consultation|bokning|booking|laser|bikini|ja|nej|yes|no|tack|thanks)$/i;
+    const blocked = /^(konsultation|consultation|konsultasion|konstitution|knstilution|konstlution|moshavere|moshavereh|mashavere|bokning|booking|laser|bikini|ja|nej|yes|no|tack|thanks)$/i;
     if (!blocked.test(raw)) {
       return raw
         .split(/\s+/)
@@ -2077,6 +2122,15 @@ async function handleUnifiedBookingEngine(params: {
   };
 
   try {
+    if (pending && isGreetingOnlyText(text)) {
+      console.log(
+        `[UnifiedBooking] Fresh greeting cleared stale pending platform=${platformName}, session=${sessionId}, status=${pending.status || "unknown"}`
+      );
+      await clearPendingBooking(sessionId);
+      pending = null;
+      return false;
+    }
+
     if (pending && isNewBookingRequestText(text)) {
       console.log(`[UnifiedBooking] Clearing stale pending platform=${platformName}, session=${sessionId}`);
       await clearPendingBooking(sessionId);
@@ -2124,20 +2178,28 @@ async function handleUnifiedBookingEngine(params: {
 
       if (slots.length > 0) {
         const exactIso = requestedTime ? findOfferedSlotIso(slots, requestedTime) : null;
+        const contextText = [
+          text,
+          ...(history || []).slice(-10).map((item: any) => item?.content || "")
+        ].join(" ");
+
+        const detectedService = normalizeBookingService(contextText, "Bokning");
+        const defaultService = getDefaultBookingServiceForBusiness(businessConfig);
+        const finalService =
+          detectedService !== "Bokning"
+            ? detectedService
+            : (defaultService || "Bokning");
+
+        const fixedDuration = getDefaultBookingDurationForService(finalService);
+
         await savePendingBooking(sessionId, platformName, {
           businessConfig,
           platform: platformName,
-          service: normalizeBookingService(
-            [text, ...(history || []).slice(-10).map((item: any) => item?.content || "")].join(" "),
-            "Bokning"
-          ),
+          service: finalService,
           selectedDate: explicitDate,
           offeredSlots: slots,
           dateTime: exactIso,
-          durationMinutes: normalizeBookingService(
-            [text, ...(history || []).slice(-10).map((item: any) => item?.content || "")].join(" "),
-            "Bokning"
-          ) === "Konsultation" ? 30 : durationMinutes,
+          durationMinutes: fixedDuration || durationMinutes,
           language,
           status: exactIso ? "awaiting_confirmation" : "awaiting_time_selection"
         });
@@ -2261,6 +2323,15 @@ async function handleUnifiedBookingEngine(params: {
       if (contextService === "Konsultation") {
         pending.service = "Konsultation";
         pending.durationMinutes = 30;
+      }
+
+      if (!pending.service || pending.service === "Bokning") {
+        const defaultService = getDefaultBookingServiceForBusiness(businessConfig);
+        if (defaultService) {
+          pending.service = defaultService;
+          const fixedDuration = getDefaultBookingDurationForService(defaultService);
+          if (fixedDuration) pending.durationMinutes = fixedDuration;
+        }
       }
 
       const missing: Array<"name" | "phone" | "service"> = [];

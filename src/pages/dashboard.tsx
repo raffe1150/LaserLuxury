@@ -431,8 +431,8 @@ function MissionControl({
         <div className="mission-impact-head">
           <div>
             <div className="mission-eyebrow">ODINLINK IMPACT</div>
-            <h2>What OdinLink has delivered</h2>
-            <p>Real activity from the currently selected business.</p>
+            <h2>Today’s business impact</h2>
+            <p>Everything OdinLink accomplished for your business today.</p>
           </div>
           <div className="automation-ring" style={{ '--automation': `${automationRate}%` } as CSSProperties}>
             <div>
@@ -444,24 +444,32 @@ function MissionControl({
 
         <div className="mission-metrics">
           <ImpactMetric
+            eyebrow="CUSTOMERS HELPED"
             value={String(totalConversations)}
-            label="Customers served"
-            detail="Conversations in the current dashboard period"
+            label="Customer conversations today"
+            detail={totalConversations === 1 ? 'One customer received a response' : `${totalConversations} customers received a response`}
           />
           <ImpactMetric
-            value={String(handledByOdinLink)}
-            label="Handled by OdinLink"
-            detail="No human attention currently required"
+            eyebrow="AUTOMATION"
+            value={`${automationRate}%`}
+            label="Handled without human help"
+            detail={
+              attentionCount > 0
+                ? `${attentionCount} ${attentionCount === 1 ? 'conversation requires' : 'conversations require'} attention`
+                : 'No human intervention required'
+            }
           />
           <ImpactMetric
+            eyebrow="APPOINTMENTS"
             value={String(bookingCount)}
-            label="Bookings created"
-            detail="Appointments visible in this dashboard"
+            label="Appointments booked"
+            detail={bookingCount > 0 ? 'Created directly by OdinLink' : 'No appointments booked yet'}
           />
           <ImpactMetric
-            value={formatMinutes(estimatedMinutesSaved)}
-            label="Estimated time saved"
-            detail="Based on four minutes per handled conversation"
+            eyebrow="BUSINESS VALUE"
+            value={`≈ ${estimatedStaffValue.toLocaleString('sv-SE')} SEK`}
+            label="Estimated staff-time value"
+            detail={`${formatMinutes(estimatedMinutesSaved)} saved today`}
             accent
           />
         </div>
@@ -504,11 +512,13 @@ function MissionControl({
 }
 
 function ImpactMetric({
+  eyebrow,
   value,
   label,
   detail,
   accent = false,
 }: {
+  eyebrow: string;
   value: string;
   label: string;
   detail: string;
@@ -516,6 +526,7 @@ function ImpactMetric({
 }) {
   return (
     <div className={accent ? 'impact-metric accent' : 'impact-metric'}>
+      <div className="impact-metric-eyebrow">{eyebrow}</div>
       <strong>{value}</strong>
       <span>{label}</span>
       <small>{detail}</small>

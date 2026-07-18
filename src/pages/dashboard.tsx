@@ -381,6 +381,15 @@ function MissionControl({
     ? `Monitoring ${connectedChannelCount} connected ${connectedChannelCount === 1 ? 'channel' : 'channels'}`
     : 'Monitoring connected customer channels';
 
+  const automationLabel =
+    automationRate >= 95
+      ? 'Excellent'
+      : automationRate >= 80
+        ? 'Strong'
+        : automationRate >= 60
+          ? 'Moderate'
+          : 'Needs attention';
+
   return (
     <section id="overview" className="mission-control">
       <div className="mission-hero">
@@ -395,20 +404,13 @@ function MissionControl({
 
           <p className="mission-greeting">{greeting} <span aria-hidden="true">👋</span></p>
           <h1>{displayBusinessName}</h1>
-          <p className="mission-hero-intro">Here’s what OdinLink has accomplished today.</p>
 
-          <div className="mission-daily-summary" aria-label="Today’s OdinLink results">
-            <div className="mission-daily-item">
-              <span className="mission-check" aria-hidden="true">✓</span>
-              <span>Handled <strong>{handledByOdinLink}</strong> customer {handledByOdinLink === 1 ? 'conversation' : 'conversations'}</span>
-            </div>
-            <div className="mission-daily-item">
-              <span className="mission-check" aria-hidden="true">✓</span>
-              <span>Booked <strong>{bookingCount}</strong> {bookingCount === 1 ? 'appointment' : 'appointments'}</span>
-            </div>
-            <div className="mission-daily-item">
-              <span className="mission-check" aria-hidden="true">✓</span>
-              <span>Saved approximately <strong>{formatMinutes(estimatedMinutesSaved)}</strong></span>
+          <div className="hero-results-block">
+            <div className="hero-results-label">TODAY’S RESULTS</div>
+            <div className="hero-result-grid">
+              <HeroResult value={String(totalConversations)} label="Customers helped" />
+              <HeroResult value={String(bookingCount)} label="Appointments booked" />
+              <HeroResult value={formatMinutes(estimatedMinutesSaved)} label="Team time saved" />
             </div>
           </div>
         </div>
@@ -429,58 +431,76 @@ function MissionControl({
 
       <div className="mission-impact-card">
         <div className="mission-impact-head">
-          <div>
-            <div className="mission-eyebrow">ODINLINK IMPACT</div>
-            <h2>Today’s business impact</h2>
-            <p>Everything OdinLink accomplished for your business today.</p>
+          <div className="mission-impact-copy">
+            <div className="mission-eyebrow">BUSINESS IMPACT</div>
+            <h2>How OdinLink performed today</h2>
+            <p>Customer service, automation, bookings and estimated value in one clear view.</p>
           </div>
-          <div className="automation-ring" style={{ '--automation': `${automationRate}%` } as CSSProperties}>
-            <div>
-              <strong>{automationRate}%</strong>
-              <span>automated</span>
+
+          <div className="automation-score-card">
+            <div
+              className="automation-ring"
+              style={{ '--automation': `${automationRate}%` } as CSSProperties}
+              aria-label={`${automationRate}% automation score`}
+            >
+              <div>
+                <strong>{automationRate}%</strong>
+              </div>
+            </div>
+            <div className="automation-score-copy">
+              <span>AUTOMATION SCORE</span>
+              <strong>{automationLabel}</strong>
+              <small>
+                {attentionCount > 0
+                  ? `${attentionCount} ${attentionCount === 1 ? 'conversation needs' : 'conversations need'} human help`
+                  : 'All conversations handled without human help'}
+              </small>
             </div>
           </div>
         </div>
 
         <div className="mission-metrics">
           <ImpactMetric
-            eyebrow="CUSTOMERS HELPED"
+            eyebrow="CUSTOMER ACTIVITY"
             value={String(totalConversations)}
-            label="Customer conversations today"
-            detail={totalConversations === 1 ? 'One customer received a response' : `${totalConversations} customers received a response`}
+            label="Customers helped today"
+            detail={totalConversations === 1 ? 'One customer received a response' : `${totalConversations} customer conversations handled`}
           />
           <ImpactMetric
             eyebrow="AUTOMATION"
             value={`${automationRate}%`}
-            label="Handled without human help"
+            label="Fully automated"
             detail={
               attentionCount > 0
-                ? `${attentionCount} ${attentionCount === 1 ? 'conversation requires' : 'conversations require'} attention`
-                : 'No human intervention required'
+                ? `${attentionCount} ${attentionCount === 1 ? 'conversation required' : 'conversations required'} human help`
+                : 'No manual intervention required'
             }
           />
           <ImpactMetric
-            eyebrow="APPOINTMENTS"
+            eyebrow="BOOKING SUCCESS"
             value={String(bookingCount)}
             label="Appointments booked"
             detail={bookingCount > 0 ? 'Created directly by OdinLink' : 'No appointments booked yet'}
           />
           <ImpactMetric
-            eyebrow="BUSINESS VALUE"
-            value={`≈ ${estimatedStaffValue.toLocaleString('sv-SE')} SEK`}
-            label="Estimated staff-time value"
-            detail={`${formatMinutes(estimatedMinutesSaved)} saved today`}
+            eyebrow="ESTIMATED VALUE"
+            value={estimatedStaffValue.toLocaleString('sv-SE')}
+            label="SEK saved today"
+            detail={`${formatMinutes(estimatedMinutesSaved)} of estimated staff time`}
             accent
           />
         </div>
 
-        <div className="mission-value-strip">
+        <div className="mission-value-strip compact">
           <div className="mission-value-icon">↗</div>
-          <div>
-            <span>Estimated staff-time value</span>
-            <strong>≈ {estimatedStaffValue.toLocaleString('sv-SE')} SEK</strong>
+          <div className="mission-value-main">
+            <span>Estimated value created today</span>
+            <strong>{estimatedStaffValue.toLocaleString('sv-SE')} <em>SEK</em></strong>
           </div>
-          <p>Calculated at 300 SEK/hour. A configurable business estimate can replace this later.</p>
+          <div className="mission-value-detail">
+            <span>{formatMinutes(estimatedMinutesSaved)} staff time saved</span>
+            <small>Calculated at 300 SEK/hour</small>
+          </div>
         </div>
       </div>
 
@@ -495,19 +515,28 @@ function MissionControl({
           </h3>
           <p>
             {attentionCount > 0
-              ? 'These conversations contain a human-attention status in the current data.'
+              ? 'Review the conversations where OdinLink has requested human assistance.'
               : 'There are no conversations currently marked for human attention.'}
           </p>
         </div>
         <button
           className="mission-action-button"
           type="button"
-          onClick={() => document.getElementById('recent-conversations')?.scrollIntoView({ behavior: 'smooth' })}
+          onClick={() => document.getElementById('conversations')?.scrollIntoView({ behavior: 'smooth' })}
         >
           {attentionCount > 0 ? 'Review conversations' : 'View recent activity'} →
         </button>
       </div>
     </section>
+  );
+}
+
+function HeroResult({ value, label }: { value: string; label: string }) {
+  return (
+    <div className="hero-result-item">
+      <strong>{value}</strong>
+      <span>{label}</span>
+    </div>
   );
 }
 

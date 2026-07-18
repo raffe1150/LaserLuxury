@@ -3235,3 +3235,86 @@ textarea.form-input{resize:vertical;min-height:140px;line-height:1.7;}
   }
 }
 
+
+
+/* ─────────────────────────────────────────────────────────────
+   SMART INBOX — CLEAN HEADER
+   Removes duplicate titles and compresses controls
+   ───────────────────────────────────────────────────────────── */
+
+#conversations .card.dashboard-section{
+  padding-top:0;
+}
+
+#conversations .card-header,
+.conversation-panel-heading,
+.conversation-panel-kicker,
+.conversation-header-actions,
+.conversation-overview-chip{
+  display:none;
+}
+
+.conversation-toolbar{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:16px;
+  padding:13px 18px;
+  border-bottom:1px solid rgba(238,242,238,.055);
+  background:rgba(238,242,238,.012);
+}
+
+.conversation-toolbar-stats{
+  display:flex;
+  align-items:center;
+  gap:15px;
+  min-width:0;
+}
+
+.conversation-toolbar-stat{
+  display:inline-flex;
+  align-items:center;
+  gap:7px;
+  color:rgba(238,242,238,.36);
+  font-size:10px;
+  font-weight:700;
+  white-space:nowrap;
+}
+
+.conversation-toolbar-stat.active{
+  color:rgba(238,242,238,.62);
+}
+
+.conversation-toolbar-stat i{
+  width:6px;
+  height:6px;
+  flex:0 0 6px;
+  border-radius:50%;
+  background:var(--green);
+  box-shadow:0 0 9px rgba(61,220,132,.55);
+}
+
+.conversation-toolbar .dashboard-search{
+  width:280px;
+  height:36px;
+  margin:0;
+  border-radius:999px;
+  background:rgba(238,242,238,.03);
+}
+
+.conversation-channel-tabs{
+  padding-top:11px;
+  padding-bottom:11px;
+}
+
+@media(max-width:760px){
+  .conversation-toolbar{
+    align-items:stretch;
+    flex-direction:column;
+    gap:10px;
+  }
+
+  .conversation-toolbar .dashboard-search{
+    width:100%;
+  }
+}

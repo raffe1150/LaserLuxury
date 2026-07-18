@@ -307,11 +307,11 @@ function normalizeRequestedTime(input?: string): string | null {
 
 function inferRequestedTimeFromText(text?: string): string | null {
   if (!text) return null;
-  const raw = String(text).toLowerCase();
+  const raw = String(text).trim().toLowerCase();
 
   // Prefer explicit clock words so phone numbers like 0738... are not mistaken for times.
   const patterns = [
-    /(?:kl|klockan|clock|saat|saate|hora|las|at)\s*(\d{1,2})(?:[\.:](\d{2}))?/i,
+    /(?:kl|klockan|clock|saat|saate|hora|las|at)\s*[\.:]?\s*(\d{1,2})(?:[\.:](\d{2}))?/i,
     /(?:^|\s)(\d{1,2})[\.:](\d{2})(?:\s|$)/i,
     /(?:^|\s)(\d{1,2})\s*(?:am|pm)(?:\s|$)/i,
   ];
@@ -327,6 +327,20 @@ function inferRequestedTimeFromText(text?: string): string | null {
       return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
     }
   }
+
+  // Accept a bare hour only when the wording clearly indicates slot selection.
+  // Examples: "13 det går bra", "14 passar mig", "saat 13 khube".
+  const bareHour = raw.match(/(?:^|\s)(\d{1,2})(?:\s|$)/);
+  if (
+    bareHour &&
+    /\b(passar|går bra|gar bra|funkar|fungerar|är bra|ar bra|khube|khob|ok|okej|works|good|fine| مناسب|خوبه|باشه)\b/i.test(raw)
+  ) {
+    const hour = Number(bareHour[1]);
+    if (hour >= 0 && hour <= 23) {
+      return `${String(hour).padStart(2, "0")}:00`;
+    }
+  }
+
   return null;
 }
 
@@ -752,11 +766,40 @@ class GoogleCalendarAdapter implements CalendarAdapter {
 
   async insertAppointment(name: string, phone: string, service: string, dateTime: string, durationMinutes: number = 60, chatId?: string) {
     try {
+      const rawDateTime = String(dateTime || "").trim();
+      if (!rawDateTime) {
+        console.error("Google Calendar insertAppointment blocked: missing dateTime", {
+          name,
+          phone,
+          service,
+          chatId
+        });
+        return { success: false, code: "MISSING_DATETIME", message: "Booking date and time are missing." };
+      }
+
       // Container runs in UTC, so parsing "T15:00:00" assumes UTC, which is 17:00 in Sweden.
       // We explicitly append Europe/Stockholm offset if not provided.
-      const safeDateTime = ensureStockholmOffset(dateTime);
+      const safeDateTime = ensureStockholmOffset(rawDateTime);
       const startTime = new Date(safeDateTime);
-      const endTime = new Date(startTime.getTime() + durationMinutes * 60 * 1000); // dynamic duration
+
+      if (Number.isNaN(startTime.getTime())) {
+        console.error("Google Calendar insertAppointment blocked: invalid dateTime", {
+          rawDateTime,
+          safeDateTime,
+          name,
+          phone,
+          service,
+          chatId
+        });
+        return { success: false, code: "INVALID_DATETIME", message: "Booking date and time are invalid." };
+      }
+
+      const safeDuration = Number(durationMinutes);
+      if (!Number.isFinite(safeDuration) || safeDuration <= 0) {
+        return { success: false, code: "INVALID_DURATION", message: "Booking duration is invalid." };
+      }
+
+      const endTime = new Date(startTime.getTime() + safeDuration * 60 * 1000);
 
       const res = await this.calendar.events.insert({
         calendarId: this.calendarId,
@@ -2058,6 +2101,17 @@ async function handleUnifiedBookingEngine(params: {
     }
 
     const contact = extractNameAndPhone(text);
+
+    if (contact && (!pending || pending.status !== "awaiting_contact")) {
+      console.warn("[UnifiedBooking] Contact received without ready booking state", {
+        platform: platformName,
+        sessionId,
+        hasPending: Boolean(pending),
+        pendingStatus: pending?.status || null,
+        pendingDateTime: pending?.dateTime || null
+      });
+    }
+
     if (pending && contact && pending.status === "awaiting_contact") {
       if (!pending.dateTime) {
         console.error(`[UnifiedBooking] Missing dateTime before insert platform=${platformName}`);
@@ -2147,7 +2201,13 @@ async function handleUnifiedBookingEngine(params: {
     return false;
   } catch (error) {
     console.error(`[UnifiedBooking] crashed platform=${platformName}:`, error);
-    return false;
+
+    const languageAfterError =
+      pending?.language ||
+      getConversationLanguage(sessionId, text);
+
+    await replyAndRecord(getErrorMessageByLanguage(languageAfterError));
+    return true;
   }
 }
 
@@ -3531,31 +3591,96 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
           );
           return { TERMINATE_EARLY: true, replyMessage };
         } else if (call.function.name === "insertAppointment" && args) {
-          // WhatsApp bookings are finalized by deterministic server logic only.
-          // Gemini may choose the wrong name/service/time, so we route this safely.
-          const restoredPending = await loadPendingBooking(chatId, "messenger", businessConfig);
+          // Safety fallback only. Normal WhatsApp bookings must be completed by UnifiedBooking.
+          const restoredPending = await loadPendingBooking(chatId, "whatsapp", businessConfig);
           const contactFromMessage = extractNameAndPhone(textMessage || "");
-          if (restoredPending && contactFromMessage) {
-            console.log(`[DeterministicBooking] Gemini tried insertAppointment, routing to deterministic booking. chatId=${chatId}`);
-            adapterRes = await adapter.insertAppointment(contactFromMessage.name, contactFromMessage.phone, restoredPending.service, restoredPending.dateTime, restoredPending.durationMinutes, chatId);
-            if (adapterRes && adapterRes.success) {
-              await recordAppointmentFromBooking({
-                businessConfig,
-                platform: "messenger",
-                userId: chatId,
-                name: contactFromMessage.name,
-                phone: contactFromMessage.phone,
-                service: restoredPending.service,
-                dateTime: restoredPending.dateTime,
-                durationMinutes: restoredPending.durationMinutes
-              });
-              await clearPendingBooking(chatId);
-              rememberCompletedBooking(chatId, getConversationLanguage(chatId, textMessage || ""), contactFromMessage.name);
-              await notifyAdminAboutBooking(businessConfig, "Messenger", businessName, contactFromMessage.name, contactFromMessage.phone, restoredPending.dateTime);
+          const pendingDateTime = String(restoredPending?.dateTime || "").trim();
+          const validPendingDate =
+            pendingDateTime &&
+            !Number.isNaN(new Date(ensureStockholmOffset(pendingDateTime)).getTime());
+
+          if (
+            restoredPending &&
+            restoredPending.status === "awaiting_contact" &&
+            contactFromMessage &&
+            validPendingDate
+          ) {
+            console.log(
+              `[UnifiedBookingFallback] WhatsApp Gemini attempted insert; using validated WhatsApp pending. chatId=${chatId}, dateTime=${pendingDateTime}`
+            );
+
+            // Recheck the exact slot immediately before insertion.
+            const selectedTime = inferRequestedTimeFromText(pendingDateTime);
+            const selectedDate = String(
+              restoredPending.selectedDate || pendingDateTime.slice(0, 10)
+            );
+            const fresh = await adapter.checkSlots(
+              selectedDate,
+              selectedDate,
+              Number(restoredPending.durationMinutes || 60),
+              selectedTime || undefined
+            );
+            const freshIso = selectedTime
+              ? findOfferedSlotIso(getSlotsArray(fresh), selectedTime)
+              : null;
+
+            if (!freshIso) {
+              adapterRes = {
+                success: false,
+                code: "SLOT_NO_LONGER_AVAILABLE",
+                message: "The selected slot is no longer available."
+              };
+            } else {
+              adapterRes = await adapter.insertAppointment(
+                contactFromMessage.name,
+                contactFromMessage.phone,
+                restoredPending.service || "Bokning",
+                freshIso,
+                Number(restoredPending.durationMinutes || 60),
+                from
+              );
+
+              if (adapterRes?.success) {
+                await recordAppointmentFromBooking({
+                  businessConfig,
+                  platform: "whatsapp",
+                  userId: from,
+                  name: contactFromMessage.name,
+                  phone: contactFromMessage.phone,
+                  service: restoredPending.service || "Bokning",
+                  dateTime: freshIso,
+                  durationMinutes: Number(restoredPending.durationMinutes || 60)
+                });
+                await clearPendingBooking(chatId);
+                rememberCompletedBooking(
+                  chatId,
+                  restoredPending.language || getConversationLanguage(chatId, textMessage || ""),
+                  contactFromMessage.name
+                );
+                await notifyAdminAboutBooking(
+                  businessConfig,
+                  "WhatsApp",
+                  businessName,
+                  contactFromMessage.name,
+                  contactFromMessage.phone,
+                  freshIso
+                );
+              }
             }
           } else {
-            console.log(`[DeterministicBooking] Blocked Messenger Gemini insertAppointment. No reliable pending/contact found. args=${JSON.stringify(args)}`);
-            adapterRes = { success: false, message: "Booking was not finalized. Ask the customer for name and mobile number after confirming the exact available time." };
+            console.error("[UnifiedBookingFallback] Blocked unsafe WhatsApp insertAppointment", {
+              chatId,
+              hasPending: Boolean(restoredPending),
+              pendingStatus: restoredPending?.status || null,
+              pendingDateTime: restoredPending?.dateTime || null,
+              hasContact: Boolean(contactFromMessage),
+              args
+            });
+            adapterRes = {
+              success: false,
+              code: "UNSAFE_GEMINI_INSERT_BLOCKED",
+              message: "Booking was not finalized because the verified booking state was incomplete."
+            };
           }
         } else if (call.function.name === "logSystemAnalysis" && args) {
           adapterRes = await handleSystemAnalysisLog(chatId, args);

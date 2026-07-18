@@ -129,11 +129,11 @@ export function SystemPromptEditor({ business, onSaved }: BusinessSettingsProps)
           <button className="ai-gen-btn" type="button" onClick={() => setModalOpen(true)}>
             Generate with AI
           </button>
-          <span className="prompt-char-count">{prompt.length} / 2000</span>
+          <span className="prompt-char-count">{prompt.length} / 10000</span>
         </div>
         <textarea
           className="form-input"
-          maxLength={2000}
+          maxLength={10000}
           rows={6}
           value={prompt}
           onChange={(event) => setPrompt(event.target.value)}

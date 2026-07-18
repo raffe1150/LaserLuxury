@@ -2669,3 +2669,93 @@ textarea.form-input{resize:vertical;min-height:140px;line-height:1.7;}
   .hero-result-copy strong{margin-bottom:0;}
   .hero-result-copy span{text-align:right;}
 }
+
+
+/* ─────────────────────────────────────────────────────────────
+   HERO RESULTS — FINAL ENTERPRISE POLISH
+   Lucide-style icons, tighter tiles and cleaner value hierarchy
+   ───────────────────────────────────────────────────────────── */
+.hero-result-grid{
+  gap:9px;
+}
+
+.hero-result-item{
+  min-height:68px;
+  padding:11px 13px;
+  border-color:rgba(238,242,238,.065);
+  border-radius:12px;
+  background:
+    linear-gradient(180deg,rgba(238,242,238,.026),rgba(238,242,238,.01)),
+    rgba(6,10,7,.34);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,.014),
+    0 8px 20px rgba(0,0,0,.06);
+}
+
+.hero-result-item:first-child{
+  padding-left:13px;
+  border-left:1px solid rgba(238,242,238,.065);
+}
+
+.hero-result-item:hover{
+  transform:translateY(-1px);
+  border-color:rgba(61,220,132,.16);
+  background:
+    linear-gradient(180deg,rgba(61,220,132,.04),rgba(238,242,238,.012)),
+    rgba(6,10,7,.38);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,.018),
+    0 11px 24px rgba(0,0,0,.09);
+}
+
+.hero-result-icon{
+  width:32px;
+  height:32px;
+  flex-basis:32px;
+  border-radius:9px;
+  font-size:initial;
+  letter-spacing:normal;
+}
+
+.hero-result-icon svg{
+  width:17px;
+  height:17px;
+  stroke:currentColor;
+  stroke-width:1.8;
+  stroke-linecap:round;
+  stroke-linejoin:round;
+}
+
+.hero-result-copy strong{
+  margin-bottom:3px;
+  font-size:25px;
+}
+
+.hero-result-copy span{
+  font-size:10.9px;
+}
+
+/* Estimated value: keep the number dominant, move SEK to supporting copy. */
+.impact-metric.accent > strong{
+  font-size:clamp(35px,3vw,45px);
+}
+
+.impact-metric.accent > span{
+  color:rgba(238,242,238,.88);
+}
+
+.impact-metric.accent > small{
+  max-width:250px;
+  color:rgba(61,220,132,.62);
+}
+
+@media(max-width:760px){
+  .hero-result-item{
+    min-height:66px;
+    padding:11px 12px;
+  }
+
+  .hero-result-copy strong{
+    font-size:22px;
+  }
+}

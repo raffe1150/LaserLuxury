@@ -3318,3 +3318,104 @@ textarea.form-input{resize:vertical;min-height:140px;line-height:1.7;}
     width:100%;
   }
 }
+
+
+/* ─────────────────────────────────────────────────────────────
+   SMART INBOX — FINAL DETAIL POLISH
+   Channel badge + fixed header/composer + scrollable transcript
+   ───────────────────────────────────────────────────────────── */
+
+.conversation-detail{
+  height:510px;
+  min-height:510px;
+  max-height:510px;
+  overflow:hidden;
+}
+
+.conversation-detail-head{
+  position:relative;
+  z-index:2;
+  flex:0 0 auto;
+}
+
+.chat-transcript{
+  flex:1 1 auto;
+  min-height:0;
+  overflow-y:auto;
+  overscroll-behavior:contain;
+  scrollbar-width:thin;
+  scrollbar-color:rgba(61,220,132,.22) transparent;
+}
+
+.chat-transcript::-webkit-scrollbar{
+  width:7px;
+}
+
+.chat-transcript::-webkit-scrollbar-track{
+  background:transparent;
+}
+
+.chat-transcript::-webkit-scrollbar-thumb{
+  border:2px solid transparent;
+  border-radius:999px;
+  background:rgba(61,220,132,.2);
+  background-clip:padding-box;
+}
+
+.chat-transcript::-webkit-scrollbar-thumb:hover{
+  background:rgba(61,220,132,.34);
+  background-clip:padding-box;
+}
+
+.conversation-reply-box{
+  position:relative;
+  z-index:2;
+  flex:0 0 auto;
+}
+
+.conversation-detail-badge.channel{
+  display:inline-flex;
+  align-items:center;
+  gap:7px;
+  padding:5px 9px 5px 6px;
+  border-color:rgba(238,242,238,.08);
+  background:rgba(238,242,238,.025);
+  color:rgba(238,242,238,.52);
+}
+
+.conversation-detail-badge.channel .brand-icon{
+  width:22px;
+  height:22px;
+  border:0;
+  border-radius:7px;
+}
+
+.conversation-detail-badge.channel .brand-icon svg{
+  width:14px;
+  height:14px;
+}
+
+.conversation-detail-badge.channel > span{
+  font-size:9px;
+  font-weight:700;
+}
+
+@media(max-width:900px){
+  .conversation-detail{
+    height:520px;
+    min-height:520px;
+    max-height:520px;
+  }
+}
+
+@media(max-width:600px){
+  .conversation-detail{
+    height:500px;
+    min-height:500px;
+    max-height:500px;
+  }
+
+  .conversation-detail-badge.channel{
+    display:none;
+  }
+}

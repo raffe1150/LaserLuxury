@@ -1315,7 +1315,10 @@ async function savePendingBooking(chatId: string, platform: string, pending: any
       type: "pending_booking",
       platform,
       service: pending.service,
-      dateTime: pending.dateTime,
+      dateTime: pending.dateTime || null,
+      selectedDate: pending.selectedDate || null,
+      offeredSlots: Array.isArray(pending.offeredSlots) ? pending.offeredSlots : [],
+      language: pending.language || null,
       durationMinutes: pending.durationMinutes,
       status: pending.status,
       createdAt: pending.createdAt || Date.now(),
@@ -1374,12 +1377,15 @@ async function loadPendingBooking(chatId: string, platform: string, businessConf
       businessConfig,
       platform,
       service: parsed.service || "Bokning",
-      dateTime: parsed.dateTime,
+      dateTime: parsed.dateTime || null,
+      selectedDate: parsed.selectedDate || null,
+      offeredSlots: Array.isArray(parsed.offeredSlots) ? parsed.offeredSlots : [],
+      language: parsed.language || null,
       durationMinutes: Number(parsed.durationMinutes || 60),
       status: parsed.status || "awaiting_contact",
       createdAt: Number(parsed.createdAt || parsed.created_at || 0)
     };
-    if (!pending.dateTime) return null;
+    if (!pending.dateTime && !pending.selectedDate) return null;
     if (isPendingBookingExpired(pending)) {
       console.log(`[DeterministicBooking] Expired DB pending booking cleared. chatId=${chatId}, dateTime=${pending.dateTime}`);
       await clearPendingBooking(chatId);
@@ -1455,6 +1461,104 @@ function getExactSlotIso(slotsArray: string[], requestedTime?: string): string |
   return null;
 }
 
+
+
+function resolveExplicitBookingDate(text?: string): string | null {
+  const raw = String(text || "").trim().toLowerCase();
+  if (!raw) return null;
+
+  const iso = raw.match(/\b(20\d{2})-(\d{2})-(\d{2})\b/);
+  if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
+
+  const numeric = raw.match(/\b(\d{1,2})[\/.\-](\d{1,2})(?:[\/.\-](20\d{2}))?\b/);
+  if (numeric) {
+    const year = Number(numeric[3] || new Intl.DateTimeFormat("en", {
+      timeZone: "Europe/Stockholm",
+      year: "numeric"
+    }).format(new Date()));
+    return `${year}-${String(Number(numeric[2])).padStart(2, "0")}-${String(Number(numeric[1])).padStart(2, "0")}`;
+  }
+
+  const weekdayMap: Array<[RegExp, number]> = [
+    [/\b(söndag|sunday|yekshanbe|یکشنبه)\b/i, 0],
+    [/\b(måndag|mandag|monday|doshanbe|دوشنبه)\b/i, 1],
+    [/\b(tisdag|tuesday|seshanbe|سه.?شنبه)\b/i, 2],
+    [/\b(onsdag|wednesday|chaharshanbe|چهارشنبه)\b/i, 3],
+    [/\b(torsdag|thursday|panjshanbe|پنجشنبه)\b/i, 4],
+    [/\b(fredag|friday|jome|جمعه)\b/i, 5],
+    [/\b(lördag|lordag|saturday|shanbe|شنبه)\b/i, 6]
+  ];
+
+  const matched = weekdayMap.find(([pattern]) => pattern.test(raw));
+  if (!matched) return null;
+
+  const targetDay = matched[1];
+  const todayStr = stockholmDateString(new Date());
+  const [year, month, day] = todayStr.split("-").map(Number);
+  const todayUtc = new Date(Date.UTC(year, month - 1, day));
+  const currentDay = todayUtc.getUTCDay();
+
+  let daysAhead = (targetDay - currentDay + 7) % 7;
+  if (daysAhead === 0 && !/\b(idag|today|امروز)\b/i.test(raw)) daysAhead = 7;
+
+  todayUtc.setUTCDate(todayUtc.getUTCDate() + daysAhead);
+  return todayUtc.toISOString().slice(0, 10);
+}
+
+function inferBookingDurationFromContext(text: string, history: any[]): number {
+  const combined = [
+    ...(history || []).slice(-10).map((item: any) =>
+      typeof item?.content === "string" ? item.content : ""
+    ),
+    text || ""
+  ].join(" ").toLowerCase();
+
+  const minuteMatch = combined.match(/(\d{1,3})\s*(?:min|minuter|minutes|دقیقه)/i);
+  if (minuteMatch) {
+    const value = Number(minuteMatch[1]);
+    if (value >= 10 && value <= 240) return value;
+  }
+
+  if (/\b(konsultation|consultation|consulting|مشاوره|moshavere)\b/i.test(combined)) return 30;
+  return 60;
+}
+
+function isBookingConversationContext(text: string, history: any[]): boolean {
+  const combined = [
+    ...(history || []).slice(-10).map((item: any) =>
+      typeof item?.content === "string" ? item.content : ""
+    ),
+    text || ""
+  ].join(" ").toLowerCase();
+
+  return /\b(boka|bokning|tid|appointment|book|booking|konsultation|consultation|vaght|رزرو|وقت|مشاوره|moshavere)\b/i.test(combined);
+}
+
+function getSlotsArray(result: any): string[] {
+  return String(result?.available_slots_string || "")
+    .split("\n")
+    .map((value) => value.trim())
+    .filter((value) => value && !value.includes("No available slots"));
+}
+
+function findOfferedSlotIso(offeredSlots: string[], selectedTime?: string): string | null {
+  const normalized = normalizeRequestedTime(selectedTime || "");
+  if (!normalized) return null;
+
+  for (const slot of offeredSlots || []) {
+    const iso = parseSlotIso(slot);
+    if (!iso) continue;
+    const date = new Date(iso);
+    if (Number.isNaN(date.getTime())) continue;
+    const time = date.toLocaleTimeString("sv-SE", {
+      timeZone: "Europe/Stockholm",
+      hour: "2-digit",
+      minute: "2-digit"
+    });
+    if (time === normalized) return iso;
+  }
+  return null;
+}
 
 function isExistingAppointmentLookupIntent(text?: string): boolean {
   const raw = String(text || "").trim().toLowerCase();
@@ -3888,10 +3992,84 @@ async function processMessengerUpdate(webhookEvent: any, config: any, platform: 
       return;
     }
 
+    if (
+      pending &&
+      textMessage &&
+      pending.status === "awaiting_time_selection"
+    ) {
+      const selectedTime = inferRequestedTimeFromText(textMessage || "");
+      const selectedIso = findOfferedSlotIso(
+        Array.isArray(pending.offeredSlots) ? pending.offeredSlots : [],
+        selectedTime || undefined
+      );
+
+      if (selectedTime && selectedIso) {
+        // Re-check Google Calendar at the exact selected date/time immediately
+        // before accepting it. This prevents stale or cross-day slot reuse.
+        const adapter = getCalendarAdapter(businessConfig);
+        const selectedDate = String(pending.selectedDate || selectedIso.slice(0, 10));
+        const freshResult = await adapter.checkSlots(
+          selectedDate,
+          selectedDate,
+          Number(pending.durationMinutes || 60),
+          selectedTime
+        );
+        const freshSlots = getSlotsArray(freshResult);
+        const freshIso = findOfferedSlotIso(freshSlots, selectedTime);
+
+        if (freshIso) {
+          pending.dateTime = freshIso;
+          pending.offeredSlots = freshSlots;
+          pending.language = pending.language || detectedLang;
+          pending.status = "awaiting_contact";
+          await savePendingBooking(chatId, "messenger", pending);
+
+          const askText = formatAskContactMessage(
+            pending.language || detectedLang
+          );
+          console.log(
+            `[DeterministicBooking] Messenger selected slot revalidated. chatId=${chatId}, dateTime=${freshIso}`
+          );
+          await sendMessengerMessage(senderId, askText, businessConfig);
+          appendLocalHistory(chatId, textMessage || "", askText);
+          await postProcessMessage(
+            chatId,
+            platform,
+            textMessage,
+            askText,
+            businessConfig?.telegramToken,
+            businessConfig?.apiKey,
+            getBusinessIdFromConfig(businessConfig)
+          );
+          return;
+        }
+
+        const unavailableReply = formatSwedishTimeSlots(
+          freshSlots,
+          selectedTime,
+          pending.language || detectedLang
+        );
+        pending.offeredSlots = freshSlots;
+        await savePendingBooking(chatId, "messenger", pending);
+        await sendMessengerMessage(senderId, unavailableReply, businessConfig);
+        appendLocalHistory(chatId, textMessage || "", unavailableReply);
+        await postProcessMessage(
+          chatId,
+          platform,
+          textMessage,
+          unavailableReply,
+          businessConfig?.telegramToken,
+          businessConfig?.apiKey,
+          getBusinessIdFromConfig(businessConfig)
+        );
+        return;
+      }
+    }
+
     if (pending && textMessage && isPendingSlotConfirmation(textMessage, pending)) {
       pending.status = "awaiting_contact";
       await savePendingBooking(chatId, "messenger", pending);
-      const askText = formatAskContactMessage(detectedLang);
+      const askText = formatAskContactMessage(pending.language || detectedLang);
       console.log(`[DeterministicBooking] Messenger slot confirmed. Awaiting contact. chatId=${chatId}, dateTime=${pending.dateTime}`);
       await sendMessengerMessage(senderId, askText, businessConfig);
       appendLocalHistory(chatId, textMessage || "", askText);
@@ -3953,6 +4131,75 @@ async function processMessengerUpdate(webhookEvent: any, config: any, platform: 
   try {
     if (!chatSessions[chatId as any]) chatSessions[chatId as any] = [];
     const history = chatSessions[chatId as any];
+
+    // Deterministic booking date flow:
+    // resolve weekday/date on the server, check the exact Google Calendar day,
+    // and never allow Gemini to substitute another weekday.
+    const explicitBookingDate = textMessage
+      ? resolveExplicitBookingDate(textMessage)
+      : null;
+
+    if (
+      textMessage &&
+      explicitBookingDate &&
+      isBookingConversationContext(textMessage, history)
+    ) {
+      const adapter = getCalendarAdapter(businessConfig);
+      const durationMinutes = inferBookingDurationFromContext(textMessage, history);
+      const requestedTime = inferRequestedTimeFromText(textMessage || "") || undefined;
+
+      console.log(
+        `[DeterministicDate] Messenger resolved text=${JSON.stringify(textMessage)} date=${explicitBookingDate} duration=${durationMinutes} requestedTime=${requestedTime || "none"}`
+      );
+
+      const calendarResult = await adapter.checkSlots(
+        explicitBookingDate,
+        explicitBookingDate,
+        durationMinutes,
+        requestedTime
+      );
+
+      const slotsArray = getSlotsArray(calendarResult);
+      const language = getConversationLanguage(chatId, textMessage || "");
+      const replyMessage = formatSwedishTimeSlots(
+        slotsArray,
+        requestedTime,
+        language
+      );
+
+      if (slotsArray.length > 0) {
+        const exactIso = requestedTime
+          ? findOfferedSlotIso(slotsArray, requestedTime)
+          : null;
+
+        await savePendingBooking(chatId, "messenger", {
+          businessConfig,
+          platform: "messenger",
+          service: inferServiceFromRecentContext(textMessage || "", history),
+          dateTime: exactIso,
+          selectedDate: explicitBookingDate,
+          offeredSlots: slotsArray,
+          language,
+          durationMinutes,
+          status: exactIso ? "awaiting_confirmation" : "awaiting_time_selection"
+        });
+      } else {
+        await clearPendingBooking(chatId);
+      }
+
+      await sendMessengerMessage(senderId, replyMessage, businessConfig);
+      appendLocalHistory(chatId, textMessage || "", replyMessage);
+      await postProcessMessage(
+        chatId,
+        platform,
+        textMessage,
+        replyMessage,
+        businessConfig?.telegramToken,
+        businessConfig?.apiKey,
+        getBusinessIdFromConfig(businessConfig)
+      );
+      return;
+    }
 
     let userMessageContent: any = textMessage;
     let userMessageForLog = textMessage;

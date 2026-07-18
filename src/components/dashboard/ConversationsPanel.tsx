@@ -219,18 +219,30 @@ export default function ConversationsPanel({
     <section id="conversations" className="card dashboard-section">
       <div className="card-header">
         <div>
-          <div className="card-title">Conversations</div>
-          <div className="card-desc">
-            Search customers and review full AI-handled chats.
+          <div className="conversation-panel-heading">
+            <div className="conversation-panel-kicker">LIVE CUSTOMER ACTIVITY</div>
+            <div className="card-title">OdinLink Inbox</div>
+            <div className="card-desc">
+              Review conversations handled by OdinLink and step in only when needed.
+            </div>
           </div>
         </div>
 
-        <input
+        <div className="conversation-header-actions">
+          <div className="conversation-overview-chip">
+            <span className="conversation-overview-dot" />
+            {localConversations.length} active
+          </div>
+          <div className="conversation-overview-chip muted">
+            {unreadCounts.all} unread
+          </div>
+          <input
           className="form-input dashboard-search"
           value={query}
           onChange={(event) => setQuery(event.target.value)}
-          placeholder="Search customer..."
+          placeholder="Search customers..."
         />
+        </div>
       </div>
 
       <div className="conversation-channel-tabs">
@@ -275,6 +287,8 @@ export default function ConversationsPanel({
           {filtered.map((conversation) => {
             const unread = Number(conversation.unreadCount || 0);
             const isUnread = unread > 0;
+            const statusTone = getStatusTone(conversation.status);
+            const statusLabel = getStatusLabel(conversation.status);
 
             return (
               <button
@@ -313,7 +327,13 @@ export default function ConversationsPanel({
                   </div>
 
                   <div className="conversation-meta">
-                    {conversation.status}
+                    <span className={`conversation-status ${statusTone}`}>
+                      <i aria-hidden="true" />
+                      {statusLabel}
+                    </span>
+                    <span className="conversation-channel-name">
+                      {formatChannelName(conversation.channel)}
+                    </span>
                   </div>
                 </div>
               </button>
@@ -325,14 +345,25 @@ export default function ConversationsPanel({
           {selected ? (
             <>
               <div className="conversation-detail-head">
-                <div>
-                  <div className="conversation-detail-name">
-                    {selected.customerName}
+                <div className="conversation-detail-identity">
+                  <div className="conversation-detail-avatar">
+                    <ChannelIcon channel={selected.channel} />
                   </div>
-
-                  <div className="conversation-detail-sub">
-                    {selected.status}
+                  <div>
+                    <div className="conversation-detail-name">
+                      {selected.customerName}
+                    </div>
+                    <div className="conversation-detail-sub">
+                      <span className={`conversation-status ${getStatusTone(selected.status)}`}>
+                        <i aria-hidden="true" />
+                        {getStatusLabel(selected.status)}
+                      </span>
+                      <span>{formatChannelName(selected.channel)}</span>
+                    </div>
                   </div>
+                </div>
+                <div className="conversation-detail-badge">
+                  OdinLink handled
                 </div>
               </div>
 
@@ -355,7 +386,7 @@ export default function ConversationsPanel({
                   value={replyText}
                   onChange={(event) => setReplyText(event.target.value)}
                   onKeyDown={handleReplyKeyDown}
-                  placeholder={`Reply via ${selected.channel}...`}
+                  placeholder={`Write a reply via ${formatChannelName(selected.channel)}...`}
                   rows={3}
                   disabled={sending || !businessId}
                 />
@@ -387,6 +418,50 @@ export default function ConversationsPanel({
       </div>
     </section>
   );
+}
+
+
+function getStatusTone(status: string) {
+  const value = String(status || '').toLowerCase();
+
+  if (
+    value.includes('human') ||
+    value.includes('attention') ||
+    value.includes('escalat') ||
+    value.includes('takeover')
+  ) {
+    return 'attention';
+  }
+
+  if (
+    value.includes('handled') ||
+    value.includes('resolved') ||
+    value.includes('complete') ||
+    value.includes('done')
+  ) {
+    return 'handled';
+  }
+
+  return 'active';
+}
+
+function getStatusLabel(status: string) {
+  const tone = getStatusTone(status);
+
+  if (tone === 'attention') return 'Needs attention';
+  if (tone === 'handled') return 'Handled by OdinLink';
+  return 'Active conversation';
+}
+
+function formatChannelName(channel: string) {
+  const normalized = normalizeChannel(channel);
+
+  if (normalized === 'whatsapp') return 'WhatsApp';
+  if (normalized === 'instagram') return 'Instagram';
+  if (normalized === 'messenger') return 'Messenger';
+  if (normalized === 'telegram') return 'Telegram';
+
+  return channel || 'Customer channel';
 }
 
 function normalizeChannel(channel: string) {

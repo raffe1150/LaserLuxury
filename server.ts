@@ -202,18 +202,21 @@ async function handleSystemAnalysisLog(chatId: string, analysis: any) {
 async function postProcessMessage(chatId: string, platform: string, userMessage: string, agentResponse: string, tgToken?: string, aiConfigKey?: string, businessId?: string | null) {
   if (!supabase) return;
   try {
+    const canonicalPlatform = normalizePlatformName(platform);
+    const canonicalUserId = normalizePlatformUserId(canonicalPlatform, chatId.toString());
+
     const payload = [
   {
-    user_id: chatId.toString(),
-    platform,
+    user_id: canonicalUserId,
+    platform: canonicalPlatform,
     sender: "user",
     message: userMessage,
     business_id: businessId || null,
     is_read: false
   },
   {
-    user_id: chatId.toString(),
-    platform,
+    user_id: canonicalUserId,
+    platform: canonicalPlatform,
     sender: "bot",
     message: agentResponse,
     business_id: businessId || null,
@@ -2425,7 +2428,14 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       });
     }
     
-    const textResponse = chatResponse.text || "I'm having trouble processing that right now.";
+    const textResponse = String(chatResponse.text || "").trim() ||
+      getErrorMessageByLanguage(getLockedReplyLanguage(telegramSessionId, text || ""));
+    if (!String(chatResponse.text || "").trim()) {
+      console.error("[AIEmptyResponse] Telegram returned no text after tool processing.", {
+        sessionId: telegramSessionId,
+        hadFunctionCalls: Boolean(chatResponse.functionCalls?.length),
+      });
+    }
 
     history.push({ role: "user", content: Array.isArray(userMessageContent) ? "(User Voice Message)" : userMessageContent });
     history.push({ role: "assistant", content: textResponse });
@@ -2773,14 +2783,65 @@ function getErrorMessageByLanguage(language: string): string {
 }
 
 
+function normalizePlatformName(platform: string): string {
+  const raw = String(platform || "").trim().toLowerCase();
+
+  if (
+    raw === "facebook" ||
+    raw === "facebook_messenger" ||
+    raw === "messenger-api" ||
+    raw.startsWith("messenger")
+  ) return "messenger";
+
+  if (
+    raw === "telegram-polling" ||
+    raw === "telegram_webhook" ||
+    raw === "telegram-webhook" ||
+    raw.startsWith("telegram")
+  ) return "telegram";
+
+  if (raw.startsWith("instagram")) return "instagram";
+  if (raw.startsWith("whatsapp") || raw === "wa") return "whatsapp";
+
+  return raw || "unknown";
+}
+
 function normalizePlatformUserId(platform: string, userId: string) {
-  const raw = String(userId || "").trim();
+  const channel = normalizePlatformName(platform);
+  let raw = String(userId || "").trim();
   if (!raw) return "";
-  if (platform === "telegram") return raw.replace(/^telegram_/, "");
-  if (platform === "whatsapp") return raw.replace(/^wa_/, "");
-  if (platform === "instagram") return raw.replace(/^ig_/, "");
-  if (platform === "messenger") return raw.replace(/^ms_/, "");
-  return raw;
+
+  const prefixes = [
+    `${channel}_`,
+    `${channel}-`,
+    channel === "telegram" ? "tg_" : "",
+    channel === "telegram" ? "telegram_" : "",
+    channel === "whatsapp" ? "wa_" : "",
+    channel === "whatsapp" ? "whatsapp_" : "",
+    channel === "whatsapp" ? "whatsapp:" : "",
+    channel === "instagram" ? "ig_" : "",
+    channel === "instagram" ? "instagram_" : "",
+    channel === "instagram" ? "instagram:" : "",
+    channel === "messenger" ? "ms_" : "",
+    channel === "messenger" ? "messenger_" : "",
+    channel === "messenger" ? "messenger:" : "",
+  ].filter(Boolean);
+
+  let lowered = raw.toLowerCase();
+  for (const prefix of prefixes) {
+    if (lowered.startsWith(prefix)) {
+      raw = raw.slice(prefix.length);
+      lowered = raw.toLowerCase();
+      break;
+    }
+  }
+
+  if (channel === "whatsapp") {
+    const digits = raw.replace(/\D/g, "");
+    return digits || raw;
+  }
+
+  return raw.trim();
 }
 
 function getAppointmentTimes(dateTime: string, durationMinutes: number = 60) {
@@ -3535,7 +3596,15 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       });
     }
 
-    const textResponse = chatResponse.text || "I'm having trouble processing that right now.";
+    const textResponse = String(chatResponse.text || "").trim() ||
+      getErrorMessageByLanguage(getConversationLanguage(chatId, textMessage || ""));
+    if (!String(chatResponse.text || "").trim()) {
+      console.error("[AIEmptyResponse] WhatsApp returned no text after tool processing.", {
+        chatId,
+        businessId: getBusinessIdFromConfig(businessConfig),
+        hadFunctionCalls: Boolean(chatResponse.functionCalls?.length),
+      });
+    }
 
     history.push({ role: "user", content: textMessage });
     history.push({ role: "assistant", content: textResponse });
@@ -4737,7 +4806,15 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       });
     }
 
-    const textResponse = chatResponse.text || "I'm having trouble processing that right now.";
+    const textResponse = String(chatResponse.text || "").trim() ||
+      getErrorMessageByLanguage(getConversationLanguage(chatId, textMessage || ""));
+    if (!String(chatResponse.text || "").trim()) {
+      console.error("[AIEmptyResponse] Messenger returned no text after tool processing.", {
+        chatId,
+        businessId: getBusinessIdFromConfig(businessConfig),
+        hadFunctionCalls: Boolean(chatResponse.functionCalls?.length),
+      });
+    }
 
     history.push({ role: "user", content: isVoiceMessage ? "[Messenger Voice Message]" : userMessageContent });
     history.push({ role: "assistant", content: textResponse });
@@ -5096,7 +5173,15 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       });
     }
 
-    const textResponse = chatResponse.text || "I'm having trouble processing that right now.";
+    const textResponse = String(chatResponse.text || "").trim() ||
+      getErrorMessageByLanguage(getConversationLanguage(chatId, textMessage || ""));
+    if (!String(chatResponse.text || "").trim()) {
+      console.error("[AIEmptyResponse] Instagram returned no text after tool processing.", {
+        chatId,
+        businessId: getBusinessIdFromConfig(businessConfig),
+        hadFunctionCalls: Boolean(chatResponse.functionCalls?.length),
+      });
+    }
 
     history.push({ role: 'user', content: isVoiceMessage ? '[Instagram Voice Message]' : userMessageContent });
     history.push({ role: 'assistant', content: textResponse });
@@ -5803,9 +5888,24 @@ app.get('/api/businesses/:businessId/conversations', async (req, res) => {
       .select('id,business_id,user_id,platform,sender,message,created_at,is_read')
       .eq('business_id', businessId)
       .order('created_at', { ascending: true })
+      .order('id', { ascending: true })
       .limit(limit);
 
     if (messageError) throw messageError;
+
+    (messageRows || []).sort((a: any, b: any) => {
+      const timeDifference =
+        new Date(a?.created_at || 0).getTime() -
+        new Date(b?.created_at || 0).getTime();
+
+      if (timeDifference !== 0) return timeDifference;
+
+      const aId = Number(a?.id);
+      const bId = Number(b?.id);
+      if (Number.isFinite(aId) && Number.isFinite(bId)) return aId - bId;
+
+      return String(a?.id || "").localeCompare(String(b?.id || ""));
+    });
 
     const { data: leadRows, error: leadError } = await supabase
       .from('appointments_leads')
@@ -5834,66 +5934,11 @@ app.get('/api/businesses/:businessId/conversations', async (req, res) => {
       );
     }
 
-    const normalizeChannel = (value: unknown) => {
-      const channel = String(value || '').trim().toLowerCase();
+    const normalizeChannel = (value: unknown) =>
+      normalizePlatformName(String(value || ""));
 
-      if (
-        channel === 'facebook' ||
-        channel === 'facebook_messenger' ||
-        channel === 'messenger-api'
-      ) {
-        return 'messenger';
-      }
-
-      if (
-        channel === 'telegram-polling' ||
-        channel === 'telegram_webhook' ||
-        channel === 'telegram-webhook'
-      ) {
-        return 'telegram';
-      }
-
-      if (channel.startsWith('instagram')) return 'instagram';
-      if (channel.startsWith('messenger')) return 'messenger';
-      if (channel.startsWith('telegram')) return 'telegram';
-      if (channel.startsWith('whatsapp')) return 'whatsapp';
-
-      if (
-        channel === 'instagram' ||
-        channel === 'messenger' ||
-        channel === 'telegram' ||
-        channel === 'whatsapp' ||
-        channel === 'google_calendar'
-      ) {
-        return channel;
-      }
-
-      return 'messenger';
-    };
-
-    const normalizeUserId = (value: unknown, channel: string) => {
-      let userId = String(value || '').trim();
-      if (!userId) return '';
-
-      const lower = userId.toLowerCase();
-      const prefixes = [
-        `${channel}_`,
-        `${channel}-`,
-        channel === 'messenger' ? 'ms_' : '',
-        channel === 'instagram' ? 'ig_' : '',
-        channel === 'telegram' ? 'telegram_' : '',
-        channel === 'whatsapp' ? 'whatsapp_' : '',
-      ].filter(Boolean);
-
-      for (const prefix of prefixes) {
-        if (lower.startsWith(prefix)) {
-          userId = userId.slice(prefix.length);
-          break;
-        }
-      }
-
-      return userId.trim();
-    };
+    const normalizeUserId = (value: unknown, channel: string) =>
+      normalizePlatformUserId(channel, String(value || ""));
 
     const isUsableCustomerName = (value: unknown) => {
       const name = String(value || '').trim();

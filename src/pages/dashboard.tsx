@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useState } from 'react';
+import { FormEvent, useEffect, useState, type CSSProperties } from 'react';
 import BookingsPanel from '../components/dashboard/BookingsPanel';
 import ConversationsPanel from '../components/dashboard/ConversationsPanel';
 import DashboardShell from '../components/dashboard/DashboardShell';
@@ -11,7 +11,6 @@ import {
   UsageStatistics,
 } from '../components/dashboard/DashboardSections';
 import HealthStatus from '../components/dashboard/HealthStatus';
-import OverviewCards from '../components/dashboard/OverviewCards';
 import { api, loadDashboardData } from '../services/api';
 import dashboardCss from '../styles/dashboard.css?raw';
 import type { Business, DashboardData, IntegrationKey } from '../types/dashboard';
@@ -235,31 +234,85 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
 
         {!loading && !error && data && selectedBusiness && (
           <>
-            <OverviewCards
-              stats={data.stats}
-              performance={data.performance}
-              usage={data.usage}
-              chart={data.bookingsChart}
+            <MissionControl
+              business={selectedBusiness}
+              data={data}
             />
-            <HealthStatus health={data.health} onTest={testIntegration} />
-            <NotificationCenter health={data.health} bookings={data.bookings} />
-            <UsageStatistics usage={data.usage} />
-            <BusinessesCard
-              businesses={data.businesses}
-              selectedBusinessId={selectedBusiness.id}
-              onCreate={() => setAddBusinessOpen(true)}
-              onDelete={setDeleteTarget}
-              onSelect={handleBusinessChange}
-            />
-            <BusinessSettings business={selectedBusiness} onSaved={handleSaved} />
-            <SystemPromptEditor business={selectedBusiness} onSaved={handleSaved} />
-            <ChannelSettings business={selectedBusiness} health={data.health} onSaved={handleSaved} onTest={testIntegration} />
-            <ConversationsPanel
-  conversations={data.conversations}
-  businessId={selectedBusiness.id}
-/>
-            <BookingsPanel bookings={data.bookings} />
-            <Activity conversations={data.conversations} bookings={data.bookings} health={data.health} />
+
+            <section id="recent-conversations" className="mission-section">
+              <div className="mission-section-head">
+                <div>
+                  <div className="mission-eyebrow">SMART INBOX</div>
+                  <h2>Recent conversations</h2>
+                  <p>Only the four most recent customers are shown here, so the dashboard stays focused.</p>
+                </div>
+                <div className="mission-total-pill">
+                  {data.conversations.length} total
+                </div>
+              </div>
+
+              <ConversationsPanel
+                conversations={data.conversations.slice(0, 4)}
+                businessId={selectedBusiness.id}
+              />
+
+              {data.conversations.length > 4 && (
+                <div className="more-conversations-card">
+                  <div>
+                    <strong>+{data.conversations.length - 4} more conversations</strong>
+                    <span>Your full customer history is safely available in OdinLink.</span>
+                  </div>
+                  <button
+                    className="mission-link-button"
+                    type="button"
+                    onClick={() => setToast('Full Inbox will be added in the next sprint')}
+                  >
+                    Open full inbox →
+                  </button>
+                </div>
+              )}
+            </section>
+
+            <section className="mission-section">
+              <div className="mission-section-head">
+                <div>
+                  <div className="mission-eyebrow">TODAY</div>
+                  <h2>Bookings and activity</h2>
+                  <p>See the customer outcomes OdinLink is creating for the business.</p>
+                </div>
+              </div>
+              <BookingsPanel bookings={data.bookings} />
+              <Activity conversations={data.conversations} bookings={data.bookings} health={data.health} />
+            </section>
+
+            <section className="mission-section mission-admin-section">
+              <div className="mission-section-head">
+                <div>
+                  <div className="mission-eyebrow">CONTROL CENTER</div>
+                  <h2>Business setup and operations</h2>
+                  <p>Manage channels, automation, usage and business settings.</p>
+                </div>
+              </div>
+
+              <HealthStatus health={data.health} onTest={testIntegration} />
+              <NotificationCenter health={data.health} bookings={data.bookings} />
+              <UsageStatistics usage={data.usage} />
+              <BusinessesCard
+                businesses={data.businesses}
+                selectedBusinessId={selectedBusiness.id}
+                onCreate={() => setAddBusinessOpen(true)}
+                onDelete={setDeleteTarget}
+                onSelect={handleBusinessChange}
+              />
+              <BusinessSettings business={selectedBusiness} onSaved={handleSaved} />
+              <SystemPromptEditor business={selectedBusiness} onSaved={handleSaved} />
+              <ChannelSettings
+                business={selectedBusiness}
+                health={data.health}
+                onSaved={handleSaved}
+                onTest={testIntegration}
+              />
+            </section>
           </>
         )}
       </DashboardShell>
@@ -299,6 +352,191 @@ function getReadableApiError(rawMessage: string) {
   } catch {
     return message || 'Connection test failed';
   }
+}
+
+function MissionControl({
+  business,
+  data,
+}: {
+  business: Business;
+  data: DashboardData;
+}) {
+  const totalConversations = data.conversations.length;
+  const attentionCount = data.conversations.filter(needsHumanAttention).length;
+  const handledByOdinLink = Math.max(totalConversations - attentionCount, 0);
+  const automationRate =
+    totalConversations > 0
+      ? Math.round((handledByOdinLink / totalConversations) * 100)
+      : 0;
+
+  const estimatedMinutesSaved = handledByOdinLink * 4;
+  const estimatedStaffValue = Math.round((estimatedMinutesSaved / 60) * 300);
+  const bookingCount = data.bookings.length;
+  const greeting = getGreeting();
+
+  return (
+    <section className="mission-control">
+      <div className="mission-hero">
+        <div>
+          <div className="mission-live-badge">
+            <span />
+            OdinLink is active
+          </div>
+          <h1>{greeting}, {business.name}.</h1>
+          <p>OdinLink has been working while you were away.</p>
+        </div>
+
+        <div className="mission-hero-summary">
+          <span>Today’s focus</span>
+          <strong>
+            {attentionCount > 0
+              ? `${attentionCount} ${attentionCount === 1 ? 'customer needs' : 'customers need'} you`
+              : 'Everything is running smoothly'}
+          </strong>
+        </div>
+      </div>
+
+      <div className="mission-impact-card">
+        <div className="mission-impact-head">
+          <div>
+            <div className="mission-eyebrow">ODINLINK IMPACT</div>
+            <h2>What OdinLink has delivered</h2>
+            <p>Real activity from the currently selected business.</p>
+          </div>
+          <div className="automation-ring" style={{ '--automation': `${automationRate}%` } as CSSProperties}>
+            <div>
+              <strong>{automationRate}%</strong>
+              <span>automated</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="mission-metrics">
+          <ImpactMetric
+            value={String(totalConversations)}
+            label="Customers served"
+            detail="Conversations in the current dashboard period"
+          />
+          <ImpactMetric
+            value={String(handledByOdinLink)}
+            label="Handled by OdinLink"
+            detail="No human attention currently required"
+          />
+          <ImpactMetric
+            value={String(bookingCount)}
+            label="Bookings created"
+            detail="Appointments visible in this dashboard"
+          />
+          <ImpactMetric
+            value={formatMinutes(estimatedMinutesSaved)}
+            label="Estimated time saved"
+            detail="Based on four minutes per handled conversation"
+            accent
+          />
+        </div>
+
+        <div className="mission-value-strip">
+          <div className="mission-value-icon">↗</div>
+          <div>
+            <span>Estimated staff-time value</span>
+            <strong>≈ {estimatedStaffValue.toLocaleString('sv-SE')} SEK</strong>
+          </div>
+          <p>Calculated at 300 SEK/hour. A configurable business estimate can replace this later.</p>
+        </div>
+      </div>
+
+      <div className={attentionCount > 0 ? 'action-center needs-attention' : 'action-center all-clear'}>
+        <div className="action-center-icon">{attentionCount > 0 ? '!' : '✓'}</div>
+        <div className="action-center-copy">
+          <div className="mission-eyebrow">ACTION CENTER</div>
+          <h3>
+            {attentionCount > 0
+              ? `${attentionCount} ${attentionCount === 1 ? 'conversation needs' : 'conversations need'} your attention`
+              : 'OdinLink is handling your customers'}
+          </h3>
+          <p>
+            {attentionCount > 0
+              ? 'These conversations contain a human-attention status in the current data.'
+              : 'There are no conversations currently marked for human attention.'}
+          </p>
+        </div>
+        <button
+          className="mission-action-button"
+          type="button"
+          onClick={() => document.getElementById('recent-conversations')?.scrollIntoView({ behavior: 'smooth' })}
+        >
+          {attentionCount > 0 ? 'Review conversations' : 'View recent activity'} →
+        </button>
+      </div>
+    </section>
+  );
+}
+
+function ImpactMetric({
+  value,
+  label,
+  detail,
+  accent = false,
+}: {
+  value: string;
+  label: string;
+  detail: string;
+  accent?: boolean;
+}) {
+  return (
+    <div className={accent ? 'impact-metric accent' : 'impact-metric'}>
+      <strong>{value}</strong>
+      <span>{label}</span>
+      <small>{detail}</small>
+    </div>
+  );
+}
+
+function needsHumanAttention(conversation: unknown) {
+  if (!conversation || typeof conversation !== 'object') return false;
+
+  const record = conversation as Record<string, unknown>;
+  const booleanFlags = [
+    record.needs_human,
+    record.needsHuman,
+    record.requires_human,
+    record.requiresHuman,
+    record.human_attention,
+    record.humanAttention,
+    record.escalated,
+  ];
+
+  if (booleanFlags.some((value) => value === true)) return true;
+
+  const status = String(
+    record.status ||
+    record.state ||
+    record.handoff_status ||
+    record.handoffStatus ||
+    '',
+  ).toLowerCase();
+
+  return [
+    'needs_human',
+    'human_required',
+    'waiting_for_human',
+    'escalated',
+    'takeover',
+  ].some((value) => status.includes(value));
+}
+
+function getGreeting() {
+  const hour = new Date().getHours();
+  if (hour < 12) return 'Good morning';
+  if (hour < 18) return 'Good afternoon';
+  return 'Good evening';
+}
+
+function formatMinutes(minutes: number) {
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const remaining = minutes % 60;
+  return remaining ? `${hours}h ${remaining}m` : `${hours}h`;
 }
 
 function BusinessesCard({

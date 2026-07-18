@@ -373,6 +373,7 @@ function MissionControl({
   const estimatedStaffValue = Math.round((estimatedMinutesSaved / 60) * 300);
   const bookingCount = data.bookings.length;
   const greeting = getGreeting();
+  const displayBusinessName = formatBusinessName(business.name);
   const connectedChannelCount = data.health.filter((item) =>
     ['connected', 'synced', 'healthy', 'active'].includes(String(item.status).toLowerCase()),
   ).length;
@@ -393,7 +394,7 @@ function MissionControl({
           </div>
 
           <p className="mission-greeting">{greeting} <span aria-hidden="true">👋</span></p>
-          <h1>{business.name}</h1>
+          <h1>{displayBusinessName}</h1>
           <p className="mission-hero-intro">Here’s what OdinLink has accomplished today.</p>
 
           <div className="mission-daily-summary" aria-label="Today’s OdinLink results">
@@ -413,7 +414,10 @@ function MissionControl({
         </div>
 
         <div className={attentionCount > 0 ? 'mission-hero-summary attention' : 'mission-hero-summary clear'}>
-          <span>Today</span>
+          <div className="mission-hero-summary-label">
+            <i aria-hidden="true" />
+            <span>Today</span>
+          </div>
           <strong>
             {attentionCount > 0
               ? `${attentionCount} ${attentionCount === 1 ? 'conversation needs' : 'conversations need'} your attention`
@@ -550,6 +554,20 @@ function needsHumanAttention(conversation: unknown) {
     'escalated',
     'takeover',
   ].some((value) => status.includes(value));
+}
+
+
+function formatBusinessName(name: string) {
+  const normalized = String(name || '').trim().replace(/\s+/g, ' ');
+  if (!normalized) return 'Your business';
+
+  return normalized
+    .split(' ')
+    .map((word) => {
+      if (/^[A-Z0-9]{2,}$/.test(word)) return word;
+      return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+    })
+    .join(' ');
 }
 
 function getGreeting() {

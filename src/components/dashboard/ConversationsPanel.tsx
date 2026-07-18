@@ -353,10 +353,7 @@ export default function ConversationsPanel({
                     </div>
                   </div>
                 </div>
-                <div className="conversation-detail-badge channel">
-                  <ChannelIcon channel={selected.channel} />
-                  <span>{formatChannelName(selected.channel)}</span>
-                </div>
+
               </div>
 
               <div className="chat-transcript">

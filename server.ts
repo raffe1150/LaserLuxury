@@ -791,6 +791,193 @@ function getCalendarAdapter(config: any): CalendarAdapter {
   return new MockCalendarAdapter();
 }
 
+
+function normalizeLookupText(value?: string): string {
+  return String(value || "")
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[^\p{L}\p{N}+]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizeLookupDigits(value?: string): string {
+  return String(value || "").replace(/\D/g, "");
+}
+
+function stockholmDateString(date: Date): string {
+  return new Intl.DateTimeFormat("sv-SE", {
+    timeZone: "Europe/Stockholm",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).format(date);
+}
+
+function addDaysToStockholmDate(dateStr: string, days: number): string {
+  const [year, month, day] = dateStr.split("-").map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
+function getEventStartIso(event: any): string {
+  return String(event?.start?.dateTime || event?.start?.date || event?.startTime || "");
+}
+
+function getEventEndIso(event: any): string {
+  return String(event?.end?.dateTime || event?.end?.date || event?.endTime || "");
+}
+
+function eventMatchesCustomer(event: any, identifiers: {
+  customerId?: string;
+  phone?: string;
+  name?: string;
+}): boolean {
+  const summary = String(event?.summary || event?.title || "");
+  const description = String(event?.description || "");
+  const location = String(event?.location || "");
+  const attendees = Array.isArray(event?.attendees)
+    ? event.attendees.map((item: any) => `${item?.displayName || ""} ${item?.email || ""}`).join(" ")
+    : "";
+
+  const haystackRaw = `${summary} ${description} ${location} ${attendees}`;
+  const haystack = normalizeLookupText(haystackRaw);
+  const haystackDigits = normalizeLookupDigits(haystackRaw);
+
+  const rawCustomerId = String(identifiers.customerId || "").trim();
+  const rawPhone = String(identifiers.phone || "").trim();
+  const normalizedName = normalizeLookupText(identifiers.name);
+
+  const digitCandidates = [
+    normalizeLookupDigits(rawCustomerId),
+    normalizeLookupDigits(rawPhone)
+  ].filter((value) => value.length >= 7);
+
+  if (digitCandidates.some((digits) => haystackDigits.includes(digits))) return true;
+
+  // Channel IDs are written into event descriptions as TelegramChatId for legacy reasons,
+  // even when the source is WhatsApp, Messenger, Instagram or web.
+  if (rawCustomerId && haystack.includes(normalizeLookupText(rawCustomerId))) return true;
+
+  if (normalizedName && normalizedName.length >= 2 && haystack.includes(normalizedName)) return true;
+
+  return false;
+}
+
+async function findCustomerAppointments(
+  adapter: CalendarAdapter,
+  args: any,
+  customerId: string,
+  platform: string
+) {
+  const today = stockholmDateString(new Date());
+  const startDate = String(args?.startDate || today);
+  const endDate = String(args?.endDate || addDaysToStockholmDate(startDate, 180));
+  const phone = String(args?.phone || "");
+  const name = String(args?.name || "");
+
+  const events = await adapter.getEvents(startDate, endDate);
+  const now = Date.now();
+
+  const appointments = (Array.isArray(events) ? events : [])
+    .filter((event: any) => {
+      const startIso = getEventStartIso(event);
+      const startMs = new Date(startIso).getTime();
+      if (!startIso || Number.isNaN(startMs) || startMs < now) return false;
+      if (String(event?.status || "").toLowerCase() === "cancelled") return false;
+      if (isLikelyWorkingHoursMarker(event)) return false;
+      return eventMatchesCustomer(event, { customerId, phone, name });
+    })
+    .sort((a: any, b: any) =>
+      new Date(getEventStartIso(a)).getTime() - new Date(getEventStartIso(b)).getTime()
+    )
+    .slice(0, 5)
+    .map((event: any) => ({
+      id: event?.id || null,
+      summary: String(event?.summary || event?.title || "Appointment"),
+      description: String(event?.description || ""),
+      start: getEventStartIso(event),
+      end: getEventEndIso(event),
+      platform
+    }));
+
+  const hasReliableIdentity =
+    normalizeLookupDigits(phone).length >= 7 ||
+    normalizeLookupDigits(customerId).length >= 7 ||
+    normalizeLookupText(name).length >= 2 ||
+    String(customerId || "").trim().length >= 5;
+
+  return {
+    success: true,
+    found: appointments.length > 0,
+    needsContactDetails: appointments.length === 0 && !hasReliableIdentity,
+    searchedFrom: startDate,
+    searchedTo: endDate,
+    appointments
+  };
+}
+
+function formatAppointmentLookupReply(result: any, language: string = "en"): string {
+  const lang = ["sv", "fa", "de", "es", "ar", "en"].includes(language) ? language : "en";
+
+  if (result?.needsContactDetails) {
+    const ask: Record<string, string> = {
+      sv: "Jag kan kontrollera det åt dig. Skicka namnet eller mobilnumret som bokningen gjordes med. 📅",
+      fa: "می‌توانم بررسی کنم. لطفاً نام یا شماره موبایلی را که رزرو با آن انجام شده بفرستید. 📅",
+      de: "Ich kann das prüfen. Bitte senden Sie den Namen oder die Mobilnummer, unter der gebucht wurde. 📅",
+      es: "Puedo comprobarlo. Envíame el nombre o número de móvil usado para la reserva. 📅",
+      ar: "يمكنني التحقق. أرسل الاسم أو رقم الهاتف المستخدم في الحجز. 📅",
+      en: "I can check that. Please send the name or mobile number used for the booking. 📅"
+    };
+    return ask[lang];
+  }
+
+  if (!result?.found || !Array.isArray(result?.appointments) || result.appointments.length === 0) {
+    const none: Record<string, string> = {
+      sv: "Jag hittade ingen kommande bokning kopplad till dina uppgifter. Vill du att jag söker med ett annat namn eller mobilnummer? 📅",
+      fa: "هیچ رزرو آینده‌ای مرتبط با اطلاعات شما پیدا نکردم. می‌خواهید با نام یا شماره موبایل دیگری بررسی کنم؟ 📅",
+      de: "Ich habe keine kommende Buchung zu Ihren Angaben gefunden. Soll ich mit einem anderen Namen oder einer anderen Mobilnummer suchen? 📅",
+      es: "No encontré ninguna reserva próxima asociada a tus datos. ¿Quieres que busque con otro nombre o número? 📅",
+      ar: "لم أجد حجزًا قادمًا مرتبطًا ببياناتك. هل تريد أن أبحث باسم أو رقم آخر؟ 📅",
+      en: "I couldn’t find an upcoming booking linked to your details. Would you like me to check another name or mobile number? 📅"
+    };
+    return none[lang];
+  }
+
+  const localeMap: Record<string, string> = {
+    sv: "sv-SE",
+    fa: "fa-IR",
+    de: "de-DE",
+    es: "es-ES",
+    ar: "ar",
+    en: "en-GB"
+  };
+
+  const formatted = result.appointments.slice(0, 3).map((appointment: any) => {
+    const date = new Date(appointment.start);
+    return new Intl.DateTimeFormat(localeMap[lang], {
+      timeZone: "Europe/Stockholm",
+      weekday: "long",
+      day: "numeric",
+      month: "long",
+      hour: "2-digit",
+      minute: "2-digit"
+    }).format(date);
+  });
+
+  const joined = formatted.join(", ");
+  const found: Record<string, string> = {
+    sv: `Ja, jag hittade din bokning: ${joined}. 📅`,
+    fa: `بله، رزرو شما را پیدا کردم: ${joined}. 📅`,
+    de: `Ja, ich habe Ihre Buchung gefunden: ${joined}. 📅`,
+    es: `Sí, encontré tu reserva: ${joined}. 📅`,
+    ar: `نعم، وجدت حجزك: ${joined}. 📅`,
+    en: `Yes, I found your booking: ${joined}. 📅`
+  };
+  return found[lang];
+}
+
 const calendarTools: any = [{
   functionDeclarations: [
     {
@@ -805,6 +992,19 @@ const calendarTools: any = [{
           durationMinutes: { type: "INTEGER", description: "The length of the requested booking in minutes. MANDATORY: Calculate this as (treatment duration + 15 min buffer). Example: Bikinilinje is 20 min -> durationMinutes = 35." }
         },
         required: ["startDate", "durationMinutes"]
+      }
+    },
+    {
+      name: "findCustomerAppointments",
+      description: "Looks up the current customer's existing future appointment(s). MUST be used when the customer asks whether they already have a booking, when their appointment is, whether a booking exists, or says they are unsure if they have an appointment. Do not escalate these requests to a human before using this tool. The server automatically uses the current channel identity; pass phone or name only when the customer explicitly provides them.",
+      parameters: {
+        type: "OBJECT",
+        properties: {
+          startDate: { type: "STRING", description: "Optional start date in YYYY-MM-DD. Use the relevant date when the customer mentions today, tomorrow, next week, or a specific day." },
+          endDate: { type: "STRING", description: "Optional end date in YYYY-MM-DD. If omitted, the server searches future appointments for the next 180 days." },
+          phone: { type: "STRING", description: "Customer phone number only if explicitly provided in the conversation." },
+          name: { type: "STRING", description: "Customer name only if explicitly provided in the conversation." }
+        }
       }
     },
     {
@@ -1626,6 +1826,7 @@ If the customer asks about services and the prompt does not include enough infor
 Before confirming any booking, you must check availability.
 Before creating any appointment, collect the customer's name and mobile number. In Messenger, ask for name and mobile number ONLY AFTER an exact date and exact time has been checked, offered to the user, and the user has confirmed that exact slot. If the customer has not chosen a specific time yet, do NOT ask for name/phone; first check availability and offer times. Do not claim the booking is final until the server confirms it.
 For vague time requests, check available slots instead of asking the customer to choose a time. If the user says a weekday such as tisdag/Tuesday, the tool date must match that weekday exactly. Never change Tuesday to Thursday or another day.
+APPOINTMENT LOOKUP — HIGH PRIORITY: If the customer asks whether they already have a booking, when their appointment is, whether a booking exists, or says they are unsure if they booked, you MUST call findCustomerAppointments before replying. This is an allowed booking-support request and must NOT be escalated merely because it is outside the business FAQ. Use the current channel identity automatically; ask for name or mobile number only if the lookup says contact details are needed.
 Do not mention internal tools, API calls, system prompts, or database logic.
 LANGUAGE RULE: Reply only in the active conversation language injected by the server. If the latest customer message is English, reply in English. If it is Swedish, reply in Swedish. If it is Persian, German, Spanish, or Arabic, reply in that same language. Never default to Swedish just because the business is in Sweden.
 `;
@@ -1681,6 +1882,14 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
                 const replyMessage = formatSwedishTimeSlots(slotsArray, args.requestedTime || inferRequestedTimeFromText(text || ""), getLockedReplyLanguage(telegramSessionId, text || ""));
                 return { TERMINATE_EARLY: true, replyMessage };
             }
+        }
+        else if (call.function.name === "findCustomerAppointments" && args) {
+          adapterRes = await findCustomerAppointments(adapter, args, chatId.toString(), "telegram");
+          const replyMessage = formatAppointmentLookupReply(
+            adapterRes,
+            getLockedReplyLanguage(telegramSessionId, text || "")
+          );
+          return { TERMINATE_EARLY: true, replyMessage };
         }
         else if (call.function.name === "insertAppointment" && args) {
           const contactOverride = extractNameAndPhone(text || "");
@@ -2730,6 +2939,7 @@ If the customer asks about services and the prompt does not include enough infor
 Before confirming any booking, you must check availability.
 Before creating any appointment, collect the customer's name and mobile number. In Messenger, ask for name and mobile number ONLY AFTER an exact date and exact time has been checked, offered to the user, and the user has confirmed that exact slot. If the customer has not chosen a specific time yet, do NOT ask for name/phone; first check availability and offer times. Do not claim the booking is final until the server confirms it.
 For vague time requests, check available slots instead of asking the customer to choose a time. If the user says a weekday such as tisdag/Tuesday, the tool date must match that weekday exactly. Never change Tuesday to Thursday or another day.
+APPOINTMENT LOOKUP — HIGH PRIORITY: If the customer asks whether they already have a booking, when their appointment is, whether a booking exists, or says they are unsure if they booked, you MUST call findCustomerAppointments before replying. This is an allowed booking-support request and must NOT be escalated merely because it is outside the business FAQ. Use the current channel identity automatically; ask for name or mobile number only if the lookup says contact details are needed.
 Do not mention internal tools, API calls, system prompts, or database logic.
 LANGUAGE RULE: Reply only in the active conversation language injected by the server. If the latest customer message is English, reply in English. If it is Swedish, reply in Swedish. If it is Persian, German, Spanish, or Arabic, reply in that same language. Never default to Swedish just because the business is in Sweden.
 `;
@@ -2773,8 +2983,15 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
             const replyMessage = formatSwedishTimeSlots(slotsArray, args.requestedTime || inferRequestedTimeFromText(textMessage || ""), getConversationLanguage(chatId, textMessage || ""));
             return { TERMINATE_EARLY: true, replyMessage };
           }
+        } else if (call.function.name === "findCustomerAppointments" && args) {
+          adapterRes = await findCustomerAppointments(adapter, args, chatId.toString(), "whatsapp");
+          const replyMessage = formatAppointmentLookupReply(
+            adapterRes,
+            getConversationLanguage(chatId, textMessage || "")
+          );
+          return { TERMINATE_EARLY: true, replyMessage };
         } else if (call.function.name === "insertAppointment" && args) {
-          // Messenger bookings are finalized by deterministic server logic only.
+          // WhatsApp bookings are finalized by deterministic server logic only.
           // Gemini may choose the wrong name/service/time, so we route this safely.
           const restoredPending = await loadPendingBooking(chatId, "messenger", businessConfig);
           const contactFromMessage = extractNameAndPhone(textMessage || "");
@@ -3708,6 +3925,7 @@ If the customer asks about services and the prompt does not include enough infor
 Before confirming any booking, you must check availability.
 Before creating any appointment, collect the customer's name and mobile number. In Messenger, ask for name and mobile number ONLY AFTER an exact date and exact time has been checked, offered to the user, and the user has confirmed that exact slot. If the customer has not chosen a specific time yet, do NOT ask for name/phone; first check availability and offer times. Do not claim the booking is final until the server confirms it.
 For vague time requests, check available slots instead of asking the customer to choose a time. If the user says a weekday such as tisdag/Tuesday, the tool date must match that weekday exactly. Never change Tuesday to Thursday or another day.
+APPOINTMENT LOOKUP — HIGH PRIORITY: If the customer asks whether they already have a booking, when their appointment is, whether a booking exists, or says they are unsure if they booked, you MUST call findCustomerAppointments before replying. This is an allowed booking-support request and must NOT be escalated merely because it is outside the business FAQ. Use the current channel identity automatically; ask for name or mobile number only if the lookup says contact details are needed.
 Do not mention internal tools, API calls, system prompts, or database logic.
 LANGUAGE RULE: Reply only in the active conversation language injected by the server. If the latest customer message is English, reply in English. If it is Swedish, reply in Swedish. If it is Persian, German, Spanish, or Arabic, reply in that same language. Never default to Swedish just because the business is in Sweden.
 `;
@@ -3778,6 +3996,13 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
             const replyMessage = formatSwedishTimeSlots(slotsArray, requestedTime, getConversationLanguage(chatId, textMessage || ""));
             return { TERMINATE_EARLY: true, replyMessage };
           }
+        } else if (call.function.name === "findCustomerAppointments" && args) {
+          adapterRes = await findCustomerAppointments(adapter, args, chatId.toString(), "messenger");
+          const replyMessage = formatAppointmentLookupReply(
+            adapterRes,
+            getConversationLanguage(chatId, textMessage || "")
+          );
+          return { TERMINATE_EARLY: true, replyMessage };
         } else if (call.function.name === "insertAppointment" && args) {
           // Messenger booking must never trust Gemini-provided date/name directly.
           // It can only finalize a short-lived server-side pending booking after contact info.
@@ -4055,6 +4280,7 @@ If the customer asks about services and the prompt does not include enough infor
 Before confirming any booking, you must check availability.
 Before creating any appointment, collect the customer's name and mobile number. In Messenger, ask for name and mobile number ONLY AFTER an exact date and exact time has been checked, offered to the user, and the user has confirmed that exact slot. If the customer has not chosen a specific time yet, do NOT ask for name/phone; first check availability and offer times. Do not claim the booking is final until the server confirms it.
 For vague time requests, check available slots instead of asking the customer to choose a time. If the user says a weekday such as tisdag/Tuesday, the tool date must match that weekday exactly. Never change Tuesday to Thursday or another day.
+APPOINTMENT LOOKUP — HIGH PRIORITY: If the customer asks whether they already have a booking, when their appointment is, whether a booking exists, or says they are unsure if they booked, you MUST call findCustomerAppointments before replying. This is an allowed booking-support request and must NOT be escalated merely because it is outside the business FAQ. Use the current channel identity automatically; ask for name or mobile number only if the lookup says contact details are needed.
 Do not mention internal tools, API calls, system prompts, or database logic.
 LANGUAGE RULE: Reply only in the active conversation language injected by the server. If the latest customer message is English, reply in English. If it is Swedish, reply in Swedish. If it is Persian, German, Spanish, or Arabic, reply in that same language. Never default to Swedish just because the business is in Sweden.
 `;
@@ -4103,6 +4329,13 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
             const replyMessage = formatSwedishTimeSlots(slotsArray, args.requestedTime || inferRequestedTimeFromText(textMessage || ""), getConversationLanguage(chatId, textMessage || ""));
             return { TERMINATE_EARLY: true, replyMessage };
           }
+        } else if (call.function.name === 'findCustomerAppointments' && args) {
+          adapterRes = await findCustomerAppointments(adapter, args, chatId.toString(), 'instagram');
+          const replyMessage = formatAppointmentLookupReply(
+            adapterRes,
+            getConversationLanguage(chatId, textMessage || '')
+          );
+          return { TERMINATE_EARLY: true, replyMessage };
         } else if (call.function.name === 'insertAppointment' && args) {
           const contactOverride = extractNameAndPhone(textMessage || "");
           const safeName = contactOverride?.name || cleanCustomerNameCandidate(args.name) || args.name;
@@ -4551,6 +4784,7 @@ If the customer asks about services and the prompt does not include enough infor
 Before confirming any booking, you must check availability.
 Before creating any appointment, collect the customer's name and mobile number. In Messenger, ask for name and mobile number ONLY AFTER an exact date and exact time has been checked, offered to the user, and the user has confirmed that exact slot. If the customer has not chosen a specific time yet, do NOT ask for name/phone; first check availability and offer times. Do not claim the booking is final until the server confirms it.
 For vague time requests, check available slots instead of asking the customer to choose a time. If the user says a weekday such as tisdag/Tuesday, the tool date must match that weekday exactly. Never change Tuesday to Thursday or another day.
+APPOINTMENT LOOKUP — HIGH PRIORITY: If the customer asks whether they already have a booking, when their appointment is, whether a booking exists, or says they are unsure if they booked, you MUST call findCustomerAppointments before replying. This is an allowed booking-support request and must NOT be escalated merely because it is outside the business FAQ. Use the current channel identity automatically; ask for name or mobile number only if the lookup says contact details are needed.
 Do not mention internal tools, API calls, system prompts, or database logic.
 LANGUAGE RULE: Reply only in the active conversation language injected by the server. If the latest customer message is English, reply in English. If it is Swedish, reply in Swedish. If it is Persian, German, Spanish, or Arabic, reply in that same language. Never default to Swedish just because the business is in Sweden.
 `;
@@ -4601,6 +4835,14 @@ Never translate unless requested.
                 return { TERMINATE_EARLY: true, replyMessage };
             }
         }
+          else if (call.function.name === "findCustomerAppointments" && args) {
+            adapterRes = await findCustomerAppointments(adapter, args, chatId.toString(), "web");
+            const replyMessage = formatAppointmentLookupReply(
+              adapterRes,
+              getLockedReplyLanguage(chatId, userText || "")
+            );
+            return { TERMINATE_EARLY: true, replyMessage };
+          }
           else if (call.function.name === "insertAppointment" && args) {
           const contactOverride = extractNameAndPhone(userText || "");
           const safeName = contactOverride?.name || cleanCustomerNameCandidate(args.name) || args.name;

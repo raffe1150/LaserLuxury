@@ -378,8 +378,8 @@ function MissionControl({
     ['connected', 'synced', 'healthy', 'active'].includes(String(item.status).toLowerCase()),
   ).length;
   const monitoringCopy = connectedChannelCount > 0
-    ? `Monitoring ${connectedChannelCount} connected ${connectedChannelCount === 1 ? 'channel' : 'channels'}`
-    : 'Monitoring connected customer channels';
+    ? `Working across ${connectedChannelCount} connected ${connectedChannelCount === 1 ? 'channel' : 'channels'}`
+    : 'Working across your connected channels';
 
   const automationLabel =
     automationRate >= 95
@@ -410,7 +410,7 @@ function MissionControl({
             <div className="hero-result-grid">
               <HeroResult icon="customers" value={String(totalConversations)} label="Customers helped" />
               <HeroResult icon="bookings" value={String(bookingCount)} label="Appointments booked" />
-              <HeroResult icon="time" value={formatMinutesLong(estimatedMinutesSaved)} label="Staff time saved" />
+              <HeroResult icon="time" value={formatMinutesLong(estimatedMinutesSaved)} label="Saved for your team" />
             </div>
           </div>
         </div>

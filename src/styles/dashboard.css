@@ -4348,3 +4348,383 @@ textarea.form-input{resize:vertical;min-height:140px;line-height:1.7;}
     left:8px;
   }
 }
+
+
+/* ─────────────────────────────────────────────────────────────
+   MOBILE POLISH V2 — compact hero, cleaner inbox and nav
+   ───────────────────────────────────────────────────────────── */
+@media (max-width: 768px){
+
+  /* Remove any desktop accent/overflow artefacts from the app canvas. */
+  .dashboard-page,
+  .dashboard-page .main,
+  .dashboard-page .content,
+  .mission-control,
+  .mission-section,
+  #conversations{
+    border-left:0 !important;
+    box-shadow:none;
+  }
+
+  .dashboard-page .topbar{
+    min-height:76px;
+    padding:10px 14px 9px;
+    padding-top:max(10px, env(safe-area-inset-top));
+    gap:2px 10px;
+  }
+
+  .mobile-brand{
+    gap:7px;
+  }
+
+  .mobile-brand svg{
+    width:28px;
+    height:28px;
+    flex-basis:28px;
+  }
+
+  .mobile-brand span{
+    font-size:15px;
+  }
+
+  .dashboard-page .topbar-title{
+    font-size:9.5px;
+  }
+
+  .dashboard-page .topbar-search{
+    width:min(50vw,205px);
+    height:40px;
+    border-radius:20px;
+  }
+
+  .dashboard-page .topbar-search select{
+    font-size:11.5px;
+  }
+
+  .dashboard-page .content{
+    padding:12px 14px calc(104px + env(safe-area-inset-bottom));
+    scroll-padding-bottom:112px;
+  }
+
+  /* Hero: preserve impact without allowing the business name to split mid-word. */
+  .mission-hero{
+    gap:13px !important;
+    padding:17px 16px !important;
+    border-radius:18px !important;
+  }
+
+  .mission-live-status{
+    gap:7px 9px;
+  }
+
+  .mission-live-badge{
+    min-height:32px;
+    padding:7px 10px;
+  }
+
+  .mission-monitoring-copy{
+    margin-top:1px;
+    font-size:10.5px;
+    line-height:1.38;
+  }
+
+  .mission-greeting,
+  .mission-hero > .mission-hero-content > .mission-greeting{
+    margin-top:13px !important;
+    font-size:11.5px !important;
+  }
+
+  .mission-hero h1{
+    max-width:100% !important;
+    margin-top:5px !important;
+    font-size:clamp(34px,10.7vw,46px) !important;
+    line-height:.94 !important;
+    letter-spacing:-.045em !important;
+    overflow-wrap:normal !important;
+    word-break:keep-all !important;
+    hyphens:none !important;
+    text-wrap:balance;
+  }
+
+  .hero-results-block{
+    margin-top:18px !important;
+  }
+
+  .hero-results-title{
+    margin-bottom:9px !important;
+  }
+
+  .hero-result-grid{
+    gap:7px !important;
+  }
+
+  .hero-result-item{
+    min-height:64px !important;
+    padding:10px 12px !important;
+    border-radius:13px;
+    gap:12px !important;
+  }
+
+  .hero-result-icon{
+    width:38px !important;
+    height:38px !important;
+    flex:0 0 38px !important;
+  }
+
+  .hero-result-copy{
+    display:grid !important;
+    grid-template-columns:auto minmax(0,1fr);
+    align-items:center;
+    width:100%;
+    gap:4px 12px;
+  }
+
+  .hero-result-copy strong{
+    font-size:25px !important;
+    line-height:1 !important;
+  }
+
+  .hero-result-copy span{
+    min-width:0;
+    font-size:10.5px !important;
+    line-height:1.3 !important;
+    text-align:right;
+  }
+
+  .mission-hero-summary{
+    padding:13px 14px !important;
+    border-radius:14px !important;
+  }
+
+  /* Impact area: reduce vertical weight while keeping metrics easy to scan. */
+  .mission-impact-card{
+    padding:16px !important;
+    border-radius:18px !important;
+  }
+
+  .mission-impact-head{
+    gap:13px !important;
+  }
+
+  .mission-impact-copy h2,
+  .mission-section-head h2{
+    font-size:clamp(22px,6.6vw,27px) !important;
+    line-height:1.1 !important;
+    text-wrap:balance;
+  }
+
+  .mission-impact-copy p,
+  .mission-section-head p{
+    font-size:11.5px !important;
+    line-height:1.48 !important;
+  }
+
+  .automation-score-card{
+    padding:12px !important;
+    border-radius:15px !important;
+  }
+
+  .automation-ring{
+    width:72px !important;
+    height:72px !important;
+    flex-basis:72px !important;
+  }
+
+  .impact-metric{
+    min-height:132px !important;
+    padding:15px !important;
+    border-radius:15px !important;
+  }
+
+  .impact-metric > strong{
+    font-size:38px !important;
+  }
+
+  .mission-section{
+    margin-top:23px !important;
+  }
+
+  .mission-section-head{
+    gap:9px !important;
+    margin-bottom:12px !important;
+  }
+
+  .mission-total-pill{
+    min-height:34px;
+    padding:8px 11px;
+  }
+
+  /* Inbox header and controls: more content above the fold. */
+  #conversations .mission-section-head{
+    display:grid !important;
+    grid-template-columns:minmax(0,1fr) auto;
+    align-items:end !important;
+  }
+
+  #conversations .mission-section-head p{
+    max-width:100%;
+  }
+
+  #conversations .mission-total-pill{
+    align-self:end;
+  }
+
+  .conversation-shell,
+  #conversations .conversation-shell{
+    position:relative;
+    border-radius:17px !important;
+    margin-bottom:18px;
+  }
+
+  .conversation-toolbar,
+  #conversations .conversation-toolbar{
+    gap:10px !important;
+    padding:12px !important;
+  }
+
+  .conversation-search,
+  #conversations .conversation-search{
+    min-height:43px !important;
+  }
+
+  /* Horizontal filters deliberately scroll and retain a visible continuation cue. */
+  .conversation-filters,
+  #conversations .conversation-filters{
+    width:auto !important;
+    margin:0 -12px !important;
+    padding:9px 40px 9px 12px !important;
+    gap:7px !important;
+    scroll-snap-type:x proximity;
+    scroll-padding-inline:12px;
+    mask-image:linear-gradient(to right,#000 0,#000 calc(100% - 30px),transparent 100%);
+    -webkit-mask-image:linear-gradient(to right,#000 0,#000 calc(100% - 30px),transparent 100%);
+  }
+
+  .conversation-filters > *,
+  #conversations .conversation-filters > *{
+    flex:0 0 auto !important;
+    scroll-snap-align:start;
+  }
+
+  .conversation-layout,
+  #conversations .conversation-layout{
+    min-height:0 !important;
+  }
+
+  .conversation-list,
+  #conversations .conversation-list{
+    max-height:min(48dvh,430px) !important;
+    padding-bottom:calc(78px + env(safe-area-inset-bottom)) !important;
+    scroll-padding-bottom:90px;
+  }
+
+  .conversation-row,
+  #conversations .conversation-row{
+    min-height:102px;
+    padding:12px !important;
+  }
+
+  .conversation-row-title{
+    font-size:14px !important;
+  }
+
+  .conversation-row-preview{
+    font-size:11px !important;
+  }
+
+  .conversation-detail,
+  #conversations .conversation-detail{
+    height:min(61dvh,560px) !important;
+    min-height:430px !important;
+    max-height:560px !important;
+  }
+
+  .conversation-detail-head{
+    position:sticky;
+    top:0;
+    z-index:3;
+    padding:12px !important;
+    background:rgba(7,12,8,.94);
+    backdrop-filter:blur(18px);
+    -webkit-backdrop-filter:blur(18px);
+  }
+
+  .chat-transcript,
+  #conversations .chat-transcript{
+    padding:12px 12px 18px !important;
+  }
+
+  .conversation-reply-box{
+    position:sticky;
+    bottom:0;
+    z-index:4;
+    padding:10px !important;
+    background:rgba(7,12,8,.96);
+    backdrop-filter:blur(18px);
+    -webkit-backdrop-filter:blur(18px);
+  }
+
+  /* Bottom navigation: smaller footprint, same touch target quality. */
+  .mobile-bottom-nav{
+    right:12px;
+    bottom:max(8px, env(safe-area-inset-bottom));
+    left:12px;
+    min-height:59px;
+    padding:5px;
+    border-radius:18px;
+  }
+
+  .mobile-nav-item{
+    min-height:47px;
+    gap:3px;
+    border-radius:13px;
+    font-size:9px;
+  }
+
+  .mobile-nav-item svg{
+    width:19px;
+    height:19px;
+  }
+
+  .toast{
+    bottom:calc(78px + env(safe-area-inset-bottom)) !important;
+  }
+}
+
+@media (max-width: 420px){
+  .dashboard-page .topbar{
+    grid-template-columns:minmax(0,1fr) minmax(126px,47vw);
+    padding-right:11px;
+    padding-left:11px;
+  }
+
+  .dashboard-page .content{
+    padding-right:11px;
+    padding-left:11px;
+  }
+
+  .mission-hero{
+    padding:16px 14px !important;
+  }
+
+  .mission-hero h1{
+    font-size:clamp(32px,10.9vw,43px) !important;
+  }
+
+  .hero-result-copy{
+    gap:4px 9px;
+  }
+
+  .hero-result-copy strong{
+    font-size:23px !important;
+  }
+
+  .hero-result-copy span{
+    font-size:10px !important;
+  }
+
+  .mobile-bottom-nav{
+    right:7px;
+    left:7px;
+  }
+}

@@ -349,6 +349,20 @@ function parseSlotIso(slot: string): string | null {
   return match?.[1] || null;
 }
 
+function getStockholmTimeFromIso(dateTime?: string): string | null {
+  const raw = String(dateTime || "").trim();
+  if (!raw) return null;
+
+  const date = new Date(ensureStockholmOffset(raw));
+  if (Number.isNaN(date.getTime())) return null;
+
+  return date.toLocaleTimeString("sv-SE", {
+    timeZone: "Europe/Stockholm",
+    hour: "2-digit",
+    minute: "2-digit"
+  });
+}
+
 function extractAvailableSlotTimes(slotsString?: string): Set<string> {
   const times = new Set<string>();
   if (!slotsString) return times;
@@ -1423,7 +1437,7 @@ function extractNameOnly(text?: string): string | null {
     /(?:my\s+name\s+is|name\s+is)\s+([A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,}(?:\s+[A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,})?)/i,
     /(?:mein\s+name\s+ist|ich\s+hei(?:ß|ss)e)\s+([A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,}(?:\s+[A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,})?)/i,
     /(?:mi\s+nombre\s+es|me\s+llamo)\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ'-]{2,}(?:\s+[A-Za-zÁÉÍÓÚÜÑáéíóúüñ'-]{2,})?)/i,
-    /(?:esme?\s+man|esmam|namam|name\s+man)\s+([A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,}(?:\s+[A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,})?)/i,
+    /(?:esme?\s+man|esmam|namam|name\s+man)\s+(?:hast|ast|e)?\s*([A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,}(?:\s+[A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,})?)/i,
     /(?:نام(?:م)?|اسم(?:م)?)\s+([\u0600-\u06FF]{2,}(?:\s+[\u0600-\u06FF]{2,})?)/u,
     /(?:اسمي|إسمي|انا اسمي|أنا اسمي|الاسم)\s+([\u0600-\u06FF]{2,})(?=\s+(?:و|ورقم|وهاتفي|رقمي|هاتفي|هو)|\s*$)/u
   ];
@@ -2225,7 +2239,12 @@ async function handleUnifiedBookingEngine(params: {
           offeredSlots: slots,
           dateTime: exactIso,
           durationMinutes: fixedDuration || durationMinutes,
-          language,
+          language: detectStrongLatestLanguage(text) || language,
+          customerPhone: getWhatsAppConversationPhone(
+            platformName,
+            recipientUserId,
+            sessionId
+          ),
           status: exactIso ? "awaiting_confirmation" : "awaiting_time_selection"
         });
       } else {
@@ -2288,7 +2307,7 @@ async function handleUnifiedBookingEngine(params: {
     if (pending && isPendingSlotConfirmation(text, pending)) {
       // Recheck once more before requesting personal details.
       const dateTime = String(pending.dateTime || "");
-      const selectedTime = inferRequestedTimeFromText(dateTime);
+      const selectedTime = getStockholmTimeFromIso(dateTime);
       const selectedDate = String(pending.selectedDate || dateTime.slice(0, 10));
 
       if (dateTime && selectedTime && selectedDate) {
@@ -2322,8 +2341,21 @@ async function handleUnifiedBookingEngine(params: {
 
       pending.status = "awaiting_contact";
       pending.language = pending.language || language;
+      if (!pending.customerPhone) {
+        pending.customerPhone = getWhatsAppConversationPhone(
+          platformName,
+          recipientUserId,
+          sessionId
+        );
+      }
+
       await savePendingBooking(sessionId, platformName, pending);
-      await replyAndRecord(formatAskContactMessage(pending.language || language));
+      await replyAndRecord(
+        formatAskContactMessageForPlatform(
+          pending.language || language,
+          platformName
+        )
+      );
       return true;
     }
 
@@ -2392,7 +2424,7 @@ async function handleUnifiedBookingEngine(params: {
       }
 
       const adapter = getCalendarAdapter(businessConfig);
-      const selectedTime = inferRequestedTimeFromText(pending.dateTime);
+      const selectedTime = getStockholmTimeFromIso(pending.dateTime);
       const selectedDate = String(
         pending.selectedDate || String(pending.dateTime).slice(0, 10)
       );
@@ -2404,13 +2436,42 @@ async function handleUnifiedBookingEngine(params: {
         Number(pending.durationMinutes || 30),
         selectedTime || undefined
       );
-      const finalIso = selectedTime
-        ? findOfferedSlotIso(getSlotsArray(fresh), selectedTime)
+      const freshSlots = getSlotsArray(fresh);
+      const revalidatedIso = selectedTime
+        ? findOfferedSlotIso(freshSlots, selectedTime)
         : null;
 
+      const lockedIso = String(pending.dateTime || "").trim();
+      const lockedTime = getStockholmTimeFromIso(lockedIso);
+      const lockedDate = lockedIso.slice(0, 10);
+
+      const finalIso =
+        revalidatedIso ||
+        (
+          lockedIso &&
+          lockedTime === selectedTime &&
+          lockedDate === selectedDate &&
+          isExactRequestedSlotAvailable(
+            Array.isArray(pending.offeredSlots) ? pending.offeredSlots : [],
+            selectedTime || undefined
+          )
+            ? lockedIso
+            : null
+        );
+
       if (!finalIso) {
+        console.error("[UnifiedBooking] Exact slot failed final revalidation", {
+          platform: platformName,
+          sessionId,
+          selectedDate,
+          selectedTime,
+          pendingDateTime: pending.dateTime,
+          previousOfferedSlots: pending.offeredSlots,
+          freshSlots
+        });
+
         pending.status = "awaiting_time_selection";
-        pending.offeredSlots = getSlotsArray(fresh);
+        pending.offeredSlots = freshSlots;
         pending.dateTime = null;
         await savePendingBooking(sessionId, platformName, pending);
         await replyAndRecord(

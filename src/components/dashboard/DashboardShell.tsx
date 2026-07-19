@@ -25,6 +25,51 @@ const NAV_ITEMS = [
   { id: 'notification-center', label: 'Notifications' },
 ] as const;
 
+const MOBILE_NAV_ITEMS = [
+  { id: 'overview', label: 'Home', icon: 'home' },
+  { id: 'conversations', label: 'Inbox', icon: 'inbox' },
+  { id: 'bookings', label: 'Bookings', icon: 'calendar' },
+  { id: 'businesses', label: 'More', icon: 'more' },
+] as const;
+
+function MobileNavIcon({ icon }: { icon: (typeof MOBILE_NAV_ITEMS)[number]['icon'] }) {
+  if (icon === 'home') {
+    return (
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <path d="m3 11 9-7 9 7" />
+        <path d="M5 10v10h14V10" />
+        <path d="M9 20v-6h6v6" />
+      </svg>
+    );
+  }
+
+  if (icon === 'inbox') {
+    return (
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <path d="M4 5h16v14H4z" />
+        <path d="M4 14h4l2 3h4l2-3h4" />
+      </svg>
+    );
+  }
+
+  if (icon === 'calendar') {
+    return (
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <rect x="3" y="5" width="18" height="16" rx="2" />
+        <path d="M8 3v4M16 3v4M3 10h18" />
+      </svg>
+    );
+  }
+
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <circle cx="5" cy="12" r="1.5" />
+      <circle cx="12" cy="12" r="1.5" />
+      <circle cx="19" cy="12" r="1.5" />
+    </svg>
+  );
+}
+
 export default function DashboardShell({
   title,
   businesses = [],
@@ -37,7 +82,6 @@ export default function DashboardShell({
   const [activeSection, setActiveSection] = useState('overview');
 
   useEffect(() => {
-    // A previous URL hash must not leave Health (or another item) selected after reload.
     if (window.location.hash) {
       window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
     }
@@ -47,7 +91,7 @@ export default function DashboardShell({
 
     const updateActiveSection = () => {
       const contentTop = content.getBoundingClientRect().top;
-      const activationLine = contentTop + 150;
+      const activationLine = contentTop + Math.min(170, window.innerHeight * 0.24);
       let current = 'overview';
 
       for (const item of NAV_ITEMS) {
@@ -80,10 +124,17 @@ export default function DashboardShell({
 
     setActiveSection(sectionId);
     section.scrollIntoView({ behavior: 'smooth', block: 'start' });
-
-    // Keep the URL clean so a stale #health hash cannot control the next page load.
     window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
   };
+
+  const mobileActiveSection =
+    activeSection === 'overview'
+      ? 'overview'
+      : activeSection === 'conversations'
+        ? 'conversations'
+        : activeSection === 'bookings' || activeSection === 'activity'
+          ? 'bookings'
+          : 'businesses';
 
   return (
     <>
@@ -139,7 +190,18 @@ export default function DashboardShell({
 
       <div className="main">
         <div className="topbar">
+          <button className="mobile-brand shell-button" type="button" onClick={() => onNavigate('/')} aria-label="Open OdinLink landing page">
+            <svg width="30" height="30" viewBox="0 0 36 36" fill="none">
+              <rect width="36" height="36" rx="10" fill="#3ddc84" />
+              <path d="M10 22 L18 10 L26 22" stroke="#060a07" strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round" />
+              <circle cx="18" cy="26" r="2.5" fill="#060a07" />
+              <path d="M14 22 L22 22" stroke="#060a07" strokeWidth="2.8" strokeLinecap="round" />
+            </svg>
+            <span>Odinlink</span>
+          </button>
+
           <span className="topbar-title">{title}</span>
+
           <div className="topbar-search">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9">
               <circle cx="11" cy="11" r="6" />
@@ -161,14 +223,31 @@ export default function DashboardShell({
               )}
             </select>
           </div>
+
           <div className="topbar-right">
             <button className="topbar-btn ghost" type="button" onClick={() => onNavigate('/')}>
               Landing
             </button>
           </div>
         </div>
+
         <div className="content">{children}</div>
       </div>
+
+      <nav className="mobile-bottom-nav" aria-label="Mobile dashboard navigation">
+        {MOBILE_NAV_ITEMS.map((item) => (
+          <a
+            key={item.id}
+            href={`#${item.id}`}
+            className={mobileActiveSection === item.id ? 'mobile-nav-item active' : 'mobile-nav-item'}
+            aria-current={mobileActiveSection === item.id ? 'page' : undefined}
+            onClick={(event) => handleSectionClick(event, item.id)}
+          >
+            <MobileNavIcon icon={item.icon} />
+            <span>{item.label}</span>
+          </a>
+        ))}
+      </nav>
     </>
   );
 }

@@ -1213,7 +1213,7 @@ function isNewBookingRequestText(text?: string): boolean {
 
   const hasBookingWord = /\b(boka|bokning|tid|appointment|book|booking|termin|cita|reservar|موعد|حجز|vaght|وقت)\b/i.test(lower);
   const hasServiceWord = /\b(helkropp|full\s*body|fullbody|bikini|laser|manikyr|pedikyr|pedicure|manicure|behandling|treatment|ganzk[oö]rper|tratamiento|علاج|جلسة)\b/i.test(lower);
-  const hasDateWord = /\b(nästa|nasta|tisdag|måndag|onsdag|torsdag|fredag|lördag|söndag|next|monday|tuesday|wednesday|thursday|friday|saturday|sunday|montag|dienstag|miércoles|martes|jueves|viernes|دوشنبه|سه\s*شنبه|الثلاثاء|الخميس)\b/i.test(lower);
+  const hasDateWord = /\b(nästa|nasta|tisdag|måndag|onsdag|torsdag|fredag|lördag|söndag|next|monday|tuesday|wednesday|thursday|friday|saturday|sunday|montag|dienstag|miércoles|martes|jueves|viernes|1shanbe|2shanbe|3shanbe|4shanbe|5shanbe|6shanbe|doshanbe|seshanbe|chaharshanbe|panjshanbe|jome|دوشنبه|سه\s*شنبه|چهارشنبه|پنجشنبه|الثلاثاء|الخميس)\b/i.test(lower);
   return (hasBookingWord && (hasServiceWord || hasDateWord)) || (hasServiceWord && hasDateWord);
 }
 
@@ -1381,7 +1381,7 @@ function extractNameAndPhone(text?: string): { name: string; phone: string } | n
     /(?:my\s+name\s+is|name\s+is)\s+([A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,}(?:\s+[A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,})?)/i,
     /(?:mein\s+name\s+ist|ich\s+hei(?:ß|ss)e)\s+([A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,}(?:\s+[A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,})?)/i,
     /(?:mi\s+nombre\s+es|me\s+llamo)\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ'-]{2,}(?:\s+[A-Za-zÁÉÍÓÚÜÑáéíóúüñ'-]{2,})?)/i,
-    /(?:esme?\s+man|esmam|namam|name\s+man)\s+([A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,}(?:\s+[A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,})?)/i,
+    /(?:esme?\s+man|esmam|namam|name\s+man)\s+(?:hast|e|ast)?\s*([A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,}(?:\s+[A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,})?)/i,
     /(?:نام(?:م)?|اسم(?:م)?)\s+([\u0600-\u06FF]{2,}(?:\s+[\u0600-\u06FF]{2,})?)/u,
     /(?:اسمي|إسمي|انا اسمي|أنا اسمي|الاسم)\s+([\u0600-\u06FF]{2,})(?=\s+(?:و|ورقم|وهاتفي|رقمي|هاتفي|هو)|\s*$)/u
   ];
@@ -1460,10 +1460,20 @@ function normalizeBookingService(text?: string, fallback?: string): string {
   return existing || "Bokning";
 }
 
-function getWhatsAppConversationPhone(platformName: string, recipientUserId: string): string | null {
+function getWhatsAppConversationPhone(
+  platformName: string,
+  recipientUserId: string,
+  sessionId?: string
+): string | null {
   if (platformName !== "whatsapp") return null;
-  const digits = String(recipientUserId || "").replace(/\D/g, "");
-  return digits.length >= 7 ? `+${digits}` : null;
+
+  const candidates = [recipientUserId, sessionId];
+  for (const candidate of candidates) {
+    const digits = String(candidate || "").replace(/\D/g, "");
+    if (digits.length >= 7) return `+${digits}`;
+  }
+
+  return null;
 }
 
 function formatMissingBookingDetailsMessage(
@@ -1695,12 +1705,12 @@ function resolveExplicitBookingDate(text?: string): string | null {
   }
 
   const weekdayMap: Array<[RegExp, number]> = [
-    [/\b(söndag|sunday|yekshanbe|یکشنبه)\b/i, 0],
-    [/\b(måndag|mandag|monday|doshanbe|دوشنبه)\b/i, 1],
-    [/\b(tisdag|tuesday|seshanbe|سه.?شنبه)\b/i, 2],
-    [/\b(onsdag|wednesday|chaharshanbe|چهارشنبه)\b/i, 3],
-    [/\b(torsdag|thursday|panjshanbe|پنجشنبه)\b/i, 4],
-    [/\b(fredag|friday|jome|جمعه)\b/i, 5],
+    [/\b(söndag|sunday|yekshanbe|1shanbe|یکشنبه)\b/i, 0],
+    [/\b(måndag|mandag|monday|doshanbe|2shanbe|دوشنبه)\b/i, 1],
+    [/\b(tisdag|tuesday|seshanbe|3shanbe|سه.?شنبه)\b/i, 2],
+    [/\b(onsdag|wednesday|chaharshanbe|4shanbe|چهارشنبه)\b/i, 3],
+    [/\b(torsdag|thursday|panjshanbe|5shanbe|پنجشنبه)\b/i, 4],
+    [/\b(fredag|friday|jome|jomeh|6shanbe|جمعه)\b/i, 5],
     [/\b(lördag|lordag|saturday|shanbe|شنبه)\b/i, 6]
   ];
 
@@ -1825,6 +1835,21 @@ function isPendingSlotConfirmation(text: string | undefined, pending: any): bool
   // must count as confirmation, even without words such as "yes" or "ok".
   return /\b(khube|khob|good|works|fine|passar|bra|går bra|okej|ok|mitonam|می.?تونم|خوبه|مناسبه|باشه|بله|آره|yes|ja|vale|bien|gut)\b/i.test(raw)
     || raw.replace(/\s+/g, "") === selectedTime.replace(":", "");
+}
+
+
+function formatAskContactMessageForPlatform(
+  language: string,
+  platformName: string
+): string {
+  if (platformName !== "whatsapp") return formatAskContactMessage(language);
+
+  if (language === "fa") return "عالیه 😊 برای نهایی‌کردن رزرو فقط نام‌تان را بفرستید.";
+  if (language === "es") return "Perfecto 😊 Para finalizar la reserva, solo necesito tu nombre.";
+  if (language === "de") return "Perfekt 😊 Für den Abschluss brauche ich nur Ihren Namen.";
+  if (language === "ar") return "ممتاز 😊 لإتمام الحجز أحتاج فقط اسمك.";
+  if (language === "en") return "Perfect 😊 To finish the booking, I only need your name.";
+  return "Toppen! 😊 För att slutföra bokningen behöver jag bara ditt namn.";
 }
 
 function formatAskContactMessage(language: string = "sv"): string {
@@ -2250,7 +2275,12 @@ async function handleUnifiedBookingEngine(params: {
         await savePendingBooking(sessionId, platformName, pending);
 
         console.log(`[UnifiedBooking] Slot revalidated platform=${platformName}, iso=${freshIso}`);
-        await replyAndRecord(formatAskContactMessage(pending.language || language));
+        await replyAndRecord(
+          formatAskContactMessageForPlatform(
+            pending.language || language,
+            platformName
+          )
+        );
         return true;
       }
     }
@@ -2302,7 +2332,11 @@ async function handleUnifiedBookingEngine(params: {
       const nameFromMessage = combinedContact?.name || extractNameOnly(text);
       const phoneFromMessage = combinedContact?.phone || extractPhoneOnly(text);
       const serviceFromMessage = normalizeBookingService(text, pending.service);
-      const phoneFromChannel = getWhatsAppConversationPhone(platformName, recipientUserId);
+      const phoneFromChannel = getWhatsAppConversationPhone(
+        platformName,
+        recipientUserId,
+        sessionId
+      );
 
       if (nameFromMessage) pending.customerName = nameFromMessage;
       if (phoneFromMessage) pending.customerPhone = phoneFromMessage;
@@ -3000,6 +3034,31 @@ function shouldKeepPreviousConversationLanguage(chatId: string, latestText?: str
   return false;
 }
 
+
+function detectStrongLatestLanguage(text?: string): string | null {
+  const raw = String(text || "").trim().toLowerCase();
+  if (!raw) return null;
+
+  if (/[\u0600-\u06FF]/.test(raw)) {
+    if (/[پچژگ]|(?:می|نمی|برای|وقت|مشاوره|شماره|اسم)/.test(raw)) return "fa";
+    return "ar";
+  }
+
+  if (
+    /\b(kan jag|jag vill|jag behöver|måndag|tisdag|onsdag|torsdag|fredag|lördag|söndag|klockan|vilken tid|konsultation|boka|ledig|passar|mitt namn)\b/i.test(raw)
+  ) return "sv";
+
+  if (
+    /\b(man|mikham|mikhastam|baraye|vaght|moshavere|moshavereh|esmam|esme man|khobe|bale|lotfan|2shanbe|3shanbe|4shanbe|5shanbe)\b/i.test(raw)
+  ) return "fa";
+
+  if (/\b(i want|can i|monday|tuesday|wednesday|appointment|consultation|book|booking|my name)\b/i.test(raw)) return "en";
+  if (/\b(ich|möchte|termin|montag|dienstag|beratung)\b/i.test(raw)) return "de";
+  if (/\b(quiero|cita|lunes|martes|consulta)\b/i.test(raw)) return "es";
+
+  return null;
+}
+
 function getConversationLanguage(chatId: string, latestText?: string): string {
   const text = String(latestText || "").trim();
   const previous = chatLanguages[chatId];
@@ -3013,7 +3072,16 @@ function getConversationLanguage(chatId: string, latestText?: string): string {
 
   if (completed && isThanksOnlyText(text)) return completed.language || previous || "en";
 
-  const detected = detectUserLanguage(text || "");
+  const strongLatest = detectStrongLatestLanguage(text);
+  const detected = strongLatest || detectUserLanguage(text || "");
+
+  if (strongLatest && strongLatest !== previous) {
+    chatLanguages[chatId] = strongLatest;
+    console.log(
+      `[LanguageLock] strong latest message override previous=${previous || "none"} with=${strongLatest} chatId=${chatId}`
+    );
+    return strongLatest;
+  }
 
   // Important production fix:
   // Old Telegram/Instagram chats can already have a previous language locked from an older test.

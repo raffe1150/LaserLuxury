@@ -1455,7 +1455,7 @@ function isRescheduleIntent(text?: string): boolean {
   if (!raw) return false;
 
   return (
-    /\b(ändra(?:\s+(?:min|tiden|tid))?|flytta(?:\s+(?:min|tiden|tid|bokningen))?|boka om|omboka|annan tid|ny tid|reschedule|change my appointment|change the time|move my appointment|تغییر.*وقت|عوض.*وقت)\b/i.test(raw) ||
+    /\b(ändra(?:\s+(?:min|tiden|tid))?|flytta(?:\s+(?:min|tiden|tid|bokningen))?|boka om|omboka|annan tid|ny tid|reschedule|change my appointment|change the time|move my appointment|avaz\s*(?:konam|kardam|bedam|beshe)?|taghir\s*(?:bedam|konam)?|vaghtam\s+avaz|hamon\s+vaght(?:e|i)?\s+ghabli|تغییر.*وقت|عوض.*وقت)\b/i.test(raw) ||
     /\b(kan inte komma|kan tyvärr inte komma|kommer inte kunna komma|cannot come|can't come|can not come)\b/i.test(raw) ||
     /\b(i\s*stället|istället|instead)\b/i.test(raw)
   );
@@ -1993,11 +1993,12 @@ function resolveExplicitBookingDate(text?: string): string | null {
   // Relative dates must be resolved before weekday parsing. This is critical for
   // rescheduling messages such as "imorgon kl 18:30" and "farda saate 18:30".
   if (/\b(idag|today|emruz|emrooz|امروز)\b/i.test(raw)) return today;
+  // Check day-after-tomorrow BEFORE tomorrow. Otherwise "pas farda" also matches "farda".
+  if (/\b(i\s*övermorgon|övermorgon|day after tomorrow|pas\s*farda|pasfarda|پس\s*فردا|پسفردا)\b/i.test(raw)) {
+    return addDaysToStockholmDate(today, 2);
+  }
   if (/\b(i\s*morgon|imorgon|tomorrow|farda|فردا)\b/i.test(raw)) {
     return addDaysToStockholmDate(today, 1);
-  }
-  if (/\b(i\s*övermorgon|övermorgon|day after tomorrow|pasfarda|پس\s*فردا|پسفردا)\b/i.test(raw)) {
-    return addDaysToStockholmDate(today, 2);
   }
 
   const iso = raw.match(/\b(20\d{2})-(\d{2})-(\d{2})\b/);
@@ -2563,7 +2564,41 @@ async function handleUnifiedBookingEngine(params: {
       pending = null;
     }
 
-    const rememberedAppointment = getAppointmentContext(sessionId);
+    // Rescheduling an existing appointment must always win over a stale/new-booking flow.
+    // Never ask again for service, duration, name or phone when an existing booking can be found.
+    const rescheduleRequested = isRescheduleIntent(text);
+    if (pending && rescheduleRequested) {
+      console.log(`[UnifiedBooking] Reschedule intent cleared pending new-booking state platform=${platformName}, session=${sessionId}`);
+      await clearPendingBooking(sessionId);
+      pending = null;
+    }
+
+    let rememberedAppointment = getAppointmentContext(sessionId);
+
+    // Memory is in-process and may be empty after deploy/restart. Recover the customer's
+    // existing booking directly from Supabase/Google Calendar before handling the change.
+    if (!pending && !rememberedAppointment && rescheduleRequested) {
+      const adapter = getCalendarAdapter(businessConfig);
+      const lookupContact = extractNameAndPhone(text);
+      const lookupResult = await findCustomerAppointments(
+        adapter,
+        {
+          name: lookupContact?.name || extractNameOnly(text) || undefined,
+          phone: lookupContact?.phone || extractPhoneOnly(text) || undefined
+        },
+        recipientUserId,
+        platformName,
+        businessConfig
+      );
+
+      rememberAppointmentContext(sessionId, lookupResult, language);
+      rememberedAppointment = getAppointmentContext(sessionId);
+
+      if (!rememberedAppointment) {
+        await replyAndRecord(formatAppointmentLookupReply(lookupResult, language));
+        return true;
+      }
+    }
 
     if (!pending && rememberedAppointment && isAppointmentNameQuestion(text)) {
       await replyAndRecord(

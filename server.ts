@@ -1451,7 +1451,14 @@ function isAppointmentNameQuestion(text?: string): boolean {
 }
 
 function isRescheduleIntent(text?: string): boolean {
-  return /\b(ändra|min tid|flytta|boka om|omboka|reschedule|change my appointment|change the time|تغییر.*وقت|عوض.*وقت)\b/i.test(String(text || ""));
+  const raw = String(text || "").trim().toLowerCase();
+  if (!raw) return false;
+
+  return (
+    /\b(ändra(?:\s+(?:min|tiden|tid))?|flytta(?:\s+(?:min|tiden|tid|bokningen))?|boka om|omboka|annan tid|ny tid|reschedule|change my appointment|change the time|move my appointment|تغییر.*وقت|عوض.*وقت)\b/i.test(raw) ||
+    /\b(kan inte komma|kan tyvärr inte komma|kommer inte kunna komma|cannot come|can't come|can not come)\b/i.test(raw) ||
+    /\b(i\s*stället|istället|instead)\b/i.test(raw)
+  );
 }
 
 function isGenericBookingRequestWithoutDate(text?: string): boolean {
@@ -1981,6 +1988,18 @@ function resolveExplicitBookingDate(text?: string): string | null {
   const raw = String(text || "").trim().toLowerCase();
   if (!raw) return null;
 
+  const today = stockholmDateString(new Date());
+
+  // Relative dates must be resolved before weekday parsing. This is critical for
+  // rescheduling messages such as "imorgon kl 18:30" and "farda saate 18:30".
+  if (/\b(idag|today|emruz|emrooz|امروز)\b/i.test(raw)) return today;
+  if (/\b(i\s*morgon|imorgon|tomorrow|farda|فردا)\b/i.test(raw)) {
+    return addDaysToStockholmDate(today, 1);
+  }
+  if (/\b(i\s*övermorgon|övermorgon|day after tomorrow|pasfarda|پس\s*فردا|پسفردا)\b/i.test(raw)) {
+    return addDaysToStockholmDate(today, 2);
+  }
+
   const iso = raw.match(/\b(20\d{2})-(\d{2})-(\d{2})\b/);
   if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
 
@@ -2017,6 +2036,32 @@ function resolveExplicitBookingDate(text?: string): string | null {
 
   todayUtc.setUTCDate(todayUtc.getUTCDate() + daysAhead);
   return todayUtc.toISOString().slice(0, 10);
+}
+
+function resolveRescheduleDate(text: string, appointment?: any): string | null {
+  const explicit = resolveExplicitBookingDate(text);
+  if (explicit) return explicit;
+
+  const raw = String(text || "").trim().toLowerCase();
+  const appointmentStart = String(appointment?.start || "").trim();
+  const appointmentDate = appointmentStart
+    ? stockholmDateString(new Date(ensureStockholmOffset(appointmentStart)))
+    : null;
+
+  // "same day", "samma dag", and equivalent phrases refer to the current appointment date.
+  if (
+    appointmentDate &&
+    /\b(samma dag|samma datum|den dagen|same day|same date|hamon rooz|hamoon rooz|همان روز|همون روز)\b/i.test(raw)
+  ) {
+    return appointmentDate;
+  }
+
+  // During an active reschedule flow, a reply containing only a new clock time means
+  // keep the appointment date and change only the time. This prevents endless loops
+  // after messages such as "imorgon kl 18:30" followed by "18:30" or "samma dag 18:30".
+  if (appointmentDate && inferRequestedTimeFromText(raw)) return appointmentDate;
+
+  return null;
 }
 
 function inferBookingDurationFromContext(text: string, history: any[]): number {
@@ -2531,9 +2576,9 @@ async function handleUnifiedBookingEngine(params: {
     }
 
     if (!pending && rememberedAppointment && isRescheduleIntent(text)) {
-      const requestedDate = resolveExplicitBookingDate(text);
-      const requestedTime = inferRequestedTimeFromText(text);
       const appointment = rememberedAppointment.appointment;
+      const requestedDate = resolveRescheduleDate(text, appointment);
+      const requestedTime = inferRequestedTimeFromText(text);
       const lockedLanguage = rememberedAppointment.language || language;
 
       if (!requestedDate || !requestedTime) {
@@ -2552,7 +2597,7 @@ async function handleUnifiedBookingEngine(params: {
 
     const activeReschedule = !pending ? getRescheduleContext(sessionId) : null;
     if (activeReschedule) {
-      const requestedDate = resolveExplicitBookingDate(text);
+      const requestedDate = resolveRescheduleDate(text, activeReschedule.appointment);
       const requestedTime = inferRequestedTimeFromText(text);
 
       if (requestedDate && requestedTime) {
@@ -2566,11 +2611,26 @@ async function handleUnifiedBookingEngine(params: {
 
       // Keep the reschedule flow active instead of accidentally starting a new booking
       // or asking for the service again. The existing appointment already contains it.
-      const ask = (activeReschedule.language || language) === "fa"
-        ? "لطفاً تاریخ و ساعت جدید را بفرستید؛ مثلاً فردا ساعت ۱۸:۳۰. 📅"
-        : (activeReschedule.language || language) === "sv"
-          ? "Skicka gärna den nya dagen och tiden, till exempel i morgon kl 18:30. 📅"
-          : "Please send the new day and time, for example tomorrow at 18:30. 📅";
+      const lockedLanguage = activeReschedule.language || language;
+      const hasDate = Boolean(requestedDate);
+      const hasTime = Boolean(requestedTime);
+      const ask = lockedLanguage === "fa"
+        ? hasDate && !hasTime
+          ? "لطفاً ساعت جدید را بفرستید؛ مثلاً ۱۸:۳۰. 📅"
+          : !hasDate && hasTime
+            ? "لطفاً روز جدید را بفرستید؛ مثلاً فردا. 📅"
+            : "لطفاً روز و ساعت جدید را بفرستید؛ مثلاً فردا ساعت ۱۸:۳۰. 📅"
+        : lockedLanguage === "sv"
+          ? hasDate && !hasTime
+            ? "Skicka gärna den nya tiden, till exempel kl 18:30. 📅"
+            : !hasDate && hasTime
+              ? "Skicka gärna den nya dagen, till exempel i morgon. 📅"
+              : "Skicka gärna den nya dagen och tiden, till exempel i morgon kl 18:30. 📅"
+          : hasDate && !hasTime
+            ? "Please send the new time, for example 18:30. 📅"
+            : !hasDate && hasTime
+              ? "Please send the new day, for example tomorrow. 📅"
+              : "Please send the new day and time, for example tomorrow at 18:30. 📅";
       await replyAndRecord(ask);
       return true;
     }

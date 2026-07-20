@@ -2481,7 +2481,18 @@ async function handleUnifiedBookingEngine(params: {
   if (!text) return false;
 
   const language = getConversationLanguage(sessionId, text);
+  const latestStrongLanguage = detectStrongLatestLanguage(text);
   let pending = await loadPendingBooking(sessionId, platformName, businessConfig);
+
+  // Never let a restored pending flow lock Messenger/Instagram to an old language.
+  // The latest clear customer message is the source of truth for the next reply.
+  if (pending && latestStrongLanguage && pending.language !== latestStrongLanguage) {
+    console.log(
+      `[LanguageLock] updating pending flow language previous=${pending.language || "none"} with=${latestStrongLanguage} session=${sessionId}`
+    );
+    pending.language = latestStrongLanguage;
+    await savePendingBooking(sessionId, platformName, pending);
+  }
 
   const replyAndRecord = async (reply: string) => {
     await send(reply);
@@ -2580,6 +2591,16 @@ async function handleUnifiedBookingEngine(params: {
       pending = null;
     }
 
+    // Appointment lookup must win over any stale pending new-booking flow.
+    // Otherwise Messenger can keep asking for name/mobile when the customer only asks
+    // whether they already have an appointment.
+    const appointmentLookupRequested = isExistingAppointmentLookupIntent(text);
+    if (pending && appointmentLookupRequested) {
+      console.log(`[UnifiedBooking] Appointment lookup cleared pending new-booking state platform=${platformName}, session=${sessionId}`);
+      await clearPendingBooking(sessionId);
+      pending = null;
+    }
+
     // Rescheduling an existing appointment must always win over a stale/new-booking flow.
     // Never ask again for service, duration, name or phone when an existing booking can be found.
     const rescheduleRequested = isRescheduleIntent(text);
@@ -2620,7 +2641,7 @@ async function handleUnifiedBookingEngine(params: {
       await replyAndRecord(
         formatAppointmentNameReply(
           rememberedAppointment.appointment,
-          rememberedAppointment.language || language
+          getFlowReplyLanguage(rememberedAppointment.language, language, text)
         )
       );
       return true;
@@ -2630,7 +2651,7 @@ async function handleUnifiedBookingEngine(params: {
       const appointment = rememberedAppointment.appointment;
       const requestedDate = resolveRescheduleDate(text, appointment);
       const requestedTime = inferRequestedTimeFromText(text);
-      const lockedLanguage = rememberedAppointment.language || language;
+      const lockedLanguage = getFlowReplyLanguage(rememberedAppointment.language, language, text);
 
       if (!requestedDate || !requestedTime) {
         rememberRescheduleContext(sessionId, appointment, lockedLanguage);
@@ -2656,13 +2677,13 @@ async function handleUnifiedBookingEngine(params: {
           activeReschedule.appointment,
           requestedDate,
           requestedTime,
-          activeReschedule.language || language
+          getFlowReplyLanguage(activeReschedule.language, language, text)
         );
       }
 
       // Keep the reschedule flow active instead of accidentally starting a new booking
       // or asking for the service again. The existing appointment already contains it.
-      const lockedLanguage = activeReschedule.language || language;
+      const lockedLanguage = getFlowReplyLanguage(activeReschedule.language, language, text);
       const hasDate = Boolean(requestedDate);
       const hasTime = Boolean(requestedTime);
       const ask = lockedLanguage === "fa"
@@ -2686,7 +2707,7 @@ async function handleUnifiedBookingEngine(params: {
       return true;
     }
 
-    if (!pending && isExistingAppointmentLookupIntent(text)) {
+    if (!pending && appointmentLookupRequested) {
       const adapter = getCalendarAdapter(businessConfig);
       const lookupContact = extractNameAndPhone(text);
       const lookupArgs = {
@@ -2709,7 +2730,7 @@ async function handleUnifiedBookingEngine(params: {
 
     const completed = getRecentCompletedBooking(sessionId);
     if (!pending && completed && isThanksOnlyText(text)) {
-      await replyAndRecord(formatThanksReply(completed.language || language, completed.name));
+      await replyAndRecord(formatThanksReply(getFlowReplyLanguage(completed.language, language, text), completed.name));
       return true;
     }
 
@@ -2830,7 +2851,7 @@ async function handleUnifiedBookingEngine(params: {
             formatSwedishTimeSlots(
               freshSlots,
               selectedTime,
-              pending.language || language
+              getFlowReplyLanguage(pending.language, language, text)
             )
           );
           return true;
@@ -2838,14 +2859,14 @@ async function handleUnifiedBookingEngine(params: {
 
         pending.dateTime = freshIso;
         pending.offeredSlots = freshSlots;
-        pending.language = pending.language || language;
+        pending.language = getFlowReplyLanguage(pending.language, language, text);
         pending.status = "awaiting_contact";
         await savePendingBooking(sessionId, platformName, pending);
 
         console.log(`[UnifiedBooking] Slot revalidated platform=${platformName}, iso=${freshIso}`);
         await replyAndRecord(
           formatAskContactMessageForPlatform(
-            pending.language || language,
+            getFlowReplyLanguage(pending.language, language, text),
             platformName
           )
         );
@@ -2879,7 +2900,7 @@ async function handleUnifiedBookingEngine(params: {
             formatSwedishTimeSlots(
               freshSlots,
               selectedTime,
-              pending.language || language
+              getFlowReplyLanguage(pending.language, language, text)
             )
           );
           return true;
@@ -2889,7 +2910,7 @@ async function handleUnifiedBookingEngine(params: {
       }
 
       pending.status = "awaiting_contact";
-      pending.language = pending.language || language;
+      pending.language = getFlowReplyLanguage(pending.language, language, text);
       if (!pending.customerPhone) {
         pending.customerPhone = getWhatsAppConversationPhone(
           platformName,
@@ -2901,7 +2922,7 @@ async function handleUnifiedBookingEngine(params: {
       await savePendingBooking(sessionId, platformName, pending);
       await replyAndRecord(
         formatAskContactMessageForPlatform(
-          pending.language || language,
+          getFlowReplyLanguage(pending.language, language, text),
           platformName
         )
       );
@@ -2958,7 +2979,7 @@ async function handleUnifiedBookingEngine(params: {
         await savePendingBooking(sessionId, platformName, pending);
         await replyAndRecord(
           formatMissingBookingDetailsMessage(
-            pending.language || language,
+            getFlowReplyLanguage(pending.language, language, text),
             missing
           )
         );
@@ -2968,7 +2989,7 @@ async function handleUnifiedBookingEngine(params: {
       if (!pending.dateTime) {
         console.error(`[UnifiedBooking] Missing dateTime before insert platform=${platformName}`);
         await clearPendingBooking(sessionId);
-        await replyAndRecord(getErrorMessageByLanguage(pending.language || language));
+        await replyAndRecord(getErrorMessageByLanguage(getFlowReplyLanguage(pending.language, language, text)));
         return true;
       }
 
@@ -3016,7 +3037,7 @@ async function handleUnifiedBookingEngine(params: {
           formatSwedishTimeSlots(
             pending.offeredSlots,
             selectedTime || undefined,
-            pending.language || language
+            getFlowReplyLanguage(pending.language, language, text)
           )
         );
         return true;
@@ -3037,7 +3058,7 @@ async function handleUnifiedBookingEngine(params: {
           `[UnifiedBooking] Calendar insert failed platform=${platformName}:`,
           JSON.stringify(result)
         );
-        await replyAndRecord(getErrorMessageByLanguage(pending.language || language));
+        await replyAndRecord(getErrorMessageByLanguage(getFlowReplyLanguage(pending.language, language, text)));
         return true;
       }
 
@@ -3055,7 +3076,7 @@ async function handleUnifiedBookingEngine(params: {
       await clearPendingBooking(sessionId);
       rememberCompletedBooking(
         sessionId,
-        pending.language || language,
+        getFlowReplyLanguage(pending.language, language, text),
         pending.customerName
       );
       await notifyAdminAboutBooking(
@@ -3069,7 +3090,7 @@ async function handleUnifiedBookingEngine(params: {
 
       await replyAndRecord(
         formatBookingSavedMessage(
-          pending.language || language,
+          getFlowReplyLanguage(pending.language, language, text),
           pending.customerName,
           pending.service,
           finalIso
@@ -3580,7 +3601,7 @@ function hasStrongLanguageEvidence(language: string, text?: string): boolean {
     return /\b(hi|hello|hey|i\s+want|i\s+would\s+like|i\s+can|can\s+i|could\s+i|appointment|book|booking|available|next\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday|week)|my\s+name\s+is|my\s+phone\s+is|pedicure|treatment|quick\s+refresh)\b/i.test(lower);
   }
   if (language === "sv") {
-    return /\b(hej|hejsan|jag\s+vill|jag\s+ska|jag\s+kan|boka|bokning|ledig|behandling|nästa\s+(måndag|tisdag|onsdag|torsdag|fredag|lördag|söndag)|mitt\s+namn|mitt\s+nummer|mobilnummer)\b/i.test(lower);
+    return /\b(hej|hejsan|hallå|kan\s+du|kan\s+jag|har\s+jag|hos\s+er|mår\s+du|jag\s+vill|jag\s+ska|jag\s+kan|jag\s+behöver|ändra\s+min\s+tid|flytta\s+min\s+tid|boka|bokning|ledig|behandling|konsultation|nästa\s+(måndag|tisdag|onsdag|torsdag|fredag|lördag|söndag)|mitt\s+namn|mitt\s+nummer|mobilnummer)\b/i.test(lower);
   }
   if (language === "de") {
     return /\b(hallo|guten|ich\s+möchte|ich\s+moechte|ich\s+will|termin|buchen|buchung|behandlung|ganzkörper|ganzkoerper|mein\s+name|meine\s+nummer|telefonnummer|nächsten|naechsten)\b/i.test(lower);
@@ -3645,7 +3666,7 @@ function detectStrongLatestLanguage(text?: string): string | null {
   }
 
   if (
-    /\b(kan jag|jag vill|jag behöver|måndag|tisdag|onsdag|torsdag|fredag|lördag|söndag|klockan|vilken tid|konsultation|boka|ledig|passar|mitt namn)\b/i.test(raw)
+    /\b(hej|hejsan|hallå|kan du|kan jag|har jag|hos er|mår du|jag vill|jag ska|jag behöver|ändra min tid|flytta min tid|måndag|tisdag|onsdag|torsdag|fredag|lördag|söndag|klockan|vilken tid|konsultation|boka|bokning|ledig|passar|mitt namn|mitt nummer|mobilnummer)\b/i.test(raw)
   ) return "sv";
 
   if (
@@ -3657,6 +3678,13 @@ function detectStrongLatestLanguage(text?: string): string | null {
   if (/\b(quiero|cita|lunes|martes|consulta)\b/i.test(raw)) return "es";
 
   return null;
+}
+
+function getFlowReplyLanguage(storedLanguage: string | undefined | null, currentLanguage: string, latestText?: string): string {
+  // A clear language in the latest customer message must override stale flow state.
+  // This is especially important after old Persian test conversations in Messenger.
+  const latestStrong = detectStrongLatestLanguage(latestText);
+  return latestStrong || storedLanguage || currentLanguage || "en";
 }
 
 function getConversationLanguage(chatId: string, latestText?: string): string {

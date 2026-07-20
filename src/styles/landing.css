@@ -456,3 +456,594 @@ footer{position:relative;z-index:1;border-top:1px solid var(--border2);padding:4
   .p-amount{font-size:34px;}
 }
 
+/* ═══════════════════════════════════════
+   MOBILE POLISH V2 — landing experience
+   ═══════════════════════════════════════ */
+
+.landing-page{
+  min-width:0;
+  overflow-x:clip;
+}
+
+@media(max-width:768px){
+
+  html,
+  body,
+  .landing-page{
+    width:100%;
+    max-width:100%;
+    overflow-x:hidden;
+  }
+
+  /* Navigation */
+  nav{
+    height:68px;
+    padding:
+      max(8px,env(safe-area-inset-top))
+      14px
+      8px;
+    gap:10px;
+    background:rgba(6,10,7,.88);
+    backdrop-filter:blur(24px);
+    -webkit-backdrop-filter:blur(24px);
+  }
+
+  .logo{
+    min-width:0;
+    gap:7px;
+    font-size:15px;
+  }
+
+  .logo svg{
+    width:30px;
+    height:30px;
+    flex:0 0 30px;
+  }
+
+  .nav-right{
+    flex:0 0 auto;
+    gap:7px;
+  }
+
+  .lang-select-btn{
+    min-height:40px;
+    padding:7px 10px;
+    font-size:11.5px;
+  }
+
+  .btn-cta-sm{
+    min-height:40px;
+    padding:9px 13px;
+    font-size:12px;
+    white-space:nowrap;
+  }
+
+  .lang-menu{
+    right:0;
+    max-width:calc(100vw - 28px);
+  }
+
+  /* Hero */
+  .hero{
+    min-height:auto;
+    padding:
+      calc(68px + 44px)
+      17px
+      56px;
+  }
+
+  .pill{
+    margin-bottom:24px;
+    padding:7px 13px 7px 9px;
+    font-size:11.5px;
+  }
+
+  h1.hero-h1{
+    max-width:680px;
+    margin-bottom:21px;
+    font-size:clamp(40px,11.7vw,58px);
+    line-height:.98;
+    letter-spacing:-.042em;
+    text-wrap:balance;
+    overflow-wrap:normal;
+    word-break:keep-all;
+  }
+
+  .hero-sub{
+    max-width:520px;
+    margin-bottom:28px;
+    font-size:14px;
+    line-height:1.66;
+  }
+
+  .hero-ctas{
+    width:100%;
+    max-width:420px;
+    gap:10px;
+  }
+
+  .btn-primary,
+  .btn-ghost{
+    min-height:50px;
+    padding:14px 20px;
+    font-size:14px;
+  }
+
+  .hero-stats{
+    display:grid;
+    grid-template-columns:repeat(3,minmax(0,1fr));
+    width:100%;
+    max-width:430px;
+    gap:8px;
+    margin-top:38px;
+  }
+
+  .hero-stats > div{
+    min-width:0;
+    padding:13px 8px;
+    border:1px solid var(--border2);
+    border-radius:14px;
+    background:rgba(11,16,9,.55);
+  }
+
+  .stat-num{
+    font-size:23px;
+  }
+
+  .stat-lbl{
+    font-size:8.5px;
+    line-height:1.35;
+  }
+
+  .hero-glow{
+    bottom:-8%;
+    width:130%;
+    height:260px;
+  }
+
+  .hero-arc{
+    width:170%;
+  }
+
+  /* Global section rhythm */
+  section{
+    padding:66px 17px;
+  }
+
+  .demo-section{
+    padding:54px 17px 68px;
+  }
+
+  .inline-cta{
+    padding:0 17px 56px;
+  }
+
+  .proof-band{
+    padding:34px 17px;
+  }
+
+  .eyebrow{
+    margin-bottom:14px;
+    font-size:10px;
+  }
+
+  .s-title{
+    margin-bottom:13px;
+    font-size:clamp(28px,8.4vw,38px);
+    line-height:1.06;
+    text-wrap:balance;
+  }
+
+  .s-desc{
+    font-size:14px;
+    line-height:1.67;
+  }
+
+  /* Proof cards */
+  .proof-inner{
+    gap:1px;
+    border-radius:17px;
+  }
+
+  .proof-item{
+    min-height:118px;
+    padding:22px 12px;
+  }
+
+  .proof-num{
+    font-size:27px;
+  }
+
+  .proof-lbl{
+    font-size:11px;
+  }
+
+  /* Demo */
+  .demo-head{
+    margin-bottom:34px;
+  }
+
+  .demo-shell{
+    border-radius:17px;
+    box-shadow:0 24px 70px rgba(0,0,0,.48),0 0 0 1px rgba(61,220,132,.06);
+  }
+
+  .demo-bar{
+    min-height:46px;
+  }
+
+  .demo-body,
+  .demo-chat{
+    min-height:340px;
+  }
+
+  .demo-chat-header{
+    padding:12px 14px;
+  }
+
+  .demo-messages{
+    gap:8px;
+    padding:14px 12px;
+  }
+
+  .dm{
+    max-width:86%;
+    font-size:12px;
+    line-height:1.48;
+  }
+
+  .demo-input{
+    padding:10px 12px;
+  }
+
+  /* How it works */
+  .how-grid{
+    margin-top:34px;
+    border-radius:17px;
+  }
+
+  .how-step{
+    padding:27px 22px;
+  }
+
+  .step-tag{
+    margin-bottom:20px;
+  }
+
+  .step-icon{
+    width:42px;
+    height:42px;
+    margin-bottom:17px;
+  }
+
+  .how-step h3{
+    margin-bottom:8px;
+  }
+
+  .how-step p{
+    line-height:1.65;
+  }
+
+  /* Features */
+  .bento{
+    gap:10px;
+    margin-top:34px;
+  }
+
+  .bento-card{
+    padding:22px;
+    border-radius:17px;
+  }
+
+  .bento-card h3{
+    font-size:18px;
+  }
+
+  .bento-card p{
+    font-size:13.5px;
+    line-height:1.65;
+  }
+
+  .mini-chat,
+  .ch-row,
+  .mini-cal{
+    margin-top:17px;
+  }
+
+  /* Inline CTA */
+  .inline-cta-inner{
+    align-items:stretch;
+    padding:25px 21px;
+    gap:20px;
+    border-radius:17px;
+    text-align:left;
+  }
+
+  .inline-cta-text h3{
+    font-size:20px;
+    line-height:1.2;
+  }
+
+  .inline-cta-text p{
+    font-size:13.5px;
+    line-height:1.58;
+  }
+
+  /* Comparison table */
+  .compare-table{
+    margin-top:32px;
+    border-radius:17px;
+  }
+
+  .compare-head div,
+  .compare-row div{
+    min-width:0;
+    padding:13px 11px;
+    font-size:11.5px;
+    line-height:1.35;
+  }
+
+  .compare-head .col-us{
+    gap:5px;
+  }
+
+  /* ROI */
+  .roi-card{
+    margin-top:34px;
+    padding:22px 18px;
+    border-radius:18px;
+    gap:18px;
+  }
+
+  .roi-card h3{
+    font-size:21px;
+  }
+
+  .roi-card p{
+    font-size:13.5px;
+    line-height:1.6;
+  }
+
+  .roi-form{
+    padding:16px;
+    border-radius:15px;
+  }
+
+  .roi-input-group input,
+  .roi-btn{
+    min-height:48px;
+    width:100%;
+  }
+
+  /* Pricing */
+  .price-grid{
+    gap:13px;
+    margin-top:36px;
+  }
+
+  .price-card{
+    padding:25px 21px;
+    border-radius:19px;
+  }
+
+  .p-name{
+    font-size:21px;
+  }
+
+  .p-desc{
+    margin-bottom:21px;
+    font-size:13.5px;
+  }
+
+  .p-amount{
+    font-size:39px;
+  }
+
+  .p-period{
+    margin-bottom:23px;
+  }
+
+  .p-divider{
+    margin-bottom:21px;
+  }
+
+  .p-features{
+    gap:11px;
+    margin-bottom:24px;
+  }
+
+  .p-features li{
+    font-size:13.5px;
+  }
+
+  .p-btn{
+    min-height:50px;
+  }
+
+  /* Testimonials */
+  .testi-grid{
+    gap:11px;
+    margin-top:34px;
+  }
+
+  .testi-card{
+    padding:22px;
+    border-radius:17px;
+  }
+
+  .testi-q{
+    margin-bottom:18px;
+    font-size:14px;
+    line-height:1.68;
+  }
+
+  /* FAQ */
+  .faq-list{
+    margin-top:34px;
+    border-radius:17px;
+  }
+
+  .faq-q{
+    gap:14px;
+    padding:17px 17px;
+    font-size:14px;
+    line-height:1.4;
+  }
+
+  .faq-a-inner{
+    padding:0 17px 17px;
+    font-size:13.5px;
+    line-height:1.65;
+  }
+
+  /* Final CTA */
+  .cta-section{
+    padding:70px 17px 82px;
+  }
+
+  .cta-section h2{
+    margin-bottom:16px;
+    font-size:clamp(32px,9.5vw,44px);
+    text-wrap:balance;
+  }
+
+  .cta-section p{
+    margin-bottom:27px;
+    font-size:14px;
+    line-height:1.6;
+  }
+
+  .cta-btns{
+    width:100%;
+    max-width:420px;
+    margin-inline:auto;
+    gap:10px;
+  }
+
+  /* Footer */
+  footer{
+    padding:34px 17px calc(25px + env(safe-area-inset-bottom));
+  }
+
+  .foot-inner{
+    display:grid;
+    grid-template-columns:1fr 1fr;
+    gap:26px 22px;
+  }
+
+  .foot-brand{
+    grid-column:1/-1;
+  }
+
+  .foot-brand p{
+    max-width:330px;
+    margin-top:10px;
+    font-size:12.5px;
+    line-height:1.55;
+  }
+
+  .foot-col h4{
+    margin-bottom:11px;
+    font-size:10.5px;
+  }
+
+  .foot-col a{
+    margin-bottom:8px;
+    font-size:13px;
+  }
+
+  .foot-bottom{
+    margin-top:28px;
+    padding-top:18px;
+    font-size:11.5px;
+  }
+
+  .foot-bottom p{
+    font-size:11.5px;
+    line-height:1.5;
+  }
+
+  .back-to-top{
+    right:14px;
+    bottom:14px;
+    width:43px;
+    height:43px;
+  }
+
+  /* RTL mobile alignment */
+  [dir="rtl"] .inline-cta-inner{
+    text-align:right;
+  }
+
+  [dir="rtl"] .foot-inner{
+    direction:rtl;
+  }
+}
+
+@media(max-width:430px){
+  nav{
+    padding-right:11px;
+    padding-left:11px;
+  }
+
+  .logo{
+    font-size:14px;
+  }
+
+  .logo svg{
+    width:28px;
+    height:28px;
+    flex-basis:28px;
+  }
+
+  .lang-select-btn{
+    padding-inline:8px;
+  }
+
+  .btn-cta-sm{
+    padding-inline:11px;
+  }
+
+  .hero{
+    padding-right:14px;
+    padding-left:14px;
+  }
+
+  h1.hero-h1{
+    font-size:clamp(38px,11.5vw,50px);
+  }
+
+  section,
+  .demo-section,
+  .proof-band{
+    padding-right:14px;
+    padding-left:14px;
+  }
+
+  .inline-cta{
+    padding-right:14px;
+    padding-left:14px;
+  }
+
+  .hero-stats{
+    gap:6px;
+  }
+
+  .stat-num{
+    font-size:21px;
+  }
+
+  .stat-lbl{
+    font-size:8px;
+  }
+
+  .proof-num{
+    font-size:24px;
+  }
+
+  .compare-head div,
+  .compare-row div{
+    padding:12px 9px;
+    font-size:10.8px;
+  }
+}

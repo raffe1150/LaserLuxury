@@ -241,7 +241,8 @@ async function postProcessMessage(chatId: string, platform: string, userMessage:
 // Unified Calendar Adapter Interface
 interface CalendarAdapter {
   checkSlots(startDate: string, endDate?: string, durationMinutes?: number, requestedTime?: string): Promise<any> | any;
-  insertAppointment(name: string, phone: string, service: string, dateTime: string, durationMinutes?: number, chatId?: string): Promise<any> | any;
+  insertAppointment(name: string, phone: string, service: string, dateTime: string, durationMinutes?: number, chatId?: string, skipConflictCheck?: boolean): Promise<any> | any;
+  updateAppointment?(eventId: string, dateTime: string, durationMinutes?: number): Promise<any> | any;
   getEvents(startDate: string, endDate: string): Promise<any> | any;
 }
 
@@ -464,7 +465,7 @@ function buildLocalizedSlotReply(slotsArray: string[], specificTime?: string, la
 
   const sentences: string[] = [];
   for (const [dateStr, timesRaw] of dayMap.entries()) {
-    const times = [...timesRaw];
+    const times = [...timesRaw].sort((a, b) => a.localeCompare(b, "sv-SE"));
     if (times.length === 1) sentences.push(`${dateStr} ${l.at} ${times[0]}`);
     else if (times.length === 2) sentences.push(`${dateStr} ${l.at} ${times[0]} ${l.and} ${times[1]}`);
     else {
@@ -666,13 +667,23 @@ class MockCalendarAdapter implements CalendarAdapter {
   }
 
   getEvents(startDate: string, endDate: string) { return this.events; }
-  insertAppointment(name: string, phone: string, service: string, dateTime: string, durationMinutes: number = 60, chatId?: string) {
+  insertAppointment(name: string, phone: string, service: string, dateTime: string, durationMinutes: number = 60, chatId?: string, _skipConflictCheck: boolean = false) {
     const conflicting = this.events.filter(e => e.startTime === dateTime);
     if(conflicting.length > 0) return { success: false, message: "Slot already booked." };
     const evEnd = new Date(new Date(dateTime).getTime() + durationMinutes * 60000).toISOString();
     const event = { id: String(this.events.length + 1), summary: `Bokad: ${name} - ${phone}`, description: `Tjänst: ${service}\nTelegramChatId: ${chatId || ''}`, startTime: dateTime, endTime: evEnd };
     this.events.push(event);
     return { success: true, message: `Successfully booked for ${name} at ${dateTime}.`, event };
+  }
+
+  updateAppointment(eventId: string, dateTime: string, durationMinutes: number = 60) {
+    const event = this.events.find((item: any) => String(item.id) === String(eventId));
+    if (!event) return { success: false, code: "EVENT_NOT_FOUND", message: "Appointment not found." };
+    const start = new Date(ensureStockholmOffset(dateTime));
+    if (Number.isNaN(start.getTime())) return { success: false, code: "INVALID_DATETIME", message: "Invalid date and time." };
+    event.startTime = start.toISOString();
+    event.endTime = new Date(start.getTime() + durationMinutes * 60000).toISOString();
+    return { success: true, event };
   }
 }
 
@@ -703,7 +714,7 @@ class GenericCalendarAdapter implements CalendarAdapter {
     }
   }
 
-  async insertAppointment(name: string, phone: string, service: string, dateTime: string, durationMinutes?: number, chatId?: string) {
+  async insertAppointment(name: string, phone: string, service: string, dateTime: string, durationMinutes?: number, chatId?: string, _skipConflictCheck: boolean = false) {
     try {
       const headers: any = { 'Content-Type': 'application/json' };
       if (this.apiKey) headers['Authorization'] = `Bearer ${this.apiKey}`;
@@ -715,6 +726,21 @@ class GenericCalendarAdapter implements CalendarAdapter {
       return await res.json();
     } catch(e) {
       return { success: false, message: 'Failed to access remote calendar API to book slot.' };
+    }
+  }
+
+  async updateAppointment(eventId: string, dateTime: string, durationMinutes: number = 60) {
+    try {
+      const headers: any = { 'Content-Type': 'application/json' };
+      if (this.apiKey) headers['Authorization'] = `Bearer ${this.apiKey}`;
+      const res = await fetch(`${this.apiUrl}/events/${encodeURIComponent(eventId)}`, {
+        method: 'PATCH',
+        headers,
+        body: JSON.stringify({ dateTime, durationMinutes })
+      });
+      return await res.json();
+    } catch (e) {
+      return { success: false, code: "UPDATE_FAILED", message: "Failed to update appointment." };
     }
   }
 }
@@ -799,7 +825,7 @@ class GoogleCalendarAdapter implements CalendarAdapter {
     }
   }
 
-  async insertAppointment(name: string, phone: string, service: string, dateTime: string, durationMinutes: number = 60, chatId?: string) {
+  async insertAppointment(name: string, phone: string, service: string, dateTime: string, durationMinutes: number = 60, chatId?: string, skipConflictCheck: boolean = false) {
     try {
       const rawDateTime = String(dateTime || "").trim();
       if (!rawDateTime) {
@@ -836,11 +862,14 @@ class GoogleCalendarAdapter implements CalendarAdapter {
 
       const endTime = new Date(startTime.getTime() + safeDuration * 60 * 1000);
 
-      // Last calendar-side conflict check, as close to insert as possible.
-      const bookingDate = stockholmDateString(startTime);
-      const existingEvents = await this.getEvents(bookingDate, bookingDate);
-      if (!isSlotFree(startTime.getTime(), safeDuration, Array.isArray(existingEvents) ? existingEvents : [])) {
-        return { success: false, code: "SLOT_CONFLICT", message: "The selected slot is no longer available." };
+      // Tool-driven calls keep their own final conflict check. The deterministic booking
+      // engine can skip this duplicate read after verifyExactSlotIsFree() has just passed.
+      if (!skipConflictCheck) {
+        const bookingDate = stockholmDateString(startTime);
+        const existingEvents = await this.getEvents(bookingDate, bookingDate);
+        if (!isSlotFree(startTime.getTime(), safeDuration, Array.isArray(existingEvents) ? existingEvents : [])) {
+          return { success: false, code: "SLOT_CONFLICT", message: "The selected slot is no longer available." };
+        }
       }
 
       const res = await this.calendar.events.insert({
@@ -856,6 +885,32 @@ class GoogleCalendarAdapter implements CalendarAdapter {
     } catch(e: any) {
       console.error("Google Calendar insertAppointment Error:", e.message);
       return { success: false, message: 'Failed to access Google Calendar API to book slot.' };
+    }
+  }
+
+  async updateAppointment(eventId: string, dateTime: string, durationMinutes: number = 60) {
+    try {
+      const safeDateTime = ensureStockholmOffset(String(dateTime || "").trim());
+      const startTime = new Date(safeDateTime);
+      const safeDuration = Number(durationMinutes || 30);
+      if (!eventId || Number.isNaN(startTime.getTime()) || !Number.isFinite(safeDuration) || safeDuration <= 0) {
+        return { success: false, code: "INVALID_RESCHEDULE_DATA", message: "Invalid reschedule data." };
+      }
+
+      const endTime = new Date(startTime.getTime() + safeDuration * 60 * 1000);
+      const res = await this.calendar.events.patch({
+        calendarId: this.calendarId,
+        eventId,
+        requestBody: {
+          start: { dateTime: startTime.toISOString(), timeZone: "Europe/Stockholm" },
+          end: { dateTime: endTime.toISOString(), timeZone: "Europe/Stockholm" }
+        }
+      });
+
+      return { success: true, event: res.data };
+    } catch (e: any) {
+      console.error("Google Calendar updateAppointment Error:", e.message);
+      return { success: false, code: "UPDATE_FAILED", message: "Failed to update appointment." };
     }
   }
 }
@@ -1008,14 +1063,40 @@ async function findCustomerAppointments(
         return false;
       }).slice(0, 5).map((row: any) => ({
         id: row.id || null,
+        calendarEventId: null,
         summary: row.service || "Appointment",
+        service: row.service || "Appointment",
+        customerName: row.customer_name || null,
+        phone: row.phone_number || null,
         description: "",
         start: row.start_time,
         end: row.end_time,
-        platform: row.platform || normalizedPlatform
+        platform: row.platform || normalizedPlatform,
+        source: "appointments_table"
       }));
 
       if (dbAppointments.length > 0) {
+        // Try to attach the actual Google Calendar event id so follow-up questions
+        // and rescheduling can use the same appointment without asking again.
+        try {
+          const calendarEvents = await adapter.getEvents(startDate, endDate);
+          for (const appointment of dbAppointments) {
+            const appointmentStart = new Date(appointment.start).getTime();
+            const matchedEvent = (Array.isArray(calendarEvents) ? calendarEvents : []).find((event: any) => {
+              const eventStart = new Date(getEventStartIso(event)).getTime();
+              if (!Number.isFinite(eventStart) || Math.abs(eventStart - appointmentStart) > 60 * 1000) return false;
+              return eventMatchesCustomer(event, {
+                customerId,
+                phone: appointment.phone || phone,
+                name: appointment.customerName || name
+              });
+            });
+            if (matchedEvent?.id) appointment.calendarEventId = matchedEvent.id;
+          }
+        } catch (enrichError) {
+          console.error("[AppointmentLookup] Calendar enrichment failed:", enrichError);
+        }
+
         return {
           success: true,
           found: true,
@@ -1046,14 +1127,25 @@ async function findCustomerAppointments(
       new Date(getEventStartIso(a)).getTime() - new Date(getEventStartIso(b)).getTime()
     )
     .slice(0, 5)
-    .map((event: any) => ({
-      id: event?.id || null,
-      summary: String(event?.summary || event?.title || "Appointment"),
-      description: String(event?.description || ""),
-      start: getEventStartIso(event),
-      end: getEventEndIso(event),
-      platform
-    }));
+    .map((event: any) => {
+      const summary = String(event?.summary || event?.title || "Appointment");
+      const description = String(event?.description || "");
+      const nameMatch = summary.match(/^Bokad:\s*(.*?)\s*-\s*(.+)$/i);
+      const serviceMatch = description.match(/Tjänst:\s*([^\n]+)/i);
+      return {
+        id: event?.id || null,
+        calendarEventId: event?.id || null,
+        summary,
+        service: serviceMatch?.[1]?.trim() || "Appointment",
+        customerName: nameMatch?.[1]?.trim() || null,
+        phone: nameMatch?.[2]?.trim() || null,
+        description,
+        start: getEventStartIso(event),
+        end: getEventEndIso(event),
+        platform,
+        source: "calendar"
+      };
+    });
 
   const hasReliableIdentity =
     normalizeLookupDigits(phone).length >= 7 ||
@@ -1109,7 +1201,7 @@ function formatAppointmentLookupReply(result: any, language: string = "en"): str
 
   const formatted = result.appointments.slice(0, 3).map((appointment: any) => {
     const date = new Date(appointment.start);
-    return new Intl.DateTimeFormat(localeMap[lang], {
+    const when = new Intl.DateTimeFormat(localeMap[lang], {
       timeZone: "Europe/Stockholm",
       weekday: "long",
       day: "numeric",
@@ -1117,6 +1209,11 @@ function formatAppointmentLookupReply(result: any, language: string = "en"): str
       hour: "2-digit",
       minute: "2-digit"
     }).format(date);
+    const name = String(appointment.customerName || "").trim();
+    const service = String(appointment.service || "").trim();
+    if (lang === "sv") return `${when}${name ? `, bokad i namnet ${name}` : ""}${service && service !== "Appointment" ? ` för ${service}` : ""}`;
+    if (lang === "fa") return `${when}${name ? `، به نام ${name}` : ""}${service && service !== "Appointment" ? ` برای ${service}` : ""}`;
+    return `${when}${name ? `, under the name ${name}` : ""}${service && service !== "Appointment" ? ` for ${service}` : ""}`;
   });
 
   const joined = formatted.join(", ");
@@ -1158,6 +1255,19 @@ const calendarTools: any = [{
           phone: { type: "STRING", description: "Customer phone number only if explicitly provided in the conversation." },
           name: { type: "STRING", description: "Customer name only if explicitly provided in the conversation." }
         }
+      }
+    },
+    {
+      name: "rescheduleAppointment",
+      description: "Moves an existing appointment to a new exact ISO date and time. Use only after findCustomerAppointments has returned a calendarEventId and after the new slot has been checked.",
+      parameters: {
+        type: "OBJECT",
+        properties: {
+          eventId: { type: "STRING", description: "The Google Calendar event id returned by findCustomerAppointments." },
+          dateTime: { type: "STRING", description: "The new start time in ISO 8601 format." },
+          durationMinutes: { type: "INTEGER", description: "Appointment duration in minutes." }
+        },
+        required: ["eventId", "dateTime", "durationMinutes"]
       }
     },
     {
@@ -1300,6 +1410,49 @@ async function checkAndIncrementDailyUsage(params: { businessId?: string | numbe
 
 const pendingBookings: Record<string, any> = {};
 const recentlyCompletedBookings: Record<string, { completedAt: number; language: string; name?: string }> = {};
+const appointmentContexts: Record<string, { appointment: any; savedAt: number; language: string }> = {};
+
+function rememberAppointmentContext(sessionId: string, result: any, language: string) {
+  const appointment = Array.isArray(result?.appointments) ? result.appointments[0] : null;
+  if (appointment) appointmentContexts[sessionId] = { appointment, savedAt: Date.now(), language };
+}
+
+function getAppointmentContext(sessionId: string) {
+  const context = appointmentContexts[sessionId];
+  if (!context) return null;
+  if (Date.now() - context.savedAt > 60 * 60 * 1000) {
+    delete appointmentContexts[sessionId];
+    return null;
+  }
+  return context;
+}
+
+function isAppointmentNameQuestion(text?: string): boolean {
+  return /\b(på vilket namn|vilket namn|vem står bokningen på|under what name|what name|به نام چه کسی|به چه نامی)\b/i.test(String(text || ""));
+}
+
+function isRescheduleIntent(text?: string): boolean {
+  return /\b(ändra|min tid|flytta|boka om|omboka|reschedule|change my appointment|change the time|تغییر.*وقت|عوض.*وقت)\b/i.test(String(text || ""));
+}
+
+function formatAppointmentNameReply(appointment: any, language: string): string {
+  const name = String(appointment?.customerName || "").trim();
+  if (!name) {
+    if (language === "fa") return "نام ثبت‌شده در این رزرو در دسترس نیست، اما زمان رزرو را تأیید کرده‌ام. 📅";
+    if (language === "sv") return "Jag kan bekräfta tiden, men namnet saknas i bokningsuppgifterna. 📅";
+    return "I can confirm the appointment time, but the booked name is missing from the record. 📅";
+  }
+  if (language === "fa") return `این رزرو به نام ${name} ثبت شده است. 📅`;
+  if (language === "sv") return `Bokningen är registrerad i namnet ${name}. 📅`;
+  return `The booking is registered under the name ${name}. 📅`;
+}
+
+function formatRescheduleSuccess(language: string, dateTime: string): string {
+  const { dateText, timeText } = formatLocalizedDateTime(dateTime, language);
+  if (language === "fa") return `وقت شما با موفقیت به ${dateText} ساعت ${timeText} تغییر کرد. 😊`;
+  if (language === "sv") return `Din bokning är nu ombokad till ${dateText} kl ${timeText}. 😊`;
+  return `Your appointment has been rescheduled to ${dateText} at ${timeText}. 😊`;
+}
 
 // Pending bookings must be short-lived. Otherwise a customer can start a new request
 // and accidentally finalize an old slot from a previous test/conversation.
@@ -2269,6 +2422,81 @@ async function handleUnifiedBookingEngine(params: {
       pending = null;
     }
 
+    const rememberedAppointment = getAppointmentContext(sessionId);
+
+    if (!pending && rememberedAppointment && isAppointmentNameQuestion(text)) {
+      await replyAndRecord(
+        formatAppointmentNameReply(
+          rememberedAppointment.appointment,
+          rememberedAppointment.language || language
+        )
+      );
+      return true;
+    }
+
+    if (!pending && rememberedAppointment && isRescheduleIntent(text)) {
+      const requestedDate = resolveExplicitBookingDate(text);
+      const requestedTime = inferRequestedTimeFromText(text);
+      const appointment = rememberedAppointment.appointment;
+      const lockedLanguage = rememberedAppointment.language || language;
+
+      if (!requestedDate || !requestedTime) {
+        const ask = lockedLanguage === "fa"
+          ? "چه روز و ساعتی برای زمان جدید مناسب است؟ 📅"
+          : lockedLanguage === "sv"
+            ? "Vilken dag och tid vill du flytta bokningen till? 📅"
+            : "Which day and time would you like to move the appointment to? 📅";
+        await replyAndRecord(ask);
+        return true;
+      }
+
+      const adapter = getCalendarAdapter(businessConfig);
+      const candidateIso = `${requestedDate}T${requestedTime}:00${getStockholmUtcOffset(requestedDate)}`;
+      const duration = Math.max(
+        1,
+        Math.round(
+          (new Date(appointment.end).getTime() - new Date(appointment.start).getTime()) / 60000
+        ) || getDefaultBookingDurationForService(appointment.service) || 30
+      );
+
+      const dateEvents = await adapter.getEvents(requestedDate, requestedDate);
+      const filteredEvents = (Array.isArray(dateEvents) ? dateEvents : []).filter(
+        (event: any) => String(event?.id || "") !== String(appointment.calendarEventId || appointment.id || "")
+      );
+      const free = isSlotFree(new Date(candidateIso).getTime(), duration, filteredEvents);
+
+      if (!free) {
+        const alternatives = await adapter.checkSlots(requestedDate, requestedDate, duration, requestedTime);
+        await replyAndRecord(
+          formatSwedishTimeSlots(getSlotsArray(alternatives), requestedTime, lockedLanguage)
+        );
+        return true;
+      }
+
+      const eventId = String(appointment.calendarEventId || "");
+      if (!eventId || !adapter.updateAppointment) {
+        const msg = lockedLanguage === "fa"
+          ? "زمان رزرو را پیدا کردم، اما شناسه تقویم برای تغییر مستقیم در دسترس نیست. لطفاً با پشتیبانی تماس بگیرید. 🙏"
+          : lockedLanguage === "sv"
+            ? "Jag hittade bokningen, men kalenderkopplingen saknar ett event-id för direkt ombokning. En medarbetare behöver hjälpa till. 🙏"
+            : "I found the appointment, but its calendar event id is unavailable for direct rescheduling. A team member needs to help. 🙏";
+        await replyAndRecord(msg);
+        return true;
+      }
+
+      const updateResult = await adapter.updateAppointment(eventId, candidateIso, duration);
+      if (!updateResult?.success) {
+        await replyAndRecord(getErrorMessageByLanguage(lockedLanguage));
+        return true;
+      }
+
+      appointment.start = candidateIso;
+      appointment.end = new Date(new Date(candidateIso).getTime() + duration * 60000).toISOString();
+      appointmentContexts[sessionId] = { appointment, savedAt: Date.now(), language: lockedLanguage };
+      await replyAndRecord(formatRescheduleSuccess(lockedLanguage, candidateIso));
+      return true;
+    }
+
     if (!pending && isExistingAppointmentLookupIntent(text)) {
       const adapter = getCalendarAdapter(businessConfig);
       const lookupContact = extractNameAndPhone(text);
@@ -2283,6 +2511,7 @@ async function handleUnifiedBookingEngine(params: {
         platformName,
         businessConfig
       );
+      rememberAppointmentContext(sessionId, lookupResult, language);
       const reply = formatAppointmentLookupReply(lookupResult, language);
       console.log(`[UnifiedBooking] Lookup platform=${platformName}, found=${Boolean(lookupResult?.found)}`);
       await replyAndRecord(reply);
@@ -2578,7 +2807,8 @@ async function handleUnifiedBookingEngine(params: {
         pending.service,
         finalIso,
         Number(pending.durationMinutes || 30),
-        recipientUserId
+        recipientUserId,
+        true
       );
 
       if (!result?.success) {

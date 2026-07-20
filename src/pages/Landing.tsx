@@ -21,5 +21,7 @@ export default function Landing({ onNavigate }: LandingProps) {
     };
   }, []);
 
-  return <div dangerouslySetInnerHTML={{ __html: landingMarkup }} />;
+  return (
+    <main className="landing-page" dangerouslySetInnerHTML={{ __html: landingMarkup }} />
+  );
 }

@@ -521,6 +521,27 @@ function isSlotFree(startMs: number, durationMinutes: number, events: any[]): bo
   return true;
 }
 
+async function verifyExactSlotIsFree(
+  adapter: CalendarAdapter,
+  dateTime: string,
+  durationMinutes: number
+): Promise<{ free: boolean; normalizedIso: string | null; reason?: string }> {
+  const normalizedIso = ensureStockholmOffset(String(dateTime || "").trim());
+  const start = new Date(normalizedIso);
+  const duration = Number(durationMinutes || 0);
+
+  if (Number.isNaN(start.getTime()) || !Number.isFinite(duration) || duration <= 0) {
+    return { free: false, normalizedIso: null, reason: "invalid_slot" };
+  }
+
+  const dateStr = stockholmDateString(start);
+  const events = await adapter.getEvents(dateStr, dateStr);
+  const free = isSlotFree(start.getTime(), duration, Array.isArray(events) ? events : []);
+
+  console.log(`[ExactSlotCheck] dateTime=${normalizedIso}, duration=${duration}, events=${Array.isArray(events) ? events.length : 0}, free=${free}`);
+  return { free, normalizedIso, reason: free ? undefined : "calendar_conflict" };
+}
+
 function getDailySlots(startDateStr: string, endDateStr: string, events: any[], durationMinutes: number = 60, requestedTime?: string) {
   const normalizedRequestedTime = normalizeRequestedTime(requestedTime || "");
   const endString = endDateStr || startDateStr;
@@ -815,6 +836,13 @@ class GoogleCalendarAdapter implements CalendarAdapter {
 
       const endTime = new Date(startTime.getTime() + safeDuration * 60 * 1000);
 
+      // Last calendar-side conflict check, as close to insert as possible.
+      const bookingDate = stockholmDateString(startTime);
+      const existingEvents = await this.getEvents(bookingDate, bookingDate);
+      if (!isSlotFree(startTime.getTime(), safeDuration, Array.isArray(existingEvents) ? existingEvents : [])) {
+        return { success: false, code: "SLOT_CONFLICT", message: "The selected slot is no longer available." };
+      }
+
       const res = await this.calendar.events.insert({
         calendarId: this.calendarId,
         requestBody: {
@@ -929,16 +957,81 @@ async function findCustomerAppointments(
   adapter: CalendarAdapter,
   args: any,
   customerId: string,
-  platform: string
+  platform: string,
+  businessConfig?: any
 ) {
   const today = stockholmDateString(new Date());
   const startDate = String(args?.startDate || today);
   const endDate = String(args?.endDate || addDaysToStockholmDate(startDate, 180));
   const phone = String(args?.phone || "");
   const name = String(args?.name || "");
+  const normalizedPlatform = normalizePlatformName(platform);
+  const normalizedCustomerId = normalizePlatformUserId(normalizedPlatform, customerId);
+  const now = Date.now();
+
+  // First use OdinLink's own appointment records. This is the most reliable identity match
+  // for Instagram/Messenger because Google Calendar events may not contain the channel id
+  // for older bookings. Fall back to Google Calendar below.
+  if (supabase) {
+    try {
+      const businessId = getBusinessIdFromConfig(businessConfig);
+      let query = supabase
+        .from("appointments")
+        .select("id,customer_name,phone_number,platform,user_id,service,start_time,end_time,status,business_id")
+        .gte("start_time", new Date(now).toISOString())
+        .lte("start_time", new Date(localStockholmDateBoundary(endDate, true)).toISOString())
+        .order("start_time", { ascending: true })
+        .limit(50);
+
+      if (businessId) query = query.eq("business_id", String(businessId));
+
+      const { data: dbRows, error: dbError } = await query;
+      if (dbError) throw dbError;
+
+      const normalizedName = normalizeLookupText(name);
+      const phoneDigits = normalizeLookupDigits(phone);
+      const customerDigits = normalizeLookupDigits(normalizedCustomerId);
+
+      const dbAppointments = (dbRows || []).filter((row: any) => {
+        if (String(row?.status || "booked").toLowerCase() === "cancelled") return false;
+
+        const rowPlatform = normalizePlatformName(row?.platform || "");
+        const rowUserId = normalizePlatformUserId(rowPlatform, String(row?.user_id || ""));
+        if (normalizedCustomerId && rowPlatform === normalizedPlatform && rowUserId === normalizedCustomerId) return true;
+
+        const rowPhone = normalizeLookupDigits(row?.phone_number);
+        if (phoneDigits.length >= 7 && rowPhone.includes(phoneDigits)) return true;
+        if (customerDigits.length >= 7 && rowPhone.includes(customerDigits)) return true;
+
+        const rowName = normalizeLookupText(row?.customer_name);
+        if (normalizedName.length >= 2 && rowName.includes(normalizedName)) return true;
+        return false;
+      }).slice(0, 5).map((row: any) => ({
+        id: row.id || null,
+        summary: row.service || "Appointment",
+        description: "",
+        start: row.start_time,
+        end: row.end_time,
+        platform: row.platform || normalizedPlatform
+      }));
+
+      if (dbAppointments.length > 0) {
+        return {
+          success: true,
+          found: true,
+          needsContactDetails: false,
+          searchedFrom: startDate,
+          searchedTo: endDate,
+          appointments: dbAppointments,
+          source: "appointments_table"
+        };
+      }
+    } catch (dbLookupError) {
+      console.error("[AppointmentLookup] Supabase lookup failed; falling back to calendar:", dbLookupError);
+    }
+  }
 
   const events = await adapter.getEvents(startDate, endDate);
-  const now = Date.now();
 
   const appointments = (Array.isArray(events) ? events : [])
     .filter((event: any) => {
@@ -2178,11 +2271,17 @@ async function handleUnifiedBookingEngine(params: {
 
     if (!pending && isExistingAppointmentLookupIntent(text)) {
       const adapter = getCalendarAdapter(businessConfig);
+      const lookupContact = extractNameAndPhone(text);
+      const lookupArgs = {
+        name: lookupContact?.name || extractNameOnly(text) || undefined,
+        phone: lookupContact?.phone || extractPhoneOnly(text) || undefined
+      };
       const lookupResult = await findCustomerAppointments(
         adapter,
-        {},
+        lookupArgs,
         recipientUserId,
-        platformName
+        platformName,
+        businessConfig
       );
       const reply = formatAppointmentLookupReply(lookupResult, language);
       console.log(`[UnifiedBooking] Lookup platform=${platformName}, found=${Boolean(lookupResult?.found)}`);
@@ -2429,44 +2528,33 @@ async function handleUnifiedBookingEngine(params: {
         pending.selectedDate || String(pending.dateTime).slice(0, 10)
       );
 
-      // Final race-condition check immediately before insert.
-      const fresh = await adapter.checkSlots(
-        selectedDate,
-        selectedDate,
-        Number(pending.durationMinutes || 30),
-        selectedTime || undefined
-      );
-      const freshSlots = getSlotsArray(fresh);
-      const revalidatedIso = selectedTime
-        ? findOfferedSlotIso(freshSlots, selectedTime)
-        : null;
-
+      // Final race-condition check immediately before insert. Verify the exact locked ISO
+      // directly against calendar events instead of re-generating/ranking suggested slots.
+      // This prevents a genuinely free selected time from being rejected by slot parsing.
       const lockedIso = String(pending.dateTime || "").trim();
-      const lockedTime = getStockholmTimeFromIso(lockedIso);
-      const lockedDate = lockedIso.slice(0, 10);
-
-      const finalIso =
-        revalidatedIso ||
-        (
-          lockedIso &&
-          lockedTime === selectedTime &&
-          lockedDate === selectedDate &&
-          isExactRequestedSlotAvailable(
-            Array.isArray(pending.offeredSlots) ? pending.offeredSlots : [],
-            selectedTime || undefined
-          )
-            ? lockedIso
-            : null
-        );
+      const exactCheck = await verifyExactSlotIsFree(
+        adapter,
+        lockedIso,
+        Number(pending.durationMinutes || 30)
+      );
+      const finalIso = exactCheck.free ? exactCheck.normalizedIso : null;
 
       if (!finalIso) {
+        const fresh = await adapter.checkSlots(
+          selectedDate,
+          selectedDate,
+          Number(pending.durationMinutes || 30),
+          selectedTime || undefined
+        );
+        const freshSlots = getSlotsArray(fresh);
+
         console.error("[UnifiedBooking] Exact slot failed final revalidation", {
           platform: platformName,
           sessionId,
           selectedDate,
           selectedTime,
           pendingDateTime: pending.dateTime,
-          previousOfferedSlots: pending.offeredSlots,
+          exactCheck,
           freshSlots
         });
 

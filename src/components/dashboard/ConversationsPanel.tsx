@@ -30,6 +30,7 @@ export default function ConversationsPanel({
   const [replyText, setReplyText] = useState('');
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
+  const [mobileChatOpen, setMobileChatOpen] = useState(false);
 
   useEffect(() => {
     setLocalConversations(conversations);
@@ -54,6 +55,27 @@ export default function ConversationsPanel({
     setReplyText('');
     setSendError(null);
   }, [selectedId]);
+
+  useEffect(() => {
+    document.body.classList.toggle('mobile-conversation-open', mobileChatOpen);
+
+    const handleEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setMobileChatOpen(false);
+      }
+    };
+
+    window.addEventListener('keydown', handleEscape);
+
+    return () => {
+      document.body.classList.remove('mobile-conversation-open');
+      window.removeEventListener('keydown', handleEscape);
+    };
+  }, [mobileChatOpen]);
+
+  const closeMobileConversation = () => {
+    setMobileChatOpen(false);
+  };
 
   const unreadCounts = useMemo(() => {
     return localConversations.reduce<Record<string, number>>(
@@ -116,6 +138,10 @@ export default function ConversationsPanel({
 
   const handleSelectConversation = async (conversation: Conversation) => {
     setSelectedId(conversation.id);
+
+    if (window.matchMedia('(max-width: 768px)').matches) {
+      setMobileChatOpen(true);
+    }
 
     const unread = Number(conversation.unreadCount || 0);
 
@@ -216,7 +242,10 @@ export default function ConversationsPanel({
   };
 
   return (
-    <section id="conversations" className="card dashboard-section">
+    <section
+      id="conversations"
+      className={`card dashboard-section${mobileChatOpen ? ' mobile-chat-open' : ''}`}
+    >
       <div className="conversation-toolbar">
         <div className="conversation-toolbar-stats">
           <span className="conversation-toolbar-stat active">
@@ -336,6 +365,18 @@ export default function ConversationsPanel({
           {selected ? (
             <>
               <div className="conversation-detail-head">
+                <button
+                  className="conversation-mobile-back"
+                  type="button"
+                  onClick={closeMobileConversation}
+                  aria-label="Back to inbox"
+                >
+                  <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                    <path d="M15 18l-6-6 6-6" />
+                  </svg>
+                  <span>Inbox</span>
+                </button>
+
                 <div className="conversation-detail-identity">
                   <div className="conversation-detail-avatar">
                     <ChannelIcon channel={selected.channel} />

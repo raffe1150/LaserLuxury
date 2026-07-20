@@ -1454,11 +1454,27 @@ function isRescheduleIntent(text?: string): boolean {
   const raw = String(text || "").trim().toLowerCase();
   if (!raw) return false;
 
-  return (
-    /\b(ändra(?:\s+(?:min|tiden|tid))?|flytta(?:\s+(?:min|tiden|tid|bokningen))?|boka om|omboka|annan tid|ny tid|reschedule|change my appointment|change the time|move my appointment|avaz\s*(?:konam|kardam|bedam|beshe)?|taghir\s*(?:bedam|konam)?|vaghtam\s+avaz|hamon\s+vaght(?:e|i)?\s+ghabli|تغییر.*وقت|عوض.*وقت)\b/i.test(raw) ||
-    /\b(kan inte komma|kan tyvärr inte komma|kommer inte kunna komma|cannot come|can't come|can not come)\b/i.test(raw) ||
-    /\b(i\s*stället|istället|instead)\b/i.test(raw)
-  );
+  // Do not use JavaScript \b around Swedish words such as "ändra".
+  // In JavaScript, \b is ASCII-based, so a word beginning with "ä" can fail to match.
+  // That caused Messenger messages like "Jag ska ändra min tid" to fall through into
+  // the new-booking flow and incorrectly ask for name/mobile again.
+  const normalized = raw
+    .normalize("NFKC")
+    .replace(/[.,!?;:()\[\]{}]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const swedishOrEnglish =
+    /(?:^|\s)(?:ändra(?:\s+(?:min\s+tid|tiden|tid|bokningen))?|flytta(?:\s+(?:min\s+tid|tiden|tid|bokningen))?|boka\s+om|omboka|annan\s+tid|ny\s+tid|reschedule|change\s+my\s+appointment|change\s+the\s+time|move\s+my\s+appointment)(?=\s|$)/i.test(normalized) ||
+    /(?:^|\s)(?:kan\s+(?:tyvärr\s+)?inte\s+komma|kommer\s+inte\s+kunna\s+komma|cannot\s+come|can't\s+come|can\s+not\s+come)(?=\s|$)/i.test(normalized) ||
+    /(?:^|\s)(?:i\s*stället|istället|instead)(?=\s|$)/i.test(normalized);
+
+  const transliteratedPersian =
+    /(?:^|\s)(?:avaz(?:\s+(?:konam|kardam|bedam|beshe))?|taghir(?:\s+(?:bedam|konam))?|vaghtam\s+avaz|vaght\s+ro\s+avaz|hamon\s+vaght(?:e|i)?\s+ghabli)(?=\s|$)/i.test(normalized);
+
+  const persianScript = /(?:تغییر[^\n]{0,30}وقت|عوض[^\n]{0,30}وقت|وقت[^\n]{0,30}(?:تغییر|عوض))/.test(raw);
+
+  return swedishOrEnglish || transliteratedPersian || persianScript;
 }
 
 function isGenericBookingRequestWithoutDate(text?: string): boolean {

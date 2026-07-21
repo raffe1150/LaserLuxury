@@ -1582,10 +1582,16 @@ function inferServiceFromText(text?: string): string {
     .normalize("NFKD")
     .replace(/[^a-z0-9\u0600-\u06FF]+/g, "");
 
+  // Customers often stretch letters or make small Finglish spelling mistakes,
+  // for example: "moshaveeeereh", "moshavereh", or "mashavare".
+  // Collapse repeated Latin letters before matching so every channel resolves
+  // the same service instead of falling back to the free-form AI flow.
+  const compactServiceCollapsed = compactService.replace(/([a-z])\1+/g, "$1");
+
   if (
     /\b(konsultation|consultation|consulting|consult|konsultasjon|konsultasion|konsiltation|konstitution|knstilution|konstlution|konstultion|konslutation|moshavere|moshavereh|mashavere|mashavereh|مشاوره)\b/i.test(raw) ||
-    /^(?:kons|cons|konst|knst).*(?:ult|lult|lut).*(?:ation|tion|ion)?$/i.test(compactService) ||
-    /^m[ao]sh?aver(?:e|eh)?$/i.test(compactService)
+    /^(?:kons|cons|konst|knst).*(?:ult|lult|lut).*(?:ation|tion|ion)?$/i.test(compactServiceCollapsed) ||
+    /^m[ao]sh?a?v?e?r(?:e|eh|h)?$/i.test(compactServiceCollapsed)
   ) return "Konsultation";
 
   if (raw.includes("bikini")) return "Bikinilinjebehandling";
@@ -2237,11 +2243,9 @@ function inferBookingDurationFromContext(text: string, history: any[]): number {
     text || ""
   ].join(" ").toLowerCase();
 
-  // AdMotion Studio consultations always have a fixed 30-minute duration.
-  // This rule intentionally wins over any generic duration question or guessed value.
-  if (
-    /\b(konsultation|consultation|consulting|consult|konsultasjon|konsultasion|konsiltation|konstitution|knstilution|moshavere|mashavere|مشاوره)\b/i.test(combined)
-  ) return 30;
+  // Keep service recognition in one place. This also catches stretched or
+  // misspelled Finglish such as "moshaveeeereh".
+  if (inferServiceFromText(combined) === "Konsultation") return 30;
 
   const minuteMatch = combined.match(/(\d{1,3})\s*(?:min|minuter|minutes|دقیقه)/i);
   if (minuteMatch) {
@@ -2260,7 +2264,11 @@ function isBookingConversationContext(text: string, history: any[]): boolean {
     text || ""
   ].join(" ").toLowerCase();
 
-  return /\b(boka|bokning|tid|appointment|book|booking|konsultation|consultation|vaght|رزرو|وقت|مشاوره|moshavere)\b/i.test(combined);
+  // A recognized service is enough to keep the message inside the deterministic
+  // booking engine. Accept common Finglish endings such as "vaghte" as well.
+  if (inferServiceFromText(combined) !== "Bokning") return true;
+
+  return /\b(boka|bokning|tid(?:en)?|appointment|book|booking|vaght(?:e|i)?|begir(?:am|im)|رزرو|وقت)\b/i.test(combined);
 }
 
 function getSlotsArray(result: any): string[] {
@@ -3453,6 +3461,7 @@ Never mention Laser Luxury unless the current business name is Laser Luxury.
 Never mention services, prices, or treatments that are not included in this business-specific system prompt.
 If the customer asks about services and the prompt does not include enough information, politely ask what service they are interested in or say you can help with booking and general guidance.
 Before confirming any booking, you must check availability.
+If the requested service is Consultation/Konsultation/مشاوره, its duration is fixed at 30 minutes. Never ask the customer how long it should take.
 Before creating any appointment, collect the customer's name and mobile number. In Messenger, ask for name and mobile number ONLY AFTER an exact date and exact time has been checked, offered to the user, and the user has confirmed that exact slot. If the customer has not chosen a specific time yet, do NOT ask for name/phone; first check availability and offer times. Do not claim the booking is final until the server confirms it.
 For vague time requests, check available slots instead of asking the customer to choose a time. If the user says a weekday such as tisdag/Tuesday, the tool date must match that weekday exactly. Never change Tuesday to Thursday or another day.
 APPOINTMENT LOOKUP — HIGH PRIORITY: If the customer asks whether they already have a booking, when their appointment is, whether a booking exists, or says they are unsure if they booked, you MUST call findCustomerAppointments before replying. This is an allowed booking-support request and must NOT be escalated merely because it is outside the business FAQ. Use the current channel identity automatically; ask for name or mobile number only if the lookup says contact details are needed.
@@ -4653,6 +4662,7 @@ Never mention Laser Luxury unless the current business name is Laser Luxury.
 Never mention services, prices, or treatments that are not included in this business-specific system prompt.
 If the customer asks about services and the prompt does not include enough information, politely ask what service they are interested in or say you can help with booking and general guidance.
 Before confirming any booking, you must check availability.
+If the requested service is Consultation/Konsultation/مشاوره, its duration is fixed at 30 minutes. Never ask the customer how long it should take.
 Before creating any appointment, collect the customer's name and mobile number. In Messenger, ask for name and mobile number ONLY AFTER an exact date and exact time has been checked, offered to the user, and the user has confirmed that exact slot. If the customer has not chosen a specific time yet, do NOT ask for name/phone; first check availability and offer times. Do not claim the booking is final until the server confirms it.
 For vague time requests, check available slots instead of asking the customer to choose a time. If the user says a weekday such as tisdag/Tuesday, the tool date must match that weekday exactly. Never change Tuesday to Thursday or another day.
 APPOINTMENT LOOKUP — HIGH PRIORITY: If the customer asks whether they already have a booking, when their appointment is, whether a booking exists, or says they are unsure if they booked, you MUST call findCustomerAppointments before replying. This is an allowed booking-support request and must NOT be escalated merely because it is outside the business FAQ. Use the current channel identity automatically; ask for name or mobile number only if the lookup says contact details are needed.
@@ -5902,6 +5912,7 @@ Never mention Laser Luxury unless the current business name is Laser Luxury.
 Never mention services, prices, or treatments that are not included in this business-specific system prompt.
 If the customer asks about services and the prompt does not include enough information, politely ask what service they are interested in or say you can help with booking and general guidance.
 Before confirming any booking, you must check availability.
+If the requested service is Consultation/Konsultation/مشاوره, its duration is fixed at 30 minutes. Never ask the customer how long it should take.
 Before creating any appointment, collect the customer's name and mobile number. In Messenger, ask for name and mobile number ONLY AFTER an exact date and exact time has been checked, offered to the user, and the user has confirmed that exact slot. If the customer has not chosen a specific time yet, do NOT ask for name/phone; first check availability and offer times. Do not claim the booking is final until the server confirms it.
 For vague time requests, check available slots instead of asking the customer to choose a time. If the user says a weekday such as tisdag/Tuesday, the tool date must match that weekday exactly. Never change Tuesday to Thursday or another day.
 APPOINTMENT LOOKUP — HIGH PRIORITY: If the customer asks whether they already have a booking, when their appointment is, whether a booking exists, or says they are unsure if they booked, you MUST call findCustomerAppointments before replying. This is an allowed booking-support request and must NOT be escalated merely because it is outside the business FAQ. Use the current channel identity automatically; ask for name or mobile number only if the lookup says contact details are needed.
@@ -6284,6 +6295,7 @@ Never mention Laser Luxury unless the current business name is Laser Luxury.
 Never mention services, prices, or treatments that are not included in this business-specific system prompt.
 If the customer asks about services and the prompt does not include enough information, politely ask what service they are interested in or say you can help with booking and general guidance.
 Before confirming any booking, you must check availability.
+If the requested service is Consultation/Konsultation/مشاوره, its duration is fixed at 30 minutes. Never ask the customer how long it should take.
 Before creating any appointment, collect the customer's name and mobile number. In Messenger, ask for name and mobile number ONLY AFTER an exact date and exact time has been checked, offered to the user, and the user has confirmed that exact slot. If the customer has not chosen a specific time yet, do NOT ask for name/phone; first check availability and offer times. Do not claim the booking is final until the server confirms it.
 For vague time requests, check available slots instead of asking the customer to choose a time. If the user says a weekday such as tisdag/Tuesday, the tool date must match that weekday exactly. Never change Tuesday to Thursday or another day.
 APPOINTMENT LOOKUP — HIGH PRIORITY: If the customer asks whether they already have a booking, when their appointment is, whether a booking exists, or says they are unsure if they booked, you MUST call findCustomerAppointments before replying. This is an allowed booking-support request and must NOT be escalated merely because it is outside the business FAQ. Use the current channel identity automatically; ask for name or mobile number only if the lookup says contact details are needed.
@@ -6791,6 +6803,7 @@ Never mention Laser Luxury unless the current business name is Laser Luxury.
 Never mention services, prices, or treatments that are not included in this business-specific system prompt.
 If the customer asks about services and the prompt does not include enough information, politely ask what service they are interested in or say you can help with booking and general guidance.
 Before confirming any booking, you must check availability.
+If the requested service is Consultation/Konsultation/مشاوره, its duration is fixed at 30 minutes. Never ask the customer how long it should take.
 Before creating any appointment, collect the customer's name and mobile number. In Messenger, ask for name and mobile number ONLY AFTER an exact date and exact time has been checked, offered to the user, and the user has confirmed that exact slot. If the customer has not chosen a specific time yet, do NOT ask for name/phone; first check availability and offer times. Do not claim the booking is final until the server confirms it.
 For vague time requests, check available slots instead of asking the customer to choose a time. If the user says a weekday such as tisdag/Tuesday, the tool date must match that weekday exactly. Never change Tuesday to Thursday or another day.
 APPOINTMENT LOOKUP — HIGH PRIORITY: If the customer asks whether they already have a booking, when their appointment is, whether a booking exists, or says they are unsure if they booked, you MUST call findCustomerAppointments before replying. This is an allowed booking-support request and must NOT be escalated merely because it is outside the business FAQ. Use the current channel identity automatically; ask for name or mobile number only if the lookup says contact details are needed.

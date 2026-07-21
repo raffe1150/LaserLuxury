@@ -2506,7 +2506,10 @@ async function notifyAdminAboutCancellation(
   const service = String(appointment?.service || "Bokning").trim();
   const { dateText, timeText } = formatLocalizedDateTime(String(appointment?.start || ""), "sv");
   const shortReason = normalizeCancellationReason(reason);
-  const notifyText = `❌ Avbokad ${platformLabel}-tid\n👤 ${customerName}${phone && phone !== "Saknas" ? ` · ${phone}` : ""}\n📅 ${dateText} kl ${timeText} · ${service}\n📝 ${shortReason}`;
+  const channelName = platformLabel.toLowerCase() === "whatsapp"
+    ? "WhatsApp"
+    : platformLabel.charAt(0).toUpperCase() + platformLabel.slice(1).toLowerCase();
+  const notifyText = `❌ Avbokning\n\n📱 Via: ${channelName}\n👤 ${customerName}\n📞 ${phone}\n📅 ${dateText} kl ${timeText}\n🔔 ${service}\n📝 ${shortReason}`;
   const channel = getAdminNotificationChannel(businessConfig);
 
   if (channel === "whatsapp") {

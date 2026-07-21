@@ -243,6 +243,7 @@ interface CalendarAdapter {
   checkSlots(startDate: string, endDate?: string, durationMinutes?: number, requestedTime?: string): Promise<any> | any;
   insertAppointment(name: string, phone: string, service: string, dateTime: string, durationMinutes?: number, chatId?: string, skipConflictCheck?: boolean): Promise<any> | any;
   updateAppointment?(eventId: string, dateTime: string, durationMinutes?: number): Promise<any> | any;
+  cancelAppointment?(eventId: string): Promise<any> | any;
   getEvents(startDate: string, endDate: string): Promise<any> | any;
 }
 
@@ -685,6 +686,13 @@ class MockCalendarAdapter implements CalendarAdapter {
     event.endTime = new Date(start.getTime() + durationMinutes * 60000).toISOString();
     return { success: true, event };
   }
+
+  cancelAppointment(eventId: string) {
+    const index = this.events.findIndex((item: any) => String(item.id) === String(eventId));
+    if (index < 0) return { success: false, code: "EVENT_NOT_FOUND", message: "Appointment not found." };
+    const [event] = this.events.splice(index, 1);
+    return { success: true, event };
+  }
 }
 
 // Generic Webhook/REST implementation
@@ -741,6 +749,19 @@ class GenericCalendarAdapter implements CalendarAdapter {
       return await res.json();
     } catch (e) {
       return { success: false, code: "UPDATE_FAILED", message: "Failed to update appointment." };
+    }
+  }
+
+  async cancelAppointment(eventId: string) {
+    try {
+      const headers: any = {};
+      if (this.apiKey) headers['Authorization'] = `Bearer ${this.apiKey}`;
+      const res = await fetch(`${this.apiUrl}/events/${encodeURIComponent(eventId)}`, { method: 'DELETE', headers });
+      if (!res.ok) return { success: false, code: "CANCEL_FAILED", message: "Failed to cancel appointment." };
+      const data = await res.json().catch(() => ({}));
+      return { success: true, ...data };
+    } catch (e) {
+      return { success: false, code: "CANCEL_FAILED", message: "Failed to cancel appointment." };
     }
   }
 }
@@ -911,6 +932,20 @@ class GoogleCalendarAdapter implements CalendarAdapter {
     } catch (e: any) {
       console.error("Google Calendar updateAppointment Error:", e.message);
       return { success: false, code: "UPDATE_FAILED", message: "Failed to update appointment." };
+    }
+  }
+
+  async cancelAppointment(eventId: string) {
+    try {
+      if (!eventId) return { success: false, code: "MISSING_EVENT_ID", message: "Calendar event id is missing." };
+      await this.calendar.events.delete({ calendarId: this.calendarId, eventId });
+      return { success: true };
+    } catch (e: any) {
+      if (Number(e?.code) === 404 || Number(e?.response?.status) === 404) {
+        return { success: true, alreadyDeleted: true };
+      }
+      console.error("Google Calendar cancelAppointment Error:", e.message);
+      return { success: false, code: "CANCEL_FAILED", message: "Failed to cancel appointment." };
     }
   }
 }
@@ -1421,6 +1456,7 @@ const appointmentContexts: Record<string, { appointment: any; savedAt: number; l
 const appointmentSelectionContexts: Record<string, { appointments: any[]; savedAt: number; language: string }> = {};
 const appointmentLookupContexts: Record<string, { savedAt: number; language: string; includePast?: boolean }> = {};
 const rescheduleContexts: Record<string, { appointment: any; savedAt: number; language: string }> = {};
+const cancellationContexts: Record<string, { appointment: any; savedAt: number; language: string; feeApplies: boolean; feeAmount: number; currency: string }> = {};
 
 function rememberAppointmentContext(sessionId: string, result: any, language: string) {
   const appointments = Array.isArray(result?.appointments)
@@ -1492,15 +1528,17 @@ function selectAppointmentFromText(
     return { type: "all" };
   }
 
+  const numericSelection = raw.match(/^(?:(?:nummer|numret|nr|number|no|n:o|شماره|رقم)\s*)?([1-9]\d*)$/i);
+  if (numericSelection) {
+    const index = Number(numericSelection[1]) - 1;
+    if (appointments[index]) return { type: "one", appointment: appointments[index] };
+  }
+
   const ordinalMap: Array<[RegExp, number]> = [
     [/\b(första|forsta|first|اولی|اول)\b/i, 0],
     [/\b(andra|second|دومی|دوم)\b/i, 1],
     [/\b(tredje|third|سومی|سوم)\b/i, 2],
-    [/\b(fjärde|fjarde|fourth|چهارمی|چهارم)\b/i, 3],
-    [/^1$/, 0],
-    [/^2$/, 1],
-    [/^3$/, 2],
-    [/^4$/, 3]
+    [/\b(fjärde|fjarde|fourth|چهارمی|چهارم)\b/i, 3]
   ];
 
   for (const [pattern, index] of ordinalMap) {
@@ -1629,6 +1667,92 @@ function getRescheduleContext(sessionId: string) {
 
 function clearRescheduleContext(sessionId: string) {
   delete rescheduleContexts[sessionId];
+}
+
+function isCancellationIntent(text?: string): boolean {
+  const raw = String(text || "").trim().toLowerCase().normalize("NFKC");
+  if (!raw) return false;
+  return /(?:^|\s)(?:avboka|avbokning|avboka den|avboka tiden|cancel|cancel it|cancel my appointment|cancel the appointment|cancell?ation|laghv|لغو|کنسل)(?=\s|$)/iu.test(raw);
+}
+
+function isCancellationConfirmation(text?: string): boolean {
+  const raw = String(text || "").trim().toLowerCase();
+  return /^(?:ja|ja tack|bekräfta|bekrafta|avboka|avboka den|yes|confirm|cancel it|bale|baleh|are|taeed|تایید|تأیید|بله|آره|لغو کن)[!.؟?\s]*$/iu.test(raw);
+}
+
+function isCancellationRejection(text?: string): boolean {
+  const raw = String(text || "").trim().toLowerCase();
+  return /^(?:nej|nej tack|avbryt|no|keep it|don'?t cancel|na|نه|خیر|لغو نکن)[!.؟?\s]*$/iu.test(raw);
+}
+
+function getCancellationPolicy(config: any) {
+  const allowCancellation = Boolean(config?.allowCancellation ?? config?.allow_cancellation ?? false);
+  const deadlineMinutes = Math.max(0, Number(config?.cancellationDeadlineMinutes ?? config?.cancellation_deadline_minutes ?? 0) || 0);
+  const feeEnabled = Boolean(config?.cancellationFeeEnabled ?? config?.cancellation_fee_enabled ?? false);
+  const feeAmount = Math.max(0, Number(config?.cancellationFeeAmount ?? config?.cancellation_fee_amount ?? 0) || 0);
+  const currency = String(config?.cancellationFeeCurrency ?? config?.cancellation_fee_currency ?? "SEK").trim().toUpperCase() || "SEK";
+  return { allowCancellation, deadlineMinutes, feeEnabled, feeAmount, currency };
+}
+
+function getCancellationFeeState(appointment: any, config: any) {
+  const policy = getCancellationPolicy(config);
+  const startMs = new Date(String(appointment?.start || "")).getTime();
+  const minutesRemaining = Number.isFinite(startMs) ? (startMs - Date.now()) / 60000 : Number.POSITIVE_INFINITY;
+  const insideDeadline = policy.deadlineMinutes > 0 && minutesRemaining < policy.deadlineMinutes;
+  return { ...policy, minutesRemaining, feeApplies: insideDeadline && policy.feeEnabled && policy.feeAmount > 0 };
+}
+
+function rememberCancellationContext(sessionId: string, appointment: any, language: string, config: any) {
+  const fee = getCancellationFeeState(appointment, config);
+  cancellationContexts[sessionId] = {
+    appointment,
+    savedAt: Date.now(),
+    language,
+    feeApplies: fee.feeApplies,
+    feeAmount: fee.feeAmount,
+    currency: fee.currency
+  };
+}
+
+function getCancellationContext(sessionId: string) {
+  const context = cancellationContexts[sessionId];
+  if (!context) return null;
+  if (Date.now() - context.savedAt > 15 * 60 * 1000) {
+    delete cancellationContexts[sessionId];
+    return null;
+  }
+  return context;
+}
+
+function clearCancellationContext(sessionId: string) {
+  delete cancellationContexts[sessionId];
+}
+
+function formatCancellationDisabled(language: string): string {
+  if (language === "fa") return "لغو خودکار برای این کسب‌وکار فعال نیست. لطفاً برای لغو با مجموعه تماس بگیرید. 🙏";
+  if (language === "sv") return "Den här verksamheten har inte aktiverat automatisk avbokning. Kontakta gärna personalen för hjälp. 🙏";
+  return "This business has not enabled automatic cancellation. Please contact the team for help. 🙏";
+}
+
+function formatCancellationConfirmation(appointment: any, language: string, feeApplies: boolean, feeAmount: number, currency: string): string {
+  const { dateText, timeText } = formatLocalizedDateTime(String(appointment?.start || ""), language);
+  const fee = `${feeAmount.toLocaleString("sv-SE")} ${currency}`;
+  if (language === "fa") return feeApplies
+    ? `آیا مطمئن هستید که می‌خواهید رزرو ${dateText} ساعت ${timeText} را لغو کنید؟ طبق قوانین مجموعه، هزینه لغو دیرهنگام ${fee} اعمال می‌شود. برای تأیید بنویسید «بله».`
+    : `آیا مطمئن هستید که می‌خواهید رزرو ${dateText} ساعت ${timeText} را لغو کنید؟ برای تأیید بنویسید «بله».`;
+  if (language === "sv") return feeApplies
+    ? `Vill du verkligen avboka tiden ${dateText} kl ${timeText}? En sen avbokningsavgift på ${fee} gäller enligt verksamhetens policy. Svara “ja” för att bekräfta.`
+    : `Vill du verkligen avboka tiden ${dateText} kl ${timeText}? Svara “ja” för att bekräfta.`;
+  return feeApplies
+    ? `Do you want to cancel the appointment on ${dateText} at ${timeText}? A late-cancellation fee of ${fee} applies under the business policy. Reply “yes” to confirm.`
+    : `Do you want to cancel the appointment on ${dateText} at ${timeText}? Reply “yes” to confirm.`;
+}
+
+function formatCancellationSuccess(language: string, feeApplies: boolean, feeAmount: number, currency: string): string {
+  const fee = `${feeAmount.toLocaleString("sv-SE")} ${currency}`;
+  if (language === "fa") return feeApplies ? `رزرو شما لغو شد. طبق قوانین مجموعه، هزینه لغو دیرهنگام ${fee} ممکن است اعمال شود.` : "رزرو شما با موفقیت لغو شد. ✅";
+  if (language === "sv") return feeApplies ? `Din bokning är avbokad. En sen avbokningsavgift på ${fee} kan debiteras enligt verksamhetens policy.` : "Din bokning är nu avbokad. ✅";
+  return feeApplies ? `Your appointment is cancelled. A late-cancellation fee of ${fee} may be charged under the business policy.` : "Your appointment has been cancelled. ✅";
 }
 
 function isAppointmentNameQuestion(text?: string): boolean {
@@ -2633,6 +2757,11 @@ function normalizeBusinessConfig(row: any) {
     messengerPageAccessToken: row.messenger_page_access_token || row.facebook_page_access_token || row.page_access_token,
     messengerVerifyToken: row.messenger_verify_token || row.facebook_verify_token,
     messengerEnabled: row.messenger_enabled,
+    allowCancellation: Boolean(row.allow_cancellation),
+    cancellationDeadlineMinutes: Math.max(0, Number(row.cancellation_deadline_minutes || 0)),
+    cancellationFeeEnabled: Boolean(row.cancellation_fee_enabled),
+    cancellationFeeAmount: Math.max(0, Number(row.cancellation_fee_amount || 0)),
+    cancellationFeeCurrency: String(row.cancellation_fee_currency || "SEK"),
     calendarProvider: "google",
   };
 }
@@ -2659,6 +2788,7 @@ function resetSessionIfBusinessConfigChanged(sessionId: string, config: any) {
     delete appointmentSelectionContexts[sessionId];
     delete appointmentLookupContexts[sessionId];
     delete rescheduleContexts[sessionId];
+    delete cancellationContexts[sessionId];
   }
   businessConfigVersions[sessionId] = nextVersion;
 }
@@ -2839,6 +2969,47 @@ async function handleUnifiedBookingEngine(params: {
   };
 
 
+  const completeCancellation = async (context: { appointment: any; language: string; feeApplies: boolean; feeAmount: number; currency: string }): Promise<boolean> => {
+    const appointment = context.appointment;
+    const adapter = getCalendarAdapter(businessConfig);
+    const eventId = String(appointment?.calendarEventId || "");
+
+    if (eventId && adapter.cancelAppointment) {
+      const calendarResult = await adapter.cancelAppointment(eventId);
+      if (!calendarResult?.success) {
+        await replyAndRecord(getErrorMessageByLanguage(context.language));
+        return true;
+      }
+    }
+
+    if (supabase && appointment?.id && appointment?.source === "appointments_table") {
+      const { error: dbError } = await supabase
+        .from("appointments")
+        .update({ status: "cancelled" })
+        .eq("id", appointment.id);
+      if (dbError) {
+        console.error("[Cancellation] appointments table update failed:", dbError);
+        if (!eventId) {
+          await replyAndRecord(getErrorMessageByLanguage(context.language));
+          return true;
+        }
+      }
+    } else if (!eventId) {
+      await replyAndRecord(context.language === "sv"
+        ? "Jag hittade bokningen, men den saknar ett kalender-id för säker avbokning. En medarbetare behöver hjälpa till. 🙏"
+        : context.language === "fa"
+          ? "رزرو پیدا شد، اما شناسه تقویم لازم برای لغو امن موجود نیست. یک همکار باید کمک کند. 🙏"
+          : "I found the appointment, but it has no calendar event id for a safe cancellation. A team member needs to help. 🙏");
+      return true;
+    }
+
+    clearCancellationContext(sessionId);
+    delete appointmentContexts[sessionId];
+    delete appointmentSelectionContexts[sessionId];
+    await replyAndRecord(formatCancellationSuccess(context.language, context.feeApplies, context.feeAmount, context.currency));
+    return true;
+  };
+
   const completeReschedule = async (
     appointment: any,
     requestedDate: string,
@@ -2946,6 +3117,7 @@ async function handleUnifiedBookingEngine(params: {
     // Rescheduling an existing appointment must always win over a stale/new-booking flow.
     // Never ask again for service, duration, name or phone when an existing booking can be found.
     const rescheduleRequested = isRescheduleIntent(text);
+    const cancellationRequested = isCancellationIntent(text);
 
     // A direct lookup question must interrupt an unfinished reschedule flow.
     // Example: customer first asks to reschedule, then asks "when is my appointment?".
@@ -2959,11 +3131,32 @@ async function handleUnifiedBookingEngine(params: {
       pending = null;
     }
 
+    if (pending && cancellationRequested) {
+      console.log(`[UnifiedBooking] Cancellation intent cleared pending new-booking state platform=${platformName}, session=${sessionId}`);
+      await clearPendingBooking(sessionId);
+      pending = null;
+    }
+
+    const activeCancellation = !pending ? getCancellationContext(sessionId) : null;
+    if (activeCancellation) {
+      const lockedLanguage = getFlowReplyLanguage(activeCancellation.language, language, text);
+      if (isCancellationRejection(text)) {
+        clearCancellationContext(sessionId);
+        await replyAndRecord(lockedLanguage === "sv" ? "Okej, bokningen behålls." : lockedLanguage === "fa" ? "باشه، رزرو شما حفظ می‌شود." : "Okay, the appointment will be kept.");
+        return true;
+      }
+      if (isCancellationConfirmation(text)) {
+        return completeCancellation({ ...activeCancellation, language: lockedLanguage });
+      }
+      await replyAndRecord(formatCancellationConfirmation(activeCancellation.appointment, lockedLanguage, activeCancellation.feeApplies, activeCancellation.feeAmount, activeCancellation.currency));
+      return true;
+    }
+
     let rememberedAppointment = getAppointmentContext(sessionId);
 
     // Memory is in-process and may be empty after deploy/restart. Recover the customer's
     // existing booking directly from Supabase/Google Calendar before handling the change.
-    if (!pending && !rememberedAppointment && rescheduleRequested) {
+    if (!pending && !rememberedAppointment && (rescheduleRequested || cancellationRequested)) {
       const adapter = getCalendarAdapter(businessConfig);
       const lookupContact = extractNameAndPhone(text);
       const lookupResult = await findCustomerAppointments(
@@ -2993,6 +3186,24 @@ async function handleUnifiedBookingEngine(params: {
           getFlowReplyLanguage(rememberedAppointment.language, language, text)
         )
       );
+      return true;
+    }
+
+    if (!pending && rememberedAppointment && cancellationRequested) {
+      const lockedLanguage = getFlowReplyLanguage(rememberedAppointment.language, language, text);
+      const policy = getCancellationPolicy(businessConfig);
+      if (!policy.allowCancellation) {
+        await replyAndRecord(formatCancellationDisabled(lockedLanguage));
+        return true;
+      }
+      const startMs = new Date(String(rememberedAppointment.appointment?.start || "")).getTime();
+      if (Number.isFinite(startMs) && startMs <= Date.now()) {
+        await replyAndRecord(lockedLanguage === "sv" ? "Den tiden har redan börjat eller passerat och kan inte avbokas automatiskt." : lockedLanguage === "fa" ? "این نوبت شروع شده یا گذشته است و به‌صورت خودکار قابل لغو نیست." : "That appointment has already started or passed and cannot be cancelled automatically.");
+        return true;
+      }
+      rememberCancellationContext(sessionId, rememberedAppointment.appointment, lockedLanguage, businessConfig);
+      const context = getCancellationContext(sessionId)!;
+      await replyAndRecord(formatCancellationConfirmation(context.appointment, lockedLanguage, context.feeApplies, context.feeAmount, context.currency));
       return true;
     }
 
@@ -3067,7 +3278,10 @@ async function handleUnifiedBookingEngine(params: {
       const selection = selectAppointmentFromText(text, activeSelectionContext.appointments);
 
       if (selection?.type === "all") {
-        await replyAndRecord(formatAllAppointmentsSelectedReply(lockedLanguage));
+        const message = cancellationRequested
+          ? (lockedLanguage === "sv" ? "För säkerhets skull kan jag bara avboka en bokning åt gången. Svara med numret eller namnet på bokningen du vill avboka." : lockedLanguage === "fa" ? "برای امنیت، هر بار فقط یک رزرو قابل لغو است. شماره یا نام رزروی را که می‌خواهید لغو کنید بفرستید." : "For safety, I can only cancel one appointment at a time. Reply with the number or name of the appointment to cancel.")
+          : formatAllAppointmentsSelectedReply(lockedLanguage);
+        await replyAndRecord(message);
         return true;
       }
 
@@ -3078,6 +3292,17 @@ async function handleUnifiedBookingEngine(params: {
           language: lockedLanguage
         };
         clearAppointmentSelectionContext(sessionId);
+        if (cancellationRequested) {
+          const policy = getCancellationPolicy(businessConfig);
+          if (!policy.allowCancellation) {
+            await replyAndRecord(formatCancellationDisabled(lockedLanguage));
+            return true;
+          }
+          rememberCancellationContext(sessionId, selection.appointment, lockedLanguage, businessConfig);
+          const context = getCancellationContext(sessionId)!;
+          await replyAndRecord(formatCancellationConfirmation(context.appointment, lockedLanguage, context.feeApplies, context.feeAmount, context.currency));
+          return true;
+        }
         await replyAndRecord(
           formatAppointmentLookupReply(
             { found: true, needsContactDetails: false, appointments: [selection.appointment] },
@@ -4078,7 +4303,7 @@ function detectStrongLatestLanguage(text?: string): string | null {
   }
 
   if (
-    /\b(hej|hejsan|hallå|kan du|kan jag|har jag|hos er|mår du|jag vill|jag ska|jag behöver|ändra min tid|flytta min tid|måndag|tisdag|onsdag|torsdag|fredag|lördag|söndag|klockan|vilken tid|konsultation|boka|bokning|ledig|passar|mitt namn|mitt nummer|mobilnummer)\b/i.test(raw)
+    /\b(hej+|hejsan|hallå|kan du|kan jag|har jag|hos er|mår du|jag vill|jag ska|jag behöver|ändra min tid|flytta min tid|måndag|tisdag|onsdag|torsdag|fredag|lördag|söndag|klockan|vilken tid|konsultation|boka|bokning|ledig|passar|mitt namn|mitt nummer|mobilnummer)\b/i.test(raw)
   ) return "sv";
 
   if (
@@ -8349,6 +8574,37 @@ app.post('/api/businesses/:businessId/integrations/:integration/test', async (re
   }
 });
 
+app.get('/api/businesses/:id/cancellation-settings', async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ success: false, message: 'Supabase is not configured.' });
+    const businessId = Number(req.params.id);
+    if (!Number.isFinite(businessId)) return res.status(400).json({ success: false, message: 'A valid business id is required.' });
+
+    const { data, error } = await supabase
+      .from('businesses')
+      .select('id,allow_cancellation,cancellation_deadline_minutes,cancellation_fee_enabled,cancellation_fee_amount,cancellation_fee_currency')
+      .eq('id', businessId)
+      .maybeSingle();
+
+    if (error) throw error;
+    if (!data) return res.status(404).json({ success: false, message: 'Business not found.' });
+
+    return res.json({
+      success: true,
+      data: {
+        allowCancellation: Boolean(data.allow_cancellation),
+        cancellationDeadlineMinutes: Math.max(0, Number(data.cancellation_deadline_minutes || 0)),
+        cancellationFeeEnabled: Boolean(data.cancellation_fee_enabled),
+        cancellationFeeAmount: Math.max(0, Number(data.cancellation_fee_amount || 0)),
+        cancellationFeeCurrency: String(data.cancellation_fee_currency || 'SEK'),
+      },
+    });
+  } catch (err: any) {
+    console.error('Error loading cancellation settings:', err);
+    return res.status(500).json({ success: false, message: err?.message || 'Could not load cancellation settings.' });
+  }
+});
+
 app.get('/api/businesses/:id/admin-notification-settings', async (req, res) => {
   try {
     if (!supabase) return res.status(500).json({ success: false, message: 'Supabase is not configured.' });
@@ -8423,12 +8679,27 @@ app.put('/api/businesses/:id', async (req, res) => {
       payload[databaseKey] = Boolean(body[requestKey]);
     };
 
+    const setNonNegativeNumber = (requestKeys: string[], databaseKey: string) => {
+      const requestKey = requestKeys.find((key) => has(key));
+      if (!requestKey) return;
+      const value = Number(body[requestKey]);
+      if (!Number.isFinite(value) || value < 0) throw new Error(`${requestKey} must be a non-negative number.`);
+      payload[databaseKey] = value;
+    };
+
     // General business settings
     setText(['businessName', 'name'], 'business_name');
     setText(['industry'], 'industry');
     setText(['timezone'], 'timezone');
     setText(['language'], 'language');
     setText(['systemPrompt'], 'custom_system_prompt');
+
+    // Customer cancellation policy
+    setBoolean(['allowCancellation', 'allow_cancellation'], 'allow_cancellation');
+    setNonNegativeNumber(['cancellationDeadlineMinutes', 'cancellation_deadline_minutes'], 'cancellation_deadline_minutes');
+    setBoolean(['cancellationFeeEnabled', 'cancellation_fee_enabled'], 'cancellation_fee_enabled');
+    setNonNegativeNumber(['cancellationFeeAmount', 'cancellation_fee_amount'], 'cancellation_fee_amount');
+    setText(['cancellationFeeCurrency', 'cancellation_fee_currency'], 'cancellation_fee_currency');
 
     // Google Calendar
     setText(['calendarId', 'googleCalendarId'], 'google_calendar_id');

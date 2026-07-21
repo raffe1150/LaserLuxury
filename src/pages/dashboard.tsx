@@ -116,6 +116,12 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
     if (refresh) setRefreshKey((value) => value + 1);
   };
 
+  useEffect(() => {
+    if (!toast) return;
+    const timeoutId = window.setTimeout(() => setToast(null), 3500);
+    return () => window.clearTimeout(timeoutId);
+  }, [toast]);
+
   const testIntegration = async (integration: string) => {
     if (!selectedBusiness) return;
 

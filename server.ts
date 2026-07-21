@@ -2773,7 +2773,14 @@ function makeBusinessConfigVersion(config: any): string {
   const businessName = config?.businessName || config?.business_name || "";
   const prompt = config?.systemPrompt || "";
   const calendarId = config?.googleCalendarId || "";
-  return crypto.createHash("sha1").update(`${businessId}|${businessName}|${calendarId}|${prompt}`).digest("hex");
+  const cancellationPolicy = [
+    Boolean(config?.allowCancellation ?? config?.allow_cancellation ?? false),
+    Number(config?.cancellationDeadlineMinutes ?? config?.cancellation_deadline_minutes ?? 0),
+    Boolean(config?.cancellationFeeEnabled ?? config?.cancellation_fee_enabled ?? false),
+    Number(config?.cancellationFeeAmount ?? config?.cancellation_fee_amount ?? 0),
+    String(config?.cancellationFeeCurrency ?? config?.cancellation_fee_currency ?? "SEK")
+  ].join("|");
+  return crypto.createHash("sha1").update(`${businessId}|${businessName}|${calendarId}|${prompt}|${cancellationPolicy}`).digest("hex");
 }
 
 function resetSessionIfBusinessConfigChanged(sessionId: string, config: any) {
@@ -2811,7 +2818,12 @@ async function loadFreshBusinessConfigByTelegramToken(token: string, fallbackCon
 
     if (data) {
       freshConfig = normalizeBusinessConfig(data);
-      console.log(`[BusinessConfig] Fresh Telegram config loaded: business=${freshConfig.businessName || "unknown"}, business_id=${getBusinessIdFromConfig(freshConfig)}, calendar_id=${freshConfig.googleCalendarId || "missing"}`);
+      console.log(
+        `[TelegramConfig] business=${freshConfig.businessName || "unknown"} (${getBusinessIdFromConfig(freshConfig) || "missing"}), ` +
+        `allowCancellation=${freshConfig.allowCancellation}, ` +
+        `deadlineMinutes=${freshConfig.cancellationDeadlineMinutes}, ` +
+        `calendar_id=${freshConfig.googleCalendarId || "missing"}`
+      );
     } else {
       console.warn(`[BusinessConfig] No Supabase business found for Telegram token ${maskToken(token)}. Using fallback config.`);
     }
@@ -5023,21 +5035,22 @@ async function processWhatsAppMessage(message: any, metadata: any, config: any, 
       }
 
       if (data) {
+        // Use the same complete business normalization as every other channel so newly
+        // added settings (especially cancellation policy) cannot be silently dropped.
         businessConfig = {
           ...businessConfig,
-          businessRecordId: data.id,
-          businessName: data.business_name,
-          business_name: data.business_name,
-          systemPrompt: data.custom_system_prompt,
-          googleCalendarId: data.google_calendar_id,
-          telegramToken: data.telegram_bot_token,
+          ...normalizeBusinessConfig(data),
           whatsappAccessToken: cleanMetaToken(data.whatsapp_access_token),
           whatsappPhoneNumberId: data.whatsapp_phone_number_id,
           whatsappBusinessAccountId: data.whatsapp_business_account_id,
           whatsappEnabled: data.whatsapp_enabled,
           calendarProvider: "google"
         };
-        console.log(`WhatsApp business matched: ${data.business_name} (${data.id})`);
+        console.log(
+          `[WhatsAppConfig] business=${data.business_name} (${data.id}), ` +
+          `allowCancellation=${businessConfig.allowCancellation}, ` +
+          `deadlineMinutes=${businessConfig.cancellationDeadlineMinutes}`
+        );
       } else {
         console.error("No business found for WhatsApp phone_number_id:", phoneNumberId);
       }
@@ -5989,14 +6002,12 @@ async function processMessengerUpdate(webhookEvent: any, config: any, platform: 
     const data = await findMessengerBusinessByPageId(recipientId);
 
     if (data) {
+      // Always normalize the complete database row here. Building the Messenger config
+      // manually caused newer business settings (including cancellation policy fields)
+      // to be dropped even though they were correctly saved in Supabase.
       businessConfig = {
         ...businessConfig,
-        businessRecordId: data.id,
-        businessName: data.business_name,
-        business_name: data.business_name,
-        systemPrompt: data.custom_system_prompt,
-        googleCalendarId: data.google_calendar_id,
-        telegramToken: data.telegram_bot_token,
+        ...normalizeBusinessConfig(data),
         messengerPageId: data.messenger_page_id || data.facebook_page_id || data.page_id || data.instagram_page_id,
         messengerPageAccessToken: cleanMetaToken(
           data.messenger_page_access_token ||
@@ -6007,7 +6018,11 @@ async function processMessengerUpdate(webhookEvent: any, config: any, platform: 
         messengerEnabled: data.messenger_enabled,
         calendarProvider: "google"
       };
-      console.log(`Messenger business matched: ${data.business_name} (${data.id})`);
+      console.log(
+        `[MessengerConfig] business=${data.business_name} (${data.id}), ` +
+        `allowCancellation=${businessConfig.allowCancellation}, ` +
+        `deadlineMinutes=${businessConfig.cancellationDeadlineMinutes}`
+      );
     } else {
       console.error("No business found for Messenger recipient/page id:", recipientId);
     }
@@ -6600,19 +6615,21 @@ async function processInstagramUpdate(webhook_event: any, config: any, platform:
 
       if (data) {
         businessRecord = data;
+        // Normalize the full database row so Instagram receives exactly the same
+        // cancellation policy and business settings as Messenger, WhatsApp and Telegram.
         businessConfig = {
           ...businessConfig,
-          businessRecordId: data.id,
-          businessName: data.business_name,
-          business_name: data.business_name,
-          systemPrompt: data.custom_system_prompt,
-          googleCalendarId: data.google_calendar_id,
+          ...normalizeBusinessConfig(data),
           instagramAccessToken: cleanInstagramToken(data.instagram_access_token),
           instagramToken: cleanInstagramToken(data.instagram_access_token),
           instagramAccountId: data.instagram_account_id,
           calendarProvider: 'google'
         };
-        console.log(`Instagram business matched: ${data.business_name} (${data.id})`);
+        console.log(
+          `[InstagramConfig] business=${data.business_name} (${data.id}), ` +
+          `allowCancellation=${businessConfig.allowCancellation}, ` +
+          `deadlineMinutes=${businessConfig.cancellationDeadlineMinutes}`
+        );
       } else {
         console.error('No business found for Instagram recipient id:', recipientId);
       }

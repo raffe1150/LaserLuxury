@@ -1750,6 +1750,39 @@ function normalizeCancellationReason(text?: string): string {
   return reason.length > 120 ? `${reason.slice(0, 117)}...` : reason;
 }
 
+function isInvalidCancellationReason(text?: string): boolean {
+  const raw = String(text || "")
+    .trim()
+    .toLowerCase()
+    .normalize("NFKC")
+    .replace(/[!?.،,؛:«»"'()\s]+/g, " ")
+    .trim();
+
+  if (!raw || raw.length < 3) return true;
+  if (isCancellationConfirmation(raw) || isCancellationRejection(raw)) return true;
+
+  // Generic confirmations or repeated cancellation commands are not actual reasons.
+  return /^(?:ok|okej|okay|yes|yeah|yep|sure|confirm|ja|ja tack|bale|baleh|are|taeed|تایید|تأیید|بله|آره|باشه|حتما|نعم|si|sí|vale|avboka|avboka den|cancel|cancel it|cancel konam|cancelesh kon|laghv|laghv kon|لغو|لغو کن|کنسل|کنسل کن)$/iu.test(raw);
+}
+
+function formatInvalidCancellationReason(language: string): string {
+  if (language === "fa") return "لطفاً دلیل واقعی لغو را خیلی کوتاه بنویسید؛ مثلاً «برنامه‌ام عوض شد».";
+  if (language === "sv") return "Skriv gärna en kort faktisk anledning, till exempel “mina planer ändrades”.";
+  if (language === "de") return "Bitte nennen Sie kurz einen tatsächlichen Grund, zum Beispiel „Meine Pläne haben sich geändert“.";
+  if (language === "es") return "Escribe un motivo real y breve, por ejemplo: «Cambiaron mis planes».";
+  if (language === "ar") return "اكتب سببًا حقيقيًا ومختصرًا، مثل: «تغيّرت خططي».";
+  return "Please give a real, brief reason, for example: “My plans changed.”";
+}
+
+function formatCancellationDisabledDuringFlow(language: string): string {
+  if (language === "fa") return "لغو خودکار غیرفعال شده و رزرو شما لغو نشد. لطفاً با مجموعه تماس بگیرید. 🙏";
+  if (language === "sv") return "Automatisk avbokning har stängts av och bokningen avbokades inte. Kontakta personalen för hjälp. 🙏";
+  if (language === "de") return "Die automatische Stornierung wurde deaktiviert; der Termin wurde nicht storniert. Bitte kontaktieren Sie das Team. 🙏";
+  if (language === "es") return "La cancelación automática se ha desactivado y la reserva no fue cancelada. Contacta con el equipo. 🙏";
+  if (language === "ar") return "تم تعطيل الإلغاء التلقائي ولم يتم إلغاء الحجز. يرجى التواصل مع الفريق. 🙏";
+  return "Automatic cancellation has been disabled, so the appointment was not cancelled. Please contact the team. 🙏";
+}
+
 function formatCancellationConfirmation(appointment: any, language: string, feeApplies: boolean, feeAmount: number, currency: string): string {
   const { dateText, timeText } = formatLocalizedDateTime(String(appointment?.start || ""), language);
   const fee = `${feeAmount.toLocaleString("sv-SE")} ${currency}`;
@@ -3057,6 +3090,7 @@ async function handleUnifiedBookingEngine(params: {
     if (eventId && adapter.cancelAppointment) {
       const calendarResult = await adapter.cancelAppointment(eventId);
       if (!calendarResult?.success) {
+        clearCancellationContext(sessionId);
         await replyAndRecord(getErrorMessageByLanguage(context.language));
         return true;
       }
@@ -3070,11 +3104,13 @@ async function handleUnifiedBookingEngine(params: {
       if (dbError) {
         console.error("[Cancellation] appointments table update failed:", dbError);
         if (!eventId) {
+          clearCancellationContext(sessionId);
           await replyAndRecord(getErrorMessageByLanguage(context.language));
           return true;
         }
       }
     } else if (!eventId) {
+      clearCancellationContext(sessionId);
       await replyAndRecord(context.language === "sv"
         ? "Jag hittade bokningen, men den saknar ett kalender-id för säker avbokning. En medarbetare behöver hjälpa till. 🙏"
         : context.language === "fa"
@@ -3232,6 +3268,16 @@ async function handleUnifiedBookingEngine(params: {
     const activeCancellation = !pending ? getCancellationContext(sessionId) : null;
     if (activeCancellation) {
       const lockedLanguage = getFlowReplyLanguage(activeCancellation.language, language, text);
+      const livePolicy = getCancellationPolicy(businessConfig);
+
+      // The dashboard policy may change while the customer is already inside the flow.
+      // Re-check it before accepting a reason or confirmation so a stale session cannot cancel.
+      if (!livePolicy.allowCancellation) {
+        clearCancellationContext(sessionId);
+        await replyAndRecord(formatCancellationDisabledDuringFlow(lockedLanguage));
+        return true;
+      }
+
       if (isCancellationRejection(text)) {
         clearCancellationContext(sessionId);
         await replyAndRecord(lockedLanguage === "sv" ? "Okej, bokningen behålls." : lockedLanguage === "fa" ? "باشه، رزرو شما حفظ می‌شود." : "Okay, the appointment will be kept.");
@@ -3239,6 +3285,12 @@ async function handleUnifiedBookingEngine(params: {
       }
 
       if (activeCancellation.awaitingReason) {
+        if (isInvalidCancellationReason(text)) {
+          activeCancellation.savedAt = Date.now();
+          await replyAndRecord(formatInvalidCancellationReason(lockedLanguage));
+          return true;
+        }
+
         activeCancellation.reason = normalizeCancellationReason(text);
         activeCancellation.awaitingReason = false;
         activeCancellation.savedAt = Date.now();
@@ -3249,6 +3301,7 @@ async function handleUnifiedBookingEngine(params: {
       if (isCancellationConfirmation(text)) {
         return completeCancellation({ ...activeCancellation, language: lockedLanguage });
       }
+
       await replyAndRecord(formatCancellationConfirmation(activeCancellation.appointment, lockedLanguage, activeCancellation.feeApplies, activeCancellation.feeAmount, activeCancellation.currency));
       return true;
     }
@@ -4278,7 +4331,7 @@ function detectUserLanguage(text: string): string {
   if (/[ßü]/i.test(raw)) scores.de += 3;
 
   // Strong phrase signals.
-  add("fa", /\b(salam|khubi|khub|khubam|khub hastin|mikham|mikhastam|baraye|vaght|saat|sate|doshanbe|seshanbe|chaharshanbe|panjshanbe|jome|shanbe|yekshanbe|emrooz|farda|bale|baleh|are|khube|chi|che|migin|migirin|shohar|shoharam|esm|esme|esmam|nam|name|shomare|shomaram|telefon|telefonam|mobail|mobile|mobilesh|ham hast|hastam|hast|sepas|mersi|merci|mamnoon|mamnun)\b/g, 3);
+  add("fa", /\b(salam|khubi|khub|khubam|khub hastin|mikham|mikhastam|mitonam|mitoonam|baraye|vaght|saat|sate|doshanbe|seshanbe|chaharshanbe|panjshanbe|jome|shanbe|yekshanbe|emrooz|farda|bale|baleh|are|khube|chi|che|migin|migirin|shohar|shoharam|esm|esme|esmam|nam|name|shomare|shomaram|telefon|telefonam|mobail|mobile|mobilesh|ham hast|hastam|hast|sepas|mersi|merci|mamnoon|mamnun|cancel konam|laghv konam)\b/g, 3);
   add("de", /\b(hallo|guten|danke|bitte|termin|uhr|morgen|nachmittag|buchen|buchung|behandlung|ganzkörper|ganzkoerper|körper|koerper|ich möchte|ich moechte|ich will|mein name|meine nummer|telefonnummer|nummer ist|montag|dienstag|mittwoch|donnerstag|freitag|samstag|sonntag)\b/g, 4);
   add("en", /\b(hi|hello|hey|thanks|thank you|yes|no|please|appointment|book|booking|available|next week|today|tomorrow|friday|thursday|wednesday|tuesday|monday|saturday|sunday|treatment|bikini|fullbody|full body|my name is|my phone is|phone|number|i want|i would like|i can|can i|could i)\b/g, 2);
   add("sv", /\b(hej|hejsan|tack|tusen tack|ja tack|nej|jag|vill|ska|ha|boka|bokning|tid|ledig|behandling|klockan|kl|mitt namn|mitt nummer|mobilnummer|telefonnummer|måndag|tisdag|onsdag|torsdag|fredag|lördag|söndag|idag|imorgon)\b/g, 2);
@@ -4406,7 +4459,7 @@ function detectStrongLatestLanguage(text?: string): string | null {
   ) return "sv";
 
   if (
-    /\b(man|mikham|mikhastam|baraye|vaght|moshavere|moshavereh|esmam|esme man|khobe|bale|lotfan|2shanbe|3shanbe|4shanbe|5shanbe)\b/i.test(raw)
+    /\b(man|mikham|mikhastam|mitonam|mitoonam|baraye|vaght|moshavere|moshavereh|esmam|esme man|shomare|shomaram|khobe|bale|lotfan|cancel konam|laghv konam|2shanbe|3shanbe|4shanbe|5shanbe)\b/i.test(raw)
   ) return "fa";
 
   if (/\b(i want|can i|monday|tuesday|wednesday|appointment|consultation|book|booking|my name)\b/i.test(raw)) return "en";

@@ -1016,8 +1016,9 @@ async function findCustomerAppointments(
   businessConfig?: any
 ) {
   const today = stockholmDateString(new Date());
-  const startDate = String(args?.startDate || today);
-  const endDate = String(args?.endDate || addDaysToStockholmDate(startDate, 180));
+  const includePast = Boolean(args?.includePast);
+  const startDate = String(args?.startDate || (includePast ? addDaysToStockholmDate(today, -180) : today));
+  const endDate = String(args?.endDate || (includePast ? today : addDaysToStockholmDate(today, 180)));
   const phone = String(args?.phone || "");
   const name = String(args?.name || "");
   const normalizedPlatform = normalizePlatformName(platform);
@@ -1033,8 +1034,8 @@ async function findCustomerAppointments(
       let query = supabase
         .from("appointments")
         .select("id,customer_name,phone_number,platform,user_id,service,start_time,end_time,status,business_id")
-        .gte("start_time", new Date(now).toISOString())
-        .lte("start_time", new Date(localStockholmDateBoundary(endDate, true)).toISOString())
+        .gte("start_time", new Date(localStockholmDateBoundary(startDate, false)).toISOString())
+        .lte("start_time", includePast ? new Date(now).toISOString() : new Date(localStockholmDateBoundary(endDate, true)).toISOString())
         .order("start_time", { ascending: true })
         .limit(50);
 
@@ -1118,13 +1119,16 @@ async function findCustomerAppointments(
     .filter((event: any) => {
       const startIso = getEventStartIso(event);
       const startMs = new Date(startIso).getTime();
-      if (!startIso || Number.isNaN(startMs) || startMs < now) return false;
+      if (!startIso || Number.isNaN(startMs)) return false;
+      if (includePast ? startMs > now : startMs < now) return false;
       if (String(event?.status || "").toLowerCase() === "cancelled") return false;
       if (isLikelyWorkingHoursMarker(event)) return false;
       return eventMatchesCustomer(event, { customerId, phone, name });
     })
     .sort((a: any, b: any) =>
-      new Date(getEventStartIso(a)).getTime() - new Date(getEventStartIso(b)).getTime()
+      includePast
+        ? new Date(getEventStartIso(b)).getTime() - new Date(getEventStartIso(a)).getTime()
+        : new Date(getEventStartIso(a)).getTime() - new Date(getEventStartIso(b)).getTime()
     )
     .slice(0, 5)
     .map((event: any) => {
@@ -1411,7 +1415,7 @@ async function checkAndIncrementDailyUsage(params: { businessId?: string | numbe
 const pendingBookings: Record<string, any> = {};
 const recentlyCompletedBookings: Record<string, { completedAt: number; language: string; name?: string }> = {};
 const appointmentContexts: Record<string, { appointment: any; savedAt: number; language: string }> = {};
-const appointmentLookupContexts: Record<string, { savedAt: number; language: string }> = {};
+const appointmentLookupContexts: Record<string, { savedAt: number; language: string; includePast?: boolean }> = {};
 const rescheduleContexts: Record<string, { appointment: any; savedAt: number; language: string }> = {};
 
 function rememberAppointmentContext(sessionId: string, result: any, language: string) {
@@ -1429,8 +1433,8 @@ function getAppointmentContext(sessionId: string) {
   return context;
 }
 
-function rememberAppointmentLookupContext(sessionId: string, language: string) {
-  appointmentLookupContexts[sessionId] = { savedAt: Date.now(), language };
+function rememberAppointmentLookupContext(sessionId: string, language: string, includePast: boolean = false) {
+  appointmentLookupContexts[sessionId] = { savedAt: Date.now(), language, includePast };
 }
 
 function getAppointmentLookupContext(sessionId: string) {
@@ -1710,6 +1714,8 @@ function extractNameAndPhone(text?: string): { name: string; phone: string } | n
   const patterns: RegExp[] = [
     /(?:mitt\s+namn\s+är|jag\s+heter)\s+([A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,}(?:\s+[A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,})?)/i,
     /(?:my\s+name\s+is|name\s+is)\s+([A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,}(?:\s+[A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,})?)/i,
+    /(?:med\s+namnet|under\s+namnet|bokad\s+i\s+namnet|namnet)\s+([A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,}(?:\s+[A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,})?)/i,
+    /(?:with\s+the\s+name|under\s+the\s+name)\s+([A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,}(?:\s+[A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,})?)/i,
     /(?:mein\s+name\s+ist|ich\s+hei(?:ß|ss)e)\s+([A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,}(?:\s+[A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,})?)/i,
     /(?:mi\s+nombre\s+es|me\s+llamo)\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ'-]{2,}(?:\s+[A-Za-zÁÉÍÓÚÜÑáéíóúüñ'-]{2,})?)/i,
     /(?:esme?\s+man|esmam|namam|name\s+man)\s+(?:hast|e|ast)?\s*([A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,}(?:\s+[A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,})?)/i,
@@ -1752,6 +1758,8 @@ function extractNameOnly(text?: string): string | null {
   const patterns: RegExp[] = [
     /(?:mitt\s+namn\s+är|jag\s+heter)\s+([A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,}(?:\s+[A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,})?)/i,
     /(?:my\s+name\s+is|name\s+is)\s+([A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,}(?:\s+[A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,})?)/i,
+    /(?:med\s+namnet|under\s+namnet|bokad\s+i\s+namnet|namnet)\s+([A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,}(?:\s+[A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,})?)/i,
+    /(?:with\s+the\s+name|under\s+the\s+name)\s+([A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,}(?:\s+[A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,})?)/i,
     /(?:mein\s+name\s+ist|ich\s+hei(?:ß|ss)e)\s+([A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,}(?:\s+[A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,})?)/i,
     /(?:mi\s+nombre\s+es|me\s+llamo)\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ'-]{2,}(?:\s+[A-Za-zÁÉÍÓÚÜÑáéíóúüñ'-]{2,})?)/i,
     /(?:esme?\s+man|esmam|namam|name\s+man)\s+(?:hast|ast|e)?\s*([A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,}(?:\s+[A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,})?)/i,
@@ -2300,6 +2308,12 @@ function isExistingAppointmentLookupIntent(text?: string): boolean {
   return lookupPatterns.some((pattern) => pattern.test(raw));
 }
 
+function isPastAppointmentLookupIntent(text?: string): boolean {
+  const raw = String(text || "").trim().toLowerCase();
+  if (!raw) return false;
+  return /(?:^|\s)(igår|igar|yesterday|tidigare|förra\s+veckan|last\s+week|hade\s+tid|had\s+an\s+appointment|missat|missed)(?=\s|$)/i.test(raw);
+}
+
 function isPendingSlotConfirmation(text: string | undefined, pending: any): boolean {
   if (!pending || pending.status !== "awaiting_confirmation") return false;
 
@@ -2758,6 +2772,13 @@ async function handleUnifiedBookingEngine(params: {
     // Rescheduling an existing appointment must always win over a stale/new-booking flow.
     // Never ask again for service, duration, name or phone when an existing booking can be found.
     const rescheduleRequested = isRescheduleIntent(text);
+
+    // A direct lookup question must interrupt an unfinished reschedule flow.
+    // Example: customer first asks to reschedule, then asks "when is my appointment?".
+    if (appointmentLookupRequested) {
+      clearRescheduleContext(sessionId);
+    }
+
     if (pending && rescheduleRequested) {
       console.log(`[UnifiedBooking] Reschedule intent cleared pending new-booking state platform=${platformName}, session=${sessionId}`);
       await clearPendingBooking(sessionId);
@@ -2869,14 +2890,14 @@ async function handleUnifiedBookingEngine(params: {
       const adapter = getCalendarAdapter(businessConfig);
       const lookupResult = await findCustomerAppointments(
         adapter,
-        { name: followUpName || undefined, phone: followUpPhone || undefined },
+        { name: followUpName || undefined, phone: followUpPhone || undefined, includePast: Boolean(activeLookupContext.includePast) },
         recipientUserId,
         platformName,
         businessConfig
       );
       rememberAppointmentContext(sessionId, lookupResult, activeLookupContext.language || language);
       if (lookupResult?.found) clearAppointmentLookupContext(sessionId);
-      else rememberAppointmentLookupContext(sessionId, activeLookupContext.language || language);
+      else rememberAppointmentLookupContext(sessionId, activeLookupContext.language || language, Boolean(activeLookupContext.includePast));
       await replyAndRecord(formatAppointmentLookupReply(lookupResult, activeLookupContext.language || language));
       return true;
     }
@@ -2884,9 +2905,11 @@ async function handleUnifiedBookingEngine(params: {
     if (!pending && appointmentLookupRequested) {
       const adapter = getCalendarAdapter(businessConfig);
       const lookupContact = extractNameAndPhone(text);
+      const includePast = isPastAppointmentLookupIntent(text);
       const lookupArgs = {
         name: lookupContact?.name || extractNameOnly(text) || undefined,
-        phone: lookupContact?.phone || extractPhoneOnly(text) || undefined
+        phone: lookupContact?.phone || extractPhoneOnly(text) || undefined,
+        includePast
       };
       const lookupResult = await findCustomerAppointments(
         adapter,
@@ -2897,7 +2920,7 @@ async function handleUnifiedBookingEngine(params: {
       );
       rememberAppointmentContext(sessionId, lookupResult, language);
       if (lookupResult?.found) clearAppointmentLookupContext(sessionId);
-      else rememberAppointmentLookupContext(sessionId, language);
+      else rememberAppointmentLookupContext(sessionId, language, includePast);
       const reply = formatAppointmentLookupReply(lookupResult, language);
       console.log(`[UnifiedBooking] Lookup platform=${platformName}, found=${Boolean(lookupResult?.found)}`);
       await replyAndRecord(reply);

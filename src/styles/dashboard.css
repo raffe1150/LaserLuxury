@@ -4945,3 +4945,112 @@ textarea.form-input{resize:vertical;min-height:140px;line-height:1.7;}
     flex-basis:35px !important;
   }
 }
+/* Admin notification channel */
+.admin-notification-card .card-desc{
+  max-width:720px;
+}
+
+.admin-notification-options{
+  display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  gap:14px;
+  margin-top:8px;
+}
+
+.admin-channel-option{
+  display:flex;
+  align-items:flex-start;
+  gap:13px;
+  min-height:112px;
+  padding:18px;
+  border:1px solid var(--border2);
+  border-radius:18px;
+  background:rgba(255,255,255,.025);
+  cursor:pointer;
+  transition:border-color .2s ease,background .2s ease,transform .2s ease;
+}
+
+.admin-channel-option:hover{
+  transform:translateY(-1px);
+  border-color:rgba(126,231,135,.38);
+}
+
+.admin-channel-option.selected{
+  border-color:rgba(126,231,135,.68);
+  background:rgba(126,231,135,.075);
+  box-shadow:0 0 0 3px rgba(126,231,135,.07);
+}
+
+.admin-channel-option input{
+  margin-top:5px;
+  accent-color:#7ee787;
+}
+
+.admin-channel-option > span:last-child{
+  display:flex;
+  flex-direction:column;
+  gap:5px;
+}
+
+.admin-channel-option strong{
+  font-size:15px;
+  color:var(--text);
+}
+
+.admin-channel-option small{
+  color:var(--muted);
+  line-height:1.55;
+}
+
+.admin-channel-icon{
+  display:grid;
+  place-items:center;
+  width:34px;
+  height:34px;
+  flex:0 0 34px;
+  border:1px solid var(--border2);
+  border-radius:11px;
+  background:rgba(255,255,255,.05);
+  font-size:18px;
+}
+
+.admin-notification-summary{
+  display:flex;
+  flex-direction:column;
+  gap:5px;
+  margin-top:16px;
+  padding:15px 17px;
+  border:1px solid var(--border2);
+  border-radius:14px;
+  background:rgba(255,255,255,.025);
+}
+
+.admin-notification-summary span,
+.admin-notification-summary small,
+.admin-notification-loading{
+  color:var(--muted);
+}
+
+.admin-notification-summary strong{
+  color:var(--text);
+  font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;
+}
+
+.admin-whatsapp-field{
+  margin-top:16px;
+  max-width:520px;
+}
+
+.admin-notification-loading{
+  padding:14px 0 4px;
+}
+
+@media (max-width:760px){
+  .admin-notification-options{
+    grid-template-columns:1fr;
+  }
+
+  .admin-channel-option{
+    min-height:auto;
+  }
+}

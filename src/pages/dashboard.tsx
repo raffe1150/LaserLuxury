@@ -305,6 +305,7 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
                 onSelect={handleBusinessChange}
               />
               <BusinessSettings business={selectedBusiness} onSaved={handleSaved} />
+              <CancellationSettings business={selectedBusiness} onSaved={handleSaved} />
               <AdminNotificationSettings business={selectedBusiness} onSaved={handleSaved} />
               <SystemPromptEditor business={selectedBusiness} onSaved={handleSaved} />
               <ChannelSettings
@@ -339,6 +340,194 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
   );
 }
 
+
+function CancellationSettings({
+  business,
+  onSaved,
+}: {
+  business: Business;
+  onSaved: (message: string, refresh?: boolean) => void;
+}) {
+  const [allowCancellation, setAllowCancellation] = useState(false);
+  const [deadlinePreset, setDeadlinePreset] = useState<'0' | '360' | '720' | '1440' | 'custom'>('0');
+  const [customDeadlineValue, setCustomDeadlineValue] = useState('');
+  const [customDeadlineUnit, setCustomDeadlineUnit] = useState<'hours' | 'days'>('hours');
+  const [feeEnabled, setFeeEnabled] = useState(false);
+  const [feeAmount, setFeeAmount] = useState('');
+  const [currency, setCurrency] = useState('SEK');
+  const [loadingSettings, setLoadingSettings] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    setLoadingSettings(true);
+    fetch(`/api/businesses/${business.id}/cancellation-settings`, { credentials: 'include' })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(await response.text());
+        return response.json();
+      })
+      .then((result) => {
+        if (!active) return;
+        const settings = result?.data || {};
+        const minutes = Math.max(0, Number(settings.cancellationDeadlineMinutes || 0));
+        setAllowCancellation(Boolean(settings.allowCancellation));
+        if ([0, 360, 720, 1440].includes(minutes)) {
+          setDeadlinePreset(String(minutes) as '0' | '360' | '720' | '1440');
+          setCustomDeadlineValue('');
+        } else {
+          setDeadlinePreset('custom');
+          if (minutes % 1440 === 0) {
+            setCustomDeadlineValue(String(minutes / 1440));
+            setCustomDeadlineUnit('days');
+          } else {
+            setCustomDeadlineValue(String(minutes / 60));
+            setCustomDeadlineUnit('hours');
+          }
+        }
+        setFeeEnabled(Boolean(settings.cancellationFeeEnabled));
+        setFeeAmount(settings.cancellationFeeAmount ? String(settings.cancellationFeeAmount) : '');
+        setCurrency(String(settings.cancellationFeeCurrency || 'SEK').toUpperCase());
+      })
+      .catch((error) => {
+        if (active) onSaved(error instanceof Error ? error.message : 'Could not load cancellation settings');
+      })
+      .finally(() => {
+        if (active) setLoadingSettings(false);
+      });
+
+    return () => { active = false; };
+  }, [business.id]);
+
+  const save = async (event: FormEvent) => {
+    event.preventDefault();
+    let deadlineMinutes = deadlinePreset === 'custom'
+      ? Number(customDeadlineValue) * (customDeadlineUnit === 'days' ? 1440 : 60)
+      : Number(deadlinePreset);
+    const amount = Number(feeAmount || 0);
+
+    if (!Number.isFinite(deadlineMinutes) || deadlineMinutes < 0) {
+      onSaved('Enter a valid cancellation deadline');
+      return;
+    }
+    deadlineMinutes = Math.round(deadlineMinutes);
+    if (deadlinePreset === 'custom' && deadlineMinutes <= 0) {
+      onSaved('Custom deadline must be greater than zero');
+      return;
+    }
+    if (feeEnabled && (!Number.isFinite(amount) || amount <= 0)) {
+      onSaved('Enter the late-cancellation fee amount');
+      return;
+    }
+
+    setSaving(true);
+    try {
+      const response = await fetch(`/api/businesses/${business.id}`, {
+        method: 'PUT',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          allowCancellation,
+          cancellationDeadlineMinutes: deadlineMinutes,
+          cancellationFeeEnabled: feeEnabled,
+          cancellationFeeAmount: feeEnabled ? amount : 0,
+          cancellationFeeCurrency: currency.trim().toUpperCase() || 'SEK',
+        }),
+      });
+      if (!response.ok) throw new Error(await response.text());
+      onSaved('Cancellation policy saved', true);
+    } catch (error) {
+      onSaved(error instanceof Error ? error.message : 'Could not save cancellation policy');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <section id="cancellation-settings" className="card dashboard-section cancellation-settings-card">
+      <div className="card-header cancellation-card-header">
+        <div>
+          <div className="card-title">Customer Cancellations</div>
+          <div className="card-desc">Let customers cancel a selected appointment in chat, with final confirmation and an optional late-cancellation fee.</div>
+        </div>
+        <label className="toggle-wrap">
+          <span className="enabled-label">{allowCancellation ? 'Enabled' : 'Disabled'}</span>
+          <span className="toggle">
+            <input type="checkbox" checked={allowCancellation} onChange={(event) => setAllowCancellation(event.target.checked)} />
+            <span className="toggle-slider" />
+          </span>
+        </label>
+      </div>
+
+      {loadingSettings ? (
+        <div className="admin-notification-loading">Loading cancellation settings...</div>
+      ) : (
+        <form onSubmit={save}>
+          <div className={allowCancellation ? 'cancellation-policy-body' : 'cancellation-policy-body disabled'}>
+            <div className="form-group">
+              <label className="form-label" htmlFor="cancellation-deadline">Free cancellation deadline</label>
+              <select id="cancellation-deadline" className="form-input" value={deadlinePreset} disabled={!allowCancellation} onChange={(event) => setDeadlinePreset(event.target.value as typeof deadlinePreset)}>
+                <option value="0">Anytime before the appointment</option>
+                <option value="360">6 hours before</option>
+                <option value="720">12 hours before</option>
+                <option value="1440">24 hours before</option>
+                <option value="custom">Custom</option>
+              </select>
+              <div className="form-hint">Inside this window, the optional late-cancellation fee can apply.</div>
+            </div>
+
+            {deadlinePreset === 'custom' && (
+              <div className="cancellation-custom-grid">
+                <div className="form-group">
+                  <label className="form-label" htmlFor="custom-cancellation-value">Custom value</label>
+                  <input id="custom-cancellation-value" className="form-input" type="number" min="1" step="1" value={customDeadlineValue} disabled={!allowCancellation} onChange={(event) => setCustomDeadlineValue(event.target.value)} placeholder="36" />
+                </div>
+                <div className="form-group">
+                  <label className="form-label" htmlFor="custom-cancellation-unit">Unit</label>
+                  <select id="custom-cancellation-unit" className="form-input" value={customDeadlineUnit} disabled={!allowCancellation} onChange={(event) => setCustomDeadlineUnit(event.target.value as 'hours' | 'days')}>
+                    <option value="hours">Hours</option>
+                    <option value="days">Days</option>
+                  </select>
+                </div>
+              </div>
+            )}
+
+            <div className="cancellation-fee-box">
+              <label className="cancellation-fee-toggle">
+                <span>
+                  <strong>Charge a late-cancellation fee</strong>
+                  <small>The business chooses the exact amount. OdinLink only informs the customer; it does not collect payment.</small>
+                </span>
+                <span className="toggle">
+                  <input type="checkbox" checked={feeEnabled} disabled={!allowCancellation || deadlinePreset === '0'} onChange={(event) => setFeeEnabled(event.target.checked)} />
+                  <span className="toggle-slider" />
+                </span>
+              </label>
+
+              {feeEnabled && deadlinePreset !== '0' && (
+                <div className="cancellation-fee-grid">
+                  <div className="form-group">
+                    <label className="form-label" htmlFor="cancellation-fee-amount">Fee amount</label>
+                    <input id="cancellation-fee-amount" className="form-input" type="number" min="0" step="0.01" value={feeAmount} disabled={!allowCancellation} onChange={(event) => setFeeAmount(event.target.value)} placeholder="250" />
+                  </div>
+                  <div className="form-group">
+                    <label className="form-label" htmlFor="cancellation-fee-currency">Currency</label>
+                    <input id="cancellation-fee-currency" className="form-input mono" maxLength={3} value={currency} disabled={!allowCancellation} onChange={(event) => setCurrency(event.target.value.replace(/[^A-Za-z]/g, '').slice(0, 3).toUpperCase())} placeholder="SEK" />
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="save-row">
+            <button className="btn btn-primary" type="submit" disabled={saving}>
+              {saving ? 'Saving...' : 'Save Cancellation Policy'}
+            </button>
+          </div>
+        </form>
+      )}
+    </section>
+  );
+}
 
 function AdminNotificationSettings({
   business,

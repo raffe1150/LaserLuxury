@@ -1512,6 +1512,7 @@ function normalizeAppointmentSelectionText(value?: string): string {
   return String(value || "")
     .toLowerCase()
     .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
     .replace(/[^\p{L}\p{N}]+/gu, " ")
     .replace(/\s+/g, " ")
     .trim();
@@ -1631,6 +1632,40 @@ function formatAllAppointmentsSelectedReply(language: string = "en"): string {
     en: "Okay, you mean both bookings. Would you like to check, move, or cancel them? 📅"
   };
   return replies[lang];
+}
+
+function isMissedPastAppointmentsIntent(text?: string): boolean {
+  const raw = normalizeAppointmentSelectionText(text);
+  if (!raw) return false;
+
+  return (
+    /\b(missade|missat|missade bada|missat bada|hann inte|kom inte|uteblev)\b/i.test(raw) ||
+    /\b(missed|did not make it|could not come|didnt come|didn't come)\b/i.test(raw) ||
+    /\b(از دست دادم|نرسیدم|نتونستم بیام|نتوانستم بیایم|فراموش کردم)\b/u.test(String(text || "")) ||
+    /\b(miss kardam|natonestam biam|nemitonestam biam)\b/i.test(raw)
+  );
+}
+
+function formatMissedPastAppointmentsReply(appointments: any[], language: string = "en"): string {
+  const lang = ["sv", "fa", "de", "es", "ar", "en"].includes(language) ? language : "en";
+  const count = Array.isArray(appointments) ? appointments.length : 0;
+
+  if (lang === "sv") {
+    return count > 1
+      ? "Ja, båda tiderna har redan passerat. Vill du att jag hjälper dig boka en ny tid? 📅"
+      : "Ja, tiden har redan passerat. Vill du att jag hjälper dig boka en ny tid? 📅";
+  }
+  if (lang === "fa") {
+    return count > 1
+      ? "بله، هر دو وقت گذشته‌اند. می‌خواهید برایتان وقت جدید پیدا کنم؟ 📅"
+      : "بله، این وقت گذشته است. می‌خواهید برایتان وقت جدید پیدا کنم؟ 📅";
+  }
+  if (lang === "de") return "Ja, die Termine sind bereits vorbei. Soll ich Ihnen helfen, einen neuen Termin zu buchen? 📅";
+  if (lang === "es") return "Sí, las citas ya han pasado. ¿Quieres que te ayude a reservar una nueva? 📅";
+  if (lang === "ar") return "نعم، المواعيد قد مضت. هل تريد أن أساعدك في حجز موعد جديد؟ 📅";
+  return count > 1
+    ? "Yes, both appointments have already passed. Would you like help booking a new one? 📅"
+    : "Yes, the appointment has already passed. Would you like help booking a new one? 📅";
 }
 
 function rememberAppointmentLookupContext(sessionId: string, language: string, includePast: boolean = false) {
@@ -3428,6 +3463,23 @@ async function handleUnifiedBookingEngine(params: {
         language,
         text
       );
+
+      if (isMissedPastAppointmentsIntent(text)) {
+        const pastAppointments = activeSelectionContext.appointments.filter((appointment: any) => {
+          const startMs = new Date(appointment?.start || "").getTime();
+          return Number.isFinite(startMs) && startMs < Date.now();
+        });
+
+        if (pastAppointments.length > 0) {
+          clearAppointmentSelectionContext(sessionId);
+          clearAppointmentLookupContext(sessionId);
+          await replyAndRecord(
+            formatMissedPastAppointmentsReply(pastAppointments, lockedLanguage)
+          );
+          return true;
+        }
+      }
+
       const selection = selectAppointmentFromText(text, activeSelectionContext.appointments);
 
       if (selection?.type === "all") {

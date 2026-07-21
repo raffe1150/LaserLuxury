@@ -5054,3 +5054,21 @@ textarea.form-input{resize:vertical;min-height:140px;line-height:1.7;}
     min-height:auto;
   }
 }
+
+/* ── CUSTOMER CANCELLATION POLICY ── */
+.cancellation-card-header{gap:20px;}
+.cancellation-card-header .toggle-wrap{flex-shrink:0;}
+.cancellation-policy-body{display:flex;flex-direction:column;gap:18px;transition:.2s;}
+.cancellation-policy-body.disabled{opacity:.48;}
+.cancellation-custom-grid,.cancellation-fee-grid{display:grid;grid-template-columns:1fr 180px;gap:14px;}
+.cancellation-fee-box{padding:16px;border:1px solid var(--border2);border-radius:12px;background:rgba(238,242,238,.025);}
+.cancellation-fee-toggle{display:flex;align-items:center;justify-content:space-between;gap:20px;cursor:pointer;}
+.cancellation-fee-toggle>span:first-child{display:flex;flex-direction:column;gap:5px;}
+.cancellation-fee-toggle strong{font-size:13.5px;}
+.cancellation-fee-toggle small{font-size:11.5px;line-height:1.55;color:var(--muted);max-width:650px;}
+.cancellation-fee-grid{margin-top:16px;padding-top:16px;border-top:1px solid var(--border2);}
+.form-input:disabled{cursor:not-allowed;opacity:.58;}
+@media(max-width:720px){
+  .cancellation-card-header,.cancellation-fee-toggle{align-items:flex-start;flex-direction:column;}
+  .cancellation-custom-grid,.cancellation-fee-grid{grid-template-columns:1fr;}
+}

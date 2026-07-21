@@ -1456,7 +1456,7 @@ const appointmentContexts: Record<string, { appointment: any; savedAt: number; l
 const appointmentSelectionContexts: Record<string, { appointments: any[]; savedAt: number; language: string }> = {};
 const appointmentLookupContexts: Record<string, { savedAt: number; language: string; includePast?: boolean }> = {};
 const rescheduleContexts: Record<string, { appointment: any; savedAt: number; language: string }> = {};
-const cancellationContexts: Record<string, { appointment: any; savedAt: number; language: string; feeApplies: boolean; feeAmount: number; currency: string }> = {};
+const cancellationContexts: Record<string, { appointment: any; savedAt: number; language: string; feeApplies: boolean; feeAmount: number; currency: string; awaitingReason: boolean; reason?: string }> = {};
 
 function rememberAppointmentContext(sessionId: string, result: any, language: string) {
   const appointments = Array.isArray(result?.appointments)
@@ -1710,7 +1710,8 @@ function rememberCancellationContext(sessionId: string, appointment: any, langua
     language,
     feeApplies: fee.feeApplies,
     feeAmount: fee.feeAmount,
-    currency: fee.currency
+    currency: fee.currency,
+    awaitingReason: true
   };
 }
 
@@ -1732,6 +1733,21 @@ function formatCancellationDisabled(language: string): string {
   if (language === "fa") return "لغو خودکار برای این کسب‌وکار فعال نیست. لطفاً برای لغو با مجموعه تماس بگیرید. 🙏";
   if (language === "sv") return "Den här verksamheten har inte aktiverat automatisk avbokning. Kontakta gärna personalen för hjälp. 🙏";
   return "This business has not enabled automatic cancellation. Please contact the team for help. 🙏";
+}
+
+function formatCancellationReasonQuestion(language: string): string {
+  if (language === "fa") return "دلیل لغو چیست؟ لطفاً خیلی کوتاه بنویسید.";
+  if (language === "sv") return "Varför vill du avboka? Svara gärna mycket kort.";
+  if (language === "de") return "Warum möchten Sie stornieren? Bitte kurz antworten.";
+  if (language === "es") return "¿Por qué quieres cancelar? Responde muy brevemente.";
+  if (language === "ar") return "ما سبب الإلغاء؟ أجب باختصار شديد.";
+  return "Why would you like to cancel? Please answer very briefly.";
+}
+
+function normalizeCancellationReason(text?: string): string {
+  const reason = String(text || "").replace(/\s+/g, " ").trim();
+  if (!reason) return "Not provided";
+  return reason.length > 120 ? `${reason.slice(0, 117)}...` : reason;
 }
 
 function formatCancellationConfirmation(appointment: any, language: string, feeApplies: boolean, feeAmount: number, currency: string): string {
@@ -2411,6 +2427,58 @@ async function notifyAdminAboutReschedule(
   return await sendCustomerMessage("telegram", notifyAdmin, notifyText, businessConfig);
 }
 
+async function notifyAdminAboutCancellation(
+  businessConfig: any,
+  platformLabel: string,
+  appointment: any,
+  reason: string
+) {
+  const customerName = String(appointment?.customerName || "Okänd kund").trim();
+  const phone = String(appointment?.phone || "Saknas").trim();
+  const service = String(appointment?.service || "Bokning").trim();
+  const { dateText, timeText } = formatLocalizedDateTime(String(appointment?.start || ""), "sv");
+  const shortReason = normalizeCancellationReason(reason);
+  const notifyText = `❌ Avbokad ${platformLabel}-tid\n👤 ${customerName}${phone && phone !== "Saknas" ? ` · ${phone}` : ""}\n📅 ${dateText} kl ${timeText} · ${service}\n📝 ${shortReason}`;
+  const channel = getAdminNotificationChannel(businessConfig);
+
+  if (channel === "whatsapp") {
+    const adminWhatsAppNumber = String(
+      businessConfig?.adminWhatsAppNumber ||
+      businessConfig?.admin_whatsapp_number ||
+      businessConfig?.notificationWhatsAppNumber ||
+      businessConfig?.notification_whatsapp_number ||
+      process.env.ADMIN_WHATSAPP_NUMBER ||
+      ""
+    ).replace(/[^\d]/g, "");
+
+    if (!adminWhatsAppNumber) {
+      console.error("[CancellationNotify] WhatsApp skipped: missing admin_whatsapp_number");
+      return false;
+    }
+
+    const sent = await sendCustomerMessage("whatsapp", adminWhatsAppNumber, notifyText, businessConfig);
+    if (!sent) console.error("[CancellationNotify] WhatsApp admin notification failed");
+    return sent;
+  }
+
+  const notifyAdmin = String(
+    businessConfig?.adminTelegramChatId ||
+    businessConfig?.admin_telegram_chat_id ||
+    activeConfig?.adminTelegramChatId ||
+    process.env.ADMIN_TELEGRAM_ID ||
+    ""
+  ).trim();
+
+  if (!notifyAdmin) {
+    console.error("[CancellationNotify] Telegram skipped: missing admin_telegram_chat_id");
+    return false;
+  }
+
+  const sent = await sendCustomerMessage("telegram", notifyAdmin, notifyText, businessConfig);
+  if (!sent) console.error("[CancellationNotify] Telegram admin notification failed");
+  return sent;
+}
+
 function isExactRequestedSlotAvailable(slotsArray: string[], requestedTime?: string): boolean {
   const normalized = normalizeRequestedTime(requestedTime || "");
   if (!normalized) return false;
@@ -2981,7 +3049,7 @@ async function handleUnifiedBookingEngine(params: {
   };
 
 
-  const completeCancellation = async (context: { appointment: any; language: string; feeApplies: boolean; feeAmount: number; currency: string }): Promise<boolean> => {
+  const completeCancellation = async (context: { appointment: any; language: string; feeApplies: boolean; feeAmount: number; currency: string; reason?: string }): Promise<boolean> => {
     const appointment = context.appointment;
     const adapter = getCalendarAdapter(businessConfig);
     const eventId = String(appointment?.calendarEventId || "");
@@ -3018,6 +3086,18 @@ async function handleUnifiedBookingEngine(params: {
     clearCancellationContext(sessionId);
     delete appointmentContexts[sessionId];
     delete appointmentSelectionContexts[sessionId];
+
+    try {
+      await notifyAdminAboutCancellation(
+        businessConfig,
+        platformName,
+        appointment,
+        context.reason || "Not provided"
+      );
+    } catch (notifyError) {
+      console.error("[CancellationNotify] crashed:", notifyError);
+    }
+
     await replyAndRecord(formatCancellationSuccess(context.language, context.feeApplies, context.feeAmount, context.currency));
     return true;
   };
@@ -3157,6 +3237,15 @@ async function handleUnifiedBookingEngine(params: {
         await replyAndRecord(lockedLanguage === "sv" ? "Okej, bokningen behålls." : lockedLanguage === "fa" ? "باشه، رزرو شما حفظ می‌شود." : "Okay, the appointment will be kept.");
         return true;
       }
+
+      if (activeCancellation.awaitingReason) {
+        activeCancellation.reason = normalizeCancellationReason(text);
+        activeCancellation.awaitingReason = false;
+        activeCancellation.savedAt = Date.now();
+        await replyAndRecord(formatCancellationConfirmation(activeCancellation.appointment, lockedLanguage, activeCancellation.feeApplies, activeCancellation.feeAmount, activeCancellation.currency));
+        return true;
+      }
+
       if (isCancellationConfirmation(text)) {
         return completeCancellation({ ...activeCancellation, language: lockedLanguage });
       }
@@ -3214,8 +3303,7 @@ async function handleUnifiedBookingEngine(params: {
         return true;
       }
       rememberCancellationContext(sessionId, rememberedAppointment.appointment, lockedLanguage, businessConfig);
-      const context = getCancellationContext(sessionId)!;
-      await replyAndRecord(formatCancellationConfirmation(context.appointment, lockedLanguage, context.feeApplies, context.feeAmount, context.currency));
+      await replyAndRecord(formatCancellationReasonQuestion(lockedLanguage));
       return true;
     }
 
@@ -3311,8 +3399,7 @@ async function handleUnifiedBookingEngine(params: {
             return true;
           }
           rememberCancellationContext(sessionId, selection.appointment, lockedLanguage, businessConfig);
-          const context = getCancellationContext(sessionId)!;
-          await replyAndRecord(formatCancellationConfirmation(context.appointment, lockedLanguage, context.feeApplies, context.feeAmount, context.currency));
+          await replyAndRecord(formatCancellationReasonQuestion(lockedLanguage));
           return true;
         }
         await replyAndRecord(

@@ -1411,6 +1411,7 @@ async function checkAndIncrementDailyUsage(params: { businessId?: string | numbe
 const pendingBookings: Record<string, any> = {};
 const recentlyCompletedBookings: Record<string, { completedAt: number; language: string; name?: string }> = {};
 const appointmentContexts: Record<string, { appointment: any; savedAt: number; language: string }> = {};
+const appointmentLookupContexts: Record<string, { savedAt: number; language: string }> = {};
 const rescheduleContexts: Record<string, { appointment: any; savedAt: number; language: string }> = {};
 
 function rememberAppointmentContext(sessionId: string, result: any, language: string) {
@@ -1426,6 +1427,24 @@ function getAppointmentContext(sessionId: string) {
     return null;
   }
   return context;
+}
+
+function rememberAppointmentLookupContext(sessionId: string, language: string) {
+  appointmentLookupContexts[sessionId] = { savedAt: Date.now(), language };
+}
+
+function getAppointmentLookupContext(sessionId: string) {
+  const context = appointmentLookupContexts[sessionId];
+  if (!context) return null;
+  if (Date.now() - context.savedAt > 30 * 60 * 1000) {
+    delete appointmentLookupContexts[sessionId];
+    return null;
+  }
+  return context;
+}
+
+function clearAppointmentLookupContext(sessionId: string) {
+  delete appointmentLookupContexts[sessionId];
 }
 
 function rememberRescheduleContext(sessionId: string, appointment: any, language: string) {
@@ -2040,6 +2059,58 @@ async function notifyAdminAboutBooking(businessConfig: any, platformLabel: strin
   return sent;
 }
 
+
+async function notifyAdminAboutReschedule(
+  businessConfig: any,
+  platformLabel: string,
+  businessName: string,
+  name: string,
+  phone: string,
+  oldDateTime: string,
+  newDateTime: string
+) {
+  const notifyText = `🔄 ${platformLabel}-bokning ombokad!
+🏢 Business: ${businessName}
+👤 Namn: ${name || "Okänd kund"}
+📞 Mobil: ${phone || "Saknas"}
+🕒 Tidigare tid: ${oldDateTime}
+📅 Ny tid: ${newDateTime}`;
+  const channel = getAdminNotificationChannel(businessConfig);
+
+  if (channel === "whatsapp") {
+    const adminWhatsAppNumber = String(
+      businessConfig?.adminWhatsAppNumber ||
+      businessConfig?.admin_whatsapp_number ||
+      businessConfig?.notificationWhatsAppNumber ||
+      businessConfig?.notification_whatsapp_number ||
+      process.env.ADMIN_WHATSAPP_NUMBER ||
+      ""
+    ).replace(/[^\d]/g, "");
+
+    if (!adminWhatsAppNumber) {
+      console.error("[RescheduleNotify] WhatsApp skipped: missing admin_whatsapp_number");
+      return false;
+    }
+
+    return await sendCustomerMessage("whatsapp", adminWhatsAppNumber, notifyText, businessConfig);
+  }
+
+  const notifyAdmin = String(
+    businessConfig?.adminTelegramChatId ||
+    businessConfig?.admin_telegram_chat_id ||
+    activeConfig?.adminTelegramChatId ||
+    process.env.ADMIN_TELEGRAM_ID ||
+    ""
+  ).trim();
+
+  if (!notifyAdmin) {
+    console.error("[RescheduleNotify] Telegram skipped: missing admin_telegram_chat_id");
+    return false;
+  }
+
+  return await sendCustomerMessage("telegram", notifyAdmin, notifyText, businessConfig);
+}
+
 function isExactRequestedSlotAvailable(slotsArray: string[], requestedTime?: string): boolean {
   const normalized = normalizeRequestedTime(requestedTime || "");
   if (!normalized) return false;
@@ -2620,6 +2691,7 @@ async function handleUnifiedBookingEngine(params: {
       return true;
     }
 
+    const oldStartIso = String(appointment.start || "");
     const updateResult = await adapter.updateAppointment(currentEventId, candidateIso, duration);
     if (!updateResult?.success) {
       await replyAndRecord(getErrorMessageByLanguage(lockedLanguage));
@@ -2642,6 +2714,17 @@ async function handleUnifiedBookingEngine(params: {
 
     appointmentContexts[sessionId] = { appointment, savedAt: Date.now(), language: lockedLanguage };
     clearRescheduleContext(sessionId);
+
+    await notifyAdminAboutReschedule(
+      businessConfig,
+      platformLogName,
+      businessConfig?.businessName || businessConfig?.business_name || "business",
+      appointment.customerName || appointment.name || "Okänd kund",
+      appointment.phone || "",
+      oldStartIso,
+      candidateIso
+    );
+
     await replyAndRecord(formatRescheduleSuccess(lockedLanguage, candidateIso));
     return true;
   };
@@ -2778,6 +2861,26 @@ async function handleUnifiedBookingEngine(params: {
       return true;
     }
 
+    const activeLookupContext = !pending ? getAppointmentLookupContext(sessionId) : null;
+    const followUpName = activeLookupContext ? extractNameOnly(text) : null;
+    const followUpPhone = activeLookupContext ? extractPhoneOnly(text) : null;
+
+    if (!pending && activeLookupContext && (followUpName || followUpPhone)) {
+      const adapter = getCalendarAdapter(businessConfig);
+      const lookupResult = await findCustomerAppointments(
+        adapter,
+        { name: followUpName || undefined, phone: followUpPhone || undefined },
+        recipientUserId,
+        platformName,
+        businessConfig
+      );
+      rememberAppointmentContext(sessionId, lookupResult, activeLookupContext.language || language);
+      if (lookupResult?.found) clearAppointmentLookupContext(sessionId);
+      else rememberAppointmentLookupContext(sessionId, activeLookupContext.language || language);
+      await replyAndRecord(formatAppointmentLookupReply(lookupResult, activeLookupContext.language || language));
+      return true;
+    }
+
     if (!pending && appointmentLookupRequested) {
       const adapter = getCalendarAdapter(businessConfig);
       const lookupContact = extractNameAndPhone(text);
@@ -2793,6 +2896,8 @@ async function handleUnifiedBookingEngine(params: {
         businessConfig
       );
       rememberAppointmentContext(sessionId, lookupResult, language);
+      if (lookupResult?.found) clearAppointmentLookupContext(sessionId);
+      else rememberAppointmentLookupContext(sessionId, language);
       const reply = formatAppointmentLookupReply(lookupResult, language);
       console.log(`[UnifiedBooking] Lookup platform=${platformName}, found=${Boolean(lookupResult?.found)}`);
       await replyAndRecord(reply);
@@ -8002,6 +8107,35 @@ app.post('/api/businesses/:businessId/integrations/:integration/test', async (re
   }
 });
 
+app.get('/api/businesses/:id/admin-notification-settings', async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ success: false, message: 'Supabase is not configured.' });
+    const businessId = Number(req.params.id);
+    if (!Number.isFinite(businessId)) return res.status(400).json({ success: false, message: 'A valid business id is required.' });
+
+    const { data, error } = await supabase
+      .from('businesses')
+      .select('id,admin_notification_channel,admin_whatsapp_number,admin_telegram_chat_id')
+      .eq('id', businessId)
+      .maybeSingle();
+
+    if (error) throw error;
+    if (!data) return res.status(404).json({ success: false, message: 'Business not found.' });
+
+    return res.json({
+      success: true,
+      data: {
+        channel: data.admin_notification_channel || 'telegram',
+        whatsappNumber: data.admin_whatsapp_number || '',
+        telegramChatId: data.admin_telegram_chat_id || '',
+      },
+    });
+  } catch (err: any) {
+    console.error('Error loading admin notification settings:', err);
+    return res.status(500).json({ success: false, message: err?.message || 'Could not load notification settings.' });
+  }
+});
+
 app.put('/api/businesses/:id', async (req, res) => {
   try {
     if (!supabase) {
@@ -8056,6 +8190,16 @@ app.put('/api/businesses/:id', async (req, res) => {
 
     // Google Calendar
     setText(['calendarId', 'googleCalendarId'], 'google_calendar_id');
+
+    // Admin notifications
+    setText(
+      ['adminNotificationChannel', 'admin_notification_channel'],
+      'admin_notification_channel',
+    );
+    setText(
+      ['adminWhatsAppNumber', 'admin_whatsapp_number'],
+      'admin_whatsapp_number',
+    );
 
     // Telegram
     setText(['telegramToken'], 'telegram_bot_token', { secret: true });

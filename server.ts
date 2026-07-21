@@ -1194,6 +1194,9 @@ function formatAppointmentLookupReply(result: any, language: string = "en"): str
     return none[lang];
   }
 
+  const selectionPrompt = formatAppointmentSelectionPrompt(result, lang);
+  if (selectionPrompt) return selectionPrompt;
+
   const localeMap: Record<string, string> = {
     sv: "sv-SE",
     fa: "fa-IR",
@@ -1415,12 +1418,34 @@ async function checkAndIncrementDailyUsage(params: { businessId?: string | numbe
 const pendingBookings: Record<string, any> = {};
 const recentlyCompletedBookings: Record<string, { completedAt: number; language: string; name?: string }> = {};
 const appointmentContexts: Record<string, { appointment: any; savedAt: number; language: string }> = {};
+const appointmentSelectionContexts: Record<string, { appointments: any[]; savedAt: number; language: string }> = {};
 const appointmentLookupContexts: Record<string, { savedAt: number; language: string; includePast?: boolean }> = {};
 const rescheduleContexts: Record<string, { appointment: any; savedAt: number; language: string }> = {};
 
 function rememberAppointmentContext(sessionId: string, result: any, language: string) {
-  const appointment = Array.isArray(result?.appointments) ? result.appointments[0] : null;
-  if (appointment) appointmentContexts[sessionId] = { appointment, savedAt: Date.now(), language };
+  const appointments = Array.isArray(result?.appointments)
+    ? result.appointments.filter(Boolean)
+    : [];
+
+  delete appointmentContexts[sessionId];
+  delete appointmentSelectionContexts[sessionId];
+
+  if (appointments.length === 1) {
+    appointmentContexts[sessionId] = {
+      appointment: appointments[0],
+      savedAt: Date.now(),
+      language
+    };
+    return;
+  }
+
+  if (appointments.length > 1) {
+    appointmentSelectionContexts[sessionId] = {
+      appointments,
+      savedAt: Date.now(),
+      language
+    };
+  }
 }
 
 function getAppointmentContext(sessionId: string) {
@@ -1431,6 +1456,143 @@ function getAppointmentContext(sessionId: string) {
     return null;
   }
   return context;
+}
+
+function getAppointmentSelectionContext(sessionId: string) {
+  const context = appointmentSelectionContexts[sessionId];
+  if (!context) return null;
+  if (Date.now() - context.savedAt > 30 * 60 * 1000) {
+    delete appointmentSelectionContexts[sessionId];
+    return null;
+  }
+  return context;
+}
+
+function clearAppointmentSelectionContext(sessionId: string) {
+  delete appointmentSelectionContexts[sessionId];
+}
+
+function normalizeAppointmentSelectionText(value?: string): string {
+  return String(value || "")
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function selectAppointmentFromText(
+  text: string,
+  appointments: any[]
+): { type: "one"; appointment: any } | { type: "all" } | null {
+  const raw = normalizeAppointmentSelectionText(text);
+  if (!raw || !Array.isArray(appointments) || appointments.length === 0) return null;
+
+  if (/\b(båda|bada|alla|allihop|both|all|har do|hardota|هر دو|هردو|همه|دوتا|دوتاش)\b/i.test(raw)) {
+    return { type: "all" };
+  }
+
+  const ordinalMap: Array<[RegExp, number]> = [
+    [/\b(första|forsta|first|اولی|اول)\b/i, 0],
+    [/\b(andra|second|دومی|دوم)\b/i, 1],
+    [/\b(tredje|third|سومی|سوم)\b/i, 2],
+    [/\b(fjärde|fjarde|fourth|چهارمی|چهارم)\b/i, 3],
+    [/^1$/, 0],
+    [/^2$/, 1],
+    [/^3$/, 2],
+    [/^4$/, 3]
+  ];
+
+  for (const [pattern, index] of ordinalMap) {
+    if (pattern.test(raw) && appointments[index]) {
+      return { type: "one", appointment: appointments[index] };
+    }
+  }
+
+  const byName = appointments.find((appointment: any) => {
+    const name = normalizeAppointmentSelectionText(appointment?.customerName);
+    return name.length >= 2 && (raw === name || raw.includes(name) || name.includes(raw));
+  });
+  if (byName) return { type: "one", appointment: byName };
+
+  const rawDigits = normalizeLookupDigits(raw);
+  if (rawDigits.length >= 4) {
+    const byPhone = appointments.find((appointment: any) => {
+      const phone = normalizeLookupDigits(appointment?.phone);
+      return phone && (phone.endsWith(rawDigits) || rawDigits.endsWith(phone));
+    });
+    if (byPhone) return { type: "one", appointment: byPhone };
+  }
+
+  return null;
+}
+
+function formatAppointmentSelectionPrompt(result: any, language: string = "en"): string | null {
+  const appointments = Array.isArray(result?.appointments) ? result.appointments : [];
+  if (appointments.length <= 1) return null;
+
+  const lang = ["sv", "fa", "de", "es", "ar", "en"].includes(language) ? language : "en";
+  const localeMap: Record<string, string> = {
+    sv: "sv-SE",
+    fa: "fa-IR",
+    de: "de-DE",
+    es: "es-ES",
+    ar: "ar",
+    en: "en-GB"
+  };
+
+  const rows = appointments.slice(0, 5).map((appointment: any, index: number) => {
+    const date = new Date(appointment.start);
+    const when = new Intl.DateTimeFormat(localeMap[lang], {
+      timeZone: "Europe/Stockholm",
+      weekday: "long",
+      day: "numeric",
+      month: "long",
+      hour: "2-digit",
+      minute: "2-digit"
+    }).format(date);
+
+    const name = String(appointment.customerName || "").trim();
+    const service = String(appointment.service || "").trim();
+    const serviceSuffix = service && service !== "Appointment" ? ` — ${service}` : "";
+
+    if (lang === "fa") return `${index + 1}) ${name || "بدون نام"} — ${when}${serviceSuffix}`;
+    if (lang === "sv") return `${index + 1}) ${name || "Utan namn"} — ${when}${serviceSuffix}`;
+    return `${index + 1}) ${name || "No name"} — ${when}${serviceSuffix}`;
+  });
+
+  const intro: Record<string, string> = {
+    sv: "Jag hittade flera bokningar kopplade till den här konversationen:",
+    fa: "چند رزرو مرتبط با این گفتگو پیدا کردم:",
+    de: "Ich habe mehrere Buchungen gefunden:",
+    es: "Encontré varias reservas:",
+    ar: "وجدت عدة حجوزات مرتبطة بهذه المحادثة:",
+    en: "I found several bookings linked to this conversation:"
+  };
+
+  const question: Record<string, string> = {
+    sv: 'Vilken menar du? Svara med namnet, numret i listan eller "båda". 📅',
+    fa: "منظورتان کدام است؟ نام، شماره فهرست یا «هر دو» را بفرستید. 📅",
+    de: "Welche meinen Sie? Antworten Sie mit dem Namen, der Nummer oder „alle“. 📅",
+    es: "¿Cuál quieres decir? Responde con el nombre, el número o «todas». 📅",
+    ar: "أي حجز تقصد؟ أرسل الاسم أو رقم الحجز أو «الكل». 📅",
+    en: 'Which one do you mean? Reply with the name, list number, or "both". 📅'
+  };
+
+  return `${intro[lang]}\n${rows.join("\n")}\n${question[lang]}`;
+}
+
+function formatAllAppointmentsSelectedReply(language: string = "en"): string {
+  const lang = ["sv", "fa", "de", "es", "ar", "en"].includes(language) ? language : "en";
+  const replies: Record<string, string> = {
+    sv: "Okej, du menar båda bokningarna. Vad vill du göra med dem — kontrollera, flytta eller avboka? 📅",
+    fa: "باشه، منظورتان هر دو رزرو است. می‌خواهید آن‌ها را بررسی، جابه‌جا یا لغو کنید؟ 📅",
+    de: "Okay, Sie meinen beide Buchungen. Möchten Sie sie prüfen, verschieben oder stornieren? 📅",
+    es: "De acuerdo, te refieres a ambas reservas. ¿Quieres revisarlas, cambiarlas o cancelarlas? 📅",
+    ar: "حسنًا، تقصد الحجزين معًا. هل تريد التحقق منهما أو تغييرهما أو إلغاءهما؟ 📅",
+    en: "Okay, you mean both bookings. Would you like to check, move, or cancel them? 📅"
+  };
+  return replies[lang];
 }
 
 function rememberAppointmentLookupContext(sessionId: string, language: string, includePast: boolean = false) {
@@ -2493,6 +2655,10 @@ function resetSessionIfBusinessConfigChanged(sessionId: string, config: any) {
     chatSessions[sessionId] = [];
     delete pendingBookings[sessionId];
     delete recentlyCompletedBookings[sessionId];
+    delete appointmentContexts[sessionId];
+    delete appointmentSelectionContexts[sessionId];
+    delete appointmentLookupContexts[sessionId];
+    delete rescheduleContexts[sessionId];
   }
   businessConfigVersions[sessionId] = nextVersion;
 }
@@ -2887,6 +3053,46 @@ async function handleUnifiedBookingEngine(params: {
               ? "Please send the new day, for example tomorrow. 📅"
               : "Please send the new day and time, for example tomorrow at 18:30. 📅";
       await replyAndRecord(ask);
+      return true;
+    }
+
+    const activeSelectionContext = !pending ? getAppointmentSelectionContext(sessionId) : null;
+
+    if (activeSelectionContext) {
+      const lockedLanguage = getFlowReplyLanguage(
+        activeSelectionContext.language,
+        language,
+        text
+      );
+      const selection = selectAppointmentFromText(text, activeSelectionContext.appointments);
+
+      if (selection?.type === "all") {
+        await replyAndRecord(formatAllAppointmentsSelectedReply(lockedLanguage));
+        return true;
+      }
+
+      if (selection?.type === "one") {
+        appointmentContexts[sessionId] = {
+          appointment: selection.appointment,
+          savedAt: Date.now(),
+          language: lockedLanguage
+        };
+        clearAppointmentSelectionContext(sessionId);
+        await replyAndRecord(
+          formatAppointmentLookupReply(
+            { found: true, needsContactDetails: false, appointments: [selection.appointment] },
+            lockedLanguage
+          )
+        );
+        return true;
+      }
+
+      await replyAndRecord(
+        formatAppointmentSelectionPrompt(
+          { found: true, needsContactDetails: false, appointments: activeSelectionContext.appointments },
+          lockedLanguage
+        ) || formatAllAppointmentsSelectedReply(lockedLanguage)
+      );
       return true;
     }
 

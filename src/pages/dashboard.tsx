@@ -305,6 +305,7 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
                 onSelect={handleBusinessChange}
               />
               <BusinessSettings business={selectedBusiness} onSaved={handleSaved} />
+              <AdminNotificationSettings business={selectedBusiness} onSaved={handleSaved} />
               <SystemPromptEditor business={selectedBusiness} onSaved={handleSaved} />
               <ChannelSettings
                 business={selectedBusiness}
@@ -338,6 +339,162 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
   );
 }
 
+
+function AdminNotificationSettings({
+  business,
+  onSaved,
+}: {
+  business: Business;
+  onSaved: (message: string, refresh?: boolean) => void;
+}) {
+  const [channel, setChannel] = useState<'telegram' | 'whatsapp'>('telegram');
+  const [whatsappNumber, setWhatsappNumber] = useState('');
+  const [telegramChatId, setTelegramChatId] = useState('');
+  const [loadingSettings, setLoadingSettings] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    setLoadingSettings(true);
+
+    fetch(`/api/businesses/${business.id}/admin-notification-settings`, {
+      credentials: 'include',
+    })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(await response.text());
+        return response.json();
+      })
+      .then((result) => {
+        if (!active) return;
+        const settings = result?.data || {};
+        setChannel(settings.channel === 'whatsapp' ? 'whatsapp' : 'telegram');
+        setWhatsappNumber(String(settings.whatsappNumber || ''));
+        setTelegramChatId(String(settings.telegramChatId || ''));
+      })
+      .catch((error) => {
+        if (active) onSaved(error instanceof Error ? error.message : 'Could not load notification settings');
+      })
+      .finally(() => {
+        if (active) setLoadingSettings(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [business.id]);
+
+  const save = async (event: FormEvent) => {
+    event.preventDefault();
+    const cleanWhatsApp = whatsappNumber.replace(/\D/g, '');
+
+    if (channel === 'whatsapp' && cleanWhatsApp.length < 8) {
+      onSaved('Enter the admin WhatsApp number with country code, for example 46701234567');
+      return;
+    }
+
+    if (channel === 'telegram' && !telegramChatId.trim()) {
+      onSaved('Add the Telegram Admin Chat ID under Channel Settings first');
+      return;
+    }
+
+    setSaving(true);
+    try {
+      const response = await fetch(`/api/businesses/${business.id}`, {
+        method: 'PUT',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          adminNotificationChannel: channel,
+          adminWhatsAppNumber: cleanWhatsApp,
+        }),
+      });
+
+      if (!response.ok) throw new Error(await response.text());
+      setWhatsappNumber(cleanWhatsApp);
+      onSaved('Admin notification settings saved', true);
+    } catch (error) {
+      onSaved(error instanceof Error ? error.message : 'Could not save notification settings');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <section id="admin-notifications" className="card dashboard-section admin-notification-card">
+      <div className="card-header">
+        <div>
+          <div className="card-title">Admin Notifications</div>
+          <div className="card-desc">Choose where the business receives new booking and reschedule alerts.</div>
+        </div>
+      </div>
+
+      {loadingSettings ? (
+        <div className="admin-notification-loading">Loading notification settings...</div>
+      ) : (
+        <form onSubmit={save}>
+          <div className="admin-notification-options" role="radiogroup" aria-label="Admin notification channel">
+            <label className={channel === 'telegram' ? 'admin-channel-option selected' : 'admin-channel-option'}>
+              <input
+                type="radio"
+                name="admin-notification-channel"
+                value="telegram"
+                checked={channel === 'telegram'}
+                onChange={() => setChannel('telegram')}
+              />
+              <span className="admin-channel-icon">✈</span>
+              <span>
+                <strong>Telegram</strong>
+                <small>Send booking alerts to the configured Admin Chat ID.</small>
+              </span>
+            </label>
+
+            <label className={channel === 'whatsapp' ? 'admin-channel-option selected' : 'admin-channel-option'}>
+              <input
+                type="radio"
+                name="admin-notification-channel"
+                value="whatsapp"
+                checked={channel === 'whatsapp'}
+                onChange={() => setChannel('whatsapp')}
+              />
+              <span className="admin-channel-icon">☏</span>
+              <span>
+                <strong>WhatsApp</strong>
+                <small>Send booking alerts to the business owner's WhatsApp.</small>
+              </span>
+            </label>
+          </div>
+
+          {channel === 'telegram' ? (
+            <div className="admin-notification-summary">
+              <span>Telegram Admin Chat ID</span>
+              <strong>{telegramChatId || 'Not configured'}</strong>
+              <small>Change this value under Channel Settings → Telegram.</small>
+            </div>
+          ) : (
+            <div className="form-group admin-whatsapp-field">
+              <label className="form-label" htmlFor="admin-whatsapp-number">Admin WhatsApp number</label>
+              <input
+                id="admin-whatsapp-number"
+                className="form-input mono"
+                inputMode="tel"
+                value={whatsappNumber}
+                onChange={(event) => setWhatsappNumber(event.target.value)}
+                placeholder="46701234567"
+              />
+              <div className="form-hint">Use country code without +, spaces or dashes.</div>
+            </div>
+          )}
+
+          <div className="save-row">
+            <button className="btn btn-primary" type="submit" disabled={saving}>
+              {saving ? 'Saving...' : 'Save Notification Channel'}
+            </button>
+          </div>
+        </form>
+      )}
+    </section>
+  );
+}
 
 function getReadableApiError(rawMessage: string) {
   const message = String(rawMessage || '').trim();

@@ -1951,24 +1951,93 @@ async function clearPendingBooking(chatId: string) {
   }
 }
 
+async function sendCustomerMessage(platform: string, recipientId: string, message: string, businessConfig: any): Promise<boolean> {
+  const channel = normalizePlatformName(platform);
+  const recipient = normalizePlatformUserId(channel, String(recipientId || ""));
+  if (!recipient) {
+    console.error(`[ChannelSend] skipped: missing recipient for platform=${channel}`);
+    return false;
+  }
+
+  if (channel === "whatsapp") return await sendWhatsAppMessage(recipient, message, businessConfig);
+  if (channel === "messenger") return await sendMessengerMessage(recipient, message, businessConfig);
+  if (channel === "instagram") return await sendInstagramMessage(recipient, message, getBusinessInstagramToken(businessConfig));
+
+  if (channel === "telegram") {
+    const token = businessConfig?.telegramToken || activeConfig?.telegramToken || process.env.TELEGRAM_TOKEN || process.env.TELEGRAM_BOT_TOKEN;
+    if (!token) {
+      console.error("[ChannelSend] Telegram skipped: missing token");
+      return false;
+    }
+    try {
+      const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chat_id: recipient, text: message })
+      });
+      if (!res.ok) console.error("[ChannelSend] Telegram failed:", await res.text());
+      return res.ok;
+    } catch (error) {
+      console.error("[ChannelSend] Telegram crashed:", error);
+      return false;
+    }
+  }
+
+  console.error(`[ChannelSend] unsupported platform=${channel}`);
+  return false;
+}
+
+function getAdminNotificationChannel(businessConfig: any): "telegram" | "whatsapp" {
+  const configured = String(
+    businessConfig?.adminNotificationChannel ||
+    businessConfig?.admin_notification_channel ||
+    process.env.ADMIN_NOTIFICATION_CHANNEL ||
+    "telegram"
+  ).trim().toLowerCase();
+
+  return configured === "whatsapp" ? "whatsapp" : "telegram";
+}
+
 async function notifyAdminAboutBooking(businessConfig: any, platformLabel: string, businessName: string, name: string, phone: string, dateTime: string) {
-  const notifyToken = businessConfig.telegramToken || activeConfig?.telegramToken || process.env.TELEGRAM_TOKEN || process.env.TELEGRAM_BOT_TOKEN;
-  const notifyAdmin = businessConfig.adminTelegramChatId || activeConfig?.adminTelegramChatId || process.env.ADMIN_TELEGRAM_ID;
-  if (!notifyToken || !notifyAdmin) {
-    console.error(`[BookingNotify] skipped: missing token/admin. hasToken=${Boolean(notifyToken)}, hasAdmin=${Boolean(notifyAdmin)}`);
-    return;
+  const notifyText = `🔔 Ny ${platformLabel}-bokning mottagen!\n🏢 Business: ${businessName}\n👤 Namn: ${name}\n📞 Mobil: ${phone}\n📅 Tid: ${dateTime}`;
+  const channel = getAdminNotificationChannel(businessConfig);
+
+  if (channel === "whatsapp") {
+    const adminWhatsAppNumber = String(
+      businessConfig?.adminWhatsAppNumber ||
+      businessConfig?.admin_whatsapp_number ||
+      businessConfig?.notificationWhatsAppNumber ||
+      businessConfig?.notification_whatsapp_number ||
+      process.env.ADMIN_WHATSAPP_NUMBER ||
+      ""
+    ).replace(/[^\d]/g, "");
+
+    if (!adminWhatsAppNumber) {
+      console.error("[BookingNotify] WhatsApp skipped: missing admin_whatsapp_number");
+      return false;
+    }
+
+    const sent = await sendCustomerMessage("whatsapp", adminWhatsAppNumber, notifyText, businessConfig);
+    if (!sent) console.error("[BookingNotify] WhatsApp admin notification failed");
+    return sent;
   }
-  try {
-    const notifyText = `🔔 Ny ${platformLabel}-bokning mottagen!\n🏢 Business: ${businessName}\n👤 Namn: ${name}\n📞 Mobil: ${phone}\n📅 Tid: ${dateTime}`;
-    const res = await fetch(`https://api.telegram.org/bot${notifyToken}/sendMessage`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: notifyAdmin, text: notifyText })
-    });
-    if (!res.ok) console.error("[BookingNotify] Telegram notify failed:", await res.text());
-  } catch (e) {
-    console.error("[BookingNotify] Telegram notify crashed:", e);
+
+  const notifyAdmin = String(
+    businessConfig?.adminTelegramChatId ||
+    businessConfig?.admin_telegram_chat_id ||
+    activeConfig?.adminTelegramChatId ||
+    process.env.ADMIN_TELEGRAM_ID ||
+    ""
+  ).trim();
+
+  if (!notifyAdmin) {
+    console.error("[BookingNotify] Telegram skipped: missing admin_telegram_chat_id");
+    return false;
   }
+
+  const sent = await sendCustomerMessage("telegram", notifyAdmin, notifyText, businessConfig);
+  if (!sent) console.error("[BookingNotify] Telegram admin notification failed");
+  return sent;
 }
 
 function isExactRequestedSlotAvailable(slotsArray: string[], requestedTime?: string): boolean {
@@ -2294,6 +2363,8 @@ function normalizeBusinessConfig(row: any) {
     business_name: row.business_name,
     telegramToken: row.telegram_bot_token,
     adminTelegramChatId: row.admin_telegram_chat_id || row.adminTelegramChatId || activeConfig.adminTelegramChatId,
+    adminNotificationChannel: row.admin_notification_channel || row.adminNotificationChannel || process.env.ADMIN_NOTIFICATION_CHANNEL || "telegram",
+    adminWhatsAppNumber: row.admin_whatsapp_number || row.adminWhatsAppNumber || row.notification_whatsapp_number || process.env.ADMIN_WHATSAPP_NUMBER,
     googleCalendarId: row.google_calendar_id,
     systemPrompt: row.custom_system_prompt,
     instagramAccessToken: row.instagram_access_token,
@@ -3339,17 +3410,15 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
             });
             rememberCompletedBooking(telegramSessionId, getLockedReplyLanguage(telegramSessionId, text || ""), safeName);
           }
-          const notifyToken = config?.telegramToken || activeConfig?.telegramToken || process.env.TELEGRAM_TOKEN;
-          const notifyAdmin = config?.adminTelegramChatId || activeConfig?.adminTelegramChatId || process.env.ADMIN_TELEGRAM_ID;
-          if (adapterRes && adapterRes.success && notifyToken && notifyAdmin) {
-             try {
-                const notifyText = `🔔 Ny bokning mottagen!\n👤 Namn: ${safeName}\n📞 Mobil: ${safePhone}\n📅 Tid: ${args.dateTime}`;
-                await fetch(`https://api.telegram.org/bot${notifyToken}/sendMessage`, {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ chat_id: notifyAdmin, text: notifyText })
-                });
-             } catch(e) { console.error("Admin notify error:", e); }
+          if (adapterRes && adapterRes.success) {
+            await notifyAdminAboutBooking(
+              config,
+              "Telegram",
+              config?.businessName || config?.business_name || "business",
+              safeName,
+              safePhone,
+              args.dateTime
+            );
           }
         }
         else if (call.function.name === "logSystemAnalysis" && args) adapterRes = await handleSystemAnalysisLog(chatId, args);
@@ -3962,34 +4031,11 @@ async function sendAppointmentReminder(appointment: any, reminderType: "24h" | "
   }
 
   try {
-    if (platform === "telegram") {
-      const token = businessConfig.telegramToken || activeConfig.telegramToken || process.env.TELEGRAM_TOKEN || process.env.TELEGRAM_BOT_TOKEN;
-      if (!token) throw new Error("Missing Telegram token");
-      const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ chat_id: recipient, text: message })
-      });
-      return res.ok;
-    }
-
-    if (platform === "whatsapp") {
-      return await sendWhatsAppMessage(recipient, message, businessConfig);
-    }
-
-    if (platform === "messenger") {
-      return await sendMessengerMessage(recipient, message, businessConfig);
-    }
-
-    if (platform === "instagram") {
-      const token = getBusinessInstagramToken(businessConfig);
-      return await sendInstagramMessage(recipient, message, token);
-    }
-
-    console.log(`[Reminder] Unsupported platform for appointment ${appointment.id}: ${platform}`);
-    return false;
+    const sent = await sendCustomerMessage(platform, recipient, message, businessConfig);
+    if (!sent) console.error(`[Reminder] Send failed for appointment ${appointment.id} through ${platform}`);
+    return sent;
   } catch (err) {
-    console.error(`[Reminder] Send failed for appointment ${appointment.id}:`, err);
+    console.error(`[Reminder] Send crashed for appointment ${appointment.id}:`, err);
     return false;
   }
 }
@@ -6186,20 +6232,15 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
             });
             rememberCompletedBooking(chatId, getConversationLanguage(chatId, textMessage || ""), safeName);
           }
-          const notifyToken = businessConfig.telegramToken || activeConfig?.telegramToken || process.env.TELEGRAM_TOKEN;
-          const notifyAdmin = businessConfig.adminTelegramChatId || activeConfig?.adminTelegramChatId || process.env.ADMIN_TELEGRAM_ID;
-
-          if (adapterRes && adapterRes.success && notifyToken && notifyAdmin) {
-            try {
-              const notifyText = `🔔 Ny Instagram-bokning mottagen!\n🏢 Business: ${businessName}\n👤 Namn: ${safeName}\n📞 Mobil: ${safePhone}\n📅 Tid: ${args.dateTime}`;
-              await fetch(`https://api.telegram.org/bot${notifyToken}/sendMessage`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ chat_id: notifyAdmin, text: notifyText })
-              });
-            } catch (e) {
-              console.error('Admin notify error:', e);
-            }
+          if (adapterRes && adapterRes.success) {
+            await notifyAdminAboutBooking(
+              businessConfig,
+              "Instagram",
+              businessName,
+              safeName,
+              safePhone,
+              args.dateTime
+            );
           }
         } else if (call.function.name === 'logSystemAnalysis' && args) {
           adapterRes = await handleSystemAnalysisLog(chatId, args);
@@ -6701,17 +6742,15 @@ Never translate unless requested.
             });
             rememberCompletedBooking(chatId.toString(), getLockedReplyLanguage(chatId, userText || ""), safeName);
           }
-          const notifyToken = activeConfig?.telegramToken || process.env.TELEGRAM_TOKEN;
-          const notifyAdmin = activeConfig?.adminTelegramChatId || process.env.ADMIN_TELEGRAM_ID;
-          if (adapterRes && adapterRes.success && notifyToken && notifyAdmin) {
-             try {
-                const notifyText = `🔔 Ny bokning mottagen!\n👤 Namn: ${safeName}\n📞 Mobil: ${safePhone}\n📅 Tid: ${args.dateTime}`;
-                await fetch(`https://api.telegram.org/bot${notifyToken}/sendMessage`, {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ chat_id: notifyAdmin, text: notifyText })
-                });
-             } catch(e) { console.error("Admin notify error:", e); }
+          if (adapterRes && adapterRes.success) {
+            await notifyAdminAboutBooking(
+              activeConfig,
+              "Web",
+              activeConfig?.businessName || activeConfig?.business_name || "business",
+              safeName,
+              safePhone,
+              args.dateTime
+            );
           }
         }
         else if (call.function.name === "logSystemAnalysis" && args) adapterRes = await handleSystemAnalysisLog(chatId, args);

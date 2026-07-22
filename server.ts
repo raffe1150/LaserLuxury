@@ -2396,56 +2396,63 @@ async function sendCustomerMessage(platform: string, recipientId: string, messag
   return false;
 }
 
-function getAdminNotificationChannel(businessConfig: any): "telegram" | "whatsapp" {
+function getAdminNotificationChannel(businessConfig: any): "telegram" | "whatsapp" | null {
   const configured = String(
-    businessConfig?.adminNotificationChannel ||
-    businessConfig?.admin_notification_channel ||
-    process.env.ADMIN_NOTIFICATION_CHANNEL ||
+    businessConfig?.admin_notification_channel ??
+    businessConfig?.adminNotificationChannel ??
     "telegram"
   ).trim().toLowerCase();
 
-  return configured === "whatsapp" ? "whatsapp" : "telegram";
+  if (configured === "whatsapp" || configured === "telegram") return configured;
+  return null;
+}
+
+function resolveAdminNotificationRoute(
+  businessConfig: any,
+  logContext: "BookingNotify" | "CancellationNotify" | "RescheduleNotify"
+): { channel: "telegram" | "whatsapp"; recipient: string } | null {
+  const channel = getAdminNotificationChannel(businessConfig);
+  if (!channel) {
+    console.error(`[${logContext}] skipped: invalid admin_notification_channel`);
+    return null;
+  }
+
+  if (channel === "whatsapp") {
+    const rawRecipient = String(
+      businessConfig?.admin_whatsapp_number ??
+      businessConfig?.adminWhatsAppNumber ??
+      ""
+    ).trim();
+    const recipient = rawRecipient.replace(/[^\d]/g, "");
+    const recipientExists = /^\d{8,15}$/.test(recipient);
+    console.log(`[${logContext}] selectedChannel=whatsapp method=WhatsApp recipientConfigured=${recipientExists}`);
+    if (!recipientExists) {
+      console.error(`[${logContext}] WhatsApp skipped: missing or invalid admin_whatsapp_number; no fallback recipient was used`);
+      return null;
+    }
+    return { channel, recipient };
+  }
+
+  const recipient = String(
+    businessConfig?.admin_telegram_chat_id ??
+    businessConfig?.adminTelegramChatId ??
+    ""
+  ).trim();
+  const recipientExists = Boolean(recipient);
+  console.log(`[${logContext}] selectedChannel=telegram method=Telegram recipientConfigured=${recipientExists}`);
+  if (!recipientExists) {
+    console.error(`[${logContext}] Telegram skipped: missing admin_telegram_chat_id`);
+    return null;
+  }
+  return { channel, recipient };
 }
 
 async function notifyAdminAboutBooking(businessConfig: any, platformLabel: string, businessName: string, name: string, phone: string, dateTime: string) {
   const notifyText = `🔔 Ny ${platformLabel}-bokning mottagen!\n🏢 Business: ${businessName}\n👤 Namn: ${name}\n📞 Mobil: ${phone}\n📅 Tid: ${dateTime}`;
-  const channel = getAdminNotificationChannel(businessConfig);
-
-  if (channel === "whatsapp") {
-    const adminWhatsAppNumber = String(
-      businessConfig?.adminWhatsAppNumber ||
-      businessConfig?.admin_whatsapp_number ||
-      businessConfig?.notificationWhatsAppNumber ||
-      businessConfig?.notification_whatsapp_number ||
-      process.env.ADMIN_WHATSAPP_NUMBER ||
-      ""
-    ).replace(/[^\d]/g, "");
-
-    if (!adminWhatsAppNumber) {
-      console.error("[BookingNotify] WhatsApp skipped: missing admin_whatsapp_number");
-      return false;
-    }
-
-    const sent = await sendCustomerMessage("whatsapp", adminWhatsAppNumber, notifyText, businessConfig);
-    if (!sent) console.error("[BookingNotify] WhatsApp admin notification failed");
-    return sent;
-  }
-
-  const notifyAdmin = String(
-    businessConfig?.adminTelegramChatId ||
-    businessConfig?.admin_telegram_chat_id ||
-    activeConfig?.adminTelegramChatId ||
-    process.env.ADMIN_TELEGRAM_ID ||
-    ""
-  ).trim();
-
-  if (!notifyAdmin) {
-    console.error("[BookingNotify] Telegram skipped: missing admin_telegram_chat_id");
-    return false;
-  }
-
-  const sent = await sendCustomerMessage("telegram", notifyAdmin, notifyText, businessConfig);
-  if (!sent) console.error("[BookingNotify] Telegram admin notification failed");
+  const route = resolveAdminNotificationRoute(businessConfig, "BookingNotify");
+  if (!route) return false;
+  const sent = await sendCustomerMessage(route.channel, route.recipient, notifyText, businessConfig);
+  if (!sent) console.error(`[BookingNotify] ${route.channel} admin notification failed`);
   return sent;
 }
 
@@ -2475,40 +2482,11 @@ async function notifyAdminAboutReschedule(
 📅 Från: ${formatAdminDateTime(oldDateTime)}
 ➡️ Till: ${formatAdminDateTime(newDateTime)}
 🔔 ${service || "Bokning"}`;
-  const channel = getAdminNotificationChannel(businessConfig);
-
-  if (channel === "whatsapp") {
-    const adminWhatsAppNumber = String(
-      businessConfig?.adminWhatsAppNumber ||
-      businessConfig?.admin_whatsapp_number ||
-      businessConfig?.notificationWhatsAppNumber ||
-      businessConfig?.notification_whatsapp_number ||
-      process.env.ADMIN_WHATSAPP_NUMBER ||
-      ""
-    ).replace(/[^\d]/g, "");
-
-    if (!adminWhatsAppNumber) {
-      console.error("[RescheduleNotify] WhatsApp skipped: missing admin_whatsapp_number");
-      return false;
-    }
-
-    return await sendCustomerMessage("whatsapp", adminWhatsAppNumber, notifyText, businessConfig);
-  }
-
-  const notifyAdmin = String(
-    businessConfig?.adminTelegramChatId ||
-    businessConfig?.admin_telegram_chat_id ||
-    activeConfig?.adminTelegramChatId ||
-    process.env.ADMIN_TELEGRAM_ID ||
-    ""
-  ).trim();
-
-  if (!notifyAdmin) {
-    console.error("[RescheduleNotify] Telegram skipped: missing admin_telegram_chat_id");
-    return false;
-  }
-
-  return await sendCustomerMessage("telegram", notifyAdmin, notifyText, businessConfig);
+  const route = resolveAdminNotificationRoute(businessConfig, "RescheduleNotify");
+  if (!route) return false;
+  const sent = await sendCustomerMessage(route.channel, route.recipient, notifyText, businessConfig);
+  if (!sent) console.error(`[RescheduleNotify] ${route.channel} admin notification failed`);
+  return sent;
 }
 
 async function notifyAdminAboutCancellation(
@@ -2526,43 +2504,10 @@ async function notifyAdminAboutCancellation(
     ? "WhatsApp"
     : platformLabel.charAt(0).toUpperCase() + platformLabel.slice(1).toLowerCase();
   const notifyText = `❌ Avbokning\n\n📱 Via: ${channelName}\n👤 ${customerName}\n📞 ${phone}\n📅 ${dateText} kl ${timeText}\n🔔 ${service}\n📝 ${shortReason}`;
-  const channel = getAdminNotificationChannel(businessConfig);
-
-  if (channel === "whatsapp") {
-    const adminWhatsAppNumber = String(
-      businessConfig?.adminWhatsAppNumber ||
-      businessConfig?.admin_whatsapp_number ||
-      businessConfig?.notificationWhatsAppNumber ||
-      businessConfig?.notification_whatsapp_number ||
-      process.env.ADMIN_WHATSAPP_NUMBER ||
-      ""
-    ).replace(/[^\d]/g, "");
-
-    if (!adminWhatsAppNumber) {
-      console.error("[CancellationNotify] WhatsApp skipped: missing admin_whatsapp_number");
-      return false;
-    }
-
-    const sent = await sendCustomerMessage("whatsapp", adminWhatsAppNumber, notifyText, businessConfig);
-    if (!sent) console.error("[CancellationNotify] WhatsApp admin notification failed");
-    return sent;
-  }
-
-  const notifyAdmin = String(
-    businessConfig?.adminTelegramChatId ||
-    businessConfig?.admin_telegram_chat_id ||
-    activeConfig?.adminTelegramChatId ||
-    process.env.ADMIN_TELEGRAM_ID ||
-    ""
-  ).trim();
-
-  if (!notifyAdmin) {
-    console.error("[CancellationNotify] Telegram skipped: missing admin_telegram_chat_id");
-    return false;
-  }
-
-  const sent = await sendCustomerMessage("telegram", notifyAdmin, notifyText, businessConfig);
-  if (!sent) console.error("[CancellationNotify] Telegram admin notification failed");
+  const route = resolveAdminNotificationRoute(businessConfig, "CancellationNotify");
+  if (!route) return false;
+  const sent = await sendCustomerMessage(route.channel, route.recipient, notifyText, businessConfig);
+  if (!sent) console.error(`[CancellationNotify] ${route.channel} admin notification failed`);
   return sent;
 }
 
@@ -2914,6 +2859,9 @@ function maskToken(token?: string) {
 }
 
 function normalizeBusinessConfig(row: any) {
+  const adminNotificationChannel = String(row?.admin_notification_channel ?? row?.adminNotificationChannel ?? "telegram").trim().toLowerCase() || "telegram";
+  const adminWhatsAppNumber = String(row?.admin_whatsapp_number ?? row?.adminWhatsAppNumber ?? "").trim();
+  const adminTelegramChatId = String(row?.admin_telegram_chat_id ?? row?.adminTelegramChatId ?? "").trim();
   return {
     ...activeConfig,
     businessRecordId: row.id,
@@ -2922,9 +2870,12 @@ function normalizeBusinessConfig(row: any) {
     businessName: row.business_name,
     business_name: row.business_name,
     telegramToken: row.telegram_bot_token,
-    adminTelegramChatId: row.admin_telegram_chat_id || row.adminTelegramChatId || activeConfig.adminTelegramChatId,
-    adminNotificationChannel: row.admin_notification_channel || row.adminNotificationChannel || process.env.ADMIN_NOTIFICATION_CHANNEL || "telegram",
-    adminWhatsAppNumber: row.admin_whatsapp_number || row.adminWhatsAppNumber || row.notification_whatsapp_number || process.env.ADMIN_WHATSAPP_NUMBER,
+    adminTelegramChatId,
+    admin_telegram_chat_id: adminTelegramChatId,
+    adminNotificationChannel,
+    admin_notification_channel: adminNotificationChannel,
+    adminWhatsAppNumber,
+    admin_whatsapp_number: adminWhatsAppNumber,
     googleCalendarId: row.google_calendar_id,
     systemPrompt: row.custom_system_prompt,
     instagramAccessToken: row.instagram_access_token,
@@ -9034,18 +8985,18 @@ app.put('/api/businesses/:id', async (req, res) => {
 
     // Admin notifications
     setText(
-      ['adminNotificationChannel', 'admin_notification_channel'],
+      ['adminNotificationChannel', 'admin_notification_channel', 'channel'],
       'admin_notification_channel',
     );
     setText(
-      ['adminWhatsAppNumber', 'admin_whatsapp_number'],
+      ['adminWhatsAppNumber', 'admin_whatsapp_number', 'whatsappNumber'],
       'admin_whatsapp_number',
     );
 
     // Telegram
     setText(['telegramToken'], 'telegram_bot_token', { secret: true });
     setText(
-      ['telegramAdminChatId', 'adminTelegramChatId'],
+      ['telegramAdminChatId', 'adminTelegramChatId', 'admin_telegram_chat_id', 'telegramChatId'],
       'admin_telegram_chat_id',
     );
 

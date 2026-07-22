@@ -9,6 +9,13 @@ import crypto from "crypto";
 import fs from "fs";
 import { google } from "googleapis";
 import { createClient } from "@supabase/supabase-js";
+import {
+  InMemoryKnowledgeStorage,
+  KnowledgeService,
+  SupabaseKnowledgeStorage,
+  isKnowledgeSourceStatus,
+  isKnowledgeSourceType,
+} from "./knowledge";
 
 let supabase: any = null;
 if (process.env.SUPABASE_URL && (process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY)) {
@@ -22,6 +29,12 @@ if (process.env.SUPABASE_URL && (process.env.SUPABASE_SERVICE_ROLE_KEY || proces
 } else {
   console.warn("Supabase not configured: missing SUPABASE_URL and key.");
 }
+
+const knowledgeService = new KnowledgeService(
+  supabase && process.env.SUPABASE_SERVICE_ROLE_KEY
+    ? new SupabaseKnowledgeStorage(supabase)
+    : new InMemoryKnowledgeStorage()
+);
 
 let currentKeyIndex = 0;
 
@@ -7197,6 +7210,80 @@ async function startServer() {
   const PORT = Number(process.env.PORT) || 3000;
   const app = express();
   app.use(express.json({ limit: '50mb' }));
+
+  await knowledgeService.initialize();
+
+  app.get('/knowledge', async (_req, res) => {
+    try {
+      const sources = await knowledgeService.list();
+      return res.json({ sources });
+    } catch (error) {
+      console.error('Knowledge list failed:', error);
+      return res.status(500).json({ error: 'Unable to list knowledge sources.' });
+    }
+  });
+
+  app.post('/knowledge', async (req, res) => {
+    try {
+      const type = typeof req.body?.type === 'string' ? req.body.type.trim().toLowerCase() : req.body?.type;
+      const title = typeof req.body?.title === 'string' ? req.body.title.trim() : '';
+      const status = req.body?.status ?? 'pending';
+      const metadata = req.body?.metadata ?? {};
+
+      if (!isKnowledgeSourceType(type)) {
+        return res.status(400).json({ error: 'Knowledge source type must be faq, pdf, website, or text.' });
+      }
+      if (!title) {
+        return res.status(400).json({ error: 'Knowledge source title is required.' });
+      }
+      if (!isKnowledgeSourceStatus(status)) {
+        return res.status(400).json({ error: 'Invalid knowledge source status.' });
+      }
+      if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
+        return res.status(400).json({ error: 'Knowledge source metadata must be an object.' });
+      }
+
+      const source = await knowledgeService.addSource({ type, title, status, metadata });
+      return res.status(201).json({ source });
+    } catch (error) {
+      console.error('Knowledge source add failed:', error);
+      return res.status(500).json({ error: 'Unable to add knowledge source.' });
+    }
+  });
+
+  app.delete('/knowledge/:id', async (req, res) => {
+    try {
+      const id = String(req.params.id || '').trim();
+      if (!id) {
+        return res.status(400).json({ error: 'Knowledge source id is required.' });
+      }
+
+      const deleted = await knowledgeService.deleteSource(id);
+      if (!deleted) {
+        return res.status(404).json({ error: 'Knowledge source not found.' });
+      }
+
+      return res.json({ success: true, id });
+    } catch (error) {
+      console.error('Knowledge source delete failed:', error);
+      return res.status(500).json({ error: 'Unable to delete knowledge source.' });
+    }
+  });
+
+  app.post('/knowledge/search', async (req, res) => {
+    try {
+      const query = typeof req.body?.query === 'string' ? req.body.query.trim() : '';
+      if (!query) {
+        return res.status(400).json({ error: 'Knowledge search query is required.', matches: [] });
+      }
+
+      const matches = await knowledgeService.search(query);
+      return res.json({ matches });
+    } catch (error) {
+      console.error('Knowledge search failed:', error);
+      return res.status(500).json({ error: 'Unable to search knowledge sources.', matches: [] });
+    }
+  });
 
   
  app.get("/webhook/instagram", (req, res) => {

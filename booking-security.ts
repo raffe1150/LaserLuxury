@@ -97,6 +97,33 @@ export function isDirectReschedulePhrase(text?: string): boolean {
   return /(?:^|\s)byt(?:\s+(?:min\s+tid|tiden|tid|bokningen))?(?=\s|$)/i.test(raw);
 }
 
+export function isExplicitNewBookingRequest(text?: string): boolean {
+  const raw = String(text || "")
+    .trim()
+    .toLowerCase()
+    .normalize("NFKC")
+    .replace(/[.,!?;:()\[\]{}]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!raw) return false;
+
+  const clearlyChangesExisting =
+    /(?:^|\s)(?:ändra|flytta|byt)(?:\s+(?:min\s+tid|tiden|tid|bokningen))?(?=\s|$)/i.test(raw) ||
+    /(?:^|\s)(?:boka\s+om|omboka|reschedule|change\s+my\s+appointment|change\s+the\s+time|move\s+my\s+appointment)(?=\s|$)/i.test(raw) ||
+    /(?:تغییر|عوض)[^\n]{0,30}(?:وقت|رزرو)|(?:وقت|رزرو)[^\n]{0,30}(?:تغییر|عوض)/u.test(raw);
+  if (clearlyChangesExisting) return false;
+
+  return (
+    /(?:^|\s)(?:boka|gör|gora|skapa|vill\s+boka)\s+(?:mig\s+)?(?:en\s+)?ny\s+(?:tid|bokning)(?=\s|$)/i.test(raw) ||
+    /(?:^|\s)ny\s+bokning(?=\s|$)/i.test(raw) ||
+    /(?:^|\s)(?:book|make|create|want)\s+(?:me\s+)?(?:a\s+)?new\s+(?:appointment|booking)(?=\s|$)/i.test(raw) ||
+    /(?:^|\s)new\s+(?:appointment|booking)(?=\s|$)/i.test(raw) ||
+    /(?:رزرو|وقت|نوبت)\s+جدید/u.test(raw) ||
+    /(?:یه|یک)\s+(?:وقت|نوبت)\s+جدید[^\n]{0,20}(?:می\s*خوام|میخوام|می‌خوام)/u.test(raw) ||
+    /(?:vaght|nobat|reserve|booking)\s+jadid/i.test(raw)
+  );
+}
+
 export function appointmentStartMatchesMode(
   startMs: number,
   mode: AppointmentLookupMode,
@@ -152,9 +179,13 @@ export function selectSecureAppointmentRows(
 
   const phone = suppliedPhone.length >= 7 ? suppliedPhone : channelPhone;
   if (phone.length >= 7) {
-    const phoneRows = eligibleRows.filter((row: any) =>
-      normalizeSecurityDigits(row?.phone_number) === phone
-    );
+    const phoneRows = eligibleRows.filter((row: any) => {
+      const rowPlatform = normalizeSecurityPlatform(row?.platform);
+      const rowUserId = normalizeSecurityUserId(rowPlatform, row?.user_id);
+      return normalizeSecurityDigits(row?.phone_number) === phone &&
+        rowPlatform === platform &&
+        (!rowUserId || rowUserId === userId);
+    });
     if (phoneRows.length > 0) {
       return { rows: phoneRows, identityKey: `phone:${phone}`, matchedBy: "phone" };
     }

@@ -2457,14 +2457,24 @@ async function notifyAdminAboutReschedule(
   name: string,
   phone: string,
   oldDateTime: string,
-  newDateTime: string
+  newDateTime: string,
+  service?: string
 ) {
-  const notifyText = `🔄 ${platformLabel}-bokning ombokad!
-🏢 Business: ${businessName}
-👤 Namn: ${name || "Okänd kund"}
-📞 Mobil: ${phone || "Saknas"}
-🕒 Tidigare tid: ${oldDateTime}
-📅 Ny tid: ${newDateTime}`;
+  const businessTimeZone = String(businessConfig?.timezone || activeConfig?.timezone || "Europe/Stockholm").trim() || "Europe/Stockholm";
+  const formatAdminDateTime = (dateTime: string) => {
+    if (!dateTime) return "Saknas";
+    const { dateText, timeText } = formatLocalizedDateTime(dateTime, "sv", businessTimeZone);
+    return `${dateText} kl ${timeText}`;
+  };
+  const notifyText = `🔄 Ombokning
+
+📱 Via: ${platformLabel}
+🏢 ${businessName || "Okänd verksamhet"}
+👤 ${name || "Okänd kund"}
+📞 ${phone || "Saknas"}
+📅 Från: ${formatAdminDateTime(oldDateTime)}
+➡️ Till: ${formatAdminDateTime(newDateTime)}
+🔔 ${service || "Bokning"}`;
   const channel = getAdminNotificationChannel(businessConfig);
 
   if (channel === "whatsapp") {
@@ -2865,12 +2875,12 @@ function localizeServiceName(service: string, language: string): string {
   return service || "appointment";
 }
 
-function formatLocalizedDateTime(dateTime: string, language: string) {
+function formatLocalizedDateTime(dateTime: string, language: string, timeZone: string = "Europe/Stockholm") {
   const start = new Date(ensureStockholmOffset(dateTime));
   const localeMap: Record<string, string> = { fa: "fa-IR", sv: "sv-SE", en: "en-GB", de: "de-DE", es: "es-ES", ar: "ar-SA" };
   const locale = localeMap[language] || "en-GB";
-  const dateText = start.toLocaleDateString(locale, { timeZone: "Europe/Stockholm", weekday: "long", day: "numeric", month: "long" });
-  const timeText = start.toLocaleTimeString("sv-SE", { timeZone: "Europe/Stockholm", hour: "2-digit", minute: "2-digit" });
+  const dateText = start.toLocaleDateString(locale, { timeZone, weekday: "long", day: "numeric", month: "long" });
+  const timeText = start.toLocaleTimeString("sv-SE", { timeZone, hour: "2-digit", minute: "2-digit" });
   return { dateText, timeText };
 }
 
@@ -3314,7 +3324,8 @@ async function handleUnifiedBookingEngine(params: {
         appointment.customerName || appointment.name || "Okänd kund",
         appointment.phone || "",
         oldStartIso,
-        candidateIso
+        candidateIso,
+        appointment.service
       );
     } catch (notifyError) {
       console.error("[RescheduleNotify] crashed:", notifyError);

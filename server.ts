@@ -16,6 +16,21 @@ import {
   isKnowledgeSourceStatus,
   isKnowledgeSourceType,
 } from "./knowledge";
+import type {
+  AppointmentLookupMode,
+  AppointmentStateOwner,
+} from "./booking-security";
+import {
+  appointmentIdentityKeyConflicts,
+  appointmentStateOwnerMatches,
+  detectAppointmentLookupMode,
+  isActiveAppointmentStatus,
+  isAppointmentLookupFollowUp,
+  isDirectAppointmentLookupPhrase,
+  isDirectReschedulePhrase,
+  selectSecureAppointmentRows,
+  selectSecureCalendarEvents,
+} from "./booking-security";
 
 let supabase: any = null;
 if (process.env.SUPABASE_URL && (process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY)) {
@@ -293,6 +308,14 @@ function localStockholmDateBoundary(dateStr: string, endOfDay = false): string {
 
 function getBusinessIdFromConfig(config: any): string | null {
   return config?.businessRecordId || config?.business_id || config?.id || null;
+}
+
+function getAppointmentBusinessScope(config: any): string {
+  const businessId = getBusinessIdFromConfig(config);
+  if (businessId) return String(businessId);
+
+  const calendarId = String(config?.googleCalendarId || config?.google_calendar_id || "").trim();
+  return calendarId ? `calendar:${calendarId}` : "";
 }
 
 function isLikelyWorkingHoursMarker(e: any): boolean {
@@ -1012,6 +1035,16 @@ function addDaysToStockholmDate(dateStr: string, days: number): string {
   return date.toISOString().slice(0, 10);
 }
 
+function stockholmLocalDayStartMs(dateStr: string): number {
+  const previousDate = addDaysToStockholmDate(dateStr, -1);
+  const previousOffset = getStockholmUtcOffset(previousDate);
+  const dateOffset = getStockholmUtcOffset(dateStr);
+  // DST changes occur after local midnight, so a transition date starts with the
+  // previous day's offset and ends with the new offset.
+  const midnightOffset = previousOffset !== dateOffset ? previousOffset : dateOffset;
+  return new Date(`${dateStr}T00:00:00${midnightOffset}`).getTime();
+}
+
 function getEventStartIso(event: any): string {
   return String(event?.start?.dateTime || event?.start?.date || event?.startTime || "");
 }
@@ -1038,7 +1071,6 @@ function eventMatchesCustomer(event: any, identifiers: {
 
   const rawCustomerId = String(identifiers.customerId || "").trim();
   const rawPhone = String(identifiers.phone || "").trim();
-  const normalizedName = normalizeLookupText(identifiers.name);
 
   const digitCandidates = [
     normalizeLookupDigits(rawCustomerId),
@@ -1051,9 +1083,69 @@ function eventMatchesCustomer(event: any, identifiers: {
   // even when the source is WhatsApp, Messenger, Instagram or web.
   if (rawCustomerId && haystack.includes(normalizeLookupText(rawCustomerId))) return true;
 
-  if (normalizedName && normalizedName.length >= 2 && haystack.includes(normalizedName)) return true;
-
   return false;
+}
+
+async function resolveVerifiedLookupPhone(
+  platform: string,
+  customerId: string,
+  suppliedPhone: string,
+  businessId: string | null
+): Promise<string> {
+  const normalizedPlatform = normalizePlatformName(platform);
+  const normalizedCustomerId = normalizePlatformUserId(normalizedPlatform, customerId);
+  const suppliedDigits = normalizeLookupDigits(suppliedPhone);
+
+  // A WhatsApp sender number is verified by Meta and is the only phone identity that
+  // may be inferred directly from a channel id. Never let a typed number override it.
+  if (normalizedPlatform === "whatsapp") {
+    const channelDigits = normalizeLookupDigits(normalizedCustomerId);
+    return channelDigits.length >= 7 ? channelDigits : "";
+  }
+
+  if (!supabase || !businessId || suppliedDigits.length < 7 || !normalizedCustomerId) return "";
+
+  const prefixes: Record<string, string[]> = {
+    messenger: ["ms_", "messenger_", "messenger:"],
+    instagram: ["ig_", "instagram_", "instagram:"],
+    telegram: ["tg_", "telegram_", "telegram:"],
+  };
+  const userIdCandidates = Array.from(new Set([
+    normalizedCustomerId,
+    ...(prefixes[normalizedPlatform] || []).map((prefix) => `${prefix}${normalizedCustomerId}`),
+  ]));
+
+  try {
+    const { data, error } = await supabase
+      .from("appointments_leads")
+      .select("user_id,platform,phone_number,business_id,ai_summary")
+      .eq("business_id", String(businessId))
+      .eq("platform", normalizedPlatform)
+      .in("user_id", userIdCandidates)
+      .limit(10);
+
+    if (error) {
+      console.error("[AppointmentLookup] Verified phone mapping lookup failed:", error);
+      return "";
+    }
+
+    for (const row of data || []) {
+      let mappedPhone = normalizeLookupDigits(row?.phone_number);
+      if (!mappedPhone && row?.ai_summary) {
+        try {
+          const summary = typeof row.ai_summary === "string" ? JSON.parse(row.ai_summary) : row.ai_summary;
+          mappedPhone = normalizeLookupDigits(summary?.customerPhone || summary?.phone);
+        } catch {
+          mappedPhone = "";
+        }
+      }
+      if (mappedPhone === suppliedDigits) return suppliedDigits;
+    }
+  } catch (error) {
+    console.error("[AppointmentLookup] Verified phone mapping lookup crashed:", error);
+  }
+
+  return "";
 }
 
 async function findCustomerAppointments(
@@ -1064,53 +1156,63 @@ async function findCustomerAppointments(
   businessConfig?: any
 ) {
   const today = stockholmDateString(new Date());
-  const includePast = Boolean(args?.includePast);
-  const startDate = String(args?.startDate || (includePast ? addDaysToStockholmDate(today, -180) : today));
-  const endDate = String(args?.endDate || (includePast ? today : addDaysToStockholmDate(today, 180)));
+  const requestedLookupMode = String(args?.lookupMode || "");
+  const lookupMode: AppointmentLookupMode = requestedLookupMode === "today" || requestedLookupMode === "history" || requestedLookupMode === "upcoming"
+    ? requestedLookupMode
+    : String(args?.startDate || "") === today && String(args?.endDate || "") === today
+      ? "today"
+    : args?.includePast
+      ? "history"
+      : "upcoming";
+  const startDate = String(args?.startDate || (lookupMode === "history" ? addDaysToStockholmDate(today, -180) : today));
+  const endDate = String(args?.endDate || (lookupMode === "upcoming" ? addDaysToStockholmDate(today, 180) : today));
   const phone = String(args?.phone || "");
   const name = String(args?.name || "");
   const normalizedPlatform = normalizePlatformName(platform);
   const normalizedCustomerId = normalizePlatformUserId(normalizedPlatform, customerId);
   const now = Date.now();
+  const rangeStartMs = stockholmLocalDayStartMs(startDate);
+  const rangeEndMs = stockholmLocalDayStartMs(addDaysToStockholmDate(endDate, 1)) - 1;
+  const businessId = getBusinessIdFromConfig(businessConfig);
+  const verifiedPhone = await resolveVerifiedLookupPhone(
+    normalizedPlatform,
+    normalizedCustomerId,
+    phone,
+    businessId
+  );
 
   // First use OdinLink's own appointment records. This is the most reliable identity match
   // for Instagram/Messenger because Google Calendar events may not contain the channel id
   // for older bookings. Fall back to Google Calendar below.
-  if (supabase) {
+  if (supabase && businessId) {
     try {
-      const businessId = getBusinessIdFromConfig(businessConfig);
       let query = supabase
         .from("appointments")
         .select("id,customer_name,phone_number,platform,user_id,service,start_time,end_time,status,business_id")
-        .gte("start_time", new Date(localStockholmDateBoundary(startDate, false)).toISOString())
-        .lte("start_time", includePast ? new Date(now).toISOString() : new Date(localStockholmDateBoundary(endDate, true)).toISOString())
+        .eq("business_id", String(businessId))
+        .gte("start_time", new Date(rangeStartMs).toISOString())
+        .lte("start_time", new Date(rangeEndMs).toISOString())
         .order("start_time", { ascending: true })
         .limit(50);
-
-      if (businessId) query = query.eq("business_id", String(businessId));
 
       const { data: dbRows, error: dbError } = await query;
       if (dbError) throw dbError;
 
-      const normalizedName = normalizeLookupText(name);
-      const phoneDigits = normalizeLookupDigits(phone);
-      const customerDigits = normalizeLookupDigits(normalizedCustomerId);
+      const secureSelection = selectSecureAppointmentRows(
+        dbRows || [],
+        {
+          businessId: String(businessId),
+          platform: normalizedPlatform,
+          userId: normalizedCustomerId,
+          phone: verifiedPhone
+        },
+        lookupMode,
+        now,
+        rangeStartMs,
+        rangeEndMs
+      );
 
-      const dbAppointments = (dbRows || []).filter((row: any) => {
-        if (String(row?.status || "booked").toLowerCase() === "cancelled") return false;
-
-        const rowPlatform = normalizePlatformName(row?.platform || "");
-        const rowUserId = normalizePlatformUserId(rowPlatform, String(row?.user_id || ""));
-        if (normalizedCustomerId && rowPlatform === normalizedPlatform && rowUserId === normalizedCustomerId) return true;
-
-        const rowPhone = normalizeLookupDigits(row?.phone_number);
-        if (phoneDigits.length >= 7 && rowPhone.includes(phoneDigits)) return true;
-        if (customerDigits.length >= 7 && rowPhone.includes(customerDigits)) return true;
-
-        const rowName = normalizeLookupText(row?.customer_name);
-        if (normalizedName.length >= 2 && rowName.includes(normalizedName)) return true;
-        return false;
-      }).slice(0, 5).map((row: any) => ({
+      const dbAppointments = secureSelection.rows.slice(0, 5).map((row: any) => ({
         id: row.id || null,
         calendarEventId: null,
         summary: row.service || "Appointment",
@@ -1121,6 +1223,10 @@ async function findCustomerAppointments(
         start: row.start_time,
         end: row.end_time,
         platform: row.platform || normalizedPlatform,
+        userId: row.user_id || null,
+        businessId: row.business_id || String(businessId),
+        status: row.status || "booked",
+        identityKey: secureSelection.identityKey,
         source: "appointments_table"
       }));
 
@@ -1136,7 +1242,7 @@ async function findCustomerAppointments(
               if (!Number.isFinite(eventStart) || Math.abs(eventStart - appointmentStart) > 60 * 1000) return false;
               return eventMatchesCustomer(event, {
                 customerId,
-                phone: appointment.phone || phone,
+                phone: appointment.phone || verifiedPhone,
                 name: appointment.customerName || name
               });
             });
@@ -1152,6 +1258,8 @@ async function findCustomerAppointments(
           needsContactDetails: false,
           searchedFrom: startDate,
           searchedTo: endDate,
+          lookupMode,
+          identityKey: secureSelection.identityKey,
           appointments: dbAppointments,
           source: "appointments_table"
         };
@@ -1159,22 +1267,24 @@ async function findCustomerAppointments(
     } catch (dbLookupError) {
       console.error("[AppointmentLookup] Supabase lookup failed; falling back to calendar:", dbLookupError);
     }
+  } else if (supabase && !businessId) {
+    console.error("[AppointmentLookup] Refusing unscoped appointments-table lookup: business id is missing.");
   }
 
   const events = await adapter.getEvents(startDate, endDate);
+  const secureCalendarSelection = selectSecureCalendarEvents(
+    (Array.isArray(events) ? events : []).filter((event: any) => !isLikelyWorkingHoursMarker(event)),
+    { platform: normalizedPlatform, userId: normalizedCustomerId, phone: verifiedPhone },
+    lookupMode,
+    now,
+    rangeStartMs,
+    rangeEndMs,
+    getEventStartIso
+  );
 
-  const appointments = (Array.isArray(events) ? events : [])
-    .filter((event: any) => {
-      const startIso = getEventStartIso(event);
-      const startMs = new Date(startIso).getTime();
-      if (!startIso || Number.isNaN(startMs)) return false;
-      if (includePast ? startMs > now : startMs < now) return false;
-      if (String(event?.status || "").toLowerCase() === "cancelled") return false;
-      if (isLikelyWorkingHoursMarker(event)) return false;
-      return eventMatchesCustomer(event, { customerId, phone, name });
-    })
+  const appointments = secureCalendarSelection.events
     .sort((a: any, b: any) =>
-      includePast
+      lookupMode === "history"
         ? new Date(getEventStartIso(b)).getTime() - new Date(getEventStartIso(a)).getTime()
         : new Date(getEventStartIso(a)).getTime() - new Date(getEventStartIso(b)).getTime()
     )
@@ -1194,15 +1304,18 @@ async function findCustomerAppointments(
         description,
         start: getEventStartIso(event),
         end: getEventEndIso(event),
-        platform,
+        platform: normalizedPlatform,
+        userId: normalizedCustomerId,
+        businessId: businessId || null,
+        status: event?.status || "booked",
+        identityKey: secureCalendarSelection.identityKey,
         source: "calendar"
       };
     });
 
   const hasReliableIdentity =
-    normalizeLookupDigits(phone).length >= 7 ||
+    normalizeLookupDigits(verifiedPhone).length >= 7 ||
     normalizeLookupDigits(customerId).length >= 7 ||
-    normalizeLookupText(name).length >= 2 ||
     String(customerId || "").trim().length >= 5;
 
   return {
@@ -1211,6 +1324,8 @@ async function findCustomerAppointments(
     needsContactDetails: appointments.length === 0 && !hasReliableIdentity,
     searchedFrom: startDate,
     searchedTo: endDate,
+    lookupMode,
+    identityKey: secureCalendarSelection.identityKey,
     appointments
   };
 }
@@ -1231,13 +1346,37 @@ function formatAppointmentLookupReply(result: any, language: string = "en"): str
   }
 
   if (!result?.found || !Array.isArray(result?.appointments) || result.appointments.length === 0) {
+    if (result?.lookupMode === "today") {
+      const noneToday: Record<string, string> = {
+        sv: "Jag hittade ingen bokning idag kopplad till dina uppgifter. Vill du att jag söker med ett annat mobilnummer? 📅",
+        fa: "هیچ رزروی برای امروز مرتبط با اطلاعات شما پیدا نکردم. می‌خواهید با شماره موبایل دیگری بررسی کنم؟ 📅",
+        de: "Ich habe für heute keine Buchung zu Ihren Angaben gefunden. Soll ich mit einer anderen Mobilnummer suchen? 📅",
+        es: "No encontré ninguna reserva para hoy asociada a tus datos. ¿Quieres que busque con otro número? 📅",
+        ar: "لم أجد حجزًا لليوم مرتبطًا ببياناتك. هل تريد أن أبحث برقم هاتف آخر؟ 📅",
+        en: "I couldn’t find a booking today linked to your details. Would you like me to check another mobile number? 📅"
+      };
+      return noneToday[lang];
+    }
+
+    if (result?.lookupMode === "history") {
+      const noneHistory: Record<string, string> = {
+        sv: "Jag hittade ingen tidigare bokning kopplad till dina uppgifter. Vill du att jag söker med ett annat mobilnummer? 📅",
+        fa: "هیچ رزرو قبلی مرتبط با اطلاعات شما پیدا نکردم. می‌خواهید با شماره موبایل دیگری بررسی کنم؟ 📅",
+        de: "Ich habe keine frühere Buchung zu Ihren Angaben gefunden. Soll ich mit einer anderen Mobilnummer suchen? 📅",
+        es: "No encontré ninguna reserva anterior asociada a tus datos. ¿Quieres que busque con otro número? 📅",
+        ar: "لم أجد حجزًا سابقًا مرتبطًا ببياناتك. هل تريد أن أبحث برقم هاتف آخر؟ 📅",
+        en: "I couldn’t find a previous booking linked to your details. Would you like me to check another mobile number? 📅"
+      };
+      return noneHistory[lang];
+    }
+
     const none: Record<string, string> = {
-      sv: "Jag hittade ingen kommande bokning kopplad till dina uppgifter. Vill du att jag söker med ett annat namn eller mobilnummer? 📅",
-      fa: "هیچ رزرو آینده‌ای مرتبط با اطلاعات شما پیدا نکردم. می‌خواهید با نام یا شماره موبایل دیگری بررسی کنم؟ 📅",
-      de: "Ich habe keine kommende Buchung zu Ihren Angaben gefunden. Soll ich mit einem anderen Namen oder einer anderen Mobilnummer suchen? 📅",
-      es: "No encontré ninguna reserva próxima asociada a tus datos. ¿Quieres que busque con otro nombre o número? 📅",
-      ar: "لم أجد حجزًا قادمًا مرتبطًا ببياناتك. هل تريد أن أبحث باسم أو رقم آخر؟ 📅",
-      en: "I couldn’t find an upcoming booking linked to your details. Would you like me to check another name or mobile number? 📅"
+      sv: "Jag hittade ingen kommande bokning kopplad till dina uppgifter. Vill du att jag söker med ett annat mobilnummer? 📅",
+      fa: "هیچ رزرو آینده‌ای مرتبط با اطلاعات شما پیدا نکردم. می‌خواهید با شماره موبایل دیگری بررسی کنم؟ 📅",
+      de: "Ich habe keine kommende Buchung zu Ihren Angaben gefunden. Soll ich mit einer anderen Mobilnummer suchen? 📅",
+      es: "No encontré ninguna reserva próxima asociada a tus datos. ¿Quieres que busque con otro número? 📅",
+      ar: "لم أجد حجزًا قادمًا مرتبطًا ببياناتك. هل تريد أن أبحث برقم هاتف آخر؟ 📅",
+      en: "I couldn’t find an upcoming booking linked to your details. Would you like me to check another mobile number? 📅"
     };
     return none[lang];
   }
@@ -1301,14 +1440,15 @@ const calendarTools: any = [{
     },
     {
       name: "findCustomerAppointments",
-      description: "Looks up the current customer's existing future appointment(s). MUST be used when the customer asks whether they already have a booking, when their appointment is, whether a booking exists, or says they are unsure if they have an appointment. Do not escalate these requests to a human before using this tool. The server automatically uses the current channel identity; pass phone or name only when the customer explicitly provides them.",
+      description: "Looks up only the current customer's appointments. MUST be used when the customer asks whether they already have a booking, when their appointment is, whether a booking exists, or says they are unsure if they have an appointment. Use lookupMode=today for the full local day, including times already passed; use upcoming for future bookings and history for prior bookings. The server automatically uses the current channel identity; pass a phone number only when the customer explicitly provides it.",
       parameters: {
         type: "OBJECT",
         properties: {
           startDate: { type: "STRING", description: "Optional start date in YYYY-MM-DD. Use the relevant date when the customer mentions today, tomorrow, next week, or a specific day." },
           endDate: { type: "STRING", description: "Optional end date in YYYY-MM-DD. If omitted, the server searches future appointments for the next 180 days." },
+          lookupMode: { type: "STRING", enum: ["upcoming", "today", "history"], description: "Appointment time scope. Use today for today's complete local calendar day, upcoming for future bookings, or history for past bookings." },
           phone: { type: "STRING", description: "Customer phone number only if explicitly provided in the conversation." },
-          name: { type: "STRING", description: "Customer name only if explicitly provided in the conversation." }
+          name: { type: "STRING", description: "Optional display name for reply context. A name alone is never used as booking identity." }
         }
       }
     },
@@ -1467,17 +1607,45 @@ const pendingBookings: Record<string, any> = {};
 const recentlyCompletedBookings: Record<string, { completedAt: number; language: string; name?: string }> = {};
 const appointmentContexts: Record<string, { appointment: any; savedAt: number; language: string }> = {};
 const appointmentSelectionContexts: Record<string, { appointments: any[]; savedAt: number; language: string }> = {};
-const appointmentLookupContexts: Record<string, { savedAt: number; language: string; includePast?: boolean }> = {};
+const appointmentLookupContexts: Record<string, { savedAt: number; language: string; includePast?: boolean; lookupMode?: AppointmentLookupMode }> = {};
 const rescheduleContexts: Record<string, { appointment: any; savedAt: number; language: string; requestedDate?: string; requestedTime?: string }> = {};
 const cancellationContexts: Record<string, { appointment: any; savedAt: number; language: string; feeApplies: boolean; feeAmount: number; currency: string; awaitingReason: boolean; reason?: string }> = {};
+const appointmentStateOwners: Record<string, AppointmentStateOwner> = {};
 
-function rememberAppointmentContext(sessionId: string, result: any, language: string) {
+function hasAppointmentConversationState(sessionId: string): boolean {
+  return Boolean(
+    appointmentContexts[sessionId] ||
+    appointmentSelectionContexts[sessionId] ||
+    appointmentLookupContexts[sessionId] ||
+    rescheduleContexts[sessionId] ||
+    cancellationContexts[sessionId]
+  );
+}
+
+function clearAppointmentConversationState(sessionId: string) {
+  delete appointmentContexts[sessionId];
+  delete appointmentSelectionContexts[sessionId];
+  delete appointmentLookupContexts[sessionId];
+  delete rescheduleContexts[sessionId];
+  delete cancellationContexts[sessionId];
+  delete appointmentStateOwners[sessionId];
+}
+
+function saveAppointmentStateOwner(sessionId: string, owner: AppointmentStateOwner, identityKey?: string) {
+  appointmentStateOwners[sessionId] = {
+    ...owner,
+    ...(identityKey ? { identityKey } : {})
+  };
+}
+
+function rememberAppointmentContext(sessionId: string, result: any, language: string, owner?: AppointmentStateOwner) {
   const appointments = Array.isArray(result?.appointments)
     ? result.appointments.filter(Boolean)
     : [];
 
   delete appointmentContexts[sessionId];
   delete appointmentSelectionContexts[sessionId];
+  if (owner) saveAppointmentStateOwner(sessionId, owner, result?.identityKey);
 
   if (appointments.length === 1) {
     appointmentContexts[sessionId] = {
@@ -1681,8 +1849,13 @@ function formatMissedPastAppointmentsReply(appointments: any[], language: string
     : "Yes, the appointment has already passed. Would you like help booking a new one? 📅";
 }
 
-function rememberAppointmentLookupContext(sessionId: string, language: string, includePast: boolean = false) {
-  appointmentLookupContexts[sessionId] = { savedAt: Date.now(), language, includePast };
+function rememberAppointmentLookupContext(
+  sessionId: string,
+  language: string,
+  includePast: boolean = false,
+  lookupMode: AppointmentLookupMode = includePast ? "history" : "upcoming"
+) {
+  appointmentLookupContexts[sessionId] = { savedAt: Date.now(), language, includePast, lookupMode };
 }
 
 function getAppointmentLookupContext(sessionId: string) {
@@ -1697,6 +1870,124 @@ function getAppointmentLookupContext(sessionId: string) {
 
 function clearAppointmentLookupContext(sessionId: string) {
   delete appointmentLookupContexts[sessionId];
+}
+
+function rememberLookupResultForConversation(
+  sessionId: string,
+  result: any,
+  language: string,
+  platform: string,
+  userId: string,
+  businessConfig: any
+) {
+  const lookupMode: AppointmentLookupMode = result?.lookupMode === "today" || result?.lookupMode === "history"
+    ? result.lookupMode
+    : "upcoming";
+  const owner: AppointmentStateOwner = {
+    sessionId,
+    businessId: getAppointmentBusinessScope(businessConfig),
+    platform: normalizePlatformName(platform),
+    userId: normalizePlatformUserId(platform, userId),
+  };
+
+  rememberAppointmentContext(sessionId, result, language, owner);
+  if (result?.found) clearAppointmentLookupContext(sessionId);
+  else rememberAppointmentLookupContext(sessionId, language, lookupMode === "history", lookupMode);
+}
+
+async function validateStoredAppointmentForMutation(
+  appointment: any,
+  owner: AppointmentStateOwner,
+  businessConfig: any,
+  adapter: CalendarAdapter
+): Promise<any | null> {
+  if (!appointment || !isActiveAppointmentStatus(appointment?.status)) return null;
+
+  const businessId = String(getBusinessIdFromConfig(businessConfig) || "");
+  const businessScope = getAppointmentBusinessScope(businessConfig);
+  if (!businessScope || owner.businessId !== businessScope) return null;
+
+  if (appointment?.source === "appointments_table") {
+    if (!supabase || !businessId || !appointment?.id) return null;
+
+    const { data, error } = await supabase
+      .from("appointments")
+      .select("id,customer_name,phone_number,platform,user_id,service,start_time,end_time,status,business_id")
+      .eq("id", appointment.id)
+      .eq("business_id", businessId)
+      .maybeSingle();
+
+    if (error) {
+      console.error("[AppointmentState] Live appointment validation failed:", error);
+      return null;
+    }
+    if (!data || !isActiveAppointmentStatus(data.status)) return null;
+
+    const rowPlatform = normalizePlatformName(data.platform || "");
+    const rowUserId = normalizePlatformUserId(rowPlatform, String(data.user_id || ""));
+    const ownerPlatform = normalizePlatformName(owner.platform);
+    const ownerUserId = normalizePlatformUserId(ownerPlatform, owner.userId);
+    const channelMatch = rowPlatform === ownerPlatform && rowUserId === ownerUserId;
+    const ownerPhone = String(owner.identityKey || "").startsWith("phone:")
+      ? normalizeLookupDigits(String(owner.identityKey).slice("phone:".length))
+      : "";
+    const phoneMatch = ownerPhone.length >= 7 && normalizeLookupDigits(data.phone_number) === ownerPhone;
+
+    if (!channelMatch && !phoneMatch) return null;
+
+    return {
+      ...appointment,
+      customerName: data.customer_name || appointment.customerName,
+      phone: data.phone_number || appointment.phone,
+      platform: data.platform || appointment.platform,
+      userId: data.user_id || appointment.userId,
+      businessId: data.business_id || appointment.businessId,
+      service: data.service || appointment.service,
+      start: data.start_time,
+      end: data.end_time,
+      status: data.status,
+    };
+  }
+
+  const eventId = String(appointment?.calendarEventId || appointment?.id || "");
+  const start = new Date(String(appointment?.start || ""));
+  if (!eventId || Number.isNaN(start.getTime())) return null;
+
+  const appointmentDate = stockholmDateString(start);
+  const dayStartMs = stockholmLocalDayStartMs(appointmentDate);
+  const dayEndMs = stockholmLocalDayStartMs(addDaysToStockholmDate(appointmentDate, 1)) - 1;
+  const events = await adapter.getEvents(appointmentDate, appointmentDate);
+  const liveEvent = (Array.isArray(events) ? events : []).find((event: any) =>
+    String(event?.id || "") === eventId
+  );
+  if (!liveEvent || !isActiveAppointmentStatus(liveEvent.status)) return null;
+
+  const ownerPhone = String(owner.identityKey || "").startsWith("phone:")
+    ? String(owner.identityKey).slice("phone:".length)
+    : "";
+  const secureMatch = selectSecureCalendarEvents(
+    [liveEvent],
+    { platform: owner.platform, userId: owner.userId, phone: ownerPhone },
+    "today",
+    Date.now(),
+    dayStartMs,
+    dayEndMs,
+    getEventStartIso
+  );
+  if (secureMatch.events.length !== 1) return null;
+
+  return {
+    ...appointment,
+    start: getEventStartIso(liveEvent) || appointment.start,
+    end: getEventEndIso(liveEvent) || appointment.end,
+    status: liveEvent.status || appointment.status || "booked",
+  };
+}
+
+function formatStaleAppointmentStateMessage(language: string): string {
+  if (language === "sv") return "Jag behöver kontrollera bokningen igen av säkerhetsskäl. Skicka mobilnumret som bokningen gjordes med. 📅";
+  if (language === "fa") return "برای حفظ امنیت باید رزرو را دوباره بررسی کنم. لطفاً شماره موبایلی را که رزرو با آن انجام شده بفرستید. 📅";
+  return "I need to check the booking again for security. Please send the mobile number used for the booking. 📅";
 }
 
 function rememberRescheduleContext(sessionId: string, appointment: any, language: string, requestedDate?: string | null, requestedTime?: string | null) {
@@ -1877,6 +2168,7 @@ function isRescheduleIntent(text?: string): boolean {
     .trim();
 
   const swedishOrEnglish =
+    isDirectReschedulePhrase(normalized) ||
     /(?:^|\s)(?:ändra(?:\s+(?:min\s+tid|tiden|tid|bokningen))?|flytta(?:\s+(?:min\s+tid|tiden|tid|bokningen))?|boka\s+om|omboka|annan\s+tid|ny\s+tid|reschedule|change\s+my\s+appointment|change\s+the\s+time|move\s+my\s+appointment)(?=\s|$)/i.test(normalized) ||
     /(?:^|\s)(?:kan\s+(?:tyvärr\s+)?inte\s+komma|kommer\s+inte\s+kunna\s+komma|cannot\s+come|can't\s+come|can\s+not\s+come)(?=\s|$)/i.test(normalized) ||
     /(?:^|\s)(?:i\s*stället|istället|instead)(?=\s|$)/i.test(normalized);
@@ -2725,6 +3017,7 @@ function findOfferedSlotIso(offeredSlots: string[], selectedTime?: string): stri
 function isExistingAppointmentLookupIntent(text?: string): boolean {
   const raw = String(text || "").trim().toLowerCase();
   if (!raw) return false;
+  if (isDirectAppointmentLookupPhrase(raw)) return true;
 
   const lookupPatterns = [
     /\b(do i|did i|have i|can you check|check if i).*(appointment|booking|booked)\b/i,
@@ -2941,6 +3234,7 @@ function resetSessionIfBusinessConfigChanged(sessionId: string, config: any) {
     delete appointmentLookupContexts[sessionId];
     delete rescheduleContexts[sessionId];
     delete cancellationContexts[sessionId];
+    delete appointmentStateOwners[sessionId];
   }
   businessConfigVersions[sessionId] = nextVersion;
 }
@@ -3097,6 +3391,25 @@ async function handleUnifiedBookingEngine(params: {
 
   if (!text) return false;
 
+  const currentAppointmentStateOwner: AppointmentStateOwner = {
+    sessionId,
+    businessId: getAppointmentBusinessScope(businessConfig),
+    platform: platformName,
+    userId: normalizePlatformUserId(platformName, recipientUserId),
+  };
+  const storedAppointmentStateOwner = appointmentStateOwners[sessionId];
+  const suppliedIdentityPhone = extractPhoneOnly(text) || undefined;
+  if (
+    (storedAppointmentStateOwner || hasAppointmentConversationState(sessionId)) &&
+    (
+      !appointmentStateOwnerMatches(storedAppointmentStateOwner, currentAppointmentStateOwner) ||
+      appointmentIdentityKeyConflicts(storedAppointmentStateOwner?.identityKey, suppliedIdentityPhone)
+    )
+  ) {
+    console.warn(`[AppointmentState] Cleared stale or cross-identity state session=${sessionId}`);
+    clearAppointmentConversationState(sessionId);
+  }
+
   const language = getConversationLanguage(sessionId, text);
   const latestStrongLanguage = detectStrongLatestLanguage(text);
   let pending = await loadPendingBooking(sessionId, platformName, businessConfig);
@@ -3127,8 +3440,25 @@ async function handleUnifiedBookingEngine(params: {
 
 
   const completeCancellation = async (context: { appointment: any; language: string; feeApplies: boolean; feeAmount: number; currency: string; reason?: string }): Promise<boolean> => {
-    const appointment = context.appointment;
     const adapter = getCalendarAdapter(businessConfig);
+    const stateOwner = appointmentStateOwners[sessionId];
+    if (!stateOwner || !appointmentStateOwnerMatches(stateOwner, currentAppointmentStateOwner)) {
+      clearAppointmentConversationState(sessionId);
+      await replyAndRecord(formatStaleAppointmentStateMessage(context.language));
+      return true;
+    }
+
+    const appointment = await validateStoredAppointmentForMutation(
+      context.appointment,
+      stateOwner,
+      businessConfig,
+      adapter
+    );
+    if (!appointment) {
+      clearAppointmentConversationState(sessionId);
+      await replyAndRecord(formatStaleAppointmentStateMessage(context.language));
+      return true;
+    }
     const eventId = String(appointment?.calendarEventId || "");
 
     if (eventId && adapter.cancelAppointment) {
@@ -3144,7 +3474,8 @@ async function handleUnifiedBookingEngine(params: {
       const { error: dbError } = await supabase
         .from("appointments")
         .update({ status: "cancelled" })
-        .eq("id", appointment.id);
+        .eq("id", appointment.id)
+        .eq("business_id", String(getBusinessIdFromConfig(businessConfig) || ""));
       if (dbError) {
         console.error("[Cancellation] appointments table update failed:", dbError);
         if (!eventId) {
@@ -3163,9 +3494,7 @@ async function handleUnifiedBookingEngine(params: {
       return true;
     }
 
-    clearCancellationContext(sessionId);
-    delete appointmentContexts[sessionId];
-    delete appointmentSelectionContexts[sessionId];
+    clearAppointmentConversationState(sessionId);
 
     try {
       await notifyAdminAboutCancellation(
@@ -3189,6 +3518,25 @@ async function handleUnifiedBookingEngine(params: {
     lockedLanguage: string
   ): Promise<boolean> => {
     const adapter = getCalendarAdapter(businessConfig);
+    const stateOwner = appointmentStateOwners[sessionId];
+    if (!stateOwner || !appointmentStateOwnerMatches(stateOwner, currentAppointmentStateOwner)) {
+      clearAppointmentConversationState(sessionId);
+      await replyAndRecord(formatStaleAppointmentStateMessage(lockedLanguage));
+      return true;
+    }
+
+    const liveAppointment = await validateStoredAppointmentForMutation(
+      appointment,
+      stateOwner,
+      businessConfig,
+      adapter
+    );
+    if (!liveAppointment) {
+      clearAppointmentConversationState(sessionId);
+      await replyAndRecord(formatStaleAppointmentStateMessage(lockedLanguage));
+      return true;
+    }
+    appointment = liveAppointment;
     const candidateIso = `${requestedDate}T${requestedTime}:00${getStockholmUtcOffset(requestedDate)}`;
     const candidateStartMs = new Date(candidateIso).getTime();
     const duration = Math.max(
@@ -3263,7 +3611,8 @@ async function handleUnifiedBookingEngine(params: {
       const { error: dbUpdateError } = await supabase
         .from("appointments")
         .update({ start_time: new Date(candidateStartMs).toISOString(), end_time: newEndIso })
-        .eq("id", appointment.id);
+        .eq("id", appointment.id)
+        .eq("business_id", String(getBusinessIdFromConfig(businessConfig) || ""));
       if (dbUpdateError) {
         console.error("[Reschedule] Calendar updated but appointments table update failed:", dbUpdateError);
         const rollbackResult = await adapter.updateAppointment(currentEventId, oldStartIso, duration);
@@ -3278,6 +3627,7 @@ async function handleUnifiedBookingEngine(params: {
     appointment.start = candidateIso;
     appointment.end = newEndIso;
     appointmentContexts[sessionId] = { appointment, savedAt: Date.now(), language: lockedLanguage };
+    saveAppointmentStateOwner(sessionId, currentAppointmentStateOwner, stateOwner.identityKey);
     clearRescheduleContext(sessionId);
 
     try {
@@ -3318,7 +3668,12 @@ async function handleUnifiedBookingEngine(params: {
     // Appointment lookup must win over any stale pending new-booking flow.
     // Otherwise Messenger can keep asking for name/mobile when the customer only asks
     // whether they already have an appointment.
-    const appointmentLookupRequested = isExistingAppointmentLookupIntent(text);
+    const appointmentLookupFollowUpRequested = isAppointmentLookupFollowUp(text) && Boolean(
+      getAppointmentContext(sessionId) ||
+      getAppointmentSelectionContext(sessionId) ||
+      getAppointmentLookupContext(sessionId)
+    );
+    const appointmentLookupRequested = isExistingAppointmentLookupIntent(text) || appointmentLookupFollowUpRequested;
     if (pending && appointmentLookupRequested) {
       console.log(`[UnifiedBooking] Appointment lookup cleared pending new-booking state platform=${platformName}, session=${sessionId}`);
       await clearPendingBooking(sessionId);
@@ -3334,6 +3689,7 @@ async function handleUnifiedBookingEngine(params: {
     // Example: customer first asks to reschedule, then asks "when is my appointment?".
     if (appointmentLookupRequested) {
       clearRescheduleContext(sessionId);
+      clearCancellationContext(sessionId);
     }
 
     if (pending && rescheduleRequested) {
@@ -3346,6 +3702,17 @@ async function handleUnifiedBookingEngine(params: {
       console.log(`[UnifiedBooking] Cancellation intent cleared pending new-booking state platform=${platformName}, session=${sessionId}`);
       await clearPendingBooking(sessionId);
       pending = null;
+    }
+
+    if (rescheduleRequested) clearCancellationContext(sessionId);
+    if (cancellationRequested) clearRescheduleContext(sessionId);
+    if (
+      !appointmentLookupRequested &&
+      !rescheduleRequested &&
+      !cancellationRequested &&
+      isNewBookingRequestText(text)
+    ) {
+      clearAppointmentConversationState(sessionId);
     }
 
     const activeCancellation = !pending ? getCancellationContext(sessionId) : null;
@@ -3407,7 +3774,7 @@ async function handleUnifiedBookingEngine(params: {
         businessConfig
       );
 
-      rememberAppointmentContext(sessionId, lookupResult, language);
+      rememberAppointmentContext(sessionId, lookupResult, language, currentAppointmentStateOwner);
       rememberedAppointment = getAppointmentContext(sessionId);
 
       if (!rememberedAppointment) {
@@ -3538,7 +3905,9 @@ async function handleUnifiedBookingEngine(params: {
       return true;
     }
 
-    const activeSelectionContext = !pending ? getAppointmentSelectionContext(sessionId) : null;
+    const activeSelectionContext = !pending && !appointmentLookupRequested
+      ? getAppointmentSelectionContext(sessionId)
+      : null;
 
     if (activeSelectionContext) {
       const lockedLanguage = getFlowReplyLanguage(
@@ -3612,18 +3981,31 @@ async function handleUnifiedBookingEngine(params: {
     const followUpName = activeLookupContext ? extractNameOnly(text) : null;
     const followUpPhone = activeLookupContext ? extractPhoneOnly(text) : null;
 
-    if (!pending && activeLookupContext && (followUpName || followUpPhone)) {
+    if (!pending && activeLookupContext && (followUpName || followUpPhone || appointmentLookupFollowUpRequested)) {
       const adapter = getCalendarAdapter(businessConfig);
+      const followUpLookupMode = appointmentLookupFollowUpRequested
+        ? detectAppointmentLookupMode(text)
+        : activeLookupContext.lookupMode || (activeLookupContext.includePast ? "history" : "upcoming");
       const lookupResult = await findCustomerAppointments(
         adapter,
-        { name: followUpName || undefined, phone: followUpPhone || undefined, includePast: Boolean(activeLookupContext.includePast) },
+        {
+          name: followUpName || undefined,
+          phone: followUpPhone || undefined,
+          includePast: followUpLookupMode === "history",
+          lookupMode: followUpLookupMode
+        },
         recipientUserId,
         platformName,
         businessConfig
       );
-      rememberAppointmentContext(sessionId, lookupResult, activeLookupContext.language || language);
+      rememberAppointmentContext(sessionId, lookupResult, activeLookupContext.language || language, currentAppointmentStateOwner);
       if (lookupResult?.found) clearAppointmentLookupContext(sessionId);
-      else rememberAppointmentLookupContext(sessionId, activeLookupContext.language || language, Boolean(activeLookupContext.includePast));
+      else rememberAppointmentLookupContext(
+        sessionId,
+        activeLookupContext.language || language,
+        followUpLookupMode === "history",
+        followUpLookupMode
+      );
       await replyAndRecord(formatAppointmentLookupReply(lookupResult, activeLookupContext.language || language));
       return true;
     }
@@ -3631,11 +4013,13 @@ async function handleUnifiedBookingEngine(params: {
     if (!pending && appointmentLookupRequested) {
       const adapter = getCalendarAdapter(businessConfig);
       const lookupContact = extractNameAndPhone(text);
-      const includePast = isPastAppointmentLookupIntent(text);
+      const lookupMode = detectAppointmentLookupMode(text);
+      const includePast = lookupMode === "history";
       const lookupArgs = {
         name: lookupContact?.name || extractNameOnly(text) || undefined,
         phone: lookupContact?.phone || extractPhoneOnly(text) || undefined,
-        includePast
+        includePast,
+        lookupMode
       };
       const lookupResult = await findCustomerAppointments(
         adapter,
@@ -3644,9 +4028,9 @@ async function handleUnifiedBookingEngine(params: {
         platformName,
         businessConfig
       );
-      rememberAppointmentContext(sessionId, lookupResult, language);
+      rememberAppointmentContext(sessionId, lookupResult, language, currentAppointmentStateOwner);
       if (lookupResult?.found) clearAppointmentLookupContext(sessionId);
-      else rememberAppointmentLookupContext(sessionId, language, includePast);
+      else rememberAppointmentLookupContext(sessionId, language, includePast, lookupMode);
       const reply = formatAppointmentLookupReply(lookupResult, language);
       console.log(`[UnifiedBooking] Lookup platform=${platformName}, found=${Boolean(lookupResult?.found)}`);
       await replyAndRecord(reply);
@@ -4240,10 +4624,12 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
             }
         }
         else if (call.function.name === "findCustomerAppointments" && args) {
-          adapterRes = await findCustomerAppointments(adapter, args, chatId.toString(), "telegram");
+          adapterRes = await findCustomerAppointments(adapter, { ...args, lookupMode: args.lookupMode || detectAppointmentLookupMode(text) }, chatId.toString(), "telegram", config);
+          const lookupLanguage = getLockedReplyLanguage(telegramSessionId, text || "");
+          rememberLookupResultForConversation(telegramSessionId, adapterRes, lookupLanguage, "telegram", chatId.toString(), config);
           const replyMessage = formatAppointmentLookupReply(
             adapterRes,
-            getLockedReplyLanguage(telegramSessionId, text || "")
+            lookupLanguage
           );
           return { TERMINATE_EARLY: true, replyMessage };
         }
@@ -5429,10 +5815,12 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
             return { TERMINATE_EARLY: true, replyMessage };
           }
         } else if (call.function.name === "findCustomerAppointments" && args) {
-          adapterRes = await findCustomerAppointments(adapter, args, chatId.toString(), "whatsapp");
+          adapterRes = await findCustomerAppointments(adapter, { ...args, lookupMode: args.lookupMode || detectAppointmentLookupMode(textMessage) }, chatId.toString(), "whatsapp", businessConfig);
+          const lookupLanguage = getConversationLanguage(chatId, textMessage || "");
+          rememberLookupResultForConversation(chatId, adapterRes, lookupLanguage, "whatsapp", from, businessConfig);
           const replyMessage = formatAppointmentLookupReply(
             adapterRes,
-            getConversationLanguage(chatId, textMessage || "")
+            lookupLanguage
           );
           return { TERMINATE_EARLY: true, replyMessage };
         } else if (call.function.name === "insertAppointment" && args) {
@@ -6343,10 +6731,12 @@ async function processMessengerUpdate(webhookEvent: any, config: any, platform: 
       const adapter = getCalendarAdapter(businessConfig);
       const lookupResult = await findCustomerAppointments(
         adapter,
-        {},
+        { lookupMode: detectAppointmentLookupMode(textMessage) },
         chatId.toString(),
-        "messenger"
+        "messenger",
+        businessConfig
       );
+      rememberLookupResultForConversation(chatId, lookupResult, detectedLang, "messenger", senderId, businessConfig);
       const lookupReply = formatAppointmentLookupReply(lookupResult, detectedLang);
 
       console.log(
@@ -6708,10 +7098,12 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
             return { TERMINATE_EARLY: true, replyMessage };
           }
         } else if (call.function.name === "findCustomerAppointments" && args) {
-          adapterRes = await findCustomerAppointments(adapter, args, chatId.toString(), "messenger");
+          adapterRes = await findCustomerAppointments(adapter, { ...args, lookupMode: args.lookupMode || detectAppointmentLookupMode(textMessage) }, chatId.toString(), "messenger", businessConfig);
+          const lookupLanguage = getConversationLanguage(chatId, textMessage || "");
+          rememberLookupResultForConversation(chatId, adapterRes, lookupLanguage, "messenger", senderId, businessConfig);
           const replyMessage = formatAppointmentLookupReply(
             adapterRes,
-            getConversationLanguage(chatId, textMessage || "")
+            lookupLanguage
           );
           return { TERMINATE_EARLY: true, replyMessage };
         } else if (call.function.name === "insertAppointment" && args) {
@@ -7071,10 +7463,12 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
             return { TERMINATE_EARLY: true, replyMessage };
           }
         } else if (call.function.name === 'findCustomerAppointments' && args) {
-          adapterRes = await findCustomerAppointments(adapter, args, chatId.toString(), 'instagram');
+          adapterRes = await findCustomerAppointments(adapter, { ...args, lookupMode: args.lookupMode || detectAppointmentLookupMode(textMessage) }, chatId.toString(), 'instagram', businessConfig);
+          const lookupLanguage = getConversationLanguage(chatId, textMessage || '');
+          rememberLookupResultForConversation(chatId, adapterRes, lookupLanguage, "instagram", senderId, businessConfig);
           const replyMessage = formatAppointmentLookupReply(
             adapterRes,
-            getConversationLanguage(chatId, textMessage || '')
+            lookupLanguage
           );
           return { TERMINATE_EARLY: true, replyMessage };
         } else if (call.function.name === 'insertAppointment' && args) {
@@ -7655,10 +8049,12 @@ Never translate unless requested.
             }
         }
           else if (call.function.name === "findCustomerAppointments" && args) {
-            adapterRes = await findCustomerAppointments(adapter, args, chatId.toString(), "web");
+            adapterRes = await findCustomerAppointments(adapter, { ...args, lookupMode: args.lookupMode || detectAppointmentLookupMode(userText) }, chatId.toString(), "web", activeConfig);
+            const lookupLanguage = getLockedReplyLanguage(chatId, userText || "");
+            rememberLookupResultForConversation(chatId, adapterRes, lookupLanguage, "web", chatId.toString(), activeConfig);
             const replyMessage = formatAppointmentLookupReply(
               adapterRes,
-              getLockedReplyLanguage(chatId, userText || "")
+              lookupLanguage
             );
             return { TERMINATE_EARLY: true, replyMessage };
           }

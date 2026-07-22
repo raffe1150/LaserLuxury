@@ -1455,7 +1455,7 @@ const recentlyCompletedBookings: Record<string, { completedAt: number; language:
 const appointmentContexts: Record<string, { appointment: any; savedAt: number; language: string }> = {};
 const appointmentSelectionContexts: Record<string, { appointments: any[]; savedAt: number; language: string }> = {};
 const appointmentLookupContexts: Record<string, { savedAt: number; language: string; includePast?: boolean }> = {};
-const rescheduleContexts: Record<string, { appointment: any; savedAt: number; language: string }> = {};
+const rescheduleContexts: Record<string, { appointment: any; savedAt: number; language: string; requestedDate?: string; requestedTime?: string }> = {};
 const cancellationContexts: Record<string, { appointment: any; savedAt: number; language: string; feeApplies: boolean; feeAmount: number; currency: string; awaitingReason: boolean; reason?: string }> = {};
 
 function rememberAppointmentContext(sessionId: string, result: any, language: string) {
@@ -1686,8 +1686,14 @@ function clearAppointmentLookupContext(sessionId: string) {
   delete appointmentLookupContexts[sessionId];
 }
 
-function rememberRescheduleContext(sessionId: string, appointment: any, language: string) {
-  rescheduleContexts[sessionId] = { appointment, savedAt: Date.now(), language };
+function rememberRescheduleContext(sessionId: string, appointment: any, language: string, requestedDate?: string | null, requestedTime?: string | null) {
+  rescheduleContexts[sessionId] = {
+    appointment,
+    savedAt: Date.now(),
+    language,
+    ...(requestedDate ? { requestedDate } : {}),
+    ...(requestedTime ? { requestedTime } : {})
+  };
 }
 
 function getRescheduleContext(sessionId: string) {
@@ -2585,19 +2591,23 @@ function resolveExplicitBookingDate(text?: string): string | null {
 
   const today = stockholmDateString(new Date());
 
-  // Relative dates must be resolved before weekday parsing. This is critical for
-  // rescheduling messages such as "imorgon kl 18:30" and "farda saate 18:30".
-  if (/\b(idag|today|emruz|emrooz|امروز)\b/i.test(raw)) return today;
-  // Check day-after-tomorrow BEFORE tomorrow. Otherwise "pas farda" also matches "farda".
-  if (/\b(i\s*övermorgon|övermorgon|day after tomorrow|pas\s*farda|pasfarda|پس\s*فردا|پسفردا)\b/i.test(raw)) {
-    return addDaysToStockholmDate(today, 2);
-  }
-  if (/\b(i\s*morgon|imorgon|tomorrow|farda|فردا)\b/i.test(raw)) {
-    return addDaysToStockholmDate(today, 1);
-  }
-
   const iso = raw.match(/\b(20\d{2})-(\d{2})-(\d{2})\b/);
   if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
+
+  // A written calendar date is authoritative even when the same message also
+  // contains a weekday, for example "onsdag 22 juli" or "22 juli, inte nästa onsdag".
+  const namedDate = raw.match(/\b(?:den\s+)?(\d{1,2})\s+(januari|februari|mars|april|maj|juni|juli|augusti|september|oktober|november|december)(?:\s+(20\d{2}))?\b/i);
+  if (namedDate) {
+    const monthNames = ["januari", "februari", "mars", "april", "maj", "juni", "juli", "augusti", "september", "oktober", "november", "december"];
+    const year = Number(namedDate[3] || today.slice(0, 4));
+    const month = monthNames.indexOf(namedDate[2].toLowerCase()) + 1;
+    const day = Number(namedDate[1]);
+    const check = new Date(Date.UTC(year, month - 1, day));
+    if (check.getUTCFullYear() === year && check.getUTCMonth() === month - 1 && check.getUTCDate() === day) {
+      return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+    }
+    return null;
+  }
 
   const numeric = raw.match(/\b(\d{1,2})[\/.\-](\d{1,2})(?:[\/.\-](20\d{2}))?\b/);
   if (numeric) {
@@ -2606,6 +2616,17 @@ function resolveExplicitBookingDate(text?: string): string | null {
       year: "numeric"
     }).format(new Date()));
     return `${year}-${String(Number(numeric[2])).padStart(2, "0")}-${String(Number(numeric[1])).padStart(2, "0")}`;
+  }
+
+  // Relative dates must still be resolved before weekday parsing. This is critical for
+  // rescheduling messages such as "imorgon kl 18:30" and "farda saate 18:30".
+  if (/\b(idag|today|emruz|emrooz|امروز)\b/i.test(raw)) return today;
+  // Check day-after-tomorrow BEFORE tomorrow. Otherwise "pas farda" also matches "farda".
+  if (/\b(i\s*övermorgon|övermorgon|day after tomorrow|pas\s*farda|pasfarda|پس\s*فردا|پسفردا)\b/i.test(raw)) {
+    return addDaysToStockholmDate(today, 2);
+  }
+  if (/\b(i\s*morgon|imorgon|tomorrow|farda|فردا)\b/i.test(raw)) {
+    return addDaysToStockholmDate(today, 1);
   }
 
   const weekdayMap: Array<[RegExp, number]> = [
@@ -2658,6 +2679,17 @@ function resolveRescheduleDate(text: string, appointment?: any): string | null {
   if (appointmentDate && inferRequestedTimeFromText(raw)) return appointmentDate;
 
   return null;
+}
+
+function isRescheduleDateCorrection(text?: string): boolean {
+  const raw = String(text || "").trim().toLowerCase();
+  if (!raw) return false;
+  const hasExplicitCalendarDate =
+    /\b20\d{2}-\d{2}-\d{2}\b/.test(raw) ||
+    /\b\d{1,2}[\/.\-]\d{1,2}(?:[\/.\-]20\d{2})?\b/.test(raw) ||
+    /\b(?:den\s+)?\d{1,2}\s+(?:januari|februari|mars|april|maj|juni|juli|augusti|september|oktober|november|december)(?:\s+20\d{2})?\b/i.test(raw);
+  if (!hasExplicitCalendarDate) return false;
+  return /\b(nej|inte|menar|rättelse|istället|no|not|mean|instead)\b/i.test(raw);
 }
 
 function inferBookingDurationFromContext(text: string, history: any[]): number {
@@ -3184,6 +3216,7 @@ async function handleUnifiedBookingEngine(params: {
   ): Promise<boolean> => {
     const adapter = getCalendarAdapter(businessConfig);
     const candidateIso = `${requestedDate}T${requestedTime}:00${getStockholmUtcOffset(requestedDate)}`;
+    const candidateStartMs = new Date(candidateIso).getTime();
     const duration = Math.max(
       1,
       Math.round(
@@ -3191,15 +3224,36 @@ async function handleUnifiedBookingEngine(params: {
       ) || getDefaultBookingDurationForService(appointment.service) || 30
     );
 
+    if (!Number.isFinite(candidateStartMs)) {
+      rememberRescheduleContext(sessionId, appointment, lockedLanguage);
+      await replyAndRecord(getErrorMessageByLanguage(lockedLanguage));
+      return true;
+    }
+
+    if (candidateStartMs <= Date.now()) {
+      rememberRescheduleContext(sessionId, appointment, lockedLanguage);
+      const msg = lockedLanguage === "fa"
+        ? "این تاریخ یا ساعت گذشته است. لطفاً یک روز یا ساعت آینده را انتخاب کنید. 📅"
+        : lockedLanguage === "sv"
+          ? "Den önskade tiden har redan passerat. Välj gärna ett annat framtida datum eller klockslag. 📅"
+          : "That requested time has already passed. Please choose another future date or time. 📅";
+      await replyAndRecord(msg);
+      return true;
+    }
+
+    rememberRescheduleContext(sessionId, appointment, lockedLanguage, requestedDate, requestedTime);
+
     const dateEvents = await adapter.getEvents(requestedDate, requestedDate);
     const currentEventId = String(appointment.calendarEventId || "");
     const filteredEvents = (Array.isArray(dateEvents) ? dateEvents : []).filter(
       (event: any) => String(event?.id || "") !== currentEventId
     );
-    const free = isSlotFree(new Date(candidateIso).getTime(), duration, filteredEvents);
+    const free = isSlotFree(candidateStartMs, duration, filteredEvents);
 
     if (!free) {
-      const alternatives = await adapter.checkSlots(requestedDate, requestedDate, duration, requestedTime);
+      const alternatives = {
+        available_slots_string: getDailySlots(requestedDate, requestedDate, filteredEvents, duration, requestedTime)
+      };
       await replyAndRecord(
         formatSwedishTimeSlots(getSlotsArray(alternatives), requestedTime, lockedLanguage)
       );
@@ -3216,6 +3270,12 @@ async function handleUnifiedBookingEngine(params: {
       return true;
     }
 
+    const requiresDbUpdate = Boolean(appointment?.id && appointment?.source === "appointments_table");
+    if (requiresDbUpdate && !supabase) {
+      await replyAndRecord(getErrorMessageByLanguage(lockedLanguage));
+      return true;
+    }
+
     const oldStartIso = String(appointment.start || "");
     const updateResult = await adapter.updateAppointment(currentEventId, candidateIso, duration);
     if (!updateResult?.success) {
@@ -3223,32 +3283,42 @@ async function handleUnifiedBookingEngine(params: {
       return true;
     }
 
-    const newEndIso = new Date(new Date(candidateIso).getTime() + duration * 60000).toISOString();
-    appointment.start = candidateIso;
-    appointment.end = newEndIso;
+    const newEndIso = new Date(candidateStartMs + duration * 60000).toISOString();
 
-    if (supabase && appointment?.id && appointment?.source === "appointments_table") {
+    if (requiresDbUpdate) {
       const { error: dbUpdateError } = await supabase
         .from("appointments")
-        .update({ start_time: new Date(candidateIso).toISOString(), end_time: newEndIso })
+        .update({ start_time: new Date(candidateStartMs).toISOString(), end_time: newEndIso })
         .eq("id", appointment.id);
       if (dbUpdateError) {
         console.error("[Reschedule] Calendar updated but appointments table update failed:", dbUpdateError);
+        const rollbackResult = await adapter.updateAppointment(currentEventId, oldStartIso, duration);
+        if (!rollbackResult?.success) {
+          console.error("[Reschedule] Calendar rollback failed after appointments table update failure:", rollbackResult);
+        }
+        await replyAndRecord(getErrorMessageByLanguage(lockedLanguage));
+        return true;
       }
     }
 
+    appointment.start = candidateIso;
+    appointment.end = newEndIso;
     appointmentContexts[sessionId] = { appointment, savedAt: Date.now(), language: lockedLanguage };
     clearRescheduleContext(sessionId);
 
-    await notifyAdminAboutReschedule(
-      businessConfig,
-      platformLogName,
-      businessConfig?.businessName || businessConfig?.business_name || "business",
-      appointment.customerName || appointment.name || "Okänd kund",
-      appointment.phone || "",
-      oldStartIso,
-      candidateIso
-    );
+    try {
+      await notifyAdminAboutReschedule(
+        businessConfig,
+        platformLogName,
+        businessConfig?.businessName || businessConfig?.business_name || "business",
+        appointment.customerName || appointment.name || "Okänd kund",
+        appointment.phone || "",
+        oldStartIso,
+        candidateIso
+      );
+    } catch (notifyError) {
+      console.error("[RescheduleNotify] crashed:", notifyError);
+    }
 
     await replyAndRecord(formatRescheduleSuccess(lockedLanguage, candidateIso));
     return true;
@@ -3383,6 +3453,7 @@ async function handleUnifiedBookingEngine(params: {
 
     if (!pending && rememberedAppointment && cancellationRequested) {
       const lockedLanguage = getFlowReplyLanguage(rememberedAppointment.language, language, text);
+      clearRescheduleContext(sessionId);
       const policy = getCancellationPolicy(businessConfig);
       if (!policy.allowCancellation) {
         await replyAndRecord(formatCancellationDisabled(lockedLanguage));
@@ -3398,14 +3469,19 @@ async function handleUnifiedBookingEngine(params: {
       return true;
     }
 
-    if (!pending && rememberedAppointment && isRescheduleIntent(text)) {
+    const existingRescheduleContext = !pending ? getRescheduleContext(sessionId) : null;
+    const rescheduleCorrectionRequested = isRescheduleDateCorrection(text);
+
+    if (!pending && !existingRescheduleContext && rememberedAppointment && (isRescheduleIntent(text) || rescheduleCorrectionRequested)) {
       const appointment = rememberedAppointment.appointment;
       const requestedDate = resolveRescheduleDate(text, appointment);
-      const requestedTime = inferRequestedTimeFromText(text);
+      const requestedTime = inferRequestedTimeFromText(text) || (
+        rescheduleCorrectionRequested ? getStockholmTimeFromIso(appointment.start) : null
+      );
       const lockedLanguage = getFlowReplyLanguage(rememberedAppointment.language, language, text);
 
       if (!requestedDate || !requestedTime) {
-        rememberRescheduleContext(sessionId, appointment, lockedLanguage);
+        rememberRescheduleContext(sessionId, appointment, lockedLanguage, requestedDate, requestedTime);
         const ask = lockedLanguage === "fa"
           ? "چه روز و ساعتی برای زمان جدید مناسب است؟ 📅"
           : lockedLanguage === "sv"
@@ -3418,10 +3494,32 @@ async function handleUnifiedBookingEngine(params: {
       return completeReschedule(appointment, requestedDate, requestedTime, lockedLanguage);
     }
 
-    const activeReschedule = !pending ? getRescheduleContext(sessionId) : null;
+    const activeReschedule = existingRescheduleContext;
     if (activeReschedule) {
-      const requestedDate = resolveRescheduleDate(text, activeReschedule.appointment);
-      const requestedTime = inferRequestedTimeFromText(text);
+      if (isCancellationRejection(text)) {
+        clearRescheduleContext(sessionId);
+        const lockedLanguage = getFlowReplyLanguage(activeReschedule.language, language, text);
+        await replyAndRecord(lockedLanguage === "sv"
+          ? "Okej, bokningen behålls på sin nuvarande tid."
+          : lockedLanguage === "fa"
+            ? "باشه، رزرو در زمان فعلی باقی می‌ماند."
+            : "Okay, the appointment will remain at its current time.");
+        return true;
+      }
+
+      const explicitDate = resolveExplicitBookingDate(text);
+      const resolvedDate = resolveRescheduleDate(text, activeReschedule.appointment);
+      const parsedTime = inferRequestedTimeFromText(text);
+      const hasSameDayExpression = /\b(samma dag|samma datum|den dagen|same day|same date|hamon rooz|hamoon rooz|همان روز|همون روز)\b/i.test(text);
+      const hasDateExpression = Boolean(explicitDate || hasSameDayExpression);
+      const requestedDate = hasDateExpression
+        ? resolvedDate
+        : parsedTime && activeReschedule.requestedDate
+          ? activeReschedule.requestedDate
+          : resolvedDate || activeReschedule.requestedDate || null;
+      const requestedTime = parsedTime || (
+        hasDateExpression ? activeReschedule.requestedTime || null : null
+      );
 
       if (requestedDate && requestedTime) {
         return completeReschedule(
@@ -3435,6 +3533,13 @@ async function handleUnifiedBookingEngine(params: {
       // Keep the reschedule flow active instead of accidentally starting a new booking
       // or asking for the service again. The existing appointment already contains it.
       const lockedLanguage = getFlowReplyLanguage(activeReschedule.language, language, text);
+      rememberRescheduleContext(
+        sessionId,
+        activeReschedule.appointment,
+        lockedLanguage,
+        requestedDate,
+        requestedTime
+      );
       const hasDate = Boolean(requestedDate);
       const hasTime = Boolean(requestedTime);
       const ask = lockedLanguage === "fa"

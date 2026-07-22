@@ -28,6 +28,7 @@ import {
   isAppointmentLookupFollowUp,
   isDirectAppointmentLookupPhrase,
   isDirectReschedulePhrase,
+  isExplicitNewBookingRequest,
   selectSecureAppointmentRows,
   selectSecureCalendarEvents,
 } from "./booking-security";
@@ -1335,12 +1336,12 @@ function formatAppointmentLookupReply(result: any, language: string = "en"): str
 
   if (result?.needsContactDetails) {
     const ask: Record<string, string> = {
-      sv: "Jag kan kontrollera det åt dig. Skicka namnet eller mobilnumret som bokningen gjordes med. 📅",
-      fa: "می‌توانم بررسی کنم. لطفاً نام یا شماره موبایلی را که رزرو با آن انجام شده بفرستید. 📅",
-      de: "Ich kann das prüfen. Bitte senden Sie den Namen oder die Mobilnummer, unter der gebucht wurde. 📅",
-      es: "Puedo comprobarlo. Envíame el nombre o número de móvil usado para la reserva. 📅",
-      ar: "يمكنني التحقق. أرسل الاسم أو رقم الهاتف المستخدم في الحجز. 📅",
-      en: "I can check that. Please send the name or mobile number used for the booking. 📅"
+      sv: "Självklart 😊 Vilket mobilnummer bokade du med?",
+      fa: "حتماً 😊 با چه شماره موبایلی رزرو کردید؟",
+      de: "Gerne 😊 Mit welcher Mobilnummer wurde gebucht?",
+      es: "Claro 😊 ¿Con qué número de móvil reservaste?",
+      ar: "بالتأكيد 😊 ما رقم الهاتف الذي استخدمته للحجز؟",
+      en: "Of course 😊 What mobile number did you book with?"
     };
     return ask[lang];
   }
@@ -1348,35 +1349,35 @@ function formatAppointmentLookupReply(result: any, language: string = "en"): str
   if (!result?.found || !Array.isArray(result?.appointments) || result.appointments.length === 0) {
     if (result?.lookupMode === "today") {
       const noneToday: Record<string, string> = {
-        sv: "Jag hittade ingen bokning idag kopplad till dina uppgifter. Vill du att jag söker med ett annat mobilnummer? 📅",
-        fa: "هیچ رزروی برای امروز مرتبط با اطلاعات شما پیدا نکردم. می‌خواهید با شماره موبایل دیگری بررسی کنم؟ 📅",
+        sv: "Jag hittar ingen bokning idag här 😊 Vilket mobilnummer bokade du med?",
+        fa: "برای امروز رزروی پیدا نکردم 😊 با چه شماره‌ای رزرو کردید؟",
         de: "Ich habe für heute keine Buchung zu Ihren Angaben gefunden. Soll ich mit einer anderen Mobilnummer suchen? 📅",
         es: "No encontré ninguna reserva para hoy asociada a tus datos. ¿Quieres que busque con otro número? 📅",
         ar: "لم أجد حجزًا لليوم مرتبطًا ببياناتك. هل تريد أن أبحث برقم هاتف آخر؟ 📅",
-        en: "I couldn’t find a booking today linked to your details. Would you like me to check another mobile number? 📅"
+        en: "I can’t find a booking for today here 😊 What mobile number did you book with?"
       };
       return noneToday[lang];
     }
 
     if (result?.lookupMode === "history") {
       const noneHistory: Record<string, string> = {
-        sv: "Jag hittade ingen tidigare bokning kopplad till dina uppgifter. Vill du att jag söker med ett annat mobilnummer? 📅",
-        fa: "هیچ رزرو قبلی مرتبط با اطلاعات شما پیدا نکردم. می‌خواهید با شماره موبایل دیگری بررسی کنم؟ 📅",
+        sv: "Jag hittar ingen tidigare bokning här 😊 Vilket mobilnummer bokade du med?",
+        fa: "رزرو قبلی پیدا نکردم 😊 با چه شماره‌ای رزرو کردید؟",
         de: "Ich habe keine frühere Buchung zu Ihren Angaben gefunden. Soll ich mit einer anderen Mobilnummer suchen? 📅",
         es: "No encontré ninguna reserva anterior asociada a tus datos. ¿Quieres que busque con otro número? 📅",
         ar: "لم أجد حجزًا سابقًا مرتبطًا ببياناتك. هل تريد أن أبحث برقم هاتف آخر؟ 📅",
-        en: "I couldn’t find a previous booking linked to your details. Would you like me to check another mobile number? 📅"
+        en: "I can’t find a previous booking here 😊 What mobile number did you book with?"
       };
       return noneHistory[lang];
     }
 
     const none: Record<string, string> = {
-      sv: "Jag hittade ingen kommande bokning kopplad till dina uppgifter. Vill du att jag söker med ett annat mobilnummer? 📅",
-      fa: "هیچ رزرو آینده‌ای مرتبط با اطلاعات شما پیدا نکردم. می‌خواهید با شماره موبایل دیگری بررسی کنم؟ 📅",
+      sv: "Jag hittar ingen kommande bokning här 😊 Vilket mobilnummer bokade du med?",
+      fa: "رزرو آینده‌ای پیدا نکردم 😊 با چه شماره‌ای رزرو کردید؟",
       de: "Ich habe keine kommende Buchung zu Ihren Angaben gefunden. Soll ich mit einer anderen Mobilnummer suchen? 📅",
       es: "No encontré ninguna reserva próxima asociada a tus datos. ¿Quieres que busque con otro número? 📅",
       ar: "لم أجد حجزًا قادمًا مرتبطًا ببياناتك. هل تريد أن أبحث برقم هاتف آخر؟ 📅",
-      en: "I couldn’t find an upcoming booking linked to your details. Would you like me to check another mobile number? 📅"
+      en: "I can’t find an upcoming booking here 😊 What mobile number did you book with?"
     };
     return none[lang];
   }
@@ -1412,12 +1413,12 @@ function formatAppointmentLookupReply(result: any, language: string = "en"): str
 
   const joined = formatted.join(", ");
   const found: Record<string, string> = {
-    sv: `Ja, jag hittade din bokning: ${joined}. 📅`,
-    fa: `بله، رزرو شما را پیدا کردم: ${joined}. 📅`,
+    sv: `Ja 😊 Din bokning är ${joined}.`,
+    fa: `بله 😊 رزروتون ${joined} هست.`,
     de: `Ja, ich habe Ihre Buchung gefunden: ${joined}. 📅`,
     es: `Sí, encontré tu reserva: ${joined}. 📅`,
     ar: `نعم، وجدت حجزك: ${joined}. 📅`,
-    en: `Yes, I found your booking: ${joined}. 📅`
+    en: `Yes 😊 Your booking is ${joined}.`
   };
   return found[lang];
 }
@@ -1985,9 +1986,9 @@ async function validateStoredAppointmentForMutation(
 }
 
 function formatStaleAppointmentStateMessage(language: string): string {
-  if (language === "sv") return "Jag behöver kontrollera bokningen igen av säkerhetsskäl. Skicka mobilnumret som bokningen gjordes med. 📅";
-  if (language === "fa") return "برای حفظ امنیت باید رزرو را دوباره بررسی کنم. لطفاً شماره موبایلی را که رزرو با آن انجام شده بفرستید. 📅";
-  return "I need to check the booking again for security. Please send the mobile number used for the booking. 📅";
+  if (language === "sv") return "Jag kollar gärna igen 😊 Vilket mobilnummer bokade du med?";
+  if (language === "fa") return "حتماً دوباره بررسی می‌کنم 😊 با چه شماره‌ای رزرو کردید؟";
+  return "I’ll gladly check again 😊 What mobile number did you book with?";
 }
 
 function rememberRescheduleContext(sessionId: string, appointment: any, language: string, requestedDate?: string | null, requestedTime?: string | null) {
@@ -2169,9 +2170,8 @@ function isRescheduleIntent(text?: string): boolean {
 
   const swedishOrEnglish =
     isDirectReschedulePhrase(normalized) ||
-    /(?:^|\s)(?:ändra(?:\s+(?:min\s+tid|tiden|tid|bokningen))?|flytta(?:\s+(?:min\s+tid|tiden|tid|bokningen))?|boka\s+om|omboka|annan\s+tid|ny\s+tid|reschedule|change\s+my\s+appointment|change\s+the\s+time|move\s+my\s+appointment)(?=\s|$)/i.test(normalized) ||
-    /(?:^|\s)(?:kan\s+(?:tyvärr\s+)?inte\s+komma|kommer\s+inte\s+kunna\s+komma|cannot\s+come|can't\s+come|can\s+not\s+come)(?=\s|$)/i.test(normalized) ||
-    /(?:^|\s)(?:i\s*stället|istället|instead)(?=\s|$)/i.test(normalized);
+    /(?:^|\s)(?:ändra(?:\s+(?:min\s+tid|tiden|tid|bokningen))?|flytta(?:\s+(?:min\s+tid|tiden|tid|bokningen))?|boka\s+om|omboka|reschedule|change\s+my\s+appointment|change\s+the\s+time|move\s+my\s+appointment)(?=\s|$)/i.test(normalized) ||
+    /(?:^|\s)(?:kan\s+(?:tyvärr\s+)?inte\s+komma|kommer\s+inte\s+kunna\s+komma|cannot\s+come|can't\s+come|can\s+not\s+come)(?=\s|$)/i.test(normalized);
 
   const transliteratedPersian =
     /(?:^|\s)(?:avaz(?:\s+(?:konam|kardam|bedam|beshe))?|taghir(?:\s+(?:bedam|konam))?|vaghtam\s+avaz|vaght\s+ro\s+avaz|hamon\s+vaght(?:e|i)?\s+ghabli)(?=\s|$)/i.test(normalized);
@@ -2225,6 +2225,7 @@ function isNewBookingRequestText(text?: string): boolean {
   const lower = raw.toLowerCase();
   if (!raw) return false;
   if (extractNameAndPhone(raw)) return false;
+  if (isExplicitNewBookingRequest(raw)) return true;
   if (isThanksOnlyText(raw) || isAffirmativeBookingText(raw) || isAmbiguousShortReply(raw)) return false;
 
   const hasBookingWord = /\b(boka|bokning|tid|appointment|book|booking|termin|cita|reservar|موعد|حجز|vaght|وقت)\b/i.test(lower);
@@ -3659,7 +3660,9 @@ async function handleUnifiedBookingEngine(params: {
       return false;
     }
 
-    if (pending && isNewBookingRequestText(text)) {
+    const explicitNewBookingRequested = isExplicitNewBookingRequest(text);
+
+    if (pending && (explicitNewBookingRequested || isNewBookingRequestText(text))) {
       console.log(`[UnifiedBooking] Clearing stale pending platform=${platformName}, session=${sessionId}`);
       await clearPendingBooking(sessionId);
       pending = null;
@@ -3673,7 +3676,8 @@ async function handleUnifiedBookingEngine(params: {
       getAppointmentSelectionContext(sessionId) ||
       getAppointmentLookupContext(sessionId)
     );
-    const appointmentLookupRequested = isExistingAppointmentLookupIntent(text) || appointmentLookupFollowUpRequested;
+    const appointmentLookupRequested = !explicitNewBookingRequested &&
+      (isExistingAppointmentLookupIntent(text) || appointmentLookupFollowUpRequested);
     if (pending && appointmentLookupRequested) {
       console.log(`[UnifiedBooking] Appointment lookup cleared pending new-booking state platform=${platformName}, session=${sessionId}`);
       await clearPendingBooking(sessionId);
@@ -3682,8 +3686,8 @@ async function handleUnifiedBookingEngine(params: {
 
     // Rescheduling an existing appointment must always win over a stale/new-booking flow.
     // Never ask again for service, duration, name or phone when an existing booking can be found.
-    const rescheduleRequested = isRescheduleIntent(text);
-    const cancellationRequested = isCancellationIntent(text);
+    const rescheduleRequested = !explicitNewBookingRequested && isRescheduleIntent(text);
+    const cancellationRequested = !explicitNewBookingRequested && isCancellationIntent(text);
 
     // A direct lookup question must interrupt an unfinished reschedule flow.
     // Example: customer first asks to reschedule, then asks "when is my appointment?".
@@ -3710,7 +3714,7 @@ async function handleUnifiedBookingEngine(params: {
       !appointmentLookupRequested &&
       !rescheduleRequested &&
       !cancellationRequested &&
-      isNewBookingRequestText(text)
+      (explicitNewBookingRequested || isNewBookingRequestText(text))
     ) {
       clearAppointmentConversationState(sessionId);
     }
@@ -3814,7 +3818,7 @@ async function handleUnifiedBookingEngine(params: {
     const existingRescheduleContext = !pending ? getRescheduleContext(sessionId) : null;
     const rescheduleCorrectionRequested = isRescheduleDateCorrection(text);
 
-    if (!pending && !existingRescheduleContext && rememberedAppointment && (isRescheduleIntent(text) || rescheduleCorrectionRequested)) {
+    if (!pending && !existingRescheduleContext && rememberedAppointment && (rescheduleRequested || rescheduleCorrectionRequested)) {
       const appointment = rememberedAppointment.appointment;
       const requestedDate = resolveRescheduleDate(text, appointment);
       const requestedTime = inferRequestedTimeFromText(text) || (
@@ -3824,11 +3828,25 @@ async function handleUnifiedBookingEngine(params: {
 
       if (!requestedDate || !requestedTime) {
         rememberRescheduleContext(sessionId, appointment, lockedLanguage, requestedDate, requestedTime);
+        const hasDate = Boolean(requestedDate);
+        const hasTime = Boolean(requestedTime);
         const ask = lockedLanguage === "fa"
-          ? "چه روز و ساعتی برای زمان جدید مناسب است؟ 📅"
+          ? hasDate && !hasTime
+            ? "حتماً 😊 چه ساعتی در اون روز براتون بهتره؟"
+            : !hasDate && hasTime
+              ? `حتماً 😊 چه روزی برای ساعت ${requestedTime} مناسبه؟`
+              : "حتماً 😊 چه روز و ساعتی براتون بهتره؟"
           : lockedLanguage === "sv"
-            ? "Vilken dag och tid vill du flytta bokningen till? 📅"
-            : "Which day and time would you like to move the appointment to? 📅";
+            ? hasDate && !hasTime
+              ? "Absolut 😊 Vilken tid passar den dagen?"
+              : !hasDate && hasTime
+                ? `Absolut 😊 Vilken dag passar för kl. ${requestedTime}?`
+                : "Absolut 😊 Vilken dag och tid passar bättre?"
+            : hasDate && !hasTime
+              ? "Of course 😊 What time works that day?"
+              : !hasDate && hasTime
+                ? `Of course 😊 What day works for ${requestedTime}?`
+                : "Of course 😊 What day and time would suit you better?";
         await replyAndRecord(ask);
         return true;
       }
@@ -3886,21 +3904,21 @@ async function handleUnifiedBookingEngine(params: {
       const hasTime = Boolean(requestedTime);
       const ask = lockedLanguage === "fa"
         ? hasDate && !hasTime
-          ? "لطفاً ساعت جدید را بفرستید؛ مثلاً ۱۸:۳۰. 📅"
+          ? "حتماً 😊 چه ساعتی در اون روز براتون بهتره؟"
           : !hasDate && hasTime
-            ? "لطفاً روز جدید را بفرستید؛ مثلاً فردا. 📅"
-            : "لطفاً روز و ساعت جدید را بفرستید؛ مثلاً فردا ساعت ۱۸:۳۰. 📅"
+            ? `حتماً 😊 چه روزی برای ساعت ${requestedTime} مناسبه؟`
+            : "حتماً 😊 چه روز و ساعتی براتون بهتره؟"
         : lockedLanguage === "sv"
           ? hasDate && !hasTime
-            ? "Skicka gärna den nya tiden, till exempel kl 18:30. 📅"
+            ? "Absolut 😊 Vilken tid passar den dagen?"
             : !hasDate && hasTime
-              ? "Skicka gärna den nya dagen, till exempel i morgon. 📅"
-              : "Skicka gärna den nya dagen och tiden, till exempel i morgon kl 18:30. 📅"
+              ? `Absolut 😊 Vilken dag passar för kl. ${requestedTime}?`
+              : "Absolut 😊 Vilken dag och tid passar bättre?"
           : hasDate && !hasTime
-            ? "Please send the new time, for example 18:30. 📅"
+            ? "Of course 😊 What time works that day?"
             : !hasDate && hasTime
-              ? "Please send the new day, for example tomorrow. 📅"
-              : "Please send the new day and time, for example tomorrow at 18:30. 📅";
+              ? `Of course 😊 What day works for ${requestedTime}?`
+              : "Of course 😊 What day and time would suit you better?";
       await replyAndRecord(ask);
       return true;
     }

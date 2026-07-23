@@ -192,6 +192,27 @@ async function generateContentWithFallback(ai: GoogleGenAI | null, options: { me
   };
 }
 
+async function transcribeVoiceMessageForFlow(audioContent: any): Promise<string | null> {
+  try {
+    const response = await generateContentWithFallback(null, {
+      messages: [{ role: "user", content: audioContent }],
+      systemInstruction:
+        "Transcribe the customer's spoken message exactly in its spoken language. " +
+        "Return only the transcript, without a label, translation, explanation, markdown, or quotation marks.",
+      model: "gemini-2.5-flash"
+    });
+    const transcript = String(response?.text || "")
+      .trim()
+      .replace(/^(?:transcript|transcription)\s*:\s*/i, "")
+      .replace(/^["“]|["”]$/g, "")
+      .trim();
+    return transcript ? transcript.slice(0, 2000) : null;
+  } catch (error) {
+    console.error("[VoiceLanguage] transcription failed; continuing with the existing language lock:", error);
+    return null;
+  }
+}
+
 
 async function handleSystemAnalysisLog(chatId: string, analysis: any) {
     if (!supabase) return { success: false, message: "No database configured" };
@@ -1993,6 +2014,14 @@ activeConfig = {
 
 const chatSessions: Record<string, any[]> = {};
 const chatLanguages: Record<string, string> = {};
+type ConversationFlowLanguageContext = {
+  language: string;
+  flowType: "appointment" | "booking" | "reschedule" | "cancellation" | "availability" | "service_info";
+  createdAt: number;
+  updatedAt: number;
+};
+const FLOW_LANGUAGE_TTL_MS = Number(process.env.FLOW_LANGUAGE_TTL_MINUTES || 120) * 60 * 1000;
+const conversationFlowLanguages: Record<string, ConversationFlowLanguageContext> = {};
 
 // Daily customer message limit. One counter per business + platform + customer + Stockholm date.
 const DAILY_CUSTOMER_MESSAGE_LIMIT = Number(process.env.DAILY_CUSTOMER_MESSAGE_LIMIT || 15);
@@ -2072,7 +2101,14 @@ async function checkAndIncrementDailyUsage(params: { businessId?: string | numbe
 }
 
 const pendingBookings: Record<string, any> = {};
-const recentlyCompletedBookings: Record<string, { completedAt: number; language: string; name?: string }> = {};
+const recentlyCompletedBookings: Record<string, {
+  completedAt: number;
+  language: string;
+  name?: string;
+  service?: string;
+  durationMinutes?: number;
+  dateTime?: string;
+}> = {};
 const appointmentContexts: Record<string, { appointment: any; savedAt: number; language: string }> = {};
 const appointmentSelectionContexts: Record<string, { appointments: any[]; savedAt: number; language: string; intent?: "reschedule" | "cancel" | "lookup" }> = {};
 const appointmentLookupContexts: Record<string, { savedAt: number; language: string; includePast?: boolean; lookupMode?: AppointmentLookupMode; historyWindowLimited?: boolean }> = {};
@@ -2114,6 +2150,21 @@ const rescheduleContexts: Record<string, RescheduleContext> = {};
 const recentlyCompletedReschedules: Record<string, { completedAt: number; eventId: string; newStartTime: string }> = {};
 const cancellationContexts: Record<string, { appointment: any; savedAt: number; language: string; feeApplies: boolean; feeAmount: number; currency: string; awaitingReason: boolean; reason?: string }> = {};
 const appointmentStateOwners: Record<string, AppointmentStateOwner> = {};
+type AvailabilitySearchContext = {
+  startDate: string;
+  endDate: string;
+  minTime?: string;
+  maxTime?: string;
+  service: string;
+  durationMinutes: number;
+  language: string;
+  businessId: string;
+  platform: string;
+  userId: string;
+  savedAt: number;
+};
+const availabilitySearchContexts: Record<string, AvailabilitySearchContext> = {};
+const lastServiceInformationReplies: Record<string, { key: string; sentAt: number }> = {};
 
 function hasAppointmentConversationState(sessionId: string): boolean {
   return Boolean(
@@ -2132,6 +2183,8 @@ function clearAppointmentConversationState(sessionId: string) {
   delete rescheduleContexts[sessionId];
   delete cancellationContexts[sessionId];
   delete appointmentStateOwners[sessionId];
+  delete availabilitySearchContexts[sessionId];
+  clearConversationFlowLanguage(sessionId);
 }
 
 function getAppointmentMutationId(appointment: any): string {
@@ -2556,16 +2609,11 @@ function rememberRescheduleContext(
     serviceDuration: Number(base?.serviceDuration || getAppointmentDurationMinutes(appointment)),
     lockedReplyLanguage,
     language: lockedReplyLanguage,
-    lastOperation: base?.lastOperation || "awaiting_target",
+    lastOperation: updates.lastOperation || base?.lastOperation || "awaiting_target",
     createdAt: Number(base?.createdAt || now),
     savedAt: now,
     ...(requestedDate ? { requestedDate } : {}),
-    ...(requestedTime ? { requestedTime } : {}),
-    appointment,
-    lastOperation: updates.lastOperation || base?.lastOperation || "awaiting_target",
-    lockedReplyLanguage,
-    language: lockedReplyLanguage,
-    savedAt: now
+    ...(requestedTime ? { requestedTime } : {})
   };
 }
 
@@ -2866,6 +2914,15 @@ function selectRescheduleOfferedSlot(text: string, offeredSlots: string[]): stri
   }
   const numeric = raw.match(/^(?:number|nummer|شماره)?\s*([1-9])$/iu);
   if (numeric) return parseSlotIso(offeredSlots[Number(numeric[1]) - 1] || "");
+  const ordinalMap: Array<[RegExp, number]> = [
+    [/\b(?:first|första|forsta|اول|اولی)\b/iu, 0],
+    [/\b(?:second|andra|دوم|دومی)\b/iu, 1],
+    [/\b(?:third|tredje|سوم|سومی)\b/iu, 2],
+    [/\b(?:fourth|fjärde|fjarde|چهارم|چهارمی)\b/iu, 3]
+  ];
+  for (const [pattern, index] of ordinalMap) {
+    if (pattern.test(raw)) return parseSlotIso(offeredSlots[index] || "");
+  }
   return null;
 }
 
@@ -2901,8 +2958,23 @@ function inferServiceFromRecentContext(currentText: string, history: any[] = [])
   return inferServiceFromText(`${recent} ${currentText || ""}`);
 }
 
-function rememberCompletedBooking(chatId: string, language: string, name?: string) {
-  recentlyCompletedBookings[chatId] = { completedAt: Date.now(), language, name };
+function rememberCompletedBooking(
+  chatId: string,
+  language: string,
+  name?: string,
+  service?: string,
+  durationMinutes?: number,
+  dateTime?: string
+) {
+  recentlyCompletedBookings[chatId] = {
+    completedAt: Date.now(),
+    language,
+    name,
+    service,
+    durationMinutes,
+    dateTime
+  };
+  clearConversationFlowLanguage(chatId);
 }
 
 function getRecentCompletedBooking(chatId: string) {
@@ -2996,6 +3068,142 @@ function getDefaultBookingServiceForBusiness(config: any): string | null {
 
 function getDefaultBookingDurationForService(service?: string): number | null {
   return normalizeBookingService(service, service) === "Konsultation" ? 30 : null;
+}
+
+function isServiceDurationQuestion(text?: string): boolean {
+  const raw = String(text || "").trim().toLowerCase();
+  if (!raw) return false;
+  return (
+    /\b(hur\s+lång\s+tid|hur\s+länge|hur\s+lång\s+är|hur\s+lång\s+tid\s+tar|hur\s+långt\s+tar).*(konsultation|behandling|besök|tid)?/i.test(raw) ||
+    /\b(how\s+long|what(?:'s|\s+is)\s+the\s+duration|duration).*(consultation|appointment|treatment|service)?/i.test(raw) ||
+    /\b(wie\s+lange|dauer).*(beratung|termin|behandlung)?/i.test(raw) ||
+    /\b(cuánto\s+dura|cuanto\s+dura|duración|duracion).*(consulta|cita|tratamiento)?/i.test(raw) ||
+    /(چقدر\s+طول\s+می(?:‌|\s*)کشد|چقدر\s+طول\s+میکشه|مدتش\s+چقدره|مدت\s+.*چقدر)/u.test(raw) ||
+    /\b(cheghadr\s+tool\s+mikeshe|cheqadr\s+tool\s+mikeshe|modatesh\s+cheghadre)\b/i.test(raw) ||
+    /(كم\s+تستغرق|ما\s+مدة|كم\s+مدة)/u.test(raw)
+  );
+}
+
+function getActiveServiceInformationContext(sessionId: string, text: string) {
+  const pending = pendingBookings[sessionId];
+  const reschedule = rescheduleContexts[sessionId];
+  const appointment = appointmentContexts[sessionId]?.appointment || reschedule?.appointment;
+  const completed = getRecentCompletedBooking(sessionId);
+  const inferred = normalizeBookingService(text, "");
+  const service = String(
+    appointment?.service ||
+    pending?.service ||
+    completed?.service ||
+    (inferred !== "Bokning" ? inferred : "")
+  ).trim();
+
+  let durationMinutes: number | null = null;
+  if (appointment?.start && appointment?.end) {
+    const measured = Math.round(
+      (new Date(String(appointment.end)).getTime() - new Date(String(appointment.start)).getTime()) / 60000
+    );
+    if (Number.isFinite(measured) && measured > 0 && measured <= 24 * 60) durationMinutes = measured;
+  }
+  if (!durationMinutes && Number(completed?.durationMinutes) > 0) {
+    durationMinutes = Number(completed.durationMinutes);
+  }
+  if (!durationMinutes && Number(pending?.durationMinutes) > 0) {
+    durationMinutes = Number(pending.durationMinutes);
+  }
+
+  return { service, durationMinutes };
+}
+
+function parseConfiguredDuration(value: unknown): number | null {
+  const numeric = Number(value);
+  if (Number.isFinite(numeric) && numeric > 0 && numeric <= 24 * 60) return Math.round(numeric);
+  const match = String(value || "").match(/\b(\d{1,3})\s*(?:min|minuter|minutes|دقیقه)\b/i);
+  if (!match) return null;
+  const parsed = Number(match[1]);
+  return parsed > 0 && parsed <= 24 * 60 ? parsed : null;
+}
+
+async function resolveServiceDurationMinutes(
+  service: string,
+  knownDuration: number | null,
+  businessConfig: any
+): Promise<number | null> {
+  if (knownDuration && knownDuration > 0) return knownDuration;
+
+  const serviceKey = String(service || "").trim().toLowerCase();
+  const configuredMaps = [
+    businessConfig?.serviceDurations,
+    businessConfig?.service_durations,
+    businessConfig?.durations
+  ];
+  for (const map of configuredMaps) {
+    if (!map || typeof map !== "object" || Array.isArray(map)) continue;
+    for (const [key, value] of Object.entries(map)) {
+      if (serviceKey && String(key).toLowerCase().includes(serviceKey)) {
+        const parsed = parseConfiguredDuration(value);
+        if (parsed) return parsed;
+      }
+    }
+  }
+
+  const services = Array.isArray(businessConfig?.services) ? businessConfig.services : [];
+  for (const item of services) {
+    const name = String(item?.name || item?.service || item?.title || "").toLowerCase();
+    if (!serviceKey || !name.includes(serviceKey)) continue;
+    const parsed = parseConfiguredDuration(
+      item?.durationMinutes ?? item?.duration_minutes ?? item?.duration
+    );
+    if (parsed) return parsed;
+  }
+
+  const defaultDuration = getDefaultBookingDurationForService(service);
+  if (defaultDuration) return defaultDuration;
+
+  try {
+    const query = `${service || "service"} duration minutes`;
+    const matches = await knowledgeService.search(query);
+    const searchable = (matches || []).flatMap((match: any) => [
+      match?.text,
+      match?.metadata?.durationMinutes,
+      match?.metadata?.duration_minutes,
+      match?.metadata?.duration
+    ]);
+    for (const value of searchable) {
+      const parsed = parseConfiguredDuration(value);
+      if (parsed) return parsed;
+    }
+  } catch (error) {
+    console.error("[ServiceInformation] Knowledge duration lookup failed:", error);
+  }
+
+  const prompt = String(businessConfig?.systemPrompt || businessConfig?.system_prompt || "");
+  if (serviceKey && prompt) {
+    const escaped = serviceKey.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const nearby = prompt.match(new RegExp(`${escaped}.{0,120}?(\\d{1,3})\\s*(?:min|minuter|minutes|دقیقه)`, "i"));
+    const parsed = parseConfiguredDuration(nearby?.[1]);
+    if (parsed) return parsed;
+  }
+
+  return null;
+}
+
+function formatServiceDurationReply(language: string, service: string, durationMinutes: number | null): string {
+  const localizedService = localizeServiceName(service || "", language);
+  if (!durationMinutes) {
+    if (language === "sv") return `Jag hittar ingen säker uppgift om längden för ${localizedService}. Jag vill inte gissa.`;
+    if (language === "fa") return `اطلاعات مطمئنی درباره مدت ${localizedService} پیدا نکردم و نمی‌خوام حدس بزنم.`;
+    if (language === "de") return `Ich finde keine verlässliche Angabe zur Dauer von ${localizedService} und möchte nicht raten.`;
+    if (language === "es") return `No encuentro información fiable sobre la duración de ${localizedService} y prefiero no adivinar.`;
+    if (language === "ar") return `لم أجد معلومة مؤكدة عن مدة ${localizedService}، ولا أريد التخمين.`;
+    return `I can’t find a reliable duration for ${localizedService}, and I don’t want to guess.`;
+  }
+
+  if (language === "sv") return `${localizedService} tar cirka ${durationMinutes} minuter. 😊`;
+  if (language === "fa") return `مدت ${localizedService} حدود ${durationMinutes} دقیقه است. 😊`;
+  if (language === "de") return `${localizedService} dauert ungefähr ${durationMinutes} Minuten. 😊`;
+  if (language === "es") return `${localizedService} dura unos ${durationMinutes} minutos. 😊`;
+  if (language === "ar") return `مدة ${localizedService} حوالي ${durationMinutes} دقيقة. 😊`;
+  return `${localizedService} takes about ${durationMinutes} minutes. 😊`;
 }
 
 function formatThanksReply(language: string = "en", name?: string): string {
@@ -3225,6 +3433,10 @@ async function savePendingBooking(chatId: string, platform: string, pending: any
       dateTime: pending.dateTime || null,
       selectedDate: pending.selectedDate || null,
       offeredSlots: Array.isArray(pending.offeredSlots) ? pending.offeredSlots : [],
+      availabilityStartDate: pending.availabilityStartDate || null,
+      availabilityEndDate: pending.availabilityEndDate || null,
+      availabilityMinTime: pending.availabilityMinTime || null,
+      availabilityMaxTime: pending.availabilityMaxTime || null,
       language: pending.language || null,
       customerName: pending.customerName || null,
       customerPhone: pending.customerPhone || null,
@@ -3263,6 +3475,7 @@ async function loadPendingBooking(chatId: string, platform: string, businessConf
     if (isPendingBookingExpired(pendingBookings[chatId])) {
       console.log(`[DeterministicBooking] Expired in-memory pending booking cleared. chatId=${chatId}`);
       await clearPendingBooking(chatId);
+      clearConversationFlowLanguage(chatId);
       return null;
     }
     return pendingBookings[chatId];
@@ -3289,6 +3502,10 @@ async function loadPendingBooking(chatId: string, platform: string, businessConf
       dateTime: parsed.dateTime || null,
       selectedDate: parsed.selectedDate || null,
       offeredSlots: Array.isArray(parsed.offeredSlots) ? parsed.offeredSlots : [],
+      availabilityStartDate: parsed.availabilityStartDate || null,
+      availabilityEndDate: parsed.availabilityEndDate || null,
+      availabilityMinTime: parsed.availabilityMinTime || null,
+      availabilityMaxTime: parsed.availabilityMaxTime || null,
       language: parsed.language || null,
       customerName: parsed.customerName || null,
       customerPhone: parsed.customerPhone || null,
@@ -3296,10 +3513,11 @@ async function loadPendingBooking(chatId: string, platform: string, businessConf
       status: parsed.status || "awaiting_contact",
       createdAt: Number(parsed.createdAt || parsed.created_at || 0)
     };
-    if (!pending.dateTime && !pending.selectedDate) return null;
+    if (!pending.dateTime && !pending.selectedDate && !pending.availabilityStartDate) return null;
     if (isPendingBookingExpired(pending)) {
       console.log(`[DeterministicBooking] Expired DB pending booking cleared. chatId=${chatId}, dateTime=${pending.dateTime}`);
       await clearPendingBooking(chatId);
+      clearConversationFlowLanguage(chatId);
       return null;
     }
     pendingBookings[chatId] = pending;
@@ -3590,6 +3808,189 @@ function resolveExplicitBookingDate(text?: string): string | null {
   return todayUtc.toISOString().slice(0, 10);
 }
 
+type AvailabilityRangeRequest = {
+  startDate: string;
+  endDate: string;
+  minTime?: string;
+  maxTime?: string;
+  flexibleDays: boolean;
+};
+
+function getConfiguredBookingWindowDays(config: any): number {
+  const value = Number(
+    config?.bookingWindowDays ??
+    config?.booking_window_days ??
+    config?.advanceBookingDays ??
+    config?.advance_booking_days ??
+    30
+  );
+  return Number.isFinite(value) ? Math.max(1, Math.min(365, Math.round(value))) : 30;
+}
+
+function extractRequestedWeekdays(text?: string): Array<{ index: number; position: number }> {
+  const raw = normalizeLocalizedDigits(String(text || ""))
+    .toLowerCase()
+    .replace(/\u200c/g, " ");
+  const definitions: Array<[number, RegExp]> = [
+    [0, /\b(?:söndag|sondag|sunday|yek\s*shanbe|yekshanbe|1\s*shanbe)\b|یک\s*شنبه/giu],
+    [1, /\b(?:måndag|mandag|monday|do\s*shanbe|doshanbe|2\s*shanbe)\b|دو\s*شنبه/giu],
+    [2, /\b(?:tisdag|tuesday|se\s*shanbe|seshanbe|3\s*shanbe)\b|سه\s*شنبه/giu],
+    [3, /\b(?:onsdag|wednesday|chahar\s*shanbe|chaharshanbe|4\s*shanbe)\b|چهار\s*شنبه|چهارشنبه/giu],
+    [4, /\b(?:torsdag|thursday|panj\s*shanbe|panjshanbe|5\s*shanbe)\b|پنج\s*شنبه|پنجشنبه/giu],
+    [5, /\b(?:fredag|friday|jome|jomeh)\b|جمعه/giu],
+    [6, /\b(?:lördag|lordag|saturday|(?<!yek\s)(?<!do\s)(?<!se\s)(?<!chahar\s)(?<!panj\s)(?<![1-5]\s)shanbe)\b|(?<!یک\s)(?<!دو\s)(?<!سه\s)(?<!چهار\s)(?<!پنج\s)شنبه/giu]
+  ];
+  const matches: Array<{ index: number; position: number }> = [];
+  for (const [index, pattern] of definitions) {
+    for (const match of raw.matchAll(pattern)) {
+      const position = Number(match.index || 0);
+      if (!matches.some((item) => item.position === position)) matches.push({ index, position });
+    }
+  }
+  return matches.sort((a, b) => a.position - b.position);
+}
+
+function nextStockholmWeekdayDate(weekday: number, fromDate: string): string {
+  const [year, month, day] = fromDate.split("-").map(Number);
+  const from = new Date(Date.UTC(year, month - 1, day));
+  let daysAhead = (weekday - from.getUTCDay() + 7) % 7;
+  if (daysAhead === 0) daysAhead = 7;
+  from.setUTCDate(from.getUTCDate() + daysAhead);
+  return from.toISOString().slice(0, 10);
+}
+
+function normalizeWindowClock(hoursText: string, minutesText?: string): string | null {
+  const hours = Number(hoursText);
+  const minutes = Number(minutesText || 0);
+  if (!Number.isInteger(hours) || !Number.isInteger(minutes) || hours < 0 || hours > 23 || minutes < 0 || minutes > 59) {
+    return null;
+  }
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
+}
+
+function parseAvailabilityRangeRequest(text: string, businessConfig: any): AvailabilityRangeRequest | null {
+  const raw = normalizeLocalizedDigits(String(text || ""))
+    .trim()
+    .toLowerCase()
+    .replace(/\u200c/g, " ")
+    .replace(/[–—]/g, "-");
+  if (!raw) return null;
+
+  let minTime: string | null = null;
+  let maxTime: string | null = null;
+  const timeRangePattern =
+    /(?:mellan|between|from|från|fran|بین|از)?\s*(\d{1,2})(?::([0-5]\d))?\s*(?:-|till|to|and|och|å|و|تا)\s*(\d{1,2})(?::([0-5]\d))?(?:\s*(?:kl|klockan|ساعت))?/giu;
+  for (const candidate of raw.matchAll(timeRangePattern)) {
+    const candidateMin = normalizeWindowClock(candidate[1], candidate[2]);
+    const candidateMax = normalizeWindowClock(candidate[3], candidate[4]);
+    if (
+      candidateMin &&
+      candidateMax &&
+      Number(timeTextToMinutes(candidateMax)) > Number(timeTextToMinutes(candidateMin))
+    ) {
+      minTime = candidateMin;
+      maxTime = candidateMax;
+    }
+  }
+  const hasValidWindow = Boolean(minTime && maxTime);
+
+  const flexibleDays = /\b(det\s+spelar\s+ingen\s+roll\s+vilken\s+dag|vilken\s+dag\s+som\s+helst|any\s+day|doesn'?t\s+matter\s+which\s+day|farghi\s+nadare\s+che\s+roozi)\b/i.test(raw) ||
+    /هر\s*روز|فرقی\s*نداره\s*چه\s*روزی/u.test(raw);
+  const weekdays = extractRequestedWeekdays(raw);
+  const hasRangeConnector = /\b(till|through|until|to|och|and)\b|(?:^|\s)å(?:\s|$)|تا|و/u.test(raw);
+
+  let explicitStartDate: string | null = null;
+  let explicitEndDate: string | null = null;
+  const isValidDate = (value: string) => {
+    const parsed = new Date(`${value}T12:00:00Z`);
+    return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+  };
+  const isoRange = raw.match(/\b(20\d{2}-\d{2}-\d{2})\s*(?:till|to|through|–|-)\s*(20\d{2}-\d{2}-\d{2})\b/i);
+  if (isoRange && isValidDate(isoRange[1]) && isValidDate(isoRange[2]) && isoRange[1] <= isoRange[2]) {
+    explicitStartDate = isoRange[1];
+    explicitEndDate = isoRange[2];
+  }
+  if (!explicitStartDate) {
+    const numericRange = raw.match(/\b(\d{1,2})[/.](\d{1,2})\s*(?:till|to|through|–|-)\s*(\d{1,2})[/.](\d{1,2})(?:[/.](20\d{2}))?\b/i);
+    if (numericRange) {
+      const year = Number(numericRange[5] || stockholmDateString(new Date()).slice(0, 4));
+      const start = `${year}-${String(Number(numericRange[2])).padStart(2, "0")}-${String(Number(numericRange[1])).padStart(2, "0")}`;
+      const end = `${year}-${String(Number(numericRange[4])).padStart(2, "0")}-${String(Number(numericRange[3])).padStart(2, "0")}`;
+      if (isValidDate(start) && isValidDate(end) && start <= end) {
+        explicitStartDate = start;
+        explicitEndDate = end;
+      }
+    }
+  }
+
+  if (!flexibleDays && !explicitStartDate && !(weekdays.length >= 2 && hasRangeConnector)) return null;
+  if (!hasValidWindow && !weekdays.length && !explicitStartDate) return null;
+
+  const today = stockholmDateString(new Date());
+  if (flexibleDays) {
+    return {
+      startDate: today,
+      endDate: addDaysToStockholmDate(today, getConfiguredBookingWindowDays(businessConfig)),
+      ...(hasValidWindow ? { minTime: minTime!, maxTime: maxTime! } : {}),
+      flexibleDays: true
+    };
+  }
+
+  if (explicitStartDate && explicitEndDate) {
+    return {
+      startDate: explicitStartDate,
+      endDate: explicitEndDate,
+      ...(hasValidWindow ? { minTime: minTime!, maxTime: maxTime! } : {}),
+      flexibleDays: false
+    };
+  }
+
+  const startDate = nextStockholmWeekdayDate(weekdays[0].index, today);
+  let endDate = startDate;
+  const [year, month, day] = startDate.split("-").map(Number);
+  const startUtc = new Date(Date.UTC(year, month - 1, day));
+  const daysToEnd = (weekdays[1].index - weekdays[0].index + 7) % 7;
+  startUtc.setUTCDate(startUtc.getUTCDate() + (daysToEnd || 7));
+  endDate = startUtc.toISOString().slice(0, 10);
+
+  return {
+    startDate,
+    endDate,
+    ...(hasValidWindow ? { minTime: minTime!, maxTime: maxTime! } : {}),
+    flexibleDays: false
+  };
+}
+
+function isAlternativeAvailabilityRequest(text?: string): boolean {
+  const raw = String(text || "").trim().toLowerCase();
+  return /\b(other|alternative|another|andra|alternativa|någon annan dag|andra dagar|outside|utanför|dagar efter|roo?z(?:e|hay)? dige|روز(?:های)? دیگر)\b/i.test(raw);
+}
+
+function formatRangeAvailabilityReply(
+  slots: string[],
+  language: string,
+  request: AvailabilityRangeRequest,
+  outsideOriginalRange: boolean
+): string {
+  if (slots.length === 0) {
+    if (language === "sv") return `Jag hittar inga lediga tider mellan ${request.minTime || "öppning"} och ${request.maxTime || "stängning"} i det önskade intervallet. Vill du att jag söker andra dagar?`;
+    if (language === "fa") return `در بازه درخواستی بین ${request.minTime || "زمان باز شدن"} تا ${request.maxTime || "زمان بسته شدن"} وقت خالی پیدا نکردم. روزهای دیگری را بررسی کنم؟`;
+    if (language === "de") return `Im gewünschten Zeitraum finde ich zwischen ${request.minTime || "Öffnung"} und ${request.maxTime || "Schließung"} keinen freien Termin. Soll ich andere Tage prüfen?`;
+    if (language === "es") return `No encuentro horas libres entre ${request.minTime || "la apertura"} y ${request.maxTime || "el cierre"} en el intervalo solicitado. ¿Busco otros días?`;
+    if (language === "ar") return `لم أجد مواعيد متاحة بين ${request.minTime || "الافتتاح"} و${request.maxTime || "الإغلاق"} ضمن النطاق المطلوب. هل أبحث في أيام أخرى؟`;
+    return `I can’t find an available time between ${request.minTime || "opening"} and ${request.maxTime || "closing"} in the requested range. Shall I check other days?`;
+  }
+
+  const base = buildLocalizedSlotReply(slots, undefined, language);
+  if (!outsideOriginalRange) return base;
+  if (language === "sv") return `Utanför det ursprungliga intervallet hittade jag: ${base}`;
+  if (language === "fa") return `خارج از بازه اولیه این زمان‌ها خالی هستند: ${base}`;
+  if (language === "de") return `Außerhalb des ursprünglichen Zeitraums habe ich Folgendes gefunden: ${base}`;
+  if (language === "es") return `Fuera del intervalo original encontré: ${base}`;
+  if (language === "ar") return `خارج النطاق الأصلي وجدت: ${base}`;
+  return `Outside the original requested range, I found: ${base}`;
+}
+
 function resolveRescheduleDate(text: string, appointment?: any): string | null {
   const explicit = resolveExplicitBookingDate(text);
   if (explicit) return explicit;
@@ -3771,29 +4172,35 @@ function localizeServiceName(service: string, language: string): string {
   const raw = String(service || "").toLowerCase();
   const isBikini = raw.includes("bikini");
   const isFullBody = raw.includes("helkropp") || raw.includes("fullbody") || raw.includes("full body");
+  const isConsultation = raw.includes("konsultation") || raw.includes("consultation") || raw.includes("مشاوره");
   if (language === "fa") {
+    if (isConsultation) return "مشاوره";
     if (isBikini) return "بیکینی";
     if (isFullBody) return "لیزر فول بادی";
     if (raw.includes("laser")) return "لیزر";
     return "وقت";
   }
   if (language === "en") {
+    if (isConsultation) return "consultation";
     if (isBikini) return "bikini treatment";
     if (isFullBody) return "full body laser treatment";
     return service || "appointment";
   }
   if (language === "sv") return service || "bokning";
   if (language === "de") {
+    if (isConsultation) return "Beratung";
     if (isBikini) return "Bikini-Behandlung";
     if (isFullBody) return "Ganzkörper-Laserbehandlung";
     return service || "Termin";
   }
   if (language === "es") {
+    if (isConsultation) return "consulta";
     if (isBikini) return "tratamiento de bikini";
     if (isFullBody) return "tratamiento láser de cuerpo completo";
     return service || "cita";
   }
   if (language === "ar") {
+    if (isConsultation) return "الاستشارة";
     if (isBikini) return "علاج البكيني";
     if (isFullBody) return "ليزر الجسم الكامل";
     return "موعد";
@@ -3875,6 +4282,15 @@ function normalizeBusinessConfig(row: any) {
     cancellationFeeEnabled: Boolean(row.cancellation_fee_enabled),
     cancellationFeeAmount: Math.max(0, Number(row.cancellation_fee_amount || 0)),
     cancellationFeeCurrency: String(row.cancellation_fee_currency || "SEK"),
+    bookingWindowDays: Number(
+      row.booking_window_days ??
+      row.advance_booking_days ??
+      activeConfig.bookingWindowDays ??
+      activeConfig.booking_window_days ??
+      30
+    ),
+    services: Array.isArray(row.services) ? row.services : activeConfig.services,
+    serviceDurations: row.service_durations || activeConfig.serviceDurations || activeConfig.service_durations,
     calendarProvider: "google",
   };
 }
@@ -3911,6 +4327,9 @@ function resetSessionIfBusinessConfigChanged(sessionId: string, config: any) {
     delete recentlyCompletedReschedules[sessionId];
     delete cancellationContexts[sessionId];
     delete appointmentStateOwners[sessionId];
+    delete availabilitySearchContexts[sessionId];
+    delete conversationFlowLanguages[sessionId];
+    delete chatLanguages[sessionId];
   }
   businessConfigVersions[sessionId] = nextVersion;
 }
@@ -4104,14 +4523,28 @@ async function handleUnifiedBookingEngine(params: {
     pending = null;
   }
 
-  // Never let a restored pending flow lock Messenger/Instagram to an old language.
-  // The latest clear customer message is the source of truth for the next reply.
-  if (pending && latestStrongLanguage && pending.language !== latestStrongLanguage) {
+  // A restored flow may change language only after a meaningful, clearly different
+  // customer message. Short confirmations, times, names, and phone numbers inherit it.
+  if (
+    pending &&
+    latestStrongLanguage &&
+    pending.language !== latestStrongLanguage &&
+    isMeaningfulLanguageMessage(text) &&
+    hasStrongLanguageEvidence(latestStrongLanguage, text)
+  ) {
     console.log(
       `[LanguageLock] updating pending flow language previous=${pending.language || "none"} with=${latestStrongLanguage} session=${sessionId}`
     );
     pending.language = latestStrongLanguage;
     await savePendingBooking(sessionId, platformName, pending);
+  }
+
+  if (entryRescheduleContext) {
+    lockConversationFlowLanguage(sessionId, entryRescheduleContext.lockedReplyLanguage || language, "reschedule");
+  } else if (pending) {
+    lockConversationFlowLanguage(sessionId, pending.language || language, "booking");
+  } else if (hasAppointmentConversationState(sessionId)) {
+    lockConversationFlowLanguage(sessionId, getStoredFlowLanguage(sessionId) || language, "appointment");
   }
 
   const replyAndRecord = async (reply: string) => {
@@ -4568,6 +5001,7 @@ async function handleUnifiedBookingEngine(params: {
     appointmentContexts[sessionId] = { appointment, savedAt: Date.now(), language: lockedLanguage };
     saveAppointmentStateOwner(sessionId, currentAppointmentStateOwner, stateOwner.identityKey);
     clearRescheduleContext(sessionId);
+    clearConversationFlowLanguage(sessionId);
     recentlyCompletedReschedules[sessionId] = {
       completedAt: Date.now(),
       eventId: currentEventId,
@@ -4599,11 +5033,40 @@ async function handleUnifiedBookingEngine(params: {
         `[UnifiedBooking] Fresh greeting cleared stale pending platform=${platformName}, session=${sessionId}, status=${pending.status || "unknown"}`
       );
       await clearPendingBooking(sessionId);
+      clearConversationFlowLanguage(sessionId);
       pending = null;
       return false;
     }
 
     const explicitNewBookingRequested = isExplicitNewBookingRequest(text);
+    const serviceDurationRequested = isServiceDurationQuestion(text);
+
+    // Service information is not an appointment lookup. This must run before lookup,
+    // stale booking cleanup, and Gemini tool dispatch so a post-booking duration question
+    // cannot repeat the appointment date/time.
+    if (serviceDurationRequested) {
+      const serviceContext = getActiveServiceInformationContext(sessionId, text);
+      const lockedLanguage = getStoredFlowLanguage(sessionId) || language;
+      lockConversationFlowLanguage(sessionId, lockedLanguage, "service_info");
+      const durationMinutes = await resolveServiceDurationMinutes(
+        serviceContext.service,
+        serviceContext.durationMinutes,
+        businessConfig
+      );
+      const reply = formatServiceDurationReply(
+        lockedLanguage,
+        serviceContext.service || (getDefaultBookingServiceForBusiness(businessConfig) || "service"),
+        durationMinutes
+      );
+      const dedupeKey = `${lockedLanguage}|${serviceContext.service}|${durationMinutes || "unknown"}|${reply}`;
+      const previousReply = lastServiceInformationReplies[sessionId];
+      if (previousReply?.key === dedupeKey && Date.now() - previousReply.sentAt < 10 * 1000) {
+        return true;
+      }
+      lastServiceInformationReplies[sessionId] = { key: dedupeKey, sentAt: Date.now() };
+      await replyAndRecord(reply);
+      return true;
+    }
 
     if (pending && (explicitNewBookingRequested || isNewBookingRequestText(text))) {
       console.log(`[UnifiedBooking] Clearing stale pending platform=${platformName}, session=${sessionId}`);
@@ -4627,6 +5090,7 @@ async function handleUnifiedBookingEngine(params: {
     );
     const appointmentLookupRequested = !explicitNewBookingRequested &&
       (isExistingAppointmentLookupIntent(text) || appointmentLookupFollowUpRequested);
+    if (appointmentLookupRequested) lockConversationFlowLanguage(sessionId, language, "appointment");
     if (pending && appointmentLookupRequested) {
       console.log(`[UnifiedBooking] Appointment lookup cleared pending new-booking state platform=${platformName}, session=${sessionId}`);
       await clearPendingBooking(sessionId);
@@ -4637,6 +5101,8 @@ async function handleUnifiedBookingEngine(params: {
     // Never ask again for service, duration, name or phone when an existing booking can be found.
     const rescheduleRequested = !explicitNewBookingRequested && isRescheduleIntent(text);
     const cancellationRequested = !explicitNewBookingRequested && isCancellationIntent(text);
+    if (rescheduleRequested) lockConversationFlowLanguage(sessionId, language, "reschedule");
+    if (cancellationRequested) lockConversationFlowLanguage(sessionId, language, "cancellation");
 
     // A direct lookup question must interrupt an unfinished reschedule flow.
     // Example: customer first asks to reschedule, then asks "when is my appointment?".
@@ -4683,6 +5149,7 @@ async function handleUnifiedBookingEngine(params: {
 
       if (isCancellationRejection(text)) {
         clearCancellationContext(sessionId);
+        clearConversationFlowLanguage(sessionId);
         await replyAndRecord(lockedLanguage === "sv" ? "Okej, bokningen behålls." : lockedLanguage === "fa" ? "باشه، رزرو شما حفظ می‌شود." : "Okay, the appointment will be kept.");
         return true;
       }
@@ -4831,6 +5298,7 @@ async function handleUnifiedBookingEngine(params: {
 
       if (isCancellationRejection(text)) {
         clearRescheduleContext(sessionId);
+        clearConversationFlowLanguage(sessionId);
         await replyAndRecord(lockedLanguage === "sv"
           ? "Okej, bokningen behålls på sin nuvarande tid."
           : lockedLanguage === "fa"
@@ -5151,6 +5619,118 @@ async function handleUnifiedBookingEngine(params: {
       return true;
     }
 
+    let storedAvailability = availabilitySearchContexts[sessionId];
+    if (storedAvailability && Date.now() - storedAvailability.savedAt > PENDING_BOOKING_TTL_MS) {
+      delete availabilitySearchContexts[sessionId];
+      storedAvailability = undefined;
+    }
+    const availabilityOwnerMatches = Boolean(
+      storedAvailability &&
+      storedAvailability.businessId === currentAppointmentStateOwner.businessId &&
+      storedAvailability.platform === currentAppointmentStateOwner.platform &&
+      storedAvailability.userId === currentAppointmentStateOwner.userId
+    );
+    if (storedAvailability && !availabilityOwnerMatches) {
+      delete availabilitySearchContexts[sessionId];
+    }
+
+    const parsedAvailabilityRange = parseAvailabilityRangeRequest(text, businessConfig);
+    const alternativeAvailabilityRequested = isAlternativeAvailabilityRequest(text);
+    if (
+      (!pending || pending.status === "awaiting_time_selection") &&
+      !getRescheduleContext(sessionId) &&
+      (parsedAvailabilityRange || (alternativeAvailabilityRequested && availabilityOwnerMatches))
+    ) {
+      if (pending) {
+        await clearPendingBooking(sessionId);
+        pending = null;
+      }
+      const original = parsedAvailabilityRange || {
+        startDate: storedAvailability!.startDate,
+        endDate: storedAvailability!.endDate,
+        minTime: storedAvailability!.minTime,
+        maxTime: storedAvailability!.maxTime,
+        flexibleDays: false
+      };
+      const outsideOriginalRange = Boolean(!parsedAvailabilityRange && alternativeAvailabilityRequested);
+      const configuredWindowEnd = addDaysToStockholmDate(
+        stockholmDateString(new Date()),
+        getConfiguredBookingWindowDays(businessConfig)
+      );
+      const searchStart = outsideOriginalRange
+        ? addDaysToStockholmDate(storedAvailability!.endDate, 1)
+        : original.startDate;
+      const searchEnd = outsideOriginalRange
+        ? configuredWindowEnd
+        : original.endDate;
+      const inferredService = normalizeBookingService(
+        inferServiceFromRecentContext(text, history),
+        storedAvailability?.service || getDefaultBookingServiceForBusiness(businessConfig) || "Bokning"
+      );
+      const durationMinutes = storedAvailability?.durationMinutes ||
+        getDefaultBookingDurationForService(inferredService) ||
+        inferBookingDurationFromContext(text, history);
+      const lockedLanguage = storedAvailability?.language || language;
+      lockConversationFlowLanguage(sessionId, lockedLanguage, "availability");
+
+      const adapter = getCalendarAdapter(businessConfig);
+      const searchIsWithinConfiguredWindow = searchStart <= searchEnd;
+      const events = searchIsWithinConfiguredWindow
+        ? await adapter.getEvents(searchStart, searchEnd)
+        : [];
+      const slotsText = getDailySlots(
+        searchStart,
+        searchEnd,
+        Array.isArray(events) ? events : [],
+        durationMinutes,
+        undefined,
+        {
+          ...(original.minTime ? { minTime: original.minTime } : {}),
+          ...(original.maxTime ? { maxTime: original.maxTime } : {})
+        }
+      );
+      const slots = getSlotsArray({ available_slots_string: slotsText });
+
+      availabilitySearchContexts[sessionId] = {
+        startDate: parsedAvailabilityRange?.startDate || storedAvailability!.startDate,
+        endDate: parsedAvailabilityRange?.endDate || storedAvailability!.endDate,
+        minTime: original.minTime,
+        maxTime: original.maxTime,
+        service: inferredService,
+        durationMinutes,
+        language: lockedLanguage,
+        businessId: currentAppointmentStateOwner.businessId,
+        platform: currentAppointmentStateOwner.platform,
+        userId: currentAppointmentStateOwner.userId,
+        savedAt: Date.now()
+      };
+
+      if (slots.length > 0) {
+        await savePendingBooking(sessionId, platformName, {
+          businessConfig,
+          platform: platformName,
+          service: inferredService,
+          selectedDate: null,
+          offeredSlots: slots,
+          availabilityStartDate: searchStart,
+          availabilityEndDate: searchEnd,
+          availabilityMinTime: original.minTime || null,
+          availabilityMaxTime: original.maxTime || null,
+          dateTime: null,
+          durationMinutes,
+          language: lockedLanguage,
+          customerPhone: getWhatsAppConversationPhone(platformName, recipientUserId, sessionId),
+          status: "awaiting_time_selection"
+        });
+        pending = pendingBookings[sessionId];
+      }
+
+      await replyAndRecord(
+        formatRangeAvailabilityReply(slots, lockedLanguage, original, outsideOriginalRange)
+      );
+      return true;
+    }
+
     if (!pending && isGenericBookingRequestWithoutDate(text)) {
       const adapter = getCalendarAdapter(businessConfig);
       const startDate = stockholmDateString(new Date());
@@ -5160,6 +5740,7 @@ async function handleUnifiedBookingEngine(params: {
         ? service
         : (getDefaultBookingServiceForBusiness(businessConfig) || "Bokning");
       const durationMinutes = getDefaultBookingDurationForService(finalService) || inferBookingDurationFromContext(text, history);
+      lockConversationFlowLanguage(sessionId, language, "booking");
       const result = await adapter.checkSlots(startDate, endDate, durationMinutes);
       const slots = getSlotsArray(result);
 
@@ -5185,6 +5766,7 @@ async function handleUnifiedBookingEngine(params: {
 
     const explicitDate = resolveExplicitBookingDate(text);
     if (explicitDate && isBookingConversationContext(text, history)) {
+      lockConversationFlowLanguage(sessionId, language, "booking");
       const adapter = getCalendarAdapter(businessConfig);
       const durationMinutes = inferBookingDurationFromContext(text, history);
       const requestedTime = inferRequestedTimeFromText(text) || undefined;
@@ -5258,10 +5840,26 @@ async function handleUnifiedBookingEngine(params: {
           Number(pending.durationMinutes || 60),
           selectedTime
         );
-        const freshSlots = getSlotsArray(fresh);
+        let freshSlots = getSlotsArray(fresh);
         const freshIso = findOfferedSlotIso(freshSlots, selectedTime);
 
         if (!freshIso) {
+          if (pending.availabilityMinTime || pending.availabilityMaxTime) {
+            const events = await adapter.getEvents(selectedDate, selectedDate);
+            freshSlots = getSlotsArray({
+              available_slots_string: getDailySlots(
+                selectedDate,
+                selectedDate,
+                Array.isArray(events) ? events : [],
+                Number(pending.durationMinutes || 60),
+                undefined,
+                {
+                  ...(pending.availabilityMinTime ? { minTime: pending.availabilityMinTime } : {}),
+                  ...(pending.availabilityMaxTime ? { maxTime: pending.availabilityMaxTime } : {})
+                }
+              )
+            });
+          }
           pending.offeredSlots = freshSlots;
           await savePendingBooking(sessionId, platformName, pending);
           await replyAndRecord(
@@ -5305,10 +5903,26 @@ async function handleUnifiedBookingEngine(params: {
           Number(pending.durationMinutes || 60),
           selectedTime
         );
-        const freshIso = findOfferedSlotIso(getSlotsArray(fresh), selectedTime);
+        let freshSlots = getSlotsArray(fresh);
+        const freshIso = findOfferedSlotIso(freshSlots, selectedTime);
 
         if (!freshIso) {
-          const freshSlots = getSlotsArray(fresh);
+          if (pending.availabilityMinTime || pending.availabilityMaxTime) {
+            const events = await adapter.getEvents(selectedDate, selectedDate);
+            freshSlots = getSlotsArray({
+              available_slots_string: getDailySlots(
+                selectedDate,
+                selectedDate,
+                Array.isArray(events) ? events : [],
+                Number(pending.durationMinutes || 60),
+                undefined,
+                {
+                  ...(pending.availabilityMinTime ? { minTime: pending.availabilityMinTime } : {}),
+                  ...(pending.availabilityMaxTime ? { maxTime: pending.availabilityMaxTime } : {})
+                }
+              )
+            });
+          }
           pending.status = "awaiting_time_selection";
           pending.offeredSlots = freshSlots;
           pending.dateTime = null;
@@ -5494,7 +6108,10 @@ async function handleUnifiedBookingEngine(params: {
       rememberCompletedBooking(
         sessionId,
         getFlowReplyLanguage(pending.language, language, text),
-        pending.customerName
+        pending.customerName,
+        pending.service,
+        Number(pending.durationMinutes || 30),
+        finalIso
       );
       await notifyAdminAboutBooking(
         businessConfig,
@@ -5692,14 +6309,20 @@ async function processTelegramUpdate(update: any, config: any, platform: string 
     } else {
       return; // Ignore other types
     }
-    
-    if (text) {
+
+    const voiceTranscript = voice && Array.isArray(userMessageContent)
+      ? await transcribeVoiceMessageForFlow(userMessageContent)
+      : null;
+    const textForFlow = String(text || voiceTranscript || "").trim();
+    if (voiceTranscript) userMessageContent = voiceTranscript;
+
+    if (textForFlow) {
       const unifiedHandled = await handleUnifiedBookingEngine({
         sessionId: telegramSessionId,
         platformName: "telegram",
         platformLogName: "Telegram",
         recipientUserId: chatId.toString(),
-        text,
+        text: textForFlow,
         history,
         businessConfig: config,
         send: async (reply) => {
@@ -5716,19 +6339,19 @@ async function processTelegramUpdate(update: any, config: any, platform: string 
     }
 
     const completedBooking = getRecentCompletedBooking(telegramSessionId);
-    if (text && completedBooking && isThanksOnlyText(text || "")) {
-      const thanksText = formatThanksReply(completedBooking.language || getLockedReplyLanguage(telegramSessionId, text), completedBooking.name);
+    if (textForFlow && completedBooking && isThanksOnlyText(textForFlow)) {
+      const thanksText = formatThanksReply(completedBooking.language || getLockedReplyLanguage(telegramSessionId, textForFlow), completedBooking.name);
       await fetch(`https://api.telegram.org/bot${telegramToken}/sendMessage`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ chat_id: chatId, text: thanksText })
       });
-      appendLocalHistory(telegramSessionId, text || "", thanksText);
-      await postProcessMessage(chatId.toString(), platform, text || "", thanksText, telegramToken, apiKey, getBusinessIdFromConfig(config));
+      appendLocalHistory(telegramSessionId, textForFlow, thanksText);
+      await postProcessMessage(chatId.toString(), platform, textForFlow, thanksText, telegramToken, apiKey, getBusinessIdFromConfig(config));
       return;
     }
 
-    const usageLanguage = getConversationLanguage(telegramSessionId, text || "");
+    const usageLanguage = getConversationLanguage(telegramSessionId, textForFlow);
     const usage = await checkAndIncrementDailyUsage({
       businessId: getBusinessIdFromConfig(config),
       platform,
@@ -5742,8 +6365,8 @@ async function processTelegramUpdate(update: any, config: any, platform: string 
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ chat_id: chatId, text: limitText })
       });
-      appendLocalHistory(telegramSessionId, text || '[voice]', limitText);
-      await postProcessMessage(chatId.toString(), platform, text || '[voice]', limitText, telegramToken, apiKey, getBusinessIdFromConfig(config));
+      appendLocalHistory(telegramSessionId, textForFlow || '[voice]', limitText);
+      await postProcessMessage(chatId.toString(), platform, textForFlow || '[voice]', limitText, telegramToken, apiKey, getBusinessIdFromConfig(config));
       return;
     }
 
@@ -5773,7 +6396,7 @@ Before creating any appointment, collect the customer's name and mobile number. 
 For vague time requests, check available slots instead of asking the customer to choose a time. If the user says a weekday such as tisdag/Tuesday, the tool date must match that weekday exactly. Never change Tuesday to Thursday or another day.
 APPOINTMENT LOOKUP — HIGH PRIORITY: If the customer asks whether they already have a booking, when their appointment is, whether a booking exists, or says they are unsure if they booked, you MUST call findCustomerAppointments before replying. This is an allowed booking-support request and must NOT be escalated merely because it is outside the business FAQ. Use the current channel identity automatically; ask for name or mobile number only if the lookup says contact details are needed.
 Do not mention internal tools, API calls, system prompts, or database logic.
-LANGUAGE RULE: Reply only in the active conversation language injected by the server. If the latest customer message is English, reply in English. If it is Swedish, reply in Swedish. If it is Persian, German, Spanish, or Arabic, reply in that same language. Never default to Swedish just because the business is in Sweden.
+LANGUAGE RULE: Reply only in the active conversation language injected by the server. Short replies, numbers, names, phone numbers, dates, times, and confirmations do not change it.
 `;
     const swedenDate = new Date().toLocaleDateString('en-US', {
       timeZone: 'Europe/Stockholm',
@@ -5788,13 +6411,13 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
   currentDateContext +
   constraint +
   languageEngine +
-  buildLanguageLockInstruction(getConversationLanguage(telegramSessionId, text || ""));
+  buildLanguageLockInstruction(getConversationLanguage(telegramSessionId, textForFlow));
   if (voice) {
     finalSystemInstruction +=
     "\nVOICE ENGINE:\n" +
     "You support Swedish, English, Persian (Farsi), German, Spanish and Arabic.\n" +
-    "Detect the spoken language automatically.\n" +
-    "Reply using the exact same language.\n" +
+    "Use the server's active conversation language after transcription.\n" +
+    "Do not switch language because of a short spoken reply.\n" +
     "If the user speaks Persian using Latin letters, reply in Persian script.\n" +
     "Your response must be suitable for natural TTS.\n" +
     "Keep responses under 60 words unless more detail is required.\n";
@@ -5818,19 +6441,19 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
         let adapterRes;
         const args = JSON.parse(call.function.arguments);
         if (call.function.name === "checkSlots" && args) {
-            adapterRes = await adapter.checkSlots(args.startDate, args.endDate, args.durationMinutes, args.requestedTime || inferRequestedTimeFromText(text || ""));
+            adapterRes = await adapter.checkSlots(args.startDate, args.endDate, args.durationMinutes, args.requestedTime || inferRequestedTimeFromText(textForFlow));
             if (adapterRes.available_slots_string) {
                 const slotsArray = adapterRes.available_slots_string
                     .split('\n')
                     .filter((s: string) => s.trim().length > 0 && !s.includes('No available slots'));
                 
-                const replyMessage = formatSwedishTimeSlots(slotsArray, args.requestedTime || inferRequestedTimeFromText(text || ""), getLockedReplyLanguage(telegramSessionId, text || ""));
+                const replyMessage = formatSwedishTimeSlots(slotsArray, args.requestedTime || inferRequestedTimeFromText(textForFlow), getLockedReplyLanguage(telegramSessionId, textForFlow));
                 return { TERMINATE_EARLY: true, replyMessage };
             }
         }
         else if (call.function.name === "findCustomerAppointments" && args) {
-          adapterRes = await findCustomerAppointments(adapter, { ...args, lookupMode: args.lookupMode || detectAppointmentLookupMode(text), lookupText: text, lookupPath: "telegram_gemini_tool" }, chatId.toString(), "telegram", config);
-          const lookupLanguage = getLockedReplyLanguage(telegramSessionId, text || "");
+          adapterRes = await findCustomerAppointments(adapter, { ...args, lookupMode: args.lookupMode || detectAppointmentLookupMode(textForFlow), lookupText: textForFlow, lookupPath: "telegram_gemini_tool" }, chatId.toString(), "telegram", config);
+          const lookupLanguage = getLockedReplyLanguage(telegramSessionId, textForFlow);
           rememberLookupResultForConversation(telegramSessionId, adapterRes, lookupLanguage, "telegram", chatId.toString(), config);
           const replyMessage = formatAppointmentLookupReply(
             adapterRes,
@@ -5864,7 +6487,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
           };
         }
         else if (call.function.name === "insertAppointment" && args) {
-          const contactOverride = extractNameAndPhone(text || "");
+          const contactOverride = extractNameAndPhone(textForFlow);
           const safeName = contactOverride?.name || cleanCustomerNameCandidate(args.name) || args.name;
           const safePhone = contactOverride?.phone || args.phone;
           adapterRes = await adapter.insertAppointment(safeName, safePhone, args.service, args.dateTime, args.durationMinutes, chatId);
@@ -5879,7 +6502,14 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
               dateTime: args.dateTime,
               durationMinutes: args.durationMinutes
             });
-            rememberCompletedBooking(telegramSessionId, getLockedReplyLanguage(telegramSessionId, text || ""), safeName);
+            rememberCompletedBooking(
+              telegramSessionId,
+              getLockedReplyLanguage(telegramSessionId, textForFlow),
+              safeName,
+              args.service,
+              Number(args.durationMinutes || 0),
+              args.dateTime
+            );
           }
           if (adapterRes && adapterRes.success) {
             await notifyAdminAboutBooking(
@@ -5931,7 +6561,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
     }
     
     const textResponse = String(chatResponse.text || "").trim() ||
-      getErrorMessageByLanguage(getLockedReplyLanguage(telegramSessionId, text || ""));
+      getErrorMessageByLanguage(getLockedReplyLanguage(telegramSessionId, textForFlow));
     if (!String(chatResponse.text || "").trim()) {
       console.error("[AIEmptyResponse] Telegram returned no text after tool processing.", {
         sessionId: telegramSessionId,
@@ -6139,10 +6769,10 @@ function hasStrongLanguageEvidence(language: string, text?: string): boolean {
   // also contains a time like 16:30. Short replies like "yes", "ok", "tack", "merci"
   // are handled elsewhere and must not switch the conversation language.
   if (language === "en") {
-    return /\b(hi|hello|hey|i\s+want|i\s+would\s+like|i\s+can|can\s+i|could\s+i|appointment|book|booking|available|next\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday|week)|my\s+name\s+is|my\s+phone\s+is|pedicure|treatment|quick\s+refresh)\b/i.test(lower);
+    return /\b(hi|hello|hey|i\s+want|i\s+would\s+like|i\s+can|can\s+i|could\s+i|how\s+long|duration|appointment|consultation|book|booking|available|next\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday|week)|my\s+name\s+is|my\s+phone\s+is|pedicure|treatment|quick\s+refresh)\b/i.test(lower);
   }
   if (language === "sv") {
-    return /\b(hej|hejsan|hallå|kan\s+du|kan\s+jag|har\s+jag|hos\s+er|mår\s+du|jag\s+vill|jag\s+ska|jag\s+kan|jag\s+behöver|ändra\s+min\s+tid|flytta\s+min\s+tid|boka|bokning|ledig|behandling|konsultation|nästa\s+(måndag|tisdag|onsdag|torsdag|fredag|lördag|söndag)|mitt\s+namn|mitt\s+nummer|mobilnummer)\b/i.test(lower);
+    return /\b(hej|hejsan|hallå|kan\s+du|kan\s+jag|har\s+jag|hos\s+er|mår\s+du|jag\s+vill|jag\s+ska|jag\s+kan|jag\s+behöver|hur\s+lång|hur\s+långt|hur\s+länge|ändra\s+min\s+tid|flytta\s+min\s+tid|boka|bokning|ledig|behandling|konsultation|nästa\s+(måndag|tisdag|onsdag|torsdag|fredag|lördag|söndag)|mitt\s+namn|mitt\s+nummer|mobilnummer)\b/i.test(lower);
   }
   if (language === "de") {
     return /\b(hallo|guten|ich\s+möchte|ich\s+moechte|ich\s+will|termin|buchen|buchung|behandlung|ganzkörper|ganzkoerper|mein\s+name|meine\s+nummer|telefonnummer|nächsten|naechsten)\b/i.test(lower);
@@ -6207,72 +6837,136 @@ function detectStrongLatestLanguage(text?: string): string | null {
   }
 
   if (
-    /\b(hej+|hejsan|hallå|kan du|kan jag|har jag|hos er|mår du|jag vill|jag ska|jag behöver|ändra min tid|flytta min tid|måndag|tisdag|onsdag|torsdag|fredag|lördag|söndag|klockan|vilken tid|konsultation|boka|bokning|ledig|passar|mitt namn|mitt nummer|mobilnummer)\b/i.test(raw)
+    /\b(hej+|hejsan|hallå|kan du|kan jag|har jag|hos er|mår du|jag vill|jag ska|jag behöver|hur lång|hur långt|hur länge|ändra min tid|flytta min tid|måndag|tisdag|onsdag|torsdag|fredag|lördag|söndag|klockan|vilken tid|konsultation|boka|bokning|ledig|passar|mitt namn|mitt nummer|mobilnummer)\b/i.test(raw)
   ) return "sv";
 
   if (
-    /\b(man|mikham|mikhastam|mitonam|mitoonam|baraye|vaght|moshavere|moshavereh|esmam|esme man|shomare|shomaram|khobe|bale|lotfan|cancel konam|laghv konam|2shanbe|3shanbe|4shanbe|5shanbe)\b/i.test(raw)
+    /\b(man|mikham|mikhastam|mitonam|mitoonam|baraye|vaght|moshavere|moshavereh|cheghadr tool|esmam|esme man|shomare|shomaram|khobe|bale|lotfan|cancel konam|laghv konam|2shanbe|3shanbe|4shanbe|5shanbe)\b/i.test(raw)
   ) return "fa";
 
-  if (/\b(i want|can i|monday|tuesday|wednesday|appointment|consultation|book|booking|my name)\b/i.test(raw)) return "en";
+  if (/\b(i want|can i|how long|duration|monday|tuesday|wednesday|appointment|consultation|book|booking|my name)\b/i.test(raw)) return "en";
   if (/\b(ich|möchte|termin|montag|dienstag|beratung)\b/i.test(raw)) return "de";
   if (/\b(quiero|cita|lunes|martes|consulta)\b/i.test(raw)) return "es";
 
   return null;
 }
 
+function isMeaningfulLanguageMessage(text?: string): boolean {
+  const raw = String(text || "").trim();
+  if (!raw) return false;
+  if (isAmbiguousShortReply(raw) || isThanksOnlyText(raw) || isAffirmativeBookingText(raw)) return false;
+  if (extractNameAndPhone(raw) || extractPhoneOnly(raw)) return false;
+  if (/^[\d\s:+().,\-/]+$/.test(normalizeLocalizedDigits(raw))) return false;
+
+  const letters = raw.match(/[A-Za-zÅÄÖåäöÉéÜüÑñ\u0600-\u06FF]+/g) || [];
+  if (letters.length < 3) return false;
+  return letters.join("").length >= 8;
+}
+
+function getStoredFlowLanguage(chatId: string): string | null {
+  const shared = conversationFlowLanguages[chatId];
+  if (shared && Date.now() - shared.updatedAt > FLOW_LANGUAGE_TTL_MS) {
+    delete conversationFlowLanguages[chatId];
+  }
+  if (pendingBookings[chatId] && isPendingBookingExpired(pendingBookings[chatId])) {
+    delete pendingBookings[chatId];
+    delete conversationFlowLanguages[chatId];
+  }
+
+  const reschedule = rescheduleContexts[chatId];
+  if (reschedule && !isRescheduleContextStale(reschedule)) {
+    return reschedule.lockedReplyLanguage || reschedule.language || null;
+  }
+
+  return conversationFlowLanguages[chatId]?.language ||
+    cancellationContexts[chatId]?.language ||
+    appointmentSelectionContexts[chatId]?.language ||
+    appointmentLookupContexts[chatId]?.language ||
+    appointmentContexts[chatId]?.language ||
+    pendingBookings[chatId]?.language ||
+    getRecentCompletedBooking(chatId)?.language ||
+    null;
+}
+
+function updateActiveFlowLanguage(chatId: string, language: string) {
+  if (conversationFlowLanguages[chatId]) {
+    conversationFlowLanguages[chatId].language = language;
+    conversationFlowLanguages[chatId].updatedAt = Date.now();
+  }
+  if (pendingBookings[chatId]) pendingBookings[chatId].language = language;
+  if (appointmentContexts[chatId]) appointmentContexts[chatId].language = language;
+  if (appointmentSelectionContexts[chatId]) appointmentSelectionContexts[chatId].language = language;
+  if (appointmentLookupContexts[chatId]) appointmentLookupContexts[chatId].language = language;
+  if (cancellationContexts[chatId]) cancellationContexts[chatId].language = language;
+  if (availabilitySearchContexts[chatId]) availabilitySearchContexts[chatId].language = language;
+  if (rescheduleContexts[chatId]) {
+    rescheduleContexts[chatId].language = language;
+    rescheduleContexts[chatId].lockedReplyLanguage = language;
+  }
+}
+
+function lockConversationFlowLanguage(
+  chatId: string,
+  language: string,
+  flowType: ConversationFlowLanguageContext["flowType"]
+) {
+  const normalized = ["sv", "fa", "de", "es", "ar", "en"].includes(language) ? language : "en";
+  const existing = conversationFlowLanguages[chatId];
+  conversationFlowLanguages[chatId] = {
+    language: existing?.language || normalized,
+    flowType,
+    createdAt: existing?.createdAt || Date.now(),
+    updatedAt: Date.now()
+  };
+  chatLanguages[chatId] = conversationFlowLanguages[chatId].language;
+}
+
+function clearConversationFlowLanguage(chatId: string) {
+  delete conversationFlowLanguages[chatId];
+}
+
 function getFlowReplyLanguage(storedLanguage: string | undefined | null, currentLanguage: string, latestText?: string): string {
-  // A clear language in the latest customer message must override stale flow state.
-  // This is especially important after old Persian test conversations in Messenger.
-  const latestStrong = detectStrongLatestLanguage(latestText);
-  return latestStrong || storedLanguage || currentLanguage || "en";
+  const explicitSwitch = isExplicitLanguageSwitch(latestText);
+  if (explicitSwitch) return explicitSwitch;
+  return storedLanguage || currentLanguage || "en";
 }
 
 function getConversationLanguage(chatId: string, latestText?: string): string {
   const text = String(latestText || "").trim();
   const previous = chatLanguages[chatId];
-  const completed = getRecentCompletedBooking(chatId);
+  const storedFlowLanguage = getStoredFlowLanguage(chatId);
   const explicitSwitch = isExplicitLanguageSwitch(text);
 
   if (explicitSwitch) {
     chatLanguages[chatId] = explicitSwitch;
+    updateActiveFlowLanguage(chatId, explicitSwitch);
     return explicitSwitch;
   }
-
-  const activeReschedule = rescheduleContexts[chatId];
-  if (activeReschedule && !isRescheduleContextStale(activeReschedule)) {
-    const locked = activeReschedule.lockedReplyLanguage || activeReschedule.language || previous || "en";
-    chatLanguages[chatId] = locked;
-    return locked;
-  }
-
-  if (completed && isThanksOnlyText(text)) return completed.language || previous || "en";
 
   const strongLatest = detectStrongLatestLanguage(text);
   const detected = strongLatest || detectUserLanguage(text || "");
 
-  if (strongLatest && strongLatest !== previous) {
+  if (
+    strongLatest &&
+    strongLatest !== (storedFlowLanguage || previous) &&
+    isMeaningfulLanguageMessage(text) &&
+    hasStrongLanguageEvidence(strongLatest, text)
+  ) {
     chatLanguages[chatId] = strongLatest;
+    updateActiveFlowLanguage(chatId, strongLatest);
     console.log(
-      `[LanguageLock] strong latest message override previous=${previous || "none"} with=${strongLatest} chatId=${chatId}`
+      `[LanguageLock] meaningful language switch previous=${storedFlowLanguage || previous || "none"} with=${strongLatest} chatId=${chatId}`
     );
     return strongLatest;
   }
 
-  // Important production fix:
-  // Old Telegram/Instagram chats can already have a previous language locked from an older test.
-  // If the next message is a full, strong message in another language AND includes a time,
-  // the old code kept the previous language because inferRequestedTimeFromText(text) returned true.
-  // That caused English conversations to receive Swedish deterministic replies like:
-  // "Ja, fredag 17 juli kl 16:30 är ledig".
-  // Strong new messages must be allowed to reset/override the old session language.
-  if (shouldAllowLatestLanguageOverride(chatId, previous, detected, text)) {
-    chatLanguages[chatId] = detected;
-    console.log(`[LanguageLock] overriding previous=${previous} with detected=${detected} for chatId=${chatId}`);
-    return detected;
+  if (storedFlowLanguage) {
+    chatLanguages[chatId] = storedFlowLanguage;
+    if (conversationFlowLanguages[chatId]) conversationFlowLanguages[chatId].updatedAt = Date.now();
+    return storedFlowLanguage;
   }
 
-  if (previous && shouldKeepPreviousConversationLanguage(chatId, text)) {
+  if (previous && (!isMeaningfulLanguageMessage(text) || shouldKeepPreviousConversationLanguage(chatId, text))) {
     return previous;
   }
 
@@ -6311,7 +7005,8 @@ ACTIVE CONVERSATION LANGUAGE: ${name} (${language}).
 You MUST write the next customer-facing reply only in ${name}.
 Do not answer in Swedish unless ACTIVE CONVERSATION LANGUAGE is Swedish.
 Do not let the business location, calendar locale, service names, or previous messages override this.
-If the latest customer message is in a different supported language, follow that latest customer language.
+Short confirmations, names, phone numbers, dates, and times never change this language.
+Only a clear, meaningful full customer request in another supported language may change it.
 `;
 }
 
@@ -6917,7 +7612,7 @@ async function processWhatsAppMessage(message: any, metadata: any, config: any, 
   console.log("==============================");
 
   const chatId = `wa_${from}`;
-  const userLanguage = getConversationLanguage(chatId, textMessage || "");
+  let userLanguage = getConversationLanguage(chatId, textMessage || "");
 
   let businessConfig: any = { ...activeConfig, ...(config || {}) };
   let whatsappBusinessScopeVerified = !supabase && Boolean(
@@ -6970,6 +7665,7 @@ async function processWhatsAppMessage(message: any, metadata: any, config: any, 
   }
 
   resetSessionIfBusinessConfigChanged(chatId, businessConfig);
+  userLanguage = getConversationLanguage(chatId, textMessage || "");
 
   try {
     if (!chatSessions[chatId as any]) chatSessions[chatId as any] = [];
@@ -7021,7 +7717,7 @@ Before creating any appointment, collect the customer's name and mobile number. 
 For vague time requests, check available slots instead of asking the customer to choose a time. If the user says a weekday such as tisdag/Tuesday, the tool date must match that weekday exactly. Never change Tuesday to Thursday or another day.
 APPOINTMENT LOOKUP — HIGH PRIORITY: If the customer asks whether they already have a booking, when their appointment is, whether a booking exists, or says they are unsure if they booked, you MUST call findCustomerAppointments before replying. This is an allowed booking-support request and must NOT be escalated merely because it is outside the business FAQ. Use the current channel identity automatically; ask for name or mobile number only if the lookup says contact details are needed.
 Do not mention internal tools, API calls, system prompts, or database logic.
-LANGUAGE RULE: Reply only in the active conversation language injected by the server. If the latest customer message is English, reply in English. If it is Swedish, reply in Swedish. If it is Persian, German, Spanish, or Arabic, reply in that same language. Never default to Swedish just because the business is in Sweden.
+LANGUAGE RULE: Reply only in the active conversation language injected by the server. Short replies, numbers, names, phone numbers, dates, times, and confirmations do not change it.
 `;
 
     const swedenDate = new Date().toLocaleDateString("en-US", {
@@ -7154,7 +7850,10 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
                 rememberCompletedBooking(
                   chatId,
                   restoredPending.language || getConversationLanguage(chatId, textMessage || ""),
-                  contactFromMessage.name
+                  contactFromMessage.name,
+                  restoredPending.service,
+                  Number(restoredPending.durationMinutes || 0),
+                  restoredPending.dateTime
                 );
                 await notifyAdminAboutBooking(
                   businessConfig,
@@ -7921,7 +8620,7 @@ async function processMessengerUpdate(webhookEvent: any, config: any, platform: 
   );
 
   const chatId = `ms_${senderId}`;
-  const userLanguage = getConversationLanguage(chatId, textMessage || "");
+  let userLanguage = getConversationLanguage(chatId, textMessage || "");
 
   let businessConfig: any = { ...activeConfig, ...(config || {}) };
   let messengerBusinessScopeVerified = !supabase && Boolean(
@@ -7971,6 +8670,7 @@ async function processMessengerUpdate(webhookEvent: any, config: any, platform: 
   }
 
   resetSessionIfBusinessConfigChanged(chatId, businessConfig);
+  userLanguage = getConversationLanguage(chatId, textMessage || "");
 
   try {
     if (textMessage) {
@@ -8013,7 +8713,7 @@ async function processMessengerUpdate(webhookEvent: any, config: any, platform: 
           lookupText: textMessage,
           lookupPath: "messenger_deterministic_lookup"
         },
-        chatId.toString(),
+        senderId,
         "messenger",
         businessConfig
       );
@@ -8155,7 +8855,14 @@ async function processMessengerUpdate(webhookEvent: any, config: any, platform: 
           durationMinutes: pending.durationMinutes
         });
         await clearPendingBooking(chatId);
-        rememberCompletedBooking(chatId, detectedLang, contact.name);
+        rememberCompletedBooking(
+          chatId,
+          detectedLang,
+          contact.name,
+          pending.service,
+          Number(pending.durationMinutes || 0),
+          pending.dateTime
+        );
         await notifyAdminAboutBooking(businessConfig, "Messenger", businessConfig.businessName || businessConfig.business_name || "business", contact.name, contact.phone, pending.dateTime);
 
         const bookedText = formatBookingSavedMessage(detectedLang, contact.name, pending.service, pending.dateTime);
@@ -8265,7 +8972,26 @@ async function processMessengerUpdate(webhookEvent: any, config: any, platform: 
         { text: "Voice message input from Messenger:" },
         { inlineData: { data: base64Audio, mimeType } }
       ];
-      userMessageForLog = "[Messenger Voice Message]";
+      const voiceTranscript = await transcribeVoiceMessageForFlow(userMessageContent);
+      if (voiceTranscript) {
+        userLanguage = getConversationLanguage(chatId, voiceTranscript);
+        userMessageContent = voiceTranscript;
+        userMessageForLog = voiceTranscript;
+        const unifiedHandled = await handleUnifiedBookingEngine({
+          sessionId: chatId,
+          platformName: "messenger",
+          platformLogName: "Messenger",
+          recipientUserId: senderId,
+          text: voiceTranscript,
+          history,
+          businessConfig,
+          send: (reply) => sendMessengerMessage(senderId, reply, businessConfig),
+          postProcessPlatform: platform
+        });
+        if (unifiedHandled) return;
+      } else {
+        userMessageForLog = "[Messenger Voice Message]";
+      }
     }
 
     const usage = await checkAndIncrementDailyUsage({
@@ -8301,7 +9027,7 @@ Before creating any appointment, collect the customer's name and mobile number. 
 For vague time requests, check available slots instead of asking the customer to choose a time. If the user says a weekday such as tisdag/Tuesday, the tool date must match that weekday exactly. Never change Tuesday to Thursday or another day.
 APPOINTMENT LOOKUP — HIGH PRIORITY: If the customer asks whether they already have a booking, when their appointment is, whether a booking exists, or says they are unsure if they booked, you MUST call findCustomerAppointments before replying. This is an allowed booking-support request and must NOT be escalated merely because it is outside the business FAQ. Use the current channel identity automatically; ask for name or mobile number only if the lookup says contact details are needed.
 Do not mention internal tools, API calls, system prompts, or database logic.
-LANGUAGE RULE: Reply only in the active conversation language injected by the server. If the latest customer message is English, reply in English. If it is Swedish, reply in Swedish. If it is Persian, German, Spanish, or Arabic, reply in that same language. Never default to Swedish just because the business is in Sweden.
+LANGUAGE RULE: Reply only in the active conversation language injected by the server. Short replies, numbers, names, phone numbers, dates, times, and confirmations do not change it.
 `;
 
     const swedenDate = new Date().toLocaleDateString("en-US", {
@@ -8320,8 +9046,8 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       finalSystemInstruction +=
         "\nVOICE ENGINE:\n" +
         "You support Swedish, English, Persian (Farsi), German, Spanish and Arabic.\n" +
-        "Detect the spoken language automatically.\n" +
-        "Reply using the exact same language.\n" +
+        "Use the server's active conversation language after transcription.\n" +
+        "Do not switch language because of a short spoken reply.\n" +
         "If the user speaks Persian using Latin letters, reply in Persian script.\n" +
         "Your response must be suitable for natural TTS.\n" +
         "Keep responses under 60 words unless more detail is required.\n";
@@ -8415,7 +9141,14 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
                 durationMinutes: restoredPending.durationMinutes
               });
               await clearPendingBooking(chatId);
-              rememberCompletedBooking(chatId, getConversationLanguage(chatId, textMessage || ""), contactOverride.name);
+              rememberCompletedBooking(
+                chatId,
+                getConversationLanguage(chatId, textMessage || ""),
+                contactOverride.name,
+                restoredPending.service,
+                Number(restoredPending.durationMinutes || 0),
+                restoredPending.dateTime
+              );
               await notifyAdminAboutBooking(businessConfig, "Messenger", businessName, contactOverride.name, contactOverride.phone, restoredPending.dateTime);
             }
           } else {
@@ -8505,8 +9238,9 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
 
 const languageEngine = `
 LANGUAGE ENGINE:
-Always identify the customer's language from their latest message.
-Reply in the active conversation language injected by the server and in the same language as the customer’s latest message.
+Reply in the active conversation language injected by the server.
+The server preserves that language across the active flow. Short replies, numbers, names,
+phone numbers, dates, times, and confirmations do not change it.
 
 Supported languages:
 - Swedish
@@ -8523,7 +9257,8 @@ Arabic rule:
 If the customer writes Arabic, reply in Arabic script.
 
 Mixed language rule:
-If the customer mixes languages, choose the language that carries the main request. If the user explicitly asks for a language, use that language.
+If the customer mixes languages, keep the active conversation language. Change only when
+the server injects a new active language after a clear meaningful request or explicit language switch.
 
 Never say "I can only speak Swedish" or "I only communicate in Swedish".
 Never refuse a supported language.
@@ -8607,6 +9342,7 @@ async function processInstagramUpdate(webhook_event: any, config: any, platform:
   }
 
   resetSessionIfBusinessConfigChanged(chatId, businessConfig);
+  userLanguage = getConversationLanguage(chatId, textMessage || "");
 
   try {
     if (!chatSessions[chatId as any]) chatSessions[chatId as any] = [];
@@ -8672,11 +9408,43 @@ if (contentType === "video/mp4") {
     }
   }
 ];
+        const voiceTranscript = await transcribeVoiceMessageForFlow(userMessageContent);
+        if (voiceTranscript) {
+          userLanguage = getConversationLanguage(chatId, voiceTranscript);
+          userMessageContent = voiceTranscript;
+          userMessageForLog = voiceTranscript;
+          const unifiedHandled = await handleUnifiedBookingEngine({
+            sessionId: chatId,
+            platformName: "instagram",
+            platformLogName: "Instagram",
+            recipientUserId: senderId,
+            text: voiceTranscript,
+            history,
+            businessConfig,
+            send: (reply) => sendInstagramMessage(
+              senderId,
+              reply,
+              getBusinessInstagramToken(businessConfig)
+            ),
+            postProcessPlatform: platform
+          });
+          if (unifiedHandled) return;
+        }
       } catch (voiceErr) {
         console.error('Instagram voice download failed:', voiceErr);
         await sendInstagramMessage(
           senderId,
-          'Ursäkta, jag kunde inte lyssna på röstmeddelandet just nu. Kan du skriva ditt meddelande istället?',
+          userLanguage === "fa"
+            ? "ببخشید، الان نتونستم پیام صوتی رو بشنوم. لطفاً پیام‌تون رو بنویسید."
+            : userLanguage === "sv"
+              ? "Ursäkta, jag kunde inte lyssna på röstmeddelandet just nu. Kan du skriva ditt meddelande istället?"
+              : userLanguage === "de"
+                ? "Entschuldigung, ich konnte die Sprachnachricht gerade nicht anhören. Bitte schreiben Sie Ihre Nachricht."
+                : userLanguage === "es"
+                  ? "Lo siento, no pude escuchar el mensaje de voz. ¿Puedes escribir tu mensaje?"
+                  : userLanguage === "ar"
+                    ? "عذرًا، لم أتمكن من سماع الرسالة الصوتية الآن. يرجى كتابة رسالتك."
+                    : "Sorry, I couldn’t listen to the voice message just now. Please type your message instead.",
          getBusinessInstagramToken(businessConfig)
         );
         return;
@@ -8716,7 +9484,7 @@ Before creating any appointment, collect the customer's name and mobile number. 
 For vague time requests, check available slots instead of asking the customer to choose a time. If the user says a weekday such as tisdag/Tuesday, the tool date must match that weekday exactly. Never change Tuesday to Thursday or another day.
 APPOINTMENT LOOKUP — HIGH PRIORITY: If the customer asks whether they already have a booking, when their appointment is, whether a booking exists, or says they are unsure if they booked, you MUST call findCustomerAppointments before replying. This is an allowed booking-support request and must NOT be escalated merely because it is outside the business FAQ. Use the current channel identity automatically; ask for name or mobile number only if the lookup says contact details are needed.
 Do not mention internal tools, API calls, system prompts, or database logic.
-LANGUAGE RULE: Reply only in the active conversation language injected by the server. If the latest customer message is English, reply in English. If it is Swedish, reply in Swedish. If it is Persian, German, Spanish, or Arabic, reply in that same language. Never default to Swedish just because the business is in Sweden.
+LANGUAGE RULE: Reply only in the active conversation language injected by the server. Short replies, numbers, names, phone numbers, dates, times, and confirmations do not change it.
 `;
 
     const swedenDate = new Date().toLocaleDateString('en-US', {
@@ -8733,7 +9501,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
 
     if (isVoiceMessage) {
       finalSystemInstruction +=
-        "\nVoice specific instructions: The user sent an Instagram voice message. Detect the spoken language and reply in the exact same language. Keep the response natural, short, and suitable for voice playback.";
+        "\nVoice specific instructions: The message was transcribed before routing. Reply in the server's active conversation language and do not switch for a short spoken reply. Keep the response natural, short, and suitable for voice playback.";
     }
 
     let chatResponse = await generateContentWithFallback(null, {
@@ -8811,7 +9579,14 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
               dateTime: args.dateTime,
               durationMinutes: args.durationMinutes
             });
-            rememberCompletedBooking(chatId, getConversationLanguage(chatId, textMessage || ""), safeName);
+            rememberCompletedBooking(
+              chatId,
+              getConversationLanguage(chatId, textMessage || ""),
+              safeName,
+              args.service,
+              Number(args.durationMinutes || 0),
+              args.dateTime
+            );
           }
           if (adapterRes && adapterRes.success) {
             await notifyAdminAboutBooking(
@@ -9324,7 +10099,7 @@ Before creating any appointment, collect the customer's name and mobile number. 
 For vague time requests, check available slots instead of asking the customer to choose a time. If the user says a weekday such as tisdag/Tuesday, the tool date must match that weekday exactly. Never change Tuesday to Thursday or another day.
 APPOINTMENT LOOKUP — HIGH PRIORITY: If the customer asks whether they already have a booking, when their appointment is, whether a booking exists, or says they are unsure if they booked, you MUST call findCustomerAppointments before replying. This is an allowed booking-support request and must NOT be escalated merely because it is outside the business FAQ. Use the current channel identity automatically; ask for name or mobile number only if the lookup says contact details are needed.
 Do not mention internal tools, API calls, system prompts, or database logic.
-LANGUAGE RULE: Reply only in the active conversation language injected by the server. If the latest customer message is English, reply in English. If it is Swedish, reply in Swedish. If it is Persian, German, Spanish, or Arabic, reply in that same language. Never default to Swedish just because the business is in Sweden.
+LANGUAGE RULE: Reply only in the active conversation language injected by the server. Short replies, numbers, names, phone numbers, dates, times, and confirmations do not change it.
 `;
       const swedenDate = new Date().toLocaleDateString('en-US', {
         timeZone: 'Europe/Stockholm',
@@ -9399,7 +10174,14 @@ Never translate unless requested.
               dateTime: args.dateTime,
               durationMinutes: args.durationMinutes
             });
-            rememberCompletedBooking(chatId.toString(), getLockedReplyLanguage(chatId, userText || ""), safeName);
+            rememberCompletedBooking(
+              chatId.toString(),
+              getLockedReplyLanguage(chatId, userText || ""),
+              safeName,
+              args.service,
+              Number(args.durationMinutes || 0),
+              args.dateTime
+            );
           }
           if (adapterRes && adapterRes.success) {
             await notifyAdminAboutBooking(

@@ -273,6 +273,7 @@ interface CalendarAdapter {
   insertAppointment(name: string, phone: string, service: string, dateTime: string, durationMinutes?: number, chatId?: string, skipConflictCheck?: boolean): Promise<any> | any;
   updateAppointment?(eventId: string, dateTime: string, durationMinutes?: number): Promise<any> | any;
   cancelAppointment?(eventId: string): Promise<any> | any;
+  getEventById?(eventId: string): Promise<any | null> | any | null;
   getEvents(startDate: string, endDate: string): Promise<any> | any;
 }
 
@@ -319,6 +320,14 @@ function getAppointmentBusinessScope(config: any): string {
   return calendarId ? `calendar:${calendarId}` : "";
 }
 
+function normalizeLocalizedDigits(value?: string): string {
+  const persianDigits = "۰۱۲۳۴۵۶۷۸۹";
+  const arabicDigits = "٠١٢٣٤٥٦٧٨٩";
+  return String(value || "")
+    .replace(/[۰-۹]/g, (digit) => String(persianDigits.indexOf(digit)))
+    .replace(/[٠-٩]/g, (digit) => String(arabicDigits.indexOf(digit)));
+}
+
 function isLikelyWorkingHoursMarker(e: any): boolean {
   const summary = String(e?.summary || e?.title || "").trim().toLowerCase();
   const description = String(e?.description || "").trim().toLowerCase();
@@ -335,7 +344,7 @@ function isLikelyWorkingHoursMarker(e: any): boolean {
 
 function normalizeRequestedTime(input?: string): string | null {
   if (!input) return null;
-  const raw = String(input).trim().toLowerCase();
+  const raw = normalizeLocalizedDigits(String(input)).trim().toLowerCase();
   const match = raw.match(/(\d{1,2})\s*[\.:]?\s*(\d{2})?/);
   if (!match) return null;
   const hour = Number(match[1]);
@@ -346,7 +355,7 @@ function normalizeRequestedTime(input?: string): string | null {
 
 function inferRequestedTimeFromText(text?: string): string | null {
   if (!text) return null;
-  const raw = String(text).trim().toLowerCase();
+  const raw = normalizeLocalizedDigits(String(text)).trim().toLowerCase();
 
   // Prefer explicit clock words so phone numbers like 0738... are not mistaken for times.
   const patterns = [
@@ -581,7 +590,28 @@ async function verifyExactSlotIsFree(
   return { free, normalizedIso, reason: free ? undefined : "calendar_conflict" };
 }
 
-function getDailySlots(startDateStr: string, endDateStr: string, events: any[], durationMinutes: number = 60, requestedTime?: string) {
+type SlotSearchOptions = {
+  minTime?: string;
+  maxTime?: string;
+  afterTime?: string;
+  selectFirstAvailable?: boolean;
+};
+
+function timeTextToMinutes(value?: string): number | null {
+  const normalized = normalizeRequestedTime(value || "");
+  if (!normalized) return null;
+  const [hours, minutes] = normalized.split(":").map(Number);
+  return hours * 60 + minutes;
+}
+
+function getDailySlots(
+  startDateStr: string,
+  endDateStr: string,
+  events: any[],
+  durationMinutes: number = 60,
+  requestedTime?: string,
+  options: SlotSearchOptions = {}
+) {
   const normalizedRequestedTime = normalizeRequestedTime(requestedTime || "");
   const endString = endDateStr || startDateStr;
 
@@ -642,7 +672,15 @@ function getDailySlots(startDateStr: string, endDateStr: string, events: any[], 
     return candidates;
   };
 
-  const allCandidates = getAllFreeCandidates();
+  const minimumMinutes = timeTextToMinutes(options.minTime);
+  const maximumMinutes = timeTextToMinutes(options.maxTime);
+  const afterMinutes = timeTextToMinutes(options.afterTime);
+  const allCandidates = getAllFreeCandidates().filter((candidate) => {
+    if (minimumMinutes !== null && candidate.totalMin < minimumMinutes) return false;
+    if (maximumMinutes !== null && candidate.totalMin > maximumMinutes) return false;
+    if (afterMinutes !== null && candidate.totalMin <= afterMinutes) return false;
+    return true;
+  });
 
   // If the customer requested an exact time, that exact time must win if it is actually free.
   if (normalizedRequestedTime) {
@@ -705,6 +743,9 @@ class MockCalendarAdapter implements CalendarAdapter {
   }
 
   getEvents(startDate: string, endDate: string) { return this.events; }
+  getEventById(eventId: string) {
+    return this.events.find((item: any) => String(item.id) === String(eventId)) || null;
+  }
   insertAppointment(name: string, phone: string, service: string, dateTime: string, durationMinutes: number = 60, chatId?: string, _skipConflictCheck: boolean = false) {
     const conflicting = this.events.filter(e => e.startTime === dateTime);
     if(conflicting.length > 0) return { success: false, message: "Slot already booked." };
@@ -756,6 +797,20 @@ class GenericCalendarAdapter implements CalendarAdapter {
       return await res.json();
     } catch(e) {
       return { success: false, message: 'Failed to access remote calendar API to check slots.' };
+    }
+  }
+
+  async getEventById(eventId: string) {
+    try {
+      if (!eventId) return null;
+      const headers: any = {};
+      if (this.apiKey) headers['Authorization'] = `Bearer ${this.apiKey}`;
+      const res = await fetch(`${this.apiUrl}/events/${encodeURIComponent(eventId)}`, { headers });
+      if (!res.ok) return null;
+      const data = await res.json().catch(() => null);
+      return data?.event || data || null;
+    } catch (e) {
+      return null;
     }
   }
 
@@ -883,6 +938,20 @@ class GoogleCalendarAdapter implements CalendarAdapter {
     }
   }
 
+  async getEventById(eventId: string) {
+    try {
+      if (!eventId) return null;
+      const res = await this.calendar.events.get({
+        calendarId: this.calendarId,
+        eventId
+      });
+      return res.data || null;
+    } catch (e: any) {
+      console.error("Google Calendar getEventById Error:", e.message);
+      return null;
+    }
+  }
+
   async insertAppointment(name: string, phone: string, service: string, dateTime: string, durationMinutes: number = 60, chatId?: string, skipConflictCheck: boolean = false) {
     try {
       const rawDateTime = String(dateTime || "").trim();
@@ -919,6 +988,18 @@ class GoogleCalendarAdapter implements CalendarAdapter {
       }
 
       const endTime = new Date(startTime.getTime() + safeDuration * 60 * 1000);
+      const ownerPlatform = String(chatId || "").startsWith("ms_")
+        ? "messenger"
+        : String(chatId || "").startsWith("ig_")
+          ? "instagram"
+          : String(chatId || "").startsWith("wa_")
+            ? "whatsapp"
+            : String(chatId || "").startsWith("tg_")
+              ? "telegram"
+              : "";
+      const ownerUserId = ownerPlatform
+        ? normalizePlatformUserId(ownerPlatform, String(chatId || ""))
+        : "";
 
       // Tool-driven calls keep their own final conflict check. The deterministic booking
       // engine can skip this duplicate read after verifyExactSlotIsFree() has just passed.
@@ -937,6 +1018,16 @@ class GoogleCalendarAdapter implements CalendarAdapter {
           description: `Tjänst: ${service}\nTelegramChatId: ${chatId || ''}`,
           start: { dateTime: startTime.toISOString(), timeZone: "Europe/Stockholm" },
           end: { dateTime: endTime.toISOString(), timeZone: "Europe/Stockholm" },
+          ...(ownerPlatform && ownerUserId
+            ? {
+                extendedProperties: {
+                  private: {
+                    platform: ownerPlatform,
+                    userId: ownerUserId
+                  }
+                }
+              }
+            : {})
         },
       });
       return { success: true, message: `Successfully booked for ${name} at ${dateTime}.`, event: res.data };
@@ -1113,6 +1204,49 @@ function calendarEventHasExactMessengerOwner(event: any, messengerUserId: string
   // Messenger-prefixed legacy owner can prove Messenger ownership without a phone mapping.
   if (!/^(?:ms_|messenger[_:-])/i.test(owner)) return false;
   return normalizePlatformUserId("messenger", owner) === expectedUserId;
+}
+
+function calendarEventHasExactChannelOwner(event: any, platform: string, userId: string): boolean {
+  const normalizedPlatform = normalizePlatformName(platform);
+  const expectedUserId = normalizePlatformUserId(normalizedPlatform, userId);
+  if (!normalizedPlatform || !expectedUserId) return false;
+  if (normalizedPlatform === "messenger") {
+    return calendarEventHasExactMessengerOwner(event, expectedUserId);
+  }
+
+  const privateProperties = event?.extendedProperties?.private || {};
+  const privatePlatform = normalizePlatformName(String(privateProperties.platform || ""));
+  const privateUserId = normalizePlatformUserId(
+    privatePlatform,
+    String(privateProperties.userId || privateProperties.user_id || "")
+  );
+  if (privatePlatform === normalizedPlatform && privateUserId === expectedUserId) return true;
+
+  const owner = getCalendarConversationOwner(event);
+  const prefixPattern: Record<string, RegExp> = {
+    instagram: /^(?:ig_|instagram[_:-])/i,
+    whatsapp: /^(?:wa_|whatsapp[_:-])/i,
+    telegram: /^(?:tg_|telegram[_:-])/i,
+  };
+  if (prefixPattern[normalizedPlatform]?.test(owner)) {
+    return normalizePlatformUserId(normalizedPlatform, owner) === expectedUserId;
+  }
+
+  // A WhatsApp sender number is a channel-verified phone identity. Exact phone tokens
+  // are therefore safe for legacy WhatsApp events that predate explicit owner markers.
+  if (normalizedPlatform === "whatsapp") {
+    return calendarEventHasExactPhone(event, expectedUserId);
+  }
+  return false;
+}
+
+function calendarEventBusinessMarkerMatches(event: any, businessScope: string): boolean {
+  const markedBusiness = String(
+    event?.extendedProperties?.private?.businessId ||
+    event?.extendedProperties?.private?.business_id ||
+    ""
+  ).trim();
+  return !markedBusiness || markedBusiness === String(businessScope || "").trim();
 }
 
 function calendarEventHasExactPhone(event: any, phone: string): boolean {
@@ -1460,11 +1594,8 @@ async function findCustomerAppointments(
                 return calendarEventHasExactMessengerOwner(event, normalizedCustomerId) ||
                   calendarEventHasExactPhone(event, appointment.phone || verifiedPhone);
               }
-              return eventMatchesCustomer(event, {
-                customerId,
-                phone: appointment.phone || verifiedPhone,
-                name: appointment.customerName || name
-              });
+              return calendarEventHasExactChannelOwner(event, normalizedPlatform, normalizedCustomerId) ||
+                calendarEventHasExactPhone(event, appointment.phone || verifiedPhone);
             });
             if (matchedEvent?.id) appointment.calendarEventId = matchedEvent.id;
           }
@@ -1507,7 +1638,10 @@ async function findCustomerAppointments(
   }
 
   const events = await adapter.getEvents(startDate, endDate);
-  const eligibleEvents = (Array.isArray(events) ? events : []).filter((event: any) => !isLikelyWorkingHoursMarker(event));
+  const eligibleEvents = (Array.isArray(events) ? events : []).filter((event: any) =>
+    !isLikelyWorkingHoursMarker(event) &&
+    calendarEventBusinessMarkerMatches(event, getAppointmentBusinessScope(businessConfig))
+  );
   let secureCalendarSelection;
 
   if (normalizedPlatform === "messenger") {
@@ -1545,15 +1679,34 @@ async function findCustomerAppointments(
       secureCalendarSelection = exactMessengerSelection;
     }
   } else {
-    secureCalendarSelection = selectSecureCalendarEvents(
-      eligibleEvents,
-      { platform: normalizedPlatform, userId: normalizedCustomerId, phone: verifiedPhone },
-      lookupMode,
-      now,
-      rangeStartMs,
-      rangeEndMs,
-      getEventStartIso
+    const exactChannelEvents = eligibleEvents.filter((event: any) =>
+      calendarEventHasExactChannelOwner(event, normalizedPlatform, normalizedCustomerId)
     );
+    const verifiedPhoneEvents = normalizeLookupDigits(verifiedPhone).length >= 7
+      ? eligibleEvents.filter((event: any) => calendarEventHasExactPhone(event, verifiedPhone))
+      : [];
+    secureCalendarSelection = exactChannelEvents.length > 0
+      ? {
+          events: exactChannelEvents.filter((event: any) => {
+            if (!isActiveAppointmentStatus(event?.status)) return false;
+            const startMs = new Date(getEventStartIso(event)).getTime();
+            if (!Number.isFinite(startMs) || startMs < rangeStartMs || startMs > rangeEndMs) return false;
+            if (lookupMode === "upcoming") return startMs >= now;
+            if (lookupMode === "history") return startMs <= now;
+            return true;
+          }),
+          identityKey: `channel:${normalizedPlatform}:${normalizedCustomerId}`,
+          matchedBy: "channel" as const
+        }
+      : selectSecureCalendarEvents(
+          verifiedPhoneEvents,
+          { platform: normalizedPlatform, userId: normalizedCustomerId, phone: verifiedPhone },
+          lookupMode,
+          now,
+          rangeStartMs,
+          rangeEndMs,
+          getEventStartIso
+        );
     exactIdentityMatchCount = secureCalendarSelection.matchedBy === "channel"
       ? secureCalendarSelection.events.length
       : 0;
@@ -1921,9 +2074,44 @@ async function checkAndIncrementDailyUsage(params: { businessId?: string | numbe
 const pendingBookings: Record<string, any> = {};
 const recentlyCompletedBookings: Record<string, { completedAt: number; language: string; name?: string }> = {};
 const appointmentContexts: Record<string, { appointment: any; savedAt: number; language: string }> = {};
-const appointmentSelectionContexts: Record<string, { appointments: any[]; savedAt: number; language: string }> = {};
+const appointmentSelectionContexts: Record<string, { appointments: any[]; savedAt: number; language: string; intent?: "reschedule" | "cancel" | "lookup" }> = {};
 const appointmentLookupContexts: Record<string, { savedAt: number; language: string; includePast?: boolean; lookupMode?: AppointmentLookupMode; historyWindowLimited?: boolean }> = {};
-const rescheduleContexts: Record<string, { appointment: any; savedAt: number; language: string; requestedDate?: string; requestedTime?: string }> = {};
+type RescheduleOperation =
+  | "awaiting_target"
+  | "awaiting_slot_selection"
+  | "awaiting_confirmation"
+  | "updating"
+  | "update_failed"
+  | "verification_failed";
+
+type RescheduleContext = {
+  sessionId: string;
+  businessId: string;
+  platform: string;
+  userId: string;
+  identityKey: string;
+  appointment: any;
+  originalAppointmentId: string;
+  exactCalendarEventId: string;
+  originalStartTime: string;
+  requestedDate?: string;
+  requestedTime?: string;
+  requestedDaypart?: "morning" | "afternoon" | "evening";
+  selectedNewStartTime?: string;
+  selectedEndTime?: string;
+  offeredSlots?: string[];
+  lastOfferedTime?: string;
+  serviceDuration: number;
+  lockedReplyLanguage: string;
+  language: string;
+  lastOperation: RescheduleOperation;
+  createdAt: number;
+  savedAt: number;
+};
+
+const RESCHEDULE_CONTEXT_TTL_MS = Number(process.env.RESCHEDULE_CONTEXT_TTL_MINUTES || 60) * 60 * 1000;
+const rescheduleContexts: Record<string, RescheduleContext> = {};
+const recentlyCompletedReschedules: Record<string, { completedAt: number; eventId: string; newStartTime: string }> = {};
 const cancellationContexts: Record<string, { appointment: any; savedAt: number; language: string; feeApplies: boolean; feeAmount: number; currency: string; awaitingReason: boolean; reason?: string }> = {};
 const appointmentStateOwners: Record<string, AppointmentStateOwner> = {};
 
@@ -1944,6 +2132,26 @@ function clearAppointmentConversationState(sessionId: string) {
   delete rescheduleContexts[sessionId];
   delete cancellationContexts[sessionId];
   delete appointmentStateOwners[sessionId];
+}
+
+function getAppointmentMutationId(appointment: any): string {
+  return String(appointment?.id || appointment?.calendarEventId || "").trim();
+}
+
+function getAppointmentCalendarEventId(appointment: any): string {
+  return String(appointment?.calendarEventId || (appointment?.source === "calendar" ? appointment?.id : "") || "").trim();
+}
+
+function getAppointmentDurationMinutes(appointment: any): number {
+  const startMs = new Date(String(appointment?.start || "")).getTime();
+  const endMs = new Date(String(appointment?.end || "")).getTime();
+  const measured = Math.round((endMs - startMs) / 60000);
+  return Math.max(
+    1,
+    Number.isFinite(measured) && measured > 0
+      ? measured
+      : (getDefaultBookingDurationForService(appointment?.service) || 30)
+  );
 }
 
 function saveAppointmentStateOwner(sessionId: string, owner: AppointmentStateOwner, identityKey?: string) {
@@ -2253,9 +2461,12 @@ async function validateStoredAppointmentForMutation(
     const ownerPhone = String(owner.identityKey || "").startsWith("phone:")
       ? normalizeLookupDigits(String(owner.identityKey).slice("phone:".length))
       : "";
-    const phoneMatch = ownerPhone.length >= 7 && normalizeLookupDigits(data.phone_number) === ownerPhone;
-
-    if (!channelMatch && !phoneMatch) return null;
+    const phoneMatch = ownerPhone.length >= 7 &&
+      rowPlatform === ownerPlatform &&
+      normalizeLookupDigits(data.phone_number) === ownerPhone &&
+      (!rowUserId || rowUserId === ownerUserId);
+    const identityIsChannel = String(owner.identityKey || "").startsWith("channel:");
+    if (identityIsChannel ? !channelMatch : (!channelMatch && !phoneMatch)) return null;
 
     return {
       ...appointment,
@@ -2276,27 +2487,21 @@ async function validateStoredAppointmentForMutation(
   if (!eventId || Number.isNaN(start.getTime())) return null;
 
   const appointmentDate = stockholmDateString(start);
-  const dayStartMs = stockholmLocalDayStartMs(appointmentDate);
-  const dayEndMs = stockholmLocalDayStartMs(addDaysToStockholmDate(appointmentDate, 1)) - 1;
   const events = await adapter.getEvents(appointmentDate, appointmentDate);
   const liveEvent = (Array.isArray(events) ? events : []).find((event: any) =>
     String(event?.id || "") === eventId
   );
   if (!liveEvent || !isActiveAppointmentStatus(liveEvent.status)) return null;
+  if (!calendarEventBusinessMarkerMatches(liveEvent, businessScope)) return null;
 
+  const exactChannelOwner = calendarEventHasExactChannelOwner(liveEvent, owner.platform, owner.userId);
   const ownerPhone = String(owner.identityKey || "").startsWith("phone:")
     ? String(owner.identityKey).slice("phone:".length)
     : "";
-  const secureMatch = selectSecureCalendarEvents(
-    [liveEvent],
-    { platform: owner.platform, userId: owner.userId, phone: ownerPhone },
-    "today",
-    Date.now(),
-    dayStartMs,
-    dayEndMs,
-    getEventStartIso
-  );
-  if (secureMatch.events.length !== 1) return null;
+  const exactVerifiedPhone = normalizePlatformName(owner.platform) !== "messenger" &&
+    ownerPhone.length >= 7 &&
+    calendarEventHasExactPhone(liveEvent, ownerPhone);
+  if (!exactChannelOwner && !exactVerifiedPhone) return null;
 
   return {
     ...appointment,
@@ -2312,24 +2517,91 @@ function formatStaleAppointmentStateMessage(language: string): string {
   return "I’ll gladly check again 😊 What mobile number did you book with?";
 }
 
-function rememberRescheduleContext(sessionId: string, appointment: any, language: string, requestedDate?: string | null, requestedTime?: string | null) {
+function rememberRescheduleContext(
+  sessionId: string,
+  appointment: any,
+  language: string,
+  requestedDate?: string | null,
+  requestedTime?: string | null,
+  updates: Partial<RescheduleContext> = {}
+) {
+  const now = Date.now();
+  const existing = rescheduleContexts[sessionId];
+  const owner = appointmentStateOwners[sessionId];
+  const sameAppointment = Boolean(
+    existing &&
+    existing.originalAppointmentId === getAppointmentMutationId(appointment) &&
+    existing.exactCalendarEventId === getAppointmentCalendarEventId(appointment)
+  );
+  const base = sameAppointment ? existing : null;
+  const lockedReplyLanguage = String(
+    updates.lockedReplyLanguage ||
+    base?.lockedReplyLanguage ||
+    language ||
+    "en"
+  );
+
   rescheduleContexts[sessionId] = {
+    ...(base || {}),
+    ...updates,
+    sessionId,
+    businessId: String(owner?.businessId || ""),
+    platform: normalizePlatformName(owner?.platform || appointment?.platform || ""),
+    userId: normalizePlatformUserId(owner?.platform || appointment?.platform || "", String(owner?.userId || appointment?.userId || "")),
+    identityKey: String(owner?.identityKey || appointment?.identityKey || ""),
     appointment,
-    savedAt: Date.now(),
-    language,
+    originalAppointmentId: getAppointmentMutationId(appointment),
+    exactCalendarEventId: getAppointmentCalendarEventId(appointment),
+    originalStartTime: String(base?.originalStartTime || appointment?.start || ""),
+    serviceDuration: Number(base?.serviceDuration || getAppointmentDurationMinutes(appointment)),
+    lockedReplyLanguage,
+    language: lockedReplyLanguage,
+    lastOperation: base?.lastOperation || "awaiting_target",
+    createdAt: Number(base?.createdAt || now),
+    savedAt: now,
     ...(requestedDate ? { requestedDate } : {}),
-    ...(requestedTime ? { requestedTime } : {})
+    ...(requestedTime ? { requestedTime } : {}),
+    appointment,
+    lastOperation: updates.lastOperation || base?.lastOperation || "awaiting_target",
+    lockedReplyLanguage,
+    language: lockedReplyLanguage,
+    savedAt: now
   };
 }
 
 function getRescheduleContext(sessionId: string) {
-  const context = rescheduleContexts[sessionId];
-  if (!context) return null;
-  if (Date.now() - context.savedAt > 60 * 60 * 1000) {
-    delete rescheduleContexts[sessionId];
-    return null;
-  }
-  return context;
+  return rescheduleContexts[sessionId] || null;
+}
+
+function isRescheduleContextStale(context: RescheduleContext): boolean {
+  return !context.createdAt || Date.now() - context.createdAt > RESCHEDULE_CONTEXT_TTL_MS;
+}
+
+function getRescheduleReplyLanguage(context: RescheduleContext, latestText?: string): string {
+  return isExplicitLanguageSwitch(latestText) ||
+    context.lockedReplyLanguage ||
+    context.language ||
+    "en";
+}
+
+function rescheduleContextOwnerMatches(
+  context: RescheduleContext,
+  currentOwner: AppointmentStateOwner,
+  storedOwner: AppointmentStateOwner | undefined
+): boolean {
+  if (!storedOwner || !appointmentStateOwnerMatches(storedOwner, currentOwner)) return false;
+  if (context.sessionId !== currentOwner.sessionId) return false;
+  if (context.businessId !== currentOwner.businessId) return false;
+  if (normalizePlatformName(context.platform) !== normalizePlatformName(currentOwner.platform)) return false;
+  if (
+    normalizePlatformUserId(context.platform, context.userId) !==
+    normalizePlatformUserId(currentOwner.platform, currentOwner.userId)
+  ) return false;
+  if (!context.identityKey) return false;
+  if (context.identityKey !== String(storedOwner.identityKey || "")) return false;
+  if (context.originalAppointmentId !== getAppointmentMutationId(context.appointment)) return false;
+  if (context.exactCalendarEventId !== getAppointmentCalendarEventId(context.appointment)) return false;
+  return Boolean(context.originalAppointmentId && context.exactCalendarEventId);
 }
 
 function clearRescheduleContext(sessionId: string) {
@@ -2491,7 +2763,7 @@ function isRescheduleIntent(text?: string): boolean {
 
   const swedishOrEnglish =
     isDirectReschedulePhrase(normalized) ||
-    /(?:^|\s)(?:ändra(?:\s+(?:min\s+tid|tiden|tid|bokningen))?|flytta(?:\s+(?:min\s+tid|tiden|tid|bokningen))?|boka\s+om|omboka|reschedule|change\s+my\s+appointment|change\s+the\s+time|move\s+my\s+appointment)(?=\s|$)/i.test(normalized) ||
+    /(?:^|\s)(?:ändra(?:\s+(?:min\s+tid|tiden|tid|bokningen))?|flytta(?:\s+(?:min\s+tid|tiden|tid|bokningen|den))?|boka\s+om|omboka|reschedule|change\s+my\s+appointment|change\s+the\s+time|move\s+(?:my\s+appointment|it|the\s+appointment))(?=\s|$)/i.test(normalized) ||
     /(?:^|\s)(?:kan\s+(?:tyvärr\s+)?inte\s+komma|kommer\s+inte\s+kunna\s+komma|cannot\s+come|can't\s+come|can\s+not\s+come)(?=\s|$)/i.test(normalized);
 
   const transliteratedPersian =
@@ -2529,6 +2801,72 @@ function formatRescheduleSuccess(language: string, dateTime: string): string {
   if (language === "fa") return `وقت شما با موفقیت به ${dateText} ساعت ${timeText} تغییر کرد. 😊`;
   if (language === "sv") return `Din bokning är nu ombokad till ${dateText} kl ${timeText}. 😊`;
   return `Your appointment has been rescheduled to ${dateText} at ${timeText}. 😊`;
+}
+
+function formatRescheduleConfirmation(language: string, dateTime: string): string {
+  const { dateText, timeText } = formatLocalizedDateTime(dateTime, language);
+  if (language === "fa") return `${dateText} ساعت ${timeText} خالیه. وقتتون رو به همون زمان منتقل کنم؟`;
+  if (language === "sv") return `${dateText} kl. ${timeText} är ledigt. Ska jag flytta din bokning dit?`;
+  if (language === "de") return `${dateText} um ${timeText} Uhr ist frei. Soll ich Ihren Termin dorthin verschieben?`;
+  if (language === "es") return `${dateText} a las ${timeText} está libre. ¿Cambio tu cita a esa hora?`;
+  if (language === "ar") return `${dateText} الساعة ${timeText} متاح. هل أنقل موعدك إلى هذا الوقت؟`;
+  return `${dateText} at ${timeText} is available. Shall I move your appointment there?`;
+}
+
+function formatRescheduleFailure(language: string): string {
+  if (language === "fa") return "متأسفم، نتونستم تغییر وقت رو با اطمینان ثبت کنم. زمان انتخابی‌تون محفوظ مونده؛ لطفاً کمی بعد دوباره تأیید کنید. 🙏";
+  if (language === "sv") return "Tyvärr kunde jag inte verifiera ombokningen. Din valda tid finns kvar här — bekräfta gärna igen om en liten stund. 🙏";
+  if (language === "de") return "Leider konnte ich die Terminänderung nicht sicher bestätigen. Ihre gewählte Zeit bleibt gespeichert; bestätigen Sie bitte in Kürze erneut.";
+  if (language === "es") return "Lo siento, no pude verificar el cambio. Conservaré la hora elegida; vuelve a confirmarla en un momento.";
+  if (language === "ar") return "عذرًا، لم أتمكن من التحقق من تغيير الموعد. سأحتفظ بالوقت المختار؛ يرجى التأكيد مرة أخرى بعد قليل.";
+  return "Sorry, I couldn’t verify the change safely. I’ve kept your selected time here; please confirm again in a moment. 🙏";
+}
+
+function isRescheduleConfirmation(text?: string): boolean {
+  const raw = String(text || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[!.،,؟?\s]+/g, " ")
+    .trim();
+  return /^(?:yes|yes please|confirm|confirm it|book that one|move it|ok|okay|sure|ja|ja tack|bekräfta|bekrafta|bale|baleh|bale lotfan|are|lotfan|بله|بله لطفاً|بله لطفا|آره|تأیید|تایید|باشه)$/iu.test(raw);
+}
+
+function isLaterRescheduleRequest(text?: string): boolean {
+  const raw = normalizeAppointmentSelectionText(text);
+  return /^(?:later|a little later|later that day|senare|lite senare|همون روز دیرتر|دیرتر|بعدتر|ye kam dir tar|dir tar)$/iu.test(raw) ||
+    /\b(?:same day but later|samma dag men senare|hamon rooz dir tar|hamoon rooz dir tar)\b/iu.test(raw);
+}
+
+function inferRequestedDaypart(text?: string): "morning" | "afternoon" | "evening" | null {
+  const raw = String(text || "").trim().toLowerCase();
+  if (/\b(morning|förmiddag|formiddag|sobh)\b/i.test(raw) || /صبح/u.test(raw)) return "morning";
+  if (/\b(afternoon|eftermiddag|bad az zohr|badezohr)\b/i.test(raw) || /بعد\s*از\s*ظهر/u.test(raw)) return "afternoon";
+  if (/\b(evening|kväll|kvall|asr|shab)\b/i.test(raw) || /(?:عصر|شب)/u.test(raw)) return "evening";
+  return null;
+}
+
+function getDaypartSlotOptions(daypart?: "morning" | "afternoon" | "evening" | null): SlotSearchOptions {
+  if (daypart === "morning") return { minTime: "09:00", maxTime: "11:59" };
+  if (daypart === "afternoon") return { minTime: "12:00", maxTime: "17:59" };
+  if (daypart === "evening") return { minTime: "17:00", maxTime: "20:00" };
+  return {};
+}
+
+function selectRescheduleOfferedSlot(text: string, offeredSlots: string[]): string | null {
+  if (!Array.isArray(offeredSlots) || offeredSlots.length === 0) return null;
+  const requestedTime = inferRequestedTimeFromText(text);
+  if (requestedTime) return findOfferedSlotIso(offeredSlots, requestedTime);
+  const raw = normalizeAppointmentSelectionText(text);
+  if (
+    /^(?:that one|same one|den|den tiden|det passar|همون|همون رو|همون رو می ?خوام|همان|همان را|اون|اون رو|hamon ro mikham|hamoon ro mikham)$/iu.test(raw) &&
+    offeredSlots.length === 1
+  ) return parseSlotIso(offeredSlots[0]);
+  if (/\b(?:last one|the last one|sista|den sista|آخری|آخرین)\b/iu.test(raw)) {
+    return parseSlotIso(offeredSlots[offeredSlots.length - 1]);
+  }
+  const numeric = raw.match(/^(?:number|nummer|شماره)?\s*([1-9])$/iu);
+  if (numeric) return parseSlotIso(offeredSlots[Number(numeric[1]) - 1] || "");
+  return null;
 }
 
 // Pending bookings must be short-lived. Otherwise a customer can start a new request
@@ -3168,7 +3506,13 @@ function getExactSlotIso(slotsArray: string[], requestedTime?: string): string |
 
 
 function resolveExplicitBookingDate(text?: string): string | null {
-  const raw = String(text || "").trim().toLowerCase();
+  const raw = normalizeLocalizedDigits(String(text || ""))
+    .trim()
+    .toLowerCase()
+    .replace(/\u200c/g, " ")
+    .replace(/[،,!?؟;؛()[\]{}]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
   if (!raw) return null;
 
   const today = stockholmDateString(new Date());
@@ -3211,14 +3555,16 @@ function resolveExplicitBookingDate(text?: string): string | null {
     return addDaysToStockholmDate(today, 1);
   }
 
+  // Persian weekday numbers are weekday names, not calendar day numbers. Match all
+  // compound forms before bare "shanbe" so "3 shanbe" can never degrade to Saturday.
   const weekdayMap: Array<[RegExp, number]> = [
-    [/\b(söndag|sunday|yekshanbe|1shanbe|یکشنبه)\b/i, 0],
-    [/\b(måndag|mandag|monday|doshanbe|2shanbe|دوشنبه)\b/i, 1],
-    [/\b(tisdag|tuesday|seshanbe|3shanbe|سه.?شنبه)\b/i, 2],
-    [/\b(onsdag|wednesday|chaharshanbe|4shanbe|چهارشنبه)\b/i, 3],
-    [/\b(torsdag|thursday|panjshanbe|5shanbe|پنجشنبه)\b/i, 4],
-    [/\b(fredag|friday|jome|jomeh|6shanbe|جمعه)\b/i, 5],
-    [/\b(lördag|lordag|saturday|shanbe|شنبه)\b/i, 6]
+    [/(?:^|\s)(?:söndag|sunday|yek\s*shanbe|yekshanbe|1\s*shanbe|یک\s*شنبه)(?=\s|$)/iu, 0],
+    [/(?:^|\s)(?:måndag|mandag|monday|do\s*shanbe|doshanbe|2\s*shanbe|دو\s*شنبه)(?=\s|$)/iu, 1],
+    [/(?:^|\s)(?:tisdag|tuesday|se\s*shanbe|seshanbe|3\s*shanbe|سه\s*شنبه)(?=\s|$)/iu, 2],
+    [/(?:^|\s)(?:onsdag|wednesday|chahar\s*shanbe|chaharshanbe|4\s*shanbe|چهار\s*شنبه|چهارشنبه)(?=\s|$)/iu, 3],
+    [/(?:^|\s)(?:torsdag|thursday|panj\s*shanbe|panjshanbe|5\s*shanbe|پنج\s*شنبه|پنجشنبه)(?=\s|$)/iu, 4],
+    [/(?:^|\s)(?:fredag|friday|jome|jomeh|جمعه)(?=\s|$)/iu, 5],
+    [/(?:^|\s)(?:lördag|lordag|saturday|shanbe|شنبه)(?=\s|$)/iu, 6]
   ];
 
   const matched = weekdayMap.find(([pattern]) => pattern.test(raw));
@@ -3231,7 +3577,14 @@ function resolveExplicitBookingDate(text?: string): string | null {
   const currentDay = todayUtc.getUTCDay();
 
   let daysAhead = (targetDay - currentDay + 7) % 7;
-  if (daysAhead === 0 && !/\b(idag|today|امروز)\b/i.test(raw)) daysAhead = 7;
+  const explicitlyThisWeek = /\bthis\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i.test(raw) ||
+    /(?:همین|این)\s*(?:شنبه|یک\s*شنبه|دو\s*شنبه|سه\s*شنبه|چهار\s*شنبه|پنج\s*شنبه|جمعه)/u.test(raw);
+  if (daysAhead === 0 && !explicitlyThisWeek && !/\b(idag|today|امروز)\b/i.test(raw)) daysAhead = 7;
+
+  // "next week / hafte ayande" is an explicit week qualifier. A plain "next Tuesday"
+  // remains the next upcoming Tuesday, while "Tuesday next week" moves into next week.
+  const explicitlyNextWeek = /\bnext\s+week\b|\bhafte\s+ayande\b|هفته\s+آینده/u.test(raw);
+  if (explicitlyNextWeek && daysAhead < 7) daysAhead += 7;
 
   todayUtc.setUTCDate(todayUtc.getUTCDate() + daysAhead);
   return todayUtc.toISOString().slice(0, 10);
@@ -3555,6 +3908,7 @@ function resetSessionIfBusinessConfigChanged(sessionId: string, config: any) {
     delete appointmentSelectionContexts[sessionId];
     delete appointmentLookupContexts[sessionId];
     delete rescheduleContexts[sessionId];
+    delete recentlyCompletedReschedules[sessionId];
     delete cancellationContexts[sessionId];
     delete appointmentStateOwners[sessionId];
   }
@@ -3720,6 +4074,10 @@ async function handleUnifiedBookingEngine(params: {
     userId: normalizePlatformUserId(platformName, recipientUserId),
   };
   const storedAppointmentStateOwner = appointmentStateOwners[sessionId];
+  const invalidatedRescheduleLanguage = rescheduleContexts[sessionId]?.lockedReplyLanguage ||
+    rescheduleContexts[sessionId]?.language ||
+    "";
+  let appointmentStateWasInvalidated = false;
   const suppliedIdentityPhone = extractPhoneOnly(text) || undefined;
   if (
     (storedAppointmentStateOwner || hasAppointmentConversationState(sessionId)) &&
@@ -3729,12 +4087,22 @@ async function handleUnifiedBookingEngine(params: {
     )
   ) {
     console.warn(`[AppointmentState] Cleared stale or cross-identity state session=${sessionId}`);
+    appointmentStateWasInvalidated = true;
     clearAppointmentConversationState(sessionId);
   }
 
   const language = getConversationLanguage(sessionId, text);
   const latestStrongLanguage = detectStrongLatestLanguage(text);
   let pending = await loadPendingBooking(sessionId, platformName, businessConfig);
+  const entryRescheduleContext = getRescheduleContext(sessionId);
+
+  // A validated reschedule flow owns short confirmations and slot follow-ups. Clear any
+  // unrelated pending new-booking state before it can ask for contact details.
+  if (entryRescheduleContext && !isExplicitNewBookingRequest(text) && pending) {
+    console.log(`[UnifiedBooking] Active reschedule cleared incompatible pending booking session=${sessionId}`);
+    await clearPendingBooking(sessionId);
+    pending = null;
+  }
 
   // Never let a restored pending flow lock Messenger/Instagram to an old language.
   // The latest clear customer message is the source of truth for the next reply.
@@ -3759,6 +4127,24 @@ async function handleUnifiedBookingEngine(params: {
       getBusinessIdFromConfig(businessConfig)
     );
   };
+
+  if (appointmentStateWasInvalidated) {
+    await replyAndRecord(formatStaleAppointmentStateMessage(invalidatedRescheduleLanguage || language));
+    return true;
+  }
+
+  const recentReschedule = recentlyCompletedReschedules[sessionId];
+  if (
+    !pending &&
+    !entryRescheduleContext &&
+    recentReschedule &&
+    Date.now() - recentReschedule.completedAt < 15 * 1000 &&
+    isRescheduleConfirmation(text)
+  ) {
+    // Meta can redeliver the same short confirmation. Swallow only the immediate
+    // duplicate so it cannot mutate or notify twice.
+    return true;
+  }
 
 
   const completeCancellation = async (context: { appointment: any; language: string; feeApplies: boolean; feeAmount: number; currency: string; reason?: string }): Promise<boolean> => {
@@ -3833,11 +4219,13 @@ async function handleUnifiedBookingEngine(params: {
     return true;
   };
 
-  const completeReschedule = async (
+  const prepareRescheduleTarget = async (
     appointment: any,
     requestedDate: string,
-    requestedTime: string,
-    lockedLanguage: string
+    requestedTime: string | null,
+    lockedLanguage: string,
+    options: SlotSearchOptions = {},
+    requestedDaypart?: "morning" | "afternoon" | "evening" | null
   ): Promise<boolean> => {
     const adapter = getCalendarAdapter(businessConfig);
     const stateOwner = appointmentStateOwners[sessionId];
@@ -3859,98 +4247,332 @@ async function handleUnifiedBookingEngine(params: {
       return true;
     }
     appointment = liveAppointment;
-    const candidateIso = `${requestedDate}T${requestedTime}:00${getStockholmUtcOffset(requestedDate)}`;
-    const candidateStartMs = new Date(candidateIso).getTime();
-    const duration = Math.max(
-      1,
-      Math.round(
-        (new Date(appointment.end).getTime() - new Date(appointment.start).getTime()) / 60000
-      ) || getDefaultBookingDurationForService(appointment.service) || 30
-    );
-
-    if (!Number.isFinite(candidateStartMs)) {
-      rememberRescheduleContext(sessionId, appointment, lockedLanguage);
-      await replyAndRecord(getErrorMessageByLanguage(lockedLanguage));
-      return true;
-    }
-
-    if (candidateStartMs <= Date.now()) {
-      rememberRescheduleContext(sessionId, appointment, lockedLanguage);
-      const msg = lockedLanguage === "fa"
-        ? "این تاریخ یا ساعت گذشته است. لطفاً یک روز یا ساعت آینده را انتخاب کنید. 📅"
+    const currentEventId = getAppointmentCalendarEventId(appointment);
+    const duration = getAppointmentDurationMinutes(appointment);
+    if (!currentEventId) {
+      rememberRescheduleContext(sessionId, appointment, lockedLanguage, requestedDate, requestedTime, {
+        requestedDaypart: requestedDaypart || undefined,
+        lastOperation: "update_failed"
+      });
+      await replyAndRecord(lockedLanguage === "fa"
+        ? "رزرو پیدا شد، اما شناسه دقیق تقویم برای تغییر امن موجود نیست. یک همکار باید کمک کند. 🙏"
         : lockedLanguage === "sv"
-          ? "Den önskade tiden har redan passerat. Välj gärna ett annat framtida datum eller klockslag. 📅"
-          : "That requested time has already passed. Please choose another future date or time. 📅";
-      await replyAndRecord(msg);
+          ? "Jag hittade bokningen, men det exakta kalender-id:t saknas för en säker ombokning. En medarbetare behöver hjälpa till. 🙏"
+          : "I found the appointment, but its exact calendar event id is missing for a safe change. A team member needs to help. 🙏");
       return true;
     }
-
-    rememberRescheduleContext(sessionId, appointment, lockedLanguage, requestedDate, requestedTime);
 
     const dateEvents = await adapter.getEvents(requestedDate, requestedDate);
-    const currentEventId = String(appointment.calendarEventId || "");
     const filteredEvents = (Array.isArray(dateEvents) ? dateEvents : []).filter(
       (event: any) => String(event?.id || "") !== currentEventId
     );
-    const free = isSlotFree(candidateStartMs, duration, filteredEvents);
 
-    if (!free) {
-      const alternatives = {
-        available_slots_string: getDailySlots(requestedDate, requestedDate, filteredEvents, duration, requestedTime)
-      };
-      await replyAndRecord(
-        formatSwedishTimeSlots(getSlotsArray(alternatives), requestedTime, lockedLanguage)
-      );
-      return true;
-    }
-
-    if (!currentEventId || !adapter.updateAppointment) {
-      const msg = lockedLanguage === "fa"
-        ? "زمان رزرو را پیدا کردم، اما اتصال تقویم برای تغییر مستقیم کامل نیست. یک همکار باید کمک کند. 🙏"
-        : lockedLanguage === "sv"
-          ? "Jag hittade bokningen, men kalenderkopplingen saknar ett event-id för direkt ombokning. En medarbetare behöver hjälpa till. 🙏"
-          : "I found the appointment, but its calendar event id is unavailable for direct rescheduling. A team member needs to help. 🙏";
-      await replyAndRecord(msg);
-      return true;
-    }
-
-    const requiresDbUpdate = Boolean(appointment?.id && appointment?.source === "appointments_table");
-    if (requiresDbUpdate && !supabase) {
-      await replyAndRecord(getErrorMessageByLanguage(lockedLanguage));
-      return true;
-    }
-
-    const oldStartIso = String(appointment.start || "");
-    const updateResult = await adapter.updateAppointment(currentEventId, candidateIso, duration);
-    if (!updateResult?.success) {
-      await replyAndRecord(getErrorMessageByLanguage(lockedLanguage));
-      return true;
-    }
-
-    const newEndIso = new Date(candidateStartMs + duration * 60000).toISOString();
-
-    if (requiresDbUpdate) {
-      const { error: dbUpdateError } = await supabase
-        .from("appointments")
-        .update({ start_time: new Date(candidateStartMs).toISOString(), end_time: newEndIso })
-        .eq("id", appointment.id)
-        .eq("business_id", String(getBusinessIdFromConfig(businessConfig) || ""));
-      if (dbUpdateError) {
-        console.error("[Reschedule] Calendar updated but appointments table update failed:", dbUpdateError);
-        const rollbackResult = await adapter.updateAppointment(currentEventId, oldStartIso, duration);
-        if (!rollbackResult?.success) {
-          console.error("[Reschedule] Calendar rollback failed after appointments table update failure:", rollbackResult);
-        }
+    if (requestedTime) {
+      const candidateIso = `${requestedDate}T${requestedTime}:00${getStockholmUtcOffset(requestedDate)}`;
+      const candidateStartMs = new Date(candidateIso).getTime();
+      if (!Number.isFinite(candidateStartMs)) {
+        rememberRescheduleContext(sessionId, appointment, lockedLanguage, requestedDate, requestedTime);
         await replyAndRecord(getErrorMessageByLanguage(lockedLanguage));
+        return true;
+      }
+      if (candidateStartMs <= Date.now()) {
+        rememberRescheduleContext(sessionId, appointment, lockedLanguage, requestedDate, requestedTime, {
+          lastOperation: "awaiting_target",
+          selectedNewStartTime: undefined,
+          selectedEndTime: undefined
+        });
+        const msg = lockedLanguage === "fa"
+          ? "این تاریخ یا ساعت گذشته است. لطفاً یک روز یا ساعت آینده را انتخاب کنید. 📅"
+          : lockedLanguage === "sv"
+            ? "Den önskade tiden har redan passerat. Välj gärna ett annat framtida datum eller klockslag. 📅"
+            : "That requested time has already passed. Please choose another future date or time. 📅";
+        await replyAndRecord(msg);
+        return true;
+      }
+
+      if (isSlotFree(candidateStartMs, duration, filteredEvents)) {
+        const selectedEndTime = new Date(candidateStartMs + duration * 60000).toISOString();
+        rememberRescheduleContext(sessionId, appointment, lockedLanguage, requestedDate, requestedTime, {
+          requestedDaypart: requestedDaypart || undefined,
+          selectedNewStartTime: candidateIso,
+          selectedEndTime,
+          offeredSlots: [`Selected (ISO: ${candidateIso})`],
+          lastOfferedTime: requestedTime,
+          lastOperation: "awaiting_confirmation"
+        });
+        await replyAndRecord(formatRescheduleConfirmation(lockedLanguage, candidateIso));
         return true;
       }
     }
 
-    appointment.start = candidateIso;
-    appointment.end = newEndIso;
+    const slotsText = getDailySlots(
+      requestedDate,
+      requestedDate,
+      filteredEvents,
+      duration,
+      requestedTime || undefined,
+      options
+    );
+    const offeredSlots = getSlotsArray({ available_slots_string: slotsText });
+    const offeredTimes = offeredSlots
+      .map((slot) => getStockholmTimeFromIso(parseSlotIso(slot) || ""))
+      .filter(Boolean) as string[];
+    const sortedOfferedTimes = offeredTimes.sort();
+    if (options.selectFirstAvailable && offeredSlots.length > 0) {
+      const selectedNewStartTime = parseSlotIso(offeredSlots[0]);
+      const selectedStartMs = new Date(ensureStockholmOffset(selectedNewStartTime || "")).getTime();
+      const selectedTime = getStockholmTimeFromIso(selectedNewStartTime || "");
+      if (selectedNewStartTime && selectedTime && Number.isFinite(selectedStartMs)) {
+        rememberRescheduleContext(sessionId, appointment, lockedLanguage, requestedDate, selectedTime, {
+          requestedDaypart: requestedDaypart || undefined,
+          selectedNewStartTime,
+          selectedEndTime: new Date(selectedStartMs + duration * 60000).toISOString(),
+          offeredSlots: [offeredSlots[0]],
+          lastOfferedTime: selectedTime,
+          lastOperation: "awaiting_confirmation"
+        });
+        await replyAndRecord(formatRescheduleConfirmation(lockedLanguage, selectedNewStartTime));
+        return true;
+      }
+    }
+    rememberRescheduleContext(sessionId, appointment, lockedLanguage, requestedDate, requestedTime, {
+      requestedDaypart: requestedDaypart || undefined,
+      selectedNewStartTime: undefined,
+      selectedEndTime: undefined,
+      offeredSlots,
+      lastOfferedTime: sortedOfferedTimes.length > 0
+        ? sortedOfferedTimes[sortedOfferedTimes.length - 1]
+        : undefined,
+      lastOperation: "awaiting_slot_selection"
+    });
+    await replyAndRecord(formatSwedishTimeSlots(offeredSlots, requestedTime || undefined, lockedLanguage));
+    return true;
+  };
+  // Backward-compatible name retained for existing focused source-level regressions.
+  // This now prepares and confirms a verified target; it does not report success.
+  const completeReschedule = prepareRescheduleTarget;
+
+  const executeConfirmedReschedule = async (context: RescheduleContext): Promise<boolean> => {
+    const lockedLanguage = getRescheduleReplyLanguage(context, text);
+    const stateOwner = appointmentStateOwners[sessionId];
+    if (
+      isRescheduleContextStale(context) ||
+      !rescheduleContextOwnerMatches(context, currentAppointmentStateOwner, stateOwner)
+    ) {
+      clearAppointmentConversationState(sessionId);
+      await replyAndRecord(formatStaleAppointmentStateMessage(lockedLanguage));
+      return true;
+    }
+
+    if (context.lastOperation === "updating") return true;
+    const candidateIso = String(context.selectedNewStartTime || "");
+    const candidateStartMs = new Date(ensureStockholmOffset(candidateIso)).getTime();
+    const currentEventId = String(context.exactCalendarEventId || "");
+    if (
+      !candidateIso ||
+      !Number.isFinite(candidateStartMs) ||
+      context.originalAppointmentId !== getAppointmentMutationId(context.appointment) ||
+      currentEventId !== getAppointmentCalendarEventId(context.appointment)
+    ) {
+      clearAppointmentConversationState(sessionId);
+      await replyAndRecord(formatStaleAppointmentStateMessage(lockedLanguage));
+      return true;
+    }
+
+    const adapter = getCalendarAdapter(businessConfig);
+    if (!adapter.updateAppointment || !adapter.getEventById || !supabase) {
+      rememberRescheduleContext(sessionId, context.appointment, lockedLanguage, context.requestedDate, context.requestedTime, {
+        ...context,
+        lastOperation: "update_failed"
+      });
+      await replyAndRecord(formatRescheduleFailure(lockedLanguage));
+      return true;
+    }
+
+    const liveAppointment = await validateStoredAppointmentForMutation(
+      context.appointment,
+      stateOwner!,
+      businessConfig,
+      adapter
+    );
+    const requiresDbUpdate = Boolean(
+      liveAppointment?.id &&
+      liveAppointment?.source === "appointments_table"
+    );
+    if (
+      !liveAppointment ||
+      !requiresDbUpdate ||
+      getAppointmentMutationId(liveAppointment) !== context.originalAppointmentId ||
+      getAppointmentCalendarEventId(liveAppointment) !== currentEventId
+    ) {
+      clearAppointmentConversationState(sessionId);
+      await replyAndRecord(formatStaleAppointmentStateMessage(lockedLanguage));
+      return true;
+    }
+
+    const duration = context.serviceDuration || getAppointmentDurationMinutes(liveAppointment);
+    const selectedDate = stockholmDateString(new Date(ensureStockholmOffset(candidateIso)));
+    const currentDayEvents = await adapter.getEvents(selectedDate, selectedDate);
+    const otherEvents = (Array.isArray(currentDayEvents) ? currentDayEvents : []).filter(
+      (event: any) => String(event?.id || "") !== currentEventId
+    );
+    if (!isSlotFree(candidateStartMs, duration, otherEvents)) {
+      return prepareRescheduleTarget(
+        liveAppointment,
+        selectedDate,
+        getStockholmTimeFromIso(candidateIso),
+        lockedLanguage,
+        getDaypartSlotOptions(context.requestedDaypart),
+        context.requestedDaypart
+      );
+    }
+
+    rememberRescheduleContext(sessionId, liveAppointment, lockedLanguage, context.requestedDate, context.requestedTime, {
+      ...context,
+      appointment: liveAppointment,
+      lastOperation: "updating"
+    });
+
+    const oldStartIso = String(liveAppointment.start || context.originalStartTime || "");
+    const oldEndIso = String(liveAppointment.end || "");
+    const newStartIso = new Date(candidateStartMs).toISOString();
+    const newEndIso = new Date(candidateStartMs + duration * 60000).toISOString();
+    const businessId = String(getBusinessIdFromConfig(businessConfig) || "");
+    let databaseWasUpdated = false;
+    let databaseUpdateAttempted = false;
+
+    const rollbackPersistence = async () => {
+      try {
+        const calendarRollback = await adapter.updateAppointment!(currentEventId, oldStartIso, duration);
+        if (!calendarRollback?.success) {
+          console.error("[Reschedule] Calendar rollback failed:", calendarRollback);
+        }
+      } catch (rollbackError) {
+        console.error("[Reschedule] Calendar rollback crashed:", rollbackError);
+      }
+      if (databaseUpdateAttempted) {
+        try {
+          let rollbackQuery = supabase
+            .from("appointments")
+            .update({ start_time: oldStartIso, end_time: oldEndIso })
+            .eq("id", liveAppointment.id)
+            .eq("business_id", businessId);
+          if (liveAppointment.platform) rollbackQuery = rollbackQuery.eq("platform", liveAppointment.platform);
+          if (liveAppointment.userId) rollbackQuery = rollbackQuery.eq("user_id", liveAppointment.userId);
+          const { error: rollbackError } = await rollbackQuery;
+          if (rollbackError) console.error("[Reschedule] Database rollback failed:", rollbackError);
+        } catch (rollbackError) {
+          console.error("[Reschedule] Database rollback crashed:", rollbackError);
+        }
+      }
+    };
+
+    const updateResult = await adapter.updateAppointment(currentEventId, candidateIso, duration);
+    if (!updateResult?.success) {
+      rememberRescheduleContext(sessionId, liveAppointment, lockedLanguage, context.requestedDate, context.requestedTime, {
+        ...context,
+        appointment: liveAppointment,
+        lastOperation: "update_failed"
+      });
+      await replyAndRecord(formatRescheduleFailure(lockedLanguage));
+      return true;
+    }
+
+    databaseUpdateAttempted = true;
+    let dbUpdateQuery = supabase
+        .from("appointments")
+        .update({ start_time: newStartIso, end_time: newEndIso })
+        .eq("id", liveAppointment.id)
+        .eq("business_id", businessId);
+    if (liveAppointment.platform) dbUpdateQuery = dbUpdateQuery.eq("platform", liveAppointment.platform);
+    if (liveAppointment.userId) dbUpdateQuery = dbUpdateQuery.eq("user_id", liveAppointment.userId);
+    const { data: updatedRow, error: dbUpdateError } = await dbUpdateQuery
+      .select("id,customer_name,phone_number,platform,user_id,service,start_time,end_time,status,business_id")
+      .maybeSingle();
+    databaseWasUpdated = Boolean(updatedRow && !dbUpdateError);
+
+    const updatedRowPlatform = normalizePlatformName(String(updatedRow?.platform || ""));
+    const updatedRowUserId = normalizePlatformUserId(updatedRowPlatform, String(updatedRow?.user_id || ""));
+    const expectedPlatform = normalizePlatformName(stateOwner!.platform);
+    const expectedUserId = normalizePlatformUserId(expectedPlatform, stateOwner!.userId);
+    const dbOwnerMatches = Boolean(
+      updatedRow &&
+      String(updatedRow.business_id || "") === businessId &&
+      updatedRowPlatform === expectedPlatform &&
+      updatedRowUserId === expectedUserId
+    );
+    const dbTimeMatches = Boolean(
+      updatedRow &&
+      new Date(updatedRow.start_time).getTime() === candidateStartMs &&
+      new Date(updatedRow.end_time).getTime() === new Date(newEndIso).getTime()
+    );
+
+    if (dbUpdateError || !databaseWasUpdated || !dbOwnerMatches || !dbTimeMatches) {
+      console.error("[Reschedule] Calendar updated but persisted appointment row did not verify:", {
+        dbUpdateError,
+        databaseWasUpdated,
+        dbOwnerMatches,
+        dbTimeMatches
+      });
+      await rollbackPersistence();
+      rememberRescheduleContext(sessionId, liveAppointment, lockedLanguage, context.requestedDate, context.requestedTime, {
+        ...context,
+        appointment: liveAppointment,
+        lastOperation: "update_failed"
+      });
+      await replyAndRecord(formatRescheduleFailure(lockedLanguage));
+      return true;
+    }
+
+    const verifiedEvent = await adapter.getEventById(currentEventId);
+    const verifiedEventStartMs = new Date(getEventStartIso(verifiedEvent)).getTime();
+    const eventBusinessMatches = Boolean(
+      verifiedEvent &&
+      calendarEventBusinessMarkerMatches(verifiedEvent, currentAppointmentStateOwner.businessId)
+    );
+    const eventIdentityMatches = Boolean(
+      verifiedEvent &&
+      (
+        calendarEventHasExactChannelOwner(verifiedEvent, stateOwner!.platform, stateOwner!.userId) ||
+        (
+          liveAppointment.source === "appointments_table" &&
+          calendarEventHasExactPhone(verifiedEvent, liveAppointment.phone || "")
+        )
+      )
+    );
+    const eventTimeMatches = verifiedEventStartMs === candidateStartMs;
+    if (!verifiedEvent || !eventBusinessMatches || !eventIdentityMatches || !eventTimeMatches) {
+      console.error("[Reschedule] Exact Calendar event verification failed:", {
+        eventId: currentEventId,
+        eventBusinessMatches,
+        eventIdentityMatches,
+        eventTimeMatches,
+        actualStart: getEventStartIso(verifiedEvent),
+        expectedStart: candidateIso
+      });
+      await rollbackPersistence();
+      rememberRescheduleContext(sessionId, liveAppointment, lockedLanguage, context.requestedDate, context.requestedTime, {
+        ...context,
+        appointment: liveAppointment,
+        lastOperation: "verification_failed"
+      });
+      await replyAndRecord(formatRescheduleFailure(lockedLanguage));
+      return true;
+    }
+
+    const appointment = {
+      ...liveAppointment,
+      start: newStartIso,
+      end: newEndIso
+    };
     appointmentContexts[sessionId] = { appointment, savedAt: Date.now(), language: lockedLanguage };
     saveAppointmentStateOwner(sessionId, currentAppointmentStateOwner, stateOwner.identityKey);
     clearRescheduleContext(sessionId);
+    recentlyCompletedReschedules[sessionId] = {
+      completedAt: Date.now(),
+      eventId: currentEventId,
+      newStartTime: newStartIso
+    };
 
     try {
       await notifyAdminAboutReschedule(
@@ -3960,14 +4582,14 @@ async function handleUnifiedBookingEngine(params: {
         appointment.customerName || appointment.name || "Okänd kund",
         appointment.phone || "",
         oldStartIso,
-        candidateIso,
+        newStartIso,
         appointment.service
       );
     } catch (notifyError) {
       console.error("[RescheduleNotify] crashed:", notifyError);
     }
 
-    await replyAndRecord(formatRescheduleSuccess(lockedLanguage, candidateIso));
+    await replyAndRecord(formatRescheduleSuccess(lockedLanguage, newStartIso));
     return true;
   };
 
@@ -4110,6 +4732,12 @@ async function handleUnifiedBookingEngine(params: {
       rememberedAppointment = getAppointmentContext(sessionId);
 
       if (!rememberedAppointment) {
+        const selectionContext = getAppointmentSelectionContext(sessionId);
+        if (selectionContext) {
+          selectionContext.intent = rescheduleRequested ? "reschedule" : cancellationRequested ? "cancel" : "lookup";
+          selectionContext.language = language;
+          selectionContext.savedAt = Date.now();
+        }
         await replyAndRecord(formatAppointmentLookupReply(lookupResult, language));
         return true;
       }
@@ -4152,41 +4780,57 @@ async function handleUnifiedBookingEngine(params: {
       const requestedTime = inferRequestedTimeFromText(text) || (
         rescheduleCorrectionRequested ? getStockholmTimeFromIso(appointment.start) : null
       );
+      const requestedDaypart = inferRequestedDaypart(text);
       const lockedLanguage = getFlowReplyLanguage(rememberedAppointment.language, language, text);
 
-      if (!requestedDate || !requestedTime) {
-        rememberRescheduleContext(sessionId, appointment, lockedLanguage, requestedDate, requestedTime);
-        const hasDate = Boolean(requestedDate);
-        const hasTime = Boolean(requestedTime);
+      if (!requestedDate) {
+        rememberRescheduleContext(sessionId, appointment, lockedLanguage, requestedDate, requestedTime, {
+          requestedDaypart: requestedDaypart || undefined,
+          lastOperation: "awaiting_target"
+        });
         const ask = lockedLanguage === "fa"
-          ? hasDate && !hasTime
-            ? "حتماً 😊 چه ساعتی در اون روز براتون بهتره؟"
-            : !hasDate && hasTime
-              ? `حتماً 😊 چه روزی برای ساعت ${requestedTime} مناسبه؟`
-              : "حتماً 😊 چه روز و ساعتی براتون بهتره؟"
+          ? requestedTime
+            ? `حتماً 😊 چه روزی برای ساعت ${requestedTime} مناسبه؟`
+            : "حتماً 😊 چه روز و ساعتی براتون بهتره؟"
           : lockedLanguage === "sv"
-            ? hasDate && !hasTime
-              ? "Absolut 😊 Vilken tid passar den dagen?"
-              : !hasDate && hasTime
-                ? `Absolut 😊 Vilken dag passar för kl. ${requestedTime}?`
-                : "Absolut 😊 Vilken dag och tid passar bättre?"
-            : hasDate && !hasTime
-              ? "Of course 😊 What time works that day?"
-              : !hasDate && hasTime
-                ? `Of course 😊 What day works for ${requestedTime}?`
-                : "Of course 😊 What day and time would suit you better?";
+            ? requestedTime
+              ? `Absolut 😊 Vilken dag passar för kl. ${requestedTime}?`
+              : "Absolut 😊 Vilken dag och tid passar bättre?"
+            : requestedTime
+              ? `Of course 😊 What day works for ${requestedTime}?`
+              : "Of course 😊 What day and time would suit you better?";
         await replyAndRecord(ask);
         return true;
       }
 
-      return completeReschedule(appointment, requestedDate, requestedTime, lockedLanguage);
+      if (!requestedDaypart) {
+        return completeReschedule(appointment, requestedDate, requestedTime, lockedLanguage);
+      }
+      return prepareRescheduleTarget(
+        appointment,
+        requestedDate,
+        requestedTime,
+        lockedLanguage,
+        getDaypartSlotOptions(requestedDaypart),
+        requestedDaypart
+      );
     }
 
     const activeReschedule = existingRescheduleContext;
     if (activeReschedule) {
+      const lockedLanguage = getRescheduleReplyLanguage(activeReschedule, text);
+      const stateOwner = appointmentStateOwners[sessionId];
+      if (
+        isRescheduleContextStale(activeReschedule) ||
+        !rescheduleContextOwnerMatches(activeReschedule, currentAppointmentStateOwner, stateOwner)
+      ) {
+        clearAppointmentConversationState(sessionId);
+        await replyAndRecord(formatStaleAppointmentStateMessage(lockedLanguage));
+        return true;
+      }
+
       if (isCancellationRejection(text)) {
         clearRescheduleContext(sessionId);
-        const lockedLanguage = getFlowReplyLanguage(activeReschedule.language, language, text);
         await replyAndRecord(lockedLanguage === "sv"
           ? "Okej, bokningen behålls på sin nuvarande tid."
           : lockedLanguage === "fa"
@@ -4195,9 +4839,78 @@ async function handleUnifiedBookingEngine(params: {
         return true;
       }
 
+      if (isRescheduleConfirmation(text)) {
+        if (
+          activeReschedule.selectedNewStartTime &&
+          (
+            activeReschedule.lastOperation === "awaiting_confirmation" ||
+            activeReschedule.lastOperation === "update_failed" ||
+            activeReschedule.lastOperation === "verification_failed"
+          )
+        ) {
+          return executeConfirmedReschedule(activeReschedule);
+        }
+        const chooseReply = lockedLanguage === "fa"
+          ? "لطفاً یکی از زمان‌های پیشنهادی رو انتخاب کنید تا همون رو برای تأیید نهایی نگه دارم."
+          : lockedLanguage === "sv"
+            ? "Välj gärna en av tiderna först, så håller jag den för din bekräftelse."
+            : "Please choose one of the offered times first, and I’ll hold it for your confirmation.";
+        await replyAndRecord(chooseReply);
+        return true;
+      }
+
+      if (isLaterRescheduleRequest(text)) {
+        const requestedDate = activeReschedule.requestedDate ||
+          resolveRescheduleDate(text, activeReschedule.appointment);
+        if (!requestedDate) {
+          await replyAndRecord(lockedLanguage === "fa"
+            ? "حتماً 😊 برای کدوم روز زمان دیرتری می‌خواهید؟"
+            : lockedLanguage === "sv"
+              ? "Absolut 😊 Vilken dag vill du ha en senare tid?"
+              : "Of course 😊 Which day would you like a later time?");
+          return true;
+        }
+        const afterTime = activeReschedule.lastOfferedTime ||
+          activeReschedule.requestedTime ||
+          getStockholmTimeFromIso(activeReschedule.appointment.start) ||
+          undefined;
+        return prepareRescheduleTarget(
+          activeReschedule.appointment,
+          requestedDate,
+          null,
+          lockedLanguage,
+          {
+            ...getDaypartSlotOptions(activeReschedule.requestedDaypart),
+            ...(afterTime ? { afterTime } : {}),
+            selectFirstAvailable: true
+          },
+          activeReschedule.requestedDaypart
+        );
+      }
+
+      const selectedOfferedIso = selectRescheduleOfferedSlot(
+        text,
+        activeReschedule.offeredSlots || []
+      );
+      if (selectedOfferedIso) {
+        const selectedDate = stockholmDateString(new Date(ensureStockholmOffset(selectedOfferedIso)));
+        const selectedTime = getStockholmTimeFromIso(selectedOfferedIso);
+        if (selectedTime) {
+          return prepareRescheduleTarget(
+            activeReschedule.appointment,
+            selectedDate,
+            selectedTime,
+            lockedLanguage,
+            getDaypartSlotOptions(activeReschedule.requestedDaypart),
+            activeReschedule.requestedDaypart
+          );
+        }
+      }
+
       const explicitDate = resolveExplicitBookingDate(text);
       const resolvedDate = resolveRescheduleDate(text, activeReschedule.appointment);
       const parsedTime = inferRequestedTimeFromText(text);
+      const parsedDaypart = inferRequestedDaypart(text);
       const hasSameDayExpression = /\b(samma dag|samma datum|den dagen|same day|same date|hamon rooz|hamoon rooz|همان روز|همون روز)\b/i.test(text);
       const hasDateExpression = Boolean(explicitDate || hasSameDayExpression);
       const requestedDate = hasDateExpression
@@ -4205,48 +4918,57 @@ async function handleUnifiedBookingEngine(params: {
         : parsedTime && activeReschedule.requestedDate
           ? activeReschedule.requestedDate
           : resolvedDate || activeReschedule.requestedDate || null;
-      const requestedTime = parsedTime || (
-        hasDateExpression ? activeReschedule.requestedTime || null : null
-      );
+      const requestedTime = parsedDaypart
+        ? null
+        : parsedTime || (
+            hasDateExpression ? activeReschedule.requestedTime || null : activeReschedule.requestedTime || null
+          );
+      const requestedDaypart = parsedDaypart || activeReschedule.requestedDaypart || null;
 
       if (requestedDate && requestedTime) {
-        return completeReschedule(
+        return prepareRescheduleTarget(
           activeReschedule.appointment,
           requestedDate,
           requestedTime,
-          getFlowReplyLanguage(activeReschedule.language, language, text)
+          lockedLanguage,
+          getDaypartSlotOptions(requestedDaypart),
+          requestedDaypart
         );
       }
 
-      // Keep the reschedule flow active instead of accidentally starting a new booking
-      // or asking for the service again. The existing appointment already contains it.
-      const lockedLanguage = getFlowReplyLanguage(activeReschedule.language, language, text);
+      if (requestedDate) {
+        return prepareRescheduleTarget(
+          activeReschedule.appointment,
+          requestedDate,
+          null,
+          lockedLanguage,
+          getDaypartSlotOptions(requestedDaypart),
+          requestedDaypart
+        );
+      }
+
       rememberRescheduleContext(
         sessionId,
         activeReschedule.appointment,
         lockedLanguage,
         requestedDate,
-        requestedTime
+        requestedTime,
+        {
+          requestedDaypart: requestedDaypart || undefined,
+          lastOperation: "awaiting_target"
+        }
       );
-      const hasDate = Boolean(requestedDate);
-      const hasTime = Boolean(requestedTime);
       const ask = lockedLanguage === "fa"
-        ? hasDate && !hasTime
-          ? "حتماً 😊 چه ساعتی در اون روز براتون بهتره؟"
-          : !hasDate && hasTime
-            ? `حتماً 😊 چه روزی برای ساعت ${requestedTime} مناسبه؟`
-            : "حتماً 😊 چه روز و ساعتی براتون بهتره؟"
+        ? requestedTime
+          ? `حتماً 😊 چه روزی برای ساعت ${requestedTime} مناسبه؟`
+          : "حتماً 😊 چه روز و ساعتی براتون بهتره؟"
         : lockedLanguage === "sv"
-          ? hasDate && !hasTime
-            ? "Absolut 😊 Vilken tid passar den dagen?"
-            : !hasDate && hasTime
-              ? `Absolut 😊 Vilken dag passar för kl. ${requestedTime}?`
-              : "Absolut 😊 Vilken dag och tid passar bättre?"
-          : hasDate && !hasTime
-            ? "Of course 😊 What time works that day?"
-            : !hasDate && hasTime
-              ? `Of course 😊 What day works for ${requestedTime}?`
-              : "Of course 😊 What day and time would suit you better?";
+          ? requestedTime
+            ? `Absolut 😊 Vilken dag passar för kl. ${requestedTime}?`
+            : "Absolut 😊 Vilken dag och tid passar bättre?"
+          : requestedTime
+            ? `Of course 😊 What day works for ${requestedTime}?`
+            : "Of course 😊 What day and time would suit you better?";
       await replyAndRecord(ask);
       return true;
     }
@@ -4281,7 +5003,7 @@ async function handleUnifiedBookingEngine(params: {
       const selection = selectAppointmentFromText(text, activeSelectionContext.appointments);
 
       if (selection?.type === "all") {
-        const message = cancellationRequested
+        const message = cancellationRequested || activeSelectionContext.intent === "cancel"
           ? (lockedLanguage === "sv" ? "För säkerhets skull kan jag bara avboka en bokning åt gången. Svara med numret eller namnet på bokningen du vill avboka." : lockedLanguage === "fa" ? "برای امنیت، هر بار فقط یک رزرو قابل لغو است. شماره یا نام رزروی را که می‌خواهید لغو کنید بفرستید." : "For safety, I can only cancel one appointment at a time. Reply with the number or name of the appointment to cancel.")
           : formatAllAppointmentsSelectedReply(lockedLanguage);
         await replyAndRecord(message);
@@ -4295,7 +5017,7 @@ async function handleUnifiedBookingEngine(params: {
           language: lockedLanguage
         };
         clearAppointmentSelectionContext(sessionId);
-        if (cancellationRequested) {
+        if (cancellationRequested || activeSelectionContext.intent === "cancel") {
           const policy = getCancellationPolicy(businessConfig);
           if (!policy.allowCancellation) {
             await replyAndRecord(formatCancellationDisabled(lockedLanguage));
@@ -4303,6 +5025,31 @@ async function handleUnifiedBookingEngine(params: {
           }
           rememberCancellationContext(sessionId, selection.appointment, lockedLanguage, businessConfig);
           await replyAndRecord(formatCancellationReasonQuestion(lockedLanguage));
+          return true;
+        }
+        if (rescheduleRequested || activeSelectionContext.intent === "reschedule") {
+          const requestedDate = resolveRescheduleDate(text, selection.appointment);
+          const requestedTime = inferRequestedTimeFromText(text);
+          const requestedDaypart = inferRequestedDaypart(text);
+          if (requestedDate) {
+            return prepareRescheduleTarget(
+              selection.appointment,
+              requestedDate,
+              requestedTime,
+              lockedLanguage,
+              getDaypartSlotOptions(requestedDaypart),
+              requestedDaypart
+            );
+          }
+          rememberRescheduleContext(sessionId, selection.appointment, lockedLanguage, requestedDate, requestedTime, {
+            requestedDaypart: requestedDaypart || undefined,
+            lastOperation: "awaiting_target"
+          });
+          await replyAndRecord(lockedLanguage === "fa"
+            ? "حتماً 😊 چه روز و ساعتی براتون بهتره؟"
+            : lockedLanguage === "sv"
+              ? "Absolut 😊 Vilken dag och tid passar bättre?"
+              : "Of course 😊 What day and time works better?");
           return true;
         }
         await replyAndRecord(
@@ -4719,7 +5466,7 @@ async function handleUnifiedBookingEngine(params: {
         pending.service,
         finalIso,
         Number(pending.durationMinutes || 30),
-        platformName === "messenger" ? sessionId : recipientUserId,
+        sessionId,
         true
       );
 
@@ -4780,6 +5527,103 @@ async function handleUnifiedBookingEngine(params: {
     await replyAndRecord(getErrorMessageByLanguage(languageAfterError));
     return true;
   }
+}
+
+async function routeRescheduleToolCallThroughUnified(params: {
+  args: any;
+  sessionId: string;
+  platformName: "whatsapp" | "messenger" | "instagram" | "telegram";
+  platformLogName: string;
+  recipientUserId: string;
+  history: any[];
+  businessConfig: any;
+  send: UnifiedBookingSend;
+  postProcessPlatform: string;
+}): Promise<{ handled: boolean; replyMessage?: string; responseAlreadySent?: boolean }> {
+  const {
+    args,
+    sessionId,
+    platformName,
+    platformLogName,
+    recipientUserId,
+    history,
+    businessConfig,
+    send,
+    postProcessPlatform
+  } = params;
+  const owner: AppointmentStateOwner = {
+    sessionId,
+    businessId: getAppointmentBusinessScope(businessConfig),
+    platform: platformName,
+    userId: normalizePlatformUserId(platformName, recipientUserId),
+  };
+  const storedOwner = appointmentStateOwners[sessionId];
+  const requestedEventId = String(args?.eventId || "").trim();
+  let appointmentContext = getAppointmentContext(sessionId);
+
+  if (!appointmentContext && requestedEventId) {
+    const selectionContext = getAppointmentSelectionContext(sessionId);
+    const selected = selectionContext?.appointments?.find((appointment: any) =>
+      getAppointmentCalendarEventId(appointment) === requestedEventId
+    );
+    if (selected) {
+      appointmentContexts[sessionId] = {
+        appointment: selected,
+        savedAt: Date.now(),
+        language: selectionContext?.language || getConversationLanguage(sessionId, "")
+      };
+      clearAppointmentSelectionContext(sessionId);
+      appointmentContext = getAppointmentContext(sessionId);
+    }
+  }
+
+  const appointmentEventId = getAppointmentCalendarEventId(appointmentContext?.appointment);
+  const requested = new Date(ensureStockholmOffset(String(args?.dateTime || "")));
+  if (
+    !appointmentContext ||
+    !storedOwner ||
+    !appointmentStateOwnerMatches(storedOwner, owner) ||
+    !requestedEventId ||
+    appointmentEventId !== requestedEventId ||
+    Number.isNaN(requested.getTime())
+  ) {
+    return {
+      handled: false,
+      replyMessage: formatStaleAppointmentStateMessage(
+        appointmentContext?.language || getConversationLanguage(sessionId, "")
+      )
+    };
+  }
+
+  const requestedDate = stockholmDateString(requested);
+  const requestedTime = requested.toLocaleTimeString("sv-SE", {
+    timeZone: "Europe/Stockholm",
+    hour: "2-digit",
+    minute: "2-digit"
+  });
+  const lockedLanguage = appointmentContext.language || getConversationLanguage(sessionId, "");
+  const replayText = lockedLanguage === "sv"
+    ? `ändra min tid ${requestedDate} klockan ${requestedTime}`
+    : lockedLanguage === "fa"
+      ? `وقت را تغییر بده ${requestedDate} ساعت ${requestedTime}`
+      : `reschedule my appointment ${requestedDate} at ${requestedTime}`;
+  const handled = await handleUnifiedBookingEngine({
+    sessionId,
+    platformName,
+    platformLogName,
+    recipientUserId,
+    text: replayText,
+    history,
+    businessConfig,
+    send,
+    postProcessPlatform
+  });
+  return handled
+    ? { handled: true, responseAlreadySent: true }
+    : {
+        handled: false,
+        replyMessage: formatStaleAppointmentStateMessage(lockedLanguage)
+      };
 }
 
 async function processTelegramUpdate(update: any, config: any, platform: string = "telegram-polling") {
@@ -4994,6 +5838,31 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
           );
           return { TERMINATE_EARLY: true, replyMessage };
         }
+        else if (call.function.name === "rescheduleAppointment" && args) {
+          const routed = await routeRescheduleToolCallThroughUnified({
+            args,
+            sessionId: telegramSessionId,
+            platformName: "telegram",
+            platformLogName: "Telegram",
+            recipientUserId: chatId.toString(),
+            history,
+            businessConfig: config,
+            send: async (reply) => {
+              const response = await fetch(`https://api.telegram.org/bot${telegramToken}/sendMessage`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ chat_id: chatId, text: reply })
+              });
+              return response.ok;
+            },
+            postProcessPlatform: platform
+          });
+          return {
+            TERMINATE_EARLY: true,
+            replyMessage: routed.replyMessage || "",
+            responseAlreadySent: routed.responseAlreadySent
+          };
+        }
         else if (call.function.name === "insertAppointment" && args) {
           const contactOverride = extractNameAndPhone(text || "");
           const safeName = contactOverride?.name || cleanCustomerNameCandidate(args.name) || args.name;
@@ -5036,6 +5905,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       
       const earlyTerm = functionResponsesParts.find((p: any) => p && p.TERMINATE_EARLY);
       if (earlyTerm) {
+          if (earlyTerm.responseAlreadySent) return;
           chatResponse.text = earlyTerm.replyMessage;
           chatResponse.functionCalls = null;
           break;
@@ -5367,6 +6237,13 @@ function getConversationLanguage(chatId: string, latestText?: string): string {
   if (explicitSwitch) {
     chatLanguages[chatId] = explicitSwitch;
     return explicitSwitch;
+  }
+
+  const activeReschedule = rescheduleContexts[chatId];
+  if (activeReschedule && !isRescheduleContextStale(activeReschedule)) {
+    const locked = activeReschedule.lockedReplyLanguage || activeReschedule.language || previous || "en";
+    chatLanguages[chatId] = locked;
+    return locked;
   }
 
   if (completed && isThanksOnlyText(text)) return completed.language || previous || "en";
@@ -6043,6 +6920,10 @@ async function processWhatsAppMessage(message: any, metadata: any, config: any, 
   const userLanguage = getConversationLanguage(chatId, textMessage || "");
 
   let businessConfig: any = { ...activeConfig, ...(config || {}) };
+  let whatsappBusinessScopeVerified = !supabase && Boolean(
+    getBusinessIdFromConfig(businessConfig) &&
+    String(businessConfig?.whatsappPhoneNumberId || businessConfig?.whatsapp_phone_number_id || "") === String(phoneNumberId)
+  );
 
   try {
     if (supabase) {
@@ -6057,6 +6938,7 @@ async function processWhatsAppMessage(message: any, metadata: any, config: any, 
       }
 
       if (data) {
+        whatsappBusinessScopeVerified = Boolean(data.id);
         // Use the same complete business normalization as every other channel so newly
         // added settings (especially cancellation policy) cannot be silently dropped.
         businessConfig = {
@@ -6079,6 +6961,12 @@ async function processWhatsAppMessage(message: any, metadata: any, config: any, 
     }
   } catch (tenantErr) {
     console.error("WhatsApp tenant config injection failed:", tenantErr);
+  }
+
+  if (!whatsappBusinessScopeVerified) {
+    clearAppointmentConversationState(chatId);
+    console.error(`[WhatsAppConfig] Refusing unscoped message for phone_number_id=${phoneNumberId}`);
+    return;
   }
 
   resetSessionIfBusinessConfigChanged(chatId, businessConfig);
@@ -6184,6 +7072,23 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
             lookupLanguage
           );
           return { TERMINATE_EARLY: true, replyMessage };
+        } else if (call.function.name === "rescheduleAppointment" && args) {
+          const routed = await routeRescheduleToolCallThroughUnified({
+            args,
+            sessionId: chatId,
+            platformName: "whatsapp",
+            platformLogName: "WhatsApp",
+            recipientUserId: from,
+            history,
+            businessConfig,
+            send: (reply) => sendWhatsAppMessage(from, reply, businessConfig),
+            postProcessPlatform: platform
+          });
+          return {
+            TERMINATE_EARLY: true,
+            replyMessage: routed.replyMessage || "",
+            responseAlreadySent: routed.responseAlreadySent
+          };
         } else if (call.function.name === "insertAppointment" && args) {
           // Safety fallback only. Normal WhatsApp bookings must be completed by UnifiedBooking.
           const restoredPending = await loadPendingBooking(chatId, "whatsapp", businessConfig);
@@ -6292,6 +7197,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
 
       const earlyTerm = functionResponsesParts.find((p: any) => p && p.TERMINATE_EARLY);
       if (earlyTerm) {
+        if (earlyTerm.responseAlreadySent) return;
         chatResponse.text = earlyTerm.replyMessage;
         chatResponse.functionCalls = null;
         break;
@@ -7058,7 +7964,11 @@ async function processMessengerUpdate(webhookEvent: any, config: any, platform: 
   }
 
   businessConfig.messengerBusinessScopeVerified = messengerBusinessScopeVerified;
-  if (!messengerBusinessScopeVerified) clearAppointmentConversationState(chatId);
+  if (!messengerBusinessScopeVerified) {
+    clearAppointmentConversationState(chatId);
+    console.error(`[MessengerConfig] Refusing unscoped message for recipient/page id=${recipientId}`);
+    return;
+  }
 
   resetSessionIfBusinessConfigChanged(chatId, businessConfig);
 
@@ -7469,6 +8379,23 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
             lookupLanguage
           );
           return { TERMINATE_EARLY: true, replyMessage };
+        } else if (call.function.name === "rescheduleAppointment" && args) {
+          const routed = await routeRescheduleToolCallThroughUnified({
+            args,
+            sessionId: chatId,
+            platformName: "messenger",
+            platformLogName: "Messenger",
+            recipientUserId: senderId,
+            history,
+            businessConfig,
+            send: (reply) => sendMessengerMessage(senderId, reply, businessConfig),
+            postProcessPlatform: platform
+          });
+          return {
+            TERMINATE_EARLY: true,
+            replyMessage: routed.replyMessage || "",
+            responseAlreadySent: routed.responseAlreadySent
+          };
         } else if (call.function.name === "insertAppointment" && args) {
           // Messenger booking must never trust Gemini-provided date/name directly.
           // It can only finalize a short-lived server-side pending booking after contact info.
@@ -7511,6 +8438,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
 
       const earlyTerm = functionResponsesParts.find((p: any) => p && p.TERMINATE_EARLY);
       if (earlyTerm) {
+        if (earlyTerm.responseAlreadySent) return;
         chatResponse.text = earlyTerm.replyMessage;
         chatResponse.functionCalls = null;
         break;
@@ -7629,6 +8557,10 @@ async function processInstagramUpdate(webhook_event: any, config: any, platform:
 
   let businessConfig: any = { ...activeConfig, ...(config || {}) };
   let businessRecord: any = null;
+  let instagramBusinessScopeVerified = !supabase && Boolean(
+    getBusinessIdFromConfig(businessConfig) &&
+    String(businessConfig?.instagramAccountId || businessConfig?.instagram_account_id || "") === String(recipientId)
+  );
 
   try {
     if (supabase) {
@@ -7644,6 +8576,7 @@ async function processInstagramUpdate(webhook_event: any, config: any, platform:
 
       if (data) {
         businessRecord = data;
+        instagramBusinessScopeVerified = Boolean(data.id);
         // Normalize the full database row so Instagram receives exactly the same
         // cancellation policy and business settings as Messenger, WhatsApp and Telegram.
         businessConfig = {
@@ -7665,6 +8598,12 @@ async function processInstagramUpdate(webhook_event: any, config: any, platform:
     }
   } catch (tenantErr) {
     console.error('Instagram tenant config injection failed:', tenantErr);
+  }
+
+  if (!instagramBusinessScopeVerified) {
+    clearAppointmentConversationState(chatId);
+    console.error(`[InstagramConfig] Refusing unscoped message for recipient id=${recipientId}`);
+    return;
   }
 
   resetSessionIfBusinessConfigChanged(chatId, businessConfig);
@@ -7835,73 +8774,27 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
           );
           return { TERMINATE_EARLY: true, replyMessage };
         } else if (call.function.name === 'rescheduleAppointment' && args) {
-          const owner: AppointmentStateOwner = {
+          const routed = await routeRescheduleToolCallThroughUnified({
+            args,
             sessionId: chatId,
-            businessId: getAppointmentBusinessScope(businessConfig),
-            platform: "instagram",
-            userId: normalizePlatformUserId("instagram", senderId),
+            platformName: "instagram",
+            platformLogName: "Instagram",
+            recipientUserId: senderId,
+            history,
+            businessConfig,
+            send: (reply) => sendInstagramMessage(
+              senderId,
+              reply,
+              getBusinessInstagramToken(businessConfig)
+            ),
+            postProcessPlatform: platform
+          });
+          instagramRescheduleReplyAlreadySent = Boolean(routed.responseAlreadySent);
+          return {
+            TERMINATE_EARLY: true,
+            replyMessage: routed.replyMessage || "",
+            responseAlreadySent: routed.responseAlreadySent
           };
-          const storedOwner = appointmentStateOwners[chatId];
-          let appointmentContext = getAppointmentContext(chatId);
-
-          if (!appointmentContext) {
-            const selected = getAppointmentSelectionContext(chatId)?.appointments?.find((appointment: any) =>
-              String(appointment?.calendarEventId || appointment?.id || "") === String(args.eventId || "")
-            );
-            if (selected) {
-              appointmentContexts[chatId] = {
-                appointment: selected,
-                savedAt: Date.now(),
-                language: getConversationLanguage(chatId, textMessage || "")
-              };
-              appointmentContext = getAppointmentContext(chatId);
-            }
-          }
-
-          const requested = new Date(ensureStockholmOffset(String(args.dateTime || "")));
-          if (
-            appointmentContext &&
-            storedOwner &&
-            appointmentStateOwnerMatches(storedOwner, owner) &&
-            !Number.isNaN(requested.getTime())
-          ) {
-            const requestedDate = stockholmDateString(requested);
-            const requestedTime = requested.toLocaleTimeString("sv-SE", {
-              timeZone: "Europe/Stockholm",
-              hour: "2-digit",
-              minute: "2-digit"
-            });
-            const lockedLanguage = appointmentContext.language || getConversationLanguage(chatId, textMessage || "");
-            const replayText = lockedLanguage === "sv"
-              ? `ändra min tid ${requestedDate} klockan ${requestedTime}`
-              : lockedLanguage === "fa"
-                ? `وقت را تغییر بده ${requestedDate} ساعت ${requestedTime}`
-                : `reschedule my appointment ${requestedDate} at ${requestedTime}`;
-            const handled = await handleUnifiedBookingEngine({
-              sessionId: chatId,
-              platformName: "instagram",
-              platformLogName: "Instagram",
-              recipientUserId: senderId,
-              text: replayText,
-              history,
-              businessConfig,
-              send: (reply) => sendInstagramMessage(
-                senderId,
-                reply,
-                getBusinessInstagramToken(businessConfig)
-              ),
-              postProcessPlatform: platform
-            });
-            if (handled) {
-              instagramRescheduleReplyAlreadySent = true;
-              return { TERMINATE_EARLY: true, replyMessage: "", responseAlreadySent: true };
-            }
-          }
-
-          const replyMessage = formatStaleAppointmentStateMessage(
-            appointmentContext?.language || getConversationLanguage(chatId, textMessage || "")
-          );
-          return { TERMINATE_EARLY: true, replyMessage };
         } else if (call.function.name === 'insertAppointment' && args) {
           const contactOverride = extractNameAndPhone(textMessage || "");
           const safeName = contactOverride?.name || cleanCustomerNameCandidate(args.name) || args.name;

@@ -2031,6 +2031,128 @@ async function findCustomerAppointments(
   };
 }
 
+type AppointmentTemporalState = "future_or_active" | "expired_today" | "recent_past";
+
+function classifyAppointmentTemporalState(
+  appointment: any,
+  nowMs: number = Date.now()
+): AppointmentTemporalState {
+  const startMs = new Date(String(appointment?.start || "")).getTime();
+  const explicitEndMs = new Date(String(appointment?.end || "")).getTime();
+  const endMs = Number.isFinite(explicitEndMs)
+    ? explicitEndMs
+    : startMs + getAppointmentDurationMinutes(appointment) * 60000;
+  if (Number.isFinite(endMs) && endMs > nowMs) return "future_or_active";
+  const appointmentDate = Number.isFinite(startMs)
+    ? stockholmDateString(new Date(startMs))
+    : "";
+  return appointmentDate === stockholmDateString(new Date(nowMs))
+    ? "expired_today"
+    : "recent_past";
+}
+
+async function findOwnedAppointmentForMutation(
+  adapter: CalendarAdapter,
+  args: any,
+  customerId: string,
+  platform: string,
+  businessConfig: any
+): Promise<{
+  result: any;
+  pastAppointment: any | null;
+  temporalState: AppointmentTemporalState | null;
+}> {
+  const upcoming = await findCustomerAppointments(
+    adapter,
+    {
+      ...args,
+      lookupMode: "upcoming",
+      includePast: false,
+      lookupPath: `${String(args?.lookupPath || "mutation")}_upcoming`
+    },
+    customerId,
+    platform,
+    businessConfig
+  );
+  if (upcoming?.found) {
+    return { result: upcoming, pastAppointment: null, temporalState: "future_or_active" };
+  }
+
+  const today = await findCustomerAppointments(
+    adapter,
+    {
+      ...args,
+      lookupMode: "today",
+      includePast: true,
+      lookupText: "today",
+      lookupPath: `${String(args?.lookupPath || "mutation")}_today`
+    },
+    customerId,
+    platform,
+    businessConfig
+  );
+  const activeToday = (Array.isArray(today?.appointments) ? today.appointments : [])
+    .filter((appointment: any) => classifyAppointmentTemporalState(appointment) === "future_or_active")
+    .sort((a: any, b: any) => new Date(a.end || a.start).getTime() - new Date(b.end || b.start).getTime());
+  if (activeToday.length > 0) {
+    return {
+      result: { ...today, found: true, appointments: activeToday },
+      pastAppointment: null,
+      temporalState: "future_or_active"
+    };
+  }
+  const expiredToday = (Array.isArray(today?.appointments) ? today.appointments : [])
+    .filter((appointment: any) => classifyAppointmentTemporalState(appointment) === "expired_today")
+    .sort((a: any, b: any) => new Date(b.end || b.start).getTime() - new Date(a.end || a.start).getTime())[0];
+  if (expiredToday) {
+    return { result: today, pastAppointment: expiredToday, temporalState: "expired_today" };
+  }
+
+  const recent = await findCustomerAppointments(
+    adapter,
+    {
+      ...args,
+      lookupMode: "history",
+      includePast: true,
+      lookupText: "previous appointment",
+      lookupPath: `${String(args?.lookupPath || "mutation")}_recent`
+    },
+    customerId,
+    platform,
+    businessConfig
+  );
+  const recentPast = (Array.isArray(recent?.appointments) ? recent.appointments : [])
+    .filter((appointment: any) => classifyAppointmentTemporalState(appointment) === "recent_past")
+    .sort((a: any, b: any) => new Date(b.end || b.start).getTime() - new Date(a.end || a.start).getTime())[0];
+  if (recentPast) {
+    return { result: recent, pastAppointment: recentPast, temporalState: "recent_past" };
+  }
+
+  return { result: upcoming, pastAppointment: null, temporalState: null };
+}
+
+function formatPastAppointmentMutationReply(
+  appointment: any,
+  temporalState: AppointmentTemporalState,
+  language: string
+): string {
+  const { dateText, timeText } = formatLocalizedDateTime(String(appointment?.start || ""), language);
+  if (temporalState === "expired_today") {
+    if (language === "sv") return `Jag hittade din bokning idag kl. ${timeText}, men tiden har redan passerat och kan inte längre ändras. Vill du att jag hjälper dig boka en ny tid?`;
+    if (language === "fa") return `رزرو امروزتان ساعت ${timeText} را پیدا کردم، اما زمانش گذشته و دیگر قابل تغییر نیست. می‌خواهید برایتان وقت جدیدی رزرو کنم؟`;
+    if (language === "de") return `Ich habe Ihren Termin heute um ${timeText} Uhr gefunden. Er ist bereits vorbei und kann nicht mehr verschoben werden. Soll ich einen neuen Termin buchen?`;
+    if (language === "es") return `Encontré tu cita de hoy a las ${timeText}, pero ya pasó y no puede cambiarse. ¿Quieres que te ayude a reservar otra?`;
+    if (language === "ar") return `وجدت موعدك اليوم الساعة ${timeText}، لكنه انتهى ولا يمكن تغييره الآن. هل تريد أن أساعدك في حجز موعد جديد؟`;
+    return `I found your appointment today at ${timeText}, but that time has already passed, so it can no longer be moved. Would you like help booking a new appointment?`;
+  }
+  if (language === "sv") return `Jag hittade din tidigare bokning ${dateText} kl. ${timeText}. Den har redan passerat och kan inte bokas om, men jag hjälper gärna till med en ny tid. Vill du det?`;
+  if (language === "fa") return `رزرو قبلی‌تان در ${dateText} ساعت ${timeText} را پیدا کردم. زمانش گذشته و قابل جابه‌جایی نیست، اما می‌توانم وقت جدیدی رزرو کنم. مایلید؟`;
+  if (language === "de") return `Ich habe Ihren früheren Termin am ${dateText} um ${timeText} Uhr gefunden. Er kann nicht mehr verschoben werden. Soll ich einen neuen Termin buchen?`;
+  if (language === "es") return `Encontré tu cita anterior del ${dateText} a las ${timeText}. Ya no puede cambiarse. ¿Quieres reservar una nueva?`;
+  if (language === "ar") return `وجدت موعدك السابق بتاريخ ${dateText} الساعة ${timeText}. لا يمكن تغييره الآن. هل تريد حجز موعد جديد؟`;
+  return `I found your previous appointment on ${dateText} at ${timeText}. It has already passed and cannot be moved. Would you like help booking a new appointment?`;
+}
+
 function formatAppointmentLookupReply(result: any, language: string = "en"): string {
   const lang = ["sv", "fa", "de", "es", "ar", "en"].includes(language) ? language : "en";
 
@@ -2222,6 +2344,32 @@ const calendarTools: any = [{
   ]
 }];
 
+function selectAuthoritativeGeminiFunctionCalls(
+  calls: any[],
+  sessionId?: string
+): any[] {
+  const available = Array.isArray(calls)
+    ? calls.filter((call) => String(call?.function?.name || "").trim())
+    : [];
+  if (available.length <= 1) return available;
+
+  const hasVerifiedReschedule = Boolean(sessionId && getRescheduleContext(sessionId));
+  const priority = hasVerifiedReschedule
+    ? ["rescheduleAppointment", "findCustomerAppointments", "checkSlots", "insertAppointment", "logSystemAnalysis"]
+    : ["findCustomerAppointments", "checkSlots", "rescheduleAppointment", "insertAppointment", "logSystemAnalysis"];
+  const selected = priority
+    .map((name) => available.find((call) => call.function.name === name))
+    .find(Boolean) || available[0];
+
+  console.warn("[BookingFlow]", {
+    operation: "gemini_tool_dispatch",
+    offeredToolCount: available.length,
+    selectedTool: String(selected?.function?.name || "unknown"),
+    finalHandledPath: "single_authoritative_tool"
+  });
+  return selected ? [selected] : [];
+}
+
 let activeConfig: any = {};
 if (fs.existsSync(path.join(process.cwd(), "agent-config.json"))) {
   try {
@@ -2406,6 +2554,11 @@ type AvailabilitySearchContext = {
 };
 const availabilitySearchContexts: Record<string, AvailabilitySearchContext> = {};
 const lastServiceInformationReplies: Record<string, { key: string; sentAt: number }> = {};
+const pastAppointmentRecoveryContexts: Record<string, {
+  savedAt: number;
+  language: string;
+  owner: AppointmentStateOwner;
+}> = {};
 
 function hasAppointmentConversationState(sessionId: string): boolean {
   return Boolean(
@@ -2425,6 +2578,7 @@ function clearAppointmentConversationState(sessionId: string) {
   delete cancellationContexts[sessionId];
   delete appointmentStateOwners[sessionId];
   delete availabilitySearchContexts[sessionId];
+  delete pastAppointmentRecoveryContexts[sessionId];
   clearConversationFlowLanguage(sessionId);
 }
 
@@ -3055,6 +3209,7 @@ function isRescheduleIntent(text?: string): boolean {
   const swedishOrEnglish =
     isDirectReschedulePhrase(normalized) ||
     /(?:^|\s)(?:ändra(?:\s+(?:min\s+tid|tiden|tid|bokningen))?|flytta(?:\s+(?:min\s+tid|tiden|tid|bokningen|den))?|boka\s+om|omboka|reschedule|change\s+my\s+appointment|change\s+the\s+time|move\s+(?:my\s+appointment|it|the\s+appointment))(?=\s|$)/i.test(normalized) ||
+    /(?:^|\s)(?:(?:can|could)\s+(?:i\s+)?(?:change|move|reschedule)|can\s+my\s+(?:appointment|booking)\s+be\s+(?:changed|moved|rescheduled)|could\s+my\s+(?:appointment|booking)\s+be\s+(?:changed|moved|rescheduled)|kan\s+(?:jag\s+)?(?:ändra|flytta|boka\s+om)|kan\s+min\s+(?:tid|bokning)\s+(?:ändras|flyttas|bokas\s+om))(?=\s|$)/i.test(normalized) ||
     /(?:^|\s)(?:kan\s+(?:tyvärr\s+)?inte\s+komma|kommer\s+inte\s+kunna\s+komma|cannot\s+come|can't\s+come|can\s+not\s+come)(?=\s|$)/i.test(normalized);
 
   const transliteratedPersian =
@@ -4481,6 +4636,15 @@ function isExistingAppointmentLookupIntent(text?: string): boolean {
   return lookupPatterns.some((pattern) => pattern.test(raw));
 }
 
+function isExistingBookingOperationRecoveryIntent(text?: string): boolean {
+  const raw = String(text || "").trim().toLowerCase().normalize("NFKC");
+  if (!raw) return false;
+  return /\b(i (?:already )?have (?:an? )?(?:appointment|booking)|i have already booking|but i (?:already )?have|i (?:only|just) want to (?:change|move|reschedule)|change my existing booking|my existing booking)\b/iu.test(raw) ||
+    /\b(jag har redan (?:en )?(?:bokning|tid)|jag vill bara (?:ändra|flytta|boka om)|min befintliga bokning|ändra min bokning)\b/iu.test(raw) ||
+    /(من قبلاً وقت دارم|من از قبل رزرو دارم|فقط می.?خوام وقتمو تغییر بدم|رزرو قبلی|وقت قبلی)/u.test(raw) ||
+    /\b(man az ghabl vaght daram|man ghablan rezerv daram|faghat mikham vaghtam ro taghir bedam|hamoon booking ghabli)\b/iu.test(raw);
+}
+
 function isPastAppointmentLookupIntent(text?: string): boolean {
   const raw = String(text || "").trim().toLowerCase();
   if (!raw) return false;
@@ -4594,6 +4758,20 @@ function guardCustomerFacingReply(sessionId: string, reply: string, fallbackLang
     mixedLanguageBlocked: true,
     stateType: conversationFlowLanguages[sessionId]?.flowType || "none"
   });
+  const reschedule = rescheduleContexts[sessionId];
+  if (reschedule?.selectedNewStartTime) {
+    return formatRescheduleConfirmation(language, reschedule.selectedNewStartTime);
+  }
+  if (Array.isArray(reschedule?.offeredSlots) && reschedule.offeredSlots.length > 0) {
+    return formatSwedishTimeSlots(reschedule.offeredSlots, reschedule.requestedTime, language);
+  }
+  const pending = pendingBookings[sessionId];
+  if (pending?.status === "awaiting_contact") {
+    return formatAskContactMessageForPlatform(language, normalizePlatformName(pending.platform || ""));
+  }
+  if (pending?.status === "awaiting_time_selection" && Array.isArray(pending.offeredSlots)) {
+    return formatSwedishTimeSlots(pending.offeredSlots, undefined, language);
+  }
   return formatLocalizedFlowFallback(language, raw);
 }
 
@@ -4667,7 +4845,261 @@ type TelegramPollerState = {
 };
 
 const telegramPollers: Record<string, TelegramPollerState> = {};
-const processedUpdateIds = new Set<string>();
+
+type AtomicClaimState = {
+  type: "inbound_message_claim" | "reschedule_operation_claim";
+  status: "processing" | "completed" | "failed";
+  attempts: number;
+  claimedAt: number;
+  updatedAt: number;
+  retryAfter?: number;
+};
+
+type AtomicClaimHandle = {
+  claimed: boolean;
+  keyHash: string;
+  storageId: string;
+  state: AtomicClaimState;
+  duplicateStatus?: AtomicClaimState["status"];
+};
+
+const atomicClaims = new Map<string, AtomicClaimState>();
+const IDEMPOTENCY_COMPLETED_TTL_MS = 24 * 60 * 60 * 1000;
+const IDEMPOTENCY_PROCESSING_TTL_MS = 2 * 60 * 1000;
+const IDEMPOTENCY_RETRY_DELAY_MS = 5 * 1000;
+const IDEMPOTENCY_MAX_ATTEMPTS = 3;
+
+function isDuplicateInsertError(error: any): boolean {
+  const code = String(error?.code || "");
+  const message = String(error?.message || "").toLowerCase();
+  return code === "23505" || message.includes("duplicate") || message.includes("unique constraint");
+}
+
+function parseAtomicClaimState(value: any): AtomicClaimState | null {
+  try {
+    const parsed = typeof value === "string" ? JSON.parse(value) : value;
+    if (
+      !parsed ||
+      !["inbound_message_claim", "reschedule_operation_claim"].includes(parsed.type) ||
+      !["processing", "completed", "failed"].includes(parsed.status)
+    ) return null;
+    return {
+      type: parsed.type,
+      status: parsed.status,
+      attempts: Math.max(1, Number(parsed.attempts || 1)),
+      claimedAt: Number(parsed.claimedAt || 0),
+      updatedAt: Number(parsed.updatedAt || 0),
+      retryAfter: parsed.retryAfter ? Number(parsed.retryAfter) : undefined
+    };
+  } catch {
+    return null;
+  }
+}
+
+function atomicClaimMayRetry(state: AtomicClaimState, now: number): boolean {
+  if (state.attempts >= IDEMPOTENCY_MAX_ATTEMPTS) return false;
+  if (state.status === "failed") return now >= Number(state.retryAfter || 0);
+  return state.status === "processing" &&
+    now - Number(state.updatedAt || state.claimedAt || 0) > IDEMPOTENCY_PROCESSING_TTL_MS;
+}
+
+async function claimAtomicOperation(params: {
+  type: AtomicClaimState["type"];
+  tenantScope: string;
+  platform: string;
+  exactId: string;
+  businessId?: string;
+}): Promise<AtomicClaimHandle> {
+  const platform = normalizePlatformName(params.platform);
+  const tenantScope = String(params.tenantScope || "").trim();
+  const exactId = String(params.exactId || "").trim();
+  const now = Date.now();
+  const rawKey = `${params.type}|${tenantScope}|${platform}|${exactId}`;
+  const keyHash = crypto.createHash("sha256").update(rawKey).digest("hex");
+  const storageId = `${params.type === "inbound_message_claim" ? "idem" : "resop"}_${keyHash.slice(0, 48)}`;
+  const existingMemory = atomicClaims.get(keyHash);
+
+  if (existingMemory) {
+    if (
+      existingMemory.status === "completed" &&
+      now - existingMemory.updatedAt <= IDEMPOTENCY_COMPLETED_TTL_MS
+    ) {
+      return { claimed: false, keyHash, storageId, state: existingMemory, duplicateStatus: "completed" };
+    }
+    if (!atomicClaimMayRetry(existingMemory, now)) {
+      return {
+        claimed: false,
+        keyHash,
+        storageId,
+        state: existingMemory,
+        duplicateStatus: existingMemory.status
+      };
+    }
+  }
+
+  const nextState: AtomicClaimState = {
+    type: params.type,
+    status: "processing",
+    attempts: Number(existingMemory?.attempts || 0) + 1,
+    claimedAt: now,
+    updatedAt: now
+  };
+
+  // Setting the process-local claim before the first await makes concurrent deliveries
+  // on the same instance atomic. Supabase adds cross-instance atomicity via user_id's
+  // existing unique constraint.
+  atomicClaims.set(keyHash, nextState);
+
+  if (!supabase) {
+    return { claimed: true, keyHash, storageId, state: nextState };
+  }
+
+  const serialized = JSON.stringify(nextState);
+  const { error: insertError } = await supabase
+    .from("appointments_leads")
+    .insert([{
+      user_id: storageId,
+      platform: `idempotency:${platform}`,
+      business_id: params.businessId || null,
+      ai_summary: serialized
+    }]);
+
+  if (!insertError) {
+    return { claimed: true, keyHash, storageId, state: nextState };
+  }
+
+  if (!isDuplicateInsertError(insertError)) {
+    atomicClaims.delete(keyHash);
+    console.error("[Idempotency] Durable claim failed; refusing unsafe processing.", {
+      platform,
+      type: params.type,
+      errorCode: String(insertError?.code || "storage_error")
+    });
+    return { claimed: false, keyHash, storageId, state: nextState, duplicateStatus: "failed" };
+  }
+
+  const { data: storedRow, error: readError } = await supabase
+    .from("appointments_leads")
+    .select("ai_summary")
+    .eq("user_id", storageId)
+    .maybeSingle();
+  if (readError || !storedRow) {
+    atomicClaims.delete(keyHash);
+    console.error("[Idempotency] Existing durable claim could not be read.", {
+      platform,
+      type: params.type,
+      errorCode: String(readError?.code || "missing_claim")
+    });
+    return { claimed: false, keyHash, storageId, state: nextState, duplicateStatus: "processing" };
+  }
+
+  const storedState = parseAtomicClaimState(storedRow.ai_summary);
+  if (!storedState || !atomicClaimMayRetry(storedState, now)) {
+    if (storedState) atomicClaims.set(keyHash, storedState);
+    return {
+      claimed: false,
+      keyHash,
+      storageId,
+      state: storedState || nextState,
+      duplicateStatus: storedState?.status || "processing"
+    };
+  }
+
+  const retryState: AtomicClaimState = {
+    ...storedState,
+    status: "processing",
+    attempts: storedState.attempts + 1,
+    claimedAt: now,
+    updatedAt: now,
+    retryAfter: undefined
+  };
+  const previousSerialized = typeof storedRow.ai_summary === "string"
+    ? storedRow.ai_summary
+    : JSON.stringify(storedRow.ai_summary);
+  const { data: claimedRow, error: retryError } = await supabase
+    .from("appointments_leads")
+    .update({ ai_summary: JSON.stringify(retryState) })
+    .eq("user_id", storageId)
+    .eq("ai_summary", previousSerialized)
+    .select("user_id")
+    .maybeSingle();
+  if (retryError || !claimedRow) {
+    atomicClaims.set(keyHash, storedState);
+    return {
+      claimed: false,
+      keyHash,
+      storageId,
+      state: storedState,
+      duplicateStatus: storedState.status
+    };
+  }
+
+  atomicClaims.set(keyHash, retryState);
+  return { claimed: true, keyHash, storageId, state: retryState };
+}
+
+async function settleAtomicOperation(
+  handle: AtomicClaimHandle,
+  status: "completed" | "failed"
+): Promise<boolean> {
+  if (!handle.claimed) return false;
+  const now = Date.now();
+  const state: AtomicClaimState = {
+    ...handle.state,
+    status,
+    updatedAt: now,
+    ...(status === "failed" ? { retryAfter: now + IDEMPOTENCY_RETRY_DELAY_MS } : { retryAfter: undefined })
+  };
+  atomicClaims.set(handle.keyHash, state);
+  if (!supabase) return true;
+
+  let lastError: any = null;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    const { data, error } = await supabase
+      .from("appointments_leads")
+      .update({ ai_summary: JSON.stringify(state) })
+      .eq("user_id", handle.storageId)
+      .select("user_id")
+      .maybeSingle();
+    if (!error && data?.user_id === handle.storageId) return true;
+    lastError = error || new Error("claim_settlement_row_missing");
+  }
+  console.error("[Idempotency] Durable claim settlement failed.", {
+    status,
+    errorCode: String(lastError?.code || "storage_error")
+  });
+  return false;
+}
+
+async function runWithInboundMessageClaim(params: {
+  tenantScope: string;
+  businessId?: string;
+  platform: string;
+  messageId: string;
+  handler: () => Promise<void>;
+}): Promise<void> {
+  const claim = await claimAtomicOperation({
+    type: "inbound_message_claim",
+    tenantScope: params.tenantScope,
+    businessId: params.businessId,
+    platform: params.platform,
+    exactId: params.messageId
+  });
+  if (!claim.claimed) {
+    console.log("[Idempotency] Duplicate inbound message suppressed.", {
+      platform: normalizePlatformName(params.platform),
+      duplicateStatus: claim.duplicateStatus || "processing"
+    });
+    return;
+  }
+  try {
+    await params.handler();
+    await settleAtomicOperation(claim, "completed");
+  } catch (error) {
+    await settleAtomicOperation(claim, "failed");
+    throw error;
+  }
+}
 
 function maskToken(token?: string) {
   if (!token) return "missing-token";
@@ -4757,6 +5189,7 @@ function resetSessionIfBusinessConfigChanged(sessionId: string, config: any) {
     delete cancellationContexts[sessionId];
     delete appointmentStateOwners[sessionId];
     delete availabilitySearchContexts[sessionId];
+    delete pastAppointmentRecoveryContexts[sessionId];
     delete conversationFlowLanguages[sessionId];
     delete chatLanguages[sessionId];
   }
@@ -4949,11 +5382,19 @@ async function handleUnifiedBookingEngine(params: {
   const latestStrongLanguage = detectStrongLatestLanguage(text);
   let pending = await loadPendingBooking(sessionId, platformName, businessConfig);
   const entryRescheduleContext = getRescheduleContext(sessionId);
+  const entryCancellationContext = getCancellationContext(sessionId);
 
   // A validated reschedule flow owns short confirmations and slot follow-ups. Clear any
   // unrelated pending new-booking state before it can ask for contact details.
   if (entryRescheduleContext && !isExplicitNewBookingRequest(text) && pending) {
     console.log(`[UnifiedBooking] Active reschedule cleared incompatible pending booking session=${sessionId}`);
+    await clearPendingBooking(sessionId);
+    pending = null;
+  }
+  if (entryRescheduleContext) {
+    clearCancellationContext(sessionId);
+  } else if (entryCancellationContext && !isExplicitNewBookingRequest(text) && pending) {
+    console.log(`[UnifiedBooking] Active cancellation cleared incompatible pending booking session=${sessionId}`);
     await clearPendingBooking(sessionId);
     pending = null;
   }
@@ -5001,20 +5442,6 @@ async function handleUnifiedBookingEngine(params: {
     await replyAndRecord(formatStaleAppointmentStateMessage(invalidatedRescheduleLanguage || language));
     return true;
   }
-
-  const recentReschedule = recentlyCompletedReschedules[sessionId];
-  if (
-    !pending &&
-    !entryRescheduleContext &&
-    recentReschedule &&
-    Date.now() - recentReschedule.completedAt < 15 * 1000 &&
-    isRescheduleConfirmation(text)
-  ) {
-    // Meta can redeliver the same short confirmation. Swallow only the immediate
-    // duplicate so it cannot mutate or notify twice.
-    return true;
-  }
-
 
   const completeCancellation = async (context: { appointment: any; language: string; feeApplies: boolean; feeAmount: number; currency: string; reason?: string }): Promise<boolean> => {
     const adapter = getCalendarAdapter(businessConfig);
@@ -5351,6 +5778,33 @@ async function handleUnifiedBookingEngine(params: {
       );
     }
 
+    const operationEndIso = finalSlotValidation.endIso ||
+      new Date(candidateStartMs + duration * 60000).toISOString();
+    const operationClaim = await claimAtomicOperation({
+      type: "reschedule_operation_claim",
+      tenantScope: String(getBusinessIdFromConfig(businessConfig) || ""),
+      businessId: String(getBusinessIdFromConfig(businessConfig) || ""),
+      platform: platformName,
+      exactId: [
+        currentAppointmentStateOwner.userId,
+        context.originalAppointmentId,
+        currentEventId,
+        new Date(candidateStartMs).toISOString(),
+        operationEndIso
+      ].join("|")
+    });
+    if (!operationClaim.claimed) {
+      console.log("[Idempotency] Duplicate reschedule confirmation suppressed.", {
+        platform: platformName,
+        duplicateStatus: operationClaim.duplicateStatus || "processing"
+      });
+      if (operationClaim.duplicateStatus === "completed") {
+        clearRescheduleContext(sessionId);
+        await clearPendingBooking(sessionId);
+      }
+      return true;
+    }
+
     rememberRescheduleContext(sessionId, liveAppointment, lockedLanguage, context.requestedDate, context.requestedTime, {
       ...context,
       appointment: liveAppointment,
@@ -5393,6 +5847,7 @@ async function handleUnifiedBookingEngine(params: {
 
     const updateResult = await adapter.updateAppointment(currentEventId, candidateIso, duration);
     if (!updateResult?.success) {
+      await settleAtomicOperation(operationClaim, "failed");
       rememberRescheduleContext(sessionId, liveAppointment, lockedLanguage, context.requestedDate, context.requestedTime, {
         ...context,
         appointment: liveAppointment,
@@ -5439,6 +5894,7 @@ async function handleUnifiedBookingEngine(params: {
         dbTimeMatches
       });
       await rollbackPersistence();
+      await settleAtomicOperation(operationClaim, "failed");
       rememberRescheduleContext(sessionId, liveAppointment, lockedLanguage, context.requestedDate, context.requestedTime, {
         ...context,
         appointment: liveAppointment,
@@ -5475,10 +5931,28 @@ async function handleUnifiedBookingEngine(params: {
         expectedStart: candidateIso
       });
       await rollbackPersistence();
+      await settleAtomicOperation(operationClaim, "failed");
       rememberRescheduleContext(sessionId, liveAppointment, lockedLanguage, context.requestedDate, context.requestedTime, {
         ...context,
         appointment: liveAppointment,
         lastOperation: "verification_failed"
+      });
+      await replyAndRecord(formatRescheduleFailure(lockedLanguage));
+      return true;
+    }
+
+    // Persist the completed operation claim before any externally visible success side
+    // effect. If that durable guard cannot be recorded, roll the verified write back so
+    // a later retry cannot duplicate either the customer reply or admin notification.
+    const operationCompletionRecorded = await settleAtomicOperation(operationClaim, "completed");
+    if (!operationCompletionRecorded) {
+      console.error("[Reschedule] Durable operation completion could not be recorded; rolling back.");
+      await rollbackPersistence();
+      await settleAtomicOperation(operationClaim, "failed");
+      rememberRescheduleContext(sessionId, liveAppointment, lockedLanguage, context.requestedDate, context.requestedTime, {
+        ...context,
+        appointment: liveAppointment,
+        lastOperation: "update_failed"
       });
       await replyAndRecord(formatRescheduleFailure(lockedLanguage));
       return true;
@@ -5492,6 +5966,7 @@ async function handleUnifiedBookingEngine(params: {
     appointmentContexts[sessionId] = { appointment, savedAt: Date.now(), language: lockedLanguage };
     saveAppointmentStateOwner(sessionId, currentAppointmentStateOwner, stateOwner.identityKey);
     clearRescheduleContext(sessionId);
+    await clearPendingBooking(sessionId);
     clearConversationFlowLanguage(sessionId);
     recentlyCompletedReschedules[sessionId] = {
       completedAt: Date.now(),
@@ -5519,6 +5994,163 @@ async function handleUnifiedBookingEngine(params: {
   };
 
   try {
+    const recoveryIntent = isExistingBookingOperationRecoveryIntent(text);
+    const priorityReschedule = getRescheduleContext(sessionId);
+    if (priorityReschedule) {
+      const stateOwner = appointmentStateOwners[sessionId];
+      const lockedLanguage = getRescheduleReplyLanguage(priorityReschedule, text);
+      if (
+        isRescheduleContextStale(priorityReschedule) ||
+        !rescheduleContextOwnerMatches(
+          priorityReschedule,
+          currentAppointmentStateOwner,
+          stateOwner
+        )
+      ) {
+        clearAppointmentConversationState(sessionId);
+        await replyAndRecord(formatStaleAppointmentStateMessage(lockedLanguage));
+        return true;
+      }
+      const temporalState = classifyAppointmentTemporalState(priorityReschedule.appointment);
+      if (temporalState !== "future_or_active") {
+        clearAppointmentConversationState(sessionId);
+        pastAppointmentRecoveryContexts[sessionId] = {
+          savedAt: Date.now(),
+          language: lockedLanguage,
+          owner: currentAppointmentStateOwner
+        };
+        lockConversationFlowLanguage(sessionId, lockedLanguage, "appointment");
+        await replyAndRecord(
+          formatPastAppointmentMutationReply(
+            priorityReschedule.appointment,
+            temporalState,
+            lockedLanguage
+          )
+        );
+        return true;
+      }
+
+      if (isRescheduleConfirmation(text)) {
+        if (
+          priorityReschedule.selectedNewStartTime &&
+          ["awaiting_confirmation", "update_failed", "verification_failed"].includes(
+            priorityReschedule.lastOperation
+          )
+        ) {
+          return executeConfirmedReschedule(priorityReschedule);
+        }
+        await replyAndRecord(
+          lockedLanguage === "fa"
+            ? "لطفاً اول یکی از زمان‌های پیشنهادی را انتخاب کنید."
+            : lockedLanguage === "sv"
+              ? "Välj först en av de föreslagna tiderna."
+              : "Please choose one of the offered times first."
+        );
+        return true;
+      }
+
+      if (recoveryIntent) {
+        if (priorityReschedule.selectedNewStartTime) {
+          rememberRescheduleContext(
+            sessionId,
+            priorityReschedule.appointment,
+            lockedLanguage,
+            priorityReschedule.requestedDate,
+            priorityReschedule.requestedTime,
+            { ...priorityReschedule, lastOperation: "awaiting_confirmation" }
+          );
+          await replyAndRecord(
+            formatRescheduleConfirmation(
+              lockedLanguage,
+              priorityReschedule.selectedNewStartTime
+            )
+          );
+          return true;
+        }
+        if (Array.isArray(priorityReschedule.offeredSlots) && priorityReschedule.offeredSlots.length > 0) {
+          await replyAndRecord(
+            formatSwedishTimeSlots(
+              priorityReschedule.offeredSlots,
+              priorityReschedule.requestedTime,
+              lockedLanguage
+            )
+          );
+          return true;
+        }
+        await replyAndRecord(
+          lockedLanguage === "fa"
+            ? "متوجه‌ام 😊 همان رزرو قبلی را تغییر می‌دهیم. چه روز و ساعتی بهتر است؟"
+            : lockedLanguage === "sv"
+              ? "Jag förstår 😊 Vi ändrar din befintliga bokning. Vilken dag och tid passar bättre?"
+              : "I understand 😊 We’ll change your existing booking. What day and time works better?"
+        );
+        return true;
+      }
+    } else if (recoveryIntent) {
+      const remembered = getAppointmentContext(sessionId);
+      const stateOwner = appointmentStateOwners[sessionId];
+      if (
+        remembered &&
+        stateOwner &&
+        appointmentStateOwnerMatches(stateOwner, currentAppointmentStateOwner) &&
+        getAppointmentMutationId(remembered.appointment) &&
+        getAppointmentCalendarEventId(remembered.appointment)
+      ) {
+        if (pending) {
+          await clearPendingBooking(sessionId);
+          pending = null;
+        }
+        const lockedLanguage = getFlowReplyLanguage(remembered.language, language, text);
+        rememberRescheduleContext(
+          sessionId,
+          remembered.appointment,
+          lockedLanguage,
+          null,
+          null,
+          { lastOperation: "awaiting_target" }
+        );
+        await replyAndRecord(
+          lockedLanguage === "fa"
+            ? "حتماً 😊 همان رزرو قبلی را تغییر می‌دهیم. چه روز و ساعتی بهتر است؟"
+            : lockedLanguage === "sv"
+              ? "Absolut 😊 Vi ändrar din befintliga bokning. Vilken dag och tid passar bättre?"
+              : "Of course 😊 We’ll change your existing booking. What day and time works better?"
+        );
+        return true;
+      }
+    }
+
+    const pastRecovery = pastAppointmentRecoveryContexts[sessionId];
+    if (pastRecovery) {
+      const expired = Date.now() - pastRecovery.savedAt > 15 * 60 * 1000;
+      const ownerMatches = appointmentStateOwnerMatches(
+        pastRecovery.owner,
+        currentAppointmentStateOwner
+      );
+      if (expired || !ownerMatches) {
+        delete pastAppointmentRecoveryContexts[sessionId];
+      } else if (isAffirmativeBookingText(text)) {
+        const recoveryLanguage = getFlowReplyLanguage(
+          pastRecovery.language,
+          language,
+          text
+        );
+        clearAppointmentConversationState(sessionId);
+        await clearPendingBooking(sessionId);
+        lockConversationFlowLanguage(sessionId, recoveryLanguage, "booking");
+        await replyAndRecord(
+          recoveryLanguage === "fa"
+            ? "حتماً 😊 برای وقت جدید چه خدماتی و چه روزی مدنظرتان است؟"
+            : recoveryLanguage === "sv"
+              ? "Absolut 😊 Vilken behandling och vilken dag passar för en ny tid?"
+              : "Of course 😊 What service and day would you like for the new appointment?"
+        );
+        return true;
+      } else if (isExplicitNewBookingRequest(text)) {
+        delete pastAppointmentRecoveryContexts[sessionId];
+      }
+    }
+
     if (pending && isGreetingOnlyText(text)) {
       console.log(
         `[UnifiedBooking] Fresh greeting cleared stale pending platform=${platformName}, session=${sessionId}, status=${pending.status || "unknown"}`
@@ -5798,13 +6430,42 @@ async function handleUnifiedBookingEngine(params: {
     }
 
     let rememberedAppointment = getAppointmentContext(sessionId);
+    if (rememberedAppointment && (rescheduleRequested || cancellationRequested)) {
+      const temporalState = classifyAppointmentTemporalState(
+        rememberedAppointment.appointment
+      );
+      if (temporalState !== "future_or_active") {
+        const lockedLanguage = getFlowReplyLanguage(
+          rememberedAppointment.language,
+          language,
+          text
+        );
+        const expiredAppointment = rememberedAppointment.appointment;
+        clearAppointmentConversationState(sessionId);
+        await clearPendingBooking(sessionId);
+        pastAppointmentRecoveryContexts[sessionId] = {
+          savedAt: Date.now(),
+          language: lockedLanguage,
+          owner: currentAppointmentStateOwner
+        };
+        lockConversationFlowLanguage(sessionId, lockedLanguage, "appointment");
+        await replyAndRecord(
+          formatPastAppointmentMutationReply(
+            expiredAppointment,
+            temporalState,
+            lockedLanguage
+          )
+        );
+        return true;
+      }
+    }
 
     // Memory is in-process and may be empty after deploy/restart. Recover the customer's
     // existing booking directly from Supabase/Google Calendar before handling the change.
     if (!pending && !rememberedAppointment && (rescheduleRequested || cancellationRequested)) {
       const adapter = getCalendarAdapter(businessConfig);
       const lookupContact = extractNameAndPhone(text);
-      const lookupResult = await findCustomerAppointments(
+      const mutationLookup = await findOwnedAppointmentForMutation(
         adapter,
         {
           name: lookupContact?.name || extractNameOnly(text) || undefined,
@@ -5815,6 +6476,27 @@ async function handleUnifiedBookingEngine(params: {
         platformName,
         businessConfig
       );
+      const lookupResult = mutationLookup.result;
+
+      if (mutationLookup.pastAppointment && mutationLookup.temporalState) {
+        const lockedLanguage = getStoredFlowLanguage(sessionId) || language;
+        clearAppointmentConversationState(sessionId);
+        await clearPendingBooking(sessionId);
+        pastAppointmentRecoveryContexts[sessionId] = {
+          savedAt: Date.now(),
+          language: lockedLanguage,
+          owner: currentAppointmentStateOwner
+        };
+        lockConversationFlowLanguage(sessionId, lockedLanguage, "appointment");
+        await replyAndRecord(
+          formatPastAppointmentMutationReply(
+            mutationLookup.pastAppointment,
+            mutationLookup.temporalState,
+            lockedLanguage
+          )
+        );
+        return true;
+      }
 
       rememberAppointmentContext(sessionId, lookupResult, language, currentAppointmentStateOwner);
       rememberedAppointment = getAppointmentContext(sessionId);
@@ -7012,17 +7694,20 @@ async function routeRescheduleToolCallThroughUnified(params: {
 
 async function processTelegramUpdate(update: any, config: any, platform: string = "telegram-polling") {
   const telegramToken = config?.telegramToken;
-  if (!telegramToken) return;
+  const updateId = String(update?.update_id ?? "").trim();
+  if (!telegramToken || !updateId || !update?.message) return;
+  await runWithInboundMessageClaim({
+    tenantScope: String(getBusinessIdFromConfig(config) || crypto.createHash("sha256").update(telegramToken).digest("hex")),
+    businessId: String(getBusinessIdFromConfig(config) || ""),
+    platform: "telegram",
+    messageId: updateId,
+    handler: () => processTelegramUpdateClaimed(update, config, platform)
+  });
+}
 
-  if (update.update_id) {
-    const processedKey = `${telegramToken}:${update.update_id}`;
-    if (processedUpdateIds.has(processedKey)) return;
-    processedUpdateIds.add(processedKey);
-    if (processedUpdateIds.size > 5000) {
-        const first = processedUpdateIds.values().next().value;
-        if (first !== undefined) processedUpdateIds.delete(first);
-    }
-  }
+async function processTelegramUpdateClaimed(update: any, config: any, platform: string = "telegram-polling") {
+  const telegramToken = config?.telegramToken;
+  if (!telegramToken) return;
 
   if (!update.message) return;
   if (!update.message.chat) return;
@@ -7201,10 +7886,14 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
     let maxTurns = 3;
     while (chatResponse.functionCalls && chatResponse.functionCalls.length > 0 && maxTurns > 0) {
       maxTurns--;
-      messages.push({ role: "assistant", content: chatResponse.text || null, tool_calls: chatResponse.functionCalls });
+      const authoritativeFunctionCalls = selectAuthoritativeGeminiFunctionCalls(
+        chatResponse.functionCalls,
+        telegramSessionId
+      );
+      messages.push({ role: "assistant", content: chatResponse.text || null, tool_calls: authoritativeFunctionCalls });
       
       const adapter = getCalendarAdapter(config);
-      const functionResponsesParts = await Promise.all(chatResponse.functionCalls.map(async (call: any) => {
+      const functionResponsesParts = await Promise.all(authoritativeFunctionCalls.map(async (call: any) => {
         let adapterRes;
         const args = JSON.parse(call.function.arguments);
         if (call.function.name === "checkSlots" && args) {
@@ -8327,6 +9016,10 @@ function getBusinessWhatsAppPhoneNumberId(businessConfig: any) {
 async function sendWhatsAppMessage(to: string, text: string, businessConfig: any) {
   const token = getBusinessWhatsAppToken(businessConfig);
   const phoneNumberId = getBusinessWhatsAppPhoneNumberId(businessConfig);
+  const safeText = guardCustomerFacingReply(
+    `wa_${normalizePlatformUserId("whatsapp", to)}`,
+    text
+  );
 
   if (!token || !phoneNumberId) {
     console.error("WhatsApp reply skipped: missing whatsapp_access_token or whatsapp_phone_number_id");
@@ -8340,7 +9033,7 @@ async function sendWhatsAppMessage(to: string, text: string, businessConfig: any
     type: "text",
     text: {
       preview_url: false,
-      body: text
+      body: safeText
     }
   };
 
@@ -8370,6 +9063,22 @@ async function sendWhatsAppMessage(to: string, text: string, businessConfig: any
 }
 
 async function processWhatsAppMessage(message: any, metadata: any, config: any, platform: string = "whatsapp-webhook") {
+  const messageId = String(message?.id || "").trim();
+  const tenantScope = String(metadata?.phone_number_id || "").trim();
+  if (!messageId || !tenantScope) {
+    console.warn("[Idempotency] WhatsApp message refused: exact message id or tenant scope is missing.");
+    return;
+  }
+  await runWithInboundMessageClaim({
+    tenantScope,
+    businessId: String(getBusinessIdFromConfig(config) || ""),
+    platform: "whatsapp",
+    messageId,
+    handler: () => processWhatsAppMessageClaimed(message, metadata, config, platform)
+  });
+}
+
+async function processWhatsAppMessageClaimed(message: any, metadata: any, config: any, platform: string = "whatsapp-webhook") {
   const from = message?.from;
   const textMessage = message?.text?.body || "";
   const phoneNumberId = metadata?.phone_number_id || "";
@@ -8517,10 +9226,14 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
     let maxTurns = 3;
     while (chatResponse.functionCalls && chatResponse.functionCalls.length > 0 && maxTurns > 0) {
       maxTurns--;
-      messages.push({ role: "assistant", content: chatResponse.text || null, tool_calls: chatResponse.functionCalls });
+      const authoritativeFunctionCalls = selectAuthoritativeGeminiFunctionCalls(
+        chatResponse.functionCalls,
+        chatId
+      );
+      messages.push({ role: "assistant", content: chatResponse.text || null, tool_calls: authoritativeFunctionCalls });
 
       const adapter = getCalendarAdapter(businessConfig);
-      const functionResponsesParts = await Promise.all(chatResponse.functionCalls.map(async (call: any) => {
+      const functionResponsesParts = await Promise.all(authoritativeFunctionCalls.map(async (call: any) => {
         let adapterRes;
         const args = JSON.parse(call.function.arguments);
 
@@ -8561,100 +9274,20 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
             responseAlreadySent: routed.responseAlreadySent
           };
         } else if (call.function.name === "insertAppointment" && args) {
-          // Safety fallback only. Normal WhatsApp bookings must be completed by UnifiedBooking.
-          const restoredPending = await loadPendingBooking(chatId, "whatsapp", businessConfig);
-          const contactFromMessage = extractNameAndPhone(textMessage || "");
-          const pendingDateTime = String(restoredPending?.dateTime || "").trim();
-          const validPendingDate =
-            pendingDateTime &&
-            !Number.isNaN(new Date(ensureStockholmOffset(pendingDateTime)).getTime());
-
-          if (
-            restoredPending &&
-            restoredPending.status === "awaiting_contact" &&
-            contactFromMessage &&
-            validPendingDate
-          ) {
-            console.log(
-              `[UnifiedBookingFallback] WhatsApp Gemini attempted insert; using validated WhatsApp pending. chatId=${chatId}, dateTime=${pendingDateTime}`
-            );
-
-            // Recheck the exact slot immediately before insertion.
-            const selectedTime = inferRequestedTimeFromText(pendingDateTime);
-            const selectedDate = String(
-              restoredPending.selectedDate || pendingDateTime.slice(0, 10)
-            );
-            const fresh = await adapter.checkSlots(
-              selectedDate,
-              selectedDate,
-              Number(restoredPending.durationMinutes || 60),
-              selectedTime || undefined
-            );
-            const freshIso = selectedTime
-              ? findOfferedSlotIso(getSlotsArray(fresh), selectedTime)
-              : null;
-
-            if (!freshIso) {
-              adapterRes = {
-                success: false,
-                code: "SLOT_NO_LONGER_AVAILABLE",
-                message: "The selected slot is no longer available."
-              };
-            } else {
-              adapterRes = await adapter.insertAppointment(
-                contactFromMessage.name,
-                contactFromMessage.phone,
-                restoredPending.service || "Bokning",
-                freshIso,
-                Number(restoredPending.durationMinutes || 60),
-                from
-              );
-
-              if (adapterRes?.success) {
-                await recordAppointmentFromBooking({
-                  businessConfig,
-                  platform: "whatsapp",
-                  userId: from,
-                  name: contactFromMessage.name,
-                  phone: contactFromMessage.phone,
-                  service: restoredPending.service || "Bokning",
-                  dateTime: freshIso,
-                  durationMinutes: Number(restoredPending.durationMinutes || 60)
-                });
-                await clearPendingBooking(chatId);
-                rememberCompletedBooking(
-                  chatId,
-                  restoredPending.language || getConversationLanguage(chatId, textMessage || ""),
-                  contactFromMessage.name,
-                  restoredPending.service,
-                  Number(restoredPending.durationMinutes || 0),
-                  restoredPending.dateTime
-                );
-                await notifyAdminAboutBooking(
-                  businessConfig,
-                  "WhatsApp",
-                  businessName,
-                  contactFromMessage.name,
-                  contactFromMessage.phone,
-                  freshIso
-                );
-              }
-            }
-          } else {
-            console.error("[UnifiedBookingFallback] Blocked unsafe WhatsApp insertAppointment", {
-              chatId,
-              hasPending: Boolean(restoredPending),
-              pendingStatus: restoredPending?.status || null,
-              pendingDateTime: restoredPending?.dateTime || null,
-              hasContact: Boolean(contactFromMessage),
-              args
-            });
-            adapterRes = {
-              success: false,
-              code: "UNSAFE_GEMINI_INSERT_BLOCKED",
-              message: "Booking was not finalized because the verified booking state was incomplete."
-            };
-          }
+          console.warn("[BookingFlow]", {
+            platform: "whatsapp",
+            businessScopePresent: Boolean(getBusinessIdFromConfig(businessConfig)),
+            operation: "booking_persistence",
+            stateType: "gemini_insert",
+            language: getConversationLanguage(chatId, textMessage || ""),
+            finalHandledPath: "blocked_non_authoritative_insert"
+          });
+          return {
+            TERMINATE_EARLY: true,
+            replyMessage: getErrorMessageByLanguage(
+              getConversationLanguage(chatId, textMessage || "")
+            )
+          };
         } else if (call.function.name === "logSystemAnalysis" && args) {
           adapterRes = await handleSystemAnalysisLog(chatId, args);
         } else {
@@ -9379,6 +10012,23 @@ Never mention internal tools, AI, databases, prompts, or webhooks.
 }
 
 async function processMessengerUpdate(webhookEvent: any, config: any, platform: string = "messenger-webhook") {
+  if (webhookEvent?.message?.is_echo) return;
+  const messageId = String(webhookEvent?.message?.mid || webhookEvent?.postback?.mid || "").trim();
+  const tenantScope = String(webhookEvent?.recipient?.id || "").trim();
+  if (!messageId || !tenantScope) {
+    console.warn("[Idempotency] Messenger message refused: exact message id or tenant scope is missing.");
+    return;
+  }
+  await runWithInboundMessageClaim({
+    tenantScope,
+    businessId: String(getBusinessIdFromConfig(config) || ""),
+    platform: "messenger",
+    messageId,
+    handler: () => processMessengerUpdateClaimed(webhookEvent, config, platform)
+  });
+}
+
+async function processMessengerUpdateClaimed(webhookEvent: any, config: any, platform: string = "messenger-webhook") {
   const senderId = webhookEvent.sender?.id;
   const recipientId = webhookEvent.recipient?.id;
 
@@ -9589,10 +10239,14 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
     while (chatResponse.functionCalls && chatResponse.functionCalls.length > 0 && maxTurns > 0) {
       console.log("[MessengerTools] functionCalls:", JSON.stringify(chatResponse.functionCalls.map((c: any) => c.function?.name)));
       maxTurns--;
-      messages.push({ role: "assistant", content: chatResponse.text || null, tool_calls: chatResponse.functionCalls });
+      const authoritativeFunctionCalls = selectAuthoritativeGeminiFunctionCalls(
+        chatResponse.functionCalls,
+        chatId
+      );
+      messages.push({ role: "assistant", content: chatResponse.text || null, tool_calls: authoritativeFunctionCalls });
 
       const adapter = getCalendarAdapter(businessConfig);
-      const functionResponsesParts = await Promise.all(chatResponse.functionCalls.map(async (call: any) => {
+      const functionResponsesParts = await Promise.all(authoritativeFunctionCalls.map(async (call: any) => {
         let adapterRes;
         const args = JSON.parse(call.function.arguments);
 
@@ -9808,6 +10462,23 @@ Keep the same warm,friendly,human tone, professional receptionist tone in every 
 `;
 
 async function processInstagramUpdate(webhook_event: any, config: any, platform: string = "instagram-webhook") {
+  if (webhook_event?.message?.is_echo) return;
+  const messageId = String(webhook_event?.message?.mid || "").trim();
+  const tenantScope = String(webhook_event?.recipient?.id || "").trim();
+  if (!messageId || !tenantScope) {
+    console.warn("[Idempotency] Instagram message refused: exact message id or tenant scope is missing.");
+    return;
+  }
+  await runWithInboundMessageClaim({
+    tenantScope,
+    businessId: String(getBusinessIdFromConfig(config) || ""),
+    platform: "instagram",
+    messageId,
+    handler: () => processInstagramUpdateClaimed(webhook_event, config, platform)
+  });
+}
+
+async function processInstagramUpdateClaimed(webhook_event: any, config: any, platform: string = "instagram-webhook") {
   const senderId = webhook_event.sender?.id;
   const recipientId = webhook_event.recipient?.id;
   if (webhook_event.message?.is_echo) {
@@ -10057,10 +10728,14 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
     let instagramRescheduleReplyAlreadySent = false;
     while (chatResponse.functionCalls && chatResponse.functionCalls.length > 0 && maxTurns > 0) {
       maxTurns--;
-      messages.push({ role: 'assistant', content: chatResponse.text || null, tool_calls: chatResponse.functionCalls });
+      const authoritativeFunctionCalls = selectAuthoritativeGeminiFunctionCalls(
+        chatResponse.functionCalls,
+        chatId
+      );
+      messages.push({ role: 'assistant', content: chatResponse.text || null, tool_calls: authoritativeFunctionCalls });
 
       const adapter = getCalendarAdapter(businessConfig);
-      const functionResponsesParts = await Promise.all(chatResponse.functionCalls.map(async (call: any) => {
+      const functionResponsesParts = await Promise.all(authoritativeFunctionCalls.map(async (call: any) => {
         let adapterRes;
         const args = JSON.parse(call.function.arguments);
 

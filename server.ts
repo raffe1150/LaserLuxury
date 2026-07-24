@@ -418,21 +418,51 @@ type RescheduleTimeFollowUp = {
   rejectedTimes: string[];
   rejectsCurrentSelection: boolean;
   afterTime: string | null;
+  boundary: TimeBoundary | null;
+};
+
+type TimeBoundaryKind =
+  | "exclusive_lower"
+  | "inclusive_lower"
+  | "exclusive_upper"
+  | "inclusive_upper"
+  | "approximate";
+
+type TimeBoundary = {
+  kind: TimeBoundaryKind;
+  time: string;
 };
 
 function parseRescheduleTimeFollowUp(text?: string): RescheduleTimeFollowUp {
-  const raw = normalizeLocalizedDigits(String(text || "")).trim().toLowerCase();
+  const raw = normalizeLocalizedDigits(String(text || ""))
+    .trim()
+    .toLowerCase()
+    .replace(/\u200c/g, " ")
+    .replace(/\s+/g, " ");
   if (!raw) {
-    return { explicitTime: null, rejectedTimes: [], rejectsCurrentSelection: false, afterTime: null };
+    return {
+      explicitTime: null,
+      rejectedTimes: [],
+      rejectsCurrentSelection: false,
+      afterTime: null,
+      boundary: null
+    };
   }
 
-  const normalizeToken = (hourValue?: string, minuteValue?: string): string | null => {
-    const hour = Number(hourValue);
+  const normalizeToken = (
+    hourValue?: string,
+    minuteValue?: string,
+    meridiemValue?: string
+  ): string | null => {
+    let hour = Number(hourValue);
     const minute = Number(minuteValue || 0);
     if (!hourValue || hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
+    const meridiem = String(meridiemValue || "").toLowerCase();
+    if (meridiem === "pm" && hour < 12) hour += 12;
+    if (meridiem === "am" && hour === 12) hour = 0;
     return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
   };
-  const timeToken = String.raw`([01]?\d|2[0-3])(?:[\.:](\d{2}))?`;
+  const timeToken = String.raw`([01]?\d|2[0-3])(?:[\.:](\d{2}))?\s*(am|pm)?`;
   const rejectedTimes: string[] = [];
   const negativePatterns = [
     new RegExp(String.raw`(?:not|don['’]?t\s+want|do\s+not\s+want|cannot|can['’]?t|inte|vill\s+inte\s+ha|kan\s+inte|nicht|lieber\s+nicht|kann\s+ich\s+nicht|no\s+(?:a\s+las|quiero)|no\s+puedo|ليس|لا\s+(?:أريد|استطيع|أستطيع)|نمی[\u200c\s]?(?:خوام|خواهم|تونم|توانم)|نمي\s*(?:خوام|تونم)|اون\s+ساعت\s+نه|آن\s+ساعت\s+نه)[^\d]{0,24}${timeToken}`, "giu"),
@@ -440,14 +470,14 @@ function parseRescheduleTimeFollowUp(text?: string): RescheduleTimeFollowUp {
   ];
   for (const pattern of negativePatterns) {
     for (const match of raw.matchAll(pattern)) {
-      const normalized = normalizeToken(match[1], match[2]);
+      const normalized = normalizeToken(match[1], match[2], match[3]);
       if (normalized && !rejectedTimes.includes(normalized)) rejectedTimes.push(normalized);
     }
   }
 
   const allTimes: string[] = [];
-  for (const match of raw.matchAll(/(?:^|[^\d])([01]?\d|2[0-3])[\.:](\d{2})(?!\d)/gu)) {
-    const normalized = normalizeToken(match[1], match[2]);
+  for (const match of raw.matchAll(/(?:^|[^\d])([01]?\d|2[0-3])[\.:](\d{2})\s*(am|pm)?(?!\d)/gu)) {
+    const normalized = normalizeToken(match[1], match[2], match[3]);
     if (normalized && !allTimes.includes(normalized)) allTimes.push(normalized);
   }
   const inferred = inferRequestedTimeFromText(raw);
@@ -455,23 +485,82 @@ function parseRescheduleTimeFollowUp(text?: string): RescheduleTimeFollowUp {
   const positiveBare = raw.match(
     new RegExp(String.raw`(?:want|prefer|instead|vill\s+ha|hellre|istället|lieber|besser|prefiero|mejor|أريد|أفضل|می[\u200c\s]?خوام|ترجیح\s+می[\u200c\s]?دم)[^\d]{0,16}${timeToken}`, "iu")
   );
-  const positiveBareTime = positiveBare ? normalizeToken(positiveBare[1], positiveBare[2]) : null;
+  const positiveBareTime = positiveBare
+    ? normalizeToken(positiveBare[1], positiveBare[2], positiveBare[3])
+    : null;
   if (positiveBareTime && !allTimes.includes(positiveBareTime)) allTimes.push(positiveBareTime);
 
-  const afterMatch = raw.match(
-    new RegExp(String.raw`(?:after|later\s+than|efter|senare\s+än|senare\s+an|nach|später\s+als|spaeter\s+als|despu[eé]s\s+de|m[aá]s\s+tarde\s+que|بعد\s+(?:از)?|دیرتر\s+از|بعد\s+الساعة)[^\d]{0,12}${timeToken}`, "iu")
-  );
-  const afterTime = afterMatch ? normalizeToken(afterMatch[1], afterMatch[2]) : null;
+  const boundaryPatterns: Array<[TimeBoundaryKind, RegExp]> = [
+    [
+      "exclusive_lower",
+      new RegExp(
+        String.raw`(?:after|later\s+than|efter(?:\s+kl(?:ockan)?)?|senare\s+[aä]n|nach|sp[aä]ter\s+als|despu[eé]s\s+de(?:\s+las)?|m[aá]s\s+tarde\s+que|bade?(?:\s+az)?(?:\s+saat)?|بعد\s+از(?:\s+ساعت)?|دیرتر\s+از|بعد\s+الساعة)\s*${timeToken}`,
+        "iu"
+      )
+    ],
+    [
+      "inclusive_lower",
+      new RegExp(
+        String.raw`(?:from|starting\s+(?:at|from)|fr[oå]n(?:\s+kl(?:ockan)?)?|ab|desde(?:\s+las)?|az(?:\s+saat)?|از\s+(?:ساعت\s*)?|من\s+الساعة)\s*${timeToken}(?:\s*(?:onward|onwards|or\s+later|och\s+senare|eller\s+senare|aufw[aä]rts|en\s+adelante|be\s+bad|به\s+بعد|فصاعد[ااً]?))?`,
+        "iu"
+      )
+    ],
+    [
+      "inclusive_upper",
+      new RegExp(
+        String.raw`(?:until|no\s+later\s+than|senast(?:\s+kl(?:ockan)?)?|bis(?:\s+sp[aä]testens)?|hasta(?:\s+las)?|ta(?:\s+saat)?|تا(?:\s+ساعت)?|حتى\s+الساعة)\s*${timeToken}|${timeToken}\s*(?:or\s+earlier|eller\s+tidigare|oder\s+fr[uü]her|o\s+antes|یا\s+زودتر|أو\s+قبل)`,
+        "iu"
+      )
+    ],
+    [
+      "exclusive_upper",
+      new RegExp(
+        String.raw`(?:before|earlier\s+than|f[oö]re(?:\s+kl(?:ockan)?)?|vor|antes\s+de(?:\s+las)?|pish\s+az(?:\s+saat)?|قبل\s+از(?:\s+ساعت)?|قبل\s+الساعة)\s*${timeToken}`,
+        "iu"
+      )
+    ],
+    [
+      "approximate",
+      new RegExp(
+        String.raw`(?:around|about|cirka|ungef[aä]r|gegen|aproximadamente|sobre\s+las|hodude?|حدود(?:\s+ساعت)?|تقریباً|تقريبا|حوالي\s+الساعة)\s*${timeToken}`,
+        "iu"
+      )
+    ]
+  ];
+  let boundary: TimeBoundary | null = null;
+  for (const [kind, pattern] of boundaryPatterns) {
+    const match = raw.match(pattern);
+    if (!match) continue;
+    let boundaryTime: string | null = null;
+    for (let index = 1; index < match.length; index += 3) {
+      if (!match[index]) continue;
+      boundaryTime = normalizeToken(
+        match[index],
+        match[index + 1],
+        match[index + 2]
+      );
+      if (boundaryTime) break;
+    }
+    if (boundaryTime) {
+      boundary = { kind, time: boundaryTime };
+      break;
+    }
+  }
+  const afterTime = boundary?.kind === "exclusive_lower" ? boundary.time : null;
   const negativeWithoutTime = /(?:cannot|can['’]?t|kan\s+inte|inte\s+då|inte\s+da|kann\s+ich\s+nicht|no\s+puedo|لا\s+(?:استطيع|أستطيع)|نمی[\u200c\s]?(?:تونم|توانم)|اون\s+موقع\s+نه|آن\s+موقع\s+نه)/iu.test(raw);
   const explicitTime = [...allTimes]
     .reverse()
-    .find((time) => !rejectedTimes.includes(time) && time !== afterTime) || null;
+    .find((time) =>
+      !rejectedTimes.includes(time) &&
+      (!boundary || boundary.kind === "approximate" || time !== boundary.time)
+    ) || (boundary?.kind === "approximate" ? boundary.time : null);
 
   return {
     explicitTime,
     rejectedTimes,
     rejectsCurrentSelection: negativeWithoutTime || rejectedTimes.length > 0,
-    afterTime
+    afterTime,
+    boundary
   };
 }
 
@@ -677,6 +766,7 @@ type SlotSearchOptions = {
   minTime?: string;
   maxTime?: string;
   afterTime?: string;
+  timeBoundary?: TimeBoundary;
   excludedTimes?: string[];
   selectFirstAvailable?: boolean;
 };
@@ -995,6 +1085,7 @@ function getDailySlots(
   const minimumMinutes = timeTextToMinutes(options.minTime);
   const maximumMinutes = timeTextToMinutes(options.maxTime);
   const afterMinutes = timeTextToMinutes(options.afterTime);
+  const boundaryMinutes = timeTextToMinutes(options.timeBoundary?.time);
   const excludedMinutes = new Set(
     (options.excludedTimes || [])
       .map((value) => timeTextToMinutes(value))
@@ -1004,6 +1095,24 @@ function getDailySlots(
     if (minimumMinutes !== null && candidate.totalMin < minimumMinutes) return false;
     if (maximumMinutes !== null && candidate.totalMin > maximumMinutes) return false;
     if (afterMinutes !== null && candidate.totalMin <= afterMinutes) return false;
+    if (boundaryMinutes !== null) {
+      if (
+        options.timeBoundary?.kind === "exclusive_lower" &&
+        candidate.totalMin <= boundaryMinutes
+      ) return false;
+      if (
+        options.timeBoundary?.kind === "inclusive_lower" &&
+        candidate.totalMin < boundaryMinutes
+      ) return false;
+      if (
+        options.timeBoundary?.kind === "exclusive_upper" &&
+        candidate.totalMin >= boundaryMinutes
+      ) return false;
+      if (
+        options.timeBoundary?.kind === "inclusive_upper" &&
+        candidate.totalMin > boundaryMinutes
+      ) return false;
+    }
     if (excludedMinutes.has(candidate.totalMin)) return false;
     return true;
   });
@@ -1678,10 +1787,16 @@ function resolveAppointmentLookupRange(args: any): {
   if (explicitDates.length > 0) {
     startDate = explicitDates[0];
     endDate = explicitDates[explicitDates.length - 1];
-  } else if (/\b(igår|igar|yesterday)\b/i.test(lookupText)) {
+  } else if (
+    /\b(igår|igar|yesterday|gestern|ayer|dirooz|diruz)\b/i.test(lookupText) ||
+    /(?:دیروز|أمس|امس)/u.test(lookupText)
+  ) {
     startDate = addDaysToStockholmDate(today, -1);
     endDate = startDate;
-  } else if (/\b(idag|today)\b/i.test(lookupText) || /(امروز|اليوم)/u.test(lookupText)) {
+  } else if (
+    /\b(idag|today|heute|hoy|emruz|emrooz)\b/i.test(lookupText) ||
+    /(?:امروز|اليوم)/u.test(lookupText)
+  ) {
     startDate = today;
     endDate = today;
   } else if (/\b(förra\s+veckan|last\s+week)\b/i.test(lookupText)) {
@@ -1798,6 +1913,58 @@ async function resolveVerifiedLookupPhone(
   return "";
 }
 
+function normalizeRecoveryName(value?: string): string {
+  return normalizeLookupText(value)
+    .replace(/\+/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function rowMatchesSecureRecoveryAttributes(
+  row: any,
+  suppliedPhone: string,
+  suppliedName?: string,
+  requestedDate?: string,
+  approximateTime?: string,
+  toleranceMinutes: number = 30
+): boolean {
+  const phoneDigits = normalizeLookupDigits(suppliedPhone);
+  if (
+    phoneDigits.length < 7 ||
+    normalizeLookupDigits(row?.phone_number) !== phoneDigits
+  ) return false;
+
+  const normalizedName = normalizeRecoveryName(suppliedName);
+  const rowName = normalizeRecoveryName(row?.customer_name);
+  const nameMatches = Boolean(
+    normalizedName.length >= 2 &&
+    rowName.length >= 2 &&
+    normalizedName === rowName
+  );
+
+  const requestedMinutes = timeTextToMinutes(approximateTime);
+  const rowStart = new Date(String(row?.start_time || ""));
+  const rowDate = Number.isNaN(rowStart.getTime()) ? "" : stockholmDateString(rowStart);
+  const rowTime = Number.isNaN(rowStart.getTime())
+    ? null
+    : timeTextToMinutes(
+        rowStart.toLocaleTimeString("sv-SE", {
+          timeZone: "Europe/Stockholm",
+          hour: "2-digit",
+          minute: "2-digit"
+        })
+      );
+  const dateTimeMatches = Boolean(
+    requestedDate &&
+    requestedMinutes !== null &&
+    rowDate === requestedDate &&
+    rowTime !== null &&
+    Math.abs(rowTime - requestedMinutes) <= toleranceMinutes
+  );
+
+  return nameMatches || dateTimeMatches;
+}
+
 async function findCustomerAppointments(
   adapter: CalendarAdapter,
   args: any,
@@ -1818,6 +1985,7 @@ async function findCustomerAppointments(
   const lookupPath = String(args?.lookupPath || "appointment_lookup");
   let exactIdentityMatchCount = 0;
   let verifiedPhoneFallbackUsed = false;
+  let secureRecoveryAttempted = false;
 
   if (
     normalizedPlatform === "messenger" &&
@@ -1894,7 +2062,7 @@ async function findCustomerAppointments(
         __originalPhoneNumber: row?.phone_number,
         phone_number: normalizeLookupDigits(row?.phone_number)
       }));
-      const secureSelection = selectSecureAppointmentRows(
+      let secureSelection: any = selectSecureAppointmentRows(
         normalizedPhoneRows,
         {
           businessId: String(businessId),
@@ -1907,6 +2075,88 @@ async function findCustomerAppointments(
         rangeStartMs,
         rangeEndMs
       );
+      if (
+        secureSelection.rows.length === 0 &&
+        args?.secureRecovery === true &&
+        normalizeLookupDigits(phone).length >= 7
+      ) {
+        secureRecoveryAttempted = true;
+        const recoveryRows = (dbRows || [])
+          .filter((row: any) => {
+            const rowPlatform = normalizePlatformName(String(row?.platform || ""));
+            const rowUserId = normalizePlatformUserId(
+              rowPlatform,
+              String(row?.user_id || "")
+            );
+            return (
+              String(row?.business_id || "") === String(businessId) &&
+              rowPlatform === normalizedPlatform &&
+              (!rowUserId || rowUserId === normalizedCustomerId) &&
+              isActiveAppointmentStatus(row?.status) &&
+              rowMatchesSecureRecoveryAttributes(
+                row,
+                phone,
+                args?.name,
+                args?.requestedDate,
+                args?.approximateTime,
+                30
+              )
+            );
+          })
+          .map((row: any) => ({
+            ...row,
+            __originalPhoneNumber: row?.phone_number,
+            phone_number: normalizeLookupDigits(row?.phone_number)
+          }));
+
+        if (recoveryRows.length > 1) {
+          logAppointmentLookupDiagnostic({
+            path: lookupPath,
+            businessScopePresent: Boolean(businessId),
+            platform: normalizedPlatform,
+            exactIdentityMatchCount: 0,
+            verifiedPhoneFallbackUsed: false,
+            returnedResultCount: 0
+          });
+          return {
+            success: true,
+            found: false,
+            needsContactDetails: false,
+            searchedFrom: startDate,
+            searchedTo: endDate,
+            lookupMode,
+            historyWindowLimited,
+            olderHistorySearched,
+            verifiedPhoneAccepted: false,
+            secureRecoveryAttempted: true,
+            secureRecoveryAmbiguous: true,
+            identityKey: "",
+            appointments: []
+          };
+        }
+
+        if (recoveryRows.length === 1) {
+          const recoveredRow = recoveryRows[0];
+          secureSelection = {
+            rows: recoveryRows,
+            identityKey: `phone:${normalizeLookupDigits(phone)}`,
+            matchedBy: "secure_recovery"
+          };
+          console.log("[AppointmentLookup]", {
+            path: lookupPath,
+            platform: normalizedPlatform,
+            businessScopePresent: true,
+            secureRecoveryMatched: true,
+            recoveredRowIdPresent: Boolean(recoveredRow?.id),
+            recoveryUsedName: Boolean(
+              normalizeRecoveryName(args?.name) &&
+              normalizeRecoveryName(args?.name) ===
+                normalizeRecoveryName(recoveredRow?.customer_name)
+            ),
+            recoveryUsedDateTime: Boolean(args?.requestedDate && args?.approximateTime)
+          });
+        }
+      }
       verifiedPhoneFallbackUsed = secureSelection.matchedBy === "phone";
 
       const dbAppointments = secureSelection.rows.slice(0, 5).map((row: any) => ({
@@ -1937,6 +2187,9 @@ async function findCustomerAppointments(
             const matchedEvent = (Array.isArray(calendarEvents) ? calendarEvents : []).find((event: any) => {
               const eventStart = new Date(getEventStartIso(event)).getTime();
               if (!Number.isFinite(eventStart) || Math.abs(eventStart - appointmentStart) > 60 * 1000) return false;
+              if (!calendarEventBusinessMarkerMatches(event, getAppointmentBusinessScope(businessConfig))) {
+                return false;
+              }
               if (normalizedPlatform === "messenger") {
                 return calendarEventHasExactMessengerOwner(event, normalizedCustomerId) ||
                   calendarEventHasExactPhone(event, appointment.phone || verifiedPhone);
@@ -1971,6 +2224,8 @@ async function findCustomerAppointments(
           historyWindowLimited,
           olderHistorySearched,
           verifiedPhoneAccepted: normalizeLookupDigits(verifiedPhone).length >= 7,
+          secureRecoveryAttempted,
+          secureRecoveryMatched: secureSelection.matchedBy === "secure_recovery",
           identityKey: secureSelection.identityKey,
           matchedBy: secureSelection.matchedBy,
           identityVerified: true,
@@ -2116,6 +2371,8 @@ async function findCustomerAppointments(
     historyWindowLimited,
     olderHistorySearched,
     verifiedPhoneAccepted: normalizeLookupDigits(verifiedPhone).length >= 7,
+    secureRecoveryAttempted,
+    secureRecoveryMatched: false,
     identityKey: secureCalendarSelection.identityKey,
     matchedBy: secureCalendarSelection.matchedBy,
     identityVerified: appointments.length > 0,
@@ -2154,6 +2411,56 @@ async function findOwnedAppointmentForMutation(
   pastAppointment: any | null;
   temporalState: AppointmentTemporalState | null;
 }> {
+  if (isValidLookupDate(args?.requestedDate)) {
+    const exactDate = String(args.requestedDate);
+    const exact = await findCustomerAppointments(
+      adapter,
+      {
+        ...args,
+        startDate: exactDate,
+        endDate: exactDate,
+        lookupMode: exactDate < stockholmDateString(new Date()) ? "history" : "today",
+        includePast: true,
+        lookupText: exactDate,
+        lookupPath: `${String(args?.lookupPath || "mutation")}_requested_date`
+      },
+      customerId,
+      platform,
+      businessConfig
+    );
+    if (exact?.found) {
+      const appointments = Array.isArray(exact.appointments) ? exact.appointments : [];
+      const futureOrActive = appointments.find(
+        (appointment: any) =>
+          classifyAppointmentTemporalState(appointment) === "future_or_active"
+      );
+      if (futureOrActive) {
+        return {
+          result: { ...exact, appointments: [futureOrActive] },
+          pastAppointment: null,
+          temporalState: "future_or_active"
+        };
+      }
+      const past = appointments
+        .filter((appointment: any) =>
+          classifyAppointmentTemporalState(appointment) !== "future_or_active"
+        )
+        .sort(
+          (a: any, b: any) =>
+            new Date(b.end || b.start).getTime() -
+            new Date(a.end || a.start).getTime()
+        )[0];
+      if (past) {
+        return {
+          result: { ...exact, appointments: [past] },
+          pastAppointment: past,
+          temporalState: classifyAppointmentTemporalState(past)
+        };
+      }
+    }
+    return { result: exact, pastAppointment: null, temporalState: null };
+  }
+
   const upcoming = await findCustomerAppointments(
     adapter,
     {
@@ -2603,10 +2910,25 @@ type AppointmentLookupContext = {
   operation?: "lookup" | "reschedule" | "cancel";
   verifiedPhone?: string;
   receivedPhone?: string;
+  receivedName?: string;
+  requestedDate?: string;
+  approximateTime?: string;
+  recoveryMode?: boolean;
+  recoveryPromptCount?: number;
   phoneReceivedAt?: number;
   lookupAttemptedAt?: number;
-  resultCategory?: "needs_verified_phone" | "phone_unverified" | "verified_not_found";
-  nextAction?: "awaiting_verified_phone" | "offer_new_booking";
+  resultCategory?:
+    | "needs_verified_phone"
+    | "phone_unverified"
+    | "verified_not_found"
+    | "recovery_needs_attribute"
+    | "recovery_ambiguous"
+    | "recovery_not_found";
+  nextAction?:
+    | "awaiting_verified_phone"
+    | "awaiting_recovery_attribute"
+    | "clarify_recovery"
+    | "offer_new_booking";
 };
 const appointmentLookupContexts: Record<string, AppointmentLookupContext> = {};
 type RescheduleOperation =
@@ -3339,7 +3661,14 @@ function isRescheduleIntent(text?: string): boolean {
 
   const persianScript = /(?:تغییر[^\n]{0,30}وقت|عوض[^\n]{0,30}وقت|وقت[^\n]{0,30}(?:تغییر|عوض))/.test(raw);
 
-  return swedishOrEnglish || transliteratedPersian || persianScript;
+  const german =
+    /\b(?:termin|buchung).*(?:andern|ändern|verschieben|umbuchen)\b|\b(?:andern|ändern|verschieben|umbuchen).*(?:termin|buchung)\b/iu.test(normalized);
+  const spanish =
+    /\b(?:cita|reserva|reservaci[oó]n).*(?:cambiar|mover|reprogramar)\b|\b(?:cambiar|mover|reprogramar).*(?:cita|reserva|reservaci[oó]n)\b/iu.test(normalized);
+  const arabic =
+    /(?:تغيير|تعديل|نقل).{0,30}(?:موعد|حجز)|(?:موعد|حجز).{0,30}(?:تغيير|تعديل|نقل)/u.test(raw);
+
+  return swedishOrEnglish || transliteratedPersian || persianScript || german || spanish || arabic;
 }
 
 function isGenericBookingRequestWithoutDate(text?: string): boolean {
@@ -3470,13 +3799,215 @@ function formatUnverifiedPhoneLookupReply(language: string): string {
   return "I received the number, but couldn’t securely link it to this conversation. Would you like to book a new appointment?";
 }
 
-function isRescheduleConfirmation(text?: string): boolean {
-  const raw = String(text || "")
+function formatSecureRecoveryPrompt(
+  language: string,
+  mode: "missing_identifier" | "need_attribute" | "ambiguous" | "not_found"
+): string {
+  const replies: Record<string, Record<typeof mode, string>> = {
+    fa: {
+      missing_identifier: "روز و ساعت را نگه داشتم 😊 لطفاً نام یا شماره‌ای را بفرستید که رزرو با آن ثبت شده است.",
+      need_attribute: "شماره را گرفتم. برای تأیید امن رزرو، لطفاً نام ثبت‌شده یا تاریخ و ساعت تقریبی وقت را هم بفرستید.",
+      ambiguous: "بیش از یک رزرو مطابق این اطلاعات پیدا شد. لطفاً تاریخ و ساعت دقیق‌تر را بفرستید؛ نیازی به تکرار شماره نیست.",
+      not_found: "با این اطلاعات نتوانستم رزرو را با اطمینان تأیید کنم. می‌توانید یک مشخصه دیگر بفرستید یا برای وقت جدید کمک بگیرید."
+    },
+    sv: {
+      missing_identifier: "Jag har sparat dagen och tiden 😊 Skicka namnet eller numret som bokningen gjordes med.",
+      need_attribute: "Jag har fått numret. För en säker kontroll behöver jag också bokningsnamnet eller ungefärligt datum och klockslag.",
+      ambiguous: "Flera bokningar stämmer med uppgifterna. Skicka ett mer exakt datum och klockslag; numret behöver inte skickas igen.",
+      not_found: "Jag kunde inte verifiera bokningen säkert med uppgifterna. Skicka gärna en ytterligare uppgift, eller så hjälper jag dig boka en ny tid."
+    },
+    de: {
+      missing_identifier: "Tag und Uhrzeit sind gespeichert 😊 Bitte senden Sie den Buchungsnamen oder die verwendete Telefonnummer.",
+      need_attribute: "Die Nummer ist gespeichert. Für eine sichere Prüfung brauche ich zusätzlich den Buchungsnamen oder das ungefähre Datum und die Uhrzeit.",
+      ambiguous: "Mehrere Termine passen zu den Angaben. Bitte nennen Sie Datum und Uhrzeit genauer; die Nummer müssen Sie nicht wiederholen.",
+      not_found: "Mit diesen Angaben konnte ich den Termin nicht sicher bestätigen. Senden Sie bitte noch eine Angabe, oder ich helfe bei einer neuen Buchung."
+    },
+    es: {
+      missing_identifier: "He guardado el día y la hora 😊 Envíame el nombre o el número usado para la reserva.",
+      need_attribute: "He guardado el número. Para verificar la reserva de forma segura, necesito también el nombre o la fecha y hora aproximadas.",
+      ambiguous: "Hay varias reservas que coinciden. Indica una fecha y hora más exactas; no hace falta repetir el número.",
+      not_found: "No pude verificar la reserva de forma segura con esos datos. Puedes darme otro dato o puedo ayudarte con una reserva nueva."
+    },
+    ar: {
+      missing_identifier: "احتفظت باليوم والوقت 😊 أرسل الاسم أو الرقم المستخدم في الحجز.",
+      need_attribute: "تم حفظ الرقم. للتحقق الآمن أحتاج أيضًا اسم الحجز أو التاريخ والوقت التقريبيين.",
+      ambiguous: "هناك أكثر من موعد يطابق المعلومات. أرسل تاريخًا ووقتًا أكثر دقة؛ لا حاجة لإرسال الرقم مجددًا.",
+      not_found: "تعذر التحقق من الحجز بأمان بهذه المعلومات. يمكنك إرسال معلومة إضافية أو يمكنني مساعدتك في حجز جديد."
+    },
+    en: {
+      missing_identifier: "I’ve saved the day and time 😊 Please send the booking name or the phone number used.",
+      need_attribute: "I’ve saved the number. To verify the booking safely, I also need the booking name or approximate date and time.",
+      ambiguous: "More than one appointment matches those details. Please give a more exact date and time; you do not need to repeat the number.",
+      not_found: "I couldn’t verify the booking safely with those details. You can send one more detail, or I can help with a new booking."
+    }
+  };
+  const lang = replies[language] ? language : "en";
+  return replies[lang][mode];
+}
+
+function getLookupIdentificationDetails(
+  text: string,
+  existing?: AppointmentLookupContext | null
+): {
+  name?: string;
+  phone?: string;
+  requestedDate?: string;
+  approximateTime?: string;
+  hasNewDateOrTime: boolean;
+} {
+  const combined = extractNameAndPhone(text);
+  const name = combined?.name || extractNameOnly(text) || existing?.receivedName;
+  const phone = normalizeAcceptedPhone(
+    combined?.phone || extractPhoneOnly(text) || existing?.receivedPhone
+  ) || undefined;
+  const parsedDate = resolveExplicitBookingDate(text);
+  const parsedTime = inferRequestedTimeFromText(text);
+  return {
+    ...(name ? { name } : {}),
+    ...(phone ? { phone } : {}),
+    ...(parsedDate || existing?.requestedDate
+      ? { requestedDate: parsedDate || existing?.requestedDate }
+      : {}),
+    ...(parsedTime || existing?.approximateTime
+      ? { approximateTime: parsedTime || existing?.approximateTime }
+      : {}),
+    hasNewDateOrTime: Boolean(parsedDate || parsedTime)
+  };
+}
+
+function isExistingBookingIdentificationStatement(text?: string): boolean {
+  const raw = normalizeAppointmentSelectionText(text);
+  if (!raw) return false;
+  return (
+    /\b(?:i have|i had|my booking is|my appointment is).*(?:booking|appointment).*(?:at|on|for)\b/u.test(raw) ||
+    /\b(?:jag har|jag hade|min bokning|min tid).*(?:bokning|tid).*(?:kl|pa|for)\b/u.test(raw) ||
+    /\b(?:ich habe|ich hatte|mein termin).*(?:termin|buchung).*(?:um|am)\b/u.test(raw) ||
+    /\b(?:tengo|tenia|mi reserva|mi cita).*(?:reserva|reservacion|cita).*(?:a las|para|el)\b/u.test(raw) ||
+    /(?:من.*(?:رزرو|وقت).*(?:ساعت|روز)|رزرو.*(?:برای|ساعت)|وقت.*(?:برای|ساعت))/u.test(String(text || "")) ||
+    /\b(?:man.*(?:rezerv|vaght).*(?:saat|rooz)|rezerv.*(?:baraye|saat))\b/u.test(raw) ||
+    /(?:لدي|عندي|كان لدي).*(?:حجز|موعد).*(?:الساعة|يوم)/u.test(String(text || ""))
+  );
+}
+
+function normalizeConfirmationReply(text?: string): string {
+  return normalizeLocalizedDigits(String(text || ""))
     .trim()
     .toLowerCase()
-    .replace(/[!.،,؟?\s]+/g, " ")
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f\u064B-\u065F\u0670]/g, "")
+    .replace(/[يى]/g, "ی")
+    .replace(/ك/g, "ک")
+    .replace(/\u200c/g, " ")
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .replace(/\s+/g, " ")
     .trim();
-  return /^(?:yes|yes please|correct|confirm|confirm it|book that one|move it|that time|ok|okay|sure|ja|ja tack|ja gärna|ja garna|bekräfta|bekrafta|gerne|ja gerne|ja bitte|bitte|sí|si|claro|sí claro|si claro|sí por favor|si por favor|نعم|أجل|اجل|موافق|نعم من فضلك|bale|baleh|bale lotfan|are|bashe|lotfan|hamoon vaght|hamon vaght|همون وقت|همان وقت|بله|بله لطفاً|بله لطفا|آره|تأیید|تایید|باشه)$/iu.test(raw);
+}
+
+function isCompoundAffirmativeReply(text?: string): boolean {
+  const raw = normalizeConfirmationReply(text);
+  if (!raw || isThanksOnlyText(raw)) return false;
+
+  // A polite word must never turn a negative or uncertain answer into confirmation.
+  const negativeOrUncertain = [
+    /\b(?:no|not|dont|do not|cannot|cant|maybe|perhaps|unsure)\b/u,
+    /\b(?:nej|inte|kanske|osaker)\b/u,
+    /\b(?:nein|nicht|vielleicht|unsicher)\b/u,
+    /\b(?:no|quizas|tal vez|no se)\b/u,
+    /(?:^|\s)(?:نه|خیر|نمیدانم|شاید|مطمئن نیستم)(?:\s|$)/u,
+    /(?:^|\s)(?:لا|ليس|ربما|غير متاكد)(?:\s|$)/u,
+    /\b(?:na|nemikham|nemitonam|shayad)\b/u
+  ];
+  if (negativeOrUncertain.some((pattern) => pattern.test(raw))) return false;
+
+  const affirmativePrefixes = [
+    "yes please",
+    "yes",
+    "sure",
+    "correct",
+    "confirm it",
+    "confirm",
+    "book that one",
+    "move it",
+    "that time",
+    "ok",
+    "okay",
+    "ja tack",
+    "ja garna",
+    "ja bitte",
+    "ja gerne",
+    "ja",
+    "gerne",
+    "si por favor",
+    "si claro",
+    "si",
+    "claro",
+    "نعم من فضلك",
+    "نعم",
+    "اجل",
+    "موافق",
+    "بله لطفا",
+    "بله",
+    "اره",
+    "باشه",
+    "bale lotfan",
+    "baleh lotfan",
+    "bale",
+    "baleh",
+    "are",
+    "bashe",
+    "hamoon vaght",
+    "hamon vaght",
+    "همون وقت",
+    "همان وقت"
+  ].sort((a, b) => b.length - a.length);
+  const politeSuffixes = new Set([
+    "please",
+    "thanks",
+    "thank",
+    "you",
+    "thankyou",
+    "tack",
+    "garna",
+    "snalla",
+    "danke",
+    "gerne",
+    "bitte",
+    "vielen",
+    "gracias",
+    "por",
+    "favor",
+    "شكرا",
+    "شکرا",
+    "جزيلا",
+    "من",
+    "فضلك",
+    "مرسی",
+    "ممنون",
+    "لطفا",
+    "متشکرم",
+    "سپاس",
+    "mersi",
+    "merci",
+    "mamnoon",
+    "mamnun",
+    "lotfan",
+    "sepas"
+  ]);
+
+  for (const prefix of affirmativePrefixes) {
+    if (raw !== prefix && !raw.startsWith(`${prefix} `)) continue;
+    const suffix = raw.slice(prefix.length).trim();
+    if (!suffix) return true;
+    const suffixTokens = suffix.split(" ");
+    if (suffixTokens.every((token) => politeSuffixes.has(token))) return true;
+  }
+  return false;
+}
+
+function isRescheduleConfirmation(text?: string): boolean {
+  const raw = normalizeConfirmationReply(text);
+  if (/^(?:bekrafta|تایید|لغو کن)$/u.test(raw)) return true;
+  return isCompoundAffirmativeReply(raw);
 }
 
 function isLaterRescheduleRequest(text?: string): boolean {
@@ -3617,11 +4148,12 @@ function inferServiceFromText(text?: string): string {
 }
 
 function isAffirmativeBookingText(text?: string): boolean {
-  const raw = String(text || "").trim().toLowerCase();
+  const raw = normalizeConfirmationReply(text);
   if (!raw) return false;
   // Important: pure thanks words (tack, tusen tack, merci, mersi, thanks) must NOT restart booking.
   if (isThanksOnlyText(raw)) return false;
-  return /(?:^|\b)(ja|japp|yes|yep|correct|ok|okej|absolut|boka|boka den|gör det|ja tack|ja gärna|ja garna|gerne|ja gerne|ja bitte|sí|si|claro|sí por favor|si por favor|bale|baleh|are|bashe|آره|بله|باشه|حتما|حتماً|نعم|أجل|اجل|موافق)(?:\b|$)/iu.test(raw);
+  return isCompoundAffirmativeReply(raw) ||
+    /^(?:japp|yep|okej|absolut|boka|boka den|gor det|حتما)$/u.test(raw);
 }
 
 function isThanksOnlyText(text?: string): boolean {
@@ -4436,7 +4968,13 @@ function resolveExplicitBookingDate(text?: string): string | null {
 
   // Relative dates must still be resolved before weekday parsing. This is critical for
   // rescheduling messages such as "imorgon kl 18:30" and "farda saate 18:30".
-  if (/\b(idag|today|emruz|emrooz|امروز)\b/i.test(raw)) return today;
+  if (/\b(idag|today|heute|hoy|emruz|emrooz)\b/i.test(raw) || /(?:امروز|اليوم)/u.test(raw)) return today;
+  if (
+    /\b(igår|igar|yesterday|gestern|ayer|dirooz|diruz)\b/i.test(raw) ||
+    /(?:دیروز|أمس|امس)/u.test(raw)
+  ) {
+    return addDaysToStockholmDate(today, -1);
+  }
   // Check day-after-tomorrow BEFORE tomorrow. Otherwise "pas farda" also matches "farda".
   if (/\b(i\s*övermorgon|övermorgon|day after tomorrow|pas\s*farda|pasfarda|پس\s*فردا|پسفردا)\b/i.test(raw)) {
     return addDaysToStockholmDate(today, 2);
@@ -4448,13 +4986,13 @@ function resolveExplicitBookingDate(text?: string): string | null {
   // Persian weekday numbers are weekday names, not calendar day numbers. Match all
   // compound forms before bare "shanbe" so "3 shanbe" can never degrade to Saturday.
   const weekdayMap: Array<[RegExp, number]> = [
-    [/(?:^|\s)(?:söndag|sunday|yek\s*shanbe|yekshanbe|1\s*shanbe|یک\s*شنبه)(?=\s|$)/iu, 0],
-    [/(?:^|\s)(?:måndag|mandag|monday|do\s*shanbe|doshanbe|2\s*shanbe|دو\s*شنبه)(?=\s|$)/iu, 1],
-    [/(?:^|\s)(?:tisdag|tuesday|se\s*shanbe|seshanbe|3\s*shanbe|سه\s*شنبه)(?=\s|$)/iu, 2],
-    [/(?:^|\s)(?:onsdag|wednesday|chahar\s*shanbe|chaharshanbe|4\s*shanbe|چهار\s*شنبه|چهارشنبه)(?=\s|$)/iu, 3],
-    [/(?:^|\s)(?:torsdag|thursday|panj\s*shanbe|panjshanbe|5\s*shanbe|پنج\s*شنبه|پنجشنبه)(?=\s|$)/iu, 4],
-    [/(?:^|\s)(?:fredag|friday|jome|jomeh|جمعه)(?=\s|$)/iu, 5],
-    [/(?:^|\s)(?:lördag|lordag|saturday|shanbe|شنبه)(?=\s|$)/iu, 6]
+    [/(?:^|\s)(?:söndag|sunday|sonntag|domingo|الأحد|الاحد|yek\s*shanbe|yekshanbe|1\s*shanbe|یک\s*شنبه)(?=\s|$)/iu, 0],
+    [/(?:^|\s)(?:måndag|mandag|monday|montag|lunes|الاثنين|الإثنين|do\s*shanbe|doshanbe|2\s*shanbe|دو\s*شنبه)(?=\s|$)/iu, 1],
+    [/(?:^|\s)(?:tisdag|tuesday|dienstag|martes|الثلاثاء|se\s*shanbe|seshanbe|3\s*shanbe|سه\s*شنبه)(?=\s|$)/iu, 2],
+    [/(?:^|\s)(?:onsdag|wednesday|mittwoch|miércoles|miercoles|الأربعاء|الاربعاء|chahar\s*shanbe|chaharshanbe|4\s*shanbe|چهار\s*شنبه|چهارشنبه)(?=\s|$)/iu, 3],
+    [/(?:^|\s)(?:torsdag|thursday|donnerstag|jueves|الخميس|panj\s*shanbe|panjshanbe|5\s*shanbe|پنج\s*شنبه|پنجشنبه)(?=\s|$)/iu, 4],
+    [/(?:^|\s)(?:fredag|friday|freitag|viernes|الجمعة|jome|jomeh|جمعه)(?=\s|$)/iu, 5],
+    [/(?:^|\s)(?:lördag|lordag|saturday|samstag|sábado|sabado|السبت|shanbe|شنبه)(?=\s|$)/iu, 6]
   ];
 
   const matched = weekdayMap.find(([pattern]) => pattern.test(raw));
@@ -4850,7 +5388,8 @@ function isExistingBookingOperationRecoveryIntent(text?: string): boolean {
 function isPastAppointmentLookupIntent(text?: string): boolean {
   const raw = String(text || "").trim().toLowerCase();
   if (!raw) return false;
-  return /(?:^|\s)(igår|igar|yesterday|tidigare|förra\s+veckan|last\s+week|hade\s+tid|had\s+an\s+appointment|missat|missed)(?=\s|$)/i.test(raw);
+  return /(?:^|\s)(igår|igar|yesterday|gestern|ayer|dirooz|diruz|tidigare|förra\s+veckan|last\s+week|letzte\s+woche|semana\s+pasada|hade\s+tid|had\s+an\s+appointment|hatte\s+ich\s+einen\s+termin|ten[ií]a\s+una\s+cita|missat|missed)(?=\s|$)/i.test(raw) ||
+    /(?:دیروز|قرار قبلی|وقت قبلی|أمس|امس|موعد سابق)/u.test(raw);
 }
 
 function isPendingSlotConfirmation(text: string | undefined, pending: any): boolean {
@@ -6280,7 +6819,7 @@ async function handleUnifiedBookingEngine(params: {
         return executeConfirmedReschedule(priorityReschedule);
       }
 
-      if (timeFollowUp.afterTime || replacesSelectedTime || rejectsSelectedTime) {
+      if (timeFollowUp.boundary || replacesSelectedTime || rejectsSelectedTime) {
         const requestedDate = priorityReschedule.requestedDate ||
           (priorityReschedule.selectedNewStartTime
             ? stockholmDateString(new Date(ensureStockholmOffset(priorityReschedule.selectedNewStartTime)))
@@ -6312,17 +6851,20 @@ async function handleUnifiedBookingEngine(params: {
           }
         );
 
-        if (requestedDate && timeFollowUp.afterTime) {
+        if (requestedDate && timeFollowUp.boundary) {
+          const approximateTime = timeFollowUp.boundary.kind === "approximate"
+            ? timeFollowUp.boundary.time
+            : null;
           return prepareRescheduleTarget(
             priorityReschedule.appointment,
             requestedDate,
-            null,
+            approximateTime,
             lockedLanguage,
             {
               ...getDaypartSlotOptions(priorityReschedule.requestedDaypart),
-              afterTime: timeFollowUp.afterTime,
+              timeBoundary: timeFollowUp.boundary,
               excludedTimes: timeFollowUp.rejectedTimes,
-              selectFirstAvailable: true
+              selectFirstAvailable: timeFollowUp.boundary.kind !== "approximate"
             },
             priorityReschedule.requestedDaypart
           );
@@ -6761,11 +7303,26 @@ async function handleUnifiedBookingEngine(params: {
     if (!pending && !rememberedAppointment && (rescheduleRequested || cancellationRequested)) {
       const adapter = getCalendarAdapter(businessConfig);
       const lookupContact = extractNameAndPhone(text);
+      const initialIdentification = getLookupIdentificationDetails(text);
+      const retainInitialDateTime =
+        isExistingBookingIdentificationStatement(text) ||
+        isPastAppointmentLookupIntent(text);
       const mutationLookup = await findOwnedAppointmentForMutation(
         adapter,
         {
           name: lookupContact?.name || extractNameOnly(text) || undefined,
           phone: lookupContact?.phone || extractPhoneOnly(text) || undefined,
+          ...(retainInitialDateTime && initialIdentification.requestedDate
+            ? {
+                requestedDate: initialIdentification.requestedDate,
+                startDate: initialIdentification.requestedDate,
+                endDate: initialIdentification.requestedDate
+              }
+            : {}),
+          ...(retainInitialDateTime && initialIdentification.approximateTime
+            ? { approximateTime: initialIdentification.approximateTime }
+            : {}),
+          secureRecovery: true,
           lookupPath: "unified_mutation_recovery"
         },
         recipientUserId,
@@ -6819,20 +7376,65 @@ async function handleUnifiedBookingEngine(params: {
               operation: rescheduleRequested ? "reschedule" : "cancel",
               verifiedPhone: verifiedPhoneAccepted ? suppliedPhone! : undefined,
               receivedPhone: suppliedPhone || undefined,
+              receivedName: initialIdentification.name,
+              requestedDate: retainInitialDateTime
+                ? initialIdentification.requestedDate
+                : undefined,
+              approximateTime: retainInitialDateTime
+                ? initialIdentification.approximateTime
+                : undefined,
+              recoveryMode: true,
+              recoveryPromptCount: phoneWasReceived && !verifiedPhoneAccepted
+                ? 1
+                : 0,
               phoneReceivedAt: suppliedPhone ? Date.now() : undefined,
               lookupAttemptedAt: Date.now(),
-              resultCategory: verifiedPhoneAccepted
+              resultCategory: lookupResult?.secureRecoveryAmbiguous
+                ? "recovery_ambiguous"
+                : verifiedPhoneAccepted
                 ? "verified_not_found"
                 : phoneWasReceived
-                  ? "phone_unverified"
+                  ? initialIdentification.name ||
+                    (
+                      retainInitialDateTime &&
+                      initialIdentification.requestedDate &&
+                      initialIdentification.approximateTime
+                    )
+                    ? "recovery_not_found"
+                    : "recovery_needs_attribute"
                   : "needs_verified_phone",
-              nextAction: verifiedPhoneAccepted || phoneWasReceived
-                ? "offer_new_booking"
-                : "awaiting_verified_phone"
+              nextAction: lookupResult?.secureRecoveryAmbiguous
+                ? "clarify_recovery"
+                : verifiedPhoneAccepted
+                  ? "offer_new_booking"
+                  : phoneWasReceived
+                    ? initialIdentification.name ||
+                      (
+                        retainInitialDateTime &&
+                        initialIdentification.requestedDate &&
+                        initialIdentification.approximateTime
+                      )
+                      ? "offer_new_booking"
+                      : "awaiting_recovery_attribute"
+                    : "awaiting_verified_phone"
             }
           );
           if (phoneWasReceived && !verifiedPhoneAccepted) {
-            await replyAndRecord(formatUnverifiedPhoneLookupReply(language));
+            await replyAndRecord(
+              formatSecureRecoveryPrompt(
+                language,
+                lookupResult?.secureRecoveryAmbiguous
+                  ? "ambiguous"
+                  : initialIdentification.name ||
+                      (
+                        retainInitialDateTime &&
+                        initialIdentification.requestedDate &&
+                        initialIdentification.approximateTime
+                      )
+                    ? "not_found"
+                    : "need_attribute"
+              )
+            );
             return true;
           }
         }
@@ -7145,8 +7747,25 @@ async function handleUnifiedBookingEngine(params: {
     }
 
     const activeLookupContext = !pending ? getAppointmentLookupContext(sessionId) : null;
-    const followUpName = activeLookupContext ? extractNameOnly(text) : null;
-    const followUpPhone = activeLookupContext ? extractPhoneOnly(text) : null;
+    const lookupIdentification = activeLookupContext
+      ? getLookupIdentificationDetails(text, activeLookupContext)
+      : null;
+    const followUpName = lookupIdentification?.name || null;
+    const followUpPhone = lookupIdentification?.phone || null;
+    const followUpRequestedDate = lookupIdentification?.requestedDate || null;
+    const followUpApproximateTime = lookupIdentification?.approximateTime || null;
+    const hasLookupIdentificationUpdate = Boolean(
+      lookupIdentification?.hasNewDateOrTime ||
+      (
+        followUpName &&
+        followUpName !== activeLookupContext?.receivedName
+      ) ||
+      (
+        followUpPhone &&
+        normalizeLookupDigits(followUpPhone) !==
+          normalizeLookupDigits(activeLookupContext?.receivedPhone)
+      )
+    );
     const normalizedFollowUpPhone = normalizeAcceptedPhone(followUpPhone || undefined);
     const repeatsReceivedPhone = Boolean(
       normalizedFollowUpPhone &&
@@ -7157,7 +7776,41 @@ async function handleUnifiedBookingEngine(params: {
 
     if (
       !pending &&
+      activeLookupContext &&
+      (
+        activeLookupContext.nextAction === "awaiting_recovery_attribute" ||
+        activeLookupContext.nextAction === "clarify_recovery"
+      ) &&
+      !hasLookupIdentificationUpdate
+    ) {
+      const lockedLanguage = activeLookupContext.language || language;
+      const promptCount = Number(activeLookupContext.recoveryPromptCount || 1);
+      if (promptCount >= 1) {
+        rememberAppointmentLookupContext(
+          sessionId,
+          lockedLanguage,
+          Boolean(activeLookupContext.includePast),
+          activeLookupContext.lookupMode ||
+            (activeLookupContext.includePast ? "history" : "upcoming"),
+          Boolean(activeLookupContext.historyWindowLimited),
+          {
+            ...activeLookupContext,
+            resultCategory: "recovery_not_found",
+            nextAction: "offer_new_booking",
+            recoveryPromptCount: promptCount + 1
+          }
+        );
+        await replyAndRecord(
+          formatSecureRecoveryPrompt(lockedLanguage, "not_found")
+        );
+        return true;
+      }
+    }
+
+    if (
+      !pending &&
       activeLookupContext?.nextAction === "offer_new_booking" &&
+      !hasLookupIdentificationUpdate &&
       (!followUpPhone || repeatsReceivedPhone)
     ) {
       const lockedLanguage = activeLookupContext.language || language;
@@ -7181,7 +7834,18 @@ async function handleUnifiedBookingEngine(params: {
         return true;
       }
       await replyAndRecord(
-        activeLookupContext.resultCategory === "phone_unverified"
+        activeLookupContext.resultCategory === "recovery_not_found" ||
+          activeLookupContext.resultCategory === "recovery_needs_attribute" ||
+          activeLookupContext.resultCategory === "recovery_ambiguous"
+          ? formatSecureRecoveryPrompt(
+              lockedLanguage,
+              activeLookupContext.resultCategory === "recovery_ambiguous"
+                ? "ambiguous"
+                : activeLookupContext.resultCategory === "recovery_needs_attribute"
+                  ? "need_attribute"
+                  : "not_found"
+            )
+          : activeLookupContext.resultCategory === "phone_unverified"
           ? formatUnverifiedPhoneLookupReply(lockedLanguage)
           : formatVerifiedPhoneNoAppointment(
               lockedLanguage,
@@ -7194,8 +7858,49 @@ async function handleUnifiedBookingEngine(params: {
     if (
       !pending &&
       activeLookupContext &&
+      (activeLookupContext.operation === "reschedule" ||
+        activeLookupContext.operation === "cancel") &&
+      lookupIdentification?.hasNewDateOrTime &&
+      !followUpName &&
+      !followUpPhone
+    ) {
+      const lockedLanguage = activeLookupContext.language || language;
+      rememberAppointmentLookupContext(
+        sessionId,
+        lockedLanguage,
+        Boolean(activeLookupContext.includePast),
+        activeLookupContext.lookupMode ||
+          (activeLookupContext.includePast ? "history" : "upcoming"),
+        Boolean(activeLookupContext.historyWindowLimited),
+        {
+          ...activeLookupContext,
+          requestedDate:
+            followUpRequestedDate || activeLookupContext.requestedDate,
+          approximateTime:
+            followUpApproximateTime || activeLookupContext.approximateTime,
+          recoveryMode: true,
+          recoveryPromptCount: Number(activeLookupContext.recoveryPromptCount || 0) + 1,
+          resultCategory: "needs_verified_phone",
+          nextAction: "awaiting_verified_phone"
+        }
+      );
+      lockConversationFlowLanguage(sessionId, lockedLanguage, "appointment");
+      await replyAndRecord(
+        formatSecureRecoveryPrompt(lockedLanguage, "missing_identifier")
+      );
+      return true;
+    }
+
+    if (
+      !pending &&
+      activeLookupContext &&
       (activeLookupContext.operation === "reschedule" || activeLookupContext.operation === "cancel") &&
-      (followUpName || followUpPhone || appointmentLookupFollowUpRequested)
+      (
+        followUpName ||
+        followUpPhone ||
+        appointmentLookupFollowUpRequested ||
+        hasLookupIdentificationUpdate
+      )
     ) {
       const adapter = getCalendarAdapter(businessConfig);
       const lockedLanguage = activeLookupContext.language || language;
@@ -7205,6 +7910,11 @@ async function handleUnifiedBookingEngine(params: {
         {
           name: followUpName || undefined,
           phone: normalizedPhone || undefined,
+          requestedDate: followUpRequestedDate || undefined,
+          startDate: followUpRequestedDate || undefined,
+          endDate: followUpRequestedDate || undefined,
+          approximateTime: followUpApproximateTime || undefined,
+          secureRecovery: true,
           lookupPath: "unified_mutation_lookup_follow_up"
         },
         recipientUserId,
@@ -7286,6 +7996,11 @@ async function handleUnifiedBookingEngine(params: {
         lookupResult?.verifiedPhoneAccepted && normalizedPhone
       );
       const phoneWasReceived = Boolean(normalizedPhone);
+      const hasRecoveryAttribute = Boolean(
+        followUpName ||
+        (followUpRequestedDate && followUpApproximateTime)
+      );
+      const recoveryAmbiguous = Boolean(lookupResult?.secureRecoveryAmbiguous);
       rememberAppointmentLookupContext(
         sessionId,
         lockedLanguage,
@@ -7298,29 +8013,64 @@ async function handleUnifiedBookingEngine(params: {
             ? normalizedPhone!
             : activeLookupContext.verifiedPhone,
           receivedPhone: normalizedPhone || activeLookupContext.receivedPhone,
+          receivedName: followUpName || activeLookupContext.receivedName,
+          requestedDate:
+            followUpRequestedDate || activeLookupContext.requestedDate,
+          approximateTime:
+            followUpApproximateTime || activeLookupContext.approximateTime,
+          recoveryMode: true,
+          recoveryPromptCount: phoneWasReceived && !verifiedPhoneAccepted
+            ? Number(activeLookupContext.recoveryPromptCount || 0) + 1
+            : activeLookupContext.recoveryPromptCount,
           phoneReceivedAt: normalizedPhone
             ? Date.now()
             : activeLookupContext.phoneReceivedAt,
           lookupAttemptedAt: Date.now(),
-          resultCategory: verifiedPhoneAccepted
-            ? "verified_not_found"
-            : phoneWasReceived
-              ? "phone_unverified"
-              : "needs_verified_phone",
-          nextAction: verifiedPhoneAccepted || phoneWasReceived
-            ? "offer_new_booking"
-            : "awaiting_verified_phone"
+          resultCategory: recoveryAmbiguous
+            ? "recovery_ambiguous"
+            : verifiedPhoneAccepted
+              ? "verified_not_found"
+              : phoneWasReceived
+                ? hasRecoveryAttribute
+                  ? "recovery_not_found"
+                  : "recovery_needs_attribute"
+                : "needs_verified_phone",
+          nextAction: recoveryAmbiguous
+            ? "clarify_recovery"
+            : verifiedPhoneAccepted
+              ? "offer_new_booking"
+              : phoneWasReceived
+                ? hasRecoveryAttribute
+                  ? "offer_new_booking"
+                  : "awaiting_recovery_attribute"
+                : "awaiting_verified_phone"
         }
       );
       await replyAndRecord(
         phoneWasReceived && !verifiedPhoneAccepted
-          ? formatUnverifiedPhoneLookupReply(lockedLanguage)
+          ? formatSecureRecoveryPrompt(
+              lockedLanguage,
+              recoveryAmbiguous
+                ? "ambiguous"
+                : hasRecoveryAttribute
+                  ? "not_found"
+                  : "need_attribute"
+            )
           : formatAppointmentLookupReply(lookupResult, lockedLanguage)
       );
       return true;
     }
 
-    if (!pending && activeLookupContext && (followUpName || followUpPhone || appointmentLookupFollowUpRequested)) {
+    if (
+      !pending &&
+      activeLookupContext &&
+      (
+        followUpName ||
+        followUpPhone ||
+        appointmentLookupFollowUpRequested ||
+        hasLookupIdentificationUpdate
+      )
+    ) {
       const adapter = getCalendarAdapter(businessConfig);
       const followUpLookupMode = appointmentLookupFollowUpRequested
         ? detectAppointmentLookupMode(text)
@@ -7333,6 +8083,11 @@ async function handleUnifiedBookingEngine(params: {
         {
           name: followUpName || undefined,
           phone: followUpPhone || undefined,
+          requestedDate: followUpRequestedDate || undefined,
+          startDate: followUpRequestedDate || undefined,
+          endDate: followUpRequestedDate || undefined,
+          approximateTime: followUpApproximateTime || undefined,
+          secureRecovery: true,
           includePast: olderHistory || followUpLookupMode === "history",
           lookupMode: olderHistory ? "history" : followUpLookupMode,
           olderHistory,
@@ -7359,23 +8114,54 @@ async function handleUnifiedBookingEngine(params: {
           receivedPhone: followUpPhone
             ? normalizeAcceptedPhone(followUpPhone) || activeLookupContext.receivedPhone
             : activeLookupContext.receivedPhone,
+          receivedName: followUpName || activeLookupContext.receivedName,
+          requestedDate:
+            followUpRequestedDate || activeLookupContext.requestedDate,
+          approximateTime:
+            followUpApproximateTime || activeLookupContext.approximateTime,
+          recoveryMode: true,
+          recoveryPromptCount: followUpPhone && !lookupResult?.verifiedPhoneAccepted
+            ? Number(activeLookupContext.recoveryPromptCount || 0) + 1
+            : activeLookupContext.recoveryPromptCount,
           phoneReceivedAt: followUpPhone
             ? Date.now()
             : activeLookupContext.phoneReceivedAt,
           lookupAttemptedAt: Date.now(),
-          resultCategory: lookupResult?.verifiedPhoneAccepted
-            ? "verified_not_found"
-            : followUpPhone
-              ? "phone_unverified"
-              : "needs_verified_phone",
-          nextAction: lookupResult?.verifiedPhoneAccepted || Boolean(followUpPhone)
-            ? "offer_new_booking"
-            : "awaiting_verified_phone"
+          resultCategory: lookupResult?.secureRecoveryAmbiguous
+            ? "recovery_ambiguous"
+            : lookupResult?.verifiedPhoneAccepted
+              ? "verified_not_found"
+              : followUpPhone
+                ? followUpName ||
+                  (followUpRequestedDate && followUpApproximateTime)
+                  ? "recovery_not_found"
+                  : "recovery_needs_attribute"
+                : "needs_verified_phone",
+          nextAction: lookupResult?.secureRecoveryAmbiguous
+            ? "clarify_recovery"
+            : lookupResult?.verifiedPhoneAccepted
+              ? "offer_new_booking"
+              : followUpPhone
+                ? followUpName ||
+                  (followUpRequestedDate && followUpApproximateTime)
+                  ? "offer_new_booking"
+                  : "awaiting_recovery_attribute"
+                : "awaiting_verified_phone"
         }
       );
       await replyAndRecord(
-        followUpPhone && !lookupResult?.verifiedPhoneAccepted
-          ? formatUnverifiedPhoneLookupReply(activeLookupContext.language || language)
+        !lookupResult?.found &&
+          followUpPhone &&
+          !lookupResult?.verifiedPhoneAccepted
+          ? formatSecureRecoveryPrompt(
+              activeLookupContext.language || language,
+              lookupResult?.secureRecoveryAmbiguous
+                ? "ambiguous"
+                : followUpName ||
+                    (followUpRequestedDate && followUpApproximateTime)
+                  ? "not_found"
+                  : "need_attribute"
+            )
           : formatAppointmentLookupReply(lookupResult, activeLookupContext.language || language)
       );
       return true;
@@ -7384,11 +8170,19 @@ async function handleUnifiedBookingEngine(params: {
     if (!pending && appointmentLookupRequested) {
       const adapter = getCalendarAdapter(businessConfig);
       const lookupContact = extractNameAndPhone(text);
-      const lookupMode = detectAppointmentLookupMode(text);
+      const lookupIdentification = getLookupIdentificationDetails(text);
+      const lookupMode = isPastAppointmentLookupIntent(text)
+        ? "history"
+        : detectAppointmentLookupMode(text);
       const includePast = lookupMode === "history";
       const lookupArgs = {
         name: lookupContact?.name || extractNameOnly(text) || undefined,
         phone: lookupContact?.phone || extractPhoneOnly(text) || undefined,
+        requestedDate: lookupIdentification.requestedDate,
+        startDate: lookupIdentification.requestedDate,
+        endDate: lookupIdentification.requestedDate,
+        approximateTime: lookupIdentification.approximateTime,
+        secureRecovery: true,
         includePast,
         lookupMode,
         lookupText: text,
@@ -7417,20 +8211,58 @@ async function handleUnifiedBookingEngine(params: {
           receivedPhone: lookupArgs.phone
             ? normalizeAcceptedPhone(lookupArgs.phone) || undefined
             : undefined,
+          receivedName: lookupIdentification.name,
+          requestedDate: lookupIdentification.requestedDate,
+          approximateTime: lookupIdentification.approximateTime,
+          recoveryMode: true,
+          recoveryPromptCount: lookupArgs.phone && !lookupResult?.verifiedPhoneAccepted
+            ? 1
+            : 0,
           phoneReceivedAt: lookupArgs.phone ? Date.now() : undefined,
           lookupAttemptedAt: Date.now(),
-          resultCategory: lookupResult?.verifiedPhoneAccepted
-            ? "verified_not_found"
-            : lookupArgs.phone
-              ? "phone_unverified"
-              : "needs_verified_phone",
-          nextAction: lookupResult?.verifiedPhoneAccepted || Boolean(lookupArgs.phone)
-            ? "offer_new_booking"
-            : "awaiting_verified_phone"
+          resultCategory: lookupResult?.secureRecoveryAmbiguous
+            ? "recovery_ambiguous"
+            : lookupResult?.verifiedPhoneAccepted
+              ? "verified_not_found"
+              : lookupArgs.phone
+                ? lookupIdentification.name ||
+                  (
+                    lookupIdentification.requestedDate &&
+                    lookupIdentification.approximateTime
+                  )
+                  ? "recovery_not_found"
+                  : "recovery_needs_attribute"
+                : "needs_verified_phone",
+          nextAction: lookupResult?.secureRecoveryAmbiguous
+            ? "clarify_recovery"
+            : lookupResult?.verifiedPhoneAccepted
+              ? "offer_new_booking"
+              : lookupArgs.phone
+                ? lookupIdentification.name ||
+                  (
+                    lookupIdentification.requestedDate &&
+                    lookupIdentification.approximateTime
+                  )
+                  ? "offer_new_booking"
+                  : "awaiting_recovery_attribute"
+                : "awaiting_verified_phone"
         }
       );
-      const reply = lookupArgs.phone && !lookupResult?.verifiedPhoneAccepted
-        ? formatUnverifiedPhoneLookupReply(language)
+      const reply = !lookupResult?.found &&
+        lookupArgs.phone &&
+        !lookupResult?.verifiedPhoneAccepted
+        ? formatSecureRecoveryPrompt(
+            language,
+            lookupResult?.secureRecoveryAmbiguous
+              ? "ambiguous"
+              : lookupIdentification.name ||
+                  (
+                    lookupIdentification.requestedDate &&
+                    lookupIdentification.approximateTime
+                  )
+                ? "not_found"
+                : "need_attribute"
+          )
         : formatAppointmentLookupReply(lookupResult, language);
       console.log(`[UnifiedBooking] Lookup platform=${platformName}, found=${Boolean(lookupResult?.found)}`);
       await replyAndRecord(reply);

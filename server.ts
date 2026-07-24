@@ -618,6 +618,245 @@ type SlotSearchOptions = {
   selectFirstAvailable?: boolean;
 };
 
+const BOOKING_OPEN_MINUTES = 9 * 60;
+const BOOKING_CLOSE_MINUTES = 20 * 60;
+const BOOKING_INTERVAL_MINUTES = 15;
+
+type BookingSlotOwner = {
+  businessId: string;
+  platform: string;
+  userId: string;
+  sessionId: string;
+};
+
+type OwnedOfferedSlot = {
+  start: string;
+  end: string;
+  durationMinutes: number;
+  service: string;
+  businessId: string;
+  platform: string;
+  userId: string;
+  generatedAt: number;
+};
+
+type ExactSlotValidationResult = {
+  free: boolean;
+  category:
+    | "available"
+    | "invalid_slot"
+    | "outside_working_hours"
+    | "invalid_interval"
+    | "calendar_conflict"
+    | "pending_conflict"
+    | "ownership_mismatch"
+    | "stale_offer";
+  normalizedIso: string | null;
+  endIso: string | null;
+};
+
+function bookingSlotOwnerMatches(slot: OwnedOfferedSlot, owner: BookingSlotOwner): boolean {
+  return Boolean(
+    slot.businessId &&
+    slot.businessId === owner.businessId &&
+    normalizePlatformName(slot.platform) === normalizePlatformName(owner.platform) &&
+    normalizePlatformUserId(slot.platform, slot.userId) ===
+      normalizePlatformUserId(owner.platform, owner.userId)
+  );
+}
+
+function getPendingBookingBlockingEvents(
+  owner: BookingSlotOwner,
+  startMs: number,
+  endMs: number
+): any[] {
+  return Object.entries(pendingBookings)
+    .filter(([sessionId, pending]) => {
+      if (sessionId === owner.sessionId || !pending || isPendingBookingExpired(pending)) return false;
+      if (!["awaiting_confirmation", "awaiting_contact", "inserting"].includes(String(pending.status || ""))) return false;
+      const pendingBusinessId = String(
+        pending.businessId ||
+        getBusinessIdFromConfig(pending.businessConfig) ||
+        ""
+      );
+      const pendingPlatform = normalizePlatformName(pending.platform || "");
+      const pendingUserId = normalizePlatformUserId(pendingPlatform, String(pending.userId || ""));
+      if (
+        pendingBusinessId !== owner.businessId ||
+        !pendingPlatform ||
+        !pendingUserId
+      ) return false;
+      const pendingStart = new Date(ensureStockholmOffset(String(pending.dateTime || ""))).getTime();
+      const pendingDuration = Number(pending.durationMinutes || 0);
+      const pendingEnd = pendingStart + pendingDuration * 60000;
+      return Number.isFinite(pendingStart) && pendingDuration > 0 && pendingStart < endMs && pendingEnd > startMs;
+    })
+    .map(([, pending]) => ({
+      startTime: ensureStockholmOffset(String(pending.dateTime || "")),
+      endTime: new Date(
+        new Date(ensureStockholmOffset(String(pending.dateTime || ""))).getTime() +
+        Number(pending.durationMinutes || 0) * 60000
+      ).toISOString(),
+      summary: "Pending appointment hold"
+    }));
+}
+
+async function validateCanonicalExactSlot(params: {
+  adapter: CalendarAdapter;
+  owner: BookingSlotOwner;
+  businessConfig: any;
+  start: string;
+  service: string;
+  durationMinutes: number;
+  excludeEventId?: string;
+  offeredSlot?: OwnedOfferedSlot;
+}): Promise<ExactSlotValidationResult> {
+  const { adapter, owner, start, service, durationMinutes, excludeEventId, offeredSlot } = params;
+  const businessId = String(getBusinessIdFromConfig(params.businessConfig) || "");
+  const platform = normalizePlatformName(owner.platform);
+  const userId = normalizePlatformUserId(platform, owner.userId);
+  if (!businessId || businessId !== owner.businessId || !platform || !userId) {
+    return { free: false, category: "ownership_mismatch", normalizedIso: null, endIso: null };
+  }
+
+  if (offeredSlot) {
+    if (!bookingSlotOwnerMatches(offeredSlot, owner)) {
+      return { free: false, category: "ownership_mismatch", normalizedIso: null, endIso: null };
+    }
+    const expectedEndMs =
+      new Date(ensureStockholmOffset(start)).getTime() + Number(durationMinutes) * 60000;
+    if (
+      Date.now() - Number(offeredSlot.generatedAt || 0) > PENDING_BOOKING_TTL_MS ||
+      Number(offeredSlot.durationMinutes) !== Number(durationMinutes) ||
+      String(offeredSlot.service || "") !== String(service || "") ||
+      new Date(offeredSlot.start).getTime() !== new Date(ensureStockholmOffset(start)).getTime() ||
+      new Date(offeredSlot.end).getTime() !== expectedEndMs
+    ) {
+      return { free: false, category: "stale_offer", normalizedIso: null, endIso: null };
+    }
+  }
+
+  const normalizedIso = ensureStockholmOffset(String(start || "").trim());
+  const startDate = new Date(normalizedIso);
+  const duration = Number(durationMinutes || 0);
+  if (Number.isNaN(startDate.getTime()) || !Number.isFinite(duration) || duration <= 0) {
+    return { free: false, category: "invalid_slot", normalizedIso: null, endIso: null };
+  }
+
+  const localDate = stockholmDateString(startDate);
+  const localTime = startDate.toLocaleTimeString("sv-SE", {
+    timeZone: "Europe/Stockholm",
+    hour: "2-digit",
+    minute: "2-digit"
+  });
+  const startMinutes = timeTextToMinutes(localTime);
+  const endMinutes = Number(startMinutes) + duration;
+  if (
+    startMinutes === null ||
+    startMinutes < BOOKING_OPEN_MINUTES ||
+    endMinutes > BOOKING_CLOSE_MINUTES
+  ) {
+    return { free: false, category: "outside_working_hours", normalizedIso, endIso: null };
+  }
+  if (startMinutes % BOOKING_INTERVAL_MINUTES !== 0) {
+    return { free: false, category: "invalid_interval", normalizedIso, endIso: null };
+  }
+
+  const startMs = startDate.getTime();
+  const endMs = startMs + duration * 60000;
+  const calendarEvents = await adapter.getEvents(localDate, localDate);
+  const filteredEvents = (Array.isArray(calendarEvents) ? calendarEvents : []).filter(
+    (event: any) => !excludeEventId || String(event?.id || "") !== String(excludeEventId)
+  );
+  if (!isSlotFree(startMs, duration, filteredEvents)) {
+    return { free: false, category: "calendar_conflict", normalizedIso, endIso: new Date(endMs).toISOString() };
+  }
+
+  const pendingEvents = getPendingBookingBlockingEvents(owner, startMs, endMs);
+  if (!isSlotFree(startMs, duration, pendingEvents)) {
+    return { free: false, category: "pending_conflict", normalizedIso, endIso: new Date(endMs).toISOString() };
+  }
+
+  return {
+    free: true,
+    category: "available",
+    normalizedIso,
+    endIso: new Date(endMs).toISOString()
+  };
+}
+
+async function createCanonicalOfferedSlots(params: {
+  adapter: CalendarAdapter;
+  owner: BookingSlotOwner;
+  businessConfig: any;
+  startDate: string;
+  endDate: string;
+  service: string;
+  durationMinutes: number;
+  requestedTime?: string;
+  options?: SlotSearchOptions;
+  excludeEventId?: string;
+}): Promise<{ displaySlots: string[]; ownedSlots: OwnedOfferedSlot[] }> {
+  const events = await params.adapter.getEvents(params.startDate, params.endDate);
+  const pendingEvents = getPendingBookingBlockingEvents(
+    params.owner,
+    new Date(localStockholmDateBoundary(params.startDate, false)).getTime(),
+    new Date(localStockholmDateBoundary(params.endDate, true)).getTime()
+  );
+  const filteredEvents = (Array.isArray(events) ? events : []).filter(
+    (event: any) => !params.excludeEventId || String(event?.id || "") !== String(params.excludeEventId)
+  );
+  const generated = getSlotsArray({
+    available_slots_string: getDailySlots(
+      params.startDate,
+      params.endDate,
+      [...filteredEvents, ...pendingEvents],
+      params.durationMinutes,
+      params.requestedTime,
+      params.options || {}
+    )
+  });
+  const displaySlots: string[] = [];
+  const ownedSlots: OwnedOfferedSlot[] = [];
+  const generatedAt = Date.now();
+
+  for (const label of generated) {
+    const start = parseSlotIso(label);
+    if (!start) continue;
+    const validation = await validateCanonicalExactSlot({
+      adapter: params.adapter,
+      owner: params.owner,
+      businessConfig: params.businessConfig,
+      start,
+      service: params.service,
+      durationMinutes: params.durationMinutes,
+      excludeEventId: params.excludeEventId
+    });
+    if (!validation.free || !validation.normalizedIso || !validation.endIso) continue;
+    displaySlots.push(label);
+    ownedSlots.push({
+      start: validation.normalizedIso,
+      end: validation.endIso,
+      durationMinutes: params.durationMinutes,
+      service: params.service,
+      businessId: params.owner.businessId,
+      platform: normalizePlatformName(params.owner.platform),
+      userId: normalizePlatformUserId(params.owner.platform, params.owner.userId),
+      generatedAt
+    });
+  }
+
+  console.log("[BookingFlow]", {
+    platform: normalizePlatformName(params.owner.platform),
+    businessScopePresent: Boolean(params.owner.businessId),
+    operation: "availability",
+    offeredSlotCount: ownedSlots.length,
+    serviceDuration: params.durationMinutes,
+    validatorResultCategory: ownedSlots.length > 0 ? "available" : "no_validated_slots"
+  });
+  return { displaySlots, ownedSlots };
+}
+
 function timeTextToMinutes(value?: string): number | null {
   const normalized = normalizeRequestedTime(value || "");
   if (!normalized) return null;
@@ -638,9 +877,6 @@ function getDailySlots(
 
   // ClinicPilot availability window.
   // Keep this dynamic later from the business dashboard/businesses table.
-  const BUSINESS_OPEN_MINUTES = 9 * 60;
-  const BUSINESS_CLOSE_MINUTES = 20 * 60;
-
   const formatter = new Intl.DateTimeFormat('en-US', { timeZone: 'Europe/Stockholm', hour: '2-digit', minute: '2-digit', hour12: false });
   const dayFormatter = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Stockholm', weekday: 'long' });
 
@@ -678,9 +914,9 @@ function getDailySlots(
 
       // Alternative slots every 15 minutes, but every candidate is still checked against
       // real calendar events. Nothing is suggested without isSlotFree() returning true.
-      for (let totalMin = BUSINESS_OPEN_MINUTES; totalMin <= BUSINESS_CLOSE_MINUTES - 15; totalMin += 15) {
+      for (let totalMin = BOOKING_OPEN_MINUTES; totalMin <= BOOKING_CLOSE_MINUTES - BOOKING_INTERVAL_MINUTES; totalMin += BOOKING_INTERVAL_MINUTES) {
         const endTotal = totalMin + durationMinutes;
-        if (endTotal > BUSINESS_CLOSE_MINUTES) continue;
+        if (endTotal > BOOKING_CLOSE_MINUTES) continue;
 
         const h = Math.floor(totalMin / 60);
         const min = totalMin % 60;
@@ -2136,8 +2372,13 @@ type RescheduleContext = {
   selectedNewStartTime?: string;
   selectedEndTime?: string;
   offeredSlots?: string[];
+  ownedOfferedSlots?: OwnedOfferedSlot[];
   lastOfferedTime?: string;
   serviceDuration: number;
+  service: string;
+  verifiedPhone?: string;
+  contactSatisfied?: boolean;
+  operationType: "reschedule";
   lockedReplyLanguage: string;
   language: string;
   lastOperation: RescheduleOperation;
@@ -2607,6 +2848,8 @@ function rememberRescheduleContext(
     exactCalendarEventId: getAppointmentCalendarEventId(appointment),
     originalStartTime: String(base?.originalStartTime || appointment?.start || ""),
     serviceDuration: Number(base?.serviceDuration || getAppointmentDurationMinutes(appointment)),
+    service: String(base?.service || appointment?.service || "Bokning"),
+    operationType: "reschedule",
     lockedReplyLanguage,
     language: lockedReplyLanguage,
     lastOperation: updates.lastOperation || base?.lastOperation || "awaiting_target",
@@ -2876,7 +3119,7 @@ function isRescheduleConfirmation(text?: string): boolean {
     .toLowerCase()
     .replace(/[!.،,؟?\s]+/g, " ")
     .trim();
-  return /^(?:yes|yes please|confirm|confirm it|book that one|move it|ok|okay|sure|ja|ja tack|bekräfta|bekrafta|bale|baleh|bale lotfan|are|lotfan|بله|بله لطفاً|بله لطفا|آره|تأیید|تایید|باشه)$/iu.test(raw);
+  return /^(?:yes|yes please|confirm|confirm it|book that one|move it|that time|ok|okay|sure|ja|ja tack|bekräfta|bekrafta|bale|baleh|bale lotfan|are|lotfan|hamoon vaght|hamon vaght|همون وقت|همان وقت|بله|بله لطفاً|بله لطفا|آره|تأیید|تایید|باشه)$/iu.test(raw);
 }
 
 function isLaterRescheduleRequest(text?: string): boolean {
@@ -3306,6 +3549,19 @@ function extractPhoneOnly(text?: string): string | null {
   return phone.replace(/\D/g, "").length >= 7 ? phone : null;
 }
 
+function normalizeAcceptedPhone(phone?: string): string | null {
+  const raw = String(phone || "").trim();
+  const digits = normalizeLookupDigits(raw);
+  if (digits.length < 7 || digits.length > 15) return null;
+  return raw.startsWith("+") ? `+${digits}` : digits;
+}
+
+function maskPhoneForDiagnostic(phone?: string): string {
+  const digits = normalizeLookupDigits(phone);
+  if (digits.length < 4) return "missing";
+  return `***${digits.slice(-4)}`;
+}
+
 function extractNameOnly(text?: string): string | null {
   const raw = String(text || "").trim();
   if (!raw) return null;
@@ -3423,6 +3679,17 @@ function formatMissingBookingDetailsMessage(
 
 async function savePendingBooking(chatId: string, platform: string, pending: any) {
   pending.createdAt = pending.createdAt || Date.now();
+  pending.businessId = String(
+    pending.businessId ||
+    getBusinessIdFromConfig(pending.businessConfig) ||
+    ""
+  );
+  pending.platform = normalizePlatformName(platform);
+  pending.userId = normalizePlatformUserId(
+    pending.platform,
+    String(pending.userId || chatId)
+  );
+  pending.sessionId = chatId;
   pendingBookings[chatId] = pending;
   if (!supabase) return;
   try {
@@ -3431,8 +3698,10 @@ async function savePendingBooking(chatId: string, platform: string, pending: any
       platform,
       service: pending.service,
       dateTime: pending.dateTime || null,
+      selectedSlotEnd: pending.selectedSlotEnd || null,
       selectedDate: pending.selectedDate || null,
       offeredSlots: Array.isArray(pending.offeredSlots) ? pending.offeredSlots : [],
+      ownedOfferedSlots: Array.isArray(pending.ownedOfferedSlots) ? pending.ownedOfferedSlots : [],
       availabilityStartDate: pending.availabilityStartDate || null,
       availabilityEndDate: pending.availabilityEndDate || null,
       availabilityMinTime: pending.availabilityMinTime || null,
@@ -3442,8 +3711,10 @@ async function savePendingBooking(chatId: string, platform: string, pending: any
       customerPhone: pending.customerPhone || null,
       durationMinutes: pending.durationMinutes,
       status: pending.status,
+      operation: pending.operation || "new_booking",
       createdAt: pending.createdAt || Date.now(),
-      business_id: getBusinessIdFromConfig(pending.businessConfig)
+      business_id: pending.businessId,
+      userId: pending.userId
     };
     const updateData: any = {
       user_id: chatId,
@@ -3478,6 +3749,25 @@ async function loadPendingBooking(chatId: string, platform: string, businessConf
       clearConversationFlowLanguage(chatId);
       return null;
     }
+    const inMemory = pendingBookings[chatId];
+    const expectedBusinessId = String(getBusinessIdFromConfig(businessConfig) || "");
+    const expectedUserId = normalizePlatformUserId(platform, chatId);
+    if (
+      String(inMemory.businessId || getBusinessIdFromConfig(inMemory.businessConfig) || "") !== expectedBusinessId ||
+      normalizePlatformName(inMemory.platform || platform) !== normalizePlatformName(platform) ||
+      normalizePlatformUserId(platform, String(inMemory.userId || chatId)) !== expectedUserId
+    ) {
+      console.warn("[BookingFlow]", {
+        platform: normalizePlatformName(platform),
+        businessScopePresent: Boolean(expectedBusinessId),
+        operation: "load_pending",
+        stateType: inMemory.operation || "new_booking",
+        ownershipMatch: false,
+        staleStateReason: "owner_mismatch"
+      });
+      await clearPendingBooking(chatId);
+      return null;
+    }
     return pendingBookings[chatId];
   }
   if (!supabase) return null;
@@ -3500,8 +3790,10 @@ async function loadPendingBooking(chatId: string, platform: string, businessConf
       platform,
       service: parsed.service || "Bokning",
       dateTime: parsed.dateTime || null,
+      selectedSlotEnd: parsed.selectedSlotEnd || null,
       selectedDate: parsed.selectedDate || null,
       offeredSlots: Array.isArray(parsed.offeredSlots) ? parsed.offeredSlots : [],
+      ownedOfferedSlots: Array.isArray(parsed.ownedOfferedSlots) ? parsed.ownedOfferedSlots : [],
       availabilityStartDate: parsed.availabilityStartDate || null,
       availabilityEndDate: parsed.availabilityEndDate || null,
       availabilityMinTime: parsed.availabilityMinTime || null,
@@ -3511,8 +3803,31 @@ async function loadPendingBooking(chatId: string, platform: string, businessConf
       customerPhone: parsed.customerPhone || null,
       durationMinutes: Number(parsed.durationMinutes || 60),
       status: parsed.status || "awaiting_contact",
+      operation: parsed.operation || "new_booking",
+      businessId: String(parsed.business_id || getBusinessIdFromConfig(businessConfig) || ""),
+      userId: normalizePlatformUserId(platform, String(parsed.userId || chatId)),
+      sessionId: chatId,
       createdAt: Number(parsed.createdAt || parsed.created_at || 0)
     };
+    const expectedBusinessId = String(getBusinessIdFromConfig(businessConfig) || "");
+    const expectedUserId = normalizePlatformUserId(platform, chatId);
+    if (
+      !pending.businessId ||
+      pending.businessId !== expectedBusinessId ||
+      normalizePlatformName(pending.platform) !== normalizePlatformName(platform) ||
+      pending.userId !== expectedUserId
+    ) {
+      console.warn("[BookingFlow]", {
+        platform: normalizePlatformName(platform),
+        businessScopePresent: Boolean(expectedBusinessId),
+        operation: "load_pending",
+        stateType: pending.operation,
+        ownershipMatch: false,
+        staleStateReason: "owner_mismatch"
+      });
+      await clearPendingBooking(chatId);
+      return null;
+    }
     if (!pending.dateTime && !pending.selectedDate && !pending.availabilityStartDate) return null;
     if (isPendingBookingExpired(pending)) {
       console.log(`[DeterministicBooking] Expired DB pending booking cleared. chatId=${chatId}, dateTime=${pending.dateTime}`);
@@ -3991,6 +4306,45 @@ function formatRangeAvailabilityReply(
   return `Outside the original requested range, I found: ${base}`;
 }
 
+function formatSlotNoLongerAvailable(
+  language: string,
+  selectedTime: string | undefined,
+  alternatives: string[]
+): string {
+  const time = normalizeRequestedTime(selectedTime || "") || selectedTime || "";
+  const alternativeText = alternatives.length > 0
+    ? buildLocalizedSlotReply(alternatives, undefined, language)
+    : "";
+  if (language === "sv") {
+    return alternatives.length > 0
+      ? `Tiden kl. ${time} hann tyvärr bli upptagen. ${alternativeText}`
+      : `Tiden kl. ${time} hann tyvärr bli upptagen. Jag hittar ingen annan ledig tid den dagen just nu.`;
+  }
+  if (language === "fa") {
+    return alternatives.length > 0
+      ? `متأسفانه ساعت ${time} دیگر خالی نیست. ${alternativeText}`
+      : `متأسفانه ساعت ${time} دیگر خالی نیست و فعلاً زمان آزاد دیگری در همان روز پیدا نکردم.`;
+  }
+  if (language === "de") {
+    return alternatives.length > 0
+      ? `Der Termin um ${time} Uhr wurde leider gerade vergeben. ${alternativeText}`
+      : `Der Termin um ${time} Uhr wurde leider gerade vergeben. Aktuell finde ich an diesem Tag keine weitere freie Zeit.`;
+  }
+  if (language === "es") {
+    return alternatives.length > 0
+      ? `La hora de las ${time} acaba de ocuparse. ${alternativeText}`
+      : `La hora de las ${time} acaba de ocuparse y no encuentro otra libre ese día.`;
+  }
+  if (language === "ar") {
+    return alternatives.length > 0
+      ? `للأسف تم حجز موعد الساعة ${time} للتو. ${alternativeText}`
+      : `للأسف تم حجز موعد الساعة ${time} للتو، ولا أجد وقتًا آخر متاحًا في ذلك اليوم.`;
+  }
+  return alternatives.length > 0
+    ? `The ${time} slot was just taken. ${alternativeText}`
+    : `The ${time} slot was just taken, and I can’t find another available time that day right now.`;
+}
+
 function resolveRescheduleDate(text: string, appointment?: any): string | null {
   const explicit = resolveExplicitBookingDate(text);
   if (explicit) return explicit;
@@ -4090,6 +4444,23 @@ function findOfferedSlotIso(offeredSlots: string[], selectedTime?: string): stri
   return null;
 }
 
+function findOwnedOfferedSlot(pending: any, startIso?: string | null): OwnedOfferedSlot | null {
+  const targetMs = new Date(ensureStockholmOffset(String(startIso || ""))).getTime();
+  if (!Number.isFinite(targetMs)) return null;
+  return (Array.isArray(pending?.ownedOfferedSlots) ? pending.ownedOfferedSlots : []).find(
+    (slot: OwnedOfferedSlot) =>
+      new Date(ensureStockholmOffset(String(slot?.start || ""))).getTime() === targetMs
+  ) || null;
+}
+
+function selectOwnedOfferedSlot(text: string, pending: any): OwnedOfferedSlot | null {
+  const selectedIso = selectRescheduleOfferedSlot(
+    text,
+    Array.isArray(pending?.offeredSlots) ? pending.offeredSlots : []
+  );
+  return findOwnedOfferedSlot(pending, selectedIso);
+}
+
 function isExistingAppointmentLookupIntent(text?: string): boolean {
   const raw = String(text || "").trim().toLowerCase();
   if (!raw) return false;
@@ -4166,6 +4537,64 @@ function formatAskContactMessage(language: string = "sv"): string {
   if (language === "ar") return "تمام 😊 لإتمام الحجز، أحتاج اسمك ورقم هاتفك.";
   if (language === "en") return "Perfect 😊 To book it, I just need your name and mobile number.";
   return "Toppen! Innan jag bokar din tid behöver jag ditt namn och mobilnummer. 😊";
+}
+
+function formatLocalizedFlowFallback(language: string, reply: string): string {
+  const raw = String(reply || "").trim();
+  const contactIntent =
+    /\b(name|phone|mobile|contact|namn|telefon|mobilnummer)\b/i.test(raw) ||
+    /(نام|اسم|شماره|موبایل)/u.test(raw);
+  if (contactIntent) return formatAskContactMessage(language);
+
+  const conflictIntent =
+    /\b(no longer available|unavailable|taken|conflict|inte längre ledig|upptagen)\b/i.test(raw) ||
+    /(دیگر خالی نیست|پر شده|گرفته شده)/u.test(raw);
+  if (conflictIntent) {
+    if (language === "sv") return "Tiden är tyvärr inte längre ledig. Jag söker gärna fram nya lediga tider. 😊";
+    if (language === "fa") return "متأسفانه این زمان دیگر خالی نیست. می‌تونم زمان‌های آزاد جدید رو بررسی کنم. 😊";
+    if (language === "de") return "Dieser Termin ist leider nicht mehr frei. Ich suche gern neue verfügbare Zeiten.";
+    if (language === "es") return "Esa hora ya no está disponible. Puedo buscar nuevas horas libres.";
+    if (language === "ar") return "للأسف لم يعد هذا الوقت متاحًا. يمكنني البحث عن أوقات جديدة.";
+    return "That time is no longer available. I can check newly available times for you. 😊";
+  }
+
+  if (language === "sv") return "Ursäkta, jag kunde inte slutföra det just nu. Försök gärna igen om en liten stund.";
+  if (language === "fa") return "ببخشید، الان نتونستم این کار رو کامل کنم. لطفاً کمی بعد دوباره تلاش کنید.";
+  if (language === "de") return "Entschuldigung, ich konnte das gerade nicht abschließen. Bitte versuchen Sie es gleich noch einmal.";
+  if (language === "es") return "Lo siento, no pude completar eso ahora. Inténtalo de nuevo en un momento.";
+  if (language === "ar") return "عذرًا، لم أتمكن من إكمال ذلك الآن. يرجى المحاولة بعد قليل.";
+  return "Sorry, I couldn’t complete that just now. Please try again in a moment.";
+}
+
+function guardCustomerFacingReply(sessionId: string, reply: string, fallbackLanguage?: string): string {
+  const raw = String(reply || "").trim();
+  const language = getStoredFlowLanguage(sessionId) ||
+    chatLanguages[sessionId] ||
+    fallbackLanguage ||
+    "en";
+  if (!raw) return getErrorMessageByLanguage(language);
+
+  const hasEnglishStructure = /\b(to confirm|can i ask|please send|i need|i can'?t find|what mobile|what day|what time|of course|your appointment|your booking|would you like|sorry|couldn'?t|is available|is booked|try again)\b/i.test(raw);
+  const hasSwedishStructure = /\b(för att|kan jag|ditt namn|din bokning|mobilnummer|vill du|tyvärr|är ledig|är bokad)\b/i.test(raw);
+  const hasPersianStructure = /[\u0600-\u06FF]/u.test(raw) &&
+    /(برای|لطفاً|می.?خواهید|وقت|رزرو|نام|شماره|متأسفانه)/u.test(raw);
+  const strongReplyLanguage = isMeaningfulLanguageMessage(raw)
+    ? detectStrongLatestLanguage(raw) || detectUserLanguage(raw)
+    : null;
+  const incompatible =
+    Boolean(strongReplyLanguage && strongReplyLanguage !== language) ||
+    (language === "sv" && hasEnglishStructure) ||
+    (language === "fa" && (hasEnglishStructure || hasSwedishStructure)) ||
+    (language === "en" && (hasSwedishStructure || hasPersianStructure)) ||
+    (language !== "en" && language !== "sv" && language !== "fa" && hasEnglishStructure && (hasSwedishStructure || hasPersianStructure));
+
+  if (!incompatible) return raw;
+  console.warn("[CustomerReplyGuard]", {
+    language,
+    mixedLanguageBlocked: true,
+    stateType: conversationFlowLanguages[sessionId]?.flowType || "none"
+  });
+  return formatLocalizedFlowFallback(language, raw);
 }
 
 function localizeServiceName(service: string, language: string): string {
@@ -4492,6 +4921,12 @@ async function handleUnifiedBookingEngine(params: {
     platform: platformName,
     userId: normalizePlatformUserId(platformName, recipientUserId),
   };
+  const currentBookingSlotOwner: BookingSlotOwner = {
+    sessionId,
+    businessId: currentAppointmentStateOwner.businessId,
+    platform: currentAppointmentStateOwner.platform,
+    userId: currentAppointmentStateOwner.userId
+  };
   const storedAppointmentStateOwner = appointmentStateOwners[sessionId];
   const invalidatedRescheduleLanguage = rescheduleContexts[sessionId]?.lockedReplyLanguage ||
     rescheduleContexts[sessionId]?.language ||
@@ -4548,13 +4983,14 @@ async function handleUnifiedBookingEngine(params: {
   }
 
   const replyAndRecord = async (reply: string) => {
-    await send(reply);
-    appendLocalHistory(sessionId, text, reply);
+    const guardedReply = guardCustomerFacingReply(sessionId, reply, language);
+    await send(guardedReply);
+    appendLocalHistory(sessionId, text, guardedReply);
     await postProcessMessage(
       recipientUserId,
       postProcessPlatform,
       text,
-      reply,
+      guardedReply,
       businessConfig?.telegramToken,
       businessConfig?.apiKey,
       getBusinessIdFromConfig(businessConfig)
@@ -4695,11 +5131,6 @@ async function handleUnifiedBookingEngine(params: {
       return true;
     }
 
-    const dateEvents = await adapter.getEvents(requestedDate, requestedDate);
-    const filteredEvents = (Array.isArray(dateEvents) ? dateEvents : []).filter(
-      (event: any) => String(event?.id || "") !== currentEventId
-    );
-
     if (requestedTime) {
       const candidateIso = `${requestedDate}T${requestedTime}:00${getStockholmUtcOffset(requestedDate)}`;
       const candidateStartMs = new Date(candidateIso).getTime();
@@ -4723,30 +5154,53 @@ async function handleUnifiedBookingEngine(params: {
         return true;
       }
 
-      if (isSlotFree(candidateStartMs, duration, filteredEvents)) {
-        const selectedEndTime = new Date(candidateStartMs + duration * 60000).toISOString();
+      const exactValidation = await validateCanonicalExactSlot({
+        adapter,
+        owner: currentBookingSlotOwner,
+        businessConfig,
+        start: candidateIso,
+        service: String(appointment?.service || "Bokning"),
+        durationMinutes: duration,
+        excludeEventId: currentEventId
+      });
+      if (exactValidation.free && exactValidation.normalizedIso && exactValidation.endIso) {
+        const ownedSlot: OwnedOfferedSlot = {
+          start: exactValidation.normalizedIso,
+          end: exactValidation.endIso,
+          durationMinutes: duration,
+          service: String(appointment?.service || "Bokning"),
+          businessId: currentBookingSlotOwner.businessId,
+          platform: currentBookingSlotOwner.platform,
+          userId: currentBookingSlotOwner.userId,
+          generatedAt: Date.now()
+        };
         rememberRescheduleContext(sessionId, appointment, lockedLanguage, requestedDate, requestedTime, {
           requestedDaypart: requestedDaypart || undefined,
-          selectedNewStartTime: candidateIso,
-          selectedEndTime,
-          offeredSlots: [`Selected (ISO: ${candidateIso})`],
+          selectedNewStartTime: ownedSlot.start,
+          selectedEndTime: ownedSlot.end,
+          offeredSlots: [`Selected (ISO: ${ownedSlot.start})`],
+          ownedOfferedSlots: [ownedSlot],
           lastOfferedTime: requestedTime,
           lastOperation: "awaiting_confirmation"
         });
-        await replyAndRecord(formatRescheduleConfirmation(lockedLanguage, candidateIso));
+        await replyAndRecord(formatRescheduleConfirmation(lockedLanguage, ownedSlot.start));
         return true;
       }
     }
 
-    const slotsText = getDailySlots(
-      requestedDate,
-      requestedDate,
-      filteredEvents,
-      duration,
-      requestedTime || undefined,
-      options
-    );
-    const offeredSlots = getSlotsArray({ available_slots_string: slotsText });
+    const canonicalOffers = await createCanonicalOfferedSlots({
+      adapter,
+      owner: currentBookingSlotOwner,
+      businessConfig,
+      startDate: requestedDate,
+      endDate: requestedDate,
+      service: String(appointment?.service || "Bokning"),
+      durationMinutes: duration,
+      requestedTime: requestedTime || undefined,
+      options,
+      excludeEventId: currentEventId
+    });
+    const offeredSlots = canonicalOffers.displaySlots;
     const offeredTimes = offeredSlots
       .map((slot) => getStockholmTimeFromIso(parseSlotIso(slot) || ""))
       .filter(Boolean) as string[];
@@ -4761,6 +5215,7 @@ async function handleUnifiedBookingEngine(params: {
           selectedNewStartTime,
           selectedEndTime: new Date(selectedStartMs + duration * 60000).toISOString(),
           offeredSlots: [offeredSlots[0]],
+          ownedOfferedSlots: canonicalOffers.ownedSlots.slice(0, 1),
           lastOfferedTime: selectedTime,
           lastOperation: "awaiting_confirmation"
         });
@@ -4773,6 +5228,7 @@ async function handleUnifiedBookingEngine(params: {
       selectedNewStartTime: undefined,
       selectedEndTime: undefined,
       offeredSlots,
+      ownedOfferedSlots: canonicalOffers.ownedSlots,
       lastOfferedTime: sortedOfferedTimes.length > 0
         ? sortedOfferedTimes[sortedOfferedTimes.length - 1]
         : undefined,
@@ -4845,11 +5301,46 @@ async function handleUnifiedBookingEngine(params: {
 
     const duration = context.serviceDuration || getAppointmentDurationMinutes(liveAppointment);
     const selectedDate = stockholmDateString(new Date(ensureStockholmOffset(candidateIso)));
-    const currentDayEvents = await adapter.getEvents(selectedDate, selectedDate);
-    const otherEvents = (Array.isArray(currentDayEvents) ? currentDayEvents : []).filter(
-      (event: any) => String(event?.id || "") !== currentEventId
+    const selectedOwnedOffer = (context.ownedOfferedSlots || []).find(
+      (slot) => new Date(slot.start).getTime() === candidateStartMs
     );
-    if (!isSlotFree(candidateStartMs, duration, otherEvents)) {
+    const finalSlotValidation = await validateCanonicalExactSlot({
+      adapter,
+      owner: currentBookingSlotOwner,
+      businessConfig,
+      start: candidateIso,
+      service: String(context.service || liveAppointment?.service || "Bokning"),
+      durationMinutes: duration,
+      excludeEventId: currentEventId,
+      ...(selectedOwnedOffer ? { offeredSlot: selectedOwnedOffer } : {})
+    });
+    console.log("[BookingFlow]", {
+      platform: platformName,
+      businessScopePresent: Boolean(currentBookingSlotOwner.businessId),
+      operation: "reschedule",
+      stateType: context.lastOperation,
+      language: lockedLanguage,
+      contactSatisfied: Boolean(context.contactSatisfied),
+      offeredSlotCount: context.ownedOfferedSlots?.length || 0,
+      selectedSlotStart: candidateIso,
+      selectedSlotEnd: context.selectedEndTime || null,
+      serviceDuration: duration,
+      validatorResultCategory: finalSlotValidation.category,
+      ownershipMatch: bookingSlotOwnerMatches(
+        selectedOwnedOffer || {
+          start: candidateIso,
+          end: context.selectedEndTime || "",
+          durationMinutes: duration,
+          service: context.service,
+          businessId: context.businessId,
+          platform: context.platform,
+          userId: context.userId,
+          generatedAt: context.savedAt
+        },
+        currentBookingSlotOwner
+      )
+    });
+    if (!finalSlotValidation.free) {
       return prepareRescheduleTarget(
         liveAppointment,
         selectedDate,
@@ -5068,6 +5559,135 @@ async function handleUnifiedBookingEngine(params: {
       return true;
     }
 
+    const activeRescheduleForContact = getRescheduleContext(sessionId);
+    const suppliedReschedulePhone = normalizeAcceptedPhone(extractPhoneOnly(text) || undefined);
+    if (activeRescheduleForContact && suppliedReschedulePhone) {
+      const stateOwner = appointmentStateOwners[sessionId];
+      const lockedLanguage = getRescheduleReplyLanguage(activeRescheduleForContact, text);
+      if (
+        isRescheduleContextStale(activeRescheduleForContact) ||
+        !rescheduleContextOwnerMatches(
+          activeRescheduleForContact,
+          currentAppointmentStateOwner,
+          stateOwner
+        )
+      ) {
+        clearAppointmentConversationState(sessionId);
+        await replyAndRecord(formatStaleAppointmentStateMessage(lockedLanguage));
+        return true;
+      }
+
+      const phoneVerification = await findCustomerAppointments(
+        getCalendarAdapter(businessConfig),
+        {
+          phone: suppliedReschedulePhone,
+          lookupPath: "reschedule_phone_verification"
+        },
+        recipientUserId,
+        platformName,
+        businessConfig
+      );
+      const verifiedAppointments = Array.isArray(phoneVerification?.appointments)
+        ? phoneVerification.appointments
+        : [];
+      const phoneMatchesSelectedAppointment = verifiedAppointments.some(
+        (appointment: any) =>
+          getAppointmentMutationId(appointment) ===
+            activeRescheduleForContact.originalAppointmentId &&
+          getAppointmentCalendarEventId(appointment) ===
+            activeRescheduleForContact.exactCalendarEventId
+      );
+      if (!phoneMatchesSelectedAppointment) {
+        console.warn("[BookingFlow]", {
+          platform: platformName,
+          businessScopePresent: Boolean(currentAppointmentStateOwner.businessId),
+          operation: "reschedule_contact",
+          stateType: activeRescheduleForContact.lastOperation,
+          language: lockedLanguage,
+          contactSatisfied: false,
+          phoneCorrelation: maskPhoneForDiagnostic(suppliedReschedulePhone),
+          ownershipMatch: false,
+          finalHandledPath: "phone_verification_failed"
+        });
+        await replyAndRecord(
+          lockedLanguage === "fa"
+            ? "این شماره با رزرو انتخاب‌شده مطابقت نداشت. لطفاً همان شماره‌ای را بفرستید که با آن رزرو کرده‌اید."
+            : lockedLanguage === "sv"
+              ? "Numret matchade inte den valda bokningen. Skicka numret som användes när tiden bokades."
+              : "That number did not match the selected booking. Please send the number used for the booking."
+        );
+        return true;
+      }
+
+      const enrichedAppointment = {
+        ...activeRescheduleForContact.appointment,
+        phone: activeRescheduleForContact.appointment?.phone || suppliedReschedulePhone
+      };
+      rememberRescheduleContext(
+        sessionId,
+        enrichedAppointment,
+        lockedLanguage,
+        activeRescheduleForContact.requestedDate,
+        activeRescheduleForContact.requestedTime,
+        {
+          ...activeRescheduleForContact,
+          appointment: enrichedAppointment,
+          verifiedPhone: suppliedReschedulePhone,
+          contactSatisfied: true,
+          savedAt: Date.now()
+        }
+      );
+      const enrichedContext = getRescheduleContext(sessionId)!;
+      console.log("[BookingFlow]", {
+        platform: platformName,
+        businessScopePresent: Boolean(currentAppointmentStateOwner.businessId),
+        operation: "reschedule_contact",
+        stateType: enrichedContext.lastOperation,
+        language: lockedLanguage,
+        contactSatisfied: true,
+        phoneCorrelation: maskPhoneForDiagnostic(suppliedReschedulePhone),
+        offeredSlotCount: enrichedContext.ownedOfferedSlots?.length || 0,
+        ownershipMatch: true,
+        finalHandledPath: "reschedule_contact_enrichment"
+      });
+
+      if (enrichedContext.selectedNewStartTime) {
+        await replyAndRecord(
+          formatRescheduleConfirmation(lockedLanguage, enrichedContext.selectedNewStartTime)
+        );
+        return true;
+      }
+      if (enrichedContext.requestedDate && enrichedContext.requestedTime) {
+        return prepareRescheduleTarget(
+          enrichedContext.appointment,
+          enrichedContext.requestedDate,
+          enrichedContext.requestedTime,
+          lockedLanguage,
+          getDaypartSlotOptions(enrichedContext.requestedDaypart),
+          enrichedContext.requestedDaypart
+        );
+      }
+      if (Array.isArray(enrichedContext.offeredSlots) && enrichedContext.offeredSlots.length > 0) {
+        await replyAndRecord(
+          formatSwedishTimeSlots(enrichedContext.offeredSlots, undefined, lockedLanguage)
+        );
+        return true;
+      }
+      const ask = lockedLanguage === "fa"
+        ? enrichedContext.requestedDate
+          ? "شماره‌تون ثبت شد 😊 چه ساعتی در همان روز براتون بهتره؟"
+          : "شماره‌تون ثبت شد 😊 چه روز و ساعتی براتون بهتره؟"
+        : lockedLanguage === "sv"
+          ? enrichedContext.requestedDate
+            ? "Numret är sparat 😊 Vilken tid den dagen passar bäst?"
+            : "Numret är sparat 😊 Vilken dag och tid passar bättre?"
+          : enrichedContext.requestedDate
+            ? "Your number is saved 😊 What time that day works best?"
+            : "Your number is saved 😊 What day and time works better?";
+      await replyAndRecord(ask);
+      return true;
+    }
+
     if (pending && (explicitNewBookingRequested || isNewBookingRequestText(text))) {
       console.log(`[UnifiedBooking] Clearing stale pending platform=${platformName}, session=${sessionId}`);
       await clearPendingBooking(sessionId);
@@ -5078,7 +5698,8 @@ async function handleUnifiedBookingEngine(params: {
     // Otherwise Messenger can keep asking for name/mobile when the customer only asks
     // whether they already have an appointment.
     const lookupContextForIntent = getAppointmentLookupContext(sessionId);
-    const appointmentLookupFollowUpRequested = Boolean(
+    const activeRescheduleForIntent = getRescheduleContext(sessionId);
+    const appointmentLookupFollowUpRequested = !activeRescheduleForIntent && Boolean(
       getAppointmentContext(sessionId) ||
       getAppointmentSelectionContext(sessionId) ||
       lookupContextForIntent
@@ -5106,7 +5727,7 @@ async function handleUnifiedBookingEngine(params: {
 
     // A direct lookup question must interrupt an unfinished reschedule flow.
     // Example: customer first asks to reschedule, then asks "when is my appointment?".
-    if (appointmentLookupRequested) {
+    if (appointmentLookupRequested && isExistingAppointmentLookupIntent(text)) {
       clearRescheduleContext(sessionId);
       clearCancellationContext(sessionId);
     }
@@ -5675,21 +6296,22 @@ async function handleUnifiedBookingEngine(params: {
 
       const adapter = getCalendarAdapter(businessConfig);
       const searchIsWithinConfiguredWindow = searchStart <= searchEnd;
-      const events = searchIsWithinConfiguredWindow
-        ? await adapter.getEvents(searchStart, searchEnd)
-        : [];
-      const slotsText = getDailySlots(
-        searchStart,
-        searchEnd,
-        Array.isArray(events) ? events : [],
-        durationMinutes,
-        undefined,
-        {
+      const canonicalOffers = searchIsWithinConfiguredWindow
+        ? await createCanonicalOfferedSlots({
+            adapter,
+            owner: currentBookingSlotOwner,
+            businessConfig,
+            startDate: searchStart,
+            endDate: searchEnd,
+            service: inferredService,
+            durationMinutes,
+            options: {
           ...(original.minTime ? { minTime: original.minTime } : {}),
           ...(original.maxTime ? { maxTime: original.maxTime } : {})
-        }
-      );
-      const slots = getSlotsArray({ available_slots_string: slotsText });
+            }
+          })
+        : { displaySlots: [], ownedSlots: [] };
+      const slots = canonicalOffers.displaySlots;
 
       availabilitySearchContexts[sessionId] = {
         startDate: parsedAvailabilityRange?.startDate || storedAvailability!.startDate,
@@ -5712,6 +6334,7 @@ async function handleUnifiedBookingEngine(params: {
           service: inferredService,
           selectedDate: null,
           offeredSlots: slots,
+          ownedOfferedSlots: canonicalOffers.ownedSlots,
           availabilityStartDate: searchStart,
           availabilityEndDate: searchEnd,
           availabilityMinTime: original.minTime || null,
@@ -5719,6 +6342,7 @@ async function handleUnifiedBookingEngine(params: {
           dateTime: null,
           durationMinutes,
           language: lockedLanguage,
+          operation: "new_booking",
           customerPhone: getWhatsAppConversationPhone(platformName, recipientUserId, sessionId),
           status: "awaiting_time_selection"
         });
@@ -5741,8 +6365,16 @@ async function handleUnifiedBookingEngine(params: {
         : (getDefaultBookingServiceForBusiness(businessConfig) || "Bokning");
       const durationMinutes = getDefaultBookingDurationForService(finalService) || inferBookingDurationFromContext(text, history);
       lockConversationFlowLanguage(sessionId, language, "booking");
-      const result = await adapter.checkSlots(startDate, endDate, durationMinutes);
-      const slots = getSlotsArray(result);
+      const canonicalOffers = await createCanonicalOfferedSlots({
+        adapter,
+        owner: currentBookingSlotOwner,
+        businessConfig,
+        startDate,
+        endDate,
+        service: finalService,
+        durationMinutes
+      });
+      const slots = canonicalOffers.displaySlots;
 
       if (slots.length > 0) {
         const firstIso = parseSlotIso(slots[0]);
@@ -5752,9 +6384,11 @@ async function handleUnifiedBookingEngine(params: {
           service: finalService,
           selectedDate: firstIso ? stockholmDateString(new Date(firstIso)) : startDate,
           offeredSlots: slots,
+          ownedOfferedSlots: canonicalOffers.ownedSlots,
           dateTime: null,
           durationMinutes,
           language: detectStrongLatestLanguage(text) || language,
+          operation: "new_booking",
           customerPhone: getWhatsAppConversationPhone(platformName, recipientUserId, sessionId),
           status: "awaiting_time_selection"
         });
@@ -5768,47 +6402,51 @@ async function handleUnifiedBookingEngine(params: {
     if (explicitDate && isBookingConversationContext(text, history)) {
       lockConversationFlowLanguage(sessionId, language, "booking");
       const adapter = getCalendarAdapter(businessConfig);
-      const durationMinutes = inferBookingDurationFromContext(text, history);
       const requestedTime = inferRequestedTimeFromText(text) || undefined;
+      const contextText = [
+        text,
+        ...(history || []).slice(-10).map((item: any) => item?.content || "")
+      ].join(" ");
+      const detectedService = normalizeBookingService(contextText, "Bokning");
+      const defaultService = getDefaultBookingServiceForBusiness(businessConfig);
+      const finalService =
+        detectedService !== "Bokning"
+          ? detectedService
+          : (defaultService || "Bokning");
+      const durationMinutes =
+        getDefaultBookingDurationForService(finalService) ||
+        inferBookingDurationFromContext(text, history);
 
       console.log(
         `[UnifiedBooking] Date resolved platform=${platformName}, text=${JSON.stringify(text)}, date=${explicitDate}, duration=${durationMinutes}, time=${requestedTime || "none"}`
       );
 
-      const result = await adapter.checkSlots(
-        explicitDate,
-        explicitDate,
+      const canonicalOffers = await createCanonicalOfferedSlots({
+        adapter,
+        owner: currentBookingSlotOwner,
+        businessConfig,
+        startDate: explicitDate,
+        endDate: explicitDate,
+        service: finalService,
         durationMinutes,
         requestedTime
-      );
-      const slots = getSlotsArray(result);
+      });
+      const slots = canonicalOffers.displaySlots;
       const reply = formatSwedishTimeSlots(slots, requestedTime, language);
 
       if (slots.length > 0) {
         const exactIso = requestedTime ? findOfferedSlotIso(slots, requestedTime) : null;
-        const contextText = [
-          text,
-          ...(history || []).slice(-10).map((item: any) => item?.content || "")
-        ].join(" ");
-
-        const detectedService = normalizeBookingService(contextText, "Bokning");
-        const defaultService = getDefaultBookingServiceForBusiness(businessConfig);
-        const finalService =
-          detectedService !== "Bokning"
-            ? detectedService
-            : (defaultService || "Bokning");
-
-        const fixedDuration = getDefaultBookingDurationForService(finalService);
-
         await savePendingBooking(sessionId, platformName, {
           businessConfig,
           platform: platformName,
           service: finalService,
           selectedDate: explicitDate,
           offeredSlots: slots,
+          ownedOfferedSlots: canonicalOffers.ownedSlots,
           dateTime: exactIso,
-          durationMinutes: fixedDuration || durationMinutes,
+          durationMinutes,
           language: detectStrongLatestLanguage(text) || language,
+          operation: "new_booking",
           customerPhone: getWhatsAppConversationPhone(
             platformName,
             recipientUserId,
@@ -5826,59 +6464,89 @@ async function handleUnifiedBookingEngine(params: {
 
     if (pending?.status === "awaiting_time_selection") {
       const selectedTime = inferRequestedTimeFromText(text);
-      const selectedIso = findOfferedSlotIso(
-        Array.isArray(pending.offeredSlots) ? pending.offeredSlots : [],
-        selectedTime || undefined
-      );
+      const selectedOwnedSlot = selectOwnedOfferedSlot(text, pending);
+      const selectedIso = selectedOwnedSlot?.start || null;
 
-      if (selectedTime && selectedIso) {
+      if (selectedIso && selectedOwnedSlot) {
         const adapter = getCalendarAdapter(businessConfig);
         const selectedDate = String(pending.selectedDate || selectedIso.slice(0, 10));
-        const fresh = await adapter.checkSlots(
-          selectedDate,
-          selectedDate,
-          Number(pending.durationMinutes || 60),
-          selectedTime
-        );
-        let freshSlots = getSlotsArray(fresh);
-        const freshIso = findOfferedSlotIso(freshSlots, selectedTime);
+        const resolvedSelectedTime = getStockholmTimeFromIso(selectedIso) || selectedTime || undefined;
+        const validation = await validateCanonicalExactSlot({
+          adapter,
+          owner: currentBookingSlotOwner,
+          businessConfig,
+          start: selectedIso,
+          service: String(pending.service || "Bokning"),
+          durationMinutes: Number(pending.durationMinutes || 60),
+          offeredSlot: selectedOwnedSlot
+        });
 
-        if (!freshIso) {
-          if (pending.availabilityMinTime || pending.availabilityMaxTime) {
-            const events = await adapter.getEvents(selectedDate, selectedDate);
-            freshSlots = getSlotsArray({
-              available_slots_string: getDailySlots(
-                selectedDate,
-                selectedDate,
-                Array.isArray(events) ? events : [],
-                Number(pending.durationMinutes || 60),
-                undefined,
-                {
-                  ...(pending.availabilityMinTime ? { minTime: pending.availabilityMinTime } : {}),
-                  ...(pending.availabilityMaxTime ? { maxTime: pending.availabilityMaxTime } : {})
-                }
-              )
-            });
-          }
-          pending.offeredSlots = freshSlots;
+        if (!validation.free || !validation.normalizedIso || !validation.endIso) {
+          const alternatives = await createCanonicalOfferedSlots({
+            adapter,
+            owner: currentBookingSlotOwner,
+            businessConfig,
+            startDate: selectedDate,
+            endDate: selectedDate,
+            service: String(pending.service || "Bokning"),
+            durationMinutes: Number(pending.durationMinutes || 60),
+            requestedTime: resolvedSelectedTime,
+            options: {
+              ...(pending.availabilityMinTime ? { minTime: pending.availabilityMinTime } : {}),
+              ...(pending.availabilityMaxTime ? { maxTime: pending.availabilityMaxTime } : {})
+            }
+          });
+          pending.offeredSlots = alternatives.displaySlots;
+          pending.ownedOfferedSlots = alternatives.ownedSlots;
+          pending.dateTime = null;
           await savePendingBooking(sessionId, platformName, pending);
+          console.log("[BookingFlow]", {
+            platform: platformName,
+            businessScopePresent: Boolean(currentBookingSlotOwner.businessId),
+            operation: "slot_selection",
+            stateType: pending.status,
+            language: pending.language || language,
+            contactSatisfied: Boolean(pending.customerPhone),
+            offeredSlotCount: alternatives.ownedSlots.length,
+            selectedSlotStart: selectedOwnedSlot.start,
+            selectedSlotEnd: selectedOwnedSlot.end,
+            serviceDuration: pending.durationMinutes,
+            validatorResultCategory: validation.category,
+            ownershipMatch: bookingSlotOwnerMatches(selectedOwnedSlot, currentBookingSlotOwner),
+            finalHandledPath: "stale_slot_alternatives"
+          });
           await replyAndRecord(
-            formatSwedishTimeSlots(
-              freshSlots,
-              selectedTime,
-              getFlowReplyLanguage(pending.language, language, text)
+            formatSlotNoLongerAvailable(
+              getFlowReplyLanguage(pending.language, language, text),
+              resolvedSelectedTime,
+              alternatives.displaySlots
             )
           );
           return true;
         }
 
-        pending.dateTime = freshIso;
-        pending.offeredSlots = freshSlots;
+        pending.dateTime = validation.normalizedIso;
+        pending.selectedSlotEnd = validation.endIso;
+        pending.selectedDate = stockholmDateString(new Date(validation.normalizedIso));
         pending.language = getFlowReplyLanguage(pending.language, language, text);
         pending.status = "awaiting_contact";
         await savePendingBooking(sessionId, platformName, pending);
 
-        console.log(`[UnifiedBooking] Slot revalidated platform=${platformName}, iso=${freshIso}`);
+        console.log("[BookingFlow]", {
+          platform: platformName,
+          businessScopePresent: Boolean(currentBookingSlotOwner.businessId),
+          operation: "slot_selection",
+          stateType: pending.status,
+          language: pending.language,
+          contactSatisfied: Boolean(pending.customerPhone),
+          offeredSlotCount: pending.ownedOfferedSlots?.length || 0,
+          selectedSlotStart: validation.normalizedIso,
+          selectedSlotEnd: validation.endIso,
+          serviceDuration: pending.durationMinutes,
+          validatorResultCategory: validation.category,
+          ownershipMatch: true,
+          finalHandledPath: "awaiting_contact"
+        });
         await replyAndRecord(
           formatAskContactMessageForPlatform(
             getFlowReplyLanguage(pending.language, language, text),
@@ -5890,56 +6558,62 @@ async function handleUnifiedBookingEngine(params: {
     }
 
     if (pending && isPendingSlotConfirmation(text, pending)) {
-      // Recheck once more before requesting personal details.
       const dateTime = String(pending.dateTime || "");
       const selectedTime = getStockholmTimeFromIso(dateTime);
       const selectedDate = String(pending.selectedDate || dateTime.slice(0, 10));
+      const selectedOwnedSlot = findOwnedOfferedSlot(pending, dateTime);
+      const adapter = getCalendarAdapter(businessConfig);
+      const validation = selectedOwnedSlot
+        ? await validateCanonicalExactSlot({
+            adapter,
+            owner: currentBookingSlotOwner,
+            businessConfig,
+            start: dateTime,
+            service: String(pending.service || "Bokning"),
+            durationMinutes: Number(pending.durationMinutes || 60),
+            offeredSlot: selectedOwnedSlot
+          })
+        : {
+            free: false,
+            category: "stale_offer" as const,
+            normalizedIso: null,
+            endIso: null
+          };
 
-      if (dateTime && selectedTime && selectedDate) {
-        const adapter = getCalendarAdapter(businessConfig);
-        const fresh = await adapter.checkSlots(
-          selectedDate,
-          selectedDate,
-          Number(pending.durationMinutes || 60),
-          selectedTime
-        );
-        let freshSlots = getSlotsArray(fresh);
-        const freshIso = findOfferedSlotIso(freshSlots, selectedTime);
-
-        if (!freshIso) {
-          if (pending.availabilityMinTime || pending.availabilityMaxTime) {
-            const events = await adapter.getEvents(selectedDate, selectedDate);
-            freshSlots = getSlotsArray({
-              available_slots_string: getDailySlots(
-                selectedDate,
-                selectedDate,
-                Array.isArray(events) ? events : [],
-                Number(pending.durationMinutes || 60),
-                undefined,
-                {
-                  ...(pending.availabilityMinTime ? { minTime: pending.availabilityMinTime } : {}),
-                  ...(pending.availabilityMaxTime ? { maxTime: pending.availabilityMaxTime } : {})
-                }
-              )
-            });
+      if (!validation.free || !validation.normalizedIso || !validation.endIso) {
+        const alternatives = await createCanonicalOfferedSlots({
+          adapter,
+          owner: currentBookingSlotOwner,
+          businessConfig,
+          startDate: selectedDate,
+          endDate: selectedDate,
+          service: String(pending.service || "Bokning"),
+          durationMinutes: Number(pending.durationMinutes || 60),
+          requestedTime: selectedTime || undefined,
+          options: {
+            ...(pending.availabilityMinTime ? { minTime: pending.availabilityMinTime } : {}),
+            ...(pending.availabilityMaxTime ? { maxTime: pending.availabilityMaxTime } : {})
           }
-          pending.status = "awaiting_time_selection";
-          pending.offeredSlots = freshSlots;
-          pending.dateTime = null;
-          await savePendingBooking(sessionId, platformName, pending);
-          await replyAndRecord(
-            formatSwedishTimeSlots(
-              freshSlots,
-              selectedTime,
-              getFlowReplyLanguage(pending.language, language, text)
-            )
-          );
-          return true;
-        }
-
-        pending.dateTime = freshIso;
+        });
+        pending.status = "awaiting_time_selection";
+        pending.offeredSlots = alternatives.displaySlots;
+        pending.ownedOfferedSlots = alternatives.ownedSlots;
+        pending.dateTime = null;
+        pending.selectedSlotEnd = null;
+        await savePendingBooking(sessionId, platformName, pending);
+        await replyAndRecord(
+          formatSlotNoLongerAvailable(
+            getFlowReplyLanguage(pending.language, language, text),
+            selectedTime,
+            alternatives.displaySlots
+          )
+        );
+        return true;
       }
 
+      pending.dateTime = validation.normalizedIso;
+      pending.selectedSlotEnd = validation.endIso;
+      pending.selectedDate = stockholmDateString(new Date(validation.normalizedIso));
       pending.status = "awaiting_contact";
       pending.language = getFlowReplyLanguage(pending.language, language, text);
       if (!pending.customerPhone) {
@@ -5972,34 +6646,11 @@ async function handleUnifiedBookingEngine(params: {
       );
 
       if (nameFromMessage) pending.customerName = nameFromMessage;
-      if (phoneFromMessage) pending.customerPhone = phoneFromMessage;
+      if (phoneFromMessage) pending.customerPhone = normalizeAcceptedPhone(phoneFromMessage);
       if (!pending.customerPhone && phoneFromChannel) pending.customerPhone = phoneFromChannel;
-      if (serviceFromMessage !== "Bokning") pending.service = serviceFromMessage;
-
-      // Consultation is a fixed product: service and duration are deterministic.
-      const contextService = normalizeBookingService(
-        [
-          ...(history || []).slice(-10).map((item: any) =>
-            typeof item?.content === "string" ? item.content : ""
-          ),
-          text
-        ].join(" "),
-        pending.service
-      );
-
-      if (contextService === "Konsultation") {
-        pending.service = "Konsultation";
-        pending.durationMinutes = 30;
-      }
-
-      if (!pending.service || pending.service === "Bokning") {
-        const defaultService = getDefaultBookingServiceForBusiness(businessConfig);
-        if (defaultService) {
-          pending.service = defaultService;
-          const fixedDuration = getDefaultBookingDurationForService(defaultService);
-          if (fixedDuration) pending.durationMinutes = fixedDuration;
-        }
-      }
+      // The offered slot owns service and duration. Contact collection must not
+      // redetect either value from a name or phone message.
+      void serviceFromMessage;
 
       const missing: Array<"name" | "phone" | "service"> = [];
       if (!pending.customerName) missing.push("name");
@@ -6030,50 +6681,106 @@ async function handleUnifiedBookingEngine(params: {
         pending.selectedDate || String(pending.dateTime).slice(0, 10)
       );
 
-      // Final race-condition check immediately before insert. Verify the exact locked ISO
-      // directly against calendar events instead of re-generating/ranking suggested slots.
-      // This prevents a genuinely free selected time from being rejected by slot parsing.
       const lockedIso = String(pending.dateTime || "").trim();
-      const exactCheck = await verifyExactSlotIsFree(
-        adapter,
-        lockedIso,
-        Number(pending.durationMinutes || 30)
-      );
+      let selectedOwnedSlot = findOwnedOfferedSlot(pending, lockedIso);
+      if (!selectedOwnedSlot) {
+        const migrationValidation = await validateCanonicalExactSlot({
+          adapter,
+          owner: currentBookingSlotOwner,
+          businessConfig,
+          start: lockedIso,
+          service: String(pending.service || "Bokning"),
+          durationMinutes: Number(pending.durationMinutes || 30)
+        });
+        if (
+          migrationValidation.free &&
+          migrationValidation.normalizedIso &&
+          migrationValidation.endIso
+        ) {
+          selectedOwnedSlot = {
+            start: migrationValidation.normalizedIso,
+            end: migrationValidation.endIso,
+            durationMinutes: Number(pending.durationMinutes || 30),
+            service: String(pending.service || "Bokning"),
+            businessId: currentBookingSlotOwner.businessId,
+            platform: currentBookingSlotOwner.platform,
+            userId: currentBookingSlotOwner.userId,
+            generatedAt: Date.now()
+          };
+          pending.ownedOfferedSlots = [selectedOwnedSlot];
+        }
+      }
+      const exactCheck = selectedOwnedSlot
+        ? await validateCanonicalExactSlot({
+            adapter,
+            owner: currentBookingSlotOwner,
+            businessConfig,
+            start: lockedIso,
+            service: String(pending.service || "Bokning"),
+            durationMinutes: Number(pending.durationMinutes || 30),
+            offeredSlot: selectedOwnedSlot
+          })
+        : {
+            free: false,
+            category: "stale_offer" as const,
+            normalizedIso: null,
+            endIso: null
+          };
       const finalIso = exactCheck.free ? exactCheck.normalizedIso : null;
 
-      if (!finalIso) {
-        const fresh = await adapter.checkSlots(
-          selectedDate,
-          selectedDate,
-          Number(pending.durationMinutes || 30),
-          selectedTime || undefined
-        );
-        const freshSlots = getSlotsArray(fresh);
-
-        console.error("[UnifiedBooking] Exact slot failed final revalidation", {
+      if (!finalIso || !exactCheck.endIso) {
+        const alternatives = await createCanonicalOfferedSlots({
+          adapter,
+          owner: currentBookingSlotOwner,
+          businessConfig,
+          startDate: selectedDate,
+          endDate: selectedDate,
+          service: String(pending.service || "Bokning"),
+          durationMinutes: Number(pending.durationMinutes || 30),
+          requestedTime: selectedTime || undefined,
+          options: {
+            ...(pending.availabilityMinTime ? { minTime: pending.availabilityMinTime } : {}),
+            ...(pending.availabilityMaxTime ? { maxTime: pending.availabilityMaxTime } : {})
+          }
+        });
+        console.warn("[BookingFlow]", {
           platform: platformName,
-          sessionId,
-          selectedDate,
-          selectedTime,
-          pendingDateTime: pending.dateTime,
-          exactCheck,
-          freshSlots
+          businessScopePresent: Boolean(currentBookingSlotOwner.businessId),
+          operation: "final_booking_validation",
+          stateType: pending.status,
+          language: pending.language || language,
+          contactSatisfied: Boolean(pending.customerName && pending.customerPhone),
+          offeredSlotCount: alternatives.ownedSlots.length,
+          selectedSlotStart: lockedIso,
+          selectedSlotEnd: pending.selectedSlotEnd || null,
+          serviceDuration: pending.durationMinutes,
+          validatorResultCategory: exactCheck.category,
+          ownershipMatch: Boolean(
+            selectedOwnedSlot &&
+            bookingSlotOwnerMatches(selectedOwnedSlot, currentBookingSlotOwner)
+          ),
+          finalHandledPath: "stale_slot_alternatives"
         });
 
         pending.status = "awaiting_time_selection";
-        pending.offeredSlots = freshSlots;
+        pending.offeredSlots = alternatives.displaySlots;
+        pending.ownedOfferedSlots = alternatives.ownedSlots;
         pending.dateTime = null;
+        pending.selectedSlotEnd = null;
         await savePendingBooking(sessionId, platformName, pending);
         await replyAndRecord(
-          formatSwedishTimeSlots(
-            pending.offeredSlots,
-            selectedTime || undefined,
-            getFlowReplyLanguage(pending.language, language, text)
+          formatSlotNoLongerAvailable(
+            getFlowReplyLanguage(pending.language, language, text),
+            selectedTime,
+            alternatives.displaySlots
           )
         );
         return true;
       }
 
+      pending.status = "inserting";
+      pending.selectedSlotEnd = exactCheck.endIso;
+      await savePendingBooking(sessionId, platformName, pending);
       const result = await adapter.insertAppointment(
         pending.customerName,
         pending.customerPhone,
@@ -6081,15 +6788,53 @@ async function handleUnifiedBookingEngine(params: {
         finalIso,
         Number(pending.durationMinutes || 30),
         sessionId,
-        true
+        false
       );
 
       if (!result?.success) {
-        console.error(
-          `[UnifiedBooking] Calendar insert failed platform=${platformName}:`,
-          JSON.stringify(result)
+        const conflict = ["SLOT_CONFLICT", "SLOT_NO_LONGER_AVAILABLE"].includes(
+          String(result?.code || "")
         );
-        await replyAndRecord(getErrorMessageByLanguage(getFlowReplyLanguage(pending.language, language, text)));
+        if (conflict) {
+          const alternatives = await createCanonicalOfferedSlots({
+            adapter,
+            owner: currentBookingSlotOwner,
+            businessConfig,
+            startDate: selectedDate,
+            endDate: selectedDate,
+            service: String(pending.service || "Bokning"),
+            durationMinutes: Number(pending.durationMinutes || 30),
+            requestedTime: selectedTime || undefined
+          });
+          pending.status = "awaiting_time_selection";
+          pending.offeredSlots = alternatives.displaySlots;
+          pending.ownedOfferedSlots = alternatives.ownedSlots;
+          pending.dateTime = null;
+          pending.selectedSlotEnd = null;
+          await savePendingBooking(sessionId, platformName, pending);
+          await replyAndRecord(
+            formatSlotNoLongerAvailable(
+              getFlowReplyLanguage(pending.language, language, text),
+              selectedTime,
+              alternatives.displaySlots
+            )
+          );
+          return true;
+        }
+        pending.status = "awaiting_contact";
+        await savePendingBooking(sessionId, platformName, pending);
+        console.error("[BookingFlow]", {
+          platform: platformName,
+          businessScopePresent: Boolean(currentBookingSlotOwner.businessId),
+          operation: "booking_persistence",
+          stateType: pending.status,
+          language: pending.language || language,
+          validatorResultCategory: String(result?.code || "insert_failed"),
+          finalHandledPath: "localized_failure"
+        });
+        await replyAndRecord(
+          getErrorMessageByLanguage(getFlowReplyLanguage(pending.language, language, text))
+        );
         return true;
       }
 
@@ -6132,6 +6877,28 @@ async function handleUnifiedBookingEngine(params: {
       );
       return true;
     }
+
+    if (pending?.status === "awaiting_time_selection") {
+      await replyAndRecord(
+        formatSwedishTimeSlots(
+          Array.isArray(pending.offeredSlots) ? pending.offeredSlots : [],
+          undefined,
+          getFlowReplyLanguage(pending.language, language, text)
+        )
+      );
+      return true;
+    }
+    if (pending?.status === "awaiting_confirmation") {
+      await replyAndRecord(
+        formatSwedishTimeSlots(
+          Array.isArray(pending.offeredSlots) ? pending.offeredSlots : [],
+          getStockholmTimeFromIso(String(pending.dateTime || "")) || undefined,
+          getFlowReplyLanguage(pending.language, language, text),
+        )
+      );
+      return true;
+    }
+    if (pending?.status === "inserting") return true;
 
     return false;
   } catch (error) {
@@ -6560,8 +7327,12 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       });
     }
     
-    const textResponse = String(chatResponse.text || "").trim() ||
-      getErrorMessageByLanguage(getLockedReplyLanguage(telegramSessionId, textForFlow));
+    const textResponse = guardCustomerFacingReply(
+      telegramSessionId,
+      String(chatResponse.text || "").trim() ||
+        getErrorMessageByLanguage(getLockedReplyLanguage(telegramSessionId, textForFlow)),
+      getLockedReplyLanguage(telegramSessionId, textForFlow)
+    );
     if (!String(chatResponse.text || "").trim()) {
       console.error("[AIEmptyResponse] Telegram returned no text after tool processing.", {
         sessionId: telegramSessionId,
@@ -7333,6 +8104,10 @@ function getBusinessInstagramToken(businessConfig: any) {
 
 async function sendInstagramMessage(recipientId: string, text: string, accessToken?: string) {
   const token = cleanInstagramToken(accessToken);
+  const safeText = guardCustomerFacingReply(
+    `ig_${normalizePlatformUserId("instagram", recipientId)}`,
+    text
+  );
 
   if (!token) {
     console.error('Instagram reply skipped: missing business instagram_access_token');
@@ -7341,7 +8116,7 @@ async function sendInstagramMessage(recipientId: string, text: string, accessTok
 
   const payload = {
     recipient: { id: recipientId },
-    message: { text }
+    message: { text: safeText }
   };
 
   try {
@@ -7920,8 +8695,12 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       });
     }
 
-    const textResponse = String(chatResponse.text || "").trim() ||
-      getErrorMessageByLanguage(getConversationLanguage(chatId, textMessage || ""));
+    const textResponse = guardCustomerFacingReply(
+      chatId,
+      String(chatResponse.text || "").trim() ||
+        getErrorMessageByLanguage(getConversationLanguage(chatId, textMessage || "")),
+      getConversationLanguage(chatId, textMessage || "")
+    );
     if (!String(chatResponse.text || "").trim()) {
       console.error("[AIEmptyResponse] WhatsApp returned no text after tool processing.", {
         chatId,
@@ -7971,6 +8750,10 @@ function getBusinessMessengerPageId(businessConfig: any) {
 
 async function sendMessengerMessage(recipientId: string, text: string, businessConfig: any) {
   const token = getBusinessMessengerToken(businessConfig);
+  const safeText = guardCustomerFacingReply(
+    `ms_${normalizePlatformUserId("messenger", recipientId)}`,
+    text
+  );
 
   if (!token) {
     console.error("Messenger reply skipped: missing messenger_page_access_token / page access token");
@@ -7980,7 +8763,7 @@ async function sendMessengerMessage(recipientId: string, text: string, businessC
   const payload = {
     recipient: { id: recipientId },
     messaging_type: "RESPONSE",
-    message: { text }
+    message: { text: safeText }
   };
 
   try {
@@ -8688,272 +9471,14 @@ async function processMessengerUpdate(webhookEvent: any, config: any, platform: 
       });
       if (unifiedHandled) return;
     }
-
-    let pending = await loadPendingBooking(chatId, "messenger", businessConfig);
-    const detectedLang = getConversationLanguage(chatId, textMessage || "");
-
-    // If the customer starts a new booking request while an old pending slot exists,
-    // clear the old pending slot. This prevents a name/phone message from finalizing
-    // a stale Thursday/18:00 appointment when the customer has now asked for Tuesday.
-    if (pending && textMessage && isNewBookingRequestText(textMessage)) {
-      console.log(`[DeterministicBooking] Messenger new booking request cleared old pending state=${pending.status || "unknown"}`);
-      await clearPendingBooking(chatId);
-      pending = null;
-    }
-
-    // Existing-booking questions are handled deterministically.
-    // This prevents the assistant from sending "please wait" and then never delivering
-    // the calendar result until the customer messages again.
-    if (!pending && textMessage && isExistingAppointmentLookupIntent(textMessage)) {
-      const adapter = getCalendarAdapter(businessConfig);
-      const lookupResult = await findCustomerAppointments(
-        adapter,
-        {
-          lookupMode: detectAppointmentLookupMode(textMessage),
-          lookupText: textMessage,
-          lookupPath: "messenger_deterministic_lookup"
-        },
-        senderId,
-        "messenger",
-        businessConfig
-      );
-      rememberLookupResultForConversation(chatId, lookupResult, detectedLang, "messenger", senderId, businessConfig);
-      const lookupReply = formatAppointmentLookupReply(lookupResult, detectedLang);
-
-      await sendMessengerMessage(senderId, lookupReply, businessConfig);
-      appendLocalHistory(chatId, textMessage || "", lookupReply);
-      await postProcessMessage(
-        chatId,
-        platform,
-        textMessage,
-        lookupReply,
-        businessConfig?.telegramToken,
-        businessConfig?.apiKey,
-        getBusinessIdFromConfig(businessConfig)
-      );
-      return;
-    }
-
-    const completedBooking = getRecentCompletedBooking(chatId);
-    if (!pending && completedBooking && isThanksOnlyText(textMessage || "")) {
-      const thanksText = formatThanksReply(completedBooking.language || detectedLang, completedBooking.name);
-      await sendMessengerMessage(senderId, thanksText, businessConfig);
-      appendLocalHistory(chatId, textMessage || "", thanksText);
-      await postProcessMessage(chatId, platform, textMessage, thanksText, businessConfig?.telegramToken, businessConfig?.apiKey, getBusinessIdFromConfig(businessConfig));
-      return;
-    }
-
-    if (
-      pending &&
-      textMessage &&
-      pending.status === "awaiting_time_selection"
-    ) {
-      const selectedTime = inferRequestedTimeFromText(textMessage || "");
-      const selectedIso = findOfferedSlotIso(
-        Array.isArray(pending.offeredSlots) ? pending.offeredSlots : [],
-        selectedTime || undefined
-      );
-
-      if (selectedTime && selectedIso) {
-        // Re-check Google Calendar at the exact selected date/time immediately
-        // before accepting it. This prevents stale or cross-day slot reuse.
-        const adapter = getCalendarAdapter(businessConfig);
-        const selectedDate = String(pending.selectedDate || selectedIso.slice(0, 10));
-        const freshResult = await adapter.checkSlots(
-          selectedDate,
-          selectedDate,
-          Number(pending.durationMinutes || 60),
-          selectedTime
-        );
-        const freshSlots = getSlotsArray(freshResult);
-        const freshIso = findOfferedSlotIso(freshSlots, selectedTime);
-
-        if (freshIso) {
-          pending.dateTime = freshIso;
-          pending.offeredSlots = freshSlots;
-          pending.language = pending.language || detectedLang;
-          pending.status = "awaiting_contact";
-          await savePendingBooking(chatId, "messenger", pending);
-
-          const askText = formatAskContactMessage(
-            pending.language || detectedLang
-          );
-          console.log("[DeterministicBooking] Messenger selected slot revalidated.");
-          await sendMessengerMessage(senderId, askText, businessConfig);
-          appendLocalHistory(chatId, textMessage || "", askText);
-          await postProcessMessage(
-            chatId,
-            platform,
-            textMessage,
-            askText,
-            businessConfig?.telegramToken,
-            businessConfig?.apiKey,
-            getBusinessIdFromConfig(businessConfig)
-          );
-          return;
-        }
-
-        const unavailableReply = formatSwedishTimeSlots(
-          freshSlots,
-          selectedTime,
-          pending.language || detectedLang
-        );
-        pending.offeredSlots = freshSlots;
-        await savePendingBooking(chatId, "messenger", pending);
-        await sendMessengerMessage(senderId, unavailableReply, businessConfig);
-        appendLocalHistory(chatId, textMessage || "", unavailableReply);
-        await postProcessMessage(
-          chatId,
-          platform,
-          textMessage,
-          unavailableReply,
-          businessConfig?.telegramToken,
-          businessConfig?.apiKey,
-          getBusinessIdFromConfig(businessConfig)
-        );
-        return;
-      }
-    }
-
-    if (pending && textMessage && isPendingSlotConfirmation(textMessage, pending)) {
-      pending.status = "awaiting_contact";
-      await savePendingBooking(chatId, "messenger", pending);
-      const askText = formatAskContactMessage(pending.language || detectedLang);
-      console.log("[DeterministicBooking] Messenger slot confirmed; awaiting contact.");
-      await sendMessengerMessage(senderId, askText, businessConfig);
-      appendLocalHistory(chatId, textMessage || "", askText);
-      await postProcessMessage(chatId, platform, textMessage, askText, businessConfig?.telegramToken, businessConfig?.apiKey, getBusinessIdFromConfig(businessConfig));
-      return;
-    }
-
-    const contact = extractNameAndPhone(textMessage || "");
-    if (pending && contact && pending.status === "awaiting_confirmation") {
-      const confirmText = formatSwedishTimeSlots([`Temp kl 00:00 (ISO: ${pending.dateTime})`], inferRequestedTimeFromText(pending.dateTime) || undefined, detectedLang);
-      const reply = detectedLang === "sv"
-        ? "Jag har tiden redo, men behöver först att du bekräftar att jag ska boka den. Svara gärna ja om du vill boka tiden. 😊"
-        : getErrorMessageByLanguage(detectedLang);
-      await sendMessengerMessage(senderId, reply, businessConfig);
-      appendLocalHistory(chatId, textMessage || "", reply);
-      await postProcessMessage(chatId, platform, textMessage, reply, businessConfig?.telegramToken, businessConfig?.apiKey, getBusinessIdFromConfig(businessConfig));
-      return;
-    }
-
-    if (pending && contact && pending.status === "awaiting_contact") {
-      console.log("[DeterministicBooking] Messenger contact received; completing validated booking.");
-      const adapter = getCalendarAdapter(businessConfig);
-      const adapterRes = await adapter.insertAppointment(contact.name, contact.phone, pending.service, pending.dateTime, pending.durationMinutes, chatId);
-
-      if (adapterRes && adapterRes.success) {
-        await recordAppointmentFromBooking({
-          businessConfig,
-          platform: "messenger",
-          userId: chatId,
-          name: contact.name,
-          phone: contact.phone,
-          service: pending.service,
-          dateTime: pending.dateTime,
-          durationMinutes: pending.durationMinutes
-        });
-        await clearPendingBooking(chatId);
-        rememberCompletedBooking(
-          chatId,
-          detectedLang,
-          contact.name,
-          pending.service,
-          Number(pending.durationMinutes || 0),
-          pending.dateTime
-        );
-        await notifyAdminAboutBooking(businessConfig, "Messenger", businessConfig.businessName || businessConfig.business_name || "business", contact.name, contact.phone, pending.dateTime);
-
-        const bookedText = formatBookingSavedMessage(detectedLang, contact.name, pending.service, pending.dateTime);
-        await sendMessengerMessage(senderId, bookedText, businessConfig);
-        appendLocalHistory(chatId, textMessage || "", bookedText);
-        await postProcessMessage(chatId, platform, textMessage, bookedText, businessConfig?.telegramToken, businessConfig?.apiKey, getBusinessIdFromConfig(businessConfig));
-        return;
-      }
-
-      console.error("[DeterministicBooking] Messenger calendar insert failed:", JSON.stringify(adapterRes));
-      const failText = detectedLang === "sv"
-        ? "Ursäkta, jag kunde inte slutföra bokningen just nu. Försök gärna igen om en liten stund."
-        : getErrorMessageByLanguage(detectedLang);
-      await sendMessengerMessage(senderId, failText, businessConfig);
-      await postProcessMessage(chatId, platform, textMessage, failText, businessConfig?.telegramToken, businessConfig?.apiKey, getBusinessIdFromConfig(businessConfig));
-      return;
-    }
   } catch (bookingFallbackErr) {
-    console.error("[DeterministicBooking] Messenger fallback crashed:", bookingFallbackErr);
+    console.error("[UnifiedBooking] Messenger deterministic dispatch crashed:", bookingFallbackErr);
+    return;
   }
 
   try {
     if (!chatSessions[chatId as any]) chatSessions[chatId as any] = [];
     const history = chatSessions[chatId as any];
-
-    // Deterministic booking date flow:
-    // resolve weekday/date on the server, check the exact Google Calendar day,
-    // and never allow Gemini to substitute another weekday.
-    const explicitBookingDate = textMessage
-      ? resolveExplicitBookingDate(textMessage)
-      : null;
-
-    if (
-      textMessage &&
-      explicitBookingDate &&
-      isBookingConversationContext(textMessage, history)
-    ) {
-      const adapter = getCalendarAdapter(businessConfig);
-      const durationMinutes = inferBookingDurationFromContext(textMessage, history);
-      const requestedTime = inferRequestedTimeFromText(textMessage || "") || undefined;
-
-      console.log(`[DeterministicDate] Messenger explicit booking date resolved; requestedTimePresent=${Boolean(requestedTime)}`);
-
-      const calendarResult = await adapter.checkSlots(
-        explicitBookingDate,
-        explicitBookingDate,
-        durationMinutes,
-        requestedTime
-      );
-
-      const slotsArray = getSlotsArray(calendarResult);
-      const language = getConversationLanguage(chatId, textMessage || "");
-      const replyMessage = formatSwedishTimeSlots(
-        slotsArray,
-        requestedTime,
-        language
-      );
-
-      if (slotsArray.length > 0) {
-        const exactIso = requestedTime
-          ? findOfferedSlotIso(slotsArray, requestedTime)
-          : null;
-
-        await savePendingBooking(chatId, "messenger", {
-          businessConfig,
-          platform: "messenger",
-          service: inferServiceFromRecentContext(textMessage || "", history),
-          dateTime: exactIso,
-          selectedDate: explicitBookingDate,
-          offeredSlots: slotsArray,
-          language,
-          durationMinutes,
-          status: exactIso ? "awaiting_confirmation" : "awaiting_time_selection"
-        });
-      } else {
-        await clearPendingBooking(chatId);
-      }
-
-      await sendMessengerMessage(senderId, replyMessage, businessConfig);
-      appendLocalHistory(chatId, textMessage || "", replyMessage);
-      await postProcessMessage(
-        chatId,
-        platform,
-        textMessage,
-        replyMessage,
-        businessConfig?.telegramToken,
-        businessConfig?.apiKey,
-        getBusinessIdFromConfig(businessConfig)
-      );
-      return;
-    }
 
     let userMessageContent: any = textMessage;
     let userMessageForLog = textMessage;
@@ -9072,30 +9597,61 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
         const args = JSON.parse(call.function.arguments);
 
         if (call.function.name === "checkSlots" && args) {
-          adapterRes = await adapter.checkSlots(args.startDate, args.endDate, args.durationMinutes, args.requestedTime || inferRequestedTimeFromText(textMessage || ""));
-          if (adapterRes.available_slots_string) {
-            const slotsArray = adapterRes.available_slots_string
-              .split("\n")
-              .filter((s: string) => s.trim().length > 0 && !s.includes("No available slots"));
-
-            const requestedTime = args.requestedTime || inferRequestedTimeFromText(textMessage || "");
-            const exactIso = getExactSlotIso(slotsArray, requestedTime);
-            if (requestedTime && exactIso && isExactRequestedSlotAvailable(slotsArray, requestedTime)) {
-              const newPending = {
-                businessConfig,
-                platform: "messenger",
-                service: args.service || inferServiceFromRecentContext(textMessage || "", history),
-                dateTime: exactIso,
-                durationMinutes: Number(args.durationMinutes || 60),
-                status: "awaiting_confirmation"
-              };
-              await savePendingBooking(chatId, "messenger", newPending);
-              console.log("[DeterministicBooking] Pending Messenger booking saved after exact-slot validation.");
-            }
-
-            const replyMessage = formatSwedishTimeSlots(slotsArray, requestedTime, getConversationLanguage(chatId, textMessage || ""));
-            return { TERMINATE_EARLY: true, replyMessage };
+          const requestedTime = args.requestedTime || inferRequestedTimeFromText(textMessage || "");
+          const service = normalizeBookingService(
+            args.service || inferServiceFromRecentContext(textMessage || "", history),
+            getDefaultBookingServiceForBusiness(businessConfig) || "Bokning"
+          );
+          const durationMinutes =
+            getDefaultBookingDurationForService(service) ||
+            Number(args.durationMinutes || inferBookingDurationFromContext(textMessage || "", history));
+          const owner: BookingSlotOwner = {
+            businessId: String(getBusinessIdFromConfig(businessConfig) || ""),
+            platform: "messenger",
+            userId: normalizePlatformUserId("messenger", senderId),
+            sessionId: chatId
+          };
+          const offers = await createCanonicalOfferedSlots({
+            adapter,
+            owner,
+            businessConfig,
+            startDate: args.startDate,
+            endDate: args.endDate || args.startDate,
+            service,
+            durationMinutes,
+            requestedTime
+          });
+          const exactSlot = requestedTime
+            ? selectOwnedOfferedSlot(requestedTime, {
+                offeredSlots: offers.displaySlots,
+                ownedOfferedSlots: offers.ownedSlots
+              })
+            : null;
+          if (offers.ownedSlots.length > 0) {
+            await savePendingBooking(chatId, "messenger", {
+              businessConfig,
+              platform: "messenger",
+              userId: senderId,
+              service,
+              selectedDate: args.startDate,
+              offeredSlots: offers.displaySlots,
+              ownedOfferedSlots: offers.ownedSlots,
+              dateTime: exactSlot?.start || null,
+              selectedSlotEnd: exactSlot?.end || null,
+              durationMinutes,
+              language: getConversationLanguage(chatId, textMessage || ""),
+              operation: "new_booking",
+              status: exactSlot ? "awaiting_confirmation" : "awaiting_time_selection"
+            });
           }
+          return {
+            TERMINATE_EARLY: true,
+            replyMessage: formatSwedishTimeSlots(
+              offers.displaySlots,
+              requestedTime,
+              getConversationLanguage(chatId, textMessage || "")
+            )
+          };
         } else if (call.function.name === "findCustomerAppointments" && args) {
           adapterRes = await findCustomerAppointments(adapter, { ...args, lookupMode: args.lookupMode || detectAppointmentLookupMode(textMessage), lookupText: textMessage, lookupPath: "messenger_gemini_tool" }, senderId, "messenger", businessConfig);
           const lookupLanguage = getConversationLanguage(chatId, textMessage || "");
@@ -9123,38 +9679,20 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
             responseAlreadySent: routed.responseAlreadySent
           };
         } else if (call.function.name === "insertAppointment" && args) {
-          // Messenger booking must never trust Gemini-provided date/name directly.
-          // It can only finalize a short-lived server-side pending booking after contact info.
-          const restoredPending = await loadPendingBooking(chatId, "messenger", businessConfig);
-          const contactOverride = extractNameAndPhone(textMessage || "");
-          if (restoredPending && !isPendingBookingExpired(restoredPending) && restoredPending.status === "awaiting_contact" && contactOverride) {
-            adapterRes = await adapter.insertAppointment(contactOverride.name, contactOverride.phone, restoredPending.service, restoredPending.dateTime, restoredPending.durationMinutes, chatId);
-            if (adapterRes && adapterRes.success) {
-              await recordAppointmentFromBooking({
-                businessConfig,
-                platform: "messenger",
-                userId: chatId,
-                name: contactOverride.name,
-                phone: contactOverride.phone,
-                service: restoredPending.service,
-                dateTime: restoredPending.dateTime,
-                durationMinutes: restoredPending.durationMinutes
-              });
-              await clearPendingBooking(chatId);
-              rememberCompletedBooking(
-                chatId,
-                getConversationLanguage(chatId, textMessage || ""),
-                contactOverride.name,
-                restoredPending.service,
-                Number(restoredPending.durationMinutes || 0),
-                restoredPending.dateTime
-              );
-              await notifyAdminAboutBooking(businessConfig, "Messenger", businessName, contactOverride.name, contactOverride.phone, restoredPending.dateTime);
-            }
-          } else {
-            console.log(`[DeterministicBooking] Blocked unsafe Messenger insertAppointment. hasPending=${Boolean(restoredPending)}, hasContact=${Boolean(contactOverride)}`);
-            adapterRes = { success: false, message: "Booking blocked: no confirmed server-side pending slot with customer contact." };
-          }
+          console.warn("[BookingFlow]", {
+            platform: "messenger",
+            businessScopePresent: Boolean(getBusinessIdFromConfig(businessConfig)),
+            operation: "booking_persistence",
+            stateType: "gemini_insert",
+            language: getConversationLanguage(chatId, textMessage || ""),
+            finalHandledPath: "blocked_non_authoritative_insert"
+          });
+          return {
+            TERMINATE_EARLY: true,
+            replyMessage: getErrorMessageByLanguage(
+              getConversationLanguage(chatId, textMessage || "")
+            )
+          };
         } else if (call.function.name === "logSystemAnalysis" && args) {
           adapterRes = await handleSystemAnalysisLog(chatId, args);
         } else {
@@ -9195,8 +9733,12 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       });
     }
 
-    const textResponse = String(chatResponse.text || "").trim() ||
-      getErrorMessageByLanguage(getConversationLanguage(chatId, textMessage || ""));
+    const textResponse = guardCustomerFacingReply(
+      chatId,
+      String(chatResponse.text || "").trim() ||
+        getErrorMessageByLanguage(getConversationLanguage(chatId, textMessage || "")),
+      getConversationLanguage(chatId, textMessage || "")
+    );
     if (!String(chatResponse.text || "").trim()) {
       console.error("[AIEmptyResponse] Messenger returned no text after tool processing.", {
         businessScopePresent: Boolean(getBusinessIdFromConfig(businessConfig)),
@@ -9523,15 +10065,61 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
         const args = JSON.parse(call.function.arguments);
 
         if (call.function.name === 'checkSlots' && args) {
-          adapterRes = await adapter.checkSlots(args.startDate, args.endDate, args.durationMinutes, args.requestedTime || inferRequestedTimeFromText(textMessage || ""));
-          if (adapterRes.available_slots_string) {
-            const slotsArray = adapterRes.available_slots_string
-              .split('\n')
-              .filter((s: string) => s.trim().length > 0 && !s.includes('No available slots'));
-
-            const replyMessage = formatSwedishTimeSlots(slotsArray, args.requestedTime || inferRequestedTimeFromText(textMessage || ""), getConversationLanguage(chatId, textMessage || ""));
-            return { TERMINATE_EARLY: true, replyMessage };
+          const requestedTime = args.requestedTime || inferRequestedTimeFromText(textMessage || "");
+          const service = normalizeBookingService(
+            args.service || inferServiceFromRecentContext(textMessage || "", history),
+            getDefaultBookingServiceForBusiness(businessConfig) || "Bokning"
+          );
+          const durationMinutes =
+            getDefaultBookingDurationForService(service) ||
+            Number(args.durationMinutes || inferBookingDurationFromContext(textMessage || "", history));
+          const owner: BookingSlotOwner = {
+            businessId: String(getBusinessIdFromConfig(businessConfig) || ""),
+            platform: "instagram",
+            userId: normalizePlatformUserId("instagram", senderId),
+            sessionId: chatId
+          };
+          const offers = await createCanonicalOfferedSlots({
+            adapter,
+            owner,
+            businessConfig,
+            startDate: args.startDate,
+            endDate: args.endDate || args.startDate,
+            service,
+            durationMinutes,
+            requestedTime
+          });
+          const exactSlot = requestedTime
+            ? selectOwnedOfferedSlot(requestedTime, {
+                offeredSlots: offers.displaySlots,
+                ownedOfferedSlots: offers.ownedSlots
+              })
+            : null;
+          if (offers.ownedSlots.length > 0) {
+            await savePendingBooking(chatId, "instagram", {
+              businessConfig,
+              platform: "instagram",
+              userId: senderId,
+              service,
+              selectedDate: args.startDate,
+              offeredSlots: offers.displaySlots,
+              ownedOfferedSlots: offers.ownedSlots,
+              dateTime: exactSlot?.start || null,
+              selectedSlotEnd: exactSlot?.end || null,
+              durationMinutes,
+              language: getConversationLanguage(chatId, textMessage || ""),
+              operation: "new_booking",
+              status: exactSlot ? "awaiting_confirmation" : "awaiting_time_selection"
+            });
           }
+          return {
+            TERMINATE_EARLY: true,
+            replyMessage: formatSwedishTimeSlots(
+              offers.displaySlots,
+              requestedTime,
+              getConversationLanguage(chatId, textMessage || "")
+            )
+          };
         } else if (call.function.name === 'findCustomerAppointments' && args) {
           adapterRes = await findCustomerAppointments(adapter, { ...args, lookupMode: args.lookupMode || detectAppointmentLookupMode(textMessage), lookupText: textMessage, lookupPath: "instagram_gemini_tool" }, senderId, 'instagram', businessConfig);
           const lookupLanguage = getConversationLanguage(chatId, textMessage || '');
@@ -9564,40 +10152,20 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
             responseAlreadySent: routed.responseAlreadySent
           };
         } else if (call.function.name === 'insertAppointment' && args) {
-          const contactOverride = extractNameAndPhone(textMessage || "");
-          const safeName = contactOverride?.name || cleanCustomerNameCandidate(args.name) || args.name;
-          const safePhone = contactOverride?.phone || args.phone;
-          adapterRes = await adapter.insertAppointment(safeName, safePhone, args.service, args.dateTime, args.durationMinutes, chatId);
-          if (adapterRes && adapterRes.success) {
-            await recordAppointmentFromBooking({
-              businessConfig,
-              platform: "instagram",
-              userId: chatId,
-              name: safeName,
-              phone: safePhone,
-              service: args.service,
-              dateTime: args.dateTime,
-              durationMinutes: args.durationMinutes
-            });
-            rememberCompletedBooking(
-              chatId,
-              getConversationLanguage(chatId, textMessage || ""),
-              safeName,
-              args.service,
-              Number(args.durationMinutes || 0),
-              args.dateTime
-            );
-          }
-          if (adapterRes && adapterRes.success) {
-            await notifyAdminAboutBooking(
-              businessConfig,
-              "Instagram",
-              businessName,
-              safeName,
-              safePhone,
-              args.dateTime
-            );
-          }
+          console.warn("[BookingFlow]", {
+            platform: "instagram",
+            businessScopePresent: Boolean(getBusinessIdFromConfig(businessConfig)),
+            operation: "booking_persistence",
+            stateType: "gemini_insert",
+            language: getConversationLanguage(chatId, textMessage || ""),
+            finalHandledPath: "blocked_non_authoritative_insert"
+          });
+          return {
+            TERMINATE_EARLY: true,
+            replyMessage: getErrorMessageByLanguage(
+              getConversationLanguage(chatId, textMessage || "")
+            )
+          };
         } else if (call.function.name === 'logSystemAnalysis' && args) {
           adapterRes = await handleSystemAnalysisLog(chatId, args);
         } else {
@@ -9638,8 +10206,12 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       });
     }
 
-    const textResponse = String(chatResponse.text || "").trim() ||
-      getErrorMessageByLanguage(getConversationLanguage(chatId, textMessage || ""));
+    const textResponse = guardCustomerFacingReply(
+      chatId,
+      String(chatResponse.text || "").trim() ||
+        getErrorMessageByLanguage(getConversationLanguage(chatId, textMessage || "")),
+      getConversationLanguage(chatId, textMessage || "")
+    );
     if (!String(chatResponse.text || "").trim()) {
       console.error("[AIEmptyResponse] Instagram returned no text after tool processing.", {
         chatId,
@@ -9667,7 +10239,19 @@ if (isVoiceMessage) {
 
     await sendInstagramMessage(
       senderId,
-      `${textResponse}\n\n🎧 Lyssna här: ${voiceReply.url}`,
+      `${textResponse}\n\n${
+        userLanguage === "fa"
+          ? "🎧 فایل صوتی:"
+          : userLanguage === "sv"
+            ? "🎧 Lyssna här:"
+            : userLanguage === "de"
+              ? "🎧 Anhören:"
+              : userLanguage === "es"
+                ? "🎧 Escuchar:"
+                : userLanguage === "ar"
+                  ? "🎧 استمع هنا:"
+                  : "🎧 Listen here:"
+      } ${voiceReply.url}`,
       instagramToken
     );
 

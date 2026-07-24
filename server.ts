@@ -413,6 +413,68 @@ function inferRequestedTimeFromText(text?: string): string | null {
   return null;
 }
 
+type RescheduleTimeFollowUp = {
+  explicitTime: string | null;
+  rejectedTimes: string[];
+  rejectsCurrentSelection: boolean;
+  afterTime: string | null;
+};
+
+function parseRescheduleTimeFollowUp(text?: string): RescheduleTimeFollowUp {
+  const raw = normalizeLocalizedDigits(String(text || "")).trim().toLowerCase();
+  if (!raw) {
+    return { explicitTime: null, rejectedTimes: [], rejectsCurrentSelection: false, afterTime: null };
+  }
+
+  const normalizeToken = (hourValue?: string, minuteValue?: string): string | null => {
+    const hour = Number(hourValue);
+    const minute = Number(minuteValue || 0);
+    if (!hourValue || hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
+    return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+  };
+  const timeToken = String.raw`([01]?\d|2[0-3])(?:[\.:](\d{2}))?`;
+  const rejectedTimes: string[] = [];
+  const negativePatterns = [
+    new RegExp(String.raw`(?:not|don['’]?t\s+want|do\s+not\s+want|cannot|can['’]?t|inte|vill\s+inte\s+ha|kan\s+inte|nicht|lieber\s+nicht|kann\s+ich\s+nicht|no\s+(?:a\s+las|quiero)|no\s+puedo|ليس|لا\s+(?:أريد|استطيع|أستطيع)|نمی[\u200c\s]?(?:خوام|خواهم|تونم|توانم)|نمي\s*(?:خوام|تونم)|اون\s+ساعت\s+نه|آن\s+ساعت\s+نه)[^\d]{0,24}${timeToken}`, "giu"),
+    new RegExp(String.raw`${timeToken}[^\d]{0,24}(?:doesn['’]?t\s+work|won['’]?t\s+work|går\s+inte|gar\s+inte|passar\s+inte|geht\s+nicht|no\s+me\s+va|no\s+puedo|مناسب\s+نیست|نمی[\u200c\s]?(?:شه|خوام|خواهم|تونم|توانم)|nemikham|nemitonam|لا\s+يناسب|لا\s+أريده)`, "giu")
+  ];
+  for (const pattern of negativePatterns) {
+    for (const match of raw.matchAll(pattern)) {
+      const normalized = normalizeToken(match[1], match[2]);
+      if (normalized && !rejectedTimes.includes(normalized)) rejectedTimes.push(normalized);
+    }
+  }
+
+  const allTimes: string[] = [];
+  for (const match of raw.matchAll(/(?:^|[^\d])([01]?\d|2[0-3])[\.:](\d{2})(?!\d)/gu)) {
+    const normalized = normalizeToken(match[1], match[2]);
+    if (normalized && !allTimes.includes(normalized)) allTimes.push(normalized);
+  }
+  const inferred = inferRequestedTimeFromText(raw);
+  if (inferred && !allTimes.includes(inferred)) allTimes.push(inferred);
+  const positiveBare = raw.match(
+    new RegExp(String.raw`(?:want|prefer|instead|vill\s+ha|hellre|istället|lieber|besser|prefiero|mejor|أريد|أفضل|می[\u200c\s]?خوام|ترجیح\s+می[\u200c\s]?دم)[^\d]{0,16}${timeToken}`, "iu")
+  );
+  const positiveBareTime = positiveBare ? normalizeToken(positiveBare[1], positiveBare[2]) : null;
+  if (positiveBareTime && !allTimes.includes(positiveBareTime)) allTimes.push(positiveBareTime);
+
+  const afterMatch = raw.match(
+    new RegExp(String.raw`(?:after|later\s+than|efter|senare\s+än|senare\s+an|nach|später\s+als|spaeter\s+als|despu[eé]s\s+de|m[aá]s\s+tarde\s+que|بعد\s+(?:از)?|دیرتر\s+از|بعد\s+الساعة)[^\d]{0,12}${timeToken}`, "iu")
+  );
+  const afterTime = afterMatch ? normalizeToken(afterMatch[1], afterMatch[2]) : null;
+  const negativeWithoutTime = /(?:cannot|can['’]?t|kan\s+inte|inte\s+då|inte\s+da|kann\s+ich\s+nicht|no\s+puedo|لا\s+(?:استطيع|أستطيع)|نمی[\u200c\s]?(?:تونم|توانم)|اون\s+موقع\s+نه|آن\s+موقع\s+نه)/iu.test(raw);
+  const explicitTime = [...allTimes]
+    .reverse()
+    .find((time) => !rejectedTimes.includes(time) && time !== afterTime) || null;
+
+  return {
+    explicitTime,
+    rejectedTimes,
+    rejectsCurrentSelection: negativeWithoutTime || rejectedTimes.length > 0,
+    afterTime
+  };
+}
+
 function parseSlotIso(slot: string): string | null {
   const match = slot.match(/\(ISO:\s(.*?)\)/);
   return match?.[1] || null;
@@ -615,6 +677,7 @@ type SlotSearchOptions = {
   minTime?: string;
   maxTime?: string;
   afterTime?: string;
+  excludedTimes?: string[];
   selectFirstAvailable?: boolean;
 };
 
@@ -932,10 +995,16 @@ function getDailySlots(
   const minimumMinutes = timeTextToMinutes(options.minTime);
   const maximumMinutes = timeTextToMinutes(options.maxTime);
   const afterMinutes = timeTextToMinutes(options.afterTime);
+  const excludedMinutes = new Set(
+    (options.excludedTimes || [])
+      .map((value) => timeTextToMinutes(value))
+      .filter((value): value is number => value !== null)
+  );
   const allCandidates = getAllFreeCandidates().filter((candidate) => {
     if (minimumMinutes !== null && candidate.totalMin < minimumMinutes) return false;
     if (maximumMinutes !== null && candidate.totalMin > maximumMinutes) return false;
     if (afterMinutes !== null && candidate.totalMin <= afterMinutes) return false;
+    if (excludedMinutes.has(candidate.totalMin)) return false;
     return true;
   });
 
@@ -1365,7 +1434,22 @@ function normalizeLookupText(value?: string): string {
 }
 
 function normalizeLookupDigits(value?: string): string {
-  return String(value || "").replace(/\D/g, "");
+  const digits = normalizeLocalizedDigits(String(value || "")).replace(/\D/g, "");
+  if (/^0046\d{7,10}$/.test(digits)) return digits.slice(2);
+  if (/^0\d{8,9}$/.test(digits)) return `46${digits.slice(1)}`;
+  return digits;
+}
+
+function appointmentIdentityKeyConflictsCanonical(
+  identityKey: string | undefined,
+  suppliedPhone?: string
+): boolean {
+  if (!String(identityKey || "").startsWith("phone:")) {
+    return appointmentIdentityKeyConflicts(identityKey, suppliedPhone);
+  }
+  const storedPhone = normalizeLookupDigits(String(identityKey).slice("phone:".length));
+  const currentPhone = normalizeLookupDigits(suppliedPhone);
+  return Boolean(storedPhone && currentPhone.length >= 7 && storedPhone !== currentPhone);
 }
 
 function stockholmDateString(date: Date): string {
@@ -1756,6 +1840,7 @@ async function findCustomerAppointments(
       lookupMode,
       historyWindowLimited,
       olderHistorySearched,
+      verifiedPhoneAccepted: false,
       identityKey: "",
       appointments: []
     };
@@ -1804,8 +1889,13 @@ async function findCustomerAppointments(
           })
         : (dbRows || []);
 
+      const normalizedPhoneRows = securelyScopedRows.map((row: any) => ({
+        ...row,
+        __originalPhoneNumber: row?.phone_number,
+        phone_number: normalizeLookupDigits(row?.phone_number)
+      }));
       const secureSelection = selectSecureAppointmentRows(
-        securelyScopedRows,
+        normalizedPhoneRows,
         {
           businessId: String(businessId),
           platform: normalizedPlatform,
@@ -1825,7 +1915,7 @@ async function findCustomerAppointments(
         summary: row.service || "Appointment",
         service: row.service || "Appointment",
         customerName: row.customer_name || null,
-        phone: row.phone_number || null,
+        phone: row.__originalPhoneNumber || row.phone_number || null,
         description: "",
         start: row.start_time,
         end: row.end_time,
@@ -1880,6 +1970,7 @@ async function findCustomerAppointments(
           lookupMode,
           historyWindowLimited,
           olderHistorySearched,
+          verifiedPhoneAccepted: normalizeLookupDigits(verifiedPhone).length >= 7,
           identityKey: secureSelection.identityKey,
           matchedBy: secureSelection.matchedBy,
           identityVerified: true,
@@ -2024,6 +2115,7 @@ async function findCustomerAppointments(
     lookupMode,
     historyWindowLimited,
     olderHistorySearched,
+    verifiedPhoneAccepted: normalizeLookupDigits(verifiedPhone).length >= 7,
     identityKey: secureCalendarSelection.identityKey,
     matchedBy: secureCalendarSelection.matchedBy,
     identityVerified: appointments.length > 0,
@@ -2156,6 +2248,10 @@ function formatPastAppointmentMutationReply(
 function formatAppointmentLookupReply(result: any, language: string = "en"): string {
   const lang = ["sv", "fa", "de", "es", "ar", "en"].includes(language) ? language : "en";
 
+  if (!result?.found && result?.verifiedPhoneAccepted) {
+    return formatVerifiedPhoneNoAppointment(lang, result?.lookupMode || "upcoming");
+  }
+
   if (!result?.found && result?.lookupMode === "history" && result?.historyWindowLimited) {
     const limitedHistory: Record<string, string> = {
       sv: "Jag hittar ingen bokning de senaste sju dagarna. Vill du att jag söker längre tillbaka? Du kan också skicka mobilnumret du bokade med 😊",
@@ -2254,6 +2350,9 @@ function formatAppointmentLookupReply(result: any, language: string = "en"): str
     const service = String(appointment.service || "").trim();
     if (lang === "sv") return `${when}${name ? `, bokad i namnet ${name}` : ""}${service && service !== "Appointment" ? ` för ${service}` : ""}`;
     if (lang === "fa") return `${when}${name ? `، به نام ${name}` : ""}${service && service !== "Appointment" ? ` برای ${service}` : ""}`;
+    if (lang === "de") return `${when}${name ? `, auf den Namen ${name}` : ""}${service && service !== "Appointment" ? ` für ${service}` : ""}`;
+    if (lang === "es") return `${when}${name ? `, a nombre de ${name}` : ""}${service && service !== "Appointment" ? ` para ${service}` : ""}`;
+    if (lang === "ar") return `${when}${name ? `، باسم ${name}` : ""}${service && service !== "Appointment" ? ` لخدمة ${service}` : ""}`;
     return `${when}${name ? `, under the name ${name}` : ""}${service && service !== "Appointment" ? ` for ${service}` : ""}`;
   });
 
@@ -2495,7 +2594,21 @@ const recentlyCompletedBookings: Record<string, {
 }> = {};
 const appointmentContexts: Record<string, { appointment: any; savedAt: number; language: string }> = {};
 const appointmentSelectionContexts: Record<string, { appointments: any[]; savedAt: number; language: string; intent?: "reschedule" | "cancel" | "lookup" }> = {};
-const appointmentLookupContexts: Record<string, { savedAt: number; language: string; includePast?: boolean; lookupMode?: AppointmentLookupMode; historyWindowLimited?: boolean }> = {};
+type AppointmentLookupContext = {
+  savedAt: number;
+  language: string;
+  includePast?: boolean;
+  lookupMode?: AppointmentLookupMode;
+  historyWindowLimited?: boolean;
+  operation?: "lookup" | "reschedule" | "cancel";
+  verifiedPhone?: string;
+  receivedPhone?: string;
+  phoneReceivedAt?: number;
+  lookupAttemptedAt?: number;
+  resultCategory?: "needs_verified_phone" | "phone_unverified" | "verified_not_found";
+  nextAction?: "awaiting_verified_phone" | "offer_new_booking";
+};
+const appointmentLookupContexts: Record<string, AppointmentLookupContext> = {};
 type RescheduleOperation =
   | "awaiting_target"
   | "awaiting_slot_selection"
@@ -2825,9 +2938,18 @@ function rememberAppointmentLookupContext(
   language: string,
   includePast: boolean = false,
   lookupMode: AppointmentLookupMode = includePast ? "history" : "upcoming",
-  historyWindowLimited: boolean = false
+  historyWindowLimited: boolean = false,
+  updates: Partial<AppointmentLookupContext> = {}
 ) {
-  appointmentLookupContexts[sessionId] = { savedAt: Date.now(), language, includePast, lookupMode, historyWindowLimited };
+  appointmentLookupContexts[sessionId] = {
+    ...(appointmentLookupContexts[sessionId] || {}),
+    ...updates,
+    savedAt: Date.now(),
+    language,
+    includePast,
+    lookupMode,
+    historyWindowLimited
+  };
 }
 
 function getAppointmentLookupContext(sessionId: string) {
@@ -3246,6 +3368,9 @@ function formatRescheduleSuccess(language: string, dateTime: string): string {
   const { dateText, timeText } = formatLocalizedDateTime(dateTime, language);
   if (language === "fa") return `وقت شما با موفقیت به ${dateText} ساعت ${timeText} تغییر کرد. 😊`;
   if (language === "sv") return `Din bokning är nu ombokad till ${dateText} kl ${timeText}. 😊`;
+  if (language === "de") return `Ihr Termin wurde auf ${dateText} um ${timeText} Uhr verschoben. 😊`;
+  if (language === "es") return `Tu cita se ha cambiado al ${dateText} a las ${timeText}. 😊`;
+  if (language === "ar") return `تم نقل موعدك إلى ${dateText} الساعة ${timeText}. 😊`;
   return `Your appointment has been rescheduled to ${dateText} at ${timeText}. 😊`;
 }
 
@@ -3268,13 +3393,90 @@ function formatRescheduleFailure(language: string): string {
   return "Sorry, I couldn’t verify the change safely. I’ve kept your selected time here; please confirm again in a moment. 🙏";
 }
 
+function formatRescheduleTimeRejected(language: string, rejectedTime?: string | null): string {
+  const time = rejectedTime ? ` ${rejectedTime}` : "";
+  if (language === "fa") return rejectedTime
+    ? `باشه، ساعت${time} رو کنار گذاشتم. چه ساعتی براتون بهتره؟`
+    : "باشه، زمان قبلی رو کنار گذاشتم. چه ساعتی براتون بهتره؟";
+  if (language === "sv") return rejectedTime
+    ? `Okej, jag tar bort kl.${time}. Vilken tid passar bättre?`
+    : "Okej, jag tar bort den tiden. Vilken tid passar bättre?";
+  if (language === "de") return rejectedTime
+    ? `Okay, ${time.trim()} Uhr ist entfernt. Welche Uhrzeit passt besser?`
+    : "Okay, ich habe diese Zeit entfernt. Welche Uhrzeit passt besser?";
+  if (language === "es") return rejectedTime
+    ? `De acuerdo, descarto las${time}. ¿Qué hora te va mejor?`
+    : "De acuerdo, descarto esa hora. ¿Qué hora te va mejor?";
+  if (language === "ar") return rejectedTime
+    ? `حسنًا، استبعدت الساعة${time}. ما الوقت الأنسب لك؟`
+    : "حسنًا، استبعدت ذلك الوقت. ما الوقت الأنسب لك؟";
+  return rejectedTime
+    ? `Okay, I’ve removed${time}. What time works better?`
+    : "Okay, I’ve removed that time. What time works better?";
+}
+
+function formatChooseRescheduleTime(language: string): string {
+  if (language === "fa") return "لطفاً اول یکی از زمان‌های پیشنهادی را انتخاب کنید.";
+  if (language === "sv") return "Välj först en av de föreslagna tiderna.";
+  if (language === "de") return "Bitte wählen Sie zuerst eine der vorgeschlagenen Zeiten.";
+  if (language === "es") return "Elige primero una de las horas propuestas.";
+  if (language === "ar") return "يرجى اختيار أحد الأوقات المقترحة أولاً.";
+  return "Please choose one of the offered times first.";
+}
+
+function formatAskRescheduleTarget(language: string): string {
+  if (language === "fa") return "حتماً 😊 چه روز و ساعتی براتون بهتره؟";
+  if (language === "sv") return "Absolut 😊 Vilken dag och tid passar bättre?";
+  if (language === "de") return "Gern 😊 Welcher Tag und welche Uhrzeit passen besser?";
+  if (language === "es") return "Claro 😊 ¿Qué día y hora te van mejor?";
+  if (language === "ar") return "بالتأكيد 😊 ما اليوم والوقت الأنسب لك؟";
+  return "Of course 😊 What day and time works better?";
+}
+
+function formatAskRescheduleDayForTime(language: string, time: string): string {
+  if (language === "fa") return `حتماً 😊 چه روزی برای ساعت ${time} مناسبه؟`;
+  if (language === "sv") return `Absolut 😊 Vilken dag passar för kl. ${time}?`;
+  if (language === "de") return `Gern 😊 Welcher Tag passt für ${time} Uhr?`;
+  if (language === "es") return `Claro 😊 ¿Qué día te va bien a las ${time}?`;
+  if (language === "ar") return `بالتأكيد 😊 ما اليوم المناسب للساعة ${time}؟`;
+  return `Of course 😊 What day works for ${time}?`;
+}
+
+function formatAskRescheduleTimeForDate(language: string): string {
+  if (language === "fa") return "شماره‌تون ثبت شد 😊 چه ساعتی در همان روز براتون بهتره؟";
+  if (language === "sv") return "Numret är sparat 😊 Vilken tid den dagen passar bäst?";
+  if (language === "de") return "Die Nummer ist gespeichert 😊 Welche Uhrzeit passt an diesem Tag am besten?";
+  if (language === "es") return "He guardado el número 😊 ¿Qué hora te va mejor ese día?";
+  if (language === "ar") return "تم حفظ الرقم 😊 ما الوقت الأنسب لك في ذلك اليوم؟";
+  return "Your number is saved 😊 What time that day works best?";
+}
+
+function formatVerifiedPhoneNoAppointment(language: string, lookupMode: AppointmentLookupMode): string {
+  const rangeLabel = lookupMode === "today" ? "today" : lookupMode === "history" ? "recently" : "in the requested range";
+  if (language === "fa") return "شماره تأیید شد، اما در بازه بررسی‌شده رزروی پیدا نکردم. می‌خواهید برایتان وقت جدیدی رزرو کنم؟";
+  if (language === "sv") return "Numret är verifierat, men jag hittar ingen bokning i den kontrollerade perioden. Vill du boka en ny tid?";
+  if (language === "de") return "Die Nummer ist bestätigt, aber im geprüften Zeitraum wurde kein Termin gefunden. Möchten Sie einen neuen Termin buchen?";
+  if (language === "es") return "El número está verificado, pero no encontré ninguna cita en el período consultado. ¿Quieres reservar una nueva?";
+  if (language === "ar") return "تم التحقق من الرقم، لكنني لم أجد موعدًا في الفترة التي تم فحصها. هل تريد حجز موعد جديد؟";
+  return `The number is verified, but I found no appointment ${rangeLabel}. Would you like to book a new one?`;
+}
+
+function formatUnverifiedPhoneLookupReply(language: string): string {
+  if (language === "fa") return "شماره را دریافت کردم، اما نتوانستم آن را به‌طور امن به این گفتگو مرتبط کنم. می‌خواهید برایتان وقت جدیدی رزرو کنم؟";
+  if (language === "sv") return "Jag har fått numret, men kunde inte koppla det säkert till den här konversationen. Vill du boka en ny tid?";
+  if (language === "de") return "Ich habe die Nummer erhalten, konnte sie aber nicht sicher diesem Gespräch zuordnen. Möchten Sie einen neuen Termin buchen?";
+  if (language === "es") return "He recibido el número, pero no pude vincularlo de forma segura a esta conversación. ¿Quieres reservar una nueva cita?";
+  if (language === "ar") return "استلمت الرقم، لكن تعذر ربطه بهذه المحادثة بشكل آمن. هل تريد حجز موعد جديد؟";
+  return "I received the number, but couldn’t securely link it to this conversation. Would you like to book a new appointment?";
+}
+
 function isRescheduleConfirmation(text?: string): boolean {
   const raw = String(text || "")
     .trim()
     .toLowerCase()
     .replace(/[!.،,؟?\s]+/g, " ")
     .trim();
-  return /^(?:yes|yes please|confirm|confirm it|book that one|move it|that time|ok|okay|sure|ja|ja tack|bekräfta|bekrafta|bale|baleh|bale lotfan|are|lotfan|hamoon vaght|hamon vaght|همون وقت|همان وقت|بله|بله لطفاً|بله لطفا|آره|تأیید|تایید|باشه)$/iu.test(raw);
+  return /^(?:yes|yes please|correct|confirm|confirm it|book that one|move it|that time|ok|okay|sure|ja|ja tack|ja gärna|ja garna|bekräfta|bekrafta|gerne|ja gerne|ja bitte|bitte|sí|si|claro|sí claro|si claro|sí por favor|si por favor|نعم|أجل|اجل|موافق|نعم من فضلك|bale|baleh|bale lotfan|are|bashe|lotfan|hamoon vaght|hamon vaght|همون وقت|همان وقت|بله|بله لطفاً|بله لطفا|آره|تأیید|تایید|باشه)$/iu.test(raw);
 }
 
 function isLaterRescheduleRequest(text?: string): boolean {
@@ -3419,7 +3621,7 @@ function isAffirmativeBookingText(text?: string): boolean {
   if (!raw) return false;
   // Important: pure thanks words (tack, tusen tack, merci, mersi, thanks) must NOT restart booking.
   if (isThanksOnlyText(raw)) return false;
-  return /\b(ja|japp|yes|yep|ok|okej|absolut|boka|boka den|gör det|ja tack|bale|baleh|are|آره|بله|باشه|حتما|حتماً)\b/i.test(raw);
+  return /(?:^|\b)(ja|japp|yes|yep|correct|ok|okej|absolut|boka|boka den|gör det|ja tack|ja gärna|ja garna|gerne|ja gerne|ja bitte|sí|si|claro|sí por favor|si por favor|bale|baleh|are|bashe|آره|بله|باشه|حتما|حتماً|نعم|أجل|اجل|موافق)(?:\b|$)/iu.test(raw);
 }
 
 function isThanksOnlyText(text?: string): boolean {
@@ -3651,7 +3853,7 @@ function cleanCustomerNameCandidate(candidate?: string): string {
 }
 
 function extractNameAndPhone(text?: string): { name: string; phone: string } | null {
-  const raw = String(text || "").trim();
+  const raw = normalizeLocalizedDigits(String(text || "")).trim();
   if (!raw) return null;
 
   const phoneMatch = raw.match(/(?:\+?\d[\d\s\-()]{6,}\d)/);
@@ -3694,7 +3896,7 @@ function extractNameAndPhone(text?: string): { name: string; phone: string } | n
 
 
 function extractPhoneOnly(text?: string): string | null {
-  const raw = String(text || "").trim();
+  const raw = normalizeLocalizedDigits(String(text || "")).trim();
   if (!raw) return null;
 
   const match = raw.match(/(?:\+?\d[\d\s\-()]{6,}\d)/);
@@ -4738,7 +4940,7 @@ function guardCustomerFacingReply(sessionId: string, reply: string, fallbackLang
     "en";
   if (!raw) return getErrorMessageByLanguage(language);
 
-  const hasEnglishStructure = /\b(to confirm|can i ask|please send|i need|i can'?t find|what mobile|what day|what time|of course|your appointment|your booking|would you like|sorry|couldn'?t|is available|is booked|try again)\b/i.test(raw);
+  const hasEnglishStructure = /\b(to confirm|can i ask|please send|please choose|i need|i can'?t find|what mobile|what day|what time|which time|of course|your appointment|your booking|would you like|sorry|couldn'?t|is available|is booked|try again)\b/i.test(raw);
   const hasSwedishStructure = /\b(för att|kan jag|ditt namn|din bokning|mobilnummer|vill du|tyvärr|är ledig|är bokad)\b/i.test(raw);
   const hasPersianStructure = /[\u0600-\u06FF]/u.test(raw) &&
     /(برای|لطفاً|می.?خواهید|وقت|رزرو|نام|شماره|متأسفانه)/u.test(raw);
@@ -4750,7 +4952,7 @@ function guardCustomerFacingReply(sessionId: string, reply: string, fallbackLang
     (language === "sv" && hasEnglishStructure) ||
     (language === "fa" && (hasEnglishStructure || hasSwedishStructure)) ||
     (language === "en" && (hasSwedishStructure || hasPersianStructure)) ||
-    (language !== "en" && language !== "sv" && language !== "fa" && hasEnglishStructure && (hasSwedishStructure || hasPersianStructure));
+    (["de", "es", "ar"].includes(language) && hasEnglishStructure);
 
   if (!incompatible) return raw;
   console.warn("[CustomerReplyGuard]", {
@@ -5370,7 +5572,7 @@ async function handleUnifiedBookingEngine(params: {
     (storedAppointmentStateOwner || hasAppointmentConversationState(sessionId)) &&
     (
       !appointmentStateOwnerMatches(storedAppointmentStateOwner, currentAppointmentStateOwner) ||
-      appointmentIdentityKeyConflicts(storedAppointmentStateOwner?.identityKey, suppliedIdentityPhone)
+      appointmentIdentityKeyConflictsCanonical(storedAppointmentStateOwner?.identityKey, suppliedIdentityPhone)
     )
   ) {
     console.warn(`[AppointmentState] Cleared stale or cross-identity state session=${sessionId}`);
@@ -5705,6 +5907,13 @@ async function handleUnifiedBookingEngine(params: {
       return true;
     }
 
+    // Transition synchronously before the first mutation-path await so another
+    // confirmation cannot re-enter fallback or re-render the selected target.
+    rememberRescheduleContext(sessionId, context.appointment, lockedLanguage, context.requestedDate, context.requestedTime, {
+      ...context,
+      lastOperation: "updating"
+    });
+
     const liveAppointment = await validateStoredAppointmentForMutation(
       context.appointment,
       stateOwner!,
@@ -5801,6 +6010,11 @@ async function handleUnifiedBookingEngine(params: {
       if (operationClaim.duplicateStatus === "completed") {
         clearRescheduleContext(sessionId);
         await clearPendingBooking(sessionId);
+      } else if (operationClaim.duplicateStatus === "failed") {
+        rememberRescheduleContext(sessionId, context.appointment, lockedLanguage, context.requestedDate, context.requestedTime, {
+          ...context,
+          lastOperation: "update_failed"
+        });
       }
       return true;
     }
@@ -6030,6 +6244,114 @@ async function handleUnifiedBookingEngine(params: {
         return true;
       }
 
+      if (priorityReschedule.lastOperation === "updating") {
+        console.log("[BookingFlow]", {
+          platform: platformName,
+          operation: "reschedule",
+          stateType: "updating",
+          finalHandledPath: "confirmation_consumed_while_processing"
+        });
+        return true;
+      }
+
+      const timeFollowUp = parseRescheduleTimeFollowUp(text);
+      const selectedTime = getStockholmTimeFromIso(priorityReschedule.selectedNewStartTime);
+      const rejectsSelectedTime = Boolean(
+        timeFollowUp.rejectsCurrentSelection &&
+        (
+          timeFollowUp.rejectedTimes.length === 0 ||
+          !selectedTime ||
+          timeFollowUp.rejectedTimes.includes(selectedTime)
+        )
+      );
+      const replacesSelectedTime = Boolean(
+        timeFollowUp.explicitTime &&
+        timeFollowUp.explicitTime !== selectedTime
+      );
+
+      if (
+        timeFollowUp.explicitTime &&
+        timeFollowUp.explicitTime === selectedTime &&
+        isPendingSlotConfirmation(text, {
+          status: "awaiting_confirmation",
+          dateTime: priorityReschedule.selectedNewStartTime
+        })
+      ) {
+        return executeConfirmedReschedule(priorityReschedule);
+      }
+
+      if (timeFollowUp.afterTime || replacesSelectedTime || rejectsSelectedTime) {
+        const requestedDate = priorityReschedule.requestedDate ||
+          (priorityReschedule.selectedNewStartTime
+            ? stockholmDateString(new Date(ensureStockholmOffset(priorityReschedule.selectedNewStartTime)))
+            : resolveRescheduleDate(text, priorityReschedule.appointment));
+        const retainedOffers = (priorityReschedule.offeredSlots || []).filter((slot) => {
+          const slotTime = getStockholmTimeFromIso(parseSlotIso(slot) || "");
+          return !slotTime || !timeFollowUp.rejectedTimes.includes(slotTime);
+        });
+        const retainedOwnedOffers = (priorityReschedule.ownedOfferedSlots || []).filter((slot) => {
+          const slotTime = getStockholmTimeFromIso(slot.start);
+          return !slotTime || !timeFollowUp.rejectedTimes.includes(slotTime);
+        });
+
+        rememberRescheduleContext(
+          sessionId,
+          priorityReschedule.appointment,
+          lockedLanguage,
+          requestedDate,
+          null,
+          {
+            ...priorityReschedule,
+            requestedTime: undefined,
+            selectedNewStartTime: undefined,
+            selectedEndTime: undefined,
+            offeredSlots: retainedOffers,
+            ownedOfferedSlots: retainedOwnedOffers,
+            lastOfferedTime: undefined,
+            lastOperation: "awaiting_target"
+          }
+        );
+
+        if (requestedDate && timeFollowUp.afterTime) {
+          return prepareRescheduleTarget(
+            priorityReschedule.appointment,
+            requestedDate,
+            null,
+            lockedLanguage,
+            {
+              ...getDaypartSlotOptions(priorityReschedule.requestedDaypart),
+              afterTime: timeFollowUp.afterTime,
+              excludedTimes: timeFollowUp.rejectedTimes,
+              selectFirstAvailable: true
+            },
+            priorityReschedule.requestedDaypart
+          );
+        }
+        if (requestedDate && timeFollowUp.explicitTime) {
+          return prepareRescheduleTarget(
+            priorityReschedule.appointment,
+            requestedDate,
+            timeFollowUp.explicitTime,
+            lockedLanguage,
+            {
+              ...getDaypartSlotOptions(priorityReschedule.requestedDaypart),
+              excludedTimes: timeFollowUp.rejectedTimes
+            },
+            priorityReschedule.requestedDaypart
+          );
+        }
+
+        await replyAndRecord(
+          formatRescheduleTimeRejected(
+            lockedLanguage,
+            selectedTime && rejectsSelectedTime
+              ? selectedTime
+              : timeFollowUp.rejectedTimes[0]
+          )
+        );
+        return true;
+      }
+
       if (isRescheduleConfirmation(text)) {
         if (
           priorityReschedule.selectedNewStartTime &&
@@ -6039,13 +6361,7 @@ async function handleUnifiedBookingEngine(params: {
         ) {
           return executeConfirmedReschedule(priorityReschedule);
         }
-        await replyAndRecord(
-          lockedLanguage === "fa"
-            ? "لطفاً اول یکی از زمان‌های پیشنهادی را انتخاب کنید."
-            : lockedLanguage === "sv"
-              ? "Välj först en av de föreslagna tiderna."
-              : "Please choose one of the offered times first."
-        );
+        await replyAndRecord(formatChooseRescheduleTime(lockedLanguage));
         return true;
       }
 
@@ -6077,13 +6393,7 @@ async function handleUnifiedBookingEngine(params: {
           );
           return true;
         }
-        await replyAndRecord(
-          lockedLanguage === "fa"
-            ? "متوجه‌ام 😊 همان رزرو قبلی را تغییر می‌دهیم. چه روز و ساعتی بهتر است؟"
-            : lockedLanguage === "sv"
-              ? "Jag förstår 😊 Vi ändrar din befintliga bokning. Vilken dag och tid passar bättre?"
-              : "I understand 😊 We’ll change your existing booking. What day and time works better?"
-        );
+        await replyAndRecord(formatAskRescheduleTarget(lockedLanguage));
         return true;
       }
     } else if (recoveryIntent) {
@@ -6109,13 +6419,7 @@ async function handleUnifiedBookingEngine(params: {
           null,
           { lastOperation: "awaiting_target" }
         );
-        await replyAndRecord(
-          lockedLanguage === "fa"
-            ? "حتماً 😊 همان رزرو قبلی را تغییر می‌دهیم. چه روز و ساعتی بهتر است؟"
-            : lockedLanguage === "sv"
-              ? "Absolut 😊 Vi ändrar din befintliga bokning. Vilken dag och tid passar bättre?"
-              : "Of course 😊 We’ll change your existing booking. What day and time works better?"
-        );
+        await replyAndRecord(formatAskRescheduleTarget(lockedLanguage));
         return true;
       }
     }
@@ -6305,17 +6609,9 @@ async function handleUnifiedBookingEngine(params: {
         );
         return true;
       }
-      const ask = lockedLanguage === "fa"
-        ? enrichedContext.requestedDate
-          ? "شماره‌تون ثبت شد 😊 چه ساعتی در همان روز براتون بهتره؟"
-          : "شماره‌تون ثبت شد 😊 چه روز و ساعتی براتون بهتره؟"
-        : lockedLanguage === "sv"
-          ? enrichedContext.requestedDate
-            ? "Numret är sparat 😊 Vilken tid den dagen passar bäst?"
-            : "Numret är sparat 😊 Vilken dag och tid passar bättre?"
-          : enrichedContext.requestedDate
-            ? "Your number is saved 😊 What time that day works best?"
-            : "Your number is saved 😊 What day and time works better?";
+      const ask = enrichedContext.requestedDate
+        ? formatAskRescheduleTimeForDate(lockedLanguage)
+        : formatAskRescheduleTarget(lockedLanguage);
       await replyAndRecord(ask);
       return true;
     }
@@ -6507,6 +6803,38 @@ async function handleUnifiedBookingEngine(params: {
           selectionContext.intent = rescheduleRequested ? "reschedule" : cancellationRequested ? "cancel" : "lookup";
           selectionContext.language = language;
           selectionContext.savedAt = Date.now();
+        } else {
+          const suppliedPhone = normalizeAcceptedPhone(
+            lookupContact?.phone || extractPhoneOnly(text) || undefined
+          );
+          const verifiedPhoneAccepted = Boolean(lookupResult?.verifiedPhoneAccepted && suppliedPhone);
+          const phoneWasReceived = Boolean(suppliedPhone);
+          rememberAppointmentLookupContext(
+            sessionId,
+            language,
+            false,
+            lookupResult?.lookupMode || "upcoming",
+            Boolean(lookupResult?.historyWindowLimited),
+            {
+              operation: rescheduleRequested ? "reschedule" : "cancel",
+              verifiedPhone: verifiedPhoneAccepted ? suppliedPhone! : undefined,
+              receivedPhone: suppliedPhone || undefined,
+              phoneReceivedAt: suppliedPhone ? Date.now() : undefined,
+              lookupAttemptedAt: Date.now(),
+              resultCategory: verifiedPhoneAccepted
+                ? "verified_not_found"
+                : phoneWasReceived
+                  ? "phone_unverified"
+                  : "needs_verified_phone",
+              nextAction: verifiedPhoneAccepted || phoneWasReceived
+                ? "offer_new_booking"
+                : "awaiting_verified_phone"
+            }
+          );
+          if (phoneWasReceived && !verifiedPhoneAccepted) {
+            await replyAndRecord(formatUnverifiedPhoneLookupReply(language));
+            return true;
+          }
         }
         await replyAndRecord(formatAppointmentLookupReply(lookupResult, language));
         return true;
@@ -6558,17 +6886,9 @@ async function handleUnifiedBookingEngine(params: {
           requestedDaypart: requestedDaypart || undefined,
           lastOperation: "awaiting_target"
         });
-        const ask = lockedLanguage === "fa"
-          ? requestedTime
-            ? `حتماً 😊 چه روزی برای ساعت ${requestedTime} مناسبه؟`
-            : "حتماً 😊 چه روز و ساعتی براتون بهتره؟"
-          : lockedLanguage === "sv"
-            ? requestedTime
-              ? `Absolut 😊 Vilken dag passar för kl. ${requestedTime}?`
-              : "Absolut 😊 Vilken dag och tid passar bättre?"
-            : requestedTime
-              ? `Of course 😊 What day works for ${requestedTime}?`
-              : "Of course 😊 What day and time would suit you better?";
+        const ask = requestedTime
+          ? formatAskRescheduleDayForTime(lockedLanguage, requestedTime)
+          : formatAskRescheduleTarget(lockedLanguage);
         await replyAndRecord(ask);
         return true;
       }
@@ -6621,12 +6941,7 @@ async function handleUnifiedBookingEngine(params: {
         ) {
           return executeConfirmedReschedule(activeReschedule);
         }
-        const chooseReply = lockedLanguage === "fa"
-          ? "لطفاً یکی از زمان‌های پیشنهادی رو انتخاب کنید تا همون رو برای تأیید نهایی نگه دارم."
-          : lockedLanguage === "sv"
-            ? "Välj gärna en av tiderna först, så håller jag den för din bekräftelse."
-            : "Please choose one of the offered times first, and I’ll hold it for your confirmation.";
-        await replyAndRecord(chooseReply);
+        await replyAndRecord(formatChooseRescheduleTime(lockedLanguage));
         return true;
       }
 
@@ -6729,17 +7044,9 @@ async function handleUnifiedBookingEngine(params: {
           lastOperation: "awaiting_target"
         }
       );
-      const ask = lockedLanguage === "fa"
-        ? requestedTime
-          ? `حتماً 😊 چه روزی برای ساعت ${requestedTime} مناسبه؟`
-          : "حتماً 😊 چه روز و ساعتی براتون بهتره؟"
-        : lockedLanguage === "sv"
-          ? requestedTime
-            ? `Absolut 😊 Vilken dag passar för kl. ${requestedTime}?`
-            : "Absolut 😊 Vilken dag och tid passar bättre?"
-          : requestedTime
-            ? `Of course 😊 What day works for ${requestedTime}?`
-            : "Of course 😊 What day and time would suit you better?";
+      const ask = requestedTime
+        ? formatAskRescheduleDayForTime(lockedLanguage, requestedTime)
+        : formatAskRescheduleTarget(lockedLanguage);
       await replyAndRecord(ask);
       return true;
     }
@@ -6816,11 +7123,7 @@ async function handleUnifiedBookingEngine(params: {
             requestedDaypart: requestedDaypart || undefined,
             lastOperation: "awaiting_target"
           });
-          await replyAndRecord(lockedLanguage === "fa"
-            ? "حتماً 😊 چه روز و ساعتی براتون بهتره؟"
-            : lockedLanguage === "sv"
-              ? "Absolut 😊 Vilken dag och tid passar bättre?"
-              : "Of course 😊 What day and time works better?");
+          await replyAndRecord(formatAskRescheduleTarget(lockedLanguage));
           return true;
         }
         await replyAndRecord(
@@ -6844,6 +7147,178 @@ async function handleUnifiedBookingEngine(params: {
     const activeLookupContext = !pending ? getAppointmentLookupContext(sessionId) : null;
     const followUpName = activeLookupContext ? extractNameOnly(text) : null;
     const followUpPhone = activeLookupContext ? extractPhoneOnly(text) : null;
+    const normalizedFollowUpPhone = normalizeAcceptedPhone(followUpPhone || undefined);
+    const repeatsReceivedPhone = Boolean(
+      normalizedFollowUpPhone &&
+      activeLookupContext?.receivedPhone &&
+      normalizeLookupDigits(normalizedFollowUpPhone) ===
+        normalizeLookupDigits(activeLookupContext.receivedPhone)
+    );
+
+    if (
+      !pending &&
+      activeLookupContext?.nextAction === "offer_new_booking" &&
+      (!followUpPhone || repeatsReceivedPhone)
+    ) {
+      const lockedLanguage = activeLookupContext.language || language;
+      if (isAffirmativeBookingText(text) || isExplicitNewBookingRequest(text)) {
+        clearAppointmentConversationState(sessionId);
+        await clearPendingBooking(sessionId);
+        lockConversationFlowLanguage(sessionId, lockedLanguage, "booking");
+        await replyAndRecord(
+          lockedLanguage === "fa"
+            ? "حتماً 😊 برای وقت جدید چه خدماتی و چه روزی مدنظرتان است؟"
+            : lockedLanguage === "sv"
+              ? "Absolut 😊 Vilken behandling och vilken dag passar för en ny tid?"
+              : lockedLanguage === "de"
+                ? "Gern 😊 Welche Behandlung und welcher Tag passen für einen neuen Termin?"
+                : lockedLanguage === "es"
+                  ? "Claro 😊 ¿Qué servicio y qué día prefieres para una nueva cita?"
+                  : lockedLanguage === "ar"
+                    ? "بالتأكيد 😊 ما الخدمة واليوم المناسبان للموعد الجديد؟"
+                    : "Of course 😊 What service and day would you like for a new appointment?"
+        );
+        return true;
+      }
+      await replyAndRecord(
+        activeLookupContext.resultCategory === "phone_unverified"
+          ? formatUnverifiedPhoneLookupReply(lockedLanguage)
+          : formatVerifiedPhoneNoAppointment(
+              lockedLanguage,
+              activeLookupContext.lookupMode || "upcoming"
+            )
+      );
+      return true;
+    }
+
+    if (
+      !pending &&
+      activeLookupContext &&
+      (activeLookupContext.operation === "reschedule" || activeLookupContext.operation === "cancel") &&
+      (followUpName || followUpPhone || appointmentLookupFollowUpRequested)
+    ) {
+      const adapter = getCalendarAdapter(businessConfig);
+      const lockedLanguage = activeLookupContext.language || language;
+      const normalizedPhone = normalizeAcceptedPhone(followUpPhone || undefined);
+      const mutationLookup = await findOwnedAppointmentForMutation(
+        adapter,
+        {
+          name: followUpName || undefined,
+          phone: normalizedPhone || undefined,
+          lookupPath: "unified_mutation_lookup_follow_up"
+        },
+        recipientUserId,
+        platformName,
+        businessConfig
+      );
+      const lookupResult = mutationLookup.result;
+
+      if (mutationLookup.pastAppointment && mutationLookup.temporalState) {
+        clearAppointmentConversationState(sessionId);
+        await clearPendingBooking(sessionId);
+        pastAppointmentRecoveryContexts[sessionId] = {
+          savedAt: Date.now(),
+          language: lockedLanguage,
+          owner: currentAppointmentStateOwner
+        };
+        lockConversationFlowLanguage(sessionId, lockedLanguage, "appointment");
+        await replyAndRecord(
+          formatPastAppointmentMutationReply(
+            mutationLookup.pastAppointment,
+            mutationLookup.temporalState,
+            lockedLanguage
+          )
+        );
+        return true;
+      }
+
+      rememberAppointmentContext(
+        sessionId,
+        lookupResult,
+        lockedLanguage,
+        currentAppointmentStateOwner
+      );
+      const recoveredAppointment = getAppointmentContext(sessionId);
+      const selectionContext = getAppointmentSelectionContext(sessionId);
+      if (selectionContext) {
+        selectionContext.intent = activeLookupContext.operation;
+        selectionContext.language = lockedLanguage;
+        selectionContext.savedAt = Date.now();
+        clearAppointmentLookupContext(sessionId);
+        await replyAndRecord(
+          formatAppointmentSelectionPrompt(lookupResult, lockedLanguage) ||
+          formatAllAppointmentsSelectedReply(lockedLanguage)
+        );
+        return true;
+      }
+
+      if (recoveredAppointment) {
+        clearAppointmentLookupContext(sessionId);
+        if (activeLookupContext.operation === "reschedule") {
+          rememberRescheduleContext(
+            sessionId,
+            recoveredAppointment.appointment,
+            lockedLanguage,
+            null,
+            null,
+            { lastOperation: "awaiting_target" }
+          );
+          await replyAndRecord(formatAskRescheduleTarget(lockedLanguage));
+          return true;
+        }
+
+        const policy = getCancellationPolicy(businessConfig);
+        if (!policy.allowCancellation) {
+          await replyAndRecord(formatCancellationDisabled(lockedLanguage));
+          return true;
+        }
+        rememberCancellationContext(
+          sessionId,
+          recoveredAppointment.appointment,
+          lockedLanguage,
+          businessConfig
+        );
+        await replyAndRecord(formatCancellationReasonQuestion(lockedLanguage));
+        return true;
+      }
+
+      const verifiedPhoneAccepted = Boolean(
+        lookupResult?.verifiedPhoneAccepted && normalizedPhone
+      );
+      const phoneWasReceived = Boolean(normalizedPhone);
+      rememberAppointmentLookupContext(
+        sessionId,
+        lockedLanguage,
+        false,
+        lookupResult?.lookupMode || activeLookupContext.lookupMode || "upcoming",
+        Boolean(lookupResult?.historyWindowLimited),
+        {
+          operation: activeLookupContext.operation,
+          verifiedPhone: verifiedPhoneAccepted
+            ? normalizedPhone!
+            : activeLookupContext.verifiedPhone,
+          receivedPhone: normalizedPhone || activeLookupContext.receivedPhone,
+          phoneReceivedAt: normalizedPhone
+            ? Date.now()
+            : activeLookupContext.phoneReceivedAt,
+          lookupAttemptedAt: Date.now(),
+          resultCategory: verifiedPhoneAccepted
+            ? "verified_not_found"
+            : phoneWasReceived
+              ? "phone_unverified"
+              : "needs_verified_phone",
+          nextAction: verifiedPhoneAccepted || phoneWasReceived
+            ? "offer_new_booking"
+            : "awaiting_verified_phone"
+        }
+      );
+      await replyAndRecord(
+        phoneWasReceived && !verifiedPhoneAccepted
+          ? formatUnverifiedPhoneLookupReply(lockedLanguage)
+          : formatAppointmentLookupReply(lookupResult, lockedLanguage)
+      );
+      return true;
+    }
 
     if (!pending && activeLookupContext && (followUpName || followUpPhone || appointmentLookupFollowUpRequested)) {
       const adapter = getCalendarAdapter(businessConfig);
@@ -6875,9 +7350,34 @@ async function handleUnifiedBookingEngine(params: {
         activeLookupContext.language || language,
         lookupResult?.lookupMode === "history",
         lookupResult?.lookupMode || followUpLookupMode,
-        Boolean(lookupResult?.historyWindowLimited)
+        Boolean(lookupResult?.historyWindowLimited),
+        {
+          operation: activeLookupContext.operation || "lookup",
+          verifiedPhone: lookupResult?.verifiedPhoneAccepted && followUpPhone
+            ? normalizeAcceptedPhone(followUpPhone) || undefined
+            : activeLookupContext.verifiedPhone,
+          receivedPhone: followUpPhone
+            ? normalizeAcceptedPhone(followUpPhone) || activeLookupContext.receivedPhone
+            : activeLookupContext.receivedPhone,
+          phoneReceivedAt: followUpPhone
+            ? Date.now()
+            : activeLookupContext.phoneReceivedAt,
+          lookupAttemptedAt: Date.now(),
+          resultCategory: lookupResult?.verifiedPhoneAccepted
+            ? "verified_not_found"
+            : followUpPhone
+              ? "phone_unverified"
+              : "needs_verified_phone",
+          nextAction: lookupResult?.verifiedPhoneAccepted || Boolean(followUpPhone)
+            ? "offer_new_booking"
+            : "awaiting_verified_phone"
+        }
       );
-      await replyAndRecord(formatAppointmentLookupReply(lookupResult, activeLookupContext.language || language));
+      await replyAndRecord(
+        followUpPhone && !lookupResult?.verifiedPhoneAccepted
+          ? formatUnverifiedPhoneLookupReply(activeLookupContext.language || language)
+          : formatAppointmentLookupReply(lookupResult, activeLookupContext.language || language)
+      );
       return true;
     }
 
@@ -6908,9 +7408,30 @@ async function handleUnifiedBookingEngine(params: {
         language,
         lookupResult?.lookupMode === "history",
         lookupResult?.lookupMode || lookupMode,
-        Boolean(lookupResult?.historyWindowLimited)
+        Boolean(lookupResult?.historyWindowLimited),
+        {
+          operation: "lookup",
+          verifiedPhone: lookupResult?.verifiedPhoneAccepted && lookupArgs.phone
+            ? normalizeAcceptedPhone(lookupArgs.phone) || undefined
+            : undefined,
+          receivedPhone: lookupArgs.phone
+            ? normalizeAcceptedPhone(lookupArgs.phone) || undefined
+            : undefined,
+          phoneReceivedAt: lookupArgs.phone ? Date.now() : undefined,
+          lookupAttemptedAt: Date.now(),
+          resultCategory: lookupResult?.verifiedPhoneAccepted
+            ? "verified_not_found"
+            : lookupArgs.phone
+              ? "phone_unverified"
+              : "needs_verified_phone",
+          nextAction: lookupResult?.verifiedPhoneAccepted || Boolean(lookupArgs.phone)
+            ? "offer_new_booking"
+            : "awaiting_verified_phone"
+        }
       );
-      const reply = formatAppointmentLookupReply(lookupResult, language);
+      const reply = lookupArgs.phone && !lookupResult?.verifiedPhoneAccepted
+        ? formatUnverifiedPhoneLookupReply(language)
+        : formatAppointmentLookupReply(lookupResult, language);
       console.log(`[UnifiedBooking] Lookup platform=${platformName}, found=${Boolean(lookupResult?.found)}`);
       await replyAndRecord(reply);
       return true;

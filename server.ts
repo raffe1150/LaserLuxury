@@ -791,6 +791,8 @@ type OwnedOfferedSlot = {
   platform: string;
   userId: string;
   generatedAt: number;
+  searchStartDate?: string;
+  searchEndDate?: string;
 };
 
 type ExactSlotValidationResult = {
@@ -878,12 +880,23 @@ async function validateCanonicalExactSlot(params: {
     }
     const expectedEndMs =
       new Date(ensureStockholmOffset(start)).getTime() + Number(durationMinutes) * 60000;
+    const offeredLocalDate = stockholmDateString(
+      new Date(ensureStockholmOffset(start))
+    );
     if (
       Date.now() - Number(offeredSlot.generatedAt || 0) > PENDING_BOOKING_TTL_MS ||
       Number(offeredSlot.durationMinutes) !== Number(durationMinutes) ||
       String(offeredSlot.service || "") !== String(service || "") ||
       new Date(offeredSlot.start).getTime() !== new Date(ensureStockholmOffset(start)).getTime() ||
-      new Date(offeredSlot.end).getTime() !== expectedEndMs
+      new Date(offeredSlot.end).getTime() !== expectedEndMs ||
+      (
+        offeredSlot.searchStartDate &&
+        offeredLocalDate < offeredSlot.searchStartDate
+      ) ||
+      (
+        offeredSlot.searchEndDate &&
+        offeredLocalDate > offeredSlot.searchEndDate
+      )
     ) {
       return { free: false, category: "stale_offer", normalizedIso: null, endIso: null };
     }
@@ -995,7 +1008,9 @@ async function createCanonicalOfferedSlots(params: {
       businessId: params.owner.businessId,
       platform: normalizePlatformName(params.owner.platform),
       userId: normalizePlatformUserId(params.owner.platform, params.owner.userId),
-      generatedAt
+      generatedAt,
+      searchStartDate: params.startDate,
+      searchEndDate: params.endDate
     });
   }
 
@@ -1926,7 +1941,8 @@ function rowMatchesSecureRecoveryAttributes(
   suppliedName?: string,
   requestedDate?: string,
   approximateTime?: string,
-  toleranceMinutes: number = 30
+  toleranceMinutes: number = 30,
+  requestedService?: string
 ): boolean {
   const phoneDigits = normalizeLookupDigits(suppliedPhone);
   if (
@@ -1961,6 +1977,15 @@ function rowMatchesSecureRecoveryAttributes(
     rowTime !== null &&
     Math.abs(rowTime - requestedMinutes) <= toleranceMinutes
   );
+
+  const normalizedRequestedService = normalizeLookupText(requestedService);
+  const normalizedRowService = normalizeLookupText(row?.service);
+  if (
+    normalizedRequestedService &&
+    normalizedRequestedService !== "bokning" &&
+    normalizedRowService &&
+    normalizedRequestedService !== normalizedRowService
+  ) return false;
 
   return nameMatches || dateTimeMatches;
 }
@@ -2099,7 +2124,8 @@ async function findCustomerAppointments(
                 args?.name,
                 args?.requestedDate,
                 args?.approximateTime,
-                30
+                30,
+                args?.service
               )
             );
           })
@@ -2913,6 +2939,7 @@ type AppointmentLookupContext = {
   receivedName?: string;
   requestedDate?: string;
   approximateTime?: string;
+  requestedService?: string;
   recoveryMode?: boolean;
   recoveryPromptCount?: number;
   phoneReceivedAt?: number;
@@ -2974,11 +3001,30 @@ const rescheduleContexts: Record<string, RescheduleContext> = {};
 const recentlyCompletedReschedules: Record<string, { completedAt: number; eventId: string; newStartTime: string }> = {};
 const cancellationContexts: Record<string, { appointment: any; savedAt: number; language: string; feeApplies: boolean; feeAmount: number; currency: string; awaitingReason: boolean; reason?: string }> = {};
 const appointmentStateOwners: Record<string, AppointmentStateOwner> = {};
-type AvailabilitySearchContext = {
+type AvailabilityConstraintKind =
+  | "whole_day"
+  | "exact_time"
+  | "time_window"
+  | "time_boundary"
+  | "approximate_time"
+  | "daypart"
+  | "date_range";
+
+type CanonicalAvailabilityConstraint = {
   startDate: string;
   endDate: string;
+  kind: AvailabilityConstraintKind;
+  exactTime?: string;
   minTime?: string;
   maxTime?: string;
+  timeBoundary?: TimeBoundary;
+  daypart?: "morning" | "afternoon" | "evening";
+  rejectedTimes: string[];
+  generatedFromLatestRequestAt: number;
+};
+
+type AvailabilitySearchContext = {
+  constraint: CanonicalAvailabilityConstraint;
   service: string;
   durationMinutes: number;
   language: string;
@@ -2986,6 +3032,7 @@ type AvailabilitySearchContext = {
   platform: string;
   userId: string;
   savedAt: number;
+  lastResultCategory?: "available" | "no_availability";
 };
 const availabilitySearchContexts: Record<string, AvailabilitySearchContext> = {};
 const lastServiceInformationReplies: Record<string, { key: string; sentAt: number }> = {};
@@ -3853,6 +3900,7 @@ function getLookupIdentificationDetails(
   phone?: string;
   requestedDate?: string;
   approximateTime?: string;
+  requestedService?: string;
   hasNewDateOrTime: boolean;
 } {
   const combined = extractNameAndPhone(text);
@@ -3862,6 +3910,10 @@ function getLookupIdentificationDetails(
   ) || undefined;
   const parsedDate = resolveExplicitBookingDate(text);
   const parsedTime = inferRequestedTimeFromText(text);
+  const inferredService = inferServiceFromText(text);
+  const requestedService = inferredService !== "Bokning"
+    ? inferredService
+    : existing?.requestedService;
   return {
     ...(name ? { name } : {}),
     ...(phone ? { phone } : {}),
@@ -3871,6 +3923,7 @@ function getLookupIdentificationDetails(
     ...(parsedTime || existing?.approximateTime
       ? { approximateTime: parsedTime || existing?.approximateTime }
       : {}),
+    ...(requestedService ? { requestedService } : {}),
     hasNewDateOrTime: Boolean(parsedDate || parsedTime)
   };
 }
@@ -4018,9 +4071,9 @@ function isLaterRescheduleRequest(text?: string): boolean {
 
 function inferRequestedDaypart(text?: string): "morning" | "afternoon" | "evening" | null {
   const raw = String(text || "").trim().toLowerCase();
-  if (/\b(morning|förmiddag|formiddag|sobh)\b/i.test(raw) || /صبح/u.test(raw)) return "morning";
-  if (/\b(afternoon|eftermiddag|bad az zohr|badezohr)\b/i.test(raw) || /بعد\s*از\s*ظهر/u.test(raw)) return "afternoon";
-  if (/\b(evening|kväll|kvall|asr|shab)\b/i.test(raw) || /(?:عصر|شب)/u.test(raw)) return "evening";
+  if (/\b(morning|förmiddag|formiddag|vormittag|morgen|ma[nñ]ana|sobh)\b/i.test(raw) || /(?:صبح|الصباح)/u.test(raw)) return "morning";
+  if (/\b(afternoon|eftermiddag|nachmittag|tarde|bad az zohr|badezohr)\b/i.test(raw) || /(?:بعد\s*از\s*ظهر|بعد\s*الظهر)/u.test(raw)) return "afternoon";
+  if (/\b(evening|kväll|kvall|abend|noche|asr|shab)\b/i.test(raw) || /(?:عصر|شب|المساء)/u.test(raw)) return "evening";
   return null;
 }
 
@@ -4595,6 +4648,7 @@ async function savePendingBooking(chatId: string, platform: string, pending: any
       availabilityEndDate: pending.availabilityEndDate || null,
       availabilityMinTime: pending.availabilityMinTime || null,
       availabilityMaxTime: pending.availabilityMaxTime || null,
+      availabilityConstraint: pending.availabilityConstraint || null,
       language: pending.language || null,
       customerName: pending.customerName || null,
       customerPhone: pending.customerPhone || null,
@@ -4687,6 +4741,7 @@ async function loadPendingBooking(chatId: string, platform: string, businessConf
       availabilityEndDate: parsed.availabilityEndDate || null,
       availabilityMinTime: parsed.availabilityMinTime || null,
       availabilityMaxTime: parsed.availabilityMaxTime || null,
+      availabilityConstraint: parsed.availabilityConstraint || null,
       language: parsed.language || null,
       customerName: parsed.customerName || null,
       customerPhone: parsed.customerPhone || null,
@@ -5042,13 +5097,13 @@ function extractRequestedWeekdays(text?: string): Array<{ index: number; positio
     .toLowerCase()
     .replace(/\u200c/g, " ");
   const definitions: Array<[number, RegExp]> = [
-    [0, /\b(?:söndag|sondag|sunday|yek\s*shanbe|yekshanbe|1\s*shanbe)\b|یک\s*شنبه/giu],
-    [1, /\b(?:måndag|mandag|monday|do\s*shanbe|doshanbe|2\s*shanbe)\b|دو\s*شنبه/giu],
-    [2, /\b(?:tisdag|tuesday|se\s*shanbe|seshanbe|3\s*shanbe)\b|سه\s*شنبه/giu],
-    [3, /\b(?:onsdag|wednesday|chahar\s*shanbe|chaharshanbe|4\s*shanbe)\b|چهار\s*شنبه|چهارشنبه/giu],
-    [4, /\b(?:torsdag|thursday|panj\s*shanbe|panjshanbe|5\s*shanbe)\b|پنج\s*شنبه|پنجشنبه/giu],
-    [5, /\b(?:fredag|friday|jome|jomeh)\b|جمعه/giu],
-    [6, /\b(?:lördag|lordag|saturday|(?<!yek\s)(?<!do\s)(?<!se\s)(?<!chahar\s)(?<!panj\s)(?<![1-5]\s)shanbe)\b|(?<!یک\s)(?<!دو\s)(?<!سه\s)(?<!چهار\s)(?<!پنج\s)شنبه/giu]
+    [0, /\b(?:söndag|sondag|sunday|sonntag|domingo|yek\s*shanbe|yekshanbe|1\s*shanbe)\b|یک\s*شنبه|الأحد|الاحد/giu],
+    [1, /\b(?:måndag|mandag|monday|montag|lunes|do\s*shanbe|doshanbe|2\s*shanbe)\b|دو\s*شنبه|الاثنين|الإثنين/giu],
+    [2, /\b(?:tisdag|tuesday|dienstag|martes|se\s*shanbe|seshanbe|3\s*shanbe)\b|سه\s*شنبه|الثلاثاء/giu],
+    [3, /\b(?:onsdag|wednesday|mittwoch|miércoles|miercoles|chahar\s*shanbe|chaharshanbe|4\s*shanbe)\b|چهار\s*شنبه|چهارشنبه|الأربعاء|الاربعاء/giu],
+    [4, /\b(?:torsdag|thursday|donnerstag|jueves|panj\s*shanbe|panjshanbe|5\s*shanbe)\b|پنج\s*شنبه|پنجشنبه|الخميس/giu],
+    [5, /\b(?:fredag|friday|freitag|viernes|jome|jomeh)\b|جمعه|الجمعة/giu],
+    [6, /\b(?:lördag|lordag|saturday|samstag|sábado|sabado|(?<!yek\s)(?<!do\s)(?<!se\s)(?<!chahar\s)(?<!panj\s)(?<![1-5]\s)shanbe)\b|(?<!یک\s)(?<!دو\s)(?<!سه\s)(?<!چهار\s)(?<!پنج\s)شنبه|السبت/giu]
   ];
   const matches: Array<{ index: number; position: number }> = [];
   for (const [index, pattern] of definitions) {
@@ -5078,6 +5133,32 @@ function normalizeWindowClock(hoursText: string, minutesText?: string): string |
   return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
 }
 
+function extractAvailabilityTimeWindow(text?: string): {
+  minTime: string;
+  maxTime: string;
+} | null {
+  const raw = normalizeLocalizedDigits(String(text || ""))
+    .trim()
+    .toLowerCase()
+    .replace(/\u200c/g, " ")
+    .replace(/[–—]/g, "-");
+  const timeRangePattern =
+    /(?:mellan|between|from|från|fran|zwischen|von|entre|desde|بين|من|بین|از)?\s*(\d{1,2})(?::([0-5]\d))?\s*(?:-|till|to|and|och|å|bis|und|hasta|y|إلى|الى|و|تا)\s*(\d{1,2})(?::([0-5]\d))?(?:\s*(?:kl|klockan|uhr|ساعت|الساعة))?/giu;
+  let selected: { minTime: string; maxTime: string } | null = null;
+  for (const candidate of raw.matchAll(timeRangePattern)) {
+    const minTime = normalizeWindowClock(candidate[1], candidate[2]);
+    const maxTime = normalizeWindowClock(candidate[3], candidate[4]);
+    if (
+      minTime &&
+      maxTime &&
+      Number(timeTextToMinutes(maxTime)) > Number(timeTextToMinutes(minTime))
+    ) {
+      selected = { minTime, maxTime };
+    }
+  }
+  return selected;
+}
+
 function parseAvailabilityRangeRequest(text: string, businessConfig: any): AvailabilityRangeRequest | null {
   const raw = normalizeLocalizedDigits(String(text || ""))
     .trim()
@@ -5086,26 +5167,13 @@ function parseAvailabilityRangeRequest(text: string, businessConfig: any): Avail
     .replace(/[–—]/g, "-");
   if (!raw) return null;
 
-  let minTime: string | null = null;
-  let maxTime: string | null = null;
-  const timeRangePattern =
-    /(?:mellan|between|from|från|fran|بین|از)?\s*(\d{1,2})(?::([0-5]\d))?\s*(?:-|till|to|and|och|å|و|تا)\s*(\d{1,2})(?::([0-5]\d))?(?:\s*(?:kl|klockan|ساعت))?/giu;
-  for (const candidate of raw.matchAll(timeRangePattern)) {
-    const candidateMin = normalizeWindowClock(candidate[1], candidate[2]);
-    const candidateMax = normalizeWindowClock(candidate[3], candidate[4]);
-    if (
-      candidateMin &&
-      candidateMax &&
-      Number(timeTextToMinutes(candidateMax)) > Number(timeTextToMinutes(candidateMin))
-    ) {
-      minTime = candidateMin;
-      maxTime = candidateMax;
-    }
-  }
-  const hasValidWindow = Boolean(minTime && maxTime);
+  const timeWindow = extractAvailabilityTimeWindow(raw);
+  const minTime = timeWindow?.minTime || null;
+  const maxTime = timeWindow?.maxTime || null;
+  const hasValidWindow = Boolean(timeWindow);
 
-  const flexibleDays = /\b(det\s+spelar\s+ingen\s+roll\s+vilken\s+dag|vilken\s+dag\s+som\s+helst|any\s+day|doesn'?t\s+matter\s+which\s+day|farghi\s+nadare\s+che\s+roozi)\b/i.test(raw) ||
-    /هر\s*روز|فرقی\s*نداره\s*چه\s*روزی/u.test(raw);
+  const flexibleDays = /\b(det\s+spelar\s+ingen\s+roll\s+vilken\s+dag|vilken\s+dag\s+som\s+helst|any\s+day|doesn'?t\s+matter\s+which\s+day|jeder\s+tag|welcher\s+tag\s+ist\s+egal|cualquier\s+d[ií]a|no\s+importa\s+qu[eé]\s+d[ií]a|farghi\s+nadare\s+che\s+roozi)\b/i.test(raw) ||
+    /هر\s*روز|فرقی\s*نداره\s*چه\s*روزی|أي\s*يوم|لا\s*يهم\s*أي\s*يوم/u.test(raw);
   const weekdays = extractRequestedWeekdays(raw);
   const hasRangeConnector = /\b(till|through|until|to|och|and)\b|(?:^|\s)å(?:\s|$)|تا|و/u.test(raw);
 
@@ -5133,7 +5201,7 @@ function parseAvailabilityRangeRequest(text: string, businessConfig: any): Avail
     }
   }
 
-  if (!flexibleDays && !explicitStartDate && !(weekdays.length >= 2 && hasRangeConnector)) return null;
+  if (!flexibleDays && !explicitStartDate && weekdays.length === 0) return null;
   if (!hasValidWindow && !weekdays.length && !explicitStartDate) return null;
 
   const today = stockholmDateString(new Date());
@@ -5157,17 +5225,141 @@ function parseAvailabilityRangeRequest(text: string, businessConfig: any): Avail
 
   const startDate = nextStockholmWeekdayDate(weekdays[0].index, today);
   let endDate = startDate;
-  const [year, month, day] = startDate.split("-").map(Number);
-  const startUtc = new Date(Date.UTC(year, month - 1, day));
-  const daysToEnd = (weekdays[1].index - weekdays[0].index + 7) % 7;
-  startUtc.setUTCDate(startUtc.getUTCDate() + (daysToEnd || 7));
-  endDate = startUtc.toISOString().slice(0, 10);
+  if (weekdays.length >= 2 && hasRangeConnector) {
+    const [year, month, day] = startDate.split("-").map(Number);
+    const startUtc = new Date(Date.UTC(year, month - 1, day));
+    const daysToEnd = (weekdays[1].index - weekdays[0].index + 7) % 7;
+    startUtc.setUTCDate(startUtc.getUTCDate() + (daysToEnd || 7));
+    endDate = startUtc.toISOString().slice(0, 10);
+  }
 
   return {
     startDate,
     endDate,
     ...(hasValidWindow ? { minTime: minTime!, maxTime: maxTime! } : {}),
     flexibleDays: false
+  };
+}
+
+function isWholeDayAvailabilityRequest(text?: string): boolean {
+  const raw = normalizeLocalizedDigits(String(text || ""))
+    .trim()
+    .toLowerCase()
+    .replace(/\u200c/g, " ")
+    .replace(/[،,!?؟;؛.]+/g, " ")
+    .replace(/\s+/g, " ");
+  if (!raw) return false;
+  return (
+    /\b(?:any\s+time|anytime|any\s+time\s+that\s+day|all\s+day|whole\s+day|only\s+(?:on\s+)?(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)|do\s+you\s+have\s+any\s+time)\b/i.test(raw) ||
+    /\b(?:vilken\s+tid\s+som\s+helst|n[aå]gon\s+tid|hela\s+dagen|bara\s+(?:p[aå]\s+)?(?:m[aå]ndag|tisdag|onsdag|torsdag|fredag|l[oö]rdag|s[oö]ndag)|har\s+du\s+(?:inte\s+)?(?:n[aå]gon\s+)?tid)\b/i.test(raw) ||
+    /\b(?:irgendeine\s+uhrzeit|jederzeit|den\s+ganzen\s+tag|nur\s+(?:am\s+)?(?:montag|dienstag|mittwoch|donnerstag|freitag|samstag|sonntag))\b/i.test(raw) ||
+    /\b(?:cualquier\s+hora|a\s+cualquier\s+hora|todo\s+el\s+d[ií]a|solo\s+(?:el\s+)?(?:lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo))\b/i.test(raw) ||
+    /\b(?:har\s+saati|har\s+vaght|tamame?\s+rooz|faghat\s+(?:shanbe|yekshanbe|doshanbe|seshanbe|chaharshanbe|panjshanbe|jomeh?))\b/i.test(raw) ||
+    /(?:هر\s*(?:ساعت|وقتی)|تمام\s*روز|فقط\s*(?:شنبه|یک\s*شنبه|دو\s*شنبه|سه\s*شنبه|چهار\s*شنبه|پنج\s*شنبه|جمعه)|أي\s*وقت|طوال\s*اليوم|فقط\s*(?:الأحد|الاحد|الاثنين|الإثنين|الثلاثاء|الأربعاء|الاربعاء|الخميس|الجمعة|السبت))/u.test(raw)
+  );
+}
+
+function deriveCanonicalAvailabilityConstraint(
+  text: string,
+  businessConfig: any,
+  previous?: CanonicalAvailabilityConstraint | null
+): CanonicalAvailabilityConstraint | null {
+  const range = parseAvailabilityRangeRequest(text, businessConfig);
+  const explicitDate = resolveExplicitBookingDate(text);
+  const timeWindow = extractAvailabilityTimeWindow(text);
+  const timeFollowUp = parseRescheduleTimeFollowUp(text);
+  const daypart = inferRequestedDaypart(text);
+  const broadensToWholeDay = isWholeDayAvailabilityRequest(text);
+  const hasDateSignal = Boolean(range || explicitDate);
+  const refersToSameDay = /\b(?:that\s+day|same\s+day|den\s+dagen|samma\s+dag|diesem\s+tag|gleichen\s+tag|ese\s+d[ií]a|mismo\s+d[ií]a|hamoon\s+rooz|hamon\s+rooz)\b/i.test(text) ||
+    /(?:همون|همان)\s*روز|ذلك\s*اليوم|نفس\s*اليوم/u.test(text);
+
+  const startDate =
+    range?.startDate ||
+    explicitDate ||
+    ((refersToSameDay || broadensToWholeDay) ? previous?.startDate : undefined);
+  const endDate =
+    range?.endDate ||
+    explicitDate ||
+    ((refersToSameDay || broadensToWholeDay) ? previous?.endDate : undefined);
+  if (!startDate || !endDate) return null;
+
+  const common = {
+    startDate,
+    endDate,
+    rejectedTimes: [...timeFollowUp.rejectedTimes],
+    generatedFromLatestRequestAt: Date.now()
+  };
+
+  // A date/weekday-only follow-up inside an active availability flow is a fresh
+  // whole-day request. It must not inherit a rejected exact time or old bounds.
+  if (
+    broadensToWholeDay ||
+    (
+      hasDateSignal &&
+      !timeWindow &&
+      !timeFollowUp.explicitTime &&
+      !timeFollowUp.boundary &&
+      !daypart
+    )
+  ) {
+    return { ...common, kind: startDate === endDate ? "whole_day" : "date_range", rejectedTimes: [] };
+  }
+  if (timeWindow) {
+    return {
+      ...common,
+      kind: "time_window",
+      minTime: timeWindow.minTime,
+      maxTime: timeWindow.maxTime
+    };
+  }
+  if (timeFollowUp.boundary) {
+    if (timeFollowUp.boundary.kind === "approximate") {
+      return {
+        ...common,
+        kind: "approximate_time",
+        exactTime: timeFollowUp.boundary.time,
+        timeBoundary: timeFollowUp.boundary
+      };
+    }
+    return {
+      ...common,
+      kind: "time_boundary",
+      timeBoundary: timeFollowUp.boundary
+    };
+  }
+  if (timeFollowUp.explicitTime) {
+    return {
+      ...common,
+      kind: "exact_time",
+      exactTime: timeFollowUp.explicitTime
+    };
+  }
+  if (daypart) {
+    const daypartOptions = getDaypartSlotOptions(daypart);
+    return {
+      ...common,
+      kind: "daypart",
+      daypart,
+      minTime: daypartOptions.minTime,
+      maxTime: daypartOptions.maxTime
+    };
+  }
+  return range
+    ? { ...common, kind: startDate === endDate ? "whole_day" : "date_range", rejectedTimes: [] }
+    : null;
+}
+
+function availabilityConstraintSlotOptions(
+  constraint: CanonicalAvailabilityConstraint
+): SlotSearchOptions {
+  return {
+    ...(constraint.minTime ? { minTime: constraint.minTime } : {}),
+    ...(constraint.maxTime ? { maxTime: constraint.maxTime } : {}),
+    ...(constraint.timeBoundary ? { timeBoundary: constraint.timeBoundary } : {}),
+    ...(Array.isArray(constraint.rejectedTimes) && constraint.rejectedTimes.length
+      ? { excludedTimes: constraint.rejectedTimes }
+      : {})
   };
 }
 
@@ -7322,6 +7514,9 @@ async function handleUnifiedBookingEngine(params: {
           ...(retainInitialDateTime && initialIdentification.approximateTime
             ? { approximateTime: initialIdentification.approximateTime }
             : {}),
+          ...(initialIdentification.requestedService
+            ? { service: initialIdentification.requestedService }
+            : {}),
           secureRecovery: true,
           lookupPath: "unified_mutation_recovery"
         },
@@ -7383,6 +7578,7 @@ async function handleUnifiedBookingEngine(params: {
               approximateTime: retainInitialDateTime
                 ? initialIdentification.approximateTime
                 : undefined,
+              requestedService: initialIdentification.requestedService,
               recoveryMode: true,
               recoveryPromptCount: phoneWasReceived && !verifiedPhoneAccepted
                 ? 1
@@ -7754,6 +7950,7 @@ async function handleUnifiedBookingEngine(params: {
     const followUpPhone = lookupIdentification?.phone || null;
     const followUpRequestedDate = lookupIdentification?.requestedDate || null;
     const followUpApproximateTime = lookupIdentification?.approximateTime || null;
+    const followUpRequestedService = lookupIdentification?.requestedService || null;
     const hasLookupIdentificationUpdate = Boolean(
       lookupIdentification?.hasNewDateOrTime ||
       (
@@ -7764,6 +7961,10 @@ async function handleUnifiedBookingEngine(params: {
         followUpPhone &&
         normalizeLookupDigits(followUpPhone) !==
           normalizeLookupDigits(activeLookupContext?.receivedPhone)
+      ) ||
+      (
+        followUpRequestedService &&
+        followUpRequestedService !== activeLookupContext?.requestedService
       )
     );
     const normalizedFollowUpPhone = normalizeAcceptedPhone(followUpPhone || undefined);
@@ -7914,6 +8115,7 @@ async function handleUnifiedBookingEngine(params: {
           startDate: followUpRequestedDate || undefined,
           endDate: followUpRequestedDate || undefined,
           approximateTime: followUpApproximateTime || undefined,
+          service: followUpRequestedService || undefined,
           secureRecovery: true,
           lookupPath: "unified_mutation_lookup_follow_up"
         },
@@ -8018,6 +8220,8 @@ async function handleUnifiedBookingEngine(params: {
             followUpRequestedDate || activeLookupContext.requestedDate,
           approximateTime:
             followUpApproximateTime || activeLookupContext.approximateTime,
+          requestedService:
+            followUpRequestedService || activeLookupContext.requestedService,
           recoveryMode: true,
           recoveryPromptCount: phoneWasReceived && !verifiedPhoneAccepted
             ? Number(activeLookupContext.recoveryPromptCount || 0) + 1
@@ -8087,6 +8291,7 @@ async function handleUnifiedBookingEngine(params: {
           startDate: followUpRequestedDate || undefined,
           endDate: followUpRequestedDate || undefined,
           approximateTime: followUpApproximateTime || undefined,
+          service: followUpRequestedService || undefined,
           secureRecovery: true,
           includePast: olderHistory || followUpLookupMode === "history",
           lookupMode: olderHistory ? "history" : followUpLookupMode,
@@ -8119,6 +8324,8 @@ async function handleUnifiedBookingEngine(params: {
             followUpRequestedDate || activeLookupContext.requestedDate,
           approximateTime:
             followUpApproximateTime || activeLookupContext.approximateTime,
+          requestedService:
+            followUpRequestedService || activeLookupContext.requestedService,
           recoveryMode: true,
           recoveryPromptCount: followUpPhone && !lookupResult?.verifiedPhoneAccepted
             ? Number(activeLookupContext.recoveryPromptCount || 0) + 1
@@ -8182,6 +8389,7 @@ async function handleUnifiedBookingEngine(params: {
         startDate: lookupIdentification.requestedDate,
         endDate: lookupIdentification.requestedDate,
         approximateTime: lookupIdentification.approximateTime,
+        service: lookupIdentification.requestedService,
         secureRecovery: true,
         includePast,
         lookupMode,
@@ -8214,6 +8422,7 @@ async function handleUnifiedBookingEngine(params: {
           receivedName: lookupIdentification.name,
           requestedDate: lookupIdentification.requestedDate,
           approximateTime: lookupIdentification.approximateTime,
+          requestedService: lookupIdentification.requestedService,
           recoveryMode: true,
           recoveryPromptCount: lookupArgs.phone && !lookupResult?.verifiedPhoneAccepted
             ? 1
@@ -8290,102 +8499,199 @@ async function handleUnifiedBookingEngine(params: {
       delete availabilitySearchContexts[sessionId];
     }
 
-    const parsedAvailabilityRange = parseAvailabilityRangeRequest(text, businessConfig);
     const alternativeAvailabilityRequested = isAlternativeAvailabilityRequest(text);
+    const previousAvailabilityConstraint = availabilityOwnerMatches
+      ? storedAvailability?.constraint
+      : (
+          pending?.operation === "new_booking"
+            ? pending.availabilityConstraint || null
+            : null
+        );
+    let latestAvailabilityConstraint = deriveCanonicalAvailabilityConstraint(
+      text,
+      businessConfig,
+      previousAvailabilityConstraint
+    );
+    let outsideOriginalRange = false;
     if (
-      (!pending || pending.status === "awaiting_time_selection") &&
-      !getRescheduleContext(sessionId) &&
-      (parsedAvailabilityRange || (alternativeAvailabilityRequested && availabilityOwnerMatches))
+      !latestAvailabilityConstraint &&
+      alternativeAvailabilityRequested &&
+      previousAvailabilityConstraint
     ) {
-      if (pending) {
-        await clearPendingBooking(sessionId);
-        pending = null;
-      }
-      const original = parsedAvailabilityRange || {
-        startDate: storedAvailability!.startDate,
-        endDate: storedAvailability!.endDate,
-        minTime: storedAvailability!.minTime,
-        maxTime: storedAvailability!.maxTime,
-        flexibleDays: false
-      };
-      const outsideOriginalRange = Boolean(!parsedAvailabilityRange && alternativeAvailabilityRequested);
       const configuredWindowEnd = addDaysToStockholmDate(
         stockholmDateString(new Date()),
         getConfiguredBookingWindowDays(businessConfig)
       );
-      const searchStart = outsideOriginalRange
-        ? addDaysToStockholmDate(storedAvailability!.endDate, 1)
-        : original.startDate;
-      const searchEnd = outsideOriginalRange
-        ? configuredWindowEnd
-        : original.endDate;
+      const alternativeStart = addDaysToStockholmDate(
+        previousAvailabilityConstraint.endDate,
+        1
+      );
+      latestAvailabilityConstraint = {
+        startDate: alternativeStart,
+        endDate: configuredWindowEnd,
+        kind: "date_range",
+        rejectedTimes: [],
+        generatedFromLatestRequestAt: Date.now()
+      };
+      outsideOriginalRange = true;
+    }
+    const hasActiveAvailabilityFlow = Boolean(
+      availabilityOwnerMatches ||
+      (
+        pending?.operation === "new_booking" &&
+        ["awaiting_time_selection", "awaiting_confirmation"].includes(
+          String(pending.status || "")
+        )
+      )
+    );
+    if (
+      (
+        !pending ||
+        ["awaiting_time_selection", "awaiting_confirmation"].includes(
+          String(pending.status || "")
+        )
+      ) &&
+      !getRescheduleContext(sessionId) &&
+      latestAvailabilityConstraint &&
+      (
+        hasActiveAvailabilityFlow ||
+        explicitNewBookingRequested ||
+        isBookingConversationContext(text, history)
+      )
+    ) {
+      const priorConstraintType = previousAvailabilityConstraint?.kind || "none";
+      const constraint = latestAvailabilityConstraint;
+      const staleConstraintsCleared = Boolean(
+        previousAvailabilityConstraint &&
+        (
+          previousAvailabilityConstraint.kind !== constraint.kind ||
+          previousAvailabilityConstraint.startDate !== constraint.startDate ||
+          previousAvailabilityConstraint.endDate !== constraint.endDate ||
+          previousAvailabilityConstraint.exactTime !== constraint.exactTime ||
+          previousAvailabilityConstraint.minTime !== constraint.minTime ||
+          previousAvailabilityConstraint.maxTime !== constraint.maxTime ||
+          previousAvailabilityConstraint.timeBoundary?.kind !==
+            constraint.timeBoundary?.kind ||
+          previousAvailabilityConstraint.timeBoundary?.time !==
+            constraint.timeBoundary?.time
+        )
+      );
+      const priorPendingBooking = pending;
+      if (pending) {
+        await clearPendingBooking(sessionId);
+        pending = null;
+      }
       const inferredService = normalizeBookingService(
         inferServiceFromRecentContext(text, history),
-        storedAvailability?.service || getDefaultBookingServiceForBusiness(businessConfig) || "Bokning"
+        storedAvailability?.service ||
+          priorPendingBooking?.service ||
+          getDefaultBookingServiceForBusiness(businessConfig) ||
+          "Bokning"
       );
       const durationMinutes = storedAvailability?.durationMinutes ||
+        Number(priorPendingBooking?.durationMinutes || 0) ||
         getDefaultBookingDurationForService(inferredService) ||
         inferBookingDurationFromContext(text, history);
-      const lockedLanguage = storedAvailability?.language || language;
+      const lockedLanguage =
+        storedAvailability?.language ||
+        priorPendingBooking?.language ||
+        getStoredFlowLanguage(sessionId) ||
+        language;
       lockConversationFlowLanguage(sessionId, lockedLanguage, "availability");
 
       const adapter = getCalendarAdapter(businessConfig);
-      const searchIsWithinConfiguredWindow = searchStart <= searchEnd;
+      const searchIsWithinConfiguredWindow =
+        constraint.startDate <= constraint.endDate;
       const canonicalOffers = searchIsWithinConfiguredWindow
         ? await createCanonicalOfferedSlots({
             adapter,
             owner: currentBookingSlotOwner,
             businessConfig,
-            startDate: searchStart,
-            endDate: searchEnd,
+            startDate: constraint.startDate,
+            endDate: constraint.endDate,
             service: inferredService,
             durationMinutes,
-            options: {
-          ...(original.minTime ? { minTime: original.minTime } : {}),
-          ...(original.maxTime ? { maxTime: original.maxTime } : {})
-            }
+            requestedTime: constraint.exactTime,
+            options: availabilityConstraintSlotOptions(constraint)
           })
         : { displaySlots: [], ownedSlots: [] };
       const slots = canonicalOffers.displaySlots;
 
       availabilitySearchContexts[sessionId] = {
-        startDate: parsedAvailabilityRange?.startDate || storedAvailability!.startDate,
-        endDate: parsedAvailabilityRange?.endDate || storedAvailability!.endDate,
-        minTime: original.minTime,
-        maxTime: original.maxTime,
+        constraint,
         service: inferredService,
         durationMinutes,
         language: lockedLanguage,
         businessId: currentAppointmentStateOwner.businessId,
         platform: currentAppointmentStateOwner.platform,
         userId: currentAppointmentStateOwner.userId,
-        savedAt: Date.now()
+        savedAt: Date.now(),
+        lastResultCategory: slots.length > 0 ? "available" : "no_availability"
       };
 
       if (slots.length > 0) {
+        const exactIso = constraint.exactTime
+          ? findOfferedSlotIso(slots, constraint.exactTime)
+          : null;
         await savePendingBooking(sessionId, platformName, {
           businessConfig,
           platform: platformName,
           service: inferredService,
-          selectedDate: null,
+          selectedDate:
+            constraint.startDate === constraint.endDate
+              ? constraint.startDate
+              : null,
           offeredSlots: slots,
           ownedOfferedSlots: canonicalOffers.ownedSlots,
-          availabilityStartDate: searchStart,
-          availabilityEndDate: searchEnd,
-          availabilityMinTime: original.minTime || null,
-          availabilityMaxTime: original.maxTime || null,
-          dateTime: null,
+          availabilityStartDate: constraint.startDate,
+          availabilityEndDate: constraint.endDate,
+          availabilityMinTime: constraint.minTime || null,
+          availabilityMaxTime: constraint.maxTime || null,
+          availabilityConstraint: constraint,
+          dateTime: exactIso,
           durationMinutes,
           language: lockedLanguage,
           operation: "new_booking",
           customerPhone: getWhatsAppConversationPhone(platformName, recipientUserId, sessionId),
-          status: "awaiting_time_selection"
+          status: exactIso ? "awaiting_confirmation" : "awaiting_time_selection"
         });
         pending = pendingBookings[sessionId];
       }
 
+      console.log("[AvailabilityFlow]", {
+        platform: platformName,
+        businessScopePresent: Boolean(currentAppointmentStateOwner.businessId),
+        flowType: "new_booking_availability",
+        previousConstraintType: priorConstraintType,
+        newConstraintType: constraint.kind,
+        staleConstraintsCleared,
+        localSearchStart: constraint.startDate,
+        localSearchEnd: constraint.endDate,
+        candidateCount: slots.length,
+        canonicalValidSlotCount: canonicalOffers.ownedSlots.length,
+        resultCategory: slots.length > 0 ? "available" : "no_availability"
+      });
+
+      const rangeReplyRequest: AvailabilityRangeRequest = {
+        startDate: constraint.startDate,
+        endDate: constraint.endDate,
+        ...(constraint.minTime ? { minTime: constraint.minTime } : {}),
+        ...(constraint.maxTime ? { maxTime: constraint.maxTime } : {}),
+        flexibleDays: constraint.startDate !== constraint.endDate
+      };
       await replyAndRecord(
-        formatRangeAvailabilityReply(slots, lockedLanguage, original, outsideOriginalRange)
+        outsideOriginalRange
+          ? formatRangeAvailabilityReply(
+              slots,
+              lockedLanguage,
+              rangeReplyRequest,
+              true
+            )
+          : formatSwedishTimeSlots(
+              slots,
+              constraint.exactTime,
+              lockedLanguage
+            )
       );
       return true;
     }
@@ -8453,7 +8759,7 @@ async function handleUnifiedBookingEngine(params: {
         inferBookingDurationFromContext(text, history);
 
       console.log(
-        `[UnifiedBooking] Date resolved platform=${platformName}, text=${JSON.stringify(text)}, date=${explicitDate}, duration=${durationMinutes}, time=${requestedTime || "none"}`
+        `[UnifiedBooking] Date resolved platform=${platformName}, date=${explicitDate}, duration=${durationMinutes}, timeConstraintPresent=${Boolean(requestedTime)}`
       );
 
       const canonicalOffers = await createCanonicalOfferedSlots({
@@ -8526,10 +8832,16 @@ async function handleUnifiedBookingEngine(params: {
             service: String(pending.service || "Bokning"),
             durationMinutes: Number(pending.durationMinutes || 60),
             requestedTime: resolvedSelectedTime,
-            options: {
-              ...(pending.availabilityMinTime ? { minTime: pending.availabilityMinTime } : {}),
-              ...(pending.availabilityMaxTime ? { maxTime: pending.availabilityMaxTime } : {})
-            }
+            options: pending.availabilityConstraint
+              ? availabilityConstraintSlotOptions(pending.availabilityConstraint)
+              : {
+                  ...(pending.availabilityMinTime
+                    ? { minTime: pending.availabilityMinTime }
+                    : {}),
+                  ...(pending.availabilityMaxTime
+                    ? { maxTime: pending.availabilityMaxTime }
+                    : {})
+                }
           });
           pending.offeredSlots = alternatives.displaySlots;
           pending.ownedOfferedSlots = alternatives.ownedSlots;
@@ -8625,10 +8937,16 @@ async function handleUnifiedBookingEngine(params: {
           service: String(pending.service || "Bokning"),
           durationMinutes: Number(pending.durationMinutes || 60),
           requestedTime: selectedTime || undefined,
-          options: {
-            ...(pending.availabilityMinTime ? { minTime: pending.availabilityMinTime } : {}),
-            ...(pending.availabilityMaxTime ? { maxTime: pending.availabilityMaxTime } : {})
-          }
+          options: pending.availabilityConstraint
+            ? availabilityConstraintSlotOptions(pending.availabilityConstraint)
+            : {
+                ...(pending.availabilityMinTime
+                  ? { minTime: pending.availabilityMinTime }
+                  : {}),
+                ...(pending.availabilityMaxTime
+                  ? { maxTime: pending.availabilityMaxTime }
+                  : {})
+              }
         });
         pending.status = "awaiting_time_selection";
         pending.offeredSlots = alternatives.displaySlots;
@@ -8773,10 +9091,16 @@ async function handleUnifiedBookingEngine(params: {
           service: String(pending.service || "Bokning"),
           durationMinutes: Number(pending.durationMinutes || 30),
           requestedTime: selectedTime || undefined,
-          options: {
-            ...(pending.availabilityMinTime ? { minTime: pending.availabilityMinTime } : {}),
-            ...(pending.availabilityMaxTime ? { maxTime: pending.availabilityMaxTime } : {})
-          }
+          options: pending.availabilityConstraint
+            ? availabilityConstraintSlotOptions(pending.availabilityConstraint)
+            : {
+                ...(pending.availabilityMinTime
+                  ? { minTime: pending.availabilityMinTime }
+                  : {}),
+                ...(pending.availabilityMaxTime
+                  ? { maxTime: pending.availabilityMaxTime }
+                  : {})
+              }
         });
         console.warn("[BookingFlow]", {
           platform: platformName,

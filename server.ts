@@ -1428,7 +1428,8 @@ class GoogleCalendarAdapter implements CalendarAdapter {
       });
       return false;
     } catch (e: any) {
-      if (Number(e?.code) === 404 || Number(e?.response?.status) === 404) {
+      const status = Number(e?.code || e?.response?.status);
+      if (status === 404 || status === 410) {
         return true;
       }
       console.error("Google Calendar verifyEventDeleted Error:", e.message);
@@ -1553,7 +1554,8 @@ class GoogleCalendarAdapter implements CalendarAdapter {
       await this.calendar.events.delete({ calendarId: this.calendarId, eventId });
       return { success: true };
     } catch (e: any) {
-      if (Number(e?.code) === 404 || Number(e?.response?.status) === 404) {
+      const status = Number(e?.code || e?.response?.status);
+      if (status === 404 || status === 410) {
         return { success: true, alreadyDeleted: true };
       }
       console.error("Google Calendar cancelAppointment Error:", e.message);
@@ -3847,6 +3849,31 @@ function getRecentCompletedCancellation(sessionId: string) {
     return null;
   }
   return completed;
+}
+
+function logInstagramCancellationStage(details: {
+  stage: string;
+  businessScopePresent: boolean;
+  result: string;
+  ownershipMatch?: boolean;
+  calendarVerified?: boolean;
+  databaseVerified?: boolean;
+}) {
+  console.log("[InstagramCancellation]", {
+    platform: "instagram",
+    stage: details.stage,
+    businessScopePresent: details.businessScopePresent,
+    result: details.result,
+    ...(typeof details.ownershipMatch === "boolean"
+      ? { ownershipMatch: details.ownershipMatch }
+      : {}),
+    ...(typeof details.calendarVerified === "boolean"
+      ? { calendarVerified: details.calendarVerified }
+      : {}),
+    ...(typeof details.databaseVerified === "boolean"
+      ? { databaseVerified: details.databaseVerified }
+      : {})
+  });
 }
 
 function formatCancellationDisabled(language: string): string {
@@ -6648,8 +6675,27 @@ async function handleUnifiedBookingEngine(params: {
 
   const completeCancellation = async (context: CancellationContext): Promise<boolean> => {
     const adapter = getCalendarAdapter(businessConfig);
+    const businessId = String(getBusinessIdFromConfig(businessConfig) || "");
+    const logCancellationStage = (
+      stage: string,
+      result: string,
+      details: Partial<{
+        ownershipMatch: boolean;
+        calendarVerified: boolean;
+        databaseVerified: boolean;
+      }> = {}
+    ) => {
+      if (platformName !== "instagram") return;
+      logInstagramCancellationStage({
+        stage,
+        businessScopePresent: Boolean(businessId),
+        result,
+        ...details
+      });
+    };
     const stateOwner = appointmentStateOwners[sessionId];
     if (!stateOwner || !appointmentStateOwnerMatches(stateOwner, currentAppointmentStateOwner)) {
+      logCancellationStage("ownership", "rejected", { ownershipMatch: false });
       clearAppointmentConversationState(sessionId);
       await replyAndRecord(formatStaleAppointmentStateMessage(context.language));
       return true;
@@ -6662,10 +6708,12 @@ async function handleUnifiedBookingEngine(params: {
       adapter
     );
     if (!appointment) {
+      logCancellationStage("ownership", "rejected", { ownershipMatch: false });
       clearAppointmentConversationState(sessionId);
       await replyAndRecord(formatStaleAppointmentStateMessage(context.language));
       return true;
     }
+    logCancellationStage("ownership", "verified", { ownershipMatch: true });
     if (classifyAppointmentTemporalState(appointment) !== "future_or_active") {
       clearCancellationContext(sessionId);
       await replyAndRecord(
@@ -6679,8 +6727,8 @@ async function handleUnifiedBookingEngine(params: {
     }
     const eventId = String(appointment?.calendarEventId || "");
     const appointmentId = getAppointmentMutationId(appointment);
-    const businessId = String(getBusinessIdFromConfig(businessConfig) || "");
     if (!eventId || !appointmentId || !adapter.cancelAppointment) {
+      logCancellationStage("mutation_prerequisites", "rejected");
       clearCancellationContext(sessionId);
       await replyAndRecord(context.language === "sv"
         ? "Jag hittade bokningen, men den saknar ett kalender-id för säker avbokning. En medarbetare behöver hjälpa till. 🙏"
@@ -6708,6 +6756,12 @@ async function handleUnifiedBookingEngine(params: {
         "cancel"
       ].join("|")
     });
+    logCancellationStage(
+      "operation_claim",
+      operationClaim.claimed
+        ? "acquired"
+        : `duplicate_${operationClaim.duplicateStatus || "processing"}`
+    );
     if (!operationClaim.claimed) {
       console.log("[Idempotency] Duplicate cancellation confirmation suppressed.", {
         platform: platformName,
@@ -6820,17 +6874,27 @@ async function handleUnifiedBookingEngine(params: {
     };
 
     let calendarResult: any;
+    logCancellationStage("calendar_delete", "started");
     try {
       calendarResult = await adapter.cancelAppointment(eventId);
     } catch (calendarError) {
+      logCancellationStage("calendar_delete", "crashed");
       console.error("[Cancellation] Calendar delete crashed:", calendarError);
       return failCancellation("calendar_delete_crashed");
     }
     if (!calendarResult?.success) {
+      logCancellationStage("calendar_delete", "failed");
       return failCancellation("calendar_delete_failed");
     }
     calendarWasDeleted = true;
-    if (!(await verifyCalendarDeleted())) {
+    logCancellationStage("calendar_delete", "completed");
+    const initialCalendarVerification = await verifyCalendarDeleted();
+    logCancellationStage(
+      "calendar_verification",
+      initialCalendarVerification ? "verified_deleted" : "not_verified",
+      { calendarVerified: initialCalendarVerification }
+    );
+    if (!initialCalendarVerification) {
       return failCancellation("calendar_delete_not_verified");
     }
 
@@ -6877,17 +6941,41 @@ async function handleUnifiedBookingEngine(params: {
       );
       const dbStatusMatches =
         String(updatedRow?.status || "").toLowerCase() === "cancelled";
+      logCancellationStage(
+        "database_verification",
+        !dbError && databaseWasUpdated && dbOwnerMatches && dbStatusMatches
+          ? "verified_cancelled"
+          : "not_verified",
+        {
+          ownershipMatch: dbOwnerMatches,
+          databaseVerified: Boolean(
+            !dbError && databaseWasUpdated && dbOwnerMatches && dbStatusMatches
+          )
+        }
+      );
       if (dbError || !databaseWasUpdated || !dbOwnerMatches || !dbStatusMatches) {
         return failCancellation("database_update_not_verified");
       }
+    } else {
+      logCancellationStage("database_verification", "not_applicable");
     }
 
-    if (!(await verifyCalendarDeleted())) {
+    const finalCalendarVerification = await verifyCalendarDeleted();
+    logCancellationStage(
+      "calendar_post_database_verification",
+      finalCalendarVerification ? "verified_deleted" : "not_verified",
+      { calendarVerified: finalCalendarVerification }
+    );
+    if (!finalCalendarVerification) {
       return failCancellation("calendar_post_database_verification_failed");
     }
     const operationCompletionRecorded = await settleAtomicOperation(
       operationClaim,
       "completed"
+    );
+    logCancellationStage(
+      "operation_settlement",
+      operationCompletionRecorded ? "completed" : "failed"
     );
     if (!operationCompletionRecorded) {
       return failCancellation("operation_completion_not_durable");
@@ -6918,9 +7006,14 @@ async function handleUnifiedBookingEngine(params: {
       context.language
     );
     try {
-      await send(successReply);
+      const deliveryResult = await send(successReply);
+      if (deliveryResult === false) {
+        throw new Error("customer_success_delivery_failed");
+      }
       appendLocalHistory(sessionId, text, successReply);
+      logCancellationStage("customer_reply", "sent");
     } catch (sendError) {
+      logCancellationStage("customer_reply", "delivery_failed");
       // The durable operation is complete. Never let a transport exception fall
       // through to Instagram's generic error handler and create a false failure.
       console.error("[Cancellation] Terminal customer success delivery failed:", sendError);
@@ -12754,16 +12847,36 @@ async function processInstagramUpdate(webhook_event: any, config: any, platform:
   if (webhook_event?.message?.is_echo) return;
   const messageId = String(webhook_event?.message?.mid || "").trim();
   const tenantScope = String(webhook_event?.recipient?.id || "").trim();
+  const cancellationTurn = Boolean(
+    webhook_event?.sender?.id &&
+    getCancellationContext(`ig_${webhook_event.sender.id}`)
+  );
   if (!messageId || !tenantScope) {
     console.warn("[Idempotency] Instagram message refused: exact message id or tenant scope is missing.");
     return;
+  }
+  if (cancellationTurn) {
+    logInstagramCancellationStage({
+      stage: "inbound_claim",
+      businessScopePresent: Boolean(getBusinessIdFromConfig(config)),
+      result: "requested"
+    });
   }
   await runWithInboundMessageClaim({
     tenantScope,
     businessId: String(getBusinessIdFromConfig(config) || ""),
     platform: "instagram",
     messageId,
-    handler: () => processInstagramUpdateClaimed(webhook_event, config, platform)
+    handler: async () => {
+      if (cancellationTurn) {
+        logInstagramCancellationStage({
+          stage: "inbound_claim",
+          businessScopePresent: Boolean(getBusinessIdFromConfig(config)),
+          result: "acquired"
+        });
+      }
+      await processInstagramUpdateClaimed(webhook_event, config, platform);
+    }
   });
 }
 

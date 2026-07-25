@@ -3240,12 +3240,20 @@ type CancellationContext = {
 };
 
 const cancellationContexts: Record<string, CancellationContext> = {};
-const recentlyCompletedCancellations: Record<string, {
+type CompletedCancellationResult = {
   completedAt: number;
+  businessId: string;
+  platform: string;
+  userId: string;
   appointmentId: string;
   calendarEventId: string;
+  operationType: "cancel";
   language: string;
-}> = {};
+  successReply: string;
+  replyAttempted: boolean;
+  replySent: boolean;
+};
+const recentlyCompletedCancellations: Record<string, CompletedCancellationResult> = {};
 const appointmentStateOwners: Record<string, AppointmentStateOwner> = {};
 type AvailabilityConstraintKind =
   | "whole_day"
@@ -3822,6 +3830,19 @@ function isCancellationConfirmation(text?: string): boolean {
     /^(?:bekrafta|avboka|avboka den|confirm|cancel it|taeed|تایید|لغو کن)$/u.test(raw);
 }
 
+function isCompletedCancellationStatusQuestion(text?: string): boolean {
+  const raw = normalizeConfirmationReply(text);
+  if (!raw) return false;
+  return (
+    /\b(?:did you cancel|was (?:it|my appointment|my booking) cancel(?:led|ed)|is (?:it|my appointment|my booking) cancel(?:led|ed))\b/u.test(raw) ||
+    /\b(?:avbokade du|blev (?:tiden|bokningen) avbokad|ar (?:tiden|bokningen) avbokad)\b/u.test(raw) ||
+    /\b(?:haben sie (?:den termin|meine buchung) storniert|wurde (?:der termin|meine buchung) storniert)\b/u.test(raw) ||
+    /\b(?:cancelaste (?:mi cita|mi reserva)|se cancelo (?:mi cita|mi reserva)|esta cancelada (?:mi cita|mi reserva))\b/u.test(raw) ||
+    /\b(?:did you laghv|laghv shod|cancel shod)\b/u.test(raw) ||
+    /(?:لغو\s*(?:کردید|شد)|آیا.*لغو|هل.*(?:ألغيت|ألغي|تم إلغاء)|تم\s*إلغاء)/u.test(String(text || ""))
+  );
+}
+
 function isCancellationRejection(text?: string): boolean {
   const raw = String(text || "").trim().toLowerCase();
   return /^(?:nej|nej tack|avbryt|no|keep it|don'?t cancel|na|نه|خیر|لغو نکن)[!.؟?\s]*$/iu.test(raw);
@@ -3872,14 +3893,116 @@ function clearCancellationContext(sessionId: string) {
   delete cancellationContexts[sessionId];
 }
 
-function getRecentCompletedCancellation(sessionId: string) {
-  const completed = recentlyCompletedCancellations[sessionId];
-  if (!completed) return null;
-  if (Date.now() - completed.completedAt > 30 * 60 * 1000) {
-    delete recentlyCompletedCancellations[sessionId];
+function getCompletedCancellationOperationKey(result: {
+  businessId: string;
+  platform: string;
+  userId: string;
+  appointmentId: string;
+  calendarEventId: string;
+}) {
+  return [
+    result.businessId,
+    normalizePlatformName(result.platform),
+    normalizePlatformUserId(result.platform, result.userId),
+    result.appointmentId,
+    result.calendarEventId,
+    "cancel"
+  ].join("|");
+}
+
+function getCompletedCancellationStorageId(owner: {
+  businessId: string;
+  platform: string;
+  userId: string;
+}) {
+  const ownerKey = [
+    owner.businessId,
+    normalizePlatformName(owner.platform),
+    normalizePlatformUserId(owner.platform, owner.userId),
+    "recent_completed_cancellation"
+  ].join("|");
+  return `cancelresult_${crypto.createHash("sha256").update(ownerKey).digest("hex").slice(0, 48)}`;
+}
+
+async function rememberCompletedCancellation(
+  result: CompletedCancellationResult
+) {
+  const operationKey = getCompletedCancellationOperationKey(result);
+  recentlyCompletedCancellations[operationKey] = result;
+  if (!supabase || normalizePlatformName(result.platform) !== "instagram") return;
+  try {
+    const { error } = await supabase
+      .from("appointments_leads")
+      .upsert([{
+        user_id: getCompletedCancellationStorageId(result),
+        platform: `operation:${normalizePlatformName(result.platform)}`,
+        business_id: result.businessId,
+        ai_summary: JSON.stringify(result)
+      }], { onConflict: "user_id" });
+    if (error) {
+      logInstagramCancellationDiagnostic({
+        engineResultType: "completed_result_persistence_failed"
+      });
+    }
+  } catch {
+    logInstagramCancellationDiagnostic({
+      engineResultType: "completed_result_persistence_failed"
+    });
+  }
+}
+
+async function getRecentCompletedCancellation(owner: {
+  businessId: string;
+  platform: string;
+  userId: string;
+}): Promise<CompletedCancellationResult | null> {
+  const normalizedPlatform = normalizePlatformName(owner.platform);
+  const normalizedUserId = normalizePlatformUserId(
+    normalizedPlatform,
+    owner.userId
+  );
+  const matchesOwner = (item: CompletedCancellationResult) =>
+    item.businessId === owner.businessId &&
+    normalizePlatformName(item.platform) === normalizedPlatform &&
+    normalizePlatformUserId(item.platform, item.userId) === normalizedUserId;
+  const memoryMatch = Object.values(recentlyCompletedCancellations)
+    .filter(matchesOwner)
+    .sort((a, b) => b.completedAt - a.completedAt)[0];
+  if (memoryMatch) {
+    if (Date.now() - memoryMatch.completedAt <= 30 * 60 * 1000) {
+      return memoryMatch;
+    }
+    delete recentlyCompletedCancellations[
+      getCompletedCancellationOperationKey(memoryMatch)
+    ];
+  }
+  if (!supabase || normalizedPlatform !== "instagram") return null;
+  try {
+    const { data, error } = await supabase
+      .from("appointments_leads")
+      .select("ai_summary,business_id,platform")
+      .eq("user_id", getCompletedCancellationStorageId(owner))
+      .eq("business_id", owner.businessId)
+      .maybeSingle();
+    if (error || !data?.ai_summary) return null;
+    const parsed = typeof data.ai_summary === "string"
+      ? JSON.parse(data.ai_summary)
+      : data.ai_summary;
+    const completed = parsed as CompletedCancellationResult;
+    if (
+      !completed ||
+      completed.operationType !== "cancel" ||
+      String(data.platform || "") !== `operation:${normalizedPlatform}` ||
+      !matchesOwner(completed) ||
+      Date.now() - Number(completed.completedAt || 0) > 30 * 60 * 1000
+    ) return null;
+    recentlyCompletedCancellations[
+      getCompletedCancellationOperationKey(completed)
+    ] = completed;
+    return completed;
+  } catch {
     return null;
   }
-  return completed;
 }
 
 function logInstagramCancellationDiagnostic(details: {
@@ -3895,6 +4018,13 @@ function logInstagramCancellationDiagnostic(details: {
   calendarVerificationResult?: boolean;
   databaseVerificationResult?: boolean;
   finalSettlement?: string;
+  engineResultType?: string;
+  settlementCompleted?: boolean;
+  successReplyAttempted?: boolean;
+  successReplySent?: boolean;
+  outerFallbackSuppressed?: boolean;
+  duplicateConfirmationSuppressed?: boolean;
+  completedCancellationStatusQueryReply?: boolean;
 }) {
   console.log("[InstagramCancellation]", details);
 }
@@ -7034,34 +7164,57 @@ async function handleUnifiedBookingEngine(params: {
       lastOperation: "completed",
       savedAt: Date.now()
     };
-    recentlyCompletedCancellations[sessionId] = {
+    const localizedSuccessReply = formatCancellationSuccess(
+      context.language,
+      context.feeApplies,
+      context.feeAmount,
+      context.currency
+    );
+    let successReply = localizedSuccessReply;
+    try {
+      successReply = guardCustomerFacingReply(
+        sessionId,
+        localizedSuccessReply,
+        context.language
+      );
+    } catch {
+      successReply = localizedSuccessReply;
+    }
+    const completedCancellation: CompletedCancellationResult = {
       completedAt: Date.now(),
+      businessId,
+      platform: platformName,
+      userId: currentAppointmentStateOwner.userId,
       appointmentId,
       calendarEventId: eventId,
-      language: context.language
+      operationType: "cancel",
+      language: context.language,
+      successReply,
+      replyAttempted: false,
+      replySent: false
     };
-
-    const successReply = guardCustomerFacingReply(
-      sessionId,
-      formatCancellationSuccess(
-        context.language,
-        context.feeApplies,
-        context.feeAmount,
-        context.currency
-      ),
-      context.language
-    );
+    await rememberCompletedCancellation(completedCancellation);
+    logCancellationDiagnostic({
+      engineResultType: "cancellation_completed",
+      settlementCompleted: true
+    });
     try {
+      completedCancellation.replyAttempted = true;
+      logCancellationDiagnostic({ successReplyAttempted: true });
       const deliveryResult = await send(successReply);
       if (deliveryResult === false) {
         throw new Error("customer_success_delivery_failed");
       }
+      completedCancellation.replySent = true;
       appendLocalHistory(sessionId, text, successReply);
+      logCancellationDiagnostic({ successReplySent: true });
     } catch (sendError) {
+      logCancellationDiagnostic({ successReplySent: false });
       // The durable operation is complete. Never let a transport exception fall
       // through to Instagram's generic error handler and create a false failure.
       console.error("[Cancellation] Terminal customer success delivery failed:", sendError);
     }
+    await rememberCompletedCancellation(completedCancellation);
     try {
       await postProcessMessage(
         recipientUserId,
@@ -7672,20 +7825,38 @@ async function handleUnifiedBookingEngine(params: {
       return true;
     }
 
-    const recentlyCancelled = getRecentCompletedCancellation(sessionId);
-    if (
-      recentlyCancelled &&
-      !pending &&
-      !getCancellationContext(sessionId) &&
-      !getRescheduleContext(sessionId) &&
-      isCancellationConfirmation(text)
-    ) {
-      console.log("[Idempotency] Repeated post-cancellation confirmation suppressed.", {
-        platform: platformName,
-        operation: "cancellation",
-        completed: true
-      });
-      return true;
+    const recentlyCancelled = await getRecentCompletedCancellation(
+      currentAppointmentStateOwner
+    );
+    if (recentlyCancelled) {
+      if (
+        isCancellationConfirmation(text) ||
+        (
+          platformName === "instagram" &&
+          isCompletedCancellationStatusQuestion(text)
+        )
+      ) {
+        clearAppointmentConversationState(sessionId);
+        await clearPendingBooking(sessionId);
+      }
+      if (isCancellationConfirmation(text)) {
+        logCancellationDiagnostic({
+          duplicateConfirmationSuppressed: true,
+          engineResultType: "completed_cancellation_duplicate"
+        });
+        return true;
+      }
+      if (
+        platformName === "instagram" &&
+        isCompletedCancellationStatusQuestion(text)
+      ) {
+        logCancellationDiagnostic({
+          completedCancellationStatusQueryReply: true,
+          engineResultType: "completed_cancellation_status"
+        });
+        await replyAndRecord(recentlyCancelled.successReply);
+        return true;
+      }
     }
     const recoveryIntent = isExistingBookingOperationRecoveryIntent(text);
     const priorityReschedule = getRescheduleContext(sessionId);
@@ -13373,6 +13544,19 @@ try {
   console.error('Instagram postProcessMessage failed:', e);
 }
   } catch (err: any) {
+    const completedCancellation = await getRecentCompletedCancellation({
+      businessId: String(getBusinessIdFromConfig(businessConfig) || ""),
+      platform: "instagram",
+      userId: String(senderId || "")
+    });
+    if (completedCancellation) {
+      logInstagramCancellationDiagnostic({
+        engineResultType: "cancellation_completed",
+        settlementCompleted: true,
+        outerFallbackSuppressed: true
+      });
+      return;
+    }
     console.error('IG processing error:', err);
    const errorLanguage = chatLanguages[chatId] || userLanguage || "en";
    const errorMessage = getErrorMessageByLanguage(errorLanguage);

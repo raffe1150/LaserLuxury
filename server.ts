@@ -295,6 +295,7 @@ interface CalendarAdapter {
   updateAppointment?(eventId: string, dateTime: string, durationMinutes?: number): Promise<any> | any;
   cancelAppointment?(eventId: string): Promise<any> | any;
   getEventById?(eventId: string): Promise<any | null> | any | null;
+  verifyEventDeleted?(eventId: string): Promise<boolean> | boolean;
   getEvents(startDate: string, endDate: string): Promise<any> | any;
 }
 
@@ -1196,6 +1197,9 @@ class MockCalendarAdapter implements CalendarAdapter {
   getEventById(eventId: string) {
     return this.events.find((item: any) => String(item.id) === String(eventId)) || null;
   }
+  verifyEventDeleted(eventId: string) {
+    return !this.events.some((item: any) => String(item.id) === String(eventId));
+  }
   insertAppointment(name: string, phone: string, service: string, dateTime: string, durationMinutes: number = 60, chatId?: string, _skipConflictCheck: boolean = false) {
     const conflicting = this.events.filter(e => e.startTime === dateTime);
     if(conflicting.length > 0) return { success: false, message: "Slot already booked." };
@@ -1262,6 +1266,19 @@ class GenericCalendarAdapter implements CalendarAdapter {
     } catch (e) {
       return null;
     }
+  }
+
+  async verifyEventDeleted(eventId: string) {
+    if (!eventId) return false;
+    const headers: any = {};
+    if (this.apiKey) headers["Authorization"] = `Bearer ${this.apiKey}`;
+    const res = await fetch(
+      `${this.apiUrl}/events/${encodeURIComponent(eventId)}`,
+      { headers }
+    );
+    if (res.status === 404 || res.status === 410) return true;
+    if (res.ok) return false;
+    throw new Error(`Calendar deletion verification failed with status ${res.status}`);
   }
 
   async insertAppointment(name: string, phone: string, service: string, dateTime: string, durationMinutes?: number, chatId?: string, _skipConflictCheck: boolean = false) {
@@ -1399,6 +1416,23 @@ class GoogleCalendarAdapter implements CalendarAdapter {
     } catch (e: any) {
       console.error("Google Calendar getEventById Error:", e.message);
       return null;
+    }
+  }
+
+  async verifyEventDeleted(eventId: string) {
+    try {
+      if (!eventId) return false;
+      await this.calendar.events.get({
+        calendarId: this.calendarId,
+        eventId
+      });
+      return false;
+    } catch (e: any) {
+      if (Number(e?.code) === 404 || Number(e?.response?.status) === 404) {
+        return true;
+      }
+      console.error("Google Calendar verifyEventDeleted Error:", e.message);
+      throw e;
     }
   }
 
@@ -1990,6 +2024,66 @@ function rowMatchesSecureRecoveryAttributes(
   return nameMatches || dateTimeMatches;
 }
 
+function calendarEventMatchesSecureRecoveryAttributes(
+  event: any,
+  suppliedPhone: string,
+  suppliedName?: string,
+  requestedDate?: string,
+  approximateTime?: string,
+  requestedService?: string,
+  toleranceMinutes: number = 30
+): boolean {
+  const phoneDigits = normalizeLookupDigits(suppliedPhone);
+  if (phoneDigits.length < 7 || !calendarEventHasExactPhone(event, phoneDigits)) {
+    return false;
+  }
+
+  const summary = String(event?.summary || event?.title || "");
+  const description = String(event?.description || "");
+  const summaryName = summary.match(/^Bokad:\s*(.*?)\s*-\s*(?:\+?[\d\s()/-]+)$/i)?.[1] || "";
+  const descriptionName = description.match(
+    /(?:CustomerName|Customer Name|Namn|Name)\s*:\s*([^\n]+)/i
+  )?.[1] || "";
+  const normalizedName = normalizeRecoveryName(suppliedName);
+  const eventName = normalizeRecoveryName(summaryName || descriptionName);
+  const nameMatches = Boolean(
+    normalizedName.length >= 2 &&
+    eventName.length >= 2 &&
+    normalizedName === eventName
+  );
+
+  const eventStart = new Date(getEventStartIso(event));
+  const eventDate = Number.isNaN(eventStart.getTime())
+    ? ""
+    : stockholmDateString(eventStart);
+  const eventMinutes = Number.isNaN(eventStart.getTime())
+    ? null
+    : timeTextToMinutes(
+        eventStart.toLocaleTimeString("sv-SE", {
+          timeZone: "Europe/Stockholm",
+          hour: "2-digit",
+          minute: "2-digit"
+        })
+      );
+  const requestedMinutes = timeTextToMinutes(approximateTime);
+  const dateTimeMatches = Boolean(
+    requestedDate &&
+    requestedMinutes !== null &&
+    eventDate === requestedDate &&
+    eventMinutes !== null &&
+    Math.abs(eventMinutes - requestedMinutes) <= toleranceMinutes
+  );
+
+  const normalizedService = normalizeLookupText(requestedService);
+  if (
+    normalizedService &&
+    normalizedService !== "bokning" &&
+    !normalizeLookupText(`${summary} ${description}`).includes(normalizedService)
+  ) return false;
+
+  return nameMatches || dateTimeMatches;
+}
+
 async function findCustomerAppointments(
   adapter: CalendarAdapter,
   args: any,
@@ -2272,6 +2366,7 @@ async function findCustomerAppointments(
     calendarEventBusinessMarkerMatches(event, getAppointmentBusinessScope(businessConfig))
   );
   let secureCalendarSelection;
+  let secureCalendarRecoveryMatched = false;
 
   if (normalizedPlatform === "messenger") {
     const exactMessengerEvents = eligibleEvents.filter((event: any) =>
@@ -2336,6 +2431,80 @@ async function findCustomerAppointments(
           rangeEndMs,
           getEventStartIso
         );
+
+    if (
+      normalizedPlatform === "telegram" &&
+      secureCalendarSelection.events.length === 0 &&
+      args?.secureRecovery === true &&
+      normalizeLookupDigits(phone).length >= 7
+    ) {
+      secureRecoveryAttempted = true;
+      const recoveryEvents = eligibleEvents.filter((event: any) => {
+        if (!isActiveAppointmentStatus(event?.status)) return false;
+        const startMs = new Date(getEventStartIso(event)).getTime();
+        if (!Number.isFinite(startMs) || startMs < rangeStartMs || startMs > rangeEndMs) {
+          return false;
+        }
+        if (lookupMode === "upcoming" && startMs < now) return false;
+        if (lookupMode === "history" && startMs > now) return false;
+
+        const privateProperties = event?.extendedProperties?.private || {};
+        const markedPlatform = normalizePlatformName(
+          String(privateProperties.platform || "")
+        );
+        const markedUserId = normalizePlatformUserId(
+          markedPlatform || "telegram",
+          String(privateProperties.userId || privateProperties.user_id || "")
+        );
+        if (markedPlatform && markedPlatform !== "telegram") return false;
+        if (markedUserId && markedUserId !== normalizedCustomerId) return false;
+
+        return calendarEventMatchesSecureRecoveryAttributes(
+          event,
+          phone,
+          args?.name,
+          args?.requestedDate,
+          args?.approximateTime,
+          args?.service,
+          30
+        );
+      });
+
+      if (recoveryEvents.length > 1) {
+        logAppointmentLookupDiagnostic({
+          path: lookupPath,
+          businessScopePresent: Boolean(businessId),
+          platform: normalizedPlatform,
+          exactIdentityMatchCount: 0,
+          verifiedPhoneFallbackUsed: false,
+          returnedResultCount: 0
+        });
+        return {
+          success: true,
+          found: false,
+          needsContactDetails: false,
+          searchedFrom: startDate,
+          searchedTo: endDate,
+          lookupMode,
+          historyWindowLimited,
+          olderHistorySearched,
+          verifiedPhoneAccepted: false,
+          secureRecoveryAttempted: true,
+          secureRecoveryAmbiguous: true,
+          identityKey: "",
+          appointments: []
+        };
+      }
+
+      if (recoveryEvents.length === 1) {
+        secureCalendarSelection = {
+          events: recoveryEvents,
+          identityKey: `phone:${normalizeLookupDigits(phone)}`,
+          matchedBy: "secure_recovery" as const
+        };
+        secureCalendarRecoveryMatched = true;
+      }
+    }
     exactIdentityMatchCount = secureCalendarSelection.matchedBy === "channel"
       ? secureCalendarSelection.events.length
       : 0;
@@ -2398,7 +2567,7 @@ async function findCustomerAppointments(
     olderHistorySearched,
     verifiedPhoneAccepted: normalizeLookupDigits(verifiedPhone).length >= 7,
     secureRecoveryAttempted,
-    secureRecoveryMatched: false,
+    secureRecoveryMatched: secureCalendarRecoveryMatched,
     identityKey: secureCalendarSelection.identityKey,
     matchedBy: secureCalendarSelection.matchedBy,
     identityVerified: appointments.length > 0,
@@ -2655,6 +2824,19 @@ function formatAppointmentLookupReply(result: any, language: string = "en"): str
       en: "I can’t find an upcoming booking here 😊 What mobile number did you book with?"
     };
     return none[lang];
+  }
+
+  if (result.appointments.length === 1) {
+    const temporalState = classifyAppointmentTemporalState(
+      result.appointments[0]
+    );
+    if (temporalState !== "future_or_active") {
+      return formatPastAppointmentMutationReply(
+        result.appointments[0],
+        temporalState,
+        lang
+      );
+    }
   }
 
   const selectionPrompt = formatAppointmentSelectionPrompt(result, lang);
@@ -2930,6 +3112,9 @@ const appointmentSelectionContexts: Record<string, { appointments: any[]; savedA
 type AppointmentLookupContext = {
   savedAt: number;
   language: string;
+  businessId?: string;
+  platform?: string;
+  userId?: string;
   includePast?: boolean;
   lookupMode?: AppointmentLookupMode;
   historyWindowLimited?: boolean;
@@ -2940,6 +3125,9 @@ type AppointmentLookupContext = {
   requestedDate?: string;
   approximateTime?: string;
   requestedService?: string;
+  lookupAlreadyRan?: boolean;
+  additionalIdentificationRequired?: boolean;
+  lastPromptKey?: string;
   recoveryMode?: boolean;
   recoveryPromptCount?: number;
   phoneReceivedAt?: number;
@@ -2999,7 +3187,32 @@ type RescheduleContext = {
 const RESCHEDULE_CONTEXT_TTL_MS = Number(process.env.RESCHEDULE_CONTEXT_TTL_MINUTES || 60) * 60 * 1000;
 const rescheduleContexts: Record<string, RescheduleContext> = {};
 const recentlyCompletedReschedules: Record<string, { completedAt: number; eventId: string; newStartTime: string }> = {};
-const cancellationContexts: Record<string, { appointment: any; savedAt: number; language: string; feeApplies: boolean; feeAmount: number; currency: string; awaitingReason: boolean; reason?: string }> = {};
+type CancellationOperation =
+  | "awaiting_reason"
+  | "awaiting_confirmation"
+  | "processing"
+  | "completed"
+  | "failed";
+
+type CancellationContext = {
+  appointment: any;
+  savedAt: number;
+  language: string;
+  feeApplies: boolean;
+  feeAmount: number;
+  currency: string;
+  awaitingReason: boolean;
+  reason?: string;
+  lastOperation: CancellationOperation;
+};
+
+const cancellationContexts: Record<string, CancellationContext> = {};
+const recentlyCompletedCancellations: Record<string, {
+  completedAt: number;
+  appointmentId: string;
+  calendarEventId: string;
+  language: string;
+}> = {};
 const appointmentStateOwners: Record<string, AppointmentStateOwner> = {};
 type AvailabilityConstraintKind =
   | "whole_day"
@@ -3310,14 +3523,33 @@ function rememberAppointmentLookupContext(
   historyWindowLimited: boolean = false,
   updates: Partial<AppointmentLookupContext> = {}
 ) {
+  const owner = appointmentStateOwners[sessionId];
+  const nextAction = updates.nextAction ??
+    appointmentLookupContexts[sessionId]?.nextAction;
   appointmentLookupContexts[sessionId] = {
     ...(appointmentLookupContexts[sessionId] || {}),
+    ...(owner
+      ? {
+          businessId: owner.businessId,
+          platform: normalizePlatformName(owner.platform),
+          userId: normalizePlatformUserId(owner.platform, owner.userId)
+        }
+      : {}),
     ...updates,
     savedAt: Date.now(),
     language,
     includePast,
     lookupMode,
-    historyWindowLimited
+    historyWindowLimited,
+    lookupAlreadyRan: Boolean(
+      updates.lookupAttemptedAt ||
+      appointmentLookupContexts[sessionId]?.lookupAttemptedAt
+    ),
+    additionalIdentificationRequired: [
+      "awaiting_verified_phone",
+      "awaiting_recovery_attribute",
+      "clarify_recovery"
+    ].includes(String(nextAction || ""))
   };
 }
 
@@ -3551,8 +3783,10 @@ function isCancellationIntent(text?: string): boolean {
 }
 
 function isCancellationConfirmation(text?: string): boolean {
-  const raw = String(text || "").trim().toLowerCase();
-  return /^(?:ja|ja tack|bekräfta|bekrafta|avboka|avboka den|yes|confirm|cancel it|bale|baleh|are|taeed|تایید|تأیید|بله|آره|لغو کن)[!.؟?\s]*$/iu.test(raw);
+  const raw = normalizeConfirmationReply(text);
+  if (!raw || isCancellationRejection(raw)) return false;
+  return isCompoundAffirmativeReply(raw) ||
+    /^(?:bekrafta|avboka|avboka den|confirm|cancel it|taeed|تایید|لغو کن)$/u.test(raw);
 }
 
 function isCancellationRejection(text?: string): boolean {
@@ -3586,7 +3820,8 @@ function rememberCancellationContext(sessionId: string, appointment: any, langua
     feeApplies: fee.feeApplies,
     feeAmount: fee.feeAmount,
     currency: fee.currency,
-    awaitingReason: true
+    awaitingReason: true,
+    lastOperation: "awaiting_reason"
   };
 }
 
@@ -3602,6 +3837,16 @@ function getCancellationContext(sessionId: string) {
 
 function clearCancellationContext(sessionId: string) {
   delete cancellationContexts[sessionId];
+}
+
+function getRecentCompletedCancellation(sessionId: string) {
+  const completed = recentlyCompletedCancellations[sessionId];
+  if (!completed) return null;
+  if (Date.now() - completed.completedAt > 30 * 60 * 1000) {
+    delete recentlyCompletedCancellations[sessionId];
+    return null;
+  }
+  return completed;
 }
 
 function formatCancellationDisabled(language: string): string {
@@ -5259,6 +5504,17 @@ function isWholeDayAvailabilityRequest(text?: string): boolean {
   );
 }
 
+function isAvailabilityPivotFromFailedLookup(text?: string): boolean {
+  if (!resolveExplicitBookingDate(text)) return false;
+  const raw = normalizeConfirmationReply(text);
+  return (
+    isWholeDayAvailabilityRequest(text) ||
+    isNewBookingRequestText(text) ||
+    /\b(?:what\s+about|how\s+about|do\s+you\s+have|available|ledig|ledigt|vad\s+s[aä]gs\s+om|wie\s+w[aä]re\s+es|hast\s+du\s+zeit|qu[eé]\s+tal|tienes\s+hora|chetor(?:e)?|vaght\s+dari)\b/iu.test(raw) ||
+    /(?:وقت\s+داری|زمان\s+خالی|چه(?:طور|‌طور)\s+است|ماذا\s+عن|هل\s+لديك\s+وقت|موعد\s+متاح)/u.test(String(text || ""))
+  );
+}
+
 function deriveCanonicalAvailabilityConstraint(
   text: string,
   businessConfig: any,
@@ -5780,7 +6036,10 @@ type TelegramPollerState = {
 const telegramPollers: Record<string, TelegramPollerState> = {};
 
 type AtomicClaimState = {
-  type: "inbound_message_claim" | "reschedule_operation_claim";
+  type:
+    | "inbound_message_claim"
+    | "reschedule_operation_claim"
+    | "cancellation_operation_claim";
   status: "processing" | "completed" | "failed";
   attempts: number;
   claimedAt: number;
@@ -5813,7 +6072,11 @@ function parseAtomicClaimState(value: any): AtomicClaimState | null {
     const parsed = typeof value === "string" ? JSON.parse(value) : value;
     if (
       !parsed ||
-      !["inbound_message_claim", "reschedule_operation_claim"].includes(parsed.type) ||
+      ![
+        "inbound_message_claim",
+        "reschedule_operation_claim",
+        "cancellation_operation_claim"
+      ].includes(parsed.type) ||
       !["processing", "completed", "failed"].includes(parsed.status)
     ) return null;
     return {
@@ -5849,7 +6112,12 @@ async function claimAtomicOperation(params: {
   const now = Date.now();
   const rawKey = `${params.type}|${tenantScope}|${platform}|${exactId}`;
   const keyHash = crypto.createHash("sha256").update(rawKey).digest("hex");
-  const storageId = `${params.type === "inbound_message_claim" ? "idem" : "resop"}_${keyHash.slice(0, 48)}`;
+  const claimPrefix = params.type === "inbound_message_claim"
+    ? "idem"
+    : params.type === "reschedule_operation_claim"
+      ? "resop"
+      : "cancelop";
+  const storageId = `${claimPrefix}_${keyHash.slice(0, 48)}`;
   const existingMemory = atomicClaims.get(keyHash);
 
   if (existingMemory) {
@@ -6319,17 +6587,19 @@ async function handleUnifiedBookingEngine(params: {
 
   // A validated reschedule flow owns short confirmations and slot follow-ups. Clear any
   // unrelated pending new-booking state before it can ask for contact details.
-  if (entryRescheduleContext && !isExplicitNewBookingRequest(text) && pending) {
+  if (entryCancellationContext && !isExplicitNewBookingRequest(text) && pending) {
+    console.log(`[UnifiedBooking] Active cancellation cleared incompatible pending booking session=${sessionId}`);
+    await clearPendingBooking(sessionId);
+    pending = null;
+  } else if (entryRescheduleContext && !isExplicitNewBookingRequest(text) && pending) {
     console.log(`[UnifiedBooking] Active reschedule cleared incompatible pending booking session=${sessionId}`);
     await clearPendingBooking(sessionId);
     pending = null;
   }
-  if (entryRescheduleContext) {
+  if (entryCancellationContext) {
+    clearRescheduleContext(sessionId);
+  } else if (entryRescheduleContext) {
     clearCancellationContext(sessionId);
-  } else if (entryCancellationContext && !isExplicitNewBookingRequest(text) && pending) {
-    console.log(`[UnifiedBooking] Active cancellation cleared incompatible pending booking session=${sessionId}`);
-    await clearPendingBooking(sessionId);
-    pending = null;
   }
 
   // A restored flow may change language only after a meaningful, clearly different
@@ -6376,7 +6646,7 @@ async function handleUnifiedBookingEngine(params: {
     return true;
   }
 
-  const completeCancellation = async (context: { appointment: any; language: string; feeApplies: boolean; feeAmount: number; currency: string; reason?: string }): Promise<boolean> => {
+  const completeCancellation = async (context: CancellationContext): Promise<boolean> => {
     const adapter = getCalendarAdapter(businessConfig);
     const stateOwner = appointmentStateOwners[sessionId];
     if (!stateOwner || !appointmentStateOwnerMatches(stateOwner, currentAppointmentStateOwner)) {
@@ -6396,42 +6666,278 @@ async function handleUnifiedBookingEngine(params: {
       await replyAndRecord(formatStaleAppointmentStateMessage(context.language));
       return true;
     }
-    const eventId = String(appointment?.calendarEventId || "");
-
-    if (eventId && adapter.cancelAppointment) {
-      const calendarResult = await adapter.cancelAppointment(eventId);
-      if (!calendarResult?.success) {
-        clearCancellationContext(sessionId);
-        await replyAndRecord(getErrorMessageByLanguage(context.language));
-        return true;
-      }
+    if (classifyAppointmentTemporalState(appointment) !== "future_or_active") {
+      clearCancellationContext(sessionId);
+      await replyAndRecord(
+        formatPastAppointmentMutationReply(
+          appointment,
+          classifyAppointmentTemporalState(appointment),
+          context.language
+        )
+      );
+      return true;
     }
-
-    if (supabase && appointment?.id && appointment?.source === "appointments_table") {
-      const { error: dbError } = await supabase
-        .from("appointments")
-        .update({ status: "cancelled" })
-        .eq("id", appointment.id)
-        .eq("business_id", String(getBusinessIdFromConfig(businessConfig) || ""));
-      if (dbError) {
-        console.error("[Cancellation] appointments table update failed:", dbError);
-        if (!eventId) {
-          clearCancellationContext(sessionId);
-          await replyAndRecord(getErrorMessageByLanguage(context.language));
-          return true;
-        }
-      }
-    } else if (!eventId) {
+    const eventId = String(appointment?.calendarEventId || "");
+    const appointmentId = getAppointmentMutationId(appointment);
+    const businessId = String(getBusinessIdFromConfig(businessConfig) || "");
+    if (!eventId || !appointmentId || !adapter.cancelAppointment) {
       clearCancellationContext(sessionId);
       await replyAndRecord(context.language === "sv"
         ? "Jag hittade bokningen, men den saknar ett kalender-id för säker avbokning. En medarbetare behöver hjälpa till. 🙏"
         : context.language === "fa"
           ? "رزرو پیدا شد، اما شناسه تقویم لازم برای لغو امن موجود نیست. یک همکار باید کمک کند. 🙏"
-          : "I found the appointment, but it has no calendar event id for a safe cancellation. A team member needs to help. 🙏");
+          : context.language === "de"
+            ? "Ich habe den Termin gefunden, aber die Kalender-ID für eine sichere Stornierung fehlt. Das Team muss helfen. 🙏"
+            : context.language === "es"
+              ? "Encontré la cita, pero falta el identificador de calendario necesario para cancelarla de forma segura. El equipo debe ayudarte. 🙏"
+              : context.language === "ar"
+                ? "وجدت الموعد، لكن معرّف التقويم اللازم للإلغاء الآمن غير موجود. يحتاج أحد أعضاء الفريق إلى المساعدة. 🙏"
+                : "I found the appointment, but it has no calendar event id for a safe cancellation. A team member needs to help. 🙏");
       return true;
     }
 
-    clearAppointmentConversationState(sessionId);
+    const operationClaim = await claimAtomicOperation({
+      type: "cancellation_operation_claim",
+      tenantScope: businessId,
+      businessId,
+      platform: platformName,
+      exactId: [
+        currentAppointmentStateOwner.userId,
+        appointmentId,
+        eventId,
+        "cancel"
+      ].join("|")
+    });
+    if (!operationClaim.claimed) {
+      console.log("[Idempotency] Duplicate cancellation confirmation suppressed.", {
+        platform: platformName,
+        duplicateStatus: operationClaim.duplicateStatus || "processing"
+      });
+      if (operationClaim.duplicateStatus === "completed") {
+        clearCancellationContext(sessionId);
+        clearRescheduleContext(sessionId);
+        await clearPendingBooking(sessionId);
+      }
+      return true;
+    }
+
+    cancellationContexts[sessionId] = {
+      ...context,
+      appointment,
+      awaitingReason: false,
+      lastOperation: "processing",
+      savedAt: Date.now()
+    };
+
+    const originalStatus = String(appointment?.status || "booked");
+    let calendarWasDeleted = false;
+    let databaseWasUpdated = false;
+    let databaseUpdateAttempted = false;
+    const verifyCalendarDeleted = async () => {
+      try {
+        if (adapter.verifyEventDeleted) {
+          return Boolean(await adapter.verifyEventDeleted(eventId));
+        }
+        if (adapter.getEventById) {
+          return !(await adapter.getEventById(eventId));
+        }
+        const date = stockholmDateString(new Date(String(appointment.start || "")));
+        const events = await adapter.getEvents(date, date);
+        return !(Array.isArray(events) ? events : []).some(
+          (event: any) => String(event?.id || "") === eventId
+        );
+      } catch (verificationError) {
+        console.error("[Cancellation] Calendar deletion verification crashed:", verificationError);
+        return false;
+      }
+    };
+    const rollbackCancellation = async (): Promise<string | null> => {
+      let restoredEventId: string | null = null;
+      if (calendarWasDeleted) {
+        try {
+          const ownerMarker = `${platformName === "instagram" ? "ig" : platformName === "telegram" ? "tg" : platformName}_${currentAppointmentStateOwner.userId}`;
+          const restored = await adapter.insertAppointment(
+            appointment.customerName || appointment.name || "Customer",
+            appointment.phone || "",
+            appointment.service || "Bokning",
+            appointment.start,
+            getAppointmentDurationMinutes(appointment),
+            ownerMarker,
+            true
+          );
+          restoredEventId = String(restored?.event?.id || "").trim() || null;
+          if (!restored?.success || !restoredEventId) {
+            console.error("[Cancellation] Calendar rollback failed.");
+            restoredEventId = null;
+          }
+        } catch (rollbackError) {
+          console.error("[Cancellation] Calendar rollback crashed:", rollbackError);
+        }
+      }
+      if (databaseUpdateAttempted && supabase && appointment?.id) {
+        try {
+          let rollbackQuery = supabase
+            .from("appointments")
+            .update({ status: originalStatus })
+            .eq("id", appointment.id)
+            .eq("business_id", businessId);
+          if (appointment.platform) rollbackQuery = rollbackQuery.eq("platform", appointment.platform);
+          if (appointment.userId) rollbackQuery = rollbackQuery.eq("user_id", appointment.userId);
+          const { error } = await rollbackQuery;
+          if (error) console.error("[Cancellation] Database rollback failed:", error);
+        } catch (rollbackError) {
+          console.error("[Cancellation] Database rollback crashed:", rollbackError);
+        }
+      }
+      return restoredEventId;
+    };
+    const failCancellation = async (technicalReason: string) => {
+      console.error("[Cancellation] Verified cancellation failed.", {
+        platform: platformName,
+        businessScopePresent: Boolean(businessId),
+        reason: technicalReason,
+        calendarWasDeleted,
+        databaseWasUpdated
+      });
+      const restoredEventId = await rollbackCancellation();
+      await settleAtomicOperation(operationClaim, "failed");
+      if (!calendarWasDeleted || restoredEventId) {
+        cancellationContexts[sessionId] = {
+          ...context,
+          appointment: {
+            ...appointment,
+            ...(restoredEventId ? { calendarEventId: restoredEventId } : {})
+          },
+          awaitingReason: false,
+          lastOperation: "failed",
+          savedAt: Date.now()
+        };
+      } else {
+        clearCancellationContext(sessionId);
+      }
+      await replyAndRecord(getErrorMessageByLanguage(context.language));
+      return true;
+    };
+
+    let calendarResult: any;
+    try {
+      calendarResult = await adapter.cancelAppointment(eventId);
+    } catch (calendarError) {
+      console.error("[Cancellation] Calendar delete crashed:", calendarError);
+      return failCancellation("calendar_delete_crashed");
+    }
+    if (!calendarResult?.success) {
+      return failCancellation("calendar_delete_failed");
+    }
+    calendarWasDeleted = true;
+    if (!(await verifyCalendarDeleted())) {
+      return failCancellation("calendar_delete_not_verified");
+    }
+
+    if (appointment?.source === "appointments_table") {
+      if (!supabase || !appointment?.id) {
+        return failCancellation("database_unavailable");
+      }
+      databaseUpdateAttempted = true;
+      let updatedRow: any = null;
+      let dbError: any = null;
+      try {
+        let updateQuery = supabase
+          .from("appointments")
+          .update({ status: "cancelled" })
+          .eq("id", appointment.id)
+          .eq("business_id", businessId);
+        if (appointment.platform) updateQuery = updateQuery.eq("platform", appointment.platform);
+        if (appointment.userId) updateQuery = updateQuery.eq("user_id", appointment.userId);
+        const result = await updateQuery
+          .select("id,platform,user_id,status,business_id")
+          .maybeSingle();
+        updatedRow = result.data;
+        dbError = result.error;
+      } catch (databaseError) {
+        console.error("[Cancellation] Database update crashed:", databaseError);
+        return failCancellation("database_update_crashed");
+      }
+      databaseWasUpdated = Boolean(updatedRow && !dbError);
+      const rowPlatform = normalizePlatformName(String(updatedRow?.platform || ""));
+      const rowUserId = normalizePlatformUserId(
+        rowPlatform,
+        String(updatedRow?.user_id || "")
+      );
+      const expectedPlatform = normalizePlatformName(stateOwner.platform);
+      const expectedUserId = normalizePlatformUserId(
+        expectedPlatform,
+        stateOwner.userId
+      );
+      const dbOwnerMatches = Boolean(
+        updatedRow &&
+        String(updatedRow.business_id || "") === businessId &&
+        rowPlatform === expectedPlatform &&
+        (!rowUserId || rowUserId === expectedUserId)
+      );
+      const dbStatusMatches =
+        String(updatedRow?.status || "").toLowerCase() === "cancelled";
+      if (dbError || !databaseWasUpdated || !dbOwnerMatches || !dbStatusMatches) {
+        return failCancellation("database_update_not_verified");
+      }
+    }
+
+    if (!(await verifyCalendarDeleted())) {
+      return failCancellation("calendar_post_database_verification_failed");
+    }
+    const operationCompletionRecorded = await settleAtomicOperation(
+      operationClaim,
+      "completed"
+    );
+    if (!operationCompletionRecorded) {
+      return failCancellation("operation_completion_not_durable");
+    }
+
+    cancellationContexts[sessionId] = {
+      ...context,
+      appointment,
+      awaitingReason: false,
+      lastOperation: "completed",
+      savedAt: Date.now()
+    };
+    recentlyCompletedCancellations[sessionId] = {
+      completedAt: Date.now(),
+      appointmentId,
+      calendarEventId: eventId,
+      language: context.language
+    };
+
+    const successReply = guardCustomerFacingReply(
+      sessionId,
+      formatCancellationSuccess(
+        context.language,
+        context.feeApplies,
+        context.feeAmount,
+        context.currency
+      ),
+      context.language
+    );
+    try {
+      await send(successReply);
+      appendLocalHistory(sessionId, text, successReply);
+    } catch (sendError) {
+      // The durable operation is complete. Never let a transport exception fall
+      // through to Instagram's generic error handler and create a false failure.
+      console.error("[Cancellation] Terminal customer success delivery failed:", sendError);
+    }
+    try {
+      await postProcessMessage(
+        recipientUserId,
+        postProcessPlatform,
+        text,
+        successReply,
+        businessConfig?.telegramToken,
+        businessConfig?.apiKey,
+        businessId
+      );
+    } catch (postProcessError) {
+      console.error("[Cancellation] Terminal post-processing failed:", postProcessError);
+    }
 
     try {
       await notifyAdminAboutCancellation(
@@ -6444,7 +6950,20 @@ async function handleUnifiedBookingEngine(params: {
       console.error("[CancellationNotify] crashed:", notifyError);
     }
 
-    await replyAndRecord(formatCancellationSuccess(context.language, context.feeApplies, context.feeAmount, context.currency));
+    try {
+      clearCancellationContext(sessionId);
+      clearRescheduleContext(sessionId);
+      await clearPendingBooking(sessionId);
+      delete appointmentContexts[sessionId];
+      delete appointmentSelectionContexts[sessionId];
+      clearAppointmentLookupContext(sessionId);
+      delete appointmentStateOwners[sessionId];
+      clearConversationFlowLanguage(sessionId);
+    } catch (cleanupError) {
+      // Persistence and operation settlement are already complete. Cleanup must never
+      // escape into a platform fallback and contradict the verified success response.
+      console.error("[Cancellation] Terminal state cleanup failed:", cleanupError);
+    }
     return true;
   };
 
@@ -6939,6 +7458,98 @@ async function handleUnifiedBookingEngine(params: {
   };
 
   try {
+    const priorityCancellation = getCancellationContext(sessionId);
+    if (priorityCancellation) {
+      const lockedLanguage = getFlowReplyLanguage(
+        priorityCancellation.language,
+        language,
+        text
+      );
+      const livePolicy = getCancellationPolicy(businessConfig);
+
+      if (
+        priorityCancellation.lastOperation === "processing" ||
+        priorityCancellation.lastOperation === "completed"
+      ) {
+        return true;
+      }
+      if (!livePolicy.allowCancellation) {
+        clearCancellationContext(sessionId);
+        await replyAndRecord(formatCancellationDisabledDuringFlow(lockedLanguage));
+        return true;
+      }
+      if (isCancellationRejection(text)) {
+        clearCancellationContext(sessionId);
+        clearConversationFlowLanguage(sessionId);
+        await replyAndRecord(
+          lockedLanguage === "sv"
+            ? "Okej, bokningen behålls."
+            : lockedLanguage === "fa"
+              ? "باشه، رزرو شما حفظ می‌شود."
+              : lockedLanguage === "de"
+                ? "Okay, der Termin bleibt bestehen."
+                : lockedLanguage === "es"
+                  ? "De acuerdo, la cita se mantiene."
+                  : lockedLanguage === "ar"
+                    ? "حسنًا، سيبقى الموعد كما هو."
+                    : "Okay, the appointment will be kept."
+        );
+        return true;
+      }
+      if (priorityCancellation.awaitingReason) {
+        if (isInvalidCancellationReason(text)) {
+          priorityCancellation.savedAt = Date.now();
+          await replyAndRecord(formatInvalidCancellationReason(lockedLanguage));
+          return true;
+        }
+        priorityCancellation.reason = normalizeCancellationReason(text);
+        priorityCancellation.awaitingReason = false;
+        priorityCancellation.lastOperation = "awaiting_confirmation";
+        priorityCancellation.savedAt = Date.now();
+        await replyAndRecord(
+          formatCancellationConfirmation(
+            priorityCancellation.appointment,
+            lockedLanguage,
+            priorityCancellation.feeApplies,
+            priorityCancellation.feeAmount,
+            priorityCancellation.currency
+          )
+        );
+        return true;
+      }
+      if (isCancellationConfirmation(text)) {
+        return completeCancellation({
+          ...priorityCancellation,
+          language: lockedLanguage
+        });
+      }
+      await replyAndRecord(
+        formatCancellationConfirmation(
+          priorityCancellation.appointment,
+          lockedLanguage,
+          priorityCancellation.feeApplies,
+          priorityCancellation.feeAmount,
+          priorityCancellation.currency
+        )
+      );
+      return true;
+    }
+
+    const recentlyCancelled = getRecentCompletedCancellation(sessionId);
+    if (
+      recentlyCancelled &&
+      !pending &&
+      !getCancellationContext(sessionId) &&
+      !getRescheduleContext(sessionId) &&
+      isCancellationConfirmation(text)
+    ) {
+      console.log("[Idempotency] Repeated post-cancellation confirmation suppressed.", {
+        platform: platformName,
+        operation: "cancellation",
+        completed: true
+      });
+      return true;
+    }
     const recoveryIntent = isExistingBookingOperationRecoveryIntent(text);
     const priorityReschedule = getRescheduleContext(sessionId);
     if (priorityReschedule) {
@@ -7158,6 +7769,8 @@ async function handleUnifiedBookingEngine(params: {
       }
     }
 
+    let forcedNewBookingFromRecovery = false;
+    let recoveredServiceForNewBooking: string | undefined;
     const pastRecovery = pastAppointmentRecoveryContexts[sessionId];
     if (pastRecovery) {
       const expired = Date.now() - pastRecovery.savedAt > 15 * 60 * 1000;
@@ -7184,7 +7797,11 @@ async function handleUnifiedBookingEngine(params: {
               : "Of course 😊 What service and day would you like for the new appointment?"
         );
         return true;
-      } else if (isExplicitNewBookingRequest(text)) {
+      } else if (
+        isExplicitNewBookingRequest(text) ||
+        isAvailabilityPivotFromFailedLookup(text)
+      ) {
+        forcedNewBookingFromRecovery = true;
         delete pastAppointmentRecoveryContexts[sessionId];
       }
     }
@@ -7199,7 +7816,18 @@ async function handleUnifiedBookingEngine(params: {
       return false;
     }
 
-    const explicitNewBookingRequested = isExplicitNewBookingRequest(text);
+    const recoveryContextBeforeIntent = getAppointmentLookupContext(sessionId);
+    if (
+      recoveryContextBeforeIntent?.nextAction === "offer_new_booking" &&
+      isAvailabilityPivotFromFailedLookup(text)
+    ) {
+      forcedNewBookingFromRecovery = true;
+      recoveredServiceForNewBooking =
+        recoveryContextBeforeIntent.requestedService;
+    }
+    const explicitNewBookingRequested =
+      isExplicitNewBookingRequest(text) ||
+      forcedNewBookingFromRecovery;
     const serviceDurationRequested = isServiceDurationQuestion(text);
 
     // Service information is not an appointment lookup. This must run before lookup,
@@ -7415,48 +8043,6 @@ async function handleUnifiedBookingEngine(params: {
       (explicitNewBookingRequested || isNewBookingRequestText(text))
     ) {
       clearAppointmentConversationState(sessionId);
-    }
-
-    const activeCancellation = !pending ? getCancellationContext(sessionId) : null;
-    if (activeCancellation) {
-      const lockedLanguage = getFlowReplyLanguage(activeCancellation.language, language, text);
-      const livePolicy = getCancellationPolicy(businessConfig);
-
-      // The dashboard policy may change while the customer is already inside the flow.
-      // Re-check it before accepting a reason or confirmation so a stale session cannot cancel.
-      if (!livePolicy.allowCancellation) {
-        clearCancellationContext(sessionId);
-        await replyAndRecord(formatCancellationDisabledDuringFlow(lockedLanguage));
-        return true;
-      }
-
-      if (isCancellationRejection(text)) {
-        clearCancellationContext(sessionId);
-        clearConversationFlowLanguage(sessionId);
-        await replyAndRecord(lockedLanguage === "sv" ? "Okej, bokningen behålls." : lockedLanguage === "fa" ? "باشه، رزرو شما حفظ می‌شود." : "Okay, the appointment will be kept.");
-        return true;
-      }
-
-      if (activeCancellation.awaitingReason) {
-        if (isInvalidCancellationReason(text)) {
-          activeCancellation.savedAt = Date.now();
-          await replyAndRecord(formatInvalidCancellationReason(lockedLanguage));
-          return true;
-        }
-
-        activeCancellation.reason = normalizeCancellationReason(text);
-        activeCancellation.awaitingReason = false;
-        activeCancellation.savedAt = Date.now();
-        await replyAndRecord(formatCancellationConfirmation(activeCancellation.appointment, lockedLanguage, activeCancellation.feeApplies, activeCancellation.feeAmount, activeCancellation.currency));
-        return true;
-      }
-
-      if (isCancellationConfirmation(text)) {
-        return completeCancellation({ ...activeCancellation, language: lockedLanguage });
-      }
-
-      await replyAndRecord(formatCancellationConfirmation(activeCancellation.appointment, lockedLanguage, activeCancellation.feeApplies, activeCancellation.feeAmount, activeCancellation.currency));
-      return true;
     }
 
     let rememberedAppointment = getAppointmentContext(sessionId);
@@ -7986,6 +8572,30 @@ async function handleUnifiedBookingEngine(params: {
     ) {
       const lockedLanguage = activeLookupContext.language || language;
       const promptCount = Number(activeLookupContext.recoveryPromptCount || 1);
+      if (
+        repeatsReceivedPhone &&
+        activeLookupContext.nextAction === "awaiting_recovery_attribute"
+      ) {
+        rememberAppointmentLookupContext(
+          sessionId,
+          lockedLanguage,
+          Boolean(activeLookupContext.includePast),
+          activeLookupContext.lookupMode ||
+            (activeLookupContext.includePast ? "history" : "upcoming"),
+          Boolean(activeLookupContext.historyWindowLimited),
+          {
+            ...activeLookupContext,
+            resultCategory: "recovery_needs_attribute",
+            nextAction: "awaiting_recovery_attribute",
+            lastPromptKey: "need_attribute",
+            recoveryPromptCount: promptCount + 1
+          }
+        );
+        await replyAndRecord(
+          formatSecureRecoveryPrompt(lockedLanguage, "need_attribute")
+        );
+        return true;
+      }
       if (promptCount >= 1) {
         rememberAppointmentLookupContext(
           sessionId,
@@ -7998,6 +8608,7 @@ async function handleUnifiedBookingEngine(params: {
             ...activeLookupContext,
             resultCategory: "recovery_not_found",
             nextAction: "offer_new_booking",
+            lastPromptKey: "not_found",
             recoveryPromptCount: promptCount + 1
           }
         );
@@ -8585,6 +9196,7 @@ async function handleUnifiedBookingEngine(params: {
         inferServiceFromRecentContext(text, history),
         storedAvailability?.service ||
           priorPendingBooking?.service ||
+          recoveredServiceForNewBooking ||
           getDefaultBookingServiceForBusiness(businessConfig) ||
           "Bokning"
       );

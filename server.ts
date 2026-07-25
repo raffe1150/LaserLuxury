@@ -290,6 +290,7 @@ async function postProcessMessage(chatId: string, platform: string, userMessage:
 
 // Unified Calendar Adapter Interface
 interface CalendarAdapter {
+  getCalendarId?(): string;
   checkSlots(startDate: string, endDate?: string, durationMinutes?: number, requestedTime?: string): Promise<any> | any;
   insertAppointment(name: string, phone: string, service: string, dateTime: string, durationMinutes?: number, chatId?: string, skipConflictCheck?: boolean): Promise<any> | any;
   updateAppointment?(eventId: string, dateTime: string, durationMinutes?: number): Promise<any> | any;
@@ -1358,6 +1359,10 @@ class GoogleCalendarAdapter implements CalendarAdapter {
     this.calendarId = calendarId;
   }
 
+  getCalendarId() {
+    return this.calendarId;
+  }
+
   async getEvents(startDate: string, endDate: string) {
     try {
       const timeMin = new Date(localStockholmDateBoundary(startDate, false)).toISOString();
@@ -1422,17 +1427,29 @@ class GoogleCalendarAdapter implements CalendarAdapter {
   async verifyEventDeleted(eventId: string) {
     try {
       if (!eventId) return false;
-      await this.calendar.events.get({
+      const response = await this.calendar.events.get({
         calendarId: this.calendarId,
         eventId
       });
-      return false;
+      const returnedEventStatus = String(response?.data?.status || "").toLowerCase();
+      const verified = returnedEventStatus === "cancelled";
+      console.log("[CalendarCancellation]", {
+        verificationHttpStatus: Number(response?.status || 200),
+        verificationHttpCode: String(response?.status || 200),
+        returnedEventStatus: returnedEventStatus || "active",
+        calendarVerificationResult: verified
+      });
+      return verified;
     } catch (e: any) {
       const status = Number(e?.code || e?.response?.status);
-      if (status === 404 || status === 410) {
-        return true;
-      }
-      console.error("Google Calendar verifyEventDeleted Error:", e.message);
+      const verified = status === 404 || status === 410;
+      console.log("[CalendarCancellation]", {
+        verificationHttpStatus: Number.isFinite(status) ? status : 0,
+        verificationHttpCode: String(e?.code || e?.response?.status || "unknown"),
+        returnedEventStatus: "unavailable",
+        calendarVerificationResult: verified
+      });
+      if (verified) return true;
       throw e;
     }
   }
@@ -1551,14 +1568,28 @@ class GoogleCalendarAdapter implements CalendarAdapter {
   async cancelAppointment(eventId: string) {
     try {
       if (!eventId) return { success: false, code: "MISSING_EVENT_ID", message: "Calendar event id is missing." };
-      await this.calendar.events.delete({ calendarId: this.calendarId, eventId });
-      return { success: true };
+      console.log("[CalendarCancellation]", {
+        deleteRequestStarted: true
+      });
+      const response = await this.calendar.events.delete({
+        calendarId: this.calendarId,
+        eventId
+      });
+      const status = Number(response?.status || 204);
+      console.log("[CalendarCancellation]", {
+        deleteHttpStatus: status,
+        deleteHttpCode: String(status)
+      });
+      return { success: true, httpStatus: status };
     } catch (e: any) {
       const status = Number(e?.code || e?.response?.status);
+      console.log("[CalendarCancellation]", {
+        deleteHttpStatus: Number.isFinite(status) ? status : 0,
+        deleteHttpCode: String(e?.code || e?.response?.status || "unknown")
+      });
       if (status === 404 || status === 410) {
-        return { success: true, alreadyDeleted: true };
+        return { success: true, alreadyDeleted: true, httpStatus: status };
       }
-      console.error("Google Calendar cancelAppointment Error:", e.message);
       return { success: false, code: "CANCEL_FAILED", message: "Failed to cancel appointment." };
     }
   }
@@ -3851,29 +3882,21 @@ function getRecentCompletedCancellation(sessionId: string) {
   return completed;
 }
 
-function logInstagramCancellationStage(details: {
-  stage: string;
-  businessScopePresent: boolean;
-  result: string;
-  ownershipMatch?: boolean;
-  calendarVerified?: boolean;
-  databaseVerified?: boolean;
+function logInstagramCancellationDiagnostic(details: {
+  adapter?: string;
+  calendarIdMatch?: boolean;
+  eventIdMatch?: boolean;
+  deleteRequestStarted?: boolean;
+  deleteHttpStatus?: number;
+  deleteHttpCode?: string;
+  verificationHttpStatus?: number;
+  verificationHttpCode?: string;
+  returnedEventStatus?: string;
+  calendarVerificationResult?: boolean;
+  databaseVerificationResult?: boolean;
+  finalSettlement?: string;
 }) {
-  console.log("[InstagramCancellation]", {
-    platform: "instagram",
-    stage: details.stage,
-    businessScopePresent: details.businessScopePresent,
-    result: details.result,
-    ...(typeof details.ownershipMatch === "boolean"
-      ? { ownershipMatch: details.ownershipMatch }
-      : {}),
-    ...(typeof details.calendarVerified === "boolean"
-      ? { calendarVerified: details.calendarVerified }
-      : {}),
-    ...(typeof details.databaseVerified === "boolean"
-      ? { databaseVerified: details.databaseVerified }
-      : {})
-  });
+  console.log("[InstagramCancellation]", details);
 }
 
 function formatCancellationDisabled(language: string): string {
@@ -6676,26 +6699,14 @@ async function handleUnifiedBookingEngine(params: {
   const completeCancellation = async (context: CancellationContext): Promise<boolean> => {
     const adapter = getCalendarAdapter(businessConfig);
     const businessId = String(getBusinessIdFromConfig(businessConfig) || "");
-    const logCancellationStage = (
-      stage: string,
-      result: string,
-      details: Partial<{
-        ownershipMatch: boolean;
-        calendarVerified: boolean;
-        databaseVerified: boolean;
-      }> = {}
+    const logCancellationDiagnostic = (
+      details: Parameters<typeof logInstagramCancellationDiagnostic>[0]
     ) => {
       if (platformName !== "instagram") return;
-      logInstagramCancellationStage({
-        stage,
-        businessScopePresent: Boolean(businessId),
-        result,
-        ...details
-      });
+      logInstagramCancellationDiagnostic(details);
     };
     const stateOwner = appointmentStateOwners[sessionId];
     if (!stateOwner || !appointmentStateOwnerMatches(stateOwner, currentAppointmentStateOwner)) {
-      logCancellationStage("ownership", "rejected", { ownershipMatch: false });
       clearAppointmentConversationState(sessionId);
       await replyAndRecord(formatStaleAppointmentStateMessage(context.language));
       return true;
@@ -6708,12 +6719,10 @@ async function handleUnifiedBookingEngine(params: {
       adapter
     );
     if (!appointment) {
-      logCancellationStage("ownership", "rejected", { ownershipMatch: false });
       clearAppointmentConversationState(sessionId);
       await replyAndRecord(formatStaleAppointmentStateMessage(context.language));
       return true;
     }
-    logCancellationStage("ownership", "verified", { ownershipMatch: true });
     if (classifyAppointmentTemporalState(appointment) !== "future_or_active") {
       clearCancellationContext(sessionId);
       await replyAndRecord(
@@ -6728,7 +6737,6 @@ async function handleUnifiedBookingEngine(params: {
     const eventId = String(appointment?.calendarEventId || "");
     const appointmentId = getAppointmentMutationId(appointment);
     if (!eventId || !appointmentId || !adapter.cancelAppointment) {
-      logCancellationStage("mutation_prerequisites", "rejected");
       clearCancellationContext(sessionId);
       await replyAndRecord(context.language === "sv"
         ? "Jag hittade bokningen, men den saknar ett kalender-id för säker avbokning. En medarbetare behöver hjälpa till. 🙏"
@@ -6744,6 +6752,74 @@ async function handleUnifiedBookingEngine(params: {
       return true;
     }
 
+    const configuredCalendarId = String(
+      businessConfig?.googleCalendarId ||
+      businessConfig?.google_calendar_id ||
+      process.env.GOOGLE_CALENDAR_ID ||
+      ""
+    ).trim();
+    const adapterCalendarId = String(adapter.getCalendarId?.() || "").trim();
+    const calendarIdMatch = Boolean(
+      configuredCalendarId &&
+      adapterCalendarId &&
+      configuredCalendarId === adapterCalendarId
+    );
+    let exactEventBeforeDelete: any = null;
+    try {
+      exactEventBeforeDelete = adapter.getEventById
+        ? await adapter.getEventById(eventId)
+        : null;
+    } catch {
+      exactEventBeforeDelete = null;
+    }
+    const eventIdMatch = Boolean(
+      exactEventBeforeDelete &&
+      String(exactEventBeforeDelete.id || "") === eventId
+    );
+    const eventStartMatches = Boolean(
+      exactEventBeforeDelete &&
+      Math.abs(
+        new Date(getEventStartIso(exactEventBeforeDelete)).getTime() -
+        new Date(String(appointment.start || "")).getTime()
+      ) <= 60 * 1000
+    );
+    const exactChannelOwner = Boolean(
+      exactEventBeforeDelete &&
+      calendarEventHasExactChannelOwner(
+        exactEventBeforeDelete,
+        stateOwner.platform,
+        stateOwner.userId
+      )
+    );
+    const exactAppointmentPhone = Boolean(
+      exactEventBeforeDelete &&
+      normalizeLookupDigits(appointment.phone).length >= 7 &&
+      calendarEventHasExactPhone(exactEventBeforeDelete, appointment.phone)
+    );
+    const eventBusinessMatches = Boolean(
+      exactEventBeforeDelete &&
+      calendarEventBusinessMarkerMatches(
+        exactEventBeforeDelete,
+        getAppointmentBusinessScope(businessConfig)
+      )
+    );
+    logCancellationDiagnostic({
+      adapter: adapter instanceof GoogleCalendarAdapter ? "google" : "unsupported",
+      calendarIdMatch,
+      eventIdMatch
+    });
+    if (
+      !(adapter instanceof GoogleCalendarAdapter) ||
+      !calendarIdMatch ||
+      !eventIdMatch ||
+      !eventStartMatches ||
+      !eventBusinessMatches ||
+      (!exactChannelOwner && !exactAppointmentPhone)
+    ) {
+      await replyAndRecord(getErrorMessageByLanguage(context.language));
+      return true;
+    }
+
     const operationClaim = await claimAtomicOperation({
       type: "cancellation_operation_claim",
       tenantScope: businessId,
@@ -6756,12 +6832,6 @@ async function handleUnifiedBookingEngine(params: {
         "cancel"
       ].join("|")
     });
-    logCancellationStage(
-      "operation_claim",
-      operationClaim.claimed
-        ? "acquired"
-        : `duplicate_${operationClaim.duplicateStatus || "processing"}`
-    );
     if (!operationClaim.claimed) {
       console.log("[Idempotency] Duplicate cancellation confirmation suppressed.", {
         platform: platformName,
@@ -6789,19 +6859,9 @@ async function handleUnifiedBookingEngine(params: {
     let databaseUpdateAttempted = false;
     const verifyCalendarDeleted = async () => {
       try {
-        if (adapter.verifyEventDeleted) {
-          return Boolean(await adapter.verifyEventDeleted(eventId));
-        }
-        if (adapter.getEventById) {
-          return !(await adapter.getEventById(eventId));
-        }
-        const date = stockholmDateString(new Date(String(appointment.start || "")));
-        const events = await adapter.getEvents(date, date);
-        return !(Array.isArray(events) ? events : []).some(
-          (event: any) => String(event?.id || "") === eventId
-        );
+        if (!adapter.verifyEventDeleted) return false;
+        return Boolean(await adapter.verifyEventDeleted(eventId));
       } catch (verificationError) {
-        console.error("[Cancellation] Calendar deletion verification crashed:", verificationError);
         return false;
       }
     };
@@ -6855,6 +6915,7 @@ async function handleUnifiedBookingEngine(params: {
       });
       const restoredEventId = await rollbackCancellation();
       await settleAtomicOperation(operationClaim, "failed");
+      logCancellationDiagnostic({ finalSettlement: "failed" });
       if (!calendarWasDeleted || restoredEventId) {
         cancellationContexts[sessionId] = {
           ...context,
@@ -6874,29 +6935,23 @@ async function handleUnifiedBookingEngine(params: {
     };
 
     let calendarResult: any;
-    logCancellationStage("calendar_delete", "started");
     try {
       calendarResult = await adapter.cancelAppointment(eventId);
     } catch (calendarError) {
-      logCancellationStage("calendar_delete", "crashed");
       console.error("[Cancellation] Calendar delete crashed:", calendarError);
       return failCancellation("calendar_delete_crashed");
     }
     if (!calendarResult?.success) {
-      logCancellationStage("calendar_delete", "failed");
       return failCancellation("calendar_delete_failed");
     }
-    calendarWasDeleted = true;
-    logCancellationStage("calendar_delete", "completed");
     const initialCalendarVerification = await verifyCalendarDeleted();
-    logCancellationStage(
-      "calendar_verification",
-      initialCalendarVerification ? "verified_deleted" : "not_verified",
-      { calendarVerified: initialCalendarVerification }
-    );
+    logCancellationDiagnostic({
+      calendarVerificationResult: initialCalendarVerification
+    });
     if (!initialCalendarVerification) {
       return failCancellation("calendar_delete_not_verified");
     }
+    calendarWasDeleted = true;
 
     if (appointment?.source === "appointments_table") {
       if (!supabase || !appointment?.id) {
@@ -6941,31 +6996,23 @@ async function handleUnifiedBookingEngine(params: {
       );
       const dbStatusMatches =
         String(updatedRow?.status || "").toLowerCase() === "cancelled";
-      logCancellationStage(
-        "database_verification",
-        !dbError && databaseWasUpdated && dbOwnerMatches && dbStatusMatches
-          ? "verified_cancelled"
-          : "not_verified",
-        {
-          ownershipMatch: dbOwnerMatches,
-          databaseVerified: Boolean(
-            !dbError && databaseWasUpdated && dbOwnerMatches && dbStatusMatches
-          )
-        }
-      );
+      logCancellationDiagnostic({
+        databaseVerificationResult: Boolean(
+          !dbError && databaseWasUpdated && dbOwnerMatches && dbStatusMatches
+        )
+      });
       if (dbError || !databaseWasUpdated || !dbOwnerMatches || !dbStatusMatches) {
         return failCancellation("database_update_not_verified");
       }
     } else {
-      logCancellationStage("database_verification", "not_applicable");
+      logCancellationDiagnostic({ databaseVerificationResult: false });
+      return failCancellation("database_row_missing");
     }
 
     const finalCalendarVerification = await verifyCalendarDeleted();
-    logCancellationStage(
-      "calendar_post_database_verification",
-      finalCalendarVerification ? "verified_deleted" : "not_verified",
-      { calendarVerified: finalCalendarVerification }
-    );
+    logCancellationDiagnostic({
+      calendarVerificationResult: finalCalendarVerification
+    });
     if (!finalCalendarVerification) {
       return failCancellation("calendar_post_database_verification_failed");
     }
@@ -6973,10 +7020,9 @@ async function handleUnifiedBookingEngine(params: {
       operationClaim,
       "completed"
     );
-    logCancellationStage(
-      "operation_settlement",
-      operationCompletionRecorded ? "completed" : "failed"
-    );
+    logCancellationDiagnostic({
+      finalSettlement: operationCompletionRecorded ? "completed" : "failed"
+    });
     if (!operationCompletionRecorded) {
       return failCancellation("operation_completion_not_durable");
     }
@@ -7011,9 +7057,7 @@ async function handleUnifiedBookingEngine(params: {
         throw new Error("customer_success_delivery_failed");
       }
       appendLocalHistory(sessionId, text, successReply);
-      logCancellationStage("customer_reply", "sent");
     } catch (sendError) {
-      logCancellationStage("customer_reply", "delivery_failed");
       // The durable operation is complete. Never let a transport exception fall
       // through to Instagram's generic error handler and create a false failure.
       console.error("[Cancellation] Terminal customer success delivery failed:", sendError);
@@ -12847,36 +12891,16 @@ async function processInstagramUpdate(webhook_event: any, config: any, platform:
   if (webhook_event?.message?.is_echo) return;
   const messageId = String(webhook_event?.message?.mid || "").trim();
   const tenantScope = String(webhook_event?.recipient?.id || "").trim();
-  const cancellationTurn = Boolean(
-    webhook_event?.sender?.id &&
-    getCancellationContext(`ig_${webhook_event.sender.id}`)
-  );
   if (!messageId || !tenantScope) {
     console.warn("[Idempotency] Instagram message refused: exact message id or tenant scope is missing.");
     return;
-  }
-  if (cancellationTurn) {
-    logInstagramCancellationStage({
-      stage: "inbound_claim",
-      businessScopePresent: Boolean(getBusinessIdFromConfig(config)),
-      result: "requested"
-    });
   }
   await runWithInboundMessageClaim({
     tenantScope,
     businessId: String(getBusinessIdFromConfig(config) || ""),
     platform: "instagram",
     messageId,
-    handler: async () => {
-      if (cancellationTurn) {
-        logInstagramCancellationStage({
-          stage: "inbound_claim",
-          businessScopePresent: Boolean(getBusinessIdFromConfig(config)),
-          result: "acquired"
-        });
-      }
-      await processInstagramUpdateClaimed(webhook_event, config, platform);
-    }
+    handler: () => processInstagramUpdateClaimed(webhook_event, config, platform)
   });
 }
 

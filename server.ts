@@ -5469,7 +5469,11 @@ function getAdminNotificationChannel(businessConfig: any): "telegram" | "whatsap
 
 function resolveAdminNotificationRoute(
   businessConfig: any,
-  logContext: "BookingNotify" | "CancellationNotify" | "RescheduleNotify"
+  logContext:
+    | "BookingNotify"
+    | "CancellationNotify"
+    | "RescheduleNotify"
+    | "HandoffNotify"
 ): { channel: "telegram" | "whatsapp"; recipient: string } | null {
   const channel = getAdminNotificationChannel(businessConfig);
   if (!channel) {
@@ -5507,13 +5511,180 @@ function resolveAdminNotificationRoute(
   return { channel, recipient };
 }
 
-async function notifyAdminAboutBooking(businessConfig: any, platformLabel: string, businessName: string, name: string, phone: string, dateTime: string) {
-  const notifyText = `🔔 Ny ${platformLabel}-bokning mottagen!\n🏢 Business: ${businessName}\n👤 Namn: ${name}\n📞 Mobil: ${phone}\n📅 Tid: ${dateTime}`;
+function formatAdminPlatformLabel(platformLabel: string): string {
+  const normalized = normalizePlatformName(platformLabel);
+  if (normalized === "whatsapp") return "WhatsApp";
+  if (normalized === "instagram") return "Instagram";
+  if (normalized === "messenger") return "Messenger";
+  if (normalized === "telegram") return "Telegram";
+  return String(platformLabel || "Okänd").trim() || "Okänd";
+}
+
+function formatNewBookingAdminNotification(params: {
+  businessConfig: any;
+  platformLabel: string;
+  businessName: string;
+  name: string;
+  phone: string;
+  dateTime: string;
+  service?: string;
+}): string {
+  const businessTimeZone = String(
+    params.businessConfig?.timezone ||
+    activeConfig?.timezone ||
+    "Europe/Stockholm"
+  ).trim() || "Europe/Stockholm";
+  const { dateText, timeText } = formatLocalizedDateTime(
+    params.dateTime,
+    "sv",
+    businessTimeZone
+  );
+  return `🔔 Ny bokning
+
+📱 Via: ${formatAdminPlatformLabel(params.platformLabel)}
+🏢 ${params.businessName || "Okänd verksamhet"}
+👤 ${params.name || "Okänd"}
+📞 ${params.phone || "Saknas"}
+📅 ${dateText} kl ${timeText}
+🔔 ${params.service || "Bokning"}`;
+}
+
+async function notifyAdminAboutBooking(
+  businessConfig: any,
+  platformLabel: string,
+  businessName: string,
+  name: string,
+  phone: string,
+  dateTime: string,
+  service?: string
+) {
+  const notifyText = formatNewBookingAdminNotification({
+    businessConfig,
+    platformLabel,
+    businessName,
+    name,
+    phone,
+    dateTime,
+    service
+  });
   const route = resolveAdminNotificationRoute(businessConfig, "BookingNotify");
   if (!route) return false;
   const sent = await sendCustomerMessage(route.channel, route.recipient, notifyText, businessConfig);
   if (!sent) console.error(`[BookingNotify] ${route.channel} admin notification failed`);
   return sent;
+}
+
+const completedHandoffNotifications = new Map<string, number>();
+const HANDOFF_NOTIFICATION_TTL_MS = 24 * 60 * 60 * 1000;
+
+function isExplicitHumanHandoffReply(reply?: string): boolean {
+  const raw = String(reply || "").trim().toLowerCase();
+  if (!raw) return false;
+  return (
+    /\b(?:connecting|transferring|handing|passing)\s+(?:you|this|your (?:question|case))\s+(?:to|over to)\s+(?:a\s+)?(?:team member|human|colleague|member of (?:the|our) team)\b/iu.test(raw) ||
+    /\b(?:kopplar|överlämnar|lamnar över|för dig vidare|slussar)\b.{0,50}\b(?:medarbetare|kollega|teamet|människa)\b/iu.test(raw) ||
+    /\b(?:verbinde|leite|übergebe|uebergebe)\b.{0,50}\b(?:mitarbeiter|kollegen|team)\b/iu.test(raw) ||
+    /\b(?:conecto|transfiero|derivo|paso)\b.{0,50}\b(?:miembro del equipo|equipo|persona|agente)\b/iu.test(raw) ||
+    /(?:وصل|ارجاع|منتقل).{0,50}(?:همکار|پشتیبان|تیم)/u.test(raw) ||
+    /(?:أحوّل|احول|أنقل|انقل|أوصلك|اوصلك).{0,50}(?:موظف|فريق|زميل|دعم)/u.test(raw)
+  );
+}
+
+function inferHandoffSubject(latestMessage?: string): string {
+  const raw = String(latestMessage || "").toLowerCase();
+  if (
+    /\b(?:pay|payment|paying|cost|price|fee|betala|betalning|kostnad|pris|avgift|zahlung|bezahlen|kosten|preis|pago|pagar|precio|coste|hazine)\b/iu.test(raw) ||
+    /(?:پرداخت|هزینه|قیمت|الدفع|السعر|التكلفة)/u.test(raw)
+  ) return "Payment";
+  if (
+    /\b(?:policy|terms|regel|regler|villkor|richtlinie|bedingungen|política|politica|condiciones)\b/iu.test(raw) ||
+    /(?:قوانین|شرایط|السياسة|الشروط)/u.test(raw)
+  ) return "Policy";
+  return "Support";
+}
+
+function formatHandoffDeliveryFailure(language: string): string {
+  if (language === "sv") return "Jag kunde inte kontakta teamet just nu. Försök gärna igen om en liten stund.";
+  if (language === "fa") return "الان نتونستم با تیم تماس بگیرم. لطفاً کمی بعد دوباره تلاش کنید.";
+  if (language === "de") return "Ich konnte das Team gerade nicht erreichen. Bitte versuchen Sie es in Kürze erneut.";
+  if (language === "es") return "No pude contactar con el equipo ahora mismo. Inténtalo de nuevo en unos minutos.";
+  if (language === "ar") return "لم أتمكن من التواصل مع الفريق الآن. يرجى المحاولة مرة أخرى بعد قليل.";
+  return "I couldn’t contact the team right now. Please try again shortly.";
+}
+
+async function settleHumanHandoffReply(params: {
+  sessionId: string;
+  inboundMessageId: string;
+  platform: string;
+  latestMessage: string;
+  proposedReply: string;
+  language: string;
+  businessConfig: any;
+}): Promise<string> {
+  if (!isExplicitHumanHandoffReply(params.proposedReply)) {
+    return params.proposedReply;
+  }
+
+  const businessId = String(getBusinessIdFromConfig(params.businessConfig) || "");
+  const platform = normalizePlatformName(params.platform);
+  const inboundMessageId = String(params.inboundMessageId || "").trim();
+  if (!businessId || !platform || !inboundMessageId) {
+    return formatHandoffDeliveryFailure(params.language);
+  }
+  const idempotencyKey = crypto
+    .createHash("sha256")
+    .update(`${businessId}|${platform}|${inboundMessageId}|handoff`)
+    .digest("hex");
+  const previous = completedHandoffNotifications.get(idempotencyKey);
+  if (previous && Date.now() - previous <= HANDOFF_NOTIFICATION_TTL_MS) {
+    return params.proposedReply;
+  }
+
+  const pending = pendingBookings[params.sessionId];
+  const appointment = appointmentContexts[params.sessionId]?.appointment;
+  const completed = getRecentCompletedBooking(params.sessionId);
+  const name = String(
+    pending?.customerName ||
+    appointment?.customerName ||
+    appointment?.name ||
+    completed?.name ||
+    "Okänd"
+  ).trim() || "Okänd";
+  const phone = String(
+    pending?.customerPhone ||
+    appointment?.phone ||
+    "Saknas"
+  ).trim() || "Saknas";
+  const businessName = String(
+    params.businessConfig?.businessName ||
+    params.businessConfig?.business_name ||
+    "Okänd verksamhet"
+  ).trim() || "Okänd verksamhet";
+  const notifyText = `🆘 Kund behöver hjälp
+
+📱 Via: ${formatAdminPlatformLabel(platform)}
+🏢 ${businessName}
+👤 ${name}
+📞 ${phone}
+📝 Fråga: ${String(params.latestMessage || "").trim()}
+📌 Ämne: ${inferHandoffSubject(params.latestMessage)}`;
+  const route = resolveAdminNotificationRoute(
+    params.businessConfig,
+    "HandoffNotify"
+  );
+  if (!route) return formatHandoffDeliveryFailure(params.language);
+  const sent = await sendCustomerMessage(
+    route.channel,
+    route.recipient,
+    notifyText,
+    params.businessConfig
+  );
+  if (!sent) {
+    console.error(`[HandoffNotify] ${route.channel} admin notification failed`);
+    return formatHandoffDeliveryFailure(params.language);
+  }
+  completedHandoffNotifications.set(idempotencyKey, Date.now());
+  return params.proposedReply;
 }
 
 
@@ -10789,7 +10960,8 @@ async function handleUnifiedBookingEngine(params: {
         businessConfig.businessName || businessConfig.business_name || "business",
         pending.customerName,
         pending.customerPhone,
-        finalIso
+        finalIso,
+        pending.service
       );
 
       await replyAndRecord(
@@ -11232,12 +11404,21 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       });
     }
     
-    const textResponse = guardCustomerFacingReply(
+    let textResponse = guardCustomerFacingReply(
       telegramSessionId,
       String(chatResponse.text || "").trim() ||
         getErrorMessageByLanguage(getLockedReplyLanguage(telegramSessionId, textForFlow)),
       getLockedReplyLanguage(telegramSessionId, textForFlow)
     );
+    textResponse = await settleHumanHandoffReply({
+      sessionId: telegramSessionId,
+      inboundMessageId: String(update?.update_id || ""),
+      platform: "telegram",
+      latestMessage: textForFlow,
+      proposedReply: textResponse,
+      language: getLockedReplyLanguage(telegramSessionId, textForFlow),
+      businessConfig: config
+    });
     if (!String(chatResponse.text || "").trim()) {
       console.error("[AIEmptyResponse] Telegram returned no text after tool processing.", {
         sessionId: telegramSessionId,
@@ -12580,12 +12761,21 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       });
     }
 
-    const textResponse = guardCustomerFacingReply(
+    let textResponse = guardCustomerFacingReply(
       chatId,
       String(chatResponse.text || "").trim() ||
         getErrorMessageByLanguage(getConversationLanguage(chatId, textMessage || "")),
       getConversationLanguage(chatId, textMessage || "")
     );
+    textResponse = await settleHumanHandoffReply({
+      sessionId: chatId,
+      inboundMessageId: String(message?.id || ""),
+      platform: "whatsapp",
+      latestMessage: textMessage,
+      proposedReply: textResponse,
+      language: getConversationLanguage(chatId, textMessage || ""),
+      businessConfig
+    });
     if (!String(chatResponse.text || "").trim()) {
       console.error("[AIEmptyResponse] WhatsApp returned no text after tool processing.", {
         chatId,
@@ -13640,12 +13830,25 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       });
     }
 
-    const textResponse = guardCustomerFacingReply(
+    let textResponse = guardCustomerFacingReply(
       chatId,
       String(chatResponse.text || "").trim() ||
         getErrorMessageByLanguage(getConversationLanguage(chatId, textMessage || "")),
       getConversationLanguage(chatId, textMessage || "")
     );
+    textResponse = await settleHumanHandoffReply({
+      sessionId: chatId,
+      inboundMessageId: String(
+        webhookEvent?.message?.mid ||
+        webhookEvent?.postback?.mid ||
+        ""
+      ),
+      platform: "messenger",
+      latestMessage: userMessageForLog,
+      proposedReply: textResponse,
+      language: getConversationLanguage(chatId, textMessage || ""),
+      businessConfig
+    });
     if (!String(chatResponse.text || "").trim()) {
       console.error("[AIEmptyResponse] Messenger returned no text after tool processing.", {
         businessScopePresent: Boolean(getBusinessIdFromConfig(businessConfig)),
@@ -14187,12 +14390,21 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       });
     }
 
-    const textResponse = guardCustomerFacingReply(
+    let textResponse = guardCustomerFacingReply(
       chatId,
       String(chatResponse.text || "").trim() ||
         getErrorMessageByLanguage(getConversationLanguage(chatId, textMessage || "")),
       getConversationLanguage(chatId, textMessage || "")
     );
+    textResponse = await settleHumanHandoffReply({
+      sessionId: chatId,
+      inboundMessageId: String(webhook_event?.message?.mid || ""),
+      platform: "instagram",
+      latestMessage: userMessageForLog,
+      proposedReply: textResponse,
+      language: getConversationLanguage(chatId, textMessage || ""),
+      businessConfig
+    });
     if (!String(chatResponse.text || "").trim()) {
       console.error("[AIEmptyResponse] Instagram returned no text after tool processing.", {
         chatId,

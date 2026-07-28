@@ -496,7 +496,7 @@ function parseRescheduleTimeFollowUp(text?: string): RescheduleTimeFollowUp {
     [
       "exclusive_lower",
       new RegExp(
-        String.raw`(?:after|later\s+than|efter(?:\s+kl(?:ockan)?)?|senare\s+[aä]n|nach|sp[aä]ter\s+als|despu[eé]s\s+de(?:\s+las)?|m[aá]s\s+tarde\s+que|bade?(?:\s+az)?(?:\s+saat)?|بعد\s+از(?:\s+ساعت)?|دیرتر\s+از|بعد\s+الساعة)\s*${timeToken}`,
+        String.raw`(?:after|later\s+than|efter(?:\s+kl(?:ockan)?)?|senare\s+[aä]n|nach|sp[aä]ter\s+als|despu[eé]s\s+de(?:\s+las)?|m[aá]s\s+tarde\s+que|bade?(?:\s+az)?(?:\s+sa{1,2}t(?:e)?)?|بعد\s+از(?:\s+ساعت)?|دیرتر\s+از|بعد\s+الساعة)\s*${timeToken}`,
         "iu"
       )
     ],
@@ -5710,14 +5710,29 @@ function deriveCanonicalAvailabilityConstraint(
   const refersToSameDay = /\b(?:that\s+day|same\s+day|den\s+dagen|samma\s+dag|diesem\s+tag|gleichen\s+tag|ese\s+d[ií]a|mismo\s+d[ií]a|hamoon\s+rooz|hamon\s+rooz)\b/i.test(text) ||
     /(?:همون|همان)\s*روز|ذلك\s*اليوم|نفس\s*اليوم/u.test(text);
 
+  // A time-only refinement belongs to the currently owned availability range.
+  // Inherit only its date(s); every time constraint is rebuilt from this turn.
+  const refinesActiveDate = Boolean(
+    previous &&
+    (
+      timeWindow ||
+      timeFollowUp.boundary ||
+      timeFollowUp.explicitTime ||
+      daypart
+    )
+  );
+  const inheritPreviousDate =
+    refersToSameDay ||
+    broadensToWholeDay ||
+    refinesActiveDate;
   const startDate =
     range?.startDate ||
     explicitDate ||
-    ((refersToSameDay || broadensToWholeDay) ? previous?.startDate : undefined);
+    (inheritPreviousDate ? previous?.startDate : undefined);
   const endDate =
     range?.endDate ||
     explicitDate ||
-    ((refersToSameDay || broadensToWholeDay) ? previous?.endDate : undefined);
+    (inheritPreviousDate ? previous?.endDate : undefined);
   if (!startDate || !endDate) return null;
 
   const common = {

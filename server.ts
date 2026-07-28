@@ -3220,7 +3220,16 @@ type RescheduleContext = {
 
 const RESCHEDULE_CONTEXT_TTL_MS = Number(process.env.RESCHEDULE_CONTEXT_TTL_MINUTES || 60) * 60 * 1000;
 const rescheduleContexts: Record<string, RescheduleContext> = {};
-const recentlyCompletedReschedules: Record<string, { completedAt: number; eventId: string; newStartTime: string }> = {};
+type CompletedRescheduleResult = {
+  completedAt: number;
+  businessId: string;
+  platform: string;
+  userId: string;
+  appointmentId: string;
+  eventId: string;
+  newStartTime: string;
+};
+const recentlyCompletedReschedules: Record<string, CompletedRescheduleResult> = {};
 type CancellationOperation =
   | "awaiting_reason"
   | "awaiting_confirmation"
@@ -4383,7 +4392,12 @@ function normalizeConfirmationReply(text?: string): string {
 }
 
 function isCompoundAffirmativeReply(text?: string): boolean {
-  const raw = normalizeConfirmationReply(text);
+  const raw = normalizeConfirmationReply(text)
+    // Collapse elongation only for known affirmative tokens. A global repeated-letter
+    // collapse would alter names and could turn unrelated text into an intent.
+    .replace(/\bja{2,}\b/gu, "ja")
+    .replace(/\bye+s{2,}\b/gu, "yes")
+    .replace(/\bba+l+e+h{0,2}\b/gu, "bale");
   if (!raw || isThanksOnlyText(raw)) return false;
 
   // A polite word must never turn a negative or uncertain answer into confirmation.
@@ -4397,6 +4411,17 @@ function isCompoundAffirmativeReply(text?: string): boolean {
     /\b(?:na|nemikham|nemitonam|shayad)\b/u
   ];
   if (negativeOrUncertain.some((pattern) => pattern.test(raw))) return false;
+
+  const affirmativeContinuationPatterns = [
+    /^ja(?: det)? (?:gar )?(?:fint|bra)(?: for mig)?$/u,
+    /^yes (?:that )?(?:works|is fine)(?: for me)?$/u,
+    /^ja (?:das )?(?:passt|ist gut)(?: fur mich)?$/u,
+    /^si (?:esta bien|me va bien)(?: para mi)?$/u,
+    /^(?:نعم|اجل|موافق) (?:هذا )?(?:مناسب|جيد)(?: لي)?$/u,
+    /^(?:بله|اره|باشه) (?:خوبه|مناسبه|برای من خوبه)$/u,
+    /^(?:bale|are|bashe) (?:khube|monasebe|baraye man khube)$/u
+  ];
+  if (affirmativeContinuationPatterns.some((pattern) => pattern.test(raw))) return true;
 
   const affirmativePrefixes = [
     "yes please",
@@ -4566,23 +4591,41 @@ function isNewBookingRequestText(text?: string): boolean {
   const lower = raw.toLowerCase();
   if (!raw) return false;
   if (extractNameAndPhone(raw)) return false;
-  if (isExplicitNewBookingRequest(raw)) return true;
+  if (isExplicitNewBookingPivotText(raw)) return true;
   if (isThanksOnlyText(raw) || isAffirmativeBookingText(raw) || isAmbiguousShortReply(raw)) return false;
 
-  const explicitNewBookingSyntax =
+  const hasBookingWord = /\b(boka|bokning|tid|appointment|book|booking|termin|cita|reservar|موعد|حجز|vaght|وقت)\b/i.test(lower);
+  const hasServiceWord = inferServiceFromText(raw) !== "Bokning";
+  const hasDateWord = /\b(nästa|nasta|tisdag|måndag|onsdag|torsdag|fredag|lördag|söndag|next|monday|tuesday|wednesday|thursday|friday|saturday|sunday|montag|dienstag|miércoles|martes|jueves|viernes|1shanbe|2shanbe|3shanbe|4shanbe|5shanbe|6shanbe|doshanbe|seshanbe|chaharshanbe|panjshanbe|jome|دوشنبه|سه\s*شنبه|چهارشنبه|پنجشنبه|الثلاثاء|الخميس)\b/i.test(lower);
+  return (hasBookingWord && (hasServiceWord || hasDateWord)) || (hasServiceWord && hasDateWord);
+}
+
+function isExplicitNewBookingPivotText(text?: string): boolean {
+  const raw = String(text || "").trim();
+  const lower = raw.toLowerCase();
+  if (!raw) return false;
+
+  // Existing-booking operations own their date/service wording. In particular,
+  // "change my time to Friday" must not be treated as a new booking merely because
+  // it contains both a booking word and a weekday.
+  if (
+    isExistingBookingOperationRecoveryIntent(raw) ||
+    isRescheduleIntent(raw) ||
+    isCancellationIntent(raw)
+  ) {
+    return false;
+  }
+
+  if (isExplicitNewBookingRequest(raw)) return true;
+  return (
     /\b(?:jag\s+vill|jag\s+skulle\s+vilja)\s+(?:gärna\s+)?boka\s+(?:en\s+)?(?:ny\s+)?(?:tid|bokning)\b/iu.test(lower) ||
     /\b(?:i\s+want|i(?:'d|\s+would)\s+like)\s+to\s+book\s+(?:a\s+)?(?:new\s+)?(?:appointment|booking)\b/iu.test(lower) ||
     /\bich\s+(?:möchte|will)\s+(?:gern(?:e)?\s+)?(?:einen\s+)?(?:neuen\s+)?termin\s+buchen\b/iu.test(lower) ||
     /\b(?:quiero|me\s+gustar[ií]a)\s+reservar\s+(?:una\s+)?(?:nueva\s+)?cita\b/iu.test(lower) ||
     /\b(?:mikham|mikhastam)\s+(?:ye\s+)?(?:vaghte?\s+jadid|vaght)\s+(?:book|rezerv)\s+konam\b/iu.test(lower) ||
     /(?:می[\u200c\s]?خوام|می[\u200c\s]?خواهم).{0,24}(?:وقت|رزرو).{0,16}(?:جدید|بگیرم|کنم)/u.test(raw) ||
-    /(?:أريد|أرغب).{0,24}(?:حجز|موعد).{0,16}(?:جديد|أحجز|احجز)/u.test(raw);
-  if (explicitNewBookingSyntax) return true;
-
-  const hasBookingWord = /\b(boka|bokning|tid|appointment|book|booking|termin|cita|reservar|موعد|حجز|vaght|وقت)\b/i.test(lower);
-  const hasServiceWord = inferServiceFromText(raw) !== "Bokning";
-  const hasDateWord = /\b(nästa|nasta|tisdag|måndag|onsdag|torsdag|fredag|lördag|söndag|next|monday|tuesday|wednesday|thursday|friday|saturday|sunday|montag|dienstag|miércoles|martes|jueves|viernes|1shanbe|2shanbe|3shanbe|4shanbe|5shanbe|6shanbe|doshanbe|seshanbe|chaharshanbe|panjshanbe|jome|دوشنبه|سه\s*شنبه|چهارشنبه|پنجشنبه|الثلاثاء|الخميس)\b/i.test(lower);
-  return (hasBookingWord && (hasServiceWord || hasDateWord)) || (hasServiceWord && hasDateWord);
+    /(?:أريد|أرغب).{0,24}(?:حجز|موعد).{0,16}(?:جديد|أحجز|احجز)/u.test(raw)
+  );
 }
 
 function inferServiceFromRecentContext(currentText: string, history: any[] = []): string {
@@ -6823,9 +6866,7 @@ async function handleUnifiedBookingEngine(params: {
   let pending = await loadPendingBooking(sessionId, platformName, businessConfig);
   const entryRescheduleContext = getRescheduleContext(sessionId);
   const entryCancellationContext = getCancellationContext(sessionId);
-  const entryExplicitNewBookingRequest =
-    isExplicitNewBookingRequest(text) ||
-    isNewBookingRequestText(text);
+  const entryExplicitNewBookingRequest = isExplicitNewBookingPivotText(text);
 
   // A clear request for a new appointment is an intentional operation pivot.
   // Remove incompatible mutation/recovery state before those priority handlers run.
@@ -6843,11 +6884,11 @@ async function handleUnifiedBookingEngine(params: {
 
   // A validated reschedule flow owns short confirmations and slot follow-ups. Clear any
   // unrelated pending new-booking state before it can ask for contact details.
-  if (entryCancellationContext && !isExplicitNewBookingRequest(text) && pending) {
+  if (entryCancellationContext && !entryExplicitNewBookingRequest && pending) {
     console.log(`[UnifiedBooking] Active cancellation cleared incompatible pending booking session=${sessionId}`);
     await clearPendingBooking(sessionId);
     pending = null;
-  } else if (entryRescheduleContext && !isExplicitNewBookingRequest(text) && pending) {
+  } else if (entryRescheduleContext && !entryExplicitNewBookingRequest && pending) {
     console.log(`[UnifiedBooking] Active reschedule cleared incompatible pending booking session=${sessionId}`);
     await clearPendingBooking(sessionId);
     pending = null;
@@ -7831,6 +7872,10 @@ async function handleUnifiedBookingEngine(params: {
     clearConversationFlowLanguage(sessionId);
     recentlyCompletedReschedules[sessionId] = {
       completedAt: Date.now(),
+      businessId: currentAppointmentStateOwner.businessId,
+      platform: currentAppointmentStateOwner.platform,
+      userId: currentAppointmentStateOwner.userId,
+      appointmentId: context.originalAppointmentId,
       eventId: currentEventId,
       newStartTime: newStartIso
     };
@@ -7964,6 +8009,22 @@ async function handleUnifiedBookingEngine(params: {
         await replyAndRecord(recentlyCancelled.successReply);
         return true;
       }
+    }
+    const recentlyRescheduled = recentlyCompletedReschedules[sessionId];
+    if (
+      recentlyRescheduled &&
+      Date.now() - recentlyRescheduled.completedAt <= RESCHEDULE_CONTEXT_TTL_MS &&
+      recentlyRescheduled.businessId === currentAppointmentStateOwner.businessId &&
+      recentlyRescheduled.platform === currentAppointmentStateOwner.platform &&
+      recentlyRescheduled.userId === currentAppointmentStateOwner.userId &&
+      isCompoundAffirmativeReply(text)
+    ) {
+      console.log("[Idempotency] Completed reschedule confirmation suppressed.", {
+        platform: platformName,
+        operation: "reschedule",
+        finalHandledPath: "completed_confirmation_suppressed"
+      });
+      return true;
     }
     const recoveryIntent = isExistingBookingOperationRecoveryIntent(text);
     const priorityReschedule = getRescheduleContext(sessionId);
@@ -8435,7 +8496,9 @@ async function handleUnifiedBookingEngine(params: {
 
     // Rescheduling an existing appointment must always win over a stale/new-booking flow.
     // Never ask again for service, duration, name or phone when an existing booking can be found.
-    const rescheduleRequested = !explicitNewBookingRequested && isRescheduleIntent(text);
+    const rescheduleRequested =
+      !explicitNewBookingRequested &&
+      (isRescheduleIntent(text) || recoveryIntent);
     const cancellationRequested = !explicitNewBookingRequested && isCancellationIntent(text);
     if (rescheduleRequested) lockConversationFlowLanguage(sessionId, language, "reschedule");
     if (cancellationRequested) lockConversationFlowLanguage(sessionId, language, "cancellation");

@@ -501,23 +501,23 @@ function parseRescheduleTimeFollowUp(text?: string): RescheduleTimeFollowUp {
       )
     ],
     [
+      "exclusive_upper",
+      new RegExp(
+        String.raw`(?:before|earlier\s+than|f[oö]re(?:\s+kl(?:ockan)?)?|innan(?:\s+kl(?:ockan)?)?|vor|antes\s+de(?:\s+las)?|(?:pish|ghabl)\s+az(?:\s+sa{1,2}t(?:e)?)?|قبل\s+از(?:\s+ساعت)?|قبل\s+الساعة)\s*${timeToken}`,
+        "iu"
+      )
+    ],
+    [
       "inclusive_lower",
       new RegExp(
-        String.raw`(?:from|starting\s+(?:at|from)|fr[oå]n(?:\s+kl(?:ockan)?)?|ab|desde(?:\s+las)?|az(?:\s+saat)?|از\s+(?:ساعت\s*)?|من\s+الساعة)\s*${timeToken}(?:\s*(?:onward|onwards|or\s+later|och\s+senare|eller\s+senare|aufw[aä]rts|en\s+adelante|be\s+bad|به\s+بعد|فصاعد[ااً]?))?`,
+        String.raw`(?:from|starting\s+(?:at|from)|fr[oå]n(?:\s+kl(?:ockan)?)?|ab|desde(?:\s+las)?|(?<!ghabl\s)(?<!pish\s)az(?:\s+sa{1,2}t(?:e)?)?|از\s+(?:ساعت\s*)?|من\s+الساعة)\s*${timeToken}(?:\s*(?:onward|onwards|or\s+later|och\s+senare|eller\s+senare|aufw[aä]rts|en\s+adelante|be\s+bad|به\s+بعد|فصاعد[ااً]?))?`,
         "iu"
       )
     ],
     [
       "inclusive_upper",
       new RegExp(
-        String.raw`(?:until|no\s+later\s+than|senast(?:\s+kl(?:ockan)?)?|bis(?:\s+sp[aä]testens)?|hasta(?:\s+las)?|ta(?:\s+saat)?|تا(?:\s+ساعت)?|حتى\s+الساعة)\s*${timeToken}|${timeToken}\s*(?:or\s+earlier|eller\s+tidigare|oder\s+fr[uü]her|o\s+antes|یا\s+زودتر|أو\s+قبل)`,
-        "iu"
-      )
-    ],
-    [
-      "exclusive_upper",
-      new RegExp(
-        String.raw`(?:before|earlier\s+than|f[oö]re(?:\s+kl(?:ockan)?)?|vor|antes\s+de(?:\s+las)?|pish\s+az(?:\s+saat)?|قبل\s+از(?:\s+ساعت)?|قبل\s+الساعة)\s*${timeToken}`,
+        String.raw`(?:until|up\s+to\s+and\s+including|no\s+later\s+than|senast(?:\s+kl(?:ockan)?)?|till\s+och\s+med|bis(?:\s+(?:sp[aä]testens|einschlie[sß]lich))?|hasta(?:\s+las)?|ta(?:\s+saat)?|تا(?:\s+ساعت)?|حتى\s+الساعة)\s*${timeToken}|${timeToken}\s*(?:inclusive|or\s+earlier|eller\s+tidigare|oder\s+fr[uü]her|o\s+antes|یا\s+زودتر|أو\s+قبل)`,
         "iu"
       )
     ],
@@ -3199,6 +3199,7 @@ type RescheduleContext = {
   originalStartTime: string;
   requestedDate?: string;
   requestedTime?: string;
+  timeBoundary?: TimeBoundary;
   requestedDaypart?: "morning" | "afternoon" | "evening";
   selectedNewStartTime?: string;
   selectedEndTime?: string;
@@ -4538,11 +4539,26 @@ function selectRescheduleOfferedSlot(text: string, offeredSlots: string[]): stri
 // Pending bookings must be short-lived. Otherwise a customer can start a new request
 // and accidentally finalize an old slot from a previous test/conversation.
 const PENDING_BOOKING_TTL_MS = Number(process.env.PENDING_BOOKING_TTL_MINUTES || 45) * 60 * 1000;
+const ACTIVE_PENDING_GREETING_TTL_MS = 10 * 60 * 1000;
 
 function isPendingBookingExpired(pending: any): boolean {
   const createdAt = Number(pending?.createdAt || pending?.created_at || 0);
   if (!createdAt) return false;
   return Date.now() - createdAt > PENDING_BOOKING_TTL_MS;
+}
+
+function isPendingBookingActiveForGreeting(pending: any): boolean {
+  const lastActivityAt = Number(
+    pending?.updatedAt ||
+    pending?.updated_at ||
+    pending?.createdAt ||
+    pending?.created_at ||
+    0
+  );
+  return Boolean(
+    lastActivityAt &&
+    Date.now() - lastActivityAt <= ACTIVE_PENDING_GREETING_TTL_MS
+  );
 }
 
 function isNewBookingRequestText(text?: string): boolean {
@@ -4662,7 +4678,16 @@ function isGreetingOnlyText(text?: string): boolean {
 
   if (!raw) return false;
 
-  return /^(hej|hejsan|hallå|halla|hello|hi|hey|salam|salaam|slm|سلام|درود|god morgon|god kväll|god kvall|good morning|good evening|khob hastin|khoobi|خوب هستین|خوبی)$/.test(raw);
+  return /^(?:he+j+|hejsan|hallå|halla|hell+o+|hi+|hey+|sala+m+|salaa+m+|slm|سلام|درود|god morgon|god kväll|god kvall|good morning|good evening|khob hastin|khoobi|خوب هستین|خوبی)$/.test(raw);
+}
+
+function formatGreetingDuringActiveBooking(language: string): string {
+  if (language === "fa") return "سلام 😊 چطور می‌تونم کمکتون کنم؟";
+  if (language === "de") return "Hallo 😊 Wie kann ich Ihnen helfen?";
+  if (language === "es") return "Hola 😊 ¿Cómo puedo ayudarte?";
+  if (language === "ar") return "مرحبًا 😊 كيف يمكنني مساعدتك؟";
+  if (language === "en") return "Hi 😊 How can I help?";
+  return "Hej 😊 Hur kan jag hjälpa dig?";
 }
 
 function getDefaultBookingServiceForBusiness(config: any): string | null {
@@ -5056,6 +5081,7 @@ function formatMissingBookingDetailsMessage(
 
 async function savePendingBooking(chatId: string, platform: string, pending: any) {
   pending.createdAt = pending.createdAt || Date.now();
+  pending.updatedAt = Date.now();
   pending.businessId = String(
     pending.businessId ||
     getBusinessIdFromConfig(pending.businessConfig) ||
@@ -5091,6 +5117,7 @@ async function savePendingBooking(chatId: string, platform: string, pending: any
       status: pending.status,
       operation: pending.operation || "new_booking",
       createdAt: pending.createdAt || Date.now(),
+      updatedAt: pending.updatedAt,
       business_id: pending.businessId,
       userId: pending.userId
     };
@@ -5186,7 +5213,14 @@ async function loadPendingBooking(chatId: string, platform: string, businessConf
       businessId: String(parsed.business_id || getBusinessIdFromConfig(businessConfig) || ""),
       userId: normalizePlatformUserId(platform, String(parsed.userId || chatId)),
       sessionId: chatId,
-      createdAt: Number(parsed.createdAt || parsed.created_at || 0)
+      createdAt: Number(parsed.createdAt || parsed.created_at || 0),
+      updatedAt: Number(
+        parsed.updatedAt ||
+        parsed.updated_at ||
+        parsed.createdAt ||
+        parsed.created_at ||
+        0
+      )
     };
     const expectedBusinessId = String(getBusinessIdFromConfig(businessConfig) || "");
     const expectedUserId = normalizePlatformUserId(platform, chatId);
@@ -7342,6 +7376,34 @@ async function handleUnifiedBookingEngine(params: {
       return true;
     }
 
+    const timeBoundary = options.timeBoundary;
+    if (
+      timeBoundary &&
+      timeBoundary.kind !== "approximate" &&
+      requestedTime === timeBoundary.time
+    ) {
+      requestedTime = null;
+    }
+    if (timeBoundary) {
+      rememberRescheduleContext(
+        sessionId,
+        appointment,
+        lockedLanguage,
+        requestedDate,
+        requestedTime,
+        {
+          timeBoundary,
+          requestedTime: requestedTime || undefined,
+          selectedNewStartTime: undefined,
+          selectedEndTime: undefined,
+          offeredSlots: [],
+          ownedOfferedSlots: [],
+          lastOfferedTime: undefined,
+          lastOperation: "awaiting_target"
+        }
+      );
+    }
+
     if (requestedTime) {
       const candidateIso = `${requestedDate}T${requestedTime}:00${getStockholmUtcOffset(requestedDate)}`;
       const candidateStartMs = new Date(candidateIso).getTime();
@@ -7386,6 +7448,7 @@ async function handleUnifiedBookingEngine(params: {
           generatedAt: Date.now()
         };
         rememberRescheduleContext(sessionId, appointment, lockedLanguage, requestedDate, requestedTime, {
+          timeBoundary: undefined,
           requestedDaypart: requestedDaypart || undefined,
           selectedNewStartTime: ownedSlot.start,
           selectedEndTime: ownedSlot.end,
@@ -7422,6 +7485,7 @@ async function handleUnifiedBookingEngine(params: {
       const selectedTime = getStockholmTimeFromIso(selectedNewStartTime || "");
       if (selectedNewStartTime && selectedTime && Number.isFinite(selectedStartMs)) {
         rememberRescheduleContext(sessionId, appointment, lockedLanguage, requestedDate, selectedTime, {
+          timeBoundary,
           requestedDaypart: requestedDaypart || undefined,
           selectedNewStartTime,
           selectedEndTime: new Date(selectedStartMs + duration * 60000).toISOString(),
@@ -7435,6 +7499,7 @@ async function handleUnifiedBookingEngine(params: {
       }
     }
     rememberRescheduleContext(sessionId, appointment, lockedLanguage, requestedDate, requestedTime, {
+      timeBoundary,
       requestedDaypart: requestedDaypart || undefined,
       selectedNewStartTime: undefined,
       selectedEndTime: undefined,
@@ -7995,10 +8060,11 @@ async function handleUnifiedBookingEngine(params: {
           {
             ...priorityReschedule,
             requestedTime: undefined,
+            timeBoundary: timeFollowUp.boundary || undefined,
             selectedNewStartTime: undefined,
             selectedEndTime: undefined,
-            offeredSlots: retainedOffers,
-            ownedOfferedSlots: retainedOwnedOffers,
+            offeredSlots: timeFollowUp.boundary ? [] : retainedOffers,
+            ownedOfferedSlots: timeFollowUp.boundary ? [] : retainedOwnedOffers,
             lastOfferedTime: undefined,
             lastOperation: "awaiting_target"
           }
@@ -8157,10 +8223,19 @@ async function handleUnifiedBookingEngine(params: {
     }
 
     if (pending && isGreetingOnlyText(text)) {
+      if (isPendingBookingActiveForGreeting(pending)) {
+        await replyAndRecord(
+          formatGreetingDuringActiveBooking(
+            getFlowReplyLanguage(pending.language, language, text)
+          )
+        );
+        return true;
+      }
       console.log(
         `[UnifiedBooking] Fresh greeting cleared stale pending platform=${platformName}, session=${sessionId}, status=${pending.status || "unknown"}`
       );
       await clearPendingBooking(sessionId);
+      delete availabilitySearchContexts[sessionId];
       clearConversationFlowLanguage(sessionId);
       pending = null;
       return false;
@@ -8609,14 +8684,35 @@ async function handleUnifiedBookingEngine(params: {
     if (!pending && !existingRescheduleContext && rememberedAppointment && (rescheduleRequested || rescheduleCorrectionRequested)) {
       const appointment = rememberedAppointment.appointment;
       const requestedDate = resolveRescheduleDate(text, appointment);
-      const requestedTime = inferRequestedTimeFromText(text) || (
-        rescheduleCorrectionRequested ? getStockholmTimeFromIso(appointment.start) : null
-      );
+      const timeFollowUp = parseRescheduleTimeFollowUp(text);
+      const requestedTime = timeFollowUp.boundary?.kind === "approximate"
+        ? timeFollowUp.boundary.time
+        : timeFollowUp.boundary
+          ? null
+          : timeFollowUp.explicitTime || (
+              rescheduleCorrectionRequested
+                ? getStockholmTimeFromIso(appointment.start)
+                : null
+            );
       const requestedDaypart = inferRequestedDaypart(text);
       const lockedLanguage = getFlowReplyLanguage(rememberedAppointment.language, language, text);
+      const slotOptions: SlotSearchOptions = {
+        ...getDaypartSlotOptions(requestedDaypart),
+        ...(timeFollowUp.boundary
+          ? { timeBoundary: timeFollowUp.boundary }
+          : {}),
+        ...(timeFollowUp.rejectedTimes.length
+          ? { excludedTimes: timeFollowUp.rejectedTimes }
+          : {}),
+        ...(timeFollowUp.boundary &&
+          timeFollowUp.boundary.kind !== "approximate"
+          ? { selectFirstAvailable: true }
+          : {})
+      };
 
       if (!requestedDate) {
         rememberRescheduleContext(sessionId, appointment, lockedLanguage, requestedDate, requestedTime, {
+          timeBoundary: timeFollowUp.boundary || undefined,
           requestedDaypart: requestedDaypart || undefined,
           lastOperation: "awaiting_target"
         });
@@ -8628,14 +8724,20 @@ async function handleUnifiedBookingEngine(params: {
       }
 
       if (!requestedDaypart) {
-        return completeReschedule(appointment, requestedDate, requestedTime, lockedLanguage);
+        return completeReschedule(
+          appointment,
+          requestedDate,
+          requestedTime,
+          lockedLanguage,
+          slotOptions
+        );
       }
       return prepareRescheduleTarget(
         appointment,
         requestedDate,
         requestedTime,
         lockedLanguage,
-        getDaypartSlotOptions(requestedDaypart),
+        slotOptions,
         requestedDaypart
       );
     }
@@ -8729,7 +8831,19 @@ async function handleUnifiedBookingEngine(params: {
 
       const explicitDate = resolveExplicitBookingDate(text);
       const resolvedDate = resolveRescheduleDate(text, activeReschedule.appointment);
-      const parsedTime = inferRequestedTimeFromText(text);
+      const timeFollowUp = parseRescheduleTimeFollowUp(text);
+      const activeTimeBoundary =
+        timeFollowUp.boundary ||
+        (
+          !timeFollowUp.explicitTime
+            ? activeReschedule.timeBoundary
+            : undefined
+        );
+      const parsedTime = activeTimeBoundary?.kind === "approximate"
+        ? activeTimeBoundary.time
+        : activeTimeBoundary
+          ? null
+          : timeFollowUp.explicitTime;
       const parsedDaypart = inferRequestedDaypart(text);
       const hasSameDayExpression = /\b(samma dag|samma datum|den dagen|same day|same date|hamon rooz|hamoon rooz|همان روز|همون روز)\b/i.test(text);
       const hasDateExpression = Boolean(explicitDate || hasSameDayExpression);
@@ -8738,12 +8852,23 @@ async function handleUnifiedBookingEngine(params: {
         : parsedTime && activeReschedule.requestedDate
           ? activeReschedule.requestedDate
           : resolvedDate || activeReschedule.requestedDate || null;
-      const requestedTime = parsedDaypart
+      const requestedTime = parsedDaypart ||
+        (activeTimeBoundary && activeTimeBoundary.kind !== "approximate")
         ? null
         : parsedTime || (
             hasDateExpression ? activeReschedule.requestedTime || null : activeReschedule.requestedTime || null
           );
       const requestedDaypart = parsedDaypart || activeReschedule.requestedDaypart || null;
+      const slotOptions: SlotSearchOptions = {
+        ...getDaypartSlotOptions(requestedDaypart),
+        ...(activeTimeBoundary ? { timeBoundary: activeTimeBoundary } : {}),
+        ...(timeFollowUp.rejectedTimes.length
+          ? { excludedTimes: timeFollowUp.rejectedTimes }
+          : {}),
+        ...(activeTimeBoundary && activeTimeBoundary.kind !== "approximate"
+          ? { selectFirstAvailable: true }
+          : {})
+      };
 
       if (requestedDate && requestedTime) {
         return prepareRescheduleTarget(
@@ -8751,7 +8876,7 @@ async function handleUnifiedBookingEngine(params: {
           requestedDate,
           requestedTime,
           lockedLanguage,
-          getDaypartSlotOptions(requestedDaypart),
+          slotOptions,
           requestedDaypart
         );
       }
@@ -8762,7 +8887,7 @@ async function handleUnifiedBookingEngine(params: {
           requestedDate,
           null,
           lockedLanguage,
-          getDaypartSlotOptions(requestedDaypart),
+          slotOptions,
           requestedDaypart
         );
       }
@@ -8774,6 +8899,7 @@ async function handleUnifiedBookingEngine(params: {
         requestedDate,
         requestedTime,
         {
+          timeBoundary: activeTimeBoundary,
           requestedDaypart: requestedDaypart || undefined,
           lastOperation: "awaiting_target"
         }
@@ -8841,19 +8967,38 @@ async function handleUnifiedBookingEngine(params: {
         }
         if (rescheduleRequested || activeSelectionContext.intent === "reschedule") {
           const requestedDate = resolveRescheduleDate(text, selection.appointment);
-          const requestedTime = inferRequestedTimeFromText(text);
+          const timeFollowUp = parseRescheduleTimeFollowUp(text);
+          const requestedTime = timeFollowUp.boundary?.kind === "approximate"
+            ? timeFollowUp.boundary.time
+            : timeFollowUp.boundary
+              ? null
+              : timeFollowUp.explicitTime;
           const requestedDaypart = inferRequestedDaypart(text);
+          const slotOptions: SlotSearchOptions = {
+            ...getDaypartSlotOptions(requestedDaypart),
+            ...(timeFollowUp.boundary
+              ? { timeBoundary: timeFollowUp.boundary }
+              : {}),
+            ...(timeFollowUp.rejectedTimes.length
+              ? { excludedTimes: timeFollowUp.rejectedTimes }
+              : {}),
+            ...(timeFollowUp.boundary &&
+              timeFollowUp.boundary.kind !== "approximate"
+              ? { selectFirstAvailable: true }
+              : {})
+          };
           if (requestedDate) {
             return prepareRescheduleTarget(
               selection.appointment,
               requestedDate,
               requestedTime,
               lockedLanguage,
-              getDaypartSlotOptions(requestedDaypart),
+              slotOptions,
               requestedDaypart
             );
           }
           rememberRescheduleContext(sessionId, selection.appointment, lockedLanguage, requestedDate, requestedTime, {
+            timeBoundary: timeFollowUp.boundary || undefined,
             requestedDaypart: requestedDaypart || undefined,
             lastOperation: "awaiting_target"
           });

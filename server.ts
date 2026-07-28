@@ -496,28 +496,28 @@ function parseRescheduleTimeFollowUp(text?: string): RescheduleTimeFollowUp {
     [
       "exclusive_lower",
       new RegExp(
-        String.raw`(?:after|later\s+than|efter(?:\s+kl(?:ockan)?)?|senare\s+[aä]n|nach|sp[aä]ter\s+als|despu[eé]s\s+de(?:\s+las)?|m[aá]s\s+tarde\s+que|bade?(?:\s+az)?(?:\s+sa{1,2}t(?:e)?)?|بعد\s+از(?:\s+ساعت)?|دیرتر\s+از|بعد\s+الساعة)\s*${timeToken}`,
+        String.raw`(?:after|later\s+than|efter(?:\s+kl(?:ockan)?\.?)?|senare\s+[aä]n|nach|sp[aä]ter\s+als|despu[eé]s\s+de(?:\s+las)?|m[aá]s\s+tarde\s+que|bade?(?:\s+az)?(?:\s+sa{1,2}t(?:e)?)?|بعد\s+از(?:\s+ساعت)?|دیرتر\s+از|بعد\s+الساعة)\s*${timeToken}`,
         "iu"
       )
     ],
     [
       "exclusive_upper",
       new RegExp(
-        String.raw`(?:before|earlier\s+than|f[oö]re(?:\s+kl(?:ockan)?)?|innan(?:\s+kl(?:ockan)?)?|vor|antes\s+de(?:\s+las)?|(?:pish|ghabl)\s+az(?:\s+sa{1,2}t(?:e)?)?|قبل\s+از(?:\s+ساعت)?|قبل\s+الساعة)\s*${timeToken}`,
+        String.raw`(?:before|earlier\s+than|f[oö]re(?:\s+kl(?:ockan)?\.?)?|innan(?:\s+kl(?:ockan)?\.?)?|vor|antes\s+de(?:\s+las)?|(?:pish|ghabl)\s+az(?:\s+sa{1,2}t(?:e)?)?|قبل\s+از(?:\s+ساعت)?|قبل\s+الساعة)\s*${timeToken}`,
         "iu"
       )
     ],
     [
       "inclusive_lower",
       new RegExp(
-        String.raw`(?:from|starting\s+(?:at|from)|fr[oå]n(?:\s+kl(?:ockan)?)?|ab|desde(?:\s+las)?|(?<!ghabl\s)(?<!pish\s)az(?:\s+sa{1,2}t(?:e)?)?|از\s+(?:ساعت\s*)?|من\s+الساعة)\s*${timeToken}(?:\s*(?:onward|onwards|or\s+later|och\s+senare|eller\s+senare|aufw[aä]rts|en\s+adelante|be\s+bad|به\s+بعد|فصاعد[ااً]?))?`,
+        String.raw`(?:from|starting\s+(?:at|from)|fr[oå]n(?:\s+kl(?:ockan)?\.?)?|ab|desde(?:\s+las)?|(?<!ghabl\s)(?<!pish\s)az(?:\s+sa{1,2}t(?:e)?)?|از\s+(?:ساعت\s*)?|من\s+الساعة)\s*${timeToken}(?:\s*(?:onward|onwards|or\s+later|och\s+senare|eller\s+senare|aufw[aä]rts|en\s+adelante|be\s+bad|به\s+بعد|فصاعد[ااً]?))?`,
         "iu"
       )
     ],
     [
       "inclusive_upper",
       new RegExp(
-        String.raw`(?:until|up\s+to\s+and\s+including|no\s+later\s+than|senast(?:\s+kl(?:ockan)?)?|till\s+och\s+med|bis(?:\s+(?:sp[aä]testens|einschlie[sß]lich))?|hasta(?:\s+las)?|ta(?:\s+saat)?|تا(?:\s+ساعت)?|حتى\s+الساعة)\s*${timeToken}|${timeToken}\s*(?:inclusive|or\s+earlier|eller\s+tidigare|oder\s+fr[uü]her|o\s+antes|یا\s+زودتر|أو\s+قبل)`,
+        String.raw`(?:until|up\s+to\s+and\s+including|no\s+later\s+than|senast(?:\s+kl(?:ockan)?\.?)?|till\s+och\s+med|bis(?:\s+(?:sp[aä]testens|einschlie[sß]lich))?|hasta(?:\s+las)?|ta(?:\s+saat)?|تا(?:\s+ساعت)?|حتى\s+الساعة)\s*${timeToken}|${timeToken}\s*(?:inclusive|or\s+earlier|eller\s+tidigare|oder\s+fr[uü]her|o\s+antes|یا\s+زودتر|أو\s+قبل)`,
         "iu"
       )
     ],
@@ -2991,6 +2991,78 @@ const calendarTools: any = [{
   ]
 }];
 
+function isInterveningNonMutatingQuestion(text?: string): boolean {
+  const raw = String(text || "").trim().toLowerCase();
+  if (!raw) return false;
+  const asksAboutPaymentOrPolicy =
+    /\b(?:pay|payment|paying|cost|price|fee|twice|double|betala|betalning|kostar|pris|avgift|två gånger|tva ganger|dubbelt|zahlen|zahlung|kosten|preis|zweimal|pagar|pago|cuesta|precio|doble|do bar|hazine|هزینه|پرداخت|دوبار|السعر|الدفع|مرتين)\b/iu.test(raw);
+  if (!asksAboutPaymentOrPolicy) return false;
+  return !(
+    isExplicitNewBookingPivotText(raw) ||
+    isRescheduleIntent(raw) ||
+    isCancellationIntent(raw) ||
+    isExistingAppointmentLookupIntent(raw)
+  );
+}
+
+function getGeminiSupportTools(sessionId?: string): any {
+  const supportOnly = Boolean(
+    sessionId &&
+    nonMutatingSupportTurns[sessionId] &&
+    Date.now() - nonMutatingSupportTurns[sessionId] < 2 * 60 * 1000
+  );
+  const forbiddenMutations = new Set([
+    "insertAppointment",
+    "rescheduleAppointment",
+    "cancelAppointment"
+  ]);
+  return calendarTools.map((group: any) => ({
+    ...group,
+    functionDeclarations: (group.functionDeclarations || []).filter((declaration: any) => {
+      const name = String(declaration?.name || "");
+      if (forbiddenMutations.has(name)) return false;
+      if (supportOnly && ["checkSlots", "findCustomerAppointments"].includes(name)) return false;
+      return true;
+    })
+  }));
+}
+
+function formatAuthoritativeBookingContinuation(
+  sessionId: string,
+  language: string
+): string {
+  const pending = pendingBookings[sessionId];
+  if (pending?.status === "awaiting_contact") {
+    const missing: Array<"name" | "phone" | "service"> = [];
+    if (!pending.customerName) missing.push("name");
+    if (!pending.customerPhone) missing.push("phone");
+    if (!pending.service || pending.service === "Bokning") missing.push("service");
+    return formatMissingBookingDetailsMessage(language, missing);
+  }
+  if (
+    pending?.status === "awaiting_confirmation" &&
+    pending.dateTime
+  ) {
+    return formatSwedishTimeSlots(
+      Array.isArray(pending.offeredSlots) ? pending.offeredSlots : [],
+      getStockholmTimeFromIso(String(pending.dateTime)) || undefined,
+      language
+    );
+  }
+  if (
+    pending?.status === "awaiting_time_selection" &&
+    Array.isArray(pending.offeredSlots)
+  ) {
+    return formatSwedishTimeSlots(pending.offeredSlots, undefined, language);
+  }
+  if (language === "sv") return "Jag fortsätter gärna med bokningen här. Vilken tid vill du välja?";
+  if (language === "fa") return "حتماً، رزرو را همین‌جا ادامه می‌دهیم. کدام زمان را انتخاب می‌کنید؟";
+  if (language === "de") return "Gern, wir setzen die Buchung hier sicher fort. Welche Zeit möchten Sie wählen?";
+  if (language === "es") return "Claro, seguimos con la reserva aquí. ¿Qué hora quieres elegir?";
+  if (language === "ar") return "بالتأكيد، سنواصل الحجز هنا. ما الوقت الذي تود اختياره؟";
+  return "Of course — we’ll continue the booking here. Which time would you like?";
+}
+
 function selectAuthoritativeGeminiFunctionCalls(
   calls: any[],
   sessionId?: string
@@ -3304,7 +3376,41 @@ const pastAppointmentRecoveryContexts: Record<string, {
   savedAt: number;
   language: string;
   owner: AppointmentStateOwner;
+  availabilityConstraint?: CanonicalAvailabilityConstraint;
+  service?: string;
+  durationMinutes?: number;
 }> = {};
+const nonMutatingSupportTurns: Record<string, number> = {};
+
+function rememberPastAppointmentRecovery(
+  sessionId: string,
+  language: string,
+  owner: AppointmentStateOwner,
+  appointment: any,
+  latestText: string,
+  businessConfig: any
+) {
+  const availabilityConstraint = deriveCanonicalAvailabilityConstraint(
+    latestText,
+    businessConfig
+  );
+  pastAppointmentRecoveryContexts[sessionId] = {
+    savedAt: Date.now(),
+    language,
+    owner,
+    ...(availabilityConstraint ? { availabilityConstraint } : {}),
+    service: String(
+      appointment?.service ||
+      inferServiceFromText(latestText) ||
+      getDefaultBookingServiceForBusiness(businessConfig) ||
+      "Bokning"
+    ),
+    durationMinutes:
+      getAppointmentDurationMinutes(appointment) ||
+      getDefaultBookingDurationForService(String(appointment?.service || "")) ||
+      inferBookingDurationFromContext(latestText)
+  };
+}
 
 function hasAppointmentConversationState(sessionId: string): boolean {
   return Boolean(
@@ -6320,6 +6426,7 @@ const telegramPollers: Record<string, TelegramPollerState> = {};
 type AtomicClaimState = {
   type:
     | "inbound_message_claim"
+    | "booking_operation_claim"
     | "reschedule_operation_claim"
     | "cancellation_operation_claim";
   status: "processing" | "completed" | "failed";
@@ -6356,6 +6463,7 @@ function parseAtomicClaimState(value: any): AtomicClaimState | null {
       !parsed ||
       ![
         "inbound_message_claim",
+        "booking_operation_claim",
         "reschedule_operation_claim",
         "cancellation_operation_claim"
       ].includes(parsed.type) ||
@@ -6396,6 +6504,8 @@ async function claimAtomicOperation(params: {
   const keyHash = crypto.createHash("sha256").update(rawKey).digest("hex");
   const claimPrefix = params.type === "inbound_message_claim"
     ? "idem"
+    : params.type === "booking_operation_claim"
+      ? "bookop"
     : params.type === "reschedule_operation_claim"
       ? "resop"
       : "cancelop";
@@ -6673,6 +6783,7 @@ function resetSessionIfBusinessConfigChanged(sessionId: string, config: any) {
     delete appointmentStateOwners[sessionId];
     delete availabilitySearchContexts[sessionId];
     delete pastAppointmentRecoveryContexts[sessionId];
+    delete nonMutatingSupportTurns[sessionId];
     delete conversationFlowLanguages[sessionId];
     delete chatLanguages[sessionId];
   }
@@ -6830,6 +6941,7 @@ async function handleUnifiedBookingEngine(params: {
   } = params;
 
   if (!text) return false;
+  delete nonMutatingSupportTurns[sessionId];
 
   const currentAppointmentStateOwner: AppointmentStateOwner = {
     sessionId,
@@ -8046,11 +8158,14 @@ async function handleUnifiedBookingEngine(params: {
       const temporalState = classifyAppointmentTemporalState(priorityReschedule.appointment);
       if (temporalState !== "future_or_active") {
         clearAppointmentConversationState(sessionId);
-        pastAppointmentRecoveryContexts[sessionId] = {
-          savedAt: Date.now(),
-          language: lockedLanguage,
-          owner: currentAppointmentStateOwner
-        };
+        rememberPastAppointmentRecovery(
+          sessionId,
+          lockedLanguage,
+          currentAppointmentStateOwner,
+          priorityReschedule.appointment,
+          text,
+          businessConfig
+        );
         lockConversationFlowLanguage(sessionId, lockedLanguage, "appointment");
         await replyAndRecord(
           formatPastAppointmentMutationReply(
@@ -8248,6 +8363,8 @@ async function handleUnifiedBookingEngine(params: {
 
     let forcedNewBookingFromRecovery = false;
     let recoveredServiceForNewBooking: string | undefined;
+    let recoveredDurationForNewBooking: number | undefined;
+    let recoveredConstraintForNewBooking: CanonicalAvailabilityConstraint | undefined;
     const pastRecovery = pastAppointmentRecoveryContexts[sessionId];
     if (pastRecovery) {
       const expired = Date.now() - pastRecovery.savedAt > 15 * 60 * 1000;
@@ -8256,6 +8373,19 @@ async function handleUnifiedBookingEngine(params: {
         currentAppointmentStateOwner
       );
       if (expired || !ownerMatches) {
+        delete pastAppointmentRecoveryContexts[sessionId];
+      } else if (
+        isExplicitNewBookingPivotText(text) ||
+        isAvailabilityPivotFromFailedLookup(text) ||
+        (
+          isAffirmativeBookingText(text) &&
+          Boolean(pastRecovery.availabilityConstraint)
+        )
+      ) {
+        forcedNewBookingFromRecovery = true;
+        recoveredConstraintForNewBooking = pastRecovery.availabilityConstraint;
+        recoveredServiceForNewBooking = pastRecovery.service;
+        recoveredDurationForNewBooking = pastRecovery.durationMinutes;
         delete pastAppointmentRecoveryContexts[sessionId];
       } else if (isAffirmativeBookingText(text)) {
         const recoveryLanguage = getFlowReplyLanguage(
@@ -8274,12 +8404,14 @@ async function handleUnifiedBookingEngine(params: {
               : "Of course 😊 What service and day would you like for the new appointment?"
         );
         return true;
-      } else if (
-        isExplicitNewBookingRequest(text) ||
-        isAvailabilityPivotFromFailedLookup(text)
-      ) {
-        forcedNewBookingFromRecovery = true;
-        delete pastAppointmentRecoveryContexts[sessionId];
+      } else if (isInterveningNonMutatingQuestion(text)) {
+        nonMutatingSupportTurns[sessionId] = Date.now();
+        lockConversationFlowLanguage(
+          sessionId,
+          pastRecovery.language || language,
+          "booking_support"
+        );
+        return false;
       }
     }
 
@@ -8341,6 +8473,19 @@ async function handleUnifiedBookingEngine(params: {
       lastServiceInformationReplies[sessionId] = { key: dedupeKey, sentAt: Date.now() };
       await replyAndRecord(reply);
       return true;
+    }
+
+    if (
+      pending?.operation === "new_booking" &&
+      isInterveningNonMutatingQuestion(text)
+    ) {
+      nonMutatingSupportTurns[sessionId] = Date.now();
+      lockConversationFlowLanguage(
+        sessionId,
+        pending.language || language,
+        "booking_support"
+      );
+      return false;
     }
 
     const activeRescheduleForContact = getRescheduleContext(sessionId);
@@ -8547,11 +8692,14 @@ async function handleUnifiedBookingEngine(params: {
         const expiredAppointment = rememberedAppointment.appointment;
         clearAppointmentConversationState(sessionId);
         await clearPendingBooking(sessionId);
-        pastAppointmentRecoveryContexts[sessionId] = {
-          savedAt: Date.now(),
-          language: lockedLanguage,
-          owner: currentAppointmentStateOwner
-        };
+        rememberPastAppointmentRecovery(
+          sessionId,
+          lockedLanguage,
+          currentAppointmentStateOwner,
+          expiredAppointment,
+          text,
+          businessConfig
+        );
         lockConversationFlowLanguage(sessionId, lockedLanguage, "appointment");
         await replyAndRecord(
           formatPastAppointmentMutationReply(
@@ -8604,11 +8752,14 @@ async function handleUnifiedBookingEngine(params: {
         const lockedLanguage = getStoredFlowLanguage(sessionId) || language;
         clearAppointmentConversationState(sessionId);
         await clearPendingBooking(sessionId);
-        pastAppointmentRecoveryContexts[sessionId] = {
-          savedAt: Date.now(),
-          language: lockedLanguage,
-          owner: currentAppointmentStateOwner
-        };
+        rememberPastAppointmentRecovery(
+          sessionId,
+          lockedLanguage,
+          currentAppointmentStateOwner,
+          mutationLookup.pastAppointment,
+          text,
+          businessConfig
+        );
         lockConversationFlowLanguage(sessionId, lockedLanguage, "appointment");
         await replyAndRecord(
           formatPastAppointmentMutationReply(
@@ -9297,11 +9448,14 @@ async function handleUnifiedBookingEngine(params: {
       if (mutationLookup.pastAppointment && mutationLookup.temporalState) {
         clearAppointmentConversationState(sessionId);
         await clearPendingBooking(sessionId);
-        pastAppointmentRecoveryContexts[sessionId] = {
-          savedAt: Date.now(),
-          language: lockedLanguage,
-          owner: currentAppointmentStateOwner
-        };
+        rememberPastAppointmentRecovery(
+          sessionId,
+          lockedLanguage,
+          currentAppointmentStateOwner,
+          mutationLookup.pastAppointment,
+          text,
+          businessConfig
+        );
         lockConversationFlowLanguage(sessionId, lockedLanguage, "appointment");
         await replyAndRecord(
           formatPastAppointmentMutationReply(
@@ -9674,12 +9828,16 @@ async function handleUnifiedBookingEngine(params: {
       : (
           pending?.operation === "new_booking"
             ? pending.availabilityConstraint || null
-            : null
+            : recoveredConstraintForNewBooking || null
         );
     let latestAvailabilityConstraint = deriveCanonicalAvailabilityConstraint(
       text,
       businessConfig,
       previousAvailabilityConstraint
+    ) || (
+      explicitNewBookingRequested
+        ? recoveredConstraintForNewBooking || null
+        : null
     );
     let outsideOriginalRange = false;
     if (
@@ -9760,6 +9918,7 @@ async function handleUnifiedBookingEngine(params: {
       );
       const durationMinutes = storedAvailability?.durationMinutes ||
         Number(priorPendingBooking?.durationMinutes || 0) ||
+        Number(recoveredDurationForNewBooking || 0) ||
         getDefaultBookingDurationForService(inferredService) ||
         inferBookingDurationFromContext(text, history);
       const lockedLanguage =
@@ -10337,7 +10496,56 @@ async function handleUnifiedBookingEngine(params: {
         return true;
       }
 
+      const ownedTargetMatches = Boolean(
+        selectedOwnedSlot &&
+        bookingSlotOwnerMatches(selectedOwnedSlot, currentBookingSlotOwner) &&
+        new Date(selectedOwnedSlot.start).getTime() === new Date(finalIso).getTime() &&
+        new Date(selectedOwnedSlot.end).getTime() === new Date(exactCheck.endIso).getTime() &&
+        stockholmDateString(new Date(finalIso)) === selectedDate
+      );
+      if (!ownedTargetMatches) {
+        console.error("[BookingFlow]", {
+          platform: platformName,
+          businessScopePresent: Boolean(currentBookingSlotOwner.businessId),
+          operation: "booking_persistence",
+          stateType: pending.status,
+          validatorResultCategory: "owned_target_mismatch",
+          ownershipMatch: false,
+          finalHandledPath: "blocked_before_insert"
+        });
+        await replyAndRecord(
+          getErrorMessageByLanguage(
+            getFlowReplyLanguage(pending.language, language, text)
+          )
+        );
+        return true;
+      }
+
+      const bookingOperationClaim = await claimAtomicOperation({
+        type: "booking_operation_claim",
+        tenantScope: currentBookingSlotOwner.businessId,
+        businessId: currentBookingSlotOwner.businessId,
+        platform: currentBookingSlotOwner.platform,
+        exactId: [
+          currentBookingSlotOwner.userId,
+          String(pending.service || ""),
+          new Date(finalIso).toISOString(),
+          new Date(exactCheck.endIso).toISOString()
+        ].join("|")
+      });
+      if (!bookingOperationClaim.claimed) {
+        console.log("[Idempotency] Duplicate booking completion suppressed.", {
+          platform: platformName,
+          duplicateStatus: bookingOperationClaim.duplicateStatus || "processing"
+        });
+        if (bookingOperationClaim.duplicateStatus === "completed") {
+          await clearPendingBooking(sessionId);
+        }
+        return true;
+      }
+
       pending.status = "inserting";
+      pending.dateTime = finalIso;
       pending.selectedSlotEnd = exactCheck.endIso;
       await savePendingBooking(sessionId, platformName, pending);
       const result = await adapter.insertAppointment(
@@ -10351,6 +10559,7 @@ async function handleUnifiedBookingEngine(params: {
       );
 
       if (!result?.success) {
+        await settleAtomicOperation(bookingOperationClaim, "failed");
         const conflict = ["SLOT_CONFLICT", "SLOT_NO_LONGER_AVAILABLE"].includes(
           String(result?.code || "")
         );
@@ -10397,7 +10606,89 @@ async function handleUnifiedBookingEngine(params: {
         return true;
       }
 
-      await recordAppointmentFromBooking({
+      const insertedEventId = String(result?.event?.id || "").trim();
+      const configuredCalendarId = String(
+        businessConfig?.googleCalendarId ||
+        businessConfig?.google_calendar_id ||
+        process.env.GOOGLE_CALENDAR_ID ||
+        ""
+      ).trim();
+      const adapterCalendarId = String(adapter.getCalendarId?.() || "").trim();
+      const calendarIdMatches = !(adapter instanceof GoogleCalendarAdapter) ||
+        Boolean(
+          configuredCalendarId &&
+          adapterCalendarId &&
+          configuredCalendarId === adapterCalendarId
+        );
+      const insertedEvent = insertedEventId && adapter.getEventById
+        ? await adapter.getEventById(insertedEventId)
+        : null;
+      const calendarStartMatches = Boolean(
+        insertedEvent &&
+        new Date(getEventStartIso(insertedEvent)).getTime() ===
+          new Date(finalIso).getTime()
+      );
+      const calendarEndMatches = Boolean(
+        insertedEvent &&
+        new Date(getEventEndIso(insertedEvent)).getTime() ===
+          new Date(exactCheck.endIso).getTime()
+      );
+      const calendarOwnerMatches = Boolean(
+        insertedEvent &&
+        calendarEventHasExactChannelOwner(
+          insertedEvent,
+          currentBookingSlotOwner.platform,
+          currentBookingSlotOwner.userId
+        )
+      );
+      const calendarVerified = Boolean(
+        insertedEvent &&
+        insertedEventId &&
+        String(insertedEvent.id || "") === insertedEventId &&
+        String(insertedEvent.status || "").toLowerCase() !== "cancelled" &&
+        calendarIdMatches &&
+        calendarStartMatches &&
+        calendarEndMatches &&
+        calendarOwnerMatches
+      );
+
+      const rollbackInsertedCalendarEvent = async () => {
+        if (!insertedEventId || !adapter.cancelAppointment) return false;
+        try {
+          const cancelled = await adapter.cancelAppointment(insertedEventId);
+          if (!cancelled?.success) return false;
+          return adapter.verifyEventDeleted
+            ? Boolean(await adapter.verifyEventDeleted(insertedEventId))
+            : false;
+        } catch {
+          return false;
+        }
+      };
+
+      if (!calendarVerified) {
+        const calendarRollbackResult = await rollbackInsertedCalendarEvent();
+        await settleAtomicOperation(bookingOperationClaim, "failed");
+        pending.status = "awaiting_contact";
+        await savePendingBooking(sessionId, platformName, pending);
+        console.error("[BookingFlow]", {
+          platform: platformName,
+          businessScopePresent: Boolean(currentBookingSlotOwner.businessId),
+          operation: "booking_verification",
+          stateType: pending.status,
+          calendarIdMatch: calendarIdMatches,
+          calendarVerificationResult: false,
+          calendarRollbackResult,
+          finalHandledPath: "calendar_verification_failed"
+        });
+        await replyAndRecord(
+          getErrorMessageByLanguage(
+            getFlowReplyLanguage(pending.language, language, text)
+          )
+        );
+        return true;
+      }
+
+      const databaseRow = await recordAppointmentFromBooking({
         businessConfig,
         platform: platformName,
         userId: recipientUserId,
@@ -10407,6 +10698,81 @@ async function handleUnifiedBookingEngine(params: {
         dateTime: finalIso,
         durationMinutes: Number(pending.durationMinutes || 30)
       });
+      const expectedBusinessId = String(
+        getBusinessIdFromConfig(businessConfig) || ""
+      );
+      const databaseVerified = Boolean(
+        databaseRow?.id &&
+        String(databaseRow.business_id || "") === expectedBusinessId &&
+        normalizePlatformName(databaseRow.platform || "") ===
+          currentBookingSlotOwner.platform &&
+        normalizePlatformUserId(
+          currentBookingSlotOwner.platform,
+          String(databaseRow.user_id || "")
+        ) === currentBookingSlotOwner.userId &&
+        String(databaseRow.service || "") === String(pending.service || "") &&
+        new Date(databaseRow.start_time).getTime() === new Date(finalIso).getTime() &&
+        new Date(databaseRow.end_time).getTime() ===
+          new Date(exactCheck.endIso).getTime() &&
+        String(databaseRow.status || "").toLowerCase() === "booked"
+      );
+      if (!databaseVerified) {
+        if (databaseRow?.id && supabase) {
+          await supabase
+            .from("appointments")
+            .delete()
+            .eq("id", databaseRow.id)
+            .eq("business_id", expectedBusinessId)
+            .eq("platform", platformName)
+            .eq("user_id", String(recipientUserId));
+        }
+        const calendarRollbackResult = await rollbackInsertedCalendarEvent();
+        await settleAtomicOperation(bookingOperationClaim, "failed");
+        pending.status = "awaiting_contact";
+        await savePendingBooking(sessionId, platformName, pending);
+        console.error("[BookingFlow]", {
+          platform: platformName,
+          businessScopePresent: Boolean(expectedBusinessId),
+          operation: "booking_verification",
+          stateType: pending.status,
+          calendarVerificationResult: true,
+          databaseVerificationResult: false,
+          calendarRollbackResult,
+          finalHandledPath: "database_verification_failed"
+        });
+        await replyAndRecord(
+          getErrorMessageByLanguage(
+            getFlowReplyLanguage(pending.language, language, text)
+          )
+        );
+        return true;
+      }
+
+      const bookingSettlementRecorded = await settleAtomicOperation(
+        bookingOperationClaim,
+        "completed"
+      );
+      if (!bookingSettlementRecorded) {
+        if (databaseRow?.id && supabase) {
+          await supabase
+            .from("appointments")
+            .delete()
+            .eq("id", databaseRow.id)
+            .eq("business_id", expectedBusinessId)
+            .eq("platform", platformName)
+            .eq("user_id", String(recipientUserId));
+        }
+        await rollbackInsertedCalendarEvent();
+        await settleAtomicOperation(bookingOperationClaim, "failed");
+        pending.status = "awaiting_contact";
+        await savePendingBooking(sessionId, platformName, pending);
+        await replyAndRecord(
+          getErrorMessageByLanguage(
+            getFlowReplyLanguage(pending.language, language, text)
+          )
+        );
+        return true;
+      }
 
       await clearPendingBooking(sessionId);
       rememberCompletedBooking(
@@ -10756,7 +11122,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
     let chatResponse = await generateContentWithFallback(null, {
       messages,
       systemInstruction: finalSystemInstruction, 
-      tools: calendarTools,
+      tools: getGeminiSupportTools(telegramSessionId),
       model: 'gemini-2.5-flash'
     });
     
@@ -10820,40 +11186,13 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
           };
         }
         else if (call.function.name === "insertAppointment" && args) {
-          const contactOverride = extractNameAndPhone(textForFlow);
-          const safeName = contactOverride?.name || cleanCustomerNameCandidate(args.name) || args.name;
-          const safePhone = contactOverride?.phone || args.phone;
-          adapterRes = await adapter.insertAppointment(safeName, safePhone, args.service, args.dateTime, args.durationMinutes, chatId);
-          if (adapterRes && adapterRes.success) {
-            await recordAppointmentFromBooking({
-              businessConfig: config,
-              platform: "telegram",
-              userId: chatId.toString(),
-              name: safeName,
-              phone: safePhone,
-              service: args.service,
-              dateTime: args.dateTime,
-              durationMinutes: args.durationMinutes
-            });
-            rememberCompletedBooking(
+          return {
+            TERMINATE_EARLY: true,
+            replyMessage: formatAuthoritativeBookingContinuation(
               telegramSessionId,
-              getLockedReplyLanguage(telegramSessionId, textForFlow),
-              safeName,
-              args.service,
-              Number(args.durationMinutes || 0),
-              args.dateTime
-            );
-          }
-          if (adapterRes && adapterRes.success) {
-            await notifyAdminAboutBooking(
-              config,
-              "Telegram",
-              config?.businessName || config?.business_name || "business",
-              safeName,
-              safePhone,
-              args.dateTime
-            );
-          }
+              getLockedReplyLanguage(telegramSessionId, textForFlow)
+            )
+          };
         }
         else if (call.function.name === "logSystemAnalysis" && args) adapterRes = await handleSystemAnalysisLog(chatId, args);
         else adapterRes = { error: "Unknown tool" };
@@ -10879,7 +11218,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       chatResponse = await generateContentWithFallback(null, {
         messages,
         systemInstruction: finalSystemInstruction, 
-        tools: calendarTools,
+        tools: getGeminiSupportTools(telegramSessionId),
         model: 'gemini-2.5-flash'
       });
     }
@@ -11443,17 +11782,17 @@ async function recordAppointmentFromBooking(params: {
   service: string;
   dateTime: string;
   durationMinutes?: number;
-}) {
+}): Promise<any | null> {
   if (!supabase) {
     console.error("Appointment DB insert skipped: Supabase client is not configured.");
-    return;
+    return null;
   }
 
   try {
     const { start, end } = getAppointmentTimes(params.dateTime, params.durationMinutes || 60);
     if (Number.isNaN(start.getTime())) {
       console.error("Appointment DB insert skipped: invalid start_time", params.dateTime);
-      return;
+      return null;
     }
 
     const businessId = getBusinessIdFromConfig(params.businessConfig);
@@ -11479,17 +11818,52 @@ async function recordAppointmentFromBooking(params: {
     const { data, error } = await supabase
       .from("appointments")
       .insert([payload])
-      .select("id,business_id,customer_name,start_time")
+      .select("id,business_id,platform,user_id,service,start_time,end_time,status")
       .single();
 
     if (error) {
       console.error("Supabase appointments insert error:", JSON.stringify(error));
       console.error("If this says RLS/policy/permission, add SUPABASE_SERVICE_ROLE_KEY to Render Environment or temporarily disable RLS on appointments while testing.");
+      return null;
     } else {
       console.log("Appointment saved to Supabase appointments:", JSON.stringify(data));
+      if (!data?.id) return null;
+      const { data: verifiedRow, error: verificationError } = await supabase
+        .from("appointments")
+        .select("id,business_id,platform,user_id,service,start_time,end_time,status")
+        .eq("id", data.id)
+        .eq("business_id", businessId)
+        .eq("platform", params.platform)
+        .eq("user_id", String(params.userId))
+        .maybeSingle();
+      if (verificationError) {
+        console.error(
+          "Supabase appointment verification error:",
+          JSON.stringify(verificationError)
+        );
+        await supabase
+          .from("appointments")
+          .delete()
+          .eq("id", data.id)
+          .eq("business_id", businessId)
+          .eq("platform", params.platform)
+          .eq("user_id", String(params.userId));
+        return null;
+      }
+      if (!verifiedRow) {
+        await supabase
+          .from("appointments")
+          .delete()
+          .eq("id", data.id)
+          .eq("business_id", businessId)
+          .eq("platform", params.platform)
+          .eq("user_id", String(params.userId));
+      }
+      return verifiedRow || null;
     }
   } catch (err) {
     console.error("recordAppointmentFromBooking error:", err);
+    return null;
   }
 }
 
@@ -12096,7 +12470,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
     let chatResponse = await generateContentWithFallback(null, {
       messages,
       systemInstruction: finalSystemInstruction,
-      tools: calendarTools,
+      tools: getGeminiSupportTools(chatId),
       model: "gemini-2.5-flash"
     });
 
@@ -12161,7 +12535,8 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
           });
           return {
             TERMINATE_EARLY: true,
-            replyMessage: getErrorMessageByLanguage(
+            replyMessage: formatAuthoritativeBookingContinuation(
+              chatId,
               getConversationLanguage(chatId, textMessage || "")
             )
           };
@@ -12192,7 +12567,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       chatResponse = await generateContentWithFallback(null, {
         messages,
         systemInstruction: finalSystemInstruction,
-        tools: calendarTools,
+        tools: getGeminiSupportTools(chatId),
         model: "gemini-2.5-flash"
       });
     }
@@ -13108,7 +13483,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
     let chatResponse = await generateContentWithFallback(null, {
       messages,
       systemInstruction: finalSystemInstruction,
-      tools: calendarTools,
+      tools: getGeminiSupportTools(chatId),
       model: "gemini-2.5-flash"
     });
 
@@ -13220,7 +13595,8 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
           });
           return {
             TERMINATE_EARLY: true,
-            replyMessage: getErrorMessageByLanguage(
+            replyMessage: formatAuthoritativeBookingContinuation(
+              chatId,
               getConversationLanguage(chatId, textMessage || "")
             )
           };
@@ -13251,7 +13627,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       chatResponse = await generateContentWithFallback(null, {
         messages,
         systemInstruction: finalSystemInstruction,
-        tools: calendarTools,
+        tools: getGeminiSupportTools(chatId),
         model: "gemini-2.5-flash"
       });
     }
@@ -13597,7 +13973,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
     let chatResponse = await generateContentWithFallback(null, {
       messages,
       systemInstruction: finalSystemInstruction,
-      tools: calendarTools,
+      tools: getGeminiSupportTools(chatId),
       model: 'gemini-2.5-flash'
     });
 
@@ -13766,7 +14142,8 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
           });
           return {
             TERMINATE_EARLY: true,
-            replyMessage: getErrorMessageByLanguage(
+            replyMessage: formatAuthoritativeBookingContinuation(
+              chatId,
               getConversationLanguage(chatId, textMessage || "")
             )
           };
@@ -13797,7 +14174,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       chatResponse = await generateContentWithFallback(null, {
         messages,
         systemInstruction: finalSystemInstruction,
-        tools: calendarTools,
+        tools: getGeminiSupportTools(chatId),
         model: 'gemini-2.5-flash'
       });
     }
@@ -14326,7 +14703,7 @@ Never translate unless requested.
       let chatResponse = await generateContentWithFallback(null, {
         messages,
         systemInstruction: finalSystemInstruction, 
-        tools: calendarTools,
+        tools: getGeminiSupportTools(chatId),
         model: 'gemini-2.5-flash'
       });
       
@@ -14360,40 +14737,13 @@ Never translate unless requested.
             return { TERMINATE_EARLY: true, replyMessage };
           }
           else if (call.function.name === "insertAppointment" && args) {
-          const contactOverride = extractNameAndPhone(userText || "");
-          const safeName = contactOverride?.name || cleanCustomerNameCandidate(args.name) || args.name;
-          const safePhone = contactOverride?.phone || args.phone;
-          adapterRes = await adapter.insertAppointment(safeName, safePhone, args.service, args.dateTime, args.durationMinutes, chatId);
-          if (adapterRes && adapterRes.success) {
-            await recordAppointmentFromBooking({
-              businessConfig: activeConfig,
-              platform: "web",
-              userId: chatId.toString(),
-              name: safeName,
-              phone: safePhone,
-              service: args.service,
-              dateTime: args.dateTime,
-              durationMinutes: args.durationMinutes
-            });
-            rememberCompletedBooking(
+          return {
+            TERMINATE_EARLY: true,
+            replyMessage: formatAuthoritativeBookingContinuation(
               chatId.toString(),
-              getLockedReplyLanguage(chatId, userText || ""),
-              safeName,
-              args.service,
-              Number(args.durationMinutes || 0),
-              args.dateTime
-            );
-          }
-          if (adapterRes && adapterRes.success) {
-            await notifyAdminAboutBooking(
-              activeConfig,
-              "Web",
-              activeConfig?.businessName || activeConfig?.business_name || "business",
-              safeName,
-              safePhone,
-              args.dateTime
-            );
-          }
+              getLockedReplyLanguage(chatId, userText || "")
+            )
+          };
         }
         else if (call.function.name === "logSystemAnalysis" && args) adapterRes = await handleSystemAnalysisLog(chatId, args);
           else adapterRes = { error: "Unknown tool" };
@@ -14418,7 +14768,7 @@ Never translate unless requested.
       chatResponse = await generateContentWithFallback(null, {
           messages,
           systemInstruction: finalSystemInstruction, 
-          tools: calendarTools,
+          tools: getGeminiSupportTools(chatId),
           model: 'gemini-2.5-flash'
         });
       }

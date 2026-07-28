@@ -4553,8 +4553,18 @@ function isNewBookingRequestText(text?: string): boolean {
   if (isExplicitNewBookingRequest(raw)) return true;
   if (isThanksOnlyText(raw) || isAffirmativeBookingText(raw) || isAmbiguousShortReply(raw)) return false;
 
+  const explicitNewBookingSyntax =
+    /\b(?:jag\s+vill|jag\s+skulle\s+vilja)\s+(?:gärna\s+)?boka\s+(?:en\s+)?(?:ny\s+)?(?:tid|bokning)\b/iu.test(lower) ||
+    /\b(?:i\s+want|i(?:'d|\s+would)\s+like)\s+to\s+book\s+(?:a\s+)?(?:new\s+)?(?:appointment|booking)\b/iu.test(lower) ||
+    /\bich\s+(?:möchte|will)\s+(?:gern(?:e)?\s+)?(?:einen\s+)?(?:neuen\s+)?termin\s+buchen\b/iu.test(lower) ||
+    /\b(?:quiero|me\s+gustar[ií]a)\s+reservar\s+(?:una\s+)?(?:nueva\s+)?cita\b/iu.test(lower) ||
+    /\b(?:mikham|mikhastam)\s+(?:ye\s+)?(?:vaghte?\s+jadid|vaght)\s+(?:book|rezerv)\s+konam\b/iu.test(lower) ||
+    /(?:می[\u200c\s]?خوام|می[\u200c\s]?خواهم).{0,24}(?:وقت|رزرو).{0,16}(?:جدید|بگیرم|کنم)/u.test(raw) ||
+    /(?:أريد|أرغب).{0,24}(?:حجز|موعد).{0,16}(?:جديد|أحجز|احجز)/u.test(raw);
+  if (explicitNewBookingSyntax) return true;
+
   const hasBookingWord = /\b(boka|bokning|tid|appointment|book|booking|termin|cita|reservar|موعد|حجز|vaght|وقت)\b/i.test(lower);
-  const hasServiceWord = /\b(helkropp|full\s*body|fullbody|bikini|laser|manikyr|pedikyr|pedicure|manicure|behandling|treatment|ganzk[oö]rper|tratamiento|علاج|جلسة)\b/i.test(lower);
+  const hasServiceWord = inferServiceFromText(raw) !== "Bokning";
   const hasDateWord = /\b(nästa|nasta|tisdag|måndag|onsdag|torsdag|fredag|lördag|söndag|next|monday|tuesday|wednesday|thursday|friday|saturday|sunday|montag|dienstag|miércoles|martes|jueves|viernes|1shanbe|2shanbe|3shanbe|4shanbe|5shanbe|6shanbe|doshanbe|seshanbe|chaharshanbe|panjshanbe|jome|دوشنبه|سه\s*شنبه|چهارشنبه|پنجشنبه|الثلاثاء|الخميس)\b/i.test(lower);
   return (hasBookingWord && (hasServiceWord || hasDateWord)) || (hasServiceWord && hasDateWord);
 }
@@ -6779,6 +6789,23 @@ async function handleUnifiedBookingEngine(params: {
   let pending = await loadPendingBooking(sessionId, platformName, businessConfig);
   const entryRescheduleContext = getRescheduleContext(sessionId);
   const entryCancellationContext = getCancellationContext(sessionId);
+  const entryExplicitNewBookingRequest =
+    isExplicitNewBookingRequest(text) ||
+    isNewBookingRequestText(text);
+
+  // A clear request for a new appointment is an intentional operation pivot.
+  // Remove incompatible mutation/recovery state before those priority handlers run.
+  if (
+    entryExplicitNewBookingRequest &&
+    (entryCancellationContext || entryRescheduleContext)
+  ) {
+    clearAppointmentConversationState(sessionId);
+    if (pending) {
+      await clearPendingBooking(sessionId);
+      pending = null;
+    }
+    lockConversationFlowLanguage(sessionId, language, "booking");
+  }
 
   // A validated reschedule flow owns short confirmations and slot follow-ups. Clear any
   // unrelated pending new-booking state before it can ask for contact details.
@@ -8149,7 +8176,7 @@ async function handleUnifiedBookingEngine(params: {
         recoveryContextBeforeIntent.requestedService;
     }
     const explicitNewBookingRequested =
-      isExplicitNewBookingRequest(text) ||
+      entryExplicitNewBookingRequest ||
       forcedNewBookingFromRecovery;
     const serviceDurationRequested = isServiceDurationQuestion(text);
 
@@ -9678,7 +9705,15 @@ async function handleUnifiedBookingEngine(params: {
     if (explicitDate && isBookingConversationContext(text, history)) {
       lockConversationFlowLanguage(sessionId, language, "booking");
       const adapter = getCalendarAdapter(businessConfig);
-      const requestedTime = inferRequestedTimeFromText(text) || undefined;
+      const directAvailabilityConstraint: CanonicalAvailabilityConstraint =
+        deriveCanonicalAvailabilityConstraint(text, businessConfig, null) || {
+          startDate: explicitDate,
+          endDate: explicitDate,
+          kind: "whole_day" as const,
+          rejectedTimes: [],
+          generatedFromLatestRequestAt: Date.now()
+        };
+      const requestedTime = directAvailabilityConstraint.exactTime;
       const contextText = [
         text,
         ...(history || []).slice(-10).map((item: any) => item?.content || "")
@@ -9701,14 +9736,27 @@ async function handleUnifiedBookingEngine(params: {
         adapter,
         owner: currentBookingSlotOwner,
         businessConfig,
-        startDate: explicitDate,
-        endDate: explicitDate,
+        startDate: directAvailabilityConstraint.startDate,
+        endDate: directAvailabilityConstraint.endDate,
         service: finalService,
         durationMinutes,
-        requestedTime
+        requestedTime,
+        options: availabilityConstraintSlotOptions(directAvailabilityConstraint)
       });
       const slots = canonicalOffers.displaySlots;
       const reply = formatSwedishTimeSlots(slots, requestedTime, language);
+
+      availabilitySearchContexts[sessionId] = {
+        constraint: directAvailabilityConstraint,
+        service: finalService,
+        durationMinutes,
+        language,
+        businessId: currentAppointmentStateOwner.businessId,
+        platform: currentAppointmentStateOwner.platform,
+        userId: currentAppointmentStateOwner.userId,
+        savedAt: Date.now(),
+        lastResultCategory: slots.length > 0 ? "available" : "no_availability"
+      };
 
       if (slots.length > 0) {
         const exactIso = requestedTime ? findOfferedSlotIso(slots, requestedTime) : null;
@@ -9716,9 +9764,18 @@ async function handleUnifiedBookingEngine(params: {
           businessConfig,
           platform: platformName,
           service: finalService,
-          selectedDate: explicitDate,
+          selectedDate:
+            directAvailabilityConstraint.startDate ===
+            directAvailabilityConstraint.endDate
+              ? directAvailabilityConstraint.startDate
+              : null,
           offeredSlots: slots,
           ownedOfferedSlots: canonicalOffers.ownedSlots,
+          availabilityStartDate: directAvailabilityConstraint.startDate,
+          availabilityEndDate: directAvailabilityConstraint.endDate,
+          availabilityMinTime: directAvailabilityConstraint.minTime || null,
+          availabilityMaxTime: directAvailabilityConstraint.maxTime || null,
+          availabilityConstraint: directAvailabilityConstraint,
           dateTime: exactIso,
           durationMinutes,
           language: detectStrongLatestLanguage(text) || language,
@@ -13352,7 +13409,6 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
         const args = JSON.parse(call.function.arguments);
 
         if (call.function.name === 'checkSlots' && args) {
-          const requestedTime = args.requestedTime || inferRequestedTimeFromText(textMessage || "");
           const service = normalizeBookingService(
             args.service || inferServiceFromRecentContext(textMessage || "", history),
             getDefaultBookingServiceForBusiness(businessConfig) || "Bokning"
@@ -13366,16 +13422,61 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
             userId: normalizePlatformUserId("instagram", senderId),
             sessionId: chatId
           };
+          const storedAvailability = availabilitySearchContexts[chatId];
+          const storedAvailabilityOwned = Boolean(
+            storedAvailability &&
+            storedAvailability.businessId === owner.businessId &&
+            storedAvailability.platform === owner.platform &&
+            storedAvailability.userId === owner.userId
+          );
+          const fallbackConstraint: CanonicalAvailabilityConstraint = {
+            startDate: args.startDate,
+            endDate: args.endDate || args.startDate,
+            kind: "whole_day",
+            rejectedTimes: [],
+            generatedFromLatestRequestAt: Date.now()
+          };
+          const constraint = deriveCanonicalAvailabilityConstraint(
+            textMessage || "",
+            businessConfig,
+            storedAvailabilityOwned
+              ? storedAvailability.constraint
+              : fallbackConstraint
+          ) || fallbackConstraint;
+          const requestedTime = constraint.exactTime ||
+            (
+              !constraint.timeBoundary &&
+              !constraint.minTime &&
+              !constraint.maxTime
+                ? args.requestedTime || inferRequestedTimeFromText(textMessage || "")
+                : undefined
+            );
+          await clearPendingBooking(chatId);
           const offers = await createCanonicalOfferedSlots({
             adapter,
             owner,
             businessConfig,
-            startDate: args.startDate,
-            endDate: args.endDate || args.startDate,
+            startDate: constraint.startDate,
+            endDate: constraint.endDate,
             service,
             durationMinutes,
-            requestedTime
+            requestedTime,
+            options: availabilityConstraintSlotOptions(constraint)
           });
+          const lockedLanguage = getConversationLanguage(chatId, textMessage || "");
+          availabilitySearchContexts[chatId] = {
+            constraint,
+            service,
+            durationMinutes,
+            language: lockedLanguage,
+            businessId: owner.businessId,
+            platform: owner.platform,
+            userId: owner.userId,
+            savedAt: Date.now(),
+            lastResultCategory: offers.ownedSlots.length > 0
+              ? "available"
+              : "no_availability"
+          };
           const exactSlot = requestedTime
             ? selectOwnedOfferedSlot(requestedTime, {
                 offeredSlots: offers.displaySlots,
@@ -13388,13 +13489,21 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
               platform: "instagram",
               userId: senderId,
               service,
-              selectedDate: args.startDate,
+              selectedDate:
+                constraint.startDate === constraint.endDate
+                  ? constraint.startDate
+                  : null,
               offeredSlots: offers.displaySlots,
               ownedOfferedSlots: offers.ownedSlots,
+              availabilityStartDate: constraint.startDate,
+              availabilityEndDate: constraint.endDate,
+              availabilityMinTime: constraint.minTime || null,
+              availabilityMaxTime: constraint.maxTime || null,
+              availabilityConstraint: constraint,
               dateTime: exactSlot?.start || null,
               selectedSlotEnd: exactSlot?.end || null,
               durationMinutes,
-              language: getConversationLanguage(chatId, textMessage || ""),
+              language: lockedLanguage,
               operation: "new_booking",
               status: exactSlot ? "awaiting_confirmation" : "awaiting_time_selection"
             });
@@ -13404,7 +13513,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
             replyMessage: formatSwedishTimeSlots(
               offers.displaySlots,
               requestedTime,
-              getConversationLanguage(chatId, textMessage || "")
+              lockedLanguage
             )
           };
         } else if (call.function.name === 'findCustomerAppointments' && args) {

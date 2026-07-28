@@ -8263,7 +8263,11 @@ async function handleUnifiedBookingEngine(params: {
     const recentlyCancelled = await getRecentCompletedCancellation(
       currentAppointmentStateOwner
     );
-    if (recentlyCancelled) {
+    if (
+      recentlyCancelled &&
+      !pending &&
+      !getRescheduleContext(sessionId)
+    ) {
       if (
         isCancellationConfirmation(text) ||
         (
@@ -8275,17 +8279,19 @@ async function handleUnifiedBookingEngine(params: {
         await clearPendingBooking(sessionId);
       }
       if (isCancellationConfirmation(text)) {
-        logCancellationDiagnostic({
-          duplicateConfirmationSuppressed: true,
-          engineResultType: "completed_cancellation_duplicate"
-        });
+        if (platformName === "instagram") {
+          logInstagramCancellationDiagnostic({
+            duplicateConfirmationSuppressed: true,
+            engineResultType: "completed_cancellation_duplicate"
+          });
+        }
         return true;
       }
       if (
         platformName === "instagram" &&
         isCompletedCancellationStatusQuestion(text)
       ) {
-        logCancellationDiagnostic({
+        logInstagramCancellationDiagnostic({
           completedCancellationStatusQueryReply: true,
           engineResultType: "completed_cancellation_status"
         });

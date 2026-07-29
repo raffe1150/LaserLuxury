@@ -6656,6 +6656,12 @@ type TelegramPollerState = {
   isPolling: boolean;
   lastUpdateId: number;
   pollingTimeout: NodeJS.Timeout | null;
+  pollingDelayResolve: (() => void) | null;
+  activeAbortController: AbortController | null;
+  loopPromise: Promise<void> | null;
+  phase: "starting" | "polling" | "stopped";
+  iteration: number;
+  consecutiveErrors: number;
   config: any;
   instanceId: string;
   tokenFingerprint: string;
@@ -7001,6 +7007,40 @@ function logTelegramMessageSent(params: {
   });
 }
 
+function sanitizeTelegramPollingError(error: unknown, token?: string): {
+  errorName: string;
+  sanitizedErrorMessage: string;
+} {
+  const errorName =
+    error instanceof Error ? String(error.name || "Error") : "Error";
+  let message =
+    error instanceof Error ? String(error.message || "") : String(error || "");
+  const normalizedToken = normalizeTelegramBotToken(token);
+  if (normalizedToken) message = message.split(normalizedToken).join("[redacted]");
+  message = message
+    .replace(/https:\/\/api\.telegram\.org\/bot[^/\s]+/gi, "https://api.telegram.org/bot[redacted]")
+    .replace(/[\r\n]+/g, " ")
+    .trim()
+    .slice(0, 240);
+  return {
+    errorName,
+    sanitizedErrorMessage: message || "Telegram polling request failed"
+  };
+}
+
+function getTelegramPollingRetryDelayMs(
+  httpStatus: number | null,
+  consecutiveErrors: number,
+  retryAfterSeconds?: number | null
+): number {
+  if (httpStatus === 429 && Number(retryAfterSeconds) > 0) {
+    return Math.max(1, Math.ceil(Number(retryAfterSeconds))) * 1000;
+  }
+  const boundedAttempt = Math.min(5, Math.max(1, consecutiveErrors));
+  if (httpStatus === 409) return Math.min(30_000, 1000 * (2 ** boundedAttempt));
+  return Math.min(15_000, 500 * (2 ** boundedAttempt));
+}
+
 function formatTelegramConfigurationError(language: string): string {
   if (language === "fa") return "متأسفانه تنظیمات رزرو این ربات موقتاً در دسترس نیست. لطفاً کمی بعد دوباره تلاش کنید.";
   if (language === "sv") return "Bokningsinställningarna för den här botten är tillfälligt otillgängliga. Försök gärna igen lite senare.";
@@ -7257,9 +7297,10 @@ async function startTelegramPolling(
 
   if (telegramPollers[token]?.isPolling) {
     const existing = telegramPollers[token];
-    console.log("[TelegramPollingStarted]", {
+    console.log("[TelegramPollerReuse]", {
       ...telegramPollerDiagnosticContext(token, config, existing.source),
       requestedSource: source,
+      phase: existing.phase,
       reusedExisting: true
     });
     return;
@@ -7278,8 +7319,14 @@ async function startTelegramPolling(
   );
   const state: TelegramPollerState = {
     isPolling: true,
-    lastUpdateId: 0,
+    lastUpdateId: -1,
     pollingTimeout: null,
+    pollingDelayResolve: null,
+    activeAbortController: null,
+    loopPromise: null,
+    phase: "starting",
+    iteration: 0,
+    consecutiveErrors: 0,
     config: pollingConfig,
     instanceId,
     tokenFingerprint,
@@ -7311,6 +7358,268 @@ async function startTelegramPolling(
   console.log("[TelegramBotInstanceId]", {
     telegramBotInstanceId: instanceId
   });
+
+  const webhookAbortController = new AbortController();
+  const webhookTimeout = setTimeout(() => webhookAbortController.abort(), 10_000);
+  console.log("[TelegramDeleteWebhookStarted]", pollerContext);
+  try {
+    const webhookResponse = await fetch(
+      `https://api.telegram.org/bot${token}/deleteWebhook`,
+      {
+      signal: webhookAbortController.signal
+      }
+    );
+    console.log("[TelegramDeleteWebhookCompleted]", {
+      ...pollerContext,
+      httpStatus: webhookResponse.status,
+      ok: webhookResponse.ok
+    });
+  } catch (e) {
+    const safeError = sanitizeTelegramPollingError(e, token);
+    console.error("[TelegramPollerDeleteWebhookError]", {
+      ...pollerContext,
+      ...safeError
+    });
+  } finally {
+    clearTimeout(webhookTimeout);
+  }
+
+  const waitBeforeRetry = async (delayMs: number) => {
+    if (!state.isPolling || delayMs <= 0) return;
+    await new Promise<void>((resolve) => {
+      state.pollingDelayResolve = resolve;
+      state.pollingTimeout = setTimeout(() => {
+        state.pollingTimeout = null;
+        state.pollingDelayResolve = null;
+        resolve();
+      }, delayMs);
+    });
+  };
+
+  const stopPoller = (reason: string) => {
+    state.isPolling = false;
+    state.phase = "stopped";
+    if (state.pollingTimeout) {
+      clearTimeout(state.pollingTimeout);
+      state.pollingTimeout = null;
+    }
+    const resolvePollingDelay = state.pollingDelayResolve;
+    state.pollingDelayResolve = null;
+    resolvePollingDelay?.();
+    state.activeAbortController?.abort();
+    state.activeAbortController = null;
+    if (!state.stoppedDiagnosticLogged) {
+      state.stoppedDiagnosticLogged = true;
+      console.log("[TelegramPollingStopped]", {
+        ...pollerContext,
+        reason,
+        lastOffset: Math.max(0, state.lastUpdateId + 1),
+        iteration: state.iteration
+      });
+    }
+  };
+
+  const poll = async () => {
+    state.phase = "polling";
+    try {
+      while (state.isPolling) {
+        state.iteration += 1;
+        const iteration = state.iteration;
+        const offset = Math.max(0, state.lastUpdateId + 1);
+        const timeoutSeconds = 30;
+        const startedAt = Date.now();
+        const abortController = new AbortController();
+        state.activeAbortController = abortController;
+        const requestTimeout = setTimeout(
+          () => abortController.abort(),
+          (timeoutSeconds + 10) * 1000
+        );
+        console.log("[TelegramGetUpdatesStarted]", {
+          ...pollerContext,
+          offset,
+          timeoutSeconds,
+          iteration
+        });
+
+        let response: Response | null = null;
+        let responseData: any = null;
+        let retryAfterSeconds: number | null = null;
+        try {
+          response = await fetch(
+            `https://api.telegram.org/bot${token}/getUpdates`,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                offset,
+                timeout: timeoutSeconds,
+                allowed_updates: ["message"]
+              }),
+              signal: abortController.signal
+            }
+          );
+          const responseText = await response.text();
+          try {
+            responseData = JSON.parse(responseText);
+          } catch (jsonError) {
+            throw Object.assign(new Error("Telegram returned invalid JSON"), {
+              name: "TelegramInvalidJsonError",
+              cause: jsonError
+            });
+          }
+
+          retryAfterSeconds =
+            Number(responseData?.parameters?.retry_after || 0) ||
+            Number(response.headers.get("retry-after") || 0) ||
+            null;
+          const result = Array.isArray(responseData?.result)
+            ? responseData.result
+            : [];
+          const completedNextOffset = result.reduce(
+            (nextOffset: number, update: any) => {
+              const updateId = Number(update?.update_id);
+              return Number.isFinite(updateId)
+                ? Math.max(nextOffset, updateId + 1)
+                : nextOffset;
+            },
+            offset
+          );
+          console.log("[TelegramGetUpdatesCompleted]", {
+            ...pollerContext,
+            httpStatus: response.status,
+            ok: Boolean(response.ok && responseData?.ok),
+            resultCount: result.length,
+            nextOffset: completedNextOffset,
+            elapsedMs: Date.now() - startedAt,
+            iteration
+          });
+
+          if (response.status === 401 || response.status === 403) {
+            const safeError = sanitizeTelegramPollingError(
+              new Error(`Telegram authorization failed with HTTP ${response.status}`),
+              token
+            );
+            console.error("[TelegramGetUpdatesError]", {
+              ...pollerContext,
+              ...safeError,
+              httpStatus: response.status,
+              retryAfterSeconds,
+              iteration,
+              willRetry: false
+            });
+            stopPoller(`terminal_http_${response.status}`);
+            break;
+          }
+
+          if (!response.ok || !responseData?.ok) {
+            state.consecutiveErrors += 1;
+            const delayMs = getTelegramPollingRetryDelayMs(
+              response.status,
+              state.consecutiveErrors,
+              retryAfterSeconds
+            );
+            const safeError = sanitizeTelegramPollingError(
+              new Error(
+                `Telegram getUpdates failed with HTTP ${response.status}`
+              ),
+              token
+            );
+            console.error("[TelegramGetUpdatesError]", {
+              ...pollerContext,
+              ...safeError,
+              httpStatus: response.status,
+              retryAfterSeconds,
+              iteration,
+              willRetry: true,
+              retryDelayMs: delayMs
+            });
+            await waitBeforeRetry(delayMs);
+            continue;
+          }
+
+          state.consecutiveErrors = 0;
+          for (const update of result) {
+            const updateId = Number(update?.update_id);
+            if (!Number.isFinite(updateId) || updateId < offset) continue;
+            state.lastUpdateId = updateId;
+            try {
+              await processTelegramUpdate(
+                update,
+                state.config,
+                "telegram-polling"
+              );
+            } catch (processingError) {
+              const safeError = sanitizeTelegramPollingError(
+                processingError,
+                token
+              );
+              console.error("[TelegramUpdateProcessingError]", {
+                ...pollerContext,
+                ...safeError,
+                iteration,
+                willContinue: true
+              });
+            }
+          }
+          console.log("[TelegramGetUpdatesOffsetCommitted]", {
+            ...pollerContext,
+            nextOffset: Math.max(0, state.lastUpdateId + 1),
+            iteration
+          });
+        } catch (error) {
+          if (!state.isPolling) break;
+          state.consecutiveErrors += 1;
+          const httpStatus = response?.status || null;
+          retryAfterSeconds =
+            retryAfterSeconds ||
+            Number(response?.headers.get("retry-after") || 0) ||
+            null;
+          const terminalAuthorizationFailure =
+            httpStatus === 401 || httpStatus === 403;
+          const delayMs = getTelegramPollingRetryDelayMs(
+            httpStatus,
+            state.consecutiveErrors,
+            retryAfterSeconds
+          );
+          const safeError = sanitizeTelegramPollingError(error, token);
+          console.error("[TelegramGetUpdatesError]", {
+            ...pollerContext,
+            ...safeError,
+            httpStatus,
+            retryAfterSeconds,
+            iteration,
+            willRetry: !terminalAuthorizationFailure,
+            retryDelayMs: terminalAuthorizationFailure ? null : delayMs
+          });
+          if (terminalAuthorizationFailure) {
+            stopPoller(`terminal_http_${httpStatus}`);
+            break;
+          }
+          await waitBeforeRetry(delayMs);
+        } finally {
+          clearTimeout(requestTimeout);
+          if (state.activeAbortController === abortController) {
+            state.activeAbortController = null;
+          }
+        }
+      }
+    } catch (fatalError) {
+      const safeError = sanitizeTelegramPollingError(fatalError, token);
+      console.error("[TelegramGetUpdatesError]", {
+        ...pollerContext,
+        ...safeError,
+        httpStatus: null,
+        retryAfterSeconds: null,
+        iteration: state.iteration,
+        willRetry: false
+      });
+      stopPoller("unexpected_loop_failure");
+    } finally {
+      if (state.isPolling) stopPoller("loop_exited");
+    }
+  };
+
+  state.loopPromise = poll();
   console.log("[TelegramPollingStarted]", {
     ...pollerContext,
     reusedExisting: false,
@@ -7318,52 +7627,6 @@ async function startTelegramPolling(
     otherActivePollerInstanceIdsForBusiness:
       existingBusinessPollers.map((poller) => poller.instanceId)
   });
-
-  try {
-    await fetch(`https://api.telegram.org/bot${token}/deleteWebhook`);
-  } catch (e) {
-    console.error("[TelegramPollerDeleteWebhookError]", {
-      ...pollerContext,
-      errorName: e instanceof Error ? e.name : "unknown"
-    });
-  }
-
-  const poll = async () => {
-    try {
-      const res = await fetch(`https://api.telegram.org/bot${token}/getUpdates?offset=${state.lastUpdateId + 1}&timeout=30`);
-      const data = await res.json();
-
-      if (!data.ok) {
-        console.error("[TelegramPollerGetUpdatesError]", {
-          ...pollerContext,
-          httpStatus: res.status,
-          telegramErrorCode: Number(data?.error_code || 0) || null
-        });
-      } else if (data.result.length > 0) {
-        for (const update of data.result) {
-          state.lastUpdateId = update.update_id;
-          await processTelegramUpdate(update, state.config, "telegram-polling");
-        }
-      }
-    } catch (e) {
-      console.error("[TelegramPollerError]", {
-        ...pollerContext,
-        errorName: e instanceof Error ? e.name : "unknown"
-      });
-    }
-
-    if (state.isPolling) {
-      state.pollingTimeout = setTimeout(poll, 1000);
-    } else if (!state.stoppedDiagnosticLogged) {
-      state.stoppedDiagnosticLogged = true;
-      console.log("[TelegramPollingStopped]", {
-        ...pollerContext,
-        reason: "state_disabled"
-      });
-    }
-  };
-
-  poll();
 }
 
 async function startAllBusinessTelegramPollers() {
@@ -7421,16 +7684,13 @@ async function startAllBusinessTelegramPollers() {
     const resolvedEnvironmentConfig =
       await loadFreshBusinessConfigByTelegramToken(fallbackToken);
     if (resolvedEnvironmentConfig.telegramBusinessResolved) {
-      const resolvedToken = normalizeTelegramBotToken(
-        resolvedEnvironmentConfig.telegramToken
-      );
-      if (resolvedToken && !startedTokens.has(resolvedToken)) {
-        startedTokens.add(resolvedToken);
-        await startTelegramPolling(
-          resolvedEnvironmentConfig,
-          "startup_environment_token"
-        );
-      }
+      console.warn("[TelegramEnvironmentFallbackBlocked]", {
+        tokenFingerprint: telegramTokenFingerprint(fallbackToken),
+        matchedBusinessId:
+          String(getBusinessIdFromConfig(resolvedEnvironmentConfig) || "") ||
+          null,
+        reason: "startup_pollers_are_database_owned"
+      });
     }
   }
 }
@@ -11728,20 +11988,13 @@ async function processTelegramUpdateClaimed(update: any, config: any, platform: 
         text: textForFlow,
         history,
         businessConfig: config,
-        send: async (reply) => {
-          const response = await fetch(`https://api.telegram.org/bot${telegramToken}/sendMessage`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ chat_id: chatId, text: reply })
-          });
-          logTelegramMessageSent({
-            token: telegramToken,
-            config,
-            source: "unified_booking_engine",
-            success: response.ok
-          });
-          return response.ok;
-        },
+        send: async (reply) =>
+          await sendCustomerMessage(
+            "telegram",
+            chatId.toString(),
+            reply,
+            config
+          ),
         postProcessPlatform: platform
       });
       const telegramPending = pendingBookings[telegramSessionId];

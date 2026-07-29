@@ -3350,6 +3350,8 @@ type CanonicalAvailabilityConstraint = {
   startDate: string;
   endDate: string;
   kind: AvailabilityConstraintKind;
+  dateComponentKind?: "weekday" | "explicit_date" | "date_range" | "inherited";
+  weekday?: string;
   exactTime?: string;
   minTime?: string;
   maxTime?: string;
@@ -6073,6 +6075,76 @@ function isAvailabilityPivotFromFailedLookup(text?: string): boolean {
   );
 }
 
+function getAvailabilityDateComponent(
+  text: string,
+  businessConfig: any,
+  fallbackDate?: string | null
+): {
+  detected: boolean;
+  kind: "weekday" | "explicit_date" | "date_range" | "inherited" | null;
+  resolvedDate: string | null;
+  endDate: string | null;
+  weekday: string | null;
+} {
+  const weekdayNames = [
+    "sunday",
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "friday",
+    "saturday"
+  ];
+  const weekdays = extractRequestedWeekdays(text);
+  const range = parseAvailabilityRangeRequest(text, businessConfig);
+  const explicitDate = resolveExplicitBookingDate(text);
+  if (weekdays.length > 0) {
+    return {
+      detected: true,
+      kind: weekdays.length > 1 && range?.startDate !== range?.endDate
+        ? "date_range"
+        : "weekday",
+      resolvedDate: range?.startDate || explicitDate,
+      endDate: range?.endDate || explicitDate,
+      weekday: weekdayNames[weekdays[0].index] || null
+    };
+  }
+  if (range) {
+    return {
+      detected: true,
+      kind: range.startDate === range.endDate ? "explicit_date" : "date_range",
+      resolvedDate: range.startDate,
+      endDate: range.endDate,
+      weekday: null
+    };
+  }
+  if (explicitDate) {
+    return {
+      detected: true,
+      kind: "explicit_date",
+      resolvedDate: explicitDate,
+      endDate: explicitDate,
+      weekday: null
+    };
+  }
+  return {
+    detected: false,
+    kind: fallbackDate ? "inherited" : null,
+    resolvedDate: fallbackDate || null,
+    endDate: fallbackDate || null,
+    weekday: null
+  };
+}
+
+function availabilityTimeRelation(boundary?: TimeBoundary | null): string | null {
+  if (!boundary) return null;
+  if (boundary.kind === "exclusive_lower") return "after";
+  if (boundary.kind === "inclusive_lower") return "from";
+  if (boundary.kind === "exclusive_upper") return "before";
+  if (boundary.kind === "inclusive_upper") return "until";
+  return "around";
+}
+
 function deriveCanonicalAvailabilityConstraint(
   text: string,
   businessConfig: any,
@@ -6084,6 +6156,11 @@ function deriveCanonicalAvailabilityConstraint(
   const timeFollowUp = parseRescheduleTimeFollowUp(text);
   const daypart = inferRequestedDaypart(text);
   const broadensToWholeDay = isWholeDayAvailabilityRequest(text);
+  const dateComponent = getAvailabilityDateComponent(
+    text,
+    businessConfig,
+    previous?.startDate
+  );
   const hasDateSignal = Boolean(range || explicitDate);
   const refersToSameDay = /\b(?:that\s+day|same\s+day|den\s+dagen|samma\s+dag|diesem\s+tag|gleichen\s+tag|ese\s+d[ií]a|mismo\s+d[ií]a|hamoon\s+rooz|hamon\s+rooz)\b/i.test(text) ||
     /(?:همون|همان)\s*روز|ذلك\s*اليوم|نفس\s*اليوم/u.test(text);
@@ -6116,6 +6193,10 @@ function deriveCanonicalAvailabilityConstraint(
   const common = {
     startDate,
     endDate,
+    dateComponentKind: dateComponent.detected
+      ? dateComponent.kind || undefined
+      : "inherited" as const,
+    ...(dateComponent.weekday ? { weekday: dateComponent.weekday } : {}),
     rejectedTimes: [...timeFollowUp.rejectedTimes],
     generatedFromLatestRequestAt: Date.now()
   };
@@ -8533,6 +8614,16 @@ async function handleUnifiedBookingEngine(params: {
     options: SlotSearchOptions = {},
     requestedDaypart?: "morning" | "afternoon" | "evening" | null
   ): Promise<boolean> => {
+    const priorRescheduleConstraint = getRescheduleContext(sessionId);
+    const priorRescheduleConstraintKind = priorRescheduleConstraint?.timeBoundary
+      ? "time_boundary"
+      : priorRescheduleConstraint?.requestedTime
+        ? "exact_time"
+        : priorRescheduleConstraint?.requestedDaypart
+          ? "daypart"
+          : "none";
+    const priorRescheduleOfferCount =
+      priorRescheduleConstraint?.offeredSlots?.length || 0;
     const adapter = getCalendarAdapter(businessConfig);
     const stateOwner = appointmentStateOwners[sessionId];
     if (!stateOwner || !appointmentStateOwnerMatches(stateOwner, currentAppointmentStateOwner)) {
@@ -8654,6 +8745,27 @@ async function handleUnifiedBookingEngine(params: {
       }
     }
 
+    // A changed combined date/time request owns the next search. Remove every
+    // selectable result from the previous constraint before awaiting Calendar,
+    // while retaining the verified appointment and conversation ownership.
+    rememberRescheduleContext(
+      sessionId,
+      appointment,
+      lockedLanguage,
+      requestedDate,
+      requestedTime,
+      {
+        requestedTime: requestedTime || undefined,
+        timeBoundary: options.timeBoundary || undefined,
+        requestedDaypart: requestedDaypart || undefined,
+        selectedNewStartTime: undefined,
+        selectedEndTime: undefined,
+        offeredSlots: [],
+        ownedOfferedSlots: [],
+        lastOfferedTime: undefined,
+        lastOperation: "awaiting_target"
+      }
+    );
     const canonicalOffers = await createCanonicalOfferedSlots({
       adapter,
       owner: currentBookingSlotOwner,
@@ -8667,6 +8779,53 @@ async function handleUnifiedBookingEngine(params: {
       excludeEventId: currentEventId
     });
     const offeredSlots = canonicalOffers.displaySlots;
+    const rescheduleDateComponent = getAvailabilityDateComponent(
+      text,
+      businessConfig,
+      requestedDate
+    );
+    console.log("[CombinedAvailabilityConstraint]", {
+      platform: platformName,
+      flowType: "reschedule",
+      previousConstraintKind: priorRescheduleConstraintKind,
+      dateComponentDetected: rescheduleDateComponent.detected,
+      dateComponentKind: rescheduleDateComponent.kind,
+      resolvedDate: requestedDate,
+      weekday: rescheduleDateComponent.weekday,
+      timeComponentDetected: Boolean(
+        options.timeBoundary || requestedTime || requestedDaypart
+      ),
+      timeRelation: options.timeBoundary
+        ? availabilityTimeRelation(options.timeBoundary)
+        : requestedTime
+          ? "exact"
+          : requestedDaypart || null,
+      boundaryMinutes: options.timeBoundary
+        ? timeTextToMinutes(options.timeBoundary.time)
+        : requestedTime
+          ? timeTextToMinutes(requestedTime)
+          : null,
+      combinedConstraintCreated: Boolean(
+        requestedDate &&
+        (options.timeBoundary || requestedTime || requestedDaypart)
+      ),
+      staleOffersCleared: Boolean(
+        options.timeBoundary &&
+        (
+          priorRescheduleOfferCount > 0 ||
+          priorRescheduleConstraint?.requestedDate !== requestedDate ||
+          priorRescheduleConstraint?.timeBoundary?.kind !==
+            options.timeBoundary.kind ||
+          priorRescheduleConstraint?.timeBoundary?.time !==
+            options.timeBoundary.time
+        )
+      ),
+      freshScanStarted: true,
+      freshOfferCount: canonicalOffers.ownedSlots.length,
+      finalHandledPath: canonicalOffers.ownedSlots.length > 0
+        ? "fresh_reschedule_offers"
+        : "fresh_reschedule_no_availability"
+    });
     const offeredTimes = offeredSlots
       .map((slot) => getStockholmTimeFromIso(parseSlotIso(slot) || ""))
       .filter(Boolean) as string[];
@@ -9259,10 +9418,15 @@ async function handleUnifiedBookingEngine(params: {
       }
 
       if (timeFollowUp.boundary || replacesSelectedTime || rejectsSelectedTime) {
-        const requestedDate = priorityReschedule.requestedDate ||
+        const latestExplicitDate = resolveRescheduleDate(
+          text,
+          priorityReschedule.appointment
+        );
+        const requestedDate = latestExplicitDate ||
+          priorityReschedule.requestedDate ||
           (priorityReschedule.selectedNewStartTime
             ? stockholmDateString(new Date(ensureStockholmOffset(priorityReschedule.selectedNewStartTime)))
-            : resolveRescheduleDate(text, priorityReschedule.appointment));
+            : null);
         const retainedOffers = (priorityReschedule.offeredSlots || []).filter((slot) => {
           const slotTime = getStockholmTimeFromIso(parseSlotIso(slot) || "");
           return !slotTime || !timeFollowUp.rejectedTimes.includes(slotTime);
@@ -11058,6 +11222,59 @@ async function handleUnifiedBookingEngine(params: {
           })
         : { displaySlots: [], ownedSlots: [] };
       const slots = canonicalOffers.displaySlots;
+      const bookingDateComponent = getAvailabilityDateComponent(
+        text,
+        businessConfig,
+        constraint.startDate
+      );
+      console.log("[CombinedAvailabilityConstraint]", {
+        platform: platformName,
+        flowType: "new_booking",
+        previousConstraintKind: priorConstraintType,
+        dateComponentDetected: bookingDateComponent.detected,
+        dateComponentKind:
+          bookingDateComponent.kind || constraint.dateComponentKind || null,
+        resolvedDate: constraint.startDate,
+        weekday: bookingDateComponent.weekday || constraint.weekday || null,
+        timeComponentDetected: Boolean(
+          constraint.timeBoundary ||
+          constraint.exactTime ||
+          constraint.minTime ||
+          constraint.maxTime ||
+          constraint.daypart
+        ),
+        timeRelation: constraint.timeBoundary
+          ? availabilityTimeRelation(constraint.timeBoundary)
+          : constraint.exactTime
+            ? "exact"
+            : constraint.kind === "time_window"
+              ? "window"
+              : constraint.daypart || null,
+        boundaryMinutes: constraint.timeBoundary
+          ? timeTextToMinutes(constraint.timeBoundary.time)
+          : constraint.exactTime
+            ? timeTextToMinutes(constraint.exactTime)
+            : null,
+        combinedConstraintCreated: Boolean(
+          constraint.startDate &&
+          (
+            constraint.timeBoundary ||
+            constraint.exactTime ||
+            constraint.minTime ||
+            constraint.maxTime ||
+            constraint.daypart
+          )
+        ),
+        staleOffersCleared: Boolean(
+          cachedOfferCountBefore > 0 &&
+          (refinementDetected || staleConstraintsCleared)
+        ),
+        freshScanStarted: true,
+        freshOfferCount: canonicalOffers.ownedSlots.length,
+        finalHandledPath: slots.length > 0
+          ? "fresh_booking_offers"
+          : "fresh_booking_no_availability"
+      });
       console.log("[BookingRefinement]", {
         platform: platformName,
         refinementDetected,
@@ -11111,6 +11328,35 @@ async function handleUnifiedBookingEngine(params: {
           operation: "new_booking",
           customerPhone: getWhatsAppConversationPhone(platformName, recipientUserId, sessionId),
           status: exactIso ? "awaiting_confirmation" : "awaiting_time_selection"
+        });
+        pending = pendingBookings[sessionId];
+      } else {
+        await savePendingBooking(sessionId, platformName, {
+          businessConfig,
+          platform: platformName,
+          service: inferredService,
+          selectedDate:
+            constraint.startDate === constraint.endDate
+              ? constraint.startDate
+              : null,
+          offeredSlots: [],
+          ownedOfferedSlots: [],
+          availabilityStartDate: constraint.startDate,
+          availabilityEndDate: constraint.endDate,
+          availabilityMinTime: constraint.minTime || null,
+          availabilityMaxTime: constraint.maxTime || null,
+          availabilityConstraint: constraint,
+          dateTime: null,
+          selectedSlotEnd: null,
+          durationMinutes,
+          language: lockedLanguage,
+          operation: "new_booking",
+          customerPhone: getWhatsAppConversationPhone(
+            platformName,
+            recipientUserId,
+            sessionId
+          ),
+          status: "awaiting_time_selection"
         });
         pending = pendingBookings[sessionId];
       }

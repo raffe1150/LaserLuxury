@@ -6178,6 +6178,59 @@ function availabilityConstraintSlotOptions(
   };
 }
 
+function slotSatisfiesAvailabilityConstraint(
+  startIso: string,
+  constraint?: CanonicalAvailabilityConstraint | null
+): boolean {
+  if (!constraint) return true;
+  const date = new Date(ensureStockholmOffset(String(startIso || "")));
+  if (Number.isNaN(date.getTime())) return false;
+
+  const localDate = stockholmDateString(date);
+  const localTime = getStockholmTimeFromIso(startIso);
+  const slotMinutes = timeTextToMinutes(localTime || "");
+  if (
+    !localTime ||
+    slotMinutes === null ||
+    localDate < constraint.startDate ||
+    localDate > constraint.endDate
+  ) return false;
+
+  if (
+    constraint.kind === "exact_time" &&
+    normalizeRequestedTime(constraint.exactTime || "") !== localTime
+  ) return false;
+
+  const minMinutes = timeTextToMinutes(constraint.minTime);
+  const maxMinutes = timeTextToMinutes(constraint.maxTime);
+  if (minMinutes !== null && slotMinutes < minMinutes) return false;
+  if (maxMinutes !== null && slotMinutes > maxMinutes) return false;
+
+  const boundaryMinutes = timeTextToMinutes(constraint.timeBoundary?.time);
+  if (boundaryMinutes !== null) {
+    if (
+      constraint.timeBoundary?.kind === "exclusive_lower" &&
+      slotMinutes <= boundaryMinutes
+    ) return false;
+    if (
+      constraint.timeBoundary?.kind === "inclusive_lower" &&
+      slotMinutes < boundaryMinutes
+    ) return false;
+    if (
+      constraint.timeBoundary?.kind === "exclusive_upper" &&
+      slotMinutes >= boundaryMinutes
+    ) return false;
+    if (
+      constraint.timeBoundary?.kind === "inclusive_upper" &&
+      slotMinutes > boundaryMinutes
+    ) return false;
+  }
+
+  return !(constraint.rejectedTimes || []).some(
+    (time) => normalizeRequestedTime(time) === localTime
+  );
+}
+
 function isAlternativeAvailabilityRequest(text?: string): boolean {
   const raw = String(text || "").trim().toLowerCase();
   return /\b(other|alternative|another|andra|alternativa|någon annan dag|andra dagar|outside|utanför|dagar efter|roo?z(?:e|hay)? dige|روز(?:های)? دیگر)\b/i.test(raw);
@@ -10007,11 +10060,12 @@ async function handleUnifiedBookingEngine(params: {
             ? pending.availabilityConstraint || null
             : recoveredConstraintForNewBooking || null
         );
-    let latestAvailabilityConstraint = deriveCanonicalAvailabilityConstraint(
+    const derivedLatestAvailabilityConstraint = deriveCanonicalAvailabilityConstraint(
       text,
       businessConfig,
       previousAvailabilityConstraint
-    ) || (
+    );
+    let latestAvailabilityConstraint = derivedLatestAvailabilityConstraint || (
       explicitNewBookingRequested
         ? recoveredConstraintForNewBooking || null
         : null
@@ -10043,18 +10097,24 @@ async function handleUnifiedBookingEngine(params: {
       availabilityOwnerMatches ||
       (
         pending?.operation === "new_booking" &&
-        ["awaiting_time_selection", "awaiting_confirmation"].includes(
+        ["awaiting_time_selection", "awaiting_confirmation", "awaiting_contact"].includes(
           String(pending.status || "")
         )
       )
     );
-    if (
+    const pendingCanAcceptAvailabilityRefinement = Boolean(
+      !pending ||
+      ["awaiting_time_selection", "awaiting_confirmation"].includes(
+        String(pending?.status || "")
+      ) ||
       (
-        !pending ||
-        ["awaiting_time_selection", "awaiting_confirmation"].includes(
-          String(pending.status || "")
-        )
-      ) &&
+        pending?.operation === "new_booking" &&
+        pending?.status === "awaiting_contact" &&
+        derivedLatestAvailabilityConstraint
+      )
+    );
+    if (
+      pendingCanAcceptAvailabilityRefinement &&
       !getRescheduleContext(sessionId) &&
       latestAvailabilityConstraint &&
       (
@@ -10348,15 +10408,25 @@ async function handleUnifiedBookingEngine(params: {
         const adapter = getCalendarAdapter(businessConfig);
         const selectedDate = String(pending.selectedDate || selectedIso.slice(0, 10));
         const resolvedSelectedTime = getStockholmTimeFromIso(selectedIso) || selectedTime || undefined;
-        const validation = await validateCanonicalExactSlot({
-          adapter,
-          owner: currentBookingSlotOwner,
-          businessConfig,
-          start: selectedIso,
-          service: String(pending.service || "Bokning"),
-          durationMinutes: Number(pending.durationMinutes || 60),
-          offeredSlot: selectedOwnedSlot
-        });
+        const validation = slotSatisfiesAvailabilityConstraint(
+          selectedIso,
+          pending.availabilityConstraint
+        )
+          ? await validateCanonicalExactSlot({
+              adapter,
+              owner: currentBookingSlotOwner,
+              businessConfig,
+              start: selectedIso,
+              service: String(pending.service || "Bokning"),
+              durationMinutes: Number(pending.durationMinutes || 60),
+              offeredSlot: selectedOwnedSlot
+            })
+          : {
+              free: false,
+              category: "constraint_mismatch" as const,
+              normalizedIso: null,
+              endIso: null
+            };
 
         if (!validation.free || !validation.normalizedIso || !validation.endIso) {
           const alternatives = await createCanonicalOfferedSlots({
@@ -10446,7 +10516,11 @@ async function handleUnifiedBookingEngine(params: {
       const selectedDate = String(pending.selectedDate || dateTime.slice(0, 10));
       const selectedOwnedSlot = findOwnedOfferedSlot(pending, dateTime);
       const adapter = getCalendarAdapter(businessConfig);
-      const validation = selectedOwnedSlot
+      const validation = selectedOwnedSlot &&
+        slotSatisfiesAvailabilityConstraint(
+          dateTime,
+          pending.availabilityConstraint
+        )
         ? await validateCanonicalExactSlot({
             adapter,
             owner: currentBookingSlotOwner,
@@ -10572,7 +10646,7 @@ async function handleUnifiedBookingEngine(params: {
 
       const lockedIso = String(pending.dateTime || "").trim();
       let selectedOwnedSlot = findOwnedOfferedSlot(pending, lockedIso);
-      if (!selectedOwnedSlot) {
+      if (!selectedOwnedSlot && !pending.availabilityConstraint) {
         const migrationValidation = await validateCanonicalExactSlot({
           adapter,
           owner: currentBookingSlotOwner,
@@ -10599,7 +10673,11 @@ async function handleUnifiedBookingEngine(params: {
           pending.ownedOfferedSlots = [selectedOwnedSlot];
         }
       }
-      const exactCheck = selectedOwnedSlot
+      const exactCheck = selectedOwnedSlot &&
+        slotSatisfiesAvailabilityConstraint(
+          lockedIso,
+          pending.availabilityConstraint
+        )
         ? await validateCanonicalExactSlot({
             adapter,
             owner: currentBookingSlotOwner,
@@ -10678,7 +10756,11 @@ async function handleUnifiedBookingEngine(params: {
         bookingSlotOwnerMatches(selectedOwnedSlot, currentBookingSlotOwner) &&
         new Date(selectedOwnedSlot.start).getTime() === new Date(finalIso).getTime() &&
         new Date(selectedOwnedSlot.end).getTime() === new Date(exactCheck.endIso).getTime() &&
-        stockholmDateString(new Date(finalIso)) === selectedDate
+        stockholmDateString(new Date(finalIso)) === selectedDate &&
+        slotSatisfiesAvailabilityConstraint(
+          finalIso,
+          pending.availabilityConstraint
+        )
       );
       if (!ownedTargetMatches) {
         console.error("[BookingFlow]", {
@@ -10749,7 +10831,10 @@ async function handleUnifiedBookingEngine(params: {
             endDate: selectedDate,
             service: String(pending.service || "Bokning"),
             durationMinutes: Number(pending.durationMinutes || 30),
-            requestedTime: selectedTime || undefined
+            requestedTime: selectedTime || undefined,
+            options: pending.availabilityConstraint
+              ? availabilityConstraintSlotOptions(pending.availabilityConstraint)
+              : undefined
           });
           pending.status = "awaiting_time_selection";
           pending.offeredSlots = alternatives.displaySlots;

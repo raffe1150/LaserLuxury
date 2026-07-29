@@ -5229,6 +5229,9 @@ function formatMissingBookingDetailsMessage(
 }
 
 async function savePendingBooking(chatId: string, platform: string, pending: any) {
+  if (pending.status === "awaiting_slot_selection") {
+    pending.status = "awaiting_time_selection";
+  }
   pending.createdAt = pending.createdAt || Date.now();
   pending.updatedAt = Date.now();
   pending.businessId = String(
@@ -5304,6 +5307,9 @@ async function loadPendingBooking(chatId: string, platform: string, businessConf
       return null;
     }
     const inMemory = pendingBookings[chatId];
+    if (inMemory.status === "awaiting_slot_selection") {
+      inMemory.status = "awaiting_time_selection";
+    }
     const expectedBusinessId = String(getBusinessIdFromConfig(businessConfig) || "");
     const expectedUserId = normalizePlatformUserId(platform, chatId);
     if (
@@ -5357,7 +5363,9 @@ async function loadPendingBooking(chatId: string, platform: string, businessConf
       customerName: parsed.customerName || null,
       customerPhone: parsed.customerPhone || null,
       durationMinutes: Number(parsed.durationMinutes || 60),
-      status: parsed.status || "awaiting_contact",
+      status: parsed.status === "awaiting_slot_selection"
+        ? "awaiting_time_selection"
+        : parsed.status || "awaiting_contact",
       operation: parsed.operation || "new_booking",
       businessId: String(parsed.business_id || getBusinessIdFromConfig(businessConfig) || ""),
       userId: normalizePlatformUserId(platform, String(parsed.userId || chatId)),
@@ -10097,9 +10105,7 @@ async function handleUnifiedBookingEngine(params: {
       availabilityOwnerMatches ||
       (
         pending?.operation === "new_booking" &&
-        ["awaiting_time_selection", "awaiting_confirmation", "awaiting_contact"].includes(
-          String(pending.status || "")
-        )
+        pending?.status !== "inserting"
       )
     );
     const pendingCanAcceptAvailabilityRefinement = Boolean(
@@ -10109,7 +10115,7 @@ async function handleUnifiedBookingEngine(params: {
       ) ||
       (
         pending?.operation === "new_booking" &&
-        pending?.status === "awaiting_contact" &&
+        pending?.status !== "inserting" &&
         derivedLatestAvailabilityConstraint
       )
     );
@@ -10141,6 +10147,7 @@ async function handleUnifiedBookingEngine(params: {
         )
       );
       const priorPendingBooking = pending;
+      delete availabilitySearchContexts[sessionId];
       if (pending) {
         await clearPendingBooking(sessionId);
         pending = null;

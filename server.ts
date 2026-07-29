@@ -5452,6 +5452,12 @@ async function sendCustomerMessage(platform: string, recipientId: string, messag
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ chat_id: recipient, text: message })
       });
+      logTelegramMessageSent({
+        token,
+        config: businessConfig,
+        source: "send_customer_message",
+        success: res.ok
+      });
       if (!res.ok) console.error("[ChannelSend] Telegram failed:", await res.text());
       return res.ok;
     } catch (error) {
@@ -6651,6 +6657,11 @@ type TelegramPollerState = {
   lastUpdateId: number;
   pollingTimeout: NodeJS.Timeout | null;
   config: any;
+  instanceId: string;
+  tokenFingerprint: string;
+  businessId: string | null;
+  source: string;
+  stoppedDiagnosticLogged: boolean;
 };
 
 const telegramPollers: Record<string, TelegramPollerState> = {};
@@ -6945,6 +6956,51 @@ function telegramTokenFingerprint(token?: string): string {
     : "missing";
 }
 
+function telegramPollerDiagnosticContext(
+  token?: string,
+  config?: any,
+  source?: string
+) {
+  const normalizedToken = normalizeTelegramBotToken(token);
+  const state = normalizedToken ? telegramPollers[normalizedToken] : undefined;
+  return {
+    tokenFingerprint: telegramTokenFingerprint(normalizedToken),
+    businessId: String(
+      getBusinessIdFromConfig(config) || state?.businessId || ""
+    ) || null,
+    pollerSource: source || state?.source || "unknown",
+    telegramBotInstanceId: state?.instanceId || null
+  };
+}
+
+function logTelegramTokenSource(
+  token: string | undefined,
+  source: string,
+  businessId?: string | number | null
+) {
+  console.log("[TelegramTokenSourceDiscovered]", {
+    tokenFingerprint: telegramTokenFingerprint(token),
+    tokenSource: source,
+    businessId: String(businessId || "") || null
+  });
+}
+
+function logTelegramMessageSent(params: {
+  token?: string;
+  config?: any;
+  source: string;
+  success: boolean;
+}) {
+  console.log("[TelegramMessageSent]", {
+    ...telegramPollerDiagnosticContext(
+      params.token,
+      params.config,
+      params.source
+    ),
+    success: params.success
+  });
+}
+
 function formatTelegramConfigurationError(language: string): string {
   if (language === "fa") return "متأسفانه تنظیمات رزرو این ربات موقتاً در دسترس نیست. لطفاً کمی بعد دوباره تلاش کنید.";
   if (language === "sv") return "Bokningsinställningarna för den här botten är tillfälligt otillgängliga. Försök gärna igen lite senare.";
@@ -7186,34 +7242,90 @@ async function loadFreshBusinessConfigByTelegramToken(token: string, fallbackCon
   }
 }
 
-async function startTelegramPolling(config: any) {
+async function startTelegramPolling(
+  config: any,
+  source: string = "unspecified"
+) {
   const token = normalizeTelegramBotToken(config?.telegramToken);
   if (!token) {
-    console.log("Telegram polling skipped: missing telegram token.");
+    console.log("[TelegramPollingStopped]", {
+      ...telegramPollerDiagnosticContext(token, config, source),
+      reason: "missing_token"
+    });
     return;
   }
 
   if (telegramPollers[token]?.isPolling) {
-    console.log(`Telegram polling already active for ${config.businessName || "business"} (${maskToken(token)})`);
+    const existing = telegramPollers[token];
+    console.log("[TelegramPollingStarted]", {
+      ...telegramPollerDiagnosticContext(token, config, existing.source),
+      requestedSource: source,
+      reusedExisting: true
+    });
     return;
   }
 
   const pollingConfig = { ...activeConfig, ...config, telegramToken: token };
+  const tokenFingerprint = telegramTokenFingerprint(token);
+  const businessId =
+    String(getBusinessIdFromConfig(pollingConfig) || "") || null;
+  const instanceId = crypto.randomUUID();
+  const existingBusinessPollers = Object.values(telegramPollers).filter(
+    (poller) =>
+      poller.isPolling &&
+      Boolean(businessId) &&
+      poller.businessId === businessId
+  );
   const state: TelegramPollerState = {
     isPolling: true,
     lastUpdateId: 0,
     pollingTimeout: null,
     config: pollingConfig,
+    instanceId,
+    tokenFingerprint,
+    businessId,
+    source,
+    stoppedDiagnosticLogged: false,
   };
 
   telegramPollers[token] = state;
 
-  console.log(`Starting Telegram long polling for ${pollingConfig.businessName || "business"} (${maskToken(token)})...`);
+  const pollerContext = telegramPollerDiagnosticContext(
+    token,
+    pollingConfig,
+    source
+  );
+  console.log("[TelegramPollerCreated]", pollerContext);
+  console.log("[TelegramPollerTokenFingerprint]", {
+    telegramBotInstanceId: instanceId,
+    tokenFingerprint
+  });
+  console.log("[TelegramPollerBusinessId]", {
+    telegramBotInstanceId: instanceId,
+    businessId
+  });
+  console.log("[TelegramPollerSource]", {
+    telegramBotInstanceId: instanceId,
+    pollerSource: source
+  });
+  console.log("[TelegramBotInstanceId]", {
+    telegramBotInstanceId: instanceId
+  });
+  console.log("[TelegramPollingStarted]", {
+    ...pollerContext,
+    reusedExisting: false,
+    otherActivePollerCountForBusiness: existingBusinessPollers.length,
+    otherActivePollerInstanceIdsForBusiness:
+      existingBusinessPollers.map((poller) => poller.instanceId)
+  });
 
   try {
     await fetch(`https://api.telegram.org/bot${token}/deleteWebhook`);
   } catch (e) {
-    console.error(`Error clearing webhook for ${maskToken(token)}:`, e);
+    console.error("[TelegramPollerDeleteWebhookError]", {
+      ...pollerContext,
+      errorName: e instanceof Error ? e.name : "unknown"
+    });
   }
 
   const poll = async () => {
@@ -7222,20 +7334,32 @@ async function startTelegramPolling(config: any) {
       const data = await res.json();
 
       if (!data.ok) {
-        console.error(`Telegram getUpdates failed for ${pollingConfig.businessName || "business"} (${maskToken(token)}):`, data);
+        console.error("[TelegramPollerGetUpdatesError]", {
+          ...pollerContext,
+          httpStatus: res.status,
+          telegramErrorCode: Number(data?.error_code || 0) || null
+        });
       } else if (data.result.length > 0) {
-        console.log(`Received ${data.result.length} Telegram update(s) for ${pollingConfig.businessName || "business"} (${maskToken(token)})`);
         for (const update of data.result) {
           state.lastUpdateId = update.update_id;
           await processTelegramUpdate(update, state.config, "telegram-polling");
         }
       }
     } catch (e) {
-      console.error(`Polling error for ${pollingConfig.businessName || "business"} (${maskToken(token)}):`, e);
+      console.error("[TelegramPollerError]", {
+        ...pollerContext,
+        errorName: e instanceof Error ? e.name : "unknown"
+      });
     }
 
     if (state.isPolling) {
       state.pollingTimeout = setTimeout(poll, 1000);
+    } else if (!state.stoppedDiagnosticLogged) {
+      state.stoppedDiagnosticLogged = true;
+      console.log("[TelegramPollingStopped]", {
+        ...pollerContext,
+        reason: "state_disabled"
+      });
     }
   };
 
@@ -7261,11 +7385,19 @@ async function startAllBusinessTelegramPollers() {
         const token = normalizeTelegramBotToken(business.telegram_bot_token);
         if (!token || startedTokens.has(token)) continue;
 
+        logTelegramTokenSource(
+          token,
+          "public.businesses.telegram_bot_token",
+          business.id
+        );
         const resolvedConfig =
           await loadFreshBusinessConfigByTelegramToken(token);
         if (!resolvedConfig.telegramBusinessResolved) continue;
         startedTokens.add(token);
-        await startTelegramPolling(resolvedConfig);
+        await startTelegramPolling(
+          resolvedConfig,
+          "startup_public_businesses"
+        );
       }
     } catch (err) {
       console.error("Failed to load business telegram pollers from Supabase:", err);
@@ -7274,6 +7406,18 @@ async function startAllBusinessTelegramPollers() {
 
   const fallbackToken = activeConfig.telegramToken || process.env.TELEGRAM_TOKEN || process.env.TELEGRAM_BOT_TOKEN;
   if (fallbackToken && !startedTokens.has(fallbackToken)) {
+    const normalizedFallbackToken = normalizeTelegramBotToken(fallbackToken);
+    const fallbackSource =
+      normalizedFallbackToken === normalizeTelegramBotToken(process.env.TELEGRAM_TOKEN)
+        ? "environment.TELEGRAM_TOKEN_via_activeConfig"
+        : normalizedFallbackToken === normalizeTelegramBotToken(process.env.TELEGRAM_BOT_TOKEN)
+          ? "environment.TELEGRAM_BOT_TOKEN_via_activeConfig"
+          : "activeConfig.telegramToken";
+    logTelegramTokenSource(
+      fallbackToken,
+      fallbackSource,
+      getBusinessIdFromConfig(activeConfig)
+    );
     const resolvedEnvironmentConfig =
       await loadFreshBusinessConfigByTelegramToken(fallbackToken);
     if (resolvedEnvironmentConfig.telegramBusinessResolved) {
@@ -7282,7 +7426,10 @@ async function startAllBusinessTelegramPollers() {
       );
       if (resolvedToken && !startedTokens.has(resolvedToken)) {
         startedTokens.add(resolvedToken);
-        await startTelegramPolling(resolvedEnvironmentConfig);
+        await startTelegramPolling(
+          resolvedEnvironmentConfig,
+          "startup_environment_token"
+        );
       }
     }
   }
@@ -11434,6 +11581,16 @@ async function processTelegramUpdate(update: any, config: any, platform: string 
   const telegramToken = normalizeTelegramBotToken(config?.telegramToken);
   const updateId = String(update?.update_id ?? "").trim();
   if (!telegramToken || !updateId || !update?.message) return;
+  console.log("[TelegramUpdateReceived]", {
+    ...telegramPollerDiagnosticContext(telegramToken, config, platform),
+    updateId,
+    deliverySource: platform
+  });
+  logTelegramTokenSource(
+    telegramToken,
+    `${platform}.processTelegramUpdate.config`,
+    getBusinessIdFromConfig(config)
+  );
   const resolvedConfig = await loadFreshBusinessConfigByTelegramToken(
     telegramToken,
     config
@@ -11460,13 +11617,19 @@ async function processTelegramUpdate(update: any, config: any, platform: string 
           detectStrongLatestLanguage(messageText) ||
           detectUserLanguage(messageText) ||
           "en";
-        await fetch(`https://api.telegram.org/bot${telegramToken}/sendMessage`, {
+        const response = await fetch(`https://api.telegram.org/bot${telegramToken}/sendMessage`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             chat_id: chatId,
             text: formatTelegramConfigurationError(replyLanguage)
           })
+        });
+        logTelegramMessageSent({
+          token: telegramToken,
+          config,
+          source: "configuration_error",
+          success: response.ok
         });
         return;
       }
@@ -11506,7 +11669,10 @@ async function processTelegramUpdateClaimed(update: any, config: any, platform: 
   resetSessionIfBusinessConfigChanged(telegramSessionId, config);
 
   const { apiKey } = config;
-  console.log(`Processing Telegram message for ${config.businessName || "business"} (${maskToken(telegramToken)}), chatId=${chatId}`);
+  console.log("[TelegramUpdateProcessing]", {
+    ...telegramPollerDiagnosticContext(telegramToken, config, platform),
+    deliverySource: platform
+  });
 
   try {
     const text = update.message.text;
@@ -11568,6 +11734,12 @@ async function processTelegramUpdateClaimed(update: any, config: any, platform: 
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ chat_id: chatId, text: reply })
           });
+          logTelegramMessageSent({
+            token: telegramToken,
+            config,
+            source: "unified_booking_engine",
+            success: response.ok
+          });
           return response.ok;
         },
         postProcessPlatform: platform
@@ -11601,10 +11773,16 @@ async function processTelegramUpdateClaimed(update: any, config: any, platform: 
     const completedBooking = getRecentCompletedBooking(telegramSessionId);
     if (textForFlow && completedBooking && isThanksOnlyText(textForFlow)) {
       const thanksText = formatThanksReply(completedBooking.language || getLockedReplyLanguage(telegramSessionId, textForFlow), completedBooking.name);
-      await fetch(`https://api.telegram.org/bot${telegramToken}/sendMessage`, {
+      const response = await fetch(`https://api.telegram.org/bot${telegramToken}/sendMessage`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ chat_id: chatId, text: thanksText })
+      });
+      logTelegramMessageSent({
+        token: telegramToken,
+        config,
+        source: "completed_booking_thanks",
+        success: response.ok
       });
       appendLocalHistory(telegramSessionId, textForFlow, thanksText);
       await postProcessMessage(chatId.toString(), platform, textForFlow, thanksText, telegramToken, apiKey, getBusinessIdFromConfig(config));
@@ -11620,10 +11798,16 @@ async function processTelegramUpdateClaimed(update: any, config: any, platform: 
     });
     if (!usage.allowed) {
       const limitText = formatDailyLimitMessage(usageLanguage);
-      await fetch(`https://api.telegram.org/bot${telegramToken}/sendMessage`, {
+      const response = await fetch(`https://api.telegram.org/bot${telegramToken}/sendMessage`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ chat_id: chatId, text: limitText })
+      });
+      logTelegramMessageSent({
+        token: telegramToken,
+        config,
+        source: "daily_usage_limit",
+        success: response.ok
       });
       appendLocalHistory(telegramSessionId, textForFlow || '[voice]', limitText);
       await postProcessMessage(chatId.toString(), platform, textForFlow || '[voice]', limitText, telegramToken, apiKey, getBusinessIdFromConfig(config));
@@ -11740,6 +11924,12 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ chat_id: chatId, text: reply })
               });
+              logTelegramMessageSent({
+                token: telegramToken,
+                config,
+                source: "reschedule_tool_unified_route",
+                success: response.ok
+              });
               return response.ok;
             },
             postProcessPlatform: platform
@@ -11841,9 +12031,15 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
          formData.append('chat_id', chatId.toString());
          formData.append('voice', blob, 'response.mp3');
          
-         await fetch(`https://api.telegram.org/bot${telegramToken}/sendVoice`, {
+         const response = await fetch(`https://api.telegram.org/bot${telegramToken}/sendVoice`, {
            method: 'POST',
            body: formData as any
+         });
+         logTelegramMessageSent({
+           token: telegramToken,
+           config,
+           source: "gemini_voice_reply",
+           success: response.ok
          });
          fs.unlinkSync(outName);
          sentAudio = true;
@@ -11852,18 +12048,30 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       }
       
       if (!sentAudio) {
-        await fetch(`https://api.telegram.org/bot${telegramToken}/sendMessage`, {
+        const response = await fetch(`https://api.telegram.org/bot${telegramToken}/sendMessage`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ chat_id: chatId, text: textResponse })
         });
+        logTelegramMessageSent({
+          token: telegramToken,
+          config,
+          source: "gemini_voice_text_fallback",
+          success: response.ok
+        });
       }
       postProcessMessage(chatId.toString(), platform, userMessageContent, textResponse, telegramToken, apiKey, getBusinessIdFromConfig(config));
     } else {
-      await fetch(`https://api.telegram.org/bot${telegramToken}/sendMessage`, {
+      const response = await fetch(`https://api.telegram.org/bot${telegramToken}/sendMessage`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ chat_id: chatId, text: textResponse })
+      });
+      logTelegramMessageSent({
+        token: telegramToken,
+        config,
+        source: "gemini_text_reply",
+        success: response.ok
       });
       
       postProcessMessage(chatId.toString(), platform, userMessageContent, textResponse, telegramToken, apiKey, getBusinessIdFromConfig(config));
@@ -11873,10 +12081,16 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
     const eStr = String(error.message || error);
     if (update.message && update.message.chat && update.message.chat.id && config.telegramToken && (eStr.includes("429") || eStr.includes("503") || eStr.includes("quota") || eStr.includes("RESOURCE_EXHAUSTED") || eStr.includes("high demand"))) {
        try {
-          await fetch(`https://api.telegram.org/bot${config.telegramToken}/sendMessage`, {
+          const response = await fetch(`https://api.telegram.org/bot${config.telegramToken}/sendMessage`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ chat_id: update.message.chat.id, text: "Just nu är det hög belastning på linjen. Vänligen vänta några sekunder och pröva att skicka ditt meddelande igen! 😊" })
+          });
+          logTelegramMessageSent({
+            token: config.telegramToken,
+            config,
+            source: "telegram_processing_error_fallback",
+            success: response.ok
           });
        } catch(e) {
           console.error("Failed to send fallback message", e);
@@ -15201,12 +15415,17 @@ console.log(JSON.stringify(req.body, null, 2));
       fs.writeFileSync(path.join(process.cwd(), "agent-config.json"), JSON.stringify(config, null, 2));
       
       if (config.telegramToken) {
+        logTelegramTokenSource(
+          config.telegramToken,
+          "api_setup_telegram.request_config",
+          getBusinessIdFromConfig(config)
+        );
         try {
           await fetch(`https://api.telegram.org/bot${config.telegramToken}/deleteWebhook`);
         } catch (e) {
           console.error("Error clearing old webhook:", e);
         }
-        startTelegramPolling(config);
+        startTelegramPolling(config, "api_setup_telegram");
       }
       res.json({ success: true, message: "Configuration saved and webhook registered." });
     } catch (error: any) {
@@ -16823,7 +17042,15 @@ app.put('/api/businesses/:id', async (req, res) => {
 
     // Start or refresh Telegram polling when a new token was saved.
     if (payload.telegram_bot_token) {
-      await startTelegramPolling(normalizeBusinessConfig(data));
+      logTelegramTokenSource(
+        data.telegram_bot_token,
+        "api_business_settings_update.database_row",
+        data.id
+      );
+      await startTelegramPolling(
+        normalizeBusinessConfig(data),
+        "api_business_settings_update"
+      );
     }
 
     return res.status(200).json({
@@ -16925,7 +17152,15 @@ app.post('/api/businesses', async (req, res) => {
     const savedBusiness = data?.[0];
 
     if (savedBusiness?.telegram_bot_token) {
-      await startTelegramPolling(normalizeBusinessConfig(savedBusiness));
+      logTelegramTokenSource(
+        savedBusiness.telegram_bot_token,
+        "api_business_create_or_update.database_row",
+        savedBusiness.id
+      );
+      await startTelegramPolling(
+        normalizeBusinessConfig(savedBusiness),
+        "api_business_create_or_update"
+      );
     }
 
     activeConfig = {

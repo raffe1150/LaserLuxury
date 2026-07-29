@@ -6933,7 +6933,9 @@ function maskToken(token?: string) {
 }
 
 function normalizeTelegramBotToken(token?: string): string {
-  return String(token || "").trim();
+  return String(token || "")
+    .replace(/[\r\n]/g, "")
+    .trim();
 }
 
 function telegramTokenFingerprint(token?: string): string {
@@ -7047,75 +7049,140 @@ function resetSessionIfBusinessConfigChanged(sessionId: string, config: any) {
 async function loadFreshBusinessConfigByTelegramToken(token: string, fallbackConfig: any = {}) {
   const normalizedToken = normalizeTelegramBotToken(token);
   const fingerprint = telegramTokenFingerprint(normalizedToken);
-  const unresolved = (resolutionSource: string) => {
-    console.warn("[TelegramBusinessResolution]", {
-      tokenFingerprint: fingerprint,
-      matched: false,
-      businessId: null,
-      businessName: null,
-      resolutionSource,
-      fallbackBlocked: true
-    });
+  const publicBusinesses = () => {
+    const publicClient = typeof supabase?.schema === "function"
+      ? supabase.schema("public")
+      : supabase;
+    return publicClient.from("businesses");
+  };
+  let candidateRows: any[] = [];
+  let matchedRow: any = null;
+  let queryError: any = null;
+  let resolutionSource = "unresolved";
+  const safeErrorMessage = (error: any) => {
+    const raw = String(error?.message || "").replace(/[\r\n]+/g, " ").trim();
+    return normalizedToken
+      ? raw.split(normalizedToken).join("[redacted]").slice(0, 240)
+      : raw.slice(0, 240);
+  };
+  const logResolution = (matchedBusinessId: string | null) => {
+    const diagnostic = {
+      environmentTokenFingerprint: fingerprint,
+      candidateBusinessRowCount: candidateRows.length,
+      candidateBusinessIds: candidateRows.map((row) => String(row?.id || "")),
+      candidateTokenFingerprints: candidateRows.map((row) =>
+        telegramTokenFingerprint(row?.telegram_bot_token)
+      ),
+      matchedBusinessId,
+      queryErrorCode: queryError ? String(queryError?.code || "unknown") : null,
+      queryErrorMessage: queryError ? safeErrorMessage(queryError) : null,
+      finalResolutionSource: resolutionSource
+    };
+    if (matchedBusinessId) console.log("[TelegramBusinessResolution]", diagnostic);
+    else console.warn("[TelegramBusinessResolution]", diagnostic);
+  };
+  const unresolved = (source: string) => {
+    resolutionSource = source;
+    logResolution(null);
     return {
       telegramToken: normalizedToken,
       telegramBusinessResolved: false,
-      telegramResolutionSource: resolutionSource
+      telegramResolutionSource: source
     };
   };
   if (!supabase) return unresolved("supabase_unavailable");
   if (!normalizedToken) return unresolved("missing_token");
 
   try {
-    const { data, error } = await supabase
-      .from("businesses")
+    const exactResult = await publicBusinesses()
       .select("*")
       .eq("telegram_bot_token", normalizedToken)
       .maybeSingle();
-
-    if (error) {
-      console.error("[TelegramBusinessResolution] lookup failed.", {
-        tokenFingerprint: fingerprint,
-        matched: false,
-        resolutionSource: "supabase_error",
-        fallbackBlocked: true,
-        errorCode: String(error?.code || "unknown")
-      });
-      return unresolved("supabase_error");
+    if (exactResult.error) {
+      queryError = exactResult.error;
+    } else if (
+      exactResult.data &&
+      normalizeTelegramBotToken(exactResult.data.telegram_bot_token) ===
+        normalizedToken
+    ) {
+      matchedRow = exactResult.data;
+      resolutionSource = "public.businesses.telegram_bot_token_equality";
     }
 
-    const storedToken = normalizeTelegramBotToken(data?.telegram_bot_token);
-    const businessId = String(data?.id || "").trim();
-    if (!data || !businessId || !storedToken || storedToken !== normalizedToken) {
-      return unresolved(data ? "supabase_token_mismatch" : "supabase_not_found");
+    const candidateResult = await publicBusinesses()
+      .select("id,business_name,telegram_bot_token")
+      .not("telegram_bot_token", "is", null);
+    if (candidateResult.error) {
+      queryError = queryError || candidateResult.error;
+    } else {
+      candidateRows = Array.isArray(candidateResult.data)
+        ? candidateResult.data
+        : [];
+    }
+
+    if (!matchedRow) {
+      const normalizedMatches = candidateRows.filter(
+        (row) =>
+          normalizeTelegramBotToken(row?.telegram_bot_token) ===
+          normalizedToken
+      );
+      if (normalizedMatches.length > 1) {
+        return unresolved("public.businesses.normalized_token_ambiguous");
+      }
+      if (normalizedMatches.length === 1) {
+        const candidateId = String(normalizedMatches[0]?.id || "").trim();
+        const fullResult = await publicBusinesses()
+          .select("*")
+          .eq("id", candidateId)
+          .maybeSingle();
+        if (fullResult.error) {
+          queryError = queryError || fullResult.error;
+          return unresolved("public.businesses.matched_row_fetch_error");
+        }
+        if (
+          fullResult.data &&
+          normalizeTelegramBotToken(fullResult.data.telegram_bot_token) ===
+            normalizedToken
+        ) {
+          matchedRow = fullResult.data;
+          resolutionSource =
+            "public.businesses.application_normalized_token_match";
+        }
+      }
+    }
+
+    const storedToken = normalizeTelegramBotToken(
+      matchedRow?.telegram_bot_token
+    );
+    const businessId = String(matchedRow?.id || "").trim();
+    if (
+      !matchedRow ||
+      !businessId ||
+      !storedToken ||
+      storedToken !== normalizedToken
+    ) {
+      return unresolved(
+        queryError
+          ? "public.businesses.query_failed_no_normalized_match"
+          : "public.businesses.no_normalized_match"
+      );
     }
 
     const freshConfig = {
-      ...normalizeBusinessConfig(data),
+      ...normalizeBusinessConfig(matchedRow),
       telegramToken: storedToken,
-      timezone: String(data.timezone || "Europe/Stockholm"),
-      language: String(data.language || ""),
-      services: Array.isArray(data.services) ? data.services : [],
-      serviceDurations: data.service_durations || {},
+      timezone: String(matchedRow.timezone || "Europe/Stockholm"),
+      language: String(matchedRow.language || ""),
+      services: Array.isArray(matchedRow.services) ? matchedRow.services : [],
+      serviceDurations: matchedRow.service_durations || {},
       telegramBusinessResolved: true,
-      telegramResolutionSource: "supabase_exact_token"
+      telegramResolutionSource: resolutionSource
     };
-    console.log("[TelegramBusinessResolution]", {
-      tokenFingerprint: fingerprint,
-      matched: true,
-      businessId,
-      businessName: freshConfig.businessName || null,
-      resolutionSource: freshConfig.telegramResolutionSource,
-      fallbackBlocked: false
-    });
+    logResolution(businessId);
     return freshConfig;
   } catch (err) {
-    console.error("[TelegramBusinessResolution] lookup crashed.", {
-      tokenFingerprint: fingerprint,
-      matched: false,
-      resolutionSource: "supabase_exception",
-      fallbackBlocked: true
-    });
-    return unresolved("supabase_exception");
+    queryError = err;
+    return unresolved("public.businesses.exception");
   }
 }
 
@@ -7180,7 +7247,10 @@ async function startAllBusinessTelegramPollers() {
 
   if (supabase) {
     try {
-      const { data, error } = await supabase
+      const publicClient = typeof supabase.schema === "function"
+        ? supabase.schema("public")
+        : supabase;
+      const { data, error } = await publicClient
         .from('businesses')
         .select('*')
         .not('telegram_bot_token', 'is', null);
@@ -7191,8 +7261,11 @@ async function startAllBusinessTelegramPollers() {
         const token = normalizeTelegramBotToken(business.telegram_bot_token);
         if (!token || startedTokens.has(token)) continue;
 
+        const resolvedConfig =
+          await loadFreshBusinessConfigByTelegramToken(token);
+        if (!resolvedConfig.telegramBusinessResolved) continue;
         startedTokens.add(token);
-        await startTelegramPolling(normalizeBusinessConfig(business));
+        await startTelegramPolling(resolvedConfig);
       }
     } catch (err) {
       console.error("Failed to load business telegram pollers from Supabase:", err);
@@ -7201,14 +7274,17 @@ async function startAllBusinessTelegramPollers() {
 
   const fallbackToken = activeConfig.telegramToken || process.env.TELEGRAM_TOKEN || process.env.TELEGRAM_BOT_TOKEN;
   if (fallbackToken && !startedTokens.has(fallbackToken)) {
-    console.warn("[TelegramBusinessResolution]", {
-      tokenFingerprint: telegramTokenFingerprint(fallbackToken),
-      matched: false,
-      businessId: null,
-      businessName: null,
-      resolutionSource: "environment_fallback",
-      fallbackBlocked: true
-    });
+    const resolvedEnvironmentConfig =
+      await loadFreshBusinessConfigByTelegramToken(fallbackToken);
+    if (resolvedEnvironmentConfig.telegramBusinessResolved) {
+      const resolvedToken = normalizeTelegramBotToken(
+        resolvedEnvironmentConfig.telegramToken
+      );
+      if (resolvedToken && !startedTokens.has(resolvedToken)) {
+        startedTokens.add(resolvedToken);
+        await startTelegramPolling(resolvedEnvironmentConfig);
+      }
+    }
   }
 }
 
@@ -11414,12 +11490,14 @@ async function processTelegramUpdateClaimed(update: any, config: any, platform: 
     normalizeTelegramBotToken(config?.telegramToken) !== telegramToken
   ) {
     console.warn("[TelegramBusinessResolution]", {
-      tokenFingerprint: telegramTokenFingerprint(telegramToken),
-      matched: false,
-      businessId: null,
-      businessName: null,
-      resolutionSource: "claimed_handler_guard",
-      fallbackBlocked: true
+      environmentTokenFingerprint: telegramTokenFingerprint(telegramToken),
+      candidateBusinessRowCount: 0,
+      candidateBusinessIds: [],
+      candidateTokenFingerprints: [],
+      matchedBusinessId: null,
+      queryErrorCode: null,
+      queryErrorMessage: null,
+      finalResolutionSource: "claimed_handler_guard"
     });
     return;
   }

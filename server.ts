@@ -10061,11 +10061,45 @@ async function handleUnifiedBookingEngine(params: {
     }
 
     const alternativeAvailabilityRequested = isAlternativeAvailabilityRequest(text);
+    const pendingOwnedOffer = Array.isArray(pending?.ownedOfferedSlots)
+      ? pending.ownedOfferedSlots.find((slot: OwnedOfferedSlot) =>
+          bookingSlotOwnerMatches(slot, currentBookingSlotOwner)
+        )
+      : null;
+    const pendingOfferStart = pendingOwnedOffer?.start ||
+      parseSlotIso(String(pending?.offeredSlots?.[0] || ""));
+    const pendingAvailabilityStartDate = String(
+      pending?.availabilityStartDate ||
+      pending?.selectedDate ||
+      pendingOwnedOffer?.searchStartDate ||
+      (pendingOfferStart
+        ? stockholmDateString(new Date(ensureStockholmOffset(pendingOfferStart)))
+        : "")
+    );
+    const pendingAvailabilityEndDate = String(
+      pending?.availabilityEndDate ||
+      pendingOwnedOffer?.searchEndDate ||
+      pendingAvailabilityStartDate
+    );
+    const restoredPendingConstraint: CanonicalAvailabilityConstraint | null =
+      pending?.operation === "new_booking" &&
+      pendingAvailabilityStartDate &&
+      pendingAvailabilityEndDate
+        ? {
+            startDate: pendingAvailabilityStartDate,
+            endDate: pendingAvailabilityEndDate,
+            kind: pendingAvailabilityStartDate === pendingAvailabilityEndDate
+              ? "whole_day"
+              : "date_range",
+            rejectedTimes: [],
+            generatedFromLatestRequestAt: Date.now()
+          }
+        : null;
     const previousAvailabilityConstraint = availabilityOwnerMatches
       ? storedAvailability?.constraint
       : (
           pending?.operation === "new_booking"
-            ? pending.availabilityConstraint || null
+            ? pending.availabilityConstraint || restoredPendingConstraint
             : recoveredConstraintForNewBooking || null
         );
     const derivedLatestAvailabilityConstraint = deriveCanonicalAvailabilityConstraint(
@@ -10131,6 +10165,13 @@ async function handleUnifiedBookingEngine(params: {
     ) {
       const priorConstraintType = previousAvailabilityConstraint?.kind || "none";
       const constraint = latestAvailabilityConstraint;
+      const cachedOfferCountBefore = Array.isArray(pending?.offeredSlots)
+        ? pending.offeredSlots.length
+        : 0;
+      const refinementDetected = Boolean(
+        pending?.operation === "new_booking" &&
+        derivedLatestAvailabilityConstraint
+      );
       const staleConstraintsCleared = Boolean(
         previousAvailabilityConstraint &&
         (
@@ -10147,6 +10188,19 @@ async function handleUnifiedBookingEngine(params: {
         )
       );
       const priorPendingBooking = pending;
+      console.log("[BookingRefinement]", {
+        platform: platformName,
+        refinementDetected,
+        pendingStatusBefore: pending?.status || "none",
+        cachedOfferCountBefore,
+        cachedReplySuppressed: refinementDetected && cachedOfferCountBefore > 0,
+        canonicalConstraintKind: constraint.kind,
+        canonicalBoundaryMinutes:
+          timeTextToMinutes(constraint.timeBoundary?.time),
+        freshScanStarted: true,
+        freshOfferCount: null,
+        finalHandledPath: "fresh_scan_started"
+      });
       delete availabilitySearchContexts[sessionId];
       if (pending) {
         await clearPendingBooking(sessionId);
@@ -10189,6 +10243,21 @@ async function handleUnifiedBookingEngine(params: {
           })
         : { displaySlots: [], ownedSlots: [] };
       const slots = canonicalOffers.displaySlots;
+      console.log("[BookingRefinement]", {
+        platform: platformName,
+        refinementDetected,
+        pendingStatusBefore: priorPendingBooking?.status || "none",
+        cachedOfferCountBefore,
+        cachedReplySuppressed: refinementDetected && cachedOfferCountBefore > 0,
+        canonicalConstraintKind: constraint.kind,
+        canonicalBoundaryMinutes:
+          timeTextToMinutes(constraint.timeBoundary?.time),
+        freshScanStarted: true,
+        freshOfferCount: canonicalOffers.ownedSlots.length,
+        finalHandledPath: slots.length > 0
+          ? "fresh_offers_rendered"
+          : "fresh_no_availability_rendered"
+      });
 
       availabilitySearchContexts[sessionId] = {
         constraint,

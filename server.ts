@@ -7294,6 +7294,24 @@ async function startTelegramPolling(
     });
     return;
   }
+  const configuredToken = normalizeTelegramBotToken(config?.telegramToken);
+  const configuredFingerprint = telegramTokenFingerprint(configuredToken);
+  const businessIdFromConfig =
+    String(getBusinessIdFromConfig(config) || "") || null;
+  if (
+    !config?.telegramBusinessResolved ||
+    !businessIdFromConfig ||
+    configuredToken !== token ||
+    configuredFingerprint !== telegramTokenFingerprint(token)
+  ) {
+    console.error("[TelegramTokenIdentityMismatch]", {
+      tokenFingerprint: telegramTokenFingerprint(token),
+      configuredTokenFingerprint: configuredFingerprint,
+      businessId: businessIdFromConfig,
+      businessResolved: Boolean(config?.telegramBusinessResolved)
+    });
+    return;
+  }
 
   if (telegramPollers[token]?.isPolling) {
     const existing = telegramPollers[token];
@@ -7359,6 +7377,78 @@ async function startTelegramPolling(
     telegramBotInstanceId: instanceId
   });
 
+  const identityAbortController = new AbortController();
+  const identityTimeout = setTimeout(
+    () => identityAbortController.abort(),
+    10_000
+  );
+  let identityResponse: Response | null = null;
+  let identityData: any = null;
+  try {
+    identityResponse = await fetch(
+      `https://api.telegram.org/bot${token}/getMe`,
+      { signal: identityAbortController.signal }
+    );
+    const identityText = await identityResponse.text();
+    identityData = JSON.parse(identityText);
+  } catch (identityError) {
+    const safeError = sanitizeTelegramPollingError(identityError, token);
+    console.error("[TelegramBotIdentity]", {
+      tokenFingerprint,
+      businessId,
+      botId: null,
+      botUsername: null,
+      botFirstName: null,
+      canJoinGroups: null,
+      supportsInlineQueries: null,
+      httpStatus: identityResponse?.status || null,
+      ok: false,
+      errorName: safeError.errorName,
+      sanitizedErrorMessage: safeError.sanitizedErrorMessage
+    });
+  } finally {
+    clearTimeout(identityTimeout);
+  }
+
+  const botIdentity = identityData?.result || {};
+  const identityOk = Boolean(
+    identityResponse?.ok &&
+    identityData?.ok &&
+    botIdentity?.id &&
+    botIdentity?.username
+  );
+  if (identityData) {
+    console.log("[TelegramBotIdentity]", {
+      tokenFingerprint,
+      businessId,
+      botId: botIdentity?.id || null,
+      botUsername: botIdentity?.username || null,
+      botFirstName: botIdentity?.first_name || null,
+      canJoinGroups: Boolean(botIdentity?.can_join_groups),
+      supportsInlineQueries: Boolean(botIdentity?.supports_inline_queries),
+      httpStatus: identityResponse?.status || null,
+      ok: identityOk
+    });
+  }
+  if (!identityOk) {
+    state.isPolling = false;
+    state.phase = "stopped";
+    state.stoppedDiagnosticLogged = true;
+    console.log("[TelegramPollingStopped]", {
+      ...pollerContext,
+      reason: "bot_identity_not_verified",
+      lastOffset: 0,
+      iteration: 0
+    });
+    return;
+  }
+  console.warn("[TelegramBotUsernameVerificationRequired]", {
+    tokenFingerprint,
+    businessId,
+    botId: botIdentity.id,
+    botUsername: botIdentity.username
+  });
+
   const webhookAbortController = new AbortController();
   const webhookTimeout = setTimeout(() => webhookAbortController.abort(), 10_000);
   console.log("[TelegramDeleteWebhookStarted]", pollerContext);
@@ -7382,6 +7472,53 @@ async function startTelegramPolling(
     });
   } finally {
     clearTimeout(webhookTimeout);
+  }
+
+  const webhookInfoAbortController = new AbortController();
+  const webhookInfoTimeout = setTimeout(
+    () => webhookInfoAbortController.abort(),
+    10_000
+  );
+  let webhookInfoResponse: Response | null = null;
+  try {
+    webhookInfoResponse = await fetch(
+      `https://api.telegram.org/bot${token}/getWebhookInfo`,
+      { signal: webhookInfoAbortController.signal }
+    );
+    const webhookInfoText = await webhookInfoResponse.text();
+    const webhookInfoData = JSON.parse(webhookInfoText);
+    const webhookInfo = webhookInfoData?.result || {};
+    const sanitizedLastError = webhookInfo?.last_error_message
+      ? sanitizeTelegramPollingError(
+          new Error(String(webhookInfo.last_error_message)),
+          token
+        ).sanitizedErrorMessage
+      : null;
+    console.log("[TelegramWebhookState]", {
+      tokenFingerprint,
+      businessId,
+      webhookUrlPresent: Boolean(webhookInfo?.url),
+      pendingUpdateCount:
+        Number(webhookInfo?.pending_update_count || 0) || 0,
+      lastErrorDate: Number(webhookInfo?.last_error_date || 0) || null,
+      lastErrorMessage: sanitizedLastError,
+      allowedUpdates: Array.isArray(webhookInfo?.allowed_updates)
+        ? webhookInfo.allowed_updates.map((value: any) => String(value))
+        : null
+    });
+  } catch (webhookInfoError) {
+    const safeError = sanitizeTelegramPollingError(webhookInfoError, token);
+    console.error("[TelegramWebhookState]", {
+      tokenFingerprint,
+      businessId,
+      webhookUrlPresent: null,
+      pendingUpdateCount: null,
+      lastErrorDate: null,
+      lastErrorMessage: safeError.sanitizedErrorMessage,
+      allowedUpdates: null
+    });
+  } finally {
+    clearTimeout(webhookInfoTimeout);
   }
 
   const waitBeforeRetry = async (delayMs: number) => {
@@ -7453,7 +7590,11 @@ async function startTelegramPolling(
               body: JSON.stringify({
                 offset,
                 timeout: timeoutSeconds,
-                allowed_updates: ["message"]
+                allowed_updates: [
+                  "message",
+                  "edited_message",
+                  "callback_query"
+                ]
               }),
               signal: abortController.signal
             }
@@ -7484,11 +7625,30 @@ async function startTelegramPolling(
             },
             offset
           );
+          const updateIds = result
+            .map((update: any) => Number(update?.update_id))
+            .filter((updateId: number) => Number.isFinite(updateId));
+          const updateTypes = Array.from(
+            new Set(
+              result.flatMap((update: any) =>
+                Object.keys(update || {}).filter(
+                  (key) => key !== "update_id"
+                )
+              )
+            )
+          );
           console.log("[TelegramGetUpdatesCompleted]", {
             ...pollerContext,
             httpStatus: response.status,
             ok: Boolean(response.ok && responseData?.ok),
             resultCount: result.length,
+            minimumUpdateId: updateIds.length
+              ? Math.min(...updateIds)
+              : null,
+            maximumUpdateId: updateIds.length
+              ? Math.max(...updateIds)
+              : null,
+            updateTypes,
             nextOffset: completedNextOffset,
             elapsedMs: Date.now() - startedAt,
             iteration
@@ -15673,12 +15833,11 @@ console.log(JSON.stringify(req.body, null, 2));
           "api_setup_telegram.request_config",
           getBusinessIdFromConfig(config)
         );
-        try {
-          await fetch(`https://api.telegram.org/bot${config.telegramToken}/deleteWebhook`);
-        } catch (e) {
-          console.error("Error clearing old webhook:", e);
+        const resolvedConfig =
+          await loadFreshBusinessConfigByTelegramToken(config.telegramToken);
+        if (resolvedConfig.telegramBusinessResolved) {
+          startTelegramPolling(resolvedConfig, "api_setup_telegram");
         }
-        startTelegramPolling(config, "api_setup_telegram");
       }
       res.json({ success: true, message: "Configuration saved and webhook registered." });
     } catch (error: any) {
@@ -17300,10 +17459,14 @@ app.put('/api/businesses/:id', async (req, res) => {
         "api_business_settings_update.database_row",
         data.id
       );
-      await startTelegramPolling(
-        normalizeBusinessConfig(data),
-        "api_business_settings_update"
-      );
+      const resolvedTelegramConfig =
+        await loadFreshBusinessConfigByTelegramToken(data.telegram_bot_token);
+      if (resolvedTelegramConfig.telegramBusinessResolved) {
+        await startTelegramPolling(
+          resolvedTelegramConfig,
+          "api_business_settings_update"
+        );
+      }
     }
 
     return res.status(200).json({
@@ -17410,10 +17573,16 @@ app.post('/api/businesses', async (req, res) => {
         "api_business_create_or_update.database_row",
         savedBusiness.id
       );
-      await startTelegramPolling(
-        normalizeBusinessConfig(savedBusiness),
-        "api_business_create_or_update"
-      );
+      const resolvedTelegramConfig =
+        await loadFreshBusinessConfigByTelegramToken(
+          savedBusiness.telegram_bot_token
+        );
+      if (resolvedTelegramConfig.telegramBusinessResolved) {
+        await startTelegramPolling(
+          resolvedTelegramConfig,
+          "api_business_create_or_update"
+        );
+      }
     }
 
     activeConfig = {

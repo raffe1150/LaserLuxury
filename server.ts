@@ -5230,6 +5230,44 @@ function formatMissingBookingDetailsMessage(
   return "Jag har allt jag behöver för att slutföra bokningen. 😊";
 }
 
+function getPendingOwnedUserId(
+  pending: any,
+  platform: string,
+  fallbackUserId: string
+): string {
+  const normalizedPlatform = normalizePlatformName(platform);
+  const rawFallbackUserId = String(fallbackUserId || "").trim();
+  const telegramSessionParts = normalizedPlatform === "telegram" &&
+    rawFallbackUserId.startsWith("tg:")
+      ? rawFallbackUserId.split(":")
+      : [];
+  const exactConversationUserId = normalizePlatformUserId(
+    normalizedPlatform,
+    telegramSessionParts.length >= 4
+      ? telegramSessionParts.slice(3).join(":")
+      : rawFallbackUserId
+  );
+  if (exactConversationUserId) return exactConversationUserId;
+
+  const businessId = String(
+    pending?.businessId ||
+    getBusinessIdFromConfig(pending?.businessConfig) ||
+    ""
+  );
+  const canonicalOwnedSlot = Array.isArray(pending?.ownedOfferedSlots)
+    ? pending.ownedOfferedSlots.find((slot: OwnedOfferedSlot) =>
+        slot &&
+        slot.businessId === businessId &&
+        normalizePlatformName(slot.platform) === normalizedPlatform &&
+        Boolean(slot.userId)
+      )
+    : null;
+  return normalizePlatformUserId(
+    normalizedPlatform,
+    String(canonicalOwnedSlot?.userId || pending?.userId || "")
+  );
+}
+
 async function savePendingBooking(chatId: string, platform: string, pending: any) {
   if (pending.status === "awaiting_slot_selection") {
     pending.status = "awaiting_time_selection";
@@ -5242,10 +5280,7 @@ async function savePendingBooking(chatId: string, platform: string, pending: any
     ""
   );
   pending.platform = normalizePlatformName(platform);
-  pending.userId = normalizePlatformUserId(
-    pending.platform,
-    String(pending.userId || chatId)
-  );
+  pending.userId = getPendingOwnedUserId(pending, pending.platform, chatId);
   pending.sessionId = chatId;
   pendingBookings[chatId] = pending;
   if (!supabase) return;
@@ -5270,6 +5305,7 @@ async function savePendingBooking(chatId: string, platform: string, pending: any
       durationMinutes: pending.durationMinutes,
       status: pending.status,
       operation: pending.operation || "new_booking",
+      expiredAppointmentFallback: Boolean(pending.expiredAppointmentFallback),
       createdAt: pending.createdAt || Date.now(),
       updatedAt: pending.updatedAt,
       business_id: pending.businessId,
@@ -5313,7 +5349,7 @@ async function loadPendingBooking(chatId: string, platform: string, businessConf
       inMemory.status = "awaiting_time_selection";
     }
     const expectedBusinessId = String(getBusinessIdFromConfig(businessConfig) || "");
-    const expectedUserId = normalizePlatformUserId(platform, chatId);
+    const expectedUserId = getPendingOwnedUserId(inMemory, platform, chatId);
     if (
       String(inMemory.businessId || getBusinessIdFromConfig(inMemory.businessConfig) || "") !== expectedBusinessId ||
       normalizePlatformName(inMemory.platform || platform) !== normalizePlatformName(platform) ||
@@ -5369,6 +5405,7 @@ async function loadPendingBooking(chatId: string, platform: string, businessConf
         ? "awaiting_time_selection"
         : parsed.status || "awaiting_contact",
       operation: parsed.operation || "new_booking",
+      expiredAppointmentFallback: Boolean(parsed.expiredAppointmentFallback),
       businessId: String(parsed.business_id || getBusinessIdFromConfig(businessConfig) || ""),
       userId: normalizePlatformUserId(platform, String(parsed.userId || chatId)),
       sessionId: chatId,
@@ -5382,7 +5419,7 @@ async function loadPendingBooking(chatId: string, platform: string, businessConf
       )
     };
     const expectedBusinessId = String(getBusinessIdFromConfig(businessConfig) || "");
-    const expectedUserId = normalizePlatformUserId(platform, chatId);
+    const expectedUserId = getPendingOwnedUserId(pending, platform, chatId);
     if (
       !pending.businessId ||
       pending.businessId !== expectedBusinessId ||
@@ -5414,6 +5451,54 @@ async function loadPendingBooking(chatId: string, platform: string, businessConf
     console.error("loadPendingBooking crashed:", err);
     return null;
   }
+}
+
+function logBookingContinuationState(fields: Partial<{
+  platform: string;
+  flowType: string;
+  previousStateType: string;
+  nextStateType: string;
+  expiredAppointmentFallback: boolean;
+  servicePresent: boolean;
+  durationPresent: boolean;
+  selectedStartPresent: boolean;
+  selectedEndPresent: boolean;
+  contactNamePresent: boolean;
+  contactPhonePresent: boolean;
+  positiveConfirmationDetected: boolean;
+  pendingSelectionOwned: boolean;
+  staleOffersCleared: boolean;
+  finalValidationStarted: boolean;
+  finalValidationPassed: boolean;
+  calendarCreateStarted: boolean;
+  calendarCreateSucceeded: boolean;
+  recoverableStatePreserved: boolean;
+  finalHandledPath: string;
+  failureCategory: string | null;
+}>) {
+  console.log("[BookingContinuationState]", {
+    platform: fields.platform || "unknown",
+    flowType: fields.flowType || "new_booking",
+    previousStateType: fields.previousStateType || "none",
+    nextStateType: fields.nextStateType || "none",
+    expiredAppointmentFallback: Boolean(fields.expiredAppointmentFallback),
+    servicePresent: Boolean(fields.servicePresent),
+    durationPresent: Boolean(fields.durationPresent),
+    selectedStartPresent: Boolean(fields.selectedStartPresent),
+    selectedEndPresent: Boolean(fields.selectedEndPresent),
+    contactNamePresent: Boolean(fields.contactNamePresent),
+    contactPhonePresent: Boolean(fields.contactPhonePresent),
+    positiveConfirmationDetected: Boolean(fields.positiveConfirmationDetected),
+    pendingSelectionOwned: Boolean(fields.pendingSelectionOwned),
+    staleOffersCleared: Boolean(fields.staleOffersCleared),
+    finalValidationStarted: Boolean(fields.finalValidationStarted),
+    finalValidationPassed: Boolean(fields.finalValidationPassed),
+    calendarCreateStarted: Boolean(fields.calendarCreateStarted),
+    calendarCreateSucceeded: Boolean(fields.calendarCreateSucceeded),
+    recoverableStatePreserved: Boolean(fields.recoverableStatePreserved),
+    finalHandledPath: fields.finalHandledPath || "unknown",
+    failureCategory: fields.failureCategory || null
+  });
 }
 
 async function clearPendingBooking(chatId: string) {
@@ -9574,6 +9659,7 @@ async function handleUnifiedBookingEngine(params: {
     let recoveredServiceForNewBooking: string | undefined;
     let recoveredDurationForNewBooking: number | undefined;
     let recoveredConstraintForNewBooking: CanonicalAvailabilityConstraint | undefined;
+    let expiredAppointmentFallbackForNewBooking = false;
     const pastRecovery = pastAppointmentRecoveryContexts[sessionId];
     if (pastRecovery) {
       const expired = Date.now() - pastRecovery.savedAt > 15 * 60 * 1000;
@@ -9581,18 +9667,68 @@ async function handleUnifiedBookingEngine(params: {
         pastRecovery.owner,
         currentAppointmentStateOwner
       );
+      const ownedPendingNewBooking = Boolean(
+        pending?.operation === "new_booking" &&
+        ["awaiting_time_selection", "awaiting_confirmation", "awaiting_contact", "inserting"]
+          .includes(String(pending?.status || "")) &&
+        String(pending?.businessId || "") === currentBookingSlotOwner.businessId &&
+        normalizePlatformName(pending?.platform || "") ===
+          currentBookingSlotOwner.platform &&
+        getPendingOwnedUserId(
+          pending,
+          currentBookingSlotOwner.platform,
+          currentBookingSlotOwner.userId
+        ) === currentBookingSlotOwner.userId
+      );
+      const latestRecoveryBookingConstraint =
+        deriveCanonicalAvailabilityConstraint(
+          text,
+          businessConfig,
+          pastRecovery.availabilityConstraint || null
+        );
       if (expired || !ownerMatches) {
         delete pastAppointmentRecoveryContexts[sessionId];
+      } else if (ownedPendingNewBooking) {
+        pending.expiredAppointmentFallback = true;
+        await savePendingBooking(sessionId, platformName, pending);
+        delete pastAppointmentRecoveryContexts[sessionId];
+        logBookingContinuationState({
+          platform: platformName,
+          flowType: "new_booking",
+          previousStateType: "expired_appointment_recovery",
+          nextStateType: String(pending.status || "new_booking"),
+          expiredAppointmentFallback: true,
+          servicePresent: Boolean(pending.service && pending.service !== "Bokning"),
+          durationPresent: Number(pending.durationMinutes || 0) > 0,
+          selectedStartPresent: Boolean(pending.dateTime),
+          selectedEndPresent: Boolean(pending.selectedSlotEnd),
+          positiveConfirmationDetected: isAffirmativeBookingText(text),
+          pendingSelectionOwned: Boolean(
+            pending.dateTime &&
+            findOwnedOfferedSlot(pending, pending.dateTime) &&
+            bookingSlotOwnerMatches(
+              findOwnedOfferedSlot(pending, pending.dateTime)!,
+              currentBookingSlotOwner
+            )
+          ),
+          recoverableStatePreserved: true,
+          finalHandledPath: "expired_recovery_suppressed_by_owned_booking",
+          failureCategory: null
+        });
       } else if (
         isExplicitNewBookingPivotText(text) ||
         isAvailabilityPivotFromFailedLookup(text) ||
+        Boolean(latestRecoveryBookingConstraint) ||
         (
           isAffirmativeBookingText(text) &&
           Boolean(pastRecovery.availabilityConstraint)
         )
       ) {
         forcedNewBookingFromRecovery = true;
-        recoveredConstraintForNewBooking = pastRecovery.availabilityConstraint;
+        expiredAppointmentFallbackForNewBooking = true;
+        recoveredConstraintForNewBooking =
+          latestRecoveryBookingConstraint ||
+          pastRecovery.availabilityConstraint;
         recoveredServiceForNewBooking = pastRecovery.service;
         recoveredDurationForNewBooking = pastRecovery.durationMinutes;
         delete pastAppointmentRecoveryContexts[sessionId];
@@ -11326,6 +11462,9 @@ async function handleUnifiedBookingEngine(params: {
           durationMinutes,
           language: lockedLanguage,
           operation: "new_booking",
+          expiredAppointmentFallback:
+            expiredAppointmentFallbackForNewBooking ||
+            Boolean(priorPendingBooking?.expiredAppointmentFallback),
           customerPhone: getWhatsAppConversationPhone(platformName, recipientUserId, sessionId),
           status: exactIso ? "awaiting_confirmation" : "awaiting_time_selection"
         });
@@ -11351,6 +11490,9 @@ async function handleUnifiedBookingEngine(params: {
           durationMinutes,
           language: lockedLanguage,
           operation: "new_booking",
+          expiredAppointmentFallback:
+            expiredAppointmentFallbackForNewBooking ||
+            Boolean(priorPendingBooking?.expiredAppointmentFallback),
           customerPhone: getWhatsAppConversationPhone(
             platformName,
             recipientUserId,
@@ -11629,6 +11771,12 @@ async function handleUnifiedBookingEngine(params: {
         pending.selectedSlotEnd = validation.endIso;
         pending.selectedDate = stockholmDateString(new Date(validation.normalizedIso));
         pending.language = getFlowReplyLanguage(pending.language, language, text);
+        pending.offeredSlots = [];
+        pending.ownedOfferedSlots = [{
+          ...selectedOwnedSlot!,
+          start: validation.normalizedIso,
+          end: validation.endIso
+        }];
         pending.status = "awaiting_contact";
         await savePendingBooking(sessionId, platformName, pending);
 
@@ -11658,6 +11806,7 @@ async function handleUnifiedBookingEngine(params: {
     }
 
     if (pending && isPendingSlotConfirmation(text, pending)) {
+      const previousPendingState = String(pending.status || "awaiting_confirmation");
       const dateTime = String(pending.dateTime || "");
       const selectedTime = getStockholmTimeFromIso(dateTime);
       const selectedDate = String(pending.selectedDate || dateTime.slice(0, 10));
@@ -11724,6 +11873,12 @@ async function handleUnifiedBookingEngine(params: {
       pending.dateTime = validation.normalizedIso;
       pending.selectedSlotEnd = validation.endIso;
       pending.selectedDate = stockholmDateString(new Date(validation.normalizedIso));
+      pending.offeredSlots = [];
+      pending.ownedOfferedSlots = [{
+        ...selectedOwnedSlot!,
+        start: validation.normalizedIso,
+        end: validation.endIso
+      }];
       pending.status = "awaiting_contact";
       pending.language = getFlowReplyLanguage(pending.language, language, text);
       if (!pending.customerPhone) {
@@ -11735,6 +11890,28 @@ async function handleUnifiedBookingEngine(params: {
       }
 
       await savePendingBooking(sessionId, platformName, pending);
+      logBookingContinuationState({
+        platform: platformName,
+        flowType: "new_booking",
+        previousStateType: previousPendingState,
+        nextStateType: "awaiting_contact",
+        expiredAppointmentFallback: Boolean(pending.expiredAppointmentFallback),
+        servicePresent: Boolean(pending.service && pending.service !== "Bokning"),
+        durationPresent: Number(pending.durationMinutes || 0) > 0,
+        selectedStartPresent: Boolean(pending.dateTime),
+        selectedEndPresent: Boolean(pending.selectedSlotEnd),
+        contactNamePresent: Boolean(pending.customerName),
+        contactPhonePresent: Boolean(pending.customerPhone),
+        positiveConfirmationDetected: true,
+        pendingSelectionOwned: bookingSlotOwnerMatches(
+          pending.ownedOfferedSlots[0],
+          currentBookingSlotOwner
+        ),
+        staleOffersCleared: true,
+        recoverableStatePreserved: true,
+        finalHandledPath: "confirmed_selection_awaiting_contact",
+        failureCategory: null
+      });
       await replyAndRecord(
         formatAskContactMessageForPlatform(
           getFlowReplyLanguage(pending.language, language, text),
@@ -11745,6 +11922,7 @@ async function handleUnifiedBookingEngine(params: {
     }
 
     if (pending?.status === "awaiting_contact") {
+      const previousPendingState = String(pending.status);
       const combinedContact = extractNameAndPhone(text);
       const nameFromMessage = combinedContact?.name || extractNameOnly(text);
       const phoneFromMessage = combinedContact?.phone || extractPhoneOnly(text);
@@ -11769,6 +11947,30 @@ async function handleUnifiedBookingEngine(params: {
 
       if (missing.length > 0) {
         await savePendingBooking(sessionId, platformName, pending);
+        logBookingContinuationState({
+          platform: platformName,
+          flowType: "new_booking",
+          previousStateType: previousPendingState,
+          nextStateType: "awaiting_contact",
+          expiredAppointmentFallback: Boolean(pending.expiredAppointmentFallback),
+          servicePresent: Boolean(pending.service && pending.service !== "Bokning"),
+          durationPresent: Number(pending.durationMinutes || 0) > 0,
+          selectedStartPresent: Boolean(pending.dateTime),
+          selectedEndPresent: Boolean(pending.selectedSlotEnd),
+          contactNamePresent: Boolean(pending.customerName),
+          contactPhonePresent: Boolean(pending.customerPhone),
+          pendingSelectionOwned: Boolean(
+            pending.dateTime &&
+            findOwnedOfferedSlot(pending, pending.dateTime) &&
+            bookingSlotOwnerMatches(
+              findOwnedOfferedSlot(pending, pending.dateTime)!,
+              currentBookingSlotOwner
+            )
+          ),
+          recoverableStatePreserved: true,
+          finalHandledPath: "awaiting_missing_contact",
+          failureCategory: null
+        });
         await replyAndRecord(
           formatMissingBookingDetailsMessage(
             getFlowReplyLanguage(pending.language, language, text),
@@ -11792,7 +11994,22 @@ async function handleUnifiedBookingEngine(params: {
 
       if (!pending.dateTime) {
         console.error(`[UnifiedBooking] Missing dateTime before insert platform=${platformName}`);
-        await clearPendingBooking(sessionId);
+        pending.status = "awaiting_time_selection";
+        await savePendingBooking(sessionId, platformName, pending);
+        logBookingContinuationState({
+          platform: platformName,
+          flowType: "new_booking",
+          previousStateType: previousPendingState,
+          nextStateType: "awaiting_time_selection",
+          expiredAppointmentFallback: Boolean(pending.expiredAppointmentFallback),
+          servicePresent: Boolean(pending.service && pending.service !== "Bokning"),
+          durationPresent: Number(pending.durationMinutes || 0) > 0,
+          contactNamePresent: Boolean(pending.customerName),
+          contactPhonePresent: Boolean(pending.customerPhone),
+          recoverableStatePreserved: true,
+          finalHandledPath: "missing_selection_recovery",
+          failureCategory: "missing_confirmed_selection"
+        });
         await replyAndRecord(getErrorMessageByLanguage(getFlowReplyLanguage(pending.language, language, text)));
         return true;
       }
@@ -11853,6 +12070,30 @@ async function handleUnifiedBookingEngine(params: {
             endIso: null
           };
       const finalIso = exactCheck.free ? exactCheck.normalizedIso : null;
+      logBookingContinuationState({
+        platform: platformName,
+        flowType: "new_booking",
+        previousStateType: previousPendingState,
+        nextStateType: exactCheck.free ? "final_validation_passed" : "awaiting_time_selection",
+        expiredAppointmentFallback: Boolean(pending.expiredAppointmentFallback),
+        servicePresent: Boolean(pending.service && pending.service !== "Bokning"),
+        durationPresent: Number(pending.durationMinutes || 0) > 0,
+        selectedStartPresent: Boolean(lockedIso),
+        selectedEndPresent: Boolean(pending.selectedSlotEnd),
+        contactNamePresent: Boolean(pending.customerName),
+        contactPhonePresent: Boolean(pending.customerPhone),
+        pendingSelectionOwned: Boolean(
+          selectedOwnedSlot &&
+          bookingSlotOwnerMatches(selectedOwnedSlot, currentBookingSlotOwner)
+        ),
+        finalValidationStarted: true,
+        finalValidationPassed: Boolean(finalIso && exactCheck.endIso),
+        recoverableStatePreserved: true,
+        finalHandledPath: exactCheck.free
+          ? "final_validation_passed"
+          : "final_validation_failed",
+        failureCategory: exactCheck.free ? null : exactCheck.category
+      });
 
       if (!finalIso || !exactCheck.endIso) {
         const alternatives = await createCanonicalOfferedSlots({
@@ -11931,6 +12172,25 @@ async function handleUnifiedBookingEngine(params: {
           ownershipMatch: false,
           finalHandledPath: "blocked_before_insert"
         });
+        logBookingContinuationState({
+          platform: platformName,
+          flowType: "new_booking",
+          previousStateType: previousPendingState,
+          nextStateType: "awaiting_contact",
+          expiredAppointmentFallback: Boolean(pending.expiredAppointmentFallback),
+          servicePresent: Boolean(pending.service && pending.service !== "Bokning"),
+          durationPresent: Number(pending.durationMinutes || 0) > 0,
+          selectedStartPresent: Boolean(pending.dateTime),
+          selectedEndPresent: Boolean(pending.selectedSlotEnd),
+          contactNamePresent: Boolean(pending.customerName),
+          contactPhonePresent: Boolean(pending.customerPhone),
+          pendingSelectionOwned: false,
+          finalValidationStarted: true,
+          finalValidationPassed: true,
+          recoverableStatePreserved: true,
+          finalHandledPath: "blocked_before_insert",
+          failureCategory: "owned_target_mismatch"
+        });
         await replyAndRecord(
           getErrorMessageByLanguage(
             getFlowReplyLanguage(pending.language, language, text)
@@ -11966,6 +12226,26 @@ async function handleUnifiedBookingEngine(params: {
       pending.dateTime = finalIso;
       pending.selectedSlotEnd = exactCheck.endIso;
       await savePendingBooking(sessionId, platformName, pending);
+      logBookingContinuationState({
+        platform: platformName,
+        flowType: "new_booking",
+        previousStateType: previousPendingState,
+        nextStateType: "inserting",
+        expiredAppointmentFallback: Boolean(pending.expiredAppointmentFallback),
+        servicePresent: Boolean(pending.service),
+        durationPresent: Number(pending.durationMinutes || 0) > 0,
+        selectedStartPresent: true,
+        selectedEndPresent: true,
+        contactNamePresent: true,
+        contactPhonePresent: true,
+        pendingSelectionOwned: true,
+        finalValidationStarted: true,
+        finalValidationPassed: true,
+        calendarCreateStarted: true,
+        recoverableStatePreserved: true,
+        finalHandledPath: "calendar_create_started",
+        failureCategory: null
+      });
       const calendarOwnerMarker = platformName === "telegram"
         ? `tg_${currentBookingSlotOwner.userId}`
         : sessionId;
@@ -12025,6 +12305,27 @@ async function handleUnifiedBookingEngine(params: {
         }
         pending.status = "awaiting_contact";
         await savePendingBooking(sessionId, platformName, pending);
+        logBookingContinuationState({
+          platform: platformName,
+          flowType: "new_booking",
+          previousStateType: "inserting",
+          nextStateType: "awaiting_contact",
+          expiredAppointmentFallback: Boolean(pending.expiredAppointmentFallback),
+          servicePresent: true,
+          durationPresent: true,
+          selectedStartPresent: true,
+          selectedEndPresent: true,
+          contactNamePresent: true,
+          contactPhonePresent: true,
+          pendingSelectionOwned: true,
+          finalValidationStarted: true,
+          finalValidationPassed: true,
+          calendarCreateStarted: true,
+          calendarCreateSucceeded: false,
+          recoverableStatePreserved: true,
+          finalHandledPath: "calendar_create_failed",
+          failureCategory: String(result?.code || "calendar_create_failed")
+        });
         console.error("[BookingFlow]", {
           platform: platformName,
           businessScopePresent: Boolean(currentBookingSlotOwner.businessId),
@@ -12039,6 +12340,28 @@ async function handleUnifiedBookingEngine(params: {
         );
         return true;
       }
+
+      logBookingContinuationState({
+        platform: platformName,
+        flowType: "new_booking",
+        previousStateType: "inserting",
+        nextStateType: "verifying",
+        expiredAppointmentFallback: Boolean(pending.expiredAppointmentFallback),
+        servicePresent: true,
+        durationPresent: true,
+        selectedStartPresent: true,
+        selectedEndPresent: true,
+        contactNamePresent: true,
+        contactPhonePresent: true,
+        pendingSelectionOwned: true,
+        finalValidationStarted: true,
+        finalValidationPassed: true,
+        calendarCreateStarted: true,
+        calendarCreateSucceeded: true,
+        recoverableStatePreserved: true,
+        finalHandledPath: "calendar_created_verification_started",
+        failureCategory: null
+      });
 
       const insertedEventId = String(result?.event?.id || "").trim();
       const configuredCalendarId = String(
@@ -12124,6 +12447,33 @@ async function handleUnifiedBookingEngine(params: {
         await settleAtomicOperation(bookingOperationClaim, "failed");
         pending.status = "awaiting_contact";
         await savePendingBooking(sessionId, platformName, pending);
+        logBookingContinuationState({
+          platform: platformName,
+          flowType: "new_booking",
+          previousStateType: "verifying",
+          nextStateType: "awaiting_contact",
+          expiredAppointmentFallback: Boolean(pending.expiredAppointmentFallback),
+          servicePresent: true,
+          durationPresent: true,
+          selectedStartPresent: true,
+          selectedEndPresent: true,
+          contactNamePresent: true,
+          contactPhonePresent: true,
+          pendingSelectionOwned: true,
+          finalValidationStarted: true,
+          finalValidationPassed: true,
+          calendarCreateStarted: true,
+          calendarCreateSucceeded: true,
+          recoverableStatePreserved: true,
+          finalHandledPath: "calendar_verification_failed",
+          failureCategory: !calendarIdMatches
+            ? "calendar_id_mismatch"
+            : !calendarStartMatches || !calendarEndMatches
+              ? "calendar_time_mismatch"
+              : !calendarOwnerMatches
+                ? "calendar_owner_mismatch"
+                : "calendar_event_not_verified"
+        });
         console.error("[BookingFlow]", {
           platform: platformName,
           businessScopePresent: Boolean(currentBookingSlotOwner.businessId),
@@ -12194,6 +12544,27 @@ async function handleUnifiedBookingEngine(params: {
         await settleAtomicOperation(bookingOperationClaim, "failed");
         pending.status = "awaiting_contact";
         await savePendingBooking(sessionId, platformName, pending);
+        logBookingContinuationState({
+          platform: platformName,
+          flowType: "new_booking",
+          previousStateType: "verifying",
+          nextStateType: "awaiting_contact",
+          expiredAppointmentFallback: Boolean(pending.expiredAppointmentFallback),
+          servicePresent: true,
+          durationPresent: true,
+          selectedStartPresent: true,
+          selectedEndPresent: true,
+          contactNamePresent: true,
+          contactPhonePresent: true,
+          pendingSelectionOwned: true,
+          finalValidationStarted: true,
+          finalValidationPassed: true,
+          calendarCreateStarted: true,
+          calendarCreateSucceeded: true,
+          recoverableStatePreserved: true,
+          finalHandledPath: "database_verification_failed",
+          failureCategory: "database_verification_failed"
+        });
         console.error("[BookingFlow]", {
           platform: platformName,
           businessScopePresent: Boolean(expectedBusinessId),
@@ -12267,6 +12638,28 @@ async function handleUnifiedBookingEngine(params: {
         finalIso,
         pending.service
       );
+
+      logBookingContinuationState({
+        platform: platformName,
+        flowType: "new_booking",
+        previousStateType: "inserting",
+        nextStateType: "completed",
+        expiredAppointmentFallback: Boolean(pending.expiredAppointmentFallback),
+        servicePresent: true,
+        durationPresent: true,
+        selectedStartPresent: true,
+        selectedEndPresent: true,
+        contactNamePresent: true,
+        contactPhonePresent: true,
+        pendingSelectionOwned: true,
+        finalValidationStarted: true,
+        finalValidationPassed: true,
+        calendarCreateStarted: true,
+        calendarCreateSucceeded: true,
+        recoverableStatePreserved: false,
+        finalHandledPath: "verified_booking_completed",
+        failureCategory: null
+      });
 
       await replyAndRecord(
         formatBookingSavedMessage(

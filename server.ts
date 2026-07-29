@@ -6932,6 +6932,26 @@ function maskToken(token?: string) {
   return `${token.slice(0, 8)}...${token.slice(-6)}`;
 }
 
+function normalizeTelegramBotToken(token?: string): string {
+  return String(token || "").trim();
+}
+
+function telegramTokenFingerprint(token?: string): string {
+  const normalized = normalizeTelegramBotToken(token);
+  return normalized
+    ? crypto.createHash("sha256").update(normalized).digest("hex").slice(0, 12)
+    : "missing";
+}
+
+function formatTelegramConfigurationError(language: string): string {
+  if (language === "fa") return "متأسفانه تنظیمات رزرو این ربات موقتاً در دسترس نیست. لطفاً کمی بعد دوباره تلاش کنید.";
+  if (language === "sv") return "Bokningsinställningarna för den här botten är tillfälligt otillgängliga. Försök gärna igen lite senare.";
+  if (language === "de") return "Die Buchungskonfiguration dieses Bots ist vorübergehend nicht verfügbar. Bitte versuchen Sie es später erneut.";
+  if (language === "es") return "La configuración de reservas de este bot no está disponible temporalmente. Inténtalo de nuevo más tarde.";
+  if (language === "ar") return "إعدادات الحجز لهذا الروبوت غير متاحة مؤقتًا. يرجى المحاولة مرة أخرى لاحقًا.";
+  return "This bot’s booking configuration is temporarily unavailable. Please try again later.";
+}
+
 function normalizeBusinessConfig(row: any) {
   const adminNotificationChannel = String(row?.admin_notification_channel ?? row?.adminNotificationChannel ?? "telegram").trim().toLowerCase() || "telegram";
   const adminWhatsAppNumber = String(row?.admin_whatsapp_number ?? row?.adminWhatsAppNumber ?? "").trim();
@@ -6943,7 +6963,9 @@ function normalizeBusinessConfig(row: any) {
     id: row.id,
     businessName: row.business_name,
     business_name: row.business_name,
-    telegramToken: row.telegram_bot_token,
+    telegramToken: normalizeTelegramBotToken(
+      row.telegram_bot_token ?? row.telegramToken
+    ),
     adminTelegramChatId,
     admin_telegram_chat_id: adminTelegramChatId,
     adminNotificationChannel,
@@ -7023,41 +7045,82 @@ function resetSessionIfBusinessConfigChanged(sessionId: string, config: any) {
 }
 
 async function loadFreshBusinessConfigByTelegramToken(token: string, fallbackConfig: any = {}) {
-  let freshConfig = { ...activeConfig, ...(fallbackConfig || {}), telegramToken: token };
-  if (!supabase || !token) return freshConfig;
+  const normalizedToken = normalizeTelegramBotToken(token);
+  const fingerprint = telegramTokenFingerprint(normalizedToken);
+  const unresolved = (resolutionSource: string) => {
+    console.warn("[TelegramBusinessResolution]", {
+      tokenFingerprint: fingerprint,
+      matched: false,
+      businessId: null,
+      businessName: null,
+      resolutionSource,
+      fallbackBlocked: true
+    });
+    return {
+      telegramToken: normalizedToken,
+      telegramBusinessResolved: false,
+      telegramResolutionSource: resolutionSource
+    };
+  };
+  if (!supabase) return unresolved("supabase_unavailable");
+  if (!normalizedToken) return unresolved("missing_token");
 
   try {
     const { data, error } = await supabase
       .from("businesses")
       .select("*")
-      .eq("telegram_bot_token", token)
+      .eq("telegram_bot_token", normalizedToken)
       .maybeSingle();
 
     if (error) {
-      console.error("Telegram business live lookup error:", JSON.stringify(error));
-      return freshConfig;
+      console.error("[TelegramBusinessResolution] lookup failed.", {
+        tokenFingerprint: fingerprint,
+        matched: false,
+        resolutionSource: "supabase_error",
+        fallbackBlocked: true,
+        errorCode: String(error?.code || "unknown")
+      });
+      return unresolved("supabase_error");
     }
 
-    if (data) {
-      freshConfig = normalizeBusinessConfig(data);
-      console.log(
-        `[TelegramConfig] business=${freshConfig.businessName || "unknown"} (${getBusinessIdFromConfig(freshConfig) || "missing"}), ` +
-        `allowCancellation=${freshConfig.allowCancellation}, ` +
-        `deadlineMinutes=${freshConfig.cancellationDeadlineMinutes}, ` +
-        `calendar_id=${freshConfig.googleCalendarId || "missing"}`
-      );
-    } else {
-      console.warn(`[BusinessConfig] No Supabase business found for Telegram token ${maskToken(token)}. Using fallback config.`);
+    const storedToken = normalizeTelegramBotToken(data?.telegram_bot_token);
+    const businessId = String(data?.id || "").trim();
+    if (!data || !businessId || !storedToken || storedToken !== normalizedToken) {
+      return unresolved(data ? "supabase_token_mismatch" : "supabase_not_found");
     }
+
+    const freshConfig = {
+      ...normalizeBusinessConfig(data),
+      telegramToken: storedToken,
+      timezone: String(data.timezone || "Europe/Stockholm"),
+      language: String(data.language || ""),
+      services: Array.isArray(data.services) ? data.services : [],
+      serviceDurations: data.service_durations || {},
+      telegramBusinessResolved: true,
+      telegramResolutionSource: "supabase_exact_token"
+    };
+    console.log("[TelegramBusinessResolution]", {
+      tokenFingerprint: fingerprint,
+      matched: true,
+      businessId,
+      businessName: freshConfig.businessName || null,
+      resolutionSource: freshConfig.telegramResolutionSource,
+      fallbackBlocked: false
+    });
+    return freshConfig;
   } catch (err) {
-    console.error("Telegram business live lookup crashed:", err);
+    console.error("[TelegramBusinessResolution] lookup crashed.", {
+      tokenFingerprint: fingerprint,
+      matched: false,
+      resolutionSource: "supabase_exception",
+      fallbackBlocked: true
+    });
+    return unresolved("supabase_exception");
   }
-
-  return freshConfig;
 }
 
 async function startTelegramPolling(config: any) {
-  const token = config?.telegramToken;
+  const token = normalizeTelegramBotToken(config?.telegramToken);
   if (!token) {
     console.log("Telegram polling skipped: missing telegram token.");
     return;
@@ -7125,7 +7188,7 @@ async function startAllBusinessTelegramPollers() {
       if (error) throw error;
 
       for (const business of data || []) {
-        const token = business.telegram_bot_token;
+        const token = normalizeTelegramBotToken(business.telegram_bot_token);
         if (!token || startedTokens.has(token)) continue;
 
         startedTokens.add(token);
@@ -7138,10 +7201,13 @@ async function startAllBusinessTelegramPollers() {
 
   const fallbackToken = activeConfig.telegramToken || process.env.TELEGRAM_TOKEN || process.env.TELEGRAM_BOT_TOKEN;
   if (fallbackToken && !startedTokens.has(fallbackToken)) {
-    await startTelegramPolling({
-      ...activeConfig,
-      businessName: activeConfig.businessName || "Environment Bot",
-      telegramToken: fallbackToken,
+    console.warn("[TelegramBusinessResolution]", {
+      tokenFingerprint: telegramTokenFingerprint(fallbackToken),
+      matched: false,
+      businessId: null,
+      businessName: null,
+      resolutionSource: "environment_fallback",
+      fallbackBlocked: true
     });
   }
 }
@@ -10214,9 +10280,13 @@ async function handleUnifiedBookingEngine(params: {
           getDefaultBookingServiceForBusiness(businessConfig) ||
           "Bokning"
       );
+      const resolvedTelegramDuration = platformName === "telegram"
+        ? await resolveServiceDurationMinutes(inferredService, null, businessConfig)
+        : null;
       const durationMinutes = storedAvailability?.durationMinutes ||
         Number(priorPendingBooking?.durationMinutes || 0) ||
         Number(recoveredDurationForNewBooking || 0) ||
+        Number(resolvedTelegramDuration || 0) ||
         getDefaultBookingDurationForService(inferredService) ||
         inferBookingDurationFromContext(text, history);
       const lockedLanguage =
@@ -10346,7 +10416,13 @@ async function handleUnifiedBookingEngine(params: {
       const finalService = service !== "Bokning"
         ? service
         : (getDefaultBookingServiceForBusiness(businessConfig) || "Bokning");
-      const durationMinutes = getDefaultBookingDurationForService(finalService) || inferBookingDurationFromContext(text, history);
+      const resolvedTelegramDuration = platformName === "telegram"
+        ? await resolveServiceDurationMinutes(finalService, null, businessConfig)
+        : null;
+      const durationMinutes =
+        Number(resolvedTelegramDuration || 0) ||
+        getDefaultBookingDurationForService(finalService) ||
+        inferBookingDurationFromContext(text, history);
       lockConversationFlowLanguage(sessionId, language, "booking");
       const canonicalOffers = await createCanonicalOfferedSlots({
         adapter,
@@ -10404,7 +10480,11 @@ async function handleUnifiedBookingEngine(params: {
         detectedService !== "Bokning"
           ? detectedService
           : (defaultService || "Bokning");
+      const resolvedTelegramDuration = platformName === "telegram"
+        ? await resolveServiceDurationMinutes(finalService, null, businessConfig)
+        : null;
       const durationMinutes =
+        Number(resolvedTelegramDuration || 0) ||
         getDefaultBookingDurationForService(finalService) ||
         inferBookingDurationFromContext(text, history);
 
@@ -11275,31 +11355,76 @@ async function routeRescheduleToolCallThroughUnified(params: {
 }
 
 async function processTelegramUpdate(update: any, config: any, platform: string = "telegram-polling") {
-  const telegramToken = config?.telegramToken;
+  const telegramToken = normalizeTelegramBotToken(config?.telegramToken);
   const updateId = String(update?.update_id ?? "").trim();
   if (!telegramToken || !updateId || !update?.message) return;
+  const resolvedConfig = await loadFreshBusinessConfigByTelegramToken(
+    telegramToken,
+    config
+  );
+  const businessId = String(getBusinessIdFromConfig(resolvedConfig) || "");
+  const businessResolved = Boolean(
+    resolvedConfig?.telegramBusinessResolved &&
+    businessId &&
+    normalizeTelegramBotToken(resolvedConfig?.telegramToken) === telegramToken
+  );
   await runWithInboundMessageClaim({
-    tenantScope: String(getBusinessIdFromConfig(config) || crypto.createHash("sha256").update(telegramToken).digest("hex")),
-    businessId: String(getBusinessIdFromConfig(config) || ""),
+    tenantScope: businessResolved
+      ? businessId
+      : `unresolved:${telegramTokenFingerprint(telegramToken)}`,
+    businessId: businessResolved ? businessId : undefined,
     platform: "telegram",
     messageId: updateId,
-    handler: () => processTelegramUpdateClaimed(update, config, platform)
+    handler: async () => {
+      if (!businessResolved) {
+        const chatId = update?.message?.chat?.id;
+        if (!chatId) return;
+        const messageText = String(update?.message?.text || "");
+        const replyLanguage =
+          detectStrongLatestLanguage(messageText) ||
+          detectUserLanguage(messageText) ||
+          "en";
+        await fetch(`https://api.telegram.org/bot${telegramToken}/sendMessage`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            chat_id: chatId,
+            text: formatTelegramConfigurationError(replyLanguage)
+          })
+        });
+        return;
+      }
+      await processTelegramUpdateClaimed(update, resolvedConfig, platform);
+    }
   });
 }
 
 async function processTelegramUpdateClaimed(update: any, config: any, platform: string = "telegram-polling") {
-  const telegramToken = config?.telegramToken;
+  const telegramToken = normalizeTelegramBotToken(config?.telegramToken);
   if (!telegramToken) return;
 
   if (!update.message) return;
   if (!update.message.chat) return;
 
   const chatId = update.message.chat.id;
-  const telegramSessionId = `${telegramToken}:${chatId}`;
-
-  // Always load the latest business config directly from Supabase for this token.
-  // Do not use old chat_history to decide the tenant; history can be stale after a business edits its name/prompt.
-  config = await loadFreshBusinessConfigByTelegramToken(telegramToken, config);
+  const businessId = String(getBusinessIdFromConfig(config) || "");
+  if (
+    !config?.telegramBusinessResolved ||
+    !businessId ||
+    normalizeTelegramBotToken(config?.telegramToken) !== telegramToken
+  ) {
+    console.warn("[TelegramBusinessResolution]", {
+      tokenFingerprint: telegramTokenFingerprint(telegramToken),
+      matched: false,
+      businessId: null,
+      businessName: null,
+      resolutionSource: "claimed_handler_guard",
+      fallbackBlocked: true
+    });
+    return;
+  }
+  const telegramSessionId =
+    `tg:${businessId}:${telegramTokenFingerprint(telegramToken)}:${chatId}`;
   resetSessionIfBusinessConfigChanged(telegramSessionId, config);
 
   const { apiKey } = config;
@@ -11368,6 +11493,29 @@ async function processTelegramUpdateClaimed(update: any, config: any, platform: 
           return response.ok;
         },
         postProcessPlatform: platform
+      });
+      const telegramPending = pendingBookings[telegramSessionId];
+      const telegramCompleted = getRecentCompletedBooking(telegramSessionId);
+      console.log("[TelegramBookingFlow]", {
+        businessScopePresent: Boolean(businessId),
+        stateType: telegramPending?.status ||
+          (telegramCompleted ? "completed" : "none"),
+        service: telegramPending?.service || telegramCompleted?.service || null,
+        duration: Number(
+          telegramPending?.durationMinutes ||
+          telegramCompleted?.durationMinutes ||
+          0
+        ) || null,
+        selectedStartPresent: Boolean(
+          telegramPending?.dateTime || telegramCompleted?.dateTime
+        ),
+        contactComplete: Boolean(
+          (telegramPending?.customerName && telegramPending?.customerPhone) ||
+          telegramCompleted
+        ),
+        finalHandledPath: unifiedHandled
+          ? "unified_booking_engine"
+          : "unified_not_handled"
       });
       if (unifiedHandled) return;
     }

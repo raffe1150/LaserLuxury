@@ -6668,6 +6668,7 @@ type TelegramPollerState = {
   businessId: string | null;
   source: string;
   stoppedDiagnosticLogged: boolean;
+  stop: ((reason: string) => void) | null;
 };
 
 const telegramPollers: Record<string, TelegramPollerState> = {};
@@ -7007,6 +7008,42 @@ function logTelegramMessageSent(params: {
   });
 }
 
+async function stopStaleTelegramPollersForBusiness(
+  businessId: string,
+  authoritativeToken: string
+): Promise<{
+  previousFingerprints: string[];
+  stoppedPollerInstanceIds: string[];
+}> {
+  const staleEntries = Object.entries(telegramPollers).filter(
+    ([registeredToken, poller]) =>
+      poller.isPolling &&
+      poller.businessId === businessId &&
+      normalizeTelegramBotToken(registeredToken) !== authoritativeToken
+  );
+  for (const [, poller] of staleEntries) {
+    poller.stop?.("business_token_rotated");
+  }
+  await Promise.allSettled(
+    staleEntries
+      .map(([, poller]) => poller.loopPromise)
+      .filter((promise): promise is Promise<void> => Boolean(promise))
+  );
+  for (const [registeredToken, poller] of staleEntries) {
+    if (telegramPollers[registeredToken] === poller) {
+      delete telegramPollers[registeredToken];
+    }
+  }
+  return {
+    previousFingerprints: staleEntries.map(
+      ([registeredToken]) => telegramTokenFingerprint(registeredToken)
+    ),
+    stoppedPollerInstanceIds: staleEntries.map(
+      ([, poller]) => poller.instanceId
+    )
+  };
+}
+
 function sanitizeTelegramPollingError(error: unknown, token?: string): {
   errorName: string;
   sanitizedErrorMessage: string;
@@ -7315,11 +7352,24 @@ async function startTelegramPolling(
 
   if (telegramPollers[token]?.isPolling) {
     const existing = telegramPollers[token];
+    const rotation = await stopStaleTelegramPollersForBusiness(
+      businessIdFromConfig,
+      token
+    );
     console.log("[TelegramPollerReuse]", {
       ...telegramPollerDiagnosticContext(token, config, existing.source),
       requestedSource: source,
       phase: existing.phase,
       reusedExisting: true
+    });
+    console.log("[TelegramPollerRotation]", {
+      businessId: businessIdFromConfig,
+      previousFingerprint:
+        rotation.previousFingerprints[0] || telegramTokenFingerprint(token),
+      newFingerprint: telegramTokenFingerprint(token),
+      stoppedPollerInstanceIds: rotation.stoppedPollerInstanceIds,
+      reusedExisting: true,
+      newPollerInstanceId: existing.instanceId
     });
     return;
   }
@@ -7351,6 +7401,7 @@ async function startTelegramPolling(
     businessId,
     source,
     stoppedDiagnosticLogged: false,
+    stop: null,
   };
 
   telegramPollers[token] = state;
@@ -7360,6 +7411,29 @@ async function startTelegramPolling(
     pollingConfig,
     source
   );
+  const stopPoller = (reason: string) => {
+    state.isPolling = false;
+    state.phase = "stopped";
+    if (state.pollingTimeout) {
+      clearTimeout(state.pollingTimeout);
+      state.pollingTimeout = null;
+    }
+    const resolvePollingDelay = state.pollingDelayResolve;
+    state.pollingDelayResolve = null;
+    resolvePollingDelay?.();
+    state.activeAbortController?.abort();
+    state.activeAbortController = null;
+    if (!state.stoppedDiagnosticLogged) {
+      state.stoppedDiagnosticLogged = true;
+      console.log("[TelegramPollingStopped]", {
+        ...pollerContext,
+        reason,
+        lastOffset: Math.max(0, state.lastUpdateId + 1),
+        iteration: state.iteration
+      });
+    }
+  };
+  state.stop = stopPoller;
   console.log("[TelegramPollerCreated]", pollerContext);
   console.log("[TelegramPollerTokenFingerprint]", {
     telegramBotInstanceId: instanceId,
@@ -7378,6 +7452,7 @@ async function startTelegramPolling(
   });
 
   const identityAbortController = new AbortController();
+  state.activeAbortController = identityAbortController;
   const identityTimeout = setTimeout(
     () => identityAbortController.abort(),
     10_000
@@ -7408,6 +7483,9 @@ async function startTelegramPolling(
     });
   } finally {
     clearTimeout(identityTimeout);
+    if (state.activeAbortController === identityAbortController) {
+      state.activeAbortController = null;
+    }
   }
 
   const botIdentity = identityData?.result || {};
@@ -7431,15 +7509,7 @@ async function startTelegramPolling(
     });
   }
   if (!identityOk) {
-    state.isPolling = false;
-    state.phase = "stopped";
-    state.stoppedDiagnosticLogged = true;
-    console.log("[TelegramPollingStopped]", {
-      ...pollerContext,
-      reason: "bot_identity_not_verified",
-      lastOffset: 0,
-      iteration: 0
-    });
+    stopPoller("bot_identity_not_verified");
     return;
   }
   console.warn("[TelegramBotUsernameVerificationRequired]", {
@@ -7450,6 +7520,7 @@ async function startTelegramPolling(
   });
 
   const webhookAbortController = new AbortController();
+  state.activeAbortController = webhookAbortController;
   const webhookTimeout = setTimeout(() => webhookAbortController.abort(), 10_000);
   console.log("[TelegramDeleteWebhookStarted]", pollerContext);
   try {
@@ -7472,9 +7543,13 @@ async function startTelegramPolling(
     });
   } finally {
     clearTimeout(webhookTimeout);
+    if (state.activeAbortController === webhookAbortController) {
+      state.activeAbortController = null;
+    }
   }
 
   const webhookInfoAbortController = new AbortController();
+  state.activeAbortController = webhookInfoAbortController;
   const webhookInfoTimeout = setTimeout(
     () => webhookInfoAbortController.abort(),
     10_000
@@ -7519,6 +7594,9 @@ async function startTelegramPolling(
     });
   } finally {
     clearTimeout(webhookInfoTimeout);
+    if (state.activeAbortController === webhookInfoAbortController) {
+      state.activeAbortController = null;
+    }
   }
 
   const waitBeforeRetry = async (delayMs: number) => {
@@ -7533,28 +7611,18 @@ async function startTelegramPolling(
     });
   };
 
-  const stopPoller = (reason: string) => {
-    state.isPolling = false;
-    state.phase = "stopped";
-    if (state.pollingTimeout) {
-      clearTimeout(state.pollingTimeout);
-      state.pollingTimeout = null;
-    }
-    const resolvePollingDelay = state.pollingDelayResolve;
-    state.pollingDelayResolve = null;
-    resolvePollingDelay?.();
-    state.activeAbortController?.abort();
-    state.activeAbortController = null;
-    if (!state.stoppedDiagnosticLogged) {
-      state.stoppedDiagnosticLogged = true;
-      console.log("[TelegramPollingStopped]", {
-        ...pollerContext,
-        reason,
-        lastOffset: Math.max(0, state.lastUpdateId + 1),
-        iteration: state.iteration
-      });
-    }
-  };
+  const rotation = await stopStaleTelegramPollersForBusiness(
+    String(businessId || ""),
+    token
+  );
+  console.log("[TelegramPollerRotation]", {
+    businessId,
+    previousFingerprint: rotation.previousFingerprints[0] || null,
+    newFingerprint: tokenFingerprint,
+    stoppedPollerInstanceIds: rotation.stoppedPollerInstanceIds,
+    reusedExisting: false,
+    newPollerInstanceId: instanceId
+  });
 
   const poll = async () => {
     state.phase = "polling";
@@ -7917,9 +7985,39 @@ async function handleUnifiedBookingEngine(params: {
   const language = getConversationLanguage(sessionId, text);
   const latestStrongLanguage = detectStrongLatestLanguage(text);
   let pending = await loadPendingBooking(sessionId, platformName, businessConfig);
-  const entryRescheduleContext = getRescheduleContext(sessionId);
-  const entryCancellationContext = getCancellationContext(sessionId);
+  let entryRescheduleContext = getRescheduleContext(sessionId);
+  let entryCancellationContext = getCancellationContext(sessionId);
   const entryExplicitNewBookingRequest = isExplicitNewBookingPivotText(text);
+  const entryPendingOwnedSlot = pending?.dateTime
+    ? findOwnedOfferedSlot(pending, pending.dateTime)
+    : null;
+  const authoritativeTelegramNewBooking = Boolean(
+    platformName === "telegram" &&
+    pending?.operation === "new_booking" &&
+    pending?.status === "awaiting_contact" &&
+    pending?.dateTime &&
+    pending?.service &&
+    entryPendingOwnedSlot &&
+    bookingSlotOwnerMatches(entryPendingOwnedSlot, currentBookingSlotOwner)
+  );
+
+  if (authoritativeTelegramNewBooking) {
+    clearCancellationContext(sessionId);
+    clearRescheduleContext(sessionId);
+    entryCancellationContext = null;
+    entryRescheduleContext = null;
+    console.log("[TelegramBookingOwnership]", {
+      businessId: currentBookingSlotOwner.businessId,
+      pendingOperation: pending?.operation || null,
+      pendingStatus: pending?.status || null,
+      contactComplete: Boolean(
+        pending?.customerName && pending?.customerPhone
+      ),
+      cancellationBranchBlocked: true,
+      rescheduleBranchBlocked: true,
+      finalHandledPath: "authoritative_new_booking_contact"
+    });
+  }
 
   // A clear request for a new appointment is an intentional operation pivot.
   // Remove incompatible mutation/recovery state before those priority handlers run.
@@ -9589,9 +9687,13 @@ async function handleUnifiedBookingEngine(params: {
     // Rescheduling an existing appointment must always win over a stale/new-booking flow.
     // Never ask again for service, duration, name or phone when an existing booking can be found.
     const rescheduleRequested =
+      !authoritativeTelegramNewBooking &&
       !explicitNewBookingRequested &&
       (isRescheduleIntent(text) || recoveryIntent);
-    const cancellationRequested = !explicitNewBookingRequested && isCancellationIntent(text);
+    const cancellationRequested =
+      !authoritativeTelegramNewBooking &&
+      !explicitNewBookingRequested &&
+      isCancellationIntent(text);
     if (rescheduleRequested) lockConversationFlowLanguage(sessionId, language, "reschedule");
     if (cancellationRequested) lockConversationFlowLanguage(sessionId, language, "cancellation");
 
@@ -11430,6 +11532,18 @@ async function handleUnifiedBookingEngine(params: {
         return true;
       }
 
+      if (platformName === "telegram") {
+        console.log("[TelegramBookingOwnership]", {
+          businessId: currentBookingSlotOwner.businessId,
+          pendingOperation: pending.operation || "new_booking",
+          pendingStatus: pending.status,
+          contactComplete: true,
+          cancellationBranchBlocked: true,
+          rescheduleBranchBlocked: true,
+          finalHandledPath: "authoritative_booking_insertion"
+        });
+      }
+
       if (!pending.dateTime) {
         console.error(`[UnifiedBooking] Missing dateTime before insert platform=${platformName}`);
         await clearPendingBooking(sessionId);
@@ -11606,15 +11720,28 @@ async function handleUnifiedBookingEngine(params: {
       pending.dateTime = finalIso;
       pending.selectedSlotEnd = exactCheck.endIso;
       await savePendingBooking(sessionId, platformName, pending);
+      const calendarOwnerMarker = platformName === "telegram"
+        ? `tg_${currentBookingSlotOwner.userId}`
+        : sessionId;
       const result = await adapter.insertAppointment(
         pending.customerName,
         pending.customerPhone,
         pending.service,
         finalIso,
         Number(pending.durationMinutes || 30),
-        sessionId,
+        calendarOwnerMarker,
         false
       );
+      if (platformName === "telegram") {
+        console.log("[TelegramCalendarMutation]", {
+          businessId: currentBookingSlotOwner.businessId,
+          operation: "new_booking",
+          mutationType: "create",
+          ownedByCurrentOperation: true,
+          eventIdPresent: Boolean(result?.event?.id),
+          success: Boolean(result?.success)
+        });
+      }
 
       if (!result?.success) {
         await settleAtomicOperation(bookingOperationClaim, "failed");
@@ -11717,11 +11844,31 @@ async function handleUnifiedBookingEngine(params: {
         if (!insertedEventId || !adapter.cancelAppointment) return false;
         try {
           const cancelled = await adapter.cancelAppointment(insertedEventId);
-          if (!cancelled?.success) return false;
-          return adapter.verifyEventDeleted
+          const rollbackVerified = cancelled?.success && adapter.verifyEventDeleted
             ? Boolean(await adapter.verifyEventDeleted(insertedEventId))
             : false;
+          if (platformName === "telegram") {
+            console.log("[TelegramCalendarMutation]", {
+              businessId: currentBookingSlotOwner.businessId,
+              operation: "new_booking_rollback",
+              mutationType: "delete",
+              ownedByCurrentOperation: true,
+              eventIdPresent: true,
+              success: rollbackVerified
+            });
+          }
+          return rollbackVerified;
         } catch {
+          if (platformName === "telegram") {
+            console.log("[TelegramCalendarMutation]", {
+              businessId: currentBookingSlotOwner.businessId,
+              operation: "new_booking_rollback",
+              mutationType: "delete",
+              ownedByCurrentOperation: true,
+              eventIdPresent: true,
+              success: false
+            });
+          }
           return false;
         }
       };
@@ -11747,6 +11894,16 @@ async function handleUnifiedBookingEngine(params: {
           )
         );
         return true;
+      }
+      if (platformName === "telegram") {
+        console.log("[TelegramCalendarMutation]", {
+          businessId: currentBookingSlotOwner.businessId,
+          operation: "new_booking_verification",
+          mutationType: "create",
+          ownedByCurrentOperation: calendarOwnerMatches,
+          eventIdPresent: Boolean(insertedEventId),
+          success: true
+        });
       }
 
       const databaseRow = await recordAppointmentFromBooking({
@@ -11835,6 +11992,17 @@ async function handleUnifiedBookingEngine(params: {
         return true;
       }
 
+      if (platformName === "telegram") {
+        console.log("[TelegramBookingOwnership]", {
+          businessId: currentBookingSlotOwner.businessId,
+          pendingOperation: pending.operation || "new_booking",
+          pendingStatus: pending.status,
+          contactComplete: true,
+          cancellationBranchBlocked: true,
+          rescheduleBranchBlocked: true,
+          finalHandledPath: "verified_booking_completed"
+        });
+      }
       await clearPendingBooking(sessionId);
       rememberCompletedBooking(
         sessionId,

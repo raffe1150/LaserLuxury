@@ -9476,6 +9476,46 @@ async function handleUnifiedBookingEngine(params: {
         return true;
       }
 
+      const latestExplicitDate = resolveExplicitBookingDate(text);
+      const selectedOfferedIso = selectRescheduleOfferedSlot(
+        text,
+        priorityReschedule.offeredSlots || []
+      );
+      if (selectedOfferedIso) {
+        const offeredDate = stockholmDateString(
+          new Date(ensureStockholmOffset(selectedOfferedIso))
+        );
+        if (!latestExplicitDate || latestExplicitDate === offeredDate) {
+          const selectedOwnedOffer = findOwnedOfferedSlot(
+            priorityReschedule,
+            selectedOfferedIso
+          );
+          if (
+            !selectedOwnedOffer ||
+            !bookingSlotOwnerMatches(selectedOwnedOffer, currentBookingSlotOwner) ||
+            Date.now() - Number(selectedOwnedOffer.generatedAt || 0) > PENDING_BOOKING_TTL_MS
+          ) {
+            clearAppointmentConversationState(sessionId);
+            await replyAndRecord(formatStaleAppointmentStateMessage(lockedLanguage));
+            return true;
+          }
+          const selectedDate = stockholmDateString(
+            new Date(ensureStockholmOffset(selectedOwnedOffer.start))
+          );
+          const selectedTime = getStockholmTimeFromIso(selectedOwnedOffer.start);
+          if (selectedTime) {
+            return prepareRescheduleTarget(
+              priorityReschedule.appointment,
+              selectedDate,
+              selectedTime,
+              lockedLanguage,
+              getDaypartSlotOptions(priorityReschedule.requestedDaypart),
+              priorityReschedule.requestedDaypart
+            );
+          }
+        }
+      }
+
       const timeFollowUp = parseRescheduleTimeFollowUp(text);
       const selectedTime = getStockholmTimeFromIso(priorityReschedule.selectedNewStartTime);
       const rejectsSelectedTime = Boolean(
@@ -9503,10 +9543,6 @@ async function handleUnifiedBookingEngine(params: {
       }
 
       if (timeFollowUp.boundary || replacesSelectedTime || rejectsSelectedTime) {
-        const latestExplicitDate = resolveRescheduleDate(
-          text,
-          priorityReschedule.appointment
-        );
         const requestedDate = latestExplicitDate ||
           priorityReschedule.requestedDate ||
           (priorityReschedule.selectedNewStartTime
@@ -10371,25 +10407,6 @@ async function handleUnifiedBookingEngine(params: {
           },
           activeReschedule.requestedDaypart
         );
-      }
-
-      const selectedOfferedIso = selectRescheduleOfferedSlot(
-        text,
-        activeReschedule.offeredSlots || []
-      );
-      if (selectedOfferedIso) {
-        const selectedDate = stockholmDateString(new Date(ensureStockholmOffset(selectedOfferedIso)));
-        const selectedTime = getStockholmTimeFromIso(selectedOfferedIso);
-        if (selectedTime) {
-          return prepareRescheduleTarget(
-            activeReschedule.appointment,
-            selectedDate,
-            selectedTime,
-            lockedLanguage,
-            getDaypartSlotOptions(activeReschedule.requestedDaypart),
-            activeReschedule.requestedDaypart
-          );
-        }
       }
 
       const explicitDate = resolveExplicitBookingDate(text);

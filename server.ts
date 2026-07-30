@@ -11213,11 +11213,22 @@ async function handleUnifiedBookingEngine(params: {
             ? pending.availabilityConstraint || restoredPendingConstraint
             : recoveredConstraintForNewBooking || null
         );
-    const derivedLatestAvailabilityConstraint = deriveCanonicalAvailabilityConstraint(
-      text,
-      businessConfig,
-      previousAvailabilityConstraint
+    const ownedAwaitingContactInput = Boolean(
+      pending?.operation === "new_booking" &&
+      pending?.status === "awaiting_contact" &&
+      pending?.dateTime &&
+      pendingOwnedOffer &&
+      new Date(pendingOwnedOffer.start).getTime() ===
+        new Date(ensureStockholmOffset(String(pending.dateTime))).getTime() &&
+      (extractNameAndPhone(text) || extractPhoneOnly(text) || extractNameOnly(text))
     );
+    const derivedLatestAvailabilityConstraint = ownedAwaitingContactInput
+      ? null
+      : deriveCanonicalAvailabilityConstraint(
+          text,
+          businessConfig,
+          previousAvailabilityConstraint
+        );
     let latestAvailabilityConstraint = derivedLatestAvailabilityConstraint || (
       explicitNewBookingRequested
         ? recoveredConstraintForNewBooking || null

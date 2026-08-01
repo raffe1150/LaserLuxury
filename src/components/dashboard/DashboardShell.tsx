@@ -13,6 +13,7 @@ interface DashboardShellProps {
 
 const NAV_ITEMS = [
   { id: 'overview', label: 'Dashboard', group: 'Overview' },
+  { id: 'analytics', label: 'Analytics' },
   { id: 'health', label: 'Health' },
   { id: 'conversations', label: 'Conversations', group: 'Management' },
   { id: 'bookings', label: 'Bookings' },
@@ -27,6 +28,7 @@ const NAV_ITEMS = [
 
 const MOBILE_NAV_ITEMS = [
   { id: 'overview', label: 'Home', icon: 'home' },
+  { id: 'analytics', label: 'Analytics', icon: 'analytics' },
   { id: 'conversations', label: 'Inbox', icon: 'inbox' },
   { id: 'bookings', label: 'Bookings', icon: 'calendar' },
   { id: 'businesses', label: 'More', icon: 'more' },
@@ -57,6 +59,14 @@ function MobileNavIcon({ icon }: { icon: (typeof MOBILE_NAV_ITEMS)[number]['icon
       <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
         <rect x="3" y="5" width="18" height="16" rx="2" />
         <path d="M8 3v4M16 3v4M3 10h18" />
+      </svg>
+    );
+  }
+
+  if (icon === 'analytics') {
+    return (
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <path d="M4 19V9M10 19V5M16 19v-7M22 19H2" />
       </svg>
     );
   }
@@ -130,6 +140,8 @@ export default function DashboardShell({
   const mobileActiveSection =
     activeSection === 'overview'
       ? 'overview'
+      : activeSection === 'analytics'
+        ? 'analytics'
       : activeSection === 'conversations'
         ? 'conversations'
         : activeSection === 'bookings' || activeSection === 'activity'
@@ -159,7 +171,7 @@ export default function DashboardShell({
         <nav className="sidebar-nav" aria-label="Dashboard sections">
           {NAV_ITEMS.map((item, index) => (
             <div key={item.id}>
-              {item.group && (
+              {'group' in item && item.group && (
                 <div
                   className="nav-group-label"
                   style={index > 0 ? { marginTop: 8 } : undefined}

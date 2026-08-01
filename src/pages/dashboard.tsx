@@ -11,6 +11,7 @@ import {
   UsageStatistics,
 } from '../components/dashboard/DashboardSections';
 import HealthStatus from '../components/dashboard/HealthStatus';
+import AnalyticsPage from '../components/dashboard/analytics/AnalyticsPage';
 import { api, loadDashboardData } from '../services/api';
 import dashboardCss from '../styles/dashboard.css?raw';
 import type { Business, DashboardData, IntegrationKey } from '../types/dashboard';
@@ -244,6 +245,8 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
               business={selectedBusiness}
               data={data}
             />
+
+            <AnalyticsPage businessId={selectedBusiness.id} />
 
             <section id="conversations" className="mission-section">
               <div className="mission-section-head">

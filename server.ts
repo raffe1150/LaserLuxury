@@ -7111,6 +7111,67 @@ async function runWithInboundMessageClaim(params: {
   }
 }
 
+type AcceptedCustomerMessagePlatform =
+  | "telegram"
+  | "whatsapp"
+  | "messenger"
+  | "instagram";
+
+function normalizeAcceptedMessageTimestamp(
+  value: unknown,
+  unit: "seconds" | "milliseconds"
+): string {
+  const numericValue = Number(value);
+  const timestampMs = unit === "seconds" ? numericValue * 1000 : numericValue;
+  if (Number.isFinite(timestampMs) && timestampMs > 0) {
+    const timestamp = new Date(timestampMs);
+    if (Number.isFinite(timestamp.getTime())) return timestamp.toISOString();
+  }
+  return new Date().toISOString();
+}
+
+function recordAcceptedCustomerMessage(params: {
+  businessId: unknown;
+  platform: AcceptedCustomerMessagePlatform;
+  source:
+    | "telegram_polling"
+    | "telegram_webhook"
+    | "whatsapp_webhook"
+    | "messenger_webhook"
+    | "instagram_webhook";
+  messageId: unknown;
+  occurredAt: string;
+  messageType: "text" | "voice";
+  language?: string;
+}): void {
+  const messageId = String(params.messageId || "").trim();
+  if (!messageId) return;
+
+  const messageIdentity = crypto
+    .createHash("sha256")
+    .update(messageId, "utf8")
+    .digest("hex");
+  const language = String(params.language || "").trim();
+
+  void analytics.record({
+    business_id: Number(params.businessId),
+    event_name: "customer_message_received",
+    event_category: "conversation",
+    occurred_at: params.occurredAt,
+    schema_version: 1,
+    source: params.source,
+    actor: "customer",
+    outcome: "received",
+    idempotency_key: `customer-message-received:v1:${params.platform}:${messageIdentity}`,
+    platform: params.platform,
+    channel: "messaging",
+    ...(language && language.length <= 20 ? { language } : {}),
+    metadata: {
+      message_type: params.messageType,
+    },
+  }).catch(() => undefined);
+}
+
 function maskToken(token?: string) {
   if (!token) return "missing-token";
   if (token.length < 12) return token;
@@ -12996,6 +13057,21 @@ async function processTelegramUpdateClaimed(update: any, config: any, platform: 
   try {
     const text = update.message.text;
     const voice = update.message.voice;
+    if (text || voice) {
+      recordAcceptedCustomerMessage({
+        businessId,
+        platform: "telegram",
+        source: platform === "telegram-webhook"
+          ? "telegram_webhook"
+          : "telegram_polling",
+        messageId: update.update_id,
+        occurredAt: normalizeAcceptedMessageTimestamp(
+          update.message.date,
+          "seconds"
+        ),
+        messageType: voice && !text ? "voice" : "text",
+      });
+    }
     
     
     const ai = new GoogleGenAI({ apiKey: apiKey || process.env.GEMINI_API_KEY });
@@ -14501,6 +14577,15 @@ async function processWhatsAppMessageClaimed(message: any, metadata: any, config
 
   resetSessionIfBusinessConfigChanged(chatId, businessConfig);
   userLanguage = getConversationLanguage(chatId, textMessage || "");
+  recordAcceptedCustomerMessage({
+    businessId: getBusinessIdFromConfig(businessConfig),
+    platform: "whatsapp",
+    source: "whatsapp_webhook",
+    messageId: message.id,
+    occurredAt: normalizeAcceptedMessageTimestamp(message.timestamp, "seconds"),
+    messageType: "text",
+    language: userLanguage,
+  });
 
   try {
     if (!chatSessions[chatId as any]) chatSessions[chatId as any] = [];
@@ -15465,6 +15550,18 @@ async function processMessengerUpdateClaimed(webhookEvent: any, config: any, pla
 
   resetSessionIfBusinessConfigChanged(chatId, businessConfig);
   userLanguage = getConversationLanguage(chatId, textMessage || "");
+  recordAcceptedCustomerMessage({
+    businessId: getBusinessIdFromConfig(businessConfig),
+    platform: "messenger",
+    source: "messenger_webhook",
+    messageId: webhookEvent.message.mid,
+    occurredAt: normalizeAcceptedMessageTimestamp(
+      webhookEvent.timestamp,
+      "milliseconds"
+    ),
+    messageType: isVoiceMessage ? "voice" : "text",
+    language: textMessage ? userLanguage : undefined,
+  });
 
   try {
     if (textMessage) {
@@ -15931,6 +16028,18 @@ async function processInstagramUpdateClaimed(webhook_event: any, config: any, pl
 
   resetSessionIfBusinessConfigChanged(chatId, businessConfig);
   userLanguage = getConversationLanguage(chatId, textMessage || "");
+  recordAcceptedCustomerMessage({
+    businessId: getBusinessIdFromConfig(businessConfig),
+    platform: "instagram",
+    source: "instagram_webhook",
+    messageId: webhook_event.message.mid,
+    occurredAt: normalizeAcceptedMessageTimestamp(
+      webhook_event.timestamp,
+      "milliseconds"
+    ),
+    messageType: audioUrl && !textMessage ? "voice" : "text",
+    language: textMessage ? userLanguage : undefined,
+  });
 
   try {
     if (!chatSessions[chatId as any]) chatSessions[chatId as any] = [];

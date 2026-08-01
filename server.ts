@@ -8518,12 +8518,12 @@ async function handleUnifiedBookingEngine(params: {
     }
     calendarWasDeleted = true;
 
+    let updatedRow: any = null;
     if (appointment?.source === "appointments_table") {
       if (!supabase || !appointment?.id) {
         return failCancellation("database_unavailable");
       }
       databaseUpdateAttempted = true;
-      let updatedRow: any = null;
       let dbError: any = null;
       try {
         let updateQuery = supabase
@@ -8534,7 +8534,7 @@ async function handleUnifiedBookingEngine(params: {
         if (appointment.platform) updateQuery = updateQuery.eq("platform", appointment.platform);
         if (appointment.userId) updateQuery = updateQuery.eq("user_id", appointment.userId);
         const result = await updateQuery
-          .select("id,platform,user_id,status,business_id")
+          .select("id,platform,user_id,service,status,business_id")
           .maybeSingle();
         updatedRow = result.data;
         dbError = result.error;
@@ -8591,6 +8591,25 @@ async function handleUnifiedBookingEngine(params: {
     if (!operationCompletionRecorded) {
       return failCancellation("operation_completion_not_durable");
     }
+
+    void analytics.record({
+      business_id: Number(updatedRow.business_id),
+      event_name: "booking_cancelled",
+      event_category: "booking",
+      occurred_at: new Date().toISOString(),
+      schema_version: 1,
+      source: "unified_cancellation_engine",
+      actor: "ai",
+      outcome: "success",
+      idempotency_key: `booking-cancelled:v1:${updatedRow.id}`,
+      booking_id: Number(updatedRow.id),
+      platform: normalizePlatformName(String(updatedRow.platform)),
+      channel: "messaging",
+      ...(typeof updatedRow.service === "string" && updatedRow.service.trim()
+        ? { service_name_snapshot: updatedRow.service }
+        : {}),
+      language: context.language,
+    }).catch(() => undefined);
 
     cancellationContexts[sessionId] = {
       ...context,
@@ -9255,6 +9274,29 @@ async function handleUnifiedBookingEngine(params: {
       await replyAndRecord(formatRescheduleFailure(lockedLanguage));
       return true;
     }
+
+    const authoritativeNewStart = new Date(updatedRow.start_time).toISOString();
+    void analytics.record({
+      business_id: Number(updatedRow.business_id),
+      event_name: "booking_rescheduled",
+      event_category: "booking",
+      occurred_at: new Date().toISOString(),
+      schema_version: 1,
+      source: "unified_reschedule_engine",
+      actor: "ai",
+      outcome: "success",
+      idempotency_key: `booking-rescheduled:v1:${updatedRow.id}:${authoritativeNewStart}`,
+      booking_id: Number(updatedRow.id),
+      platform: updatedRowPlatform,
+      channel: "messaging",
+      ...(typeof updatedRow.service === "string" && updatedRow.service.trim()
+        ? { service_name_snapshot: updatedRow.service }
+        : {}),
+      language: lockedLanguage,
+      metadata: {
+        new_start_time: authoritativeNewStart,
+      },
+    }).catch(() => undefined);
 
     const appointment = {
       ...liveAppointment,

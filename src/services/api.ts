@@ -8,22 +8,54 @@ import type {
   PlatformPerformance,
   UsageInfo,
 } from '../types/dashboard';
+import { getBrowserSupabaseClient, getCurrentAccessToken } from '../auth/supabase-browser';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || '';
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+export class ApiRequestError extends Error {
+  readonly status: number;
+  readonly code: 'unauthenticated' | 'forbidden' | 'request_failed';
+
+  constructor(status: number, code: ApiRequestError['code'], message: string) {
+    super(message);
+    this.name = 'ApiRequestError';
+    this.status = status;
+    this.code = code;
+  }
+}
+
+let invalidSessionCleanup: Promise<unknown> | null = null;
+
+export async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const accessToken = await getCurrentAccessToken();
   const response = await fetch(`${API_BASE}${path}`, {
     credentials: 'include',
+    ...init,
     headers: {
       'Content-Type': 'application/json',
+      ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
       ...(init?.headers || {}),
     },
-    ...init,
   });
 
   if (!response.ok) {
+    if (response.status === 401) {
+      if (!invalidSessionCleanup) {
+        try {
+          invalidSessionCleanup = getBrowserSupabaseClient().auth.signOut({ scope: 'local' })
+            .catch(() => undefined)
+            .finally(() => { invalidSessionCleanup = null; });
+        } catch {
+          invalidSessionCleanup = null;
+        }
+      }
+      throw new ApiRequestError(401, 'unauthenticated', 'Your session has expired. Please sign in again.');
+    }
+    if (response.status === 403) {
+      throw new ApiRequestError(403, 'forbidden', 'You do not have permission to perform this action.');
+    }
     const message = await response.text().catch(() => response.statusText);
-    throw new Error(message || `Request failed with status ${response.status}`);
+    throw new ApiRequestError(response.status, 'request_failed', message || `Request failed with status ${response.status}`);
   }
 
   return response.json() as Promise<T>;
@@ -72,6 +104,11 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(toBackendBusinessPayload(payload)),
     }).then(normalizeBusiness),
+  updateBusinessSettings: (businessId: string, payload: Record<string, unknown>) =>
+    request<Business>(`/api/businesses/${businessId}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }).then(normalizeBusiness),
   deleteBusiness: (businessId: string) =>
     request<{ ok: boolean }>(`/api/businesses/${businessId}`, {
       method: 'DELETE',
@@ -111,6 +148,14 @@ export const api = {
     request<Booking[]>(`/api/businesses/${businessId}/bookings`),
   getUsage: (businessId: string) =>
     request<UsageInfo>(`/api/businesses/${businessId}/usage`),
+  getCancellationSettings: (businessId: string) =>
+    request<{ success: boolean; data: Record<string, unknown> }>(
+      `/api/businesses/${businessId}/cancellation-settings`,
+    ),
+  getAdminNotificationSettings: (businessId: string) =>
+    request<{ success: boolean; data: Record<string, unknown> }>(
+      `/api/businesses/${businessId}/admin-notification-settings`,
+    ),
   testIntegration: (businessId: string, integration: string) =>
     request<{ ok: boolean; message: string }>(
       `/api/businesses/${businessId}/integrations/${integration}/test`,

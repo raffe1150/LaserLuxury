@@ -13,6 +13,7 @@ import {
 import HealthStatus from '../components/dashboard/HealthStatus';
 import AnalyticsPage from '../components/dashboard/analytics/AnalyticsPage';
 import { api, loadDashboardData } from '../services/api';
+import { useAuth } from '../auth/AuthProvider';
 import dashboardCss from '../styles/dashboard.css?raw';
 import type { Business, DashboardData, IntegrationKey } from '../types/dashboard';
 
@@ -21,6 +22,7 @@ interface DashboardProps {
 }
 
 export default function Dashboard({ onNavigate }: DashboardProps) {
+  const { signOut } = useAuth();
   const [selectedBusinessId, setSelectedBusinessId] = useState<string>(() => {
     return localStorage.getItem('odinlink_selected_business') || '';
   });
@@ -228,6 +230,10 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
         businessName={selectedBusiness?.name}
         onBusinessChange={handleBusinessChange}
         onNavigate={onNavigate}
+        onSignOut={async () => {
+          await signOut();
+          onNavigate('/login');
+        }}
       >
         {loading && (
           <StateCard title="Loading dashboard" copy="Loading businesses and scoped dashboard data from backend APIs." />
@@ -370,11 +376,7 @@ function CancellationSettings({
   useEffect(() => {
     let active = true;
     setLoadingSettings(true);
-    fetch(`/api/businesses/${business.id}/cancellation-settings`, { credentials: 'include' })
-      .then(async (response) => {
-        if (!response.ok) throw new Error(await response.text());
-        return response.json();
-      })
+    api.getCancellationSettings(business.id)
       .then((result) => {
         if (!active) return;
         const settings = result?.data || {};
@@ -430,19 +432,13 @@ function CancellationSettings({
 
     setSaving(true);
     try {
-      const response = await fetch(`/api/businesses/${business.id}`, {
-        method: 'PUT',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      await api.updateBusinessSettings(business.id, {
           allowCancellation,
           cancellationDeadlineMinutes: deadlineMinutes,
           cancellationFeeEnabled: feeEnabled,
           cancellationFeeAmount: feeEnabled ? amount : 0,
           cancellationFeeCurrency: currency.trim().toUpperCase() || 'SEK',
-        }),
       });
-      if (!response.ok) throw new Error(await response.text());
       onSaved('Cancellation policy saved', true);
     } catch (error) {
       onSaved(error instanceof Error ? error.message : 'Could not save cancellation policy');
@@ -555,13 +551,7 @@ function AdminNotificationSettings({
     let active = true;
     setLoadingSettings(true);
 
-    fetch(`/api/businesses/${business.id}/admin-notification-settings`, {
-      credentials: 'include',
-    })
-      .then(async (response) => {
-        if (!response.ok) throw new Error(await response.text());
-        return response.json();
-      })
+    api.getAdminNotificationSettings(business.id)
       .then((result) => {
         if (!active) return;
         const settings = result?.data || {};
@@ -597,17 +587,10 @@ function AdminNotificationSettings({
 
     setSaving(true);
     try {
-      const response = await fetch(`/api/businesses/${business.id}`, {
-        method: 'PUT',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      await api.updateBusinessSettings(business.id, {
           adminNotificationChannel: channel,
           adminWhatsAppNumber: cleanWhatsApp,
-        }),
       });
-
-      if (!response.ok) throw new Error(await response.text());
       setWhatsappNumber(cleanWhatsApp);
       onSaved('Admin notification settings saved', true);
     } catch (error) {

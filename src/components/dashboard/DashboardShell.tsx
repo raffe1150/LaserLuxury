@@ -8,6 +8,7 @@ interface DashboardShellProps {
   businessName?: string;
   onNavigate: (path: '/' | '/login' | '/dashboard') => void;
   onBusinessChange?: (businessId: string) => void;
+  onSignOut?: () => void | Promise<void>;
   children: ReactNode;
 }
 
@@ -87,6 +88,7 @@ export default function DashboardShell({
   businessName,
   onNavigate,
   onBusinessChange,
+  onSignOut,
   children,
 }: DashboardShellProps) {
   const [activeSection, setActiveSection] = useState('overview');
@@ -237,6 +239,9 @@ export default function DashboardShell({
           </div>
 
           <div className="topbar-right">
+            <button className="topbar-btn ghost" type="button" onClick={() => void onSignOut?.()}>
+              Sign out
+            </button>
             <button className="topbar-btn ghost" type="button" onClick={() => onNavigate('/')}>
               Landing
             </button>

@@ -13,8 +13,6 @@ import {
   InMemoryKnowledgeStorage,
   KnowledgeService,
   SupabaseKnowledgeStorage,
-  isKnowledgeSourceStatus,
-  isKnowledgeSourceType,
 } from "./knowledge";
 import type {
   AppointmentLookupMode,
@@ -33,8 +31,48 @@ import {
   selectSecureCalendarEvents,
 } from "./booking-security";
 import { analytics } from "./src/analytics";
+import { createRequireAuth } from "./src/auth/require-auth";
+import { createRequireBusinessPermission } from "./src/auth/require-business-access";
+import { getAuthorizationClient } from "./src/auth/supabase-auth";
+import type { AuthenticatedRequest, BusinessPermission } from "./src/auth/types";
 
 let supabase: any = null;
+const DASHBOARD_BUSINESS_COLUMNS = [
+  'id',
+  'business_name',
+  'industry',
+  'timezone',
+  'language',
+  'custom_system_prompt',
+  'google_calendar_id',
+  'instagram_page_id',
+  'instagram_account_id',
+  'messenger_page_id',
+  'whatsapp_phone_number_id',
+  'whatsapp_business_account_id',
+].join(',');
+const DASHBOARD_SALON_COLUMNS = 'id,salon_name,business_id,status';
+
+function logOperatorApiFailure(
+  category: string,
+  request: express.Request,
+  businessId?: unknown,
+): void {
+  const auth = (request as AuthenticatedRequest).auth;
+  console.error('[OperatorAPI]', {
+    category,
+    ...(auth?.userId ? { userId: auth.userId } : {}),
+    ...(businessId !== undefined ? { businessId: String(businessId) } : {}),
+  });
+}
+
+function logWebhookFailure(handler: string, platform: string): void {
+  console.error('[Webhook]', {
+    handler,
+    platform,
+    category: 'processing_failed',
+  });
+}
 if (process.env.SUPABASE_URL && (process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY)) {
   // Prefer SERVICE_ROLE for server-side writes. This is needed when RLS blocks inserts
   // into tables such as appointments. Falls back to ANON only if service role is missing.
@@ -16523,79 +16561,23 @@ async function startServer() {
   const app = express();
   app.use(express.json({ limit: '50mb' }));
 
+  const requireAuth = createRequireAuth();
+  const requireBusinessPermission = (permission: BusinessPermission) =>
+    createRequireBusinessPermission(permission);
+  const requireBodyBusinessPermission = (permission: BusinessPermission) =>
+    createRequireBusinessPermission(permission, {
+      resolveBusinessId: (request) => request.body?.businessId ?? request.body?.business_id,
+    });
+
   await knowledgeService.initialize();
 
-  app.get('/knowledge', async (_req, res) => {
-    try {
-      const sources = await knowledgeService.list();
-      return res.json({ sources });
-    } catch (error) {
-      console.error('Knowledge list failed:', error);
-      return res.status(500).json({ error: 'Unable to list knowledge sources.' });
-    }
-  });
+  const knowledgeTemporarilyUnavailable = (_req: express.Request, res: express.Response) =>
+    res.status(503).json({ error: 'feature_temporarily_unavailable' });
 
-  app.post('/knowledge', async (req, res) => {
-    try {
-      const type = typeof req.body?.type === 'string' ? req.body.type.trim().toLowerCase() : req.body?.type;
-      const title = typeof req.body?.title === 'string' ? req.body.title.trim() : '';
-      const status = req.body?.status ?? 'pending';
-      const metadata = req.body?.metadata ?? {};
-
-      if (!isKnowledgeSourceType(type)) {
-        return res.status(400).json({ error: 'Knowledge source type must be faq, pdf, website, or text.' });
-      }
-      if (!title) {
-        return res.status(400).json({ error: 'Knowledge source title is required.' });
-      }
-      if (!isKnowledgeSourceStatus(status)) {
-        return res.status(400).json({ error: 'Invalid knowledge source status.' });
-      }
-      if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
-        return res.status(400).json({ error: 'Knowledge source metadata must be an object.' });
-      }
-
-      const source = await knowledgeService.addSource({ type, title, status, metadata });
-      return res.status(201).json({ source });
-    } catch (error) {
-      console.error('Knowledge source add failed:', error);
-      return res.status(500).json({ error: 'Unable to add knowledge source.' });
-    }
-  });
-
-  app.delete('/knowledge/:id', async (req, res) => {
-    try {
-      const id = String(req.params.id || '').trim();
-      if (!id) {
-        return res.status(400).json({ error: 'Knowledge source id is required.' });
-      }
-
-      const deleted = await knowledgeService.deleteSource(id);
-      if (!deleted) {
-        return res.status(404).json({ error: 'Knowledge source not found.' });
-      }
-
-      return res.json({ success: true, id });
-    } catch (error) {
-      console.error('Knowledge source delete failed:', error);
-      return res.status(500).json({ error: 'Unable to delete knowledge source.' });
-    }
-  });
-
-  app.post('/knowledge/search', async (req, res) => {
-    try {
-      const query = typeof req.body?.query === 'string' ? req.body.query.trim() : '';
-      if (!query) {
-        return res.status(400).json({ error: 'Knowledge search query is required.', matches: [] });
-      }
-
-      const matches = await knowledgeService.search(query);
-      return res.json({ matches });
-    } catch (error) {
-      console.error('Knowledge search failed:', error);
-      return res.status(500).json({ error: 'Unable to search knowledge sources.', matches: [] });
-    }
-  });
+  app.get('/knowledge', requireAuth, knowledgeTemporarilyUnavailable);
+  app.post('/knowledge', requireAuth, knowledgeTemporarilyUnavailable);
+  app.delete('/knowledge/:id', requireAuth, knowledgeTemporarilyUnavailable);
+  app.post('/knowledge/search', requireAuth, knowledgeTemporarilyUnavailable);
 
   
  app.get("/webhook/instagram", (req, res) => {
@@ -16632,8 +16614,6 @@ async function startServer() {
 });
 
   app.post("/webhook", async (req, res) => {
-    console.log("========== WHATSAPP WEBHOOK ==========");
-console.log(JSON.stringify(req.body, null, 2));
     const body = req.body;
 
     if (body.object === 'instagram') {
@@ -16643,13 +16623,17 @@ console.log(JSON.stringify(req.body, null, 2));
         for (const entry of body.entry) {
           if (entry.messaging) {
             for (const webhook_event of entry.messaging) {
-              processInstagramUpdate(webhook_event, activeConfig).catch(e => console.error("IG webhook error:", e));
+              processInstagramUpdate(webhook_event, activeConfig).catch(() =>
+                logWebhookFailure('webhook', 'instagram')
+              );
             }
           }
           if (entry.changes) {
             for (const change of entry.changes) {
               if (change.field === 'comments' || change.field === 'live_comments') {
-                processMetaCommentUpdate(entry, change, activeConfig, 'instagram').catch(e => console.error("IG comment webhook error:", e));
+                processMetaCommentUpdate(entry, change, activeConfig, 'instagram').catch(() =>
+                  logWebhookFailure('webhook_comment', 'instagram')
+                );
               }
             }
           }
@@ -16658,19 +16642,16 @@ console.log(JSON.stringify(req.body, null, 2));
       } else if (body.object === "page") {
       res.status(200).send("EVENT_RECEIVED");
 
-      console.log("========== MESSENGER WEBHOOK ==========");
-      console.log(JSON.stringify(body, null, 2));
-
       for (const entry of body.entry || []) {
         for (const webhookEvent of entry.messaging || []) {
-          processMessengerUpdate(webhookEvent, activeConfig).catch(e =>
-            console.error("Messenger webhook error:", e)
+          processMessengerUpdate(webhookEvent, activeConfig).catch(() =>
+            logWebhookFailure('webhook', 'messenger')
           );
         }
         for (const change of entry.changes || []) {
           if (change.field === 'comments' || change.field === 'feed') {
-            processMetaCommentUpdate(entry, change, activeConfig, 'facebook').catch(e =>
-              console.error("Facebook comment webhook error:", e)
+            processMetaCommentUpdate(entry, change, activeConfig, 'facebook').catch(() =>
+              logWebhookFailure('webhook_comment', 'facebook')
             );
           }
         }
@@ -16687,7 +16668,9 @@ console.log(JSON.stringify(req.body, null, 2));
               const messages = value.messages || [];
 
               for (const message of messages) {
-                processWhatsAppMessage(message, metadata, activeConfig).catch(e => console.error("WhatsApp webhook error:", e));
+                processWhatsAppMessage(message, metadata, activeConfig).catch(() =>
+                  logWebhookFailure('webhook', 'whatsapp')
+                );
               }
             }
           }
@@ -16721,13 +16704,10 @@ console.log(JSON.stringify(req.body, null, 2));
 
     res.status(200).send("EVENT_RECEIVED");
 
-    console.log("========== MESSENGER WEBHOOK /webhook/messenger ==========");
-    console.log(JSON.stringify(body, null, 2));
-
     for (const entry of body.entry || []) {
       for (const webhookEvent of entry.messaging || []) {
-        processMessengerUpdate(webhookEvent, activeConfig).catch(e =>
-          console.error("Messenger route processing error:", e)
+        processMessengerUpdate(webhookEvent, activeConfig).catch(() =>
+          logWebhookFailure('webhook_messenger', 'messenger')
         );
       }
 
@@ -16735,8 +16715,8 @@ console.log(JSON.stringify(req.body, null, 2));
       // This makes /webhook/messenger work for both Messenger messages and Facebook comments.
       for (const change of entry.changes || []) {
         if (change.field === "feed" || change.field === "comments" || change.field === "live_comments") {
-          processMetaCommentUpdate(entry, change, activeConfig, "facebook").catch(e =>
-            console.error("Facebook comment messenger route error:", e)
+          processMetaCommentUpdate(entry, change, activeConfig, "facebook").catch(() =>
+            logWebhookFailure('webhook_messenger_comment', 'facebook')
           );
         }
       }
@@ -16767,22 +16747,19 @@ console.log(JSON.stringify(req.body, null, 2));
 
     res.status(200).send("EVENT_RECEIVED");
 
-    console.log("========== FACEBOOK WEBHOOK /webhook/facebook ==========");
-    console.log(JSON.stringify(body, null, 2));
-
     for (const entry of body.entry || []) {
       for (const change of entry.changes || []) {
         if (change.field === "feed" || change.field === "comments" || change.field === "live_comments") {
-          processMetaCommentUpdate(entry, change, activeConfig, "facebook").catch(e =>
-            console.error("Facebook comment route error:", e)
+          processMetaCommentUpdate(entry, change, activeConfig, "facebook").catch(() =>
+            logWebhookFailure('webhook_facebook_comment', 'facebook')
           );
         }
       }
 
       // Keep Messenger support here too in case Meta sends messaging events to this callback URL.
       for (const webhookEvent of entry.messaging || []) {
-        processMessengerUpdate(webhookEvent, activeConfig).catch(e =>
-          console.error("Messenger event on facebook route error:", e)
+        processMessengerUpdate(webhookEvent, activeConfig).catch(() =>
+          logWebhookFailure('webhook_facebook', 'messenger')
         );
       }
     }
@@ -16797,15 +16774,12 @@ console.log(JSON.stringify(req.body, null, 2));
 
   res.status(200).send("EVENT_RECEIVED");
 
-  console.log("========== INSTAGRAM WEBHOOK /webhook/instagram ==========");
-  console.log(JSON.stringify(body, null, 2));
-
   if (body.entry) {
     for (const entry of body.entry) {
       if (entry.messaging) {
         for (const webhook_event of entry.messaging) {
-          processInstagramUpdate(webhook_event, activeConfig).catch(e =>
-            console.error("IG webhook instagram route error:", e)
+          processInstagramUpdate(webhook_event, activeConfig).catch(() =>
+            logWebhookFailure('webhook_instagram', 'instagram')
           );
         }
       }
@@ -16819,8 +16793,8 @@ console.log(JSON.stringify(req.body, null, 2));
       if (entry.changes) {
         for (const change of entry.changes) {
           if (change.field === "comments" || change.field === "live_comments") {
-            processMetaCommentUpdate(entry, change, activeConfig, "instagram").catch(e =>
-              console.error("IG comment instagram route error:", e)
+            processMetaCommentUpdate(entry, change, activeConfig, "instagram").catch(() =>
+              logWebhookFailure('webhook_instagram_comment', 'instagram')
             );
           }
         }
@@ -16829,7 +16803,11 @@ console.log(JSON.stringify(req.body, null, 2));
   }
 });
 
-  app.post("/api/setup-telegram", async (req, res) => {
+  app.post(
+    "/api/setup-telegram",
+    requireAuth,
+    requireBodyBusinessPermission('settings.manage'),
+    async (req, res) => {
     try {
       const config = req.body;
       activeConfig = config;
@@ -16849,7 +16827,8 @@ console.log(JSON.stringify(req.body, null, 2));
       }
       res.json({ success: true, message: "Configuration saved and webhook registered." });
     } catch (error: any) {
-      res.status(500).json({ error: error.message });
+      logOperatorApiFailure('setup_telegram_failed', req, req.body?.businessId);
+      res.status(500).json({ error: 'authorization_failed' });
     }
   });
 
@@ -17123,28 +17102,45 @@ Never translate unless requested.
 
 
   // API: دریافت لیست سالن‌ها/شعبه‌ها از دیتابیس
-  app.get('/api/salons', async (req, res) => {
+  app.get('/api/salons', requireAuth, async (req, res) => {
     try {
       if (!supabase) {
         return res.status(500).json({ success: false, message: 'Supabase is not configured.' });
       }
 
+      const userId = (req as AuthenticatedRequest).auth!.userId;
+      const { data: memberships, error: membershipError } = await getAuthorizationClient()
+        .from('business_memberships')
+        .select('business_id')
+        .eq('user_id', userId)
+        .eq('status', 'active');
+      if (membershipError) {
+        return res.status(500).json({ error: 'authorization_failed' });
+      }
+      const businessIds = (memberships || []).map((row) => row.business_id);
+      if (businessIds.length === 0) return res.status(200).json([]);
+
       const { data, error } = await supabase
         .from('salons')
-        .select('*')
+        .select(DASHBOARD_SALON_COLUMNS)
+        .in('business_id', businessIds)
        
 
       if (error) throw error;
 
       res.status(200).json(data || []);
     } catch (err: any) {
-      console.error('Error fetching salons:', err);
-      res.status(500).json({ success: false, message: err.message });
+      logOperatorApiFailure('salon_list_failed', req);
+      res.status(500).json({ success: false, message: 'Could not load salons.' });
     }
   });
 
   // API: ثبت سالن/شعبه جدید در دیتابیس
-  app.post('/api/salons', async (req, res) => {
+  app.post(
+    '/api/salons',
+    requireAuth,
+    requireBodyBusinessPermission('settings.manage'),
+    async (req, res) => {
     try {
       if (!supabase) {
         return res.status(500).json({ success: false, message: 'Supabase is not configured.' });
@@ -17165,27 +17161,42 @@ Never translate unless requested.
             status: status || 'active',
           },
         ])
-        .select();
+        .select(DASHBOARD_SALON_COLUMNS);
 
       if (error) throw error;
 
       res.status(200).json({ success: true, data });
     } catch (err: any) {
-      console.error('Error adding salon:', err);
-      res.status(500).json({ success: false, message: err.message });
+      logOperatorApiFailure('salon_create_failed', req, req.body?.businessId);
+      res.status(500).json({ success: false, message: 'Could not create salon.' });
     }
   });
 
   // API: دریافت تنظیمات بیزینس از دیتابیس
-app.get('/api/businesses', async (req, res) => {
+app.get('/api/businesses', requireAuth, async (req, res) => {
   try {
     if (!supabase) {
       return res.status(500).json({ success: false, message: 'Supabase is not configured.' });
     }
 
+    const userId = (req as AuthenticatedRequest).auth!.userId;
+    const { data: memberships, error: membershipError } = await getAuthorizationClient()
+      .from('business_memberships')
+      .select('business_id')
+      .eq('user_id', userId)
+      .eq('status', 'active');
+    if (membershipError) {
+      return res.status(500).json({ error: 'authorization_failed' });
+    }
+    const businessIds = (memberships || []).map((row) => row.business_id);
+    if (businessIds.length === 0) {
+      return res.status(200).json({ success: true, data: [] });
+    }
+
     const { data, error } = await supabase
       .from('businesses')
-      .select('*')
+      .select(DASHBOARD_BUSINESS_COLUMNS)
+      .in('id', businessIds)
       .order('id', { ascending: true });
 
     if (error) throw error;
@@ -17195,14 +17206,14 @@ app.get('/api/businesses', async (req, res) => {
       data: data || [],
     });
   } catch (err: any) {
-    console.error('Error fetching businesses:', err);
-    res.status(500).json({ success: false, message: err.message });
+    logOperatorApiFailure('business_list_failed', req);
+    res.status(500).json({ success: false, message: 'Could not load businesses.' });
   }
 });
 
 
 // API: دریافت رزروهای بیزینس برای داشبورد
-app.get('/api/businesses/:businessId/conversations', async (req, res) => {
+app.get('/api/businesses/:businessId/conversations', requireAuth, requireBusinessPermission('conversations.read'), async (req, res) => {
   try {
     if (!supabase) {
       return res.status(500).json({
@@ -17431,17 +17442,17 @@ app.get('/api/businesses/:businessId/conversations', async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     return res.status(200).json(conversations);
   } catch (err: any) {
-    console.error('Error fetching business conversations:', err);
+    logOperatorApiFailure('conversation_list_failed', req, req.params.businessId);
     return res.status(500).json({
       success: false,
-      message: err?.message || 'Could not fetch conversations.',
+      message: 'Could not fetch conversations.',
     });
   }
 });
 
 
 // API: send a manual dashboard reply to an existing conversation
-app.post('/api/businesses/:businessId/conversations/:conversationId/messages', async (req, res) => {
+app.post('/api/businesses/:businessId/conversations/:conversationId/messages', requireAuth, requireBusinessPermission('conversations.send'), async (req, res) => {
   try {
     if (!supabase) {
       return res.status(500).json({
@@ -17624,7 +17635,7 @@ app.post('/api/businesses/:businessId/conversations/:conversationId/messages', a
       sent = telegramResponse.ok && telegramResult?.ok !== false;
 
       if (!sent) {
-        console.error('Telegram manual send failed:', JSON.stringify(telegramResult));
+        logOperatorApiFailure('manual_message_provider_failed', req, businessId);
       }
     }
 
@@ -17651,7 +17662,7 @@ app.post('/api/businesses/:businessId/conversations/:conversationId/messages', a
       .single();
 
     if (saveError) {
-      console.error('Manual message was sent but could not be saved:', JSON.stringify(saveError));
+      logOperatorApiFailure('manual_message_persistence_failed', req, businessId);
       return res.status(500).json({
         success: false,
         sent: true,
@@ -17666,17 +17677,17 @@ app.post('/api/businesses/:businessId/conversations/:conversationId/messages', a
       channel: requestedChannel,
     });
   } catch (err: any) {
-    console.error('Manual conversation send error:', err);
+    logOperatorApiFailure('manual_message_failed', req, req.params.businessId);
     return res.status(500).json({
       success: false,
-      message: err?.message || 'Could not send the message.',
+      message: 'Could not send the message.',
     });
   }
 });
 
 
 // API: mark all unread customer messages in one conversation as read
-app.put('/api/businesses/:businessId/conversations/:conversationId/read', async (req, res) => {
+app.put('/api/businesses/:businessId/conversations/:conversationId/read', requireAuth, requireBusinessPermission('conversations.send'), async (req, res) => {
   try {
     if (!supabase) {
       return res.status(500).json({
@@ -17807,15 +17818,15 @@ app.put('/api/businesses/:businessId/conversations/:conversationId/read', async 
       updatedCount: matchingIds.length,
     });
   } catch (err: any) {
-    console.error('Error marking conversation as read:', err);
+    logOperatorApiFailure('conversation_read_update_failed', req, req.params.businessId);
     return res.status(500).json({
       success: false,
-      message: err?.message || 'Could not mark conversation as read.',
+      message: 'Could not mark conversation as read.',
     });
   }
 });
 
-app.get('/api/businesses/:businessId/bookings', async (req, res) => {
+app.get('/api/businesses/:businessId/bookings', requireAuth, requireBusinessPermission('bookings.read'), async (req, res) => {
   try {
     if (!supabase) {
       return res.status(500).json({
@@ -17914,10 +17925,10 @@ app.get('/api/businesses/:businessId/bookings', async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     return res.status(200).json(bookings);
   } catch (err: any) {
-    console.error('Error fetching business bookings:', err);
+    logOperatorApiFailure('booking_list_failed', req, req.params.businessId);
     return res.status(500).json({
       success: false,
-      message: err?.message || 'Could not fetch bookings.',
+      message: 'Could not fetch bookings.',
     });
   }
 });
@@ -17926,7 +17937,7 @@ app.get('/api/businesses/:businessId/bookings', async (req, res) => {
 // Tests a saved integration for one business and always returns JSON.
 // Frontend endpoint:
 // POST /api/businesses/:businessId/integrations/:integration/test
-app.post('/api/businesses/:businessId/integrations/:integration/test', async (req, res) => {
+app.post('/api/businesses/:businessId/integrations/:integration/test', requireAuth, requireBusinessPermission('settings.manage'), async (req, res) => {
   const businessId = String(req.params.businessId || '').trim();
   const integration = String(req.params.integration || '').trim().toLowerCase();
 
@@ -17978,7 +17989,7 @@ app.post('/api/businesses/:businessId/integrations/:integration/test', async (re
       .maybeSingle();
 
     if (businessError) {
-      console.error('[IntegrationTest] Business lookup failed:', JSON.stringify(businessError));
+      logOperatorApiFailure('integration_business_lookup_failed', req, businessId);
       return fail(500, 'Could not load the selected business.');
     }
 
@@ -18223,22 +18234,12 @@ app.post('/api/businesses/:businessId/integrations/:integration/test', async (re
 
     return fail(400, `Unsupported integration: ${integration}`);
   } catch (err: any) {
-    console.error(
-      `[IntegrationTest] ${integration} failed for business ${businessId}:`,
-      err,
-    );
-
-    const remoteMessage =
-      err?.response?.data?.error?.message ||
-      err?.errors?.[0]?.message ||
-      err?.message ||
-      'Integration test failed.';
-
-    return fail(500, remoteMessage);
+    logOperatorApiFailure('integration_test_failed', req, businessId);
+    return fail(500, 'Integration test failed.');
   }
 });
 
-app.get('/api/businesses/:id/cancellation-settings', async (req, res) => {
+app.get('/api/businesses/:id/cancellation-settings', requireAuth, requireBusinessPermission('settings.manage'), async (req, res) => {
   try {
     if (!supabase) return res.status(500).json({ success: false, message: 'Supabase is not configured.' });
     const businessId = Number(req.params.id);
@@ -18264,12 +18265,12 @@ app.get('/api/businesses/:id/cancellation-settings', async (req, res) => {
       },
     });
   } catch (err: any) {
-    console.error('Error loading cancellation settings:', err);
-    return res.status(500).json({ success: false, message: err?.message || 'Could not load cancellation settings.' });
+    logOperatorApiFailure('cancellation_settings_read_failed', req, req.params.id);
+    return res.status(500).json({ success: false, message: 'Could not load cancellation settings.' });
   }
 });
 
-app.get('/api/businesses/:id/admin-notification-settings', async (req, res) => {
+app.get('/api/businesses/:id/admin-notification-settings', requireAuth, requireBusinessPermission('settings.manage'), async (req, res) => {
   try {
     if (!supabase) return res.status(500).json({ success: false, message: 'Supabase is not configured.' });
     const businessId = Number(req.params.id);
@@ -18293,12 +18294,12 @@ app.get('/api/businesses/:id/admin-notification-settings', async (req, res) => {
       },
     });
   } catch (err: any) {
-    console.error('Error loading admin notification settings:', err);
-    return res.status(500).json({ success: false, message: err?.message || 'Could not load notification settings.' });
+    logOperatorApiFailure('notification_settings_read_failed', req, req.params.id);
+    return res.status(500).json({ success: false, message: 'Could not load notification settings.' });
   }
 });
 
-app.put('/api/businesses/:id', async (req, res) => {
+app.put('/api/businesses/:id', requireAuth, requireBusinessPermission('settings.manage'), async (req, res) => {
   try {
     if (!supabase) {
       return res.status(500).json({
@@ -18448,7 +18449,7 @@ app.put('/api/businesses/:id', async (req, res) => {
       .from('businesses')
       .update(payload)
       .eq('id', businessId)
-      .select()
+      .select(DASHBOARD_BUSINESS_COLUMNS)
       .maybeSingle();
 
     if (error) throw error;
@@ -18463,12 +18464,12 @@ app.put('/api/businesses/:id', async (req, res) => {
     // Start or refresh Telegram polling when a new token was saved.
     if (payload.telegram_bot_token) {
       logTelegramTokenSource(
-        data.telegram_bot_token,
+        payload.telegram_bot_token,
         "api_business_settings_update.database_row",
         data.id
       );
       const resolvedTelegramConfig =
-        await loadFreshBusinessConfigByTelegramToken(data.telegram_bot_token);
+        await loadFreshBusinessConfigByTelegramToken(String(payload.telegram_bot_token));
       if (resolvedTelegramConfig.telegramBusinessResolved) {
         await startTelegramPolling(
           resolvedTelegramConfig,
@@ -18483,40 +18484,38 @@ app.put('/api/businesses/:id', async (req, res) => {
       message: 'Business settings saved successfully.',
     });
   } catch (err: any) {
-    console.error('Error updating business:', err);
+    logOperatorApiFailure('business_update_failed', req, req.params.id);
     return res.status(500).json({
       success: false,
-      message: err?.message || 'Could not update business.',
+      message: 'Could not update business.',
     });
   }
 });
 
-  app.delete('/api/businesses/:id', async (req, res) => {
+  app.delete('/api/businesses/:id', requireAuth, requireBusinessPermission('business.delete'), async (req, res) => {
   try {
-    if (!supabase) {
-      return res.status(500).json({ success: false, message: 'Supabase is not configured.' });
+    const businessId = (req as AuthenticatedRequest).businessAccess!.businessId;
+    const { data: deleted, error } = await getAuthorizationClient().rpc(
+      'delete_business_with_memberships',
+      { p_business_id: businessId },
+    );
+
+    if (error) throw new Error('atomic_business_delete_failed');
+    if (deleted !== true) {
+      return res.status(404).json({ success: false, message: 'Business not found.' });
     }
 
-    const { id } = req.params;
-
-    const { error } = await supabase
-      .from('businesses')
-      .delete()
-      .eq('id', Number(id));
-
-    if (error) throw error;
-
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
       message: 'Business deleted successfully',
     });
   } catch (err: any) {
-    console.error('Error deleting business:', err);
-    res.status(500).json({ success: false, message: err.message });
+    logOperatorApiFailure('business_delete_failed', req, req.params.id);
+    res.status(500).json({ success: false, message: 'Could not delete business.' });
   }
 });
   // API: ذخیره یا به‌روزرسانی تنظیمات بیزینس در دیتابیس
-app.post('/api/businesses', async (req, res) => {
+app.post('/api/businesses', requireAuth, async (req, res) => {
   try {
     if (!supabase) {
       return res.status(500).json({ success: false, message: 'Supabase is not configured.' });
@@ -18537,6 +18536,13 @@ app.post('/api/businesses', async (req, res) => {
 } = req.body;
     const finalBusinessName = businessName || businessId;
 
+    if (id) {
+      return res.status(400).json({
+        success: false,
+        message: 'Use the business update endpoint for existing businesses.',
+      });
+    }
+
     if (!finalBusinessName) {
       return res.status(400).json({ success: false, message: 'businessName is required.' });
     }
@@ -18554,36 +18560,34 @@ app.post('/api/businesses', async (req, res) => {
   instagram_enabled: Boolean(instagramEnabled),
 };
 
-    let query;
+    const authenticatedRequest = req as AuthenticatedRequest;
+    const { data: savedBusiness, error } = await getAuthorizationClient().rpc(
+      'create_business_with_owner',
+      {
+        p_owner_user_id: authenticatedRequest.auth!.userId,
+        p_business_name: payload.business_name,
+        p_telegram_bot_token: payload.telegram_bot_token,
+        p_google_calendar_id: payload.google_calendar_id,
+        p_custom_system_prompt: payload.custom_system_prompt,
+        p_instagram_page_id: payload.instagram_page_id,
+        p_instagram_account_id: payload.instagram_account_id,
+        p_instagram_access_token: payload.instagram_access_token,
+        p_instagram_verify_token: payload.instagram_verify_token,
+        p_instagram_enabled: payload.instagram_enabled,
+      },
+    );
 
-    if (id) {
-      query = supabase
-        .from('businesses')
-        .update(payload)
-        .eq('id', id)
-        .select();
-    } else {
-      query = supabase
-        .from('businesses')
-        .insert([payload])
-        .select();
-    }
+    if (error || !savedBusiness?.id) throw new Error('atomic_business_creation_failed');
 
-    const { data, error } = await query;
-
-    if (error) throw error;
-
-    const savedBusiness = data?.[0];
-
-    if (savedBusiness?.telegram_bot_token) {
+    if (payload.telegram_bot_token) {
       logTelegramTokenSource(
-        savedBusiness.telegram_bot_token,
+        payload.telegram_bot_token,
         "api_business_create_or_update.database_row",
         savedBusiness.id
       );
       const resolvedTelegramConfig =
         await loadFreshBusinessConfigByTelegramToken(
-          savedBusiness.telegram_bot_token
+          payload.telegram_bot_token
         );
       if (resolvedTelegramConfig.telegramBusinessResolved) {
         await startTelegramPolling(
@@ -18600,16 +18604,16 @@ app.post('/api/businesses', async (req, res) => {
       systemPrompt: payload.custom_system_prompt,
     };
 
-    res.status(200).json({ success: true, data });
+    res.status(200).json({ success: true, data: savedBusiness });
   } catch (err: any) {
-    console.error('Error saving business config:', err);
-    res.status(500).json({ success: false, message: err.message });
+    logOperatorApiFailure('business_create_failed', req);
+    res.status(500).json({ success: false, message: 'Could not create business.' });
   }
 });
 
   // AI Prompt Builder: generates a business-specific receptionist system prompt.
   // Uses the existing Gemini queue, retry, key rotation and Render environment keys.
-  app.post('/api/ai/generate-system-prompt', async (req, res) => {
+  app.post('/api/ai/generate-system-prompt', requireAuth, async (req, res) => {
     try {
       const {
         businessName,
@@ -18716,85 +18720,13 @@ Generate the final production-ready system prompt now.
         prompt: prompt.slice(0, 10000),
       });
     } catch (err: any) {
-      console.error('AI system prompt generation failed:', err);
+      logOperatorApiFailure('prompt_generation_failed', req);
       return res.status(500).json({
         success: false,
-        message: err?.message || 'Could not generate system prompt.',
+        message: 'Could not generate system prompt.',
       });
     }
   });
-
-  app.get('/webhook/instagram', (req, res) => {
-  const mode = req.query['hub.mode'];
-  const token = req.query['hub.verify_token'];
-  const challenge = req.query['hub.challenge'];
-
-  const verifyToken = process.env.INSTAGRAM_VERIFY_TOKEN || 'clinicpilot_verify_123';
-
-  if (mode === 'subscribe' && token === verifyToken) {
-    console.log('Instagram webhook verified successfully.');
-    return res.status(200).send(challenge);
-  }
-
-  console.log('Instagram webhook verification failed.');
-  return res.sendStatus(403);
-});
-
-app.post('/webhook/instagram', async (req, res) => {
-  try {
-    console.log('Incoming Instagram webhook:');
-    console.log(JSON.stringify(req.body, null, 2));
-
-    const body = req.body;
-
-    if (body.object !== 'instagram') {
-      return res.sendStatus(404);
-    }
-
-    // Acknowledge Meta fast, then process messages in the background.
-    res.sendStatus(200);
-
-    for (const entry of body.entry || []) {
-      for (const messagingEvent of entry.messaging || []) {
-        const hasText = Boolean(messagingEvent?.message?.text);
-        const hasAudio = Boolean(
-          messagingEvent?.message?.attachments?.some(
-            (attachment: any) => attachment?.type === 'audio' && attachment?.payload?.url
-          )
-        );
-
-        if (hasText || hasAudio) {
-          processInstagramUpdate(messagingEvent, activeConfig).catch((e) => {
-            console.error('Instagram async processing failed:', e);
-          });
-        } else {
-          console.log('Instagram webhook ignored: no text/audio message payload.');
-        }
-      }
-
-      // Instagram comments + Meta test payload support
-      for (const change of entry.changes || []) {
-        const value = change?.value;
-        if (change?.field === 'comments' || change?.field === 'live_comments') {
-          processMetaCommentUpdate(entry, change, activeConfig, 'instagram').catch((e) => {
-            console.error('Instagram comment async processing failed:', e);
-          });
-        } else if (change?.field === 'messages' && value?.message?.text) {
-          console.log('==============================');
-          console.log('META TEST MESSAGE');
-          console.log('Sender ID:', value.sender?.id);
-          console.log('Recipient ID:', value.recipient?.id);
-          console.log('Message:', value.message?.text);
-          console.log('==============================');
-        }
-      }
-    }
-  } catch (err) {
-    console.error('Instagram webhook error:', err);
-    if (!res.headersSent) return res.sendStatus(500);
-  }
-});
-
 
   app.get('/media/instagram/:filename', (req, res) => {
     try {

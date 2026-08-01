@@ -57,8 +57,17 @@ async function runTests(): Promise<void> {
     assert.match(markup, new RegExp(platform));
   }
   assert.match(markup, /Demo analytics/);
+  assert.match(markup, /Sample data — not live business performance/);
+  assert.match(markup, /New booking events/);
+  assert.match(markup, /Inbound customer activity/);
+  assert.match(markup, /Bookings created minus cancellations/);
+  assert.match(markup, /not the number of currently active appointments/);
+  assert.match(markup, /Dates are grouped by UTC day/);
   assert.match(markup, /Unattributed/);
   assert.match(markup, /not a customer-level conversion rate/);
+  assert.match(markup, /Booking activity using the service name stored with each event/);
+  assert.doesNotMatch(markup, />Conversion rate</i);
+  assert.doesNotMatch(markup, /growth|revenue|saved time|health score/i);
   assert.match(renderToStaticMarkup(<AnalyticsDashboardView data={data} mode="live" />), /Complete/);
 
   const unknownPlatform = structuredClone(data);

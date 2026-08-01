@@ -135,11 +135,14 @@ export function AnalyticsDashboardView({
           </div>
           <aside className="analytics-interpretation-note">
             <span aria-hidden="true">i</span>
-            <p>
-              These figures describe recorded message and booking activity. Bookings per message is
-              not a customer-level conversion rate, and net booking activity is not the number of
-              currently active appointments.
-            </p>
+            <div>
+              <h3>How to read these figures</h3>
+              <ul>
+                <li>Net booking activity is bookings created minus cancellations during this period; it is not the number of currently active appointments.</li>
+                <li>Bookings per message compares booking events with inbound messages. It is not a customer-level conversion rate.</li>
+                <li>Service names reflect the name stored when each event occurred.</li>
+              </ul>
+            </div>
           </aside>
         </>
       )}
@@ -160,6 +163,9 @@ function AnalyticsDataStatus({
   return (
     <div className="analytics-status-row">
       <div className={`analytics-demo-badge ${mode}`}><span />{status}</div>
+      <span className="analytics-status-context">
+        {mode === 'demo' ? 'Sample data — not live business performance' : 'Recorded analytics events'}
+      </span>
       <span className="analytics-updated">
         {mode === 'demo' ? 'Preview updated ' : 'Updated '}
         <time dateTime={data.generatedAt}>{formatTimestamp(data.generatedAt)}</time>
@@ -175,25 +181,27 @@ function AnalyticsDataStatus({
 
 function AnalyticsSummaryCards({ data }: { data: DashboardAnalyticsData }) {
   const cards = [
-    { label: 'Messages received', value: formatNumber(data.summary.messagesReceived), tone: 'messages' },
-    { label: 'Bookings created', value: formatNumber(data.summary.bookingsCreated), tone: 'created' },
-    { label: 'Reschedules', value: formatNumber(data.summary.bookingsRescheduled), tone: 'rescheduled' },
-    { label: 'Cancellations', value: formatNumber(data.summary.bookingsCancelled), tone: 'cancelled' },
-    { label: 'Net booking activity', value: formatSigned(data.summary.netBookingActivity), tone: 'net' },
+    { label: 'Bookings created', value: formatNumber(data.summary.bookingsCreated), tone: 'created', description: 'New booking events', importance: 'featured' },
+    { label: 'Messages received', value: formatNumber(data.summary.messagesReceived), tone: 'messages', description: 'Inbound customer activity', importance: 'primary' },
+    { label: 'Net booking activity', value: formatSigned(data.summary.netBookingActivity), tone: 'net', description: 'Bookings created minus cancellations', importance: 'primary' },
+    { label: 'Reschedules', value: formatNumber(data.summary.bookingsRescheduled), tone: 'rescheduled', description: 'Booking time changes', importance: 'supporting' },
+    { label: 'Cancellations', value: formatNumber(data.summary.bookingsCancelled), tone: 'cancelled', description: 'Cancelled booking events', importance: 'supporting' },
     {
       label: 'Bookings per message',
       value: formatRatio(data.summary.bookingMessageRatio),
       tone: 'ratio',
+      description: 'Booking activity relative to inbound messages',
+      importance: 'supporting',
       title: 'This compares booking events with received message events. It is not a customer-level conversion rate.',
     },
   ];
   return (
     <div className="analytics-kpi-grid" aria-label="Analytics summary">
       {cards.map((card) => (
-        <article className={`analytics-kpi ${card.tone}`} key={card.label} title={card.title}>
-          <span>{card.label}</span>
+        <article className={`analytics-kpi ${card.tone} ${card.importance}`} key={card.label} title={card.title}>
+          <div className="analytics-kpi-heading"><i aria-hidden="true" /><span>{card.label}</span></div>
           <strong>{card.value}</strong>
-          {card.tone === 'ratio' && <small>Activity ratio</small>}
+          <p>{card.description}</p>
         </article>
       ))}
     </div>
@@ -215,26 +223,42 @@ function AnalyticsDailyTrend({ data }: { data: DashboardAnalyticsData }) {
   const y = (value: number) => plot.top
     + (1 - value / maxValue) * (height - plot.top - plot.bottom);
   const series = [
-    { key: 'messagesReceived', label: 'Messages', color: '#3ddc84', dash: undefined },
-    { key: 'bookingsCreated', label: 'Bookings', color: '#7aa7ff', dash: undefined },
-    { key: 'bookingsRescheduled', label: 'Reschedules', color: '#f2c66d', dash: '7 5' },
-    { key: 'bookingsCancelled', label: 'Cancellations', color: '#ef7f87', dash: '3 5' },
+    { key: 'messagesReceived', label: 'Messages', color: '#3ddc84', dash: undefined, priority: 'primary', width: 3 },
+    { key: 'bookingsCreated', label: 'Bookings', color: '#7aa7ff', dash: undefined, priority: 'primary', width: 2.75 },
+    { key: 'bookingsRescheduled', label: 'Reschedules', color: '#f2c66d', dash: '6 6', priority: 'supporting', width: 1.5 },
+    { key: 'bookingsCancelled', label: 'Cancellations', color: '#ef7f87', dash: '3 6', priority: 'supporting', width: 1.5 },
   ] as const;
   const labelEvery = Math.max(1, Math.ceil(data.daily.length / 6));
+  const baseline = height - plot.bottom;
+  const messagesArea = [
+    `${plot.left},${baseline}`,
+    ...data.daily.map((day, index) => `${x(index)},${y(day.messagesReceived)}`),
+    `${width - plot.right},${baseline}`,
+  ].join(' ');
 
   return (
     <article className="analytics-panel analytics-trend-panel">
       <div className="analytics-panel-head">
-        <div><h3>Daily activity</h3><p>Recorded events by UTC day</p></div>
+        <div>
+          <span className="analytics-panel-eyebrow">ACTIVITY OVER TIME</span>
+          <h3>Daily activity</h3>
+          <p>See how customer messages and booking activity changed during this period. Dates are grouped by UTC day.</p>
+        </div>
         <div className="analytics-legend" aria-label="Chart legend">
-          {series.map((item) => <span key={item.key}><i style={{ background: item.color }} />{item.label}</span>)}
+          {series.map((item) => <span className={item.priority} key={item.key}><i style={{ background: item.color }} />{item.label}</span>)}
         </div>
       </div>
       <figure className="analytics-chart-wrap">
         <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-labelledby="analytics-chart-title analytics-chart-desc">
           <title id="analytics-chart-title">Daily analytics activity in UTC</title>
           <desc id="analytics-chart-desc">{chartSummary(data)}</desc>
-          {[0, 0.5, 1].map((position) => {
+          <defs>
+            <linearGradient id="analytics-messages-area" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#3ddc84" stopOpacity="0.14" />
+              <stop offset="100%" stopColor="#3ddc84" stopOpacity="0" />
+            </linearGradient>
+          </defs>
+          {[0, 1 / 3, 2 / 3, 1].map((position) => {
             const lineY = plot.top + position * (height - plot.top - plot.bottom);
             const value = Math.round(maxValue * (1 - position));
             return (
@@ -244,15 +268,17 @@ function AnalyticsDailyTrend({ data }: { data: DashboardAnalyticsData }) {
               </g>
             );
           })}
+          <polygon className="analytics-message-area" points={messagesArea} fill="url(#analytics-messages-area)" />
           {series.map((item) => (
             <polyline
+              className={`analytics-chart-series ${item.priority}`}
               key={item.key}
               fill="none"
               stroke={item.color}
               strokeDasharray={item.dash}
               strokeLinecap="round"
               strokeLinejoin="round"
-              strokeWidth="2.5"
+              strokeWidth={item.width}
               points={data.daily.map((day, index) => `${x(index)},${y(day[item.key])}`).join(' ')}
             />
           ))}
@@ -271,28 +297,39 @@ function AnalyticsDailyTrend({ data }: { data: DashboardAnalyticsData }) {
 }
 
 function AnalyticsPlatformBreakdown({ data }: { data: DashboardAnalyticsData }) {
+  const rows = PLATFORM_DETAILS.map((platform) => ({
+    ...platform,
+    data: data.platforms.find((item) => item.platform === platform.key),
+  })).sort((left, right) => (right.data?.messagesReceived || 0) - (left.data?.messagesReceived || 0));
+  const maxMessages = Math.max(1, ...rows.map((row) => row.data?.messagesReceived || 0));
+
   return (
-    <article className="analytics-panel">
-      <div className="analytics-panel-head"><div><h3>Platform performance</h3><p>Activity by connected channel</p></div></div>
-      <div className="analytics-table-wrap">
-        <table className="analytics-table">
-          <thead><tr><th>Platform</th><th>Messages</th><th>Bookings</th><th>Moved</th><th>Cancelled</th><th>Bookings/message</th></tr></thead>
-          <tbody>
-            {PLATFORM_DETAILS.map((platform) => {
-              const row = data.platforms.find((item) => item.platform === platform.key);
-              return (
-                <tr key={platform.key}>
-                  <th scope="row"><span className="analytics-platform"><img src={platform.logo} alt="" />{platform.label}</span></th>
-                  <td>{formatNumber(row?.messagesReceived || 0)}</td>
-                  <td>{formatNumber(row?.bookingsCreated || 0)}</td>
-                  <td>{formatNumber(row?.bookingsRescheduled || 0)}</td>
-                  <td>{formatNumber(row?.bookingsCancelled || 0)}</td>
-                  <td>{formatRatio(row?.bookingMessageRatio ?? null)}</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+    <article className="analytics-panel analytics-breakdown-panel">
+      <div className="analytics-panel-head">
+        <div><span className="analytics-panel-eyebrow">CHANNEL MIX</span><h3>Platform performance</h3><p>Compare inbound activity and booking events across connected channels.</p></div>
+      </div>
+      <div className="analytics-performance-list" role="list" aria-label="Platform performance">
+        {rows.map((platform) => {
+          const row = platform.data;
+          const messages = row?.messagesReceived || 0;
+          return (
+            <div className="analytics-performance-row" role="listitem" key={platform.key}>
+              <div className="analytics-performance-main">
+                <span className="analytics-platform"><img src={platform.logo} alt="" /><strong>{platform.label}</strong></span>
+                <div className="analytics-performance-primary">
+                  <span><strong>{formatNumber(messages)}</strong><small>Messages</small></span>
+                  <span><strong>{formatNumber(row?.bookingsCreated || 0)}</strong><small>Bookings</small></span>
+                </div>
+              </div>
+              <div className="analytics-activity-track" aria-hidden="true"><span style={{ width: `${(messages / maxMessages) * 100}%` }} /></div>
+              <dl className="analytics-performance-secondary">
+                <div><dt>Moved</dt><dd>{formatNumber(row?.bookingsRescheduled || 0)}</dd></div>
+                <div><dt>Cancelled</dt><dd>{formatNumber(row?.bookingsCancelled || 0)}</dd></div>
+                <div><dt>Bookings/message</dt><dd>{formatRatio(row?.bookingMessageRatio ?? null)}</dd></div>
+              </dl>
+            </div>
+          );
+        })}
       </div>
     </article>
   );
@@ -302,22 +339,35 @@ function AnalyticsServiceBreakdown({ data }: { data: DashboardAnalyticsData }) {
   const unattributedTotal = data.services.unattributed.bookingsCreated
     + data.services.unattributed.bookingsRescheduled
     + data.services.unattributed.bookingsCancelled;
+  const rows = [
+    ...data.services.rows.map((service) => ({ ...service, unattributed: false })),
+    ...(unattributedTotal > 0 ? [{ serviceName: 'Unattributed', ...data.services.unattributed, unattributed: true }] : []),
+  ];
+  const maxCreated = Math.max(1, ...rows.map((row) => row.bookingsCreated));
+
   return (
-    <article className="analytics-panel">
-      <div className="analytics-panel-head"><div><h3>Service performance</h3><p>Event-time service names for this period</p></div></div>
-      <div className="analytics-table-wrap">
-        <table className="analytics-table analytics-service-table">
-          <thead><tr><th>Service snapshot</th><th>Created</th><th>Moved</th><th>Cancelled</th><th>Total</th></tr></thead>
-          <tbody>
-            {data.services.rows.map((service) => {
-              const total = service.bookingsCreated + service.bookingsRescheduled + service.bookingsCancelled;
-              return <tr key={service.serviceName}><th scope="row">{service.serviceName}</th><td>{service.bookingsCreated}</td><td>{service.bookingsRescheduled}</td><td>{service.bookingsCancelled}</td><td><strong>{total}</strong></td></tr>;
-            })}
-            {unattributedTotal > 0 && (
-              <tr className="analytics-unattributed"><th scope="row">Unattributed</th><td>{data.services.unattributed.bookingsCreated}</td><td>{data.services.unattributed.bookingsRescheduled}</td><td>{data.services.unattributed.bookingsCancelled}</td><td><strong>{unattributedTotal}</strong></td></tr>
-            )}
-          </tbody>
-        </table>
+    <article className="analytics-panel analytics-breakdown-panel">
+      <div className="analytics-panel-head">
+        <div><span className="analytics-panel-eyebrow">SERVICE MIX</span><h3>Service performance</h3><p>Booking activity using the service name stored with each event.</p></div>
+      </div>
+      <div className="analytics-service-list" role="list" aria-label="Service performance">
+        {rows.map((service) => {
+          const total = service.bookingsCreated + service.bookingsRescheduled + service.bookingsCancelled;
+          return (
+            <div className={`analytics-service-row${service.unattributed ? ' unattributed' : ''}`} role="listitem" key={service.serviceName}>
+              <div className="analytics-service-heading">
+                <strong>{service.serviceName}</strong>
+                <span><b>{formatNumber(service.bookingsCreated)}</b> created</span>
+              </div>
+              <div className="analytics-activity-track service" aria-hidden="true"><span style={{ width: `${(service.bookingsCreated / maxCreated) * 100}%` }} /></div>
+              <dl className="analytics-service-secondary">
+                <div><dt>Moved</dt><dd>{formatNumber(service.bookingsRescheduled)}</dd></div>
+                <div><dt>Cancelled</dt><dd>{formatNumber(service.bookingsCancelled)}</dd></div>
+                <div><dt>Total activity</dt><dd>{formatNumber(total)}</dd></div>
+              </dl>
+            </div>
+          );
+        })}
       </div>
       {data.services.truncated && <p className="analytics-service-note">Showing top services for this period.</p>}
     </article>

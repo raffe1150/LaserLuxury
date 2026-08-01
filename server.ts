@@ -32,6 +32,7 @@ import {
   selectSecureAppointmentRows,
   selectSecureCalendarEvents,
 } from "./booking-security";
+import { analytics } from "./src/analytics";
 
 let supabase: any = null;
 if (process.env.SUPABASE_URL && (process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY)) {
@@ -12637,6 +12638,27 @@ async function handleUnifiedBookingEngine(params: {
         return true;
       }
 
+      const persistedCreatedAt = String(databaseRow.created_at || "").trim();
+      const analyticsOccurredAt = Number.isFinite(Date.parse(persistedCreatedAt))
+        ? new Date(persistedCreatedAt).toISOString()
+        : new Date().toISOString();
+      void analytics.record({
+        business_id: Number(databaseRow.business_id),
+        event_name: "booking_created",
+        event_category: "booking",
+        occurred_at: analyticsOccurredAt,
+        schema_version: 1,
+        source: "unified_booking_engine",
+        actor: "ai",
+        outcome: "success",
+        idempotency_key: `booking-created:v1:${databaseRow.id}`,
+        booking_id: Number(databaseRow.id),
+        platform: currentBookingSlotOwner.platform,
+        channel: "messaging",
+        service_name_snapshot: String(databaseRow.service),
+        language: getFlowReplyLanguage(pending.language, language, text),
+      }).catch(() => undefined);
+
       if (platformName === "telegram") {
         console.log("[TelegramBookingOwnership]", {
           businessId: currentBookingSlotOwner.businessId,
@@ -13854,7 +13876,7 @@ async function recordAppointmentFromBooking(params: {
     const { data, error } = await supabase
       .from("appointments")
       .insert([payload])
-      .select("id,business_id,platform,user_id,service,start_time,end_time,status")
+      .select("id,business_id,platform,user_id,service,start_time,end_time,status,created_at")
       .single();
 
     if (error) {
@@ -13866,7 +13888,7 @@ async function recordAppointmentFromBooking(params: {
       if (!data?.id) return null;
       const { data: verifiedRow, error: verificationError } = await supabase
         .from("appointments")
-        .select("id,business_id,platform,user_id,service,start_time,end_time,status")
+        .select("id,business_id,platform,user_id,service,start_time,end_time,status,created_at")
         .eq("id", data.id)
         .eq("business_id", businessId)
         .eq("platform", params.platform)

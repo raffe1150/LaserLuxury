@@ -175,6 +175,10 @@ export function parseTimeConstraint(text: string): NormalizedTimeConstraint | un
     if (kind === 'before') return { kind, endMinutes: value, endInclusive, confidence: 'high' };
     return { kind, startMinutes: value, startInclusive, endInclusive, confidence: 'high' };
   }
+  const bareExact = raw.match(/^([01]?\d|2[0-3])[\.:]([0-5]\d)$/u);
+  if (bareExact) {
+    return { kind: 'exact', startMinutes: Number(bareExact[1]) * 60 + Number(bareExact[2]), startInclusive: true, endInclusive: true, confidence: 'high' };
+  }
   if (/\b(?:morning|morgon)\b/iu.test(raw) || /صبح/u.test(raw)) return { kind: 'morning', startMinutes: 9 * 60, endMinutes: 12 * 60, startInclusive: true, endInclusive: false, confidence: 'high' };
   if (/\b(?:afternoon|eftermiddag)\b/iu.test(raw) || /بعدازظهر/u.test(raw)) return { kind: 'afternoon', startMinutes: 12 * 60, endMinutes: 17 * 60, startInclusive: true, endInclusive: false, confidence: 'high' };
   if (/\b(?:evening|kväll)\b/iu.test(raw) || /عصر/u.test(raw)) return { kind: 'evening', startMinutes: 17 * 60, endMinutes: 20 * 60, startInclusive: true, endInclusive: true, confidence: 'high' };

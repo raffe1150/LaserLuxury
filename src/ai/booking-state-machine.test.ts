@@ -63,6 +63,28 @@ assert.deepEqual(dateTransition.replaced, { date: true, time: false, service: fa
 assert.equal(dateTransition.request.date?.value, '2026-08-03');
 assert.equal(dateTransition.request.timeConstraint?.startMinutes, 19 * 60);
 
+const lockedMonday = pending('Monday before 12');
+lockedMonday.offeredSlots = [];
+lockedMonday.ownedOfferedSlots = [];
+lockedMonday.dateTime = null;
+lockedMonday.selectedSlotEnd = null;
+const mondayAt13 = applyBookingTransition(lockedMonday, request('kl 13'));
+assert.equal(mondayAt13.request.date?.value, '2026-08-03', 'time-only follow-up retains locked Monday');
+assert.equal(mondayAt13.request.timeConstraint?.startMinutes, 13 * 60);
+assert.equal(lockedMonday.service, 'Konsultation');
+assert.equal(mondayAt13.replaced.date, false);
+assert.equal(mondayAt13.replaced.time, true);
+assert.deepEqual(lockedMonday.offeredSlots, []);
+
+const lockedFriday = pending('Friday after 18');
+const fridayAt19 = applyBookingTransition(lockedFriday, request('kl 19'));
+assert.equal(fridayAt19.request.date?.value, '2026-08-07');
+assert.equal(fridayAt19.replaced.date, false);
+const explicitTuesday = applyBookingTransition(pending('Monday before 12'), request('Tuesday instead'));
+assert.equal(explicitTuesday.request.date?.value, '2026-08-04');
+assert.equal(explicitTuesday.replaced.date, true);
+assert.deepEqual(explicitTuesday.replaced, { date: true, time: false, service: false });
+
 const changedService = pending('Friday before 12 consultation');
 const serviceTransition = applyBookingTransition(changedService, request('laser instead'));
 assert.deepEqual(serviceTransition.replaced, { date: false, time: false, service: true });

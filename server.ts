@@ -54,6 +54,7 @@ import {
 import { applyNormalizedRequestToPending, availabilityFieldsFromConstraint, buildSlotFingerprintSource, formatPersianSpokenPhone, getDateInTimeZone, getZonedSlotParts, isCurrentConversationTurn, normalizeBookingRequest, parseBookingDate, parseTimeConstraint, preparePersianTextForTts, registerConversationTurn, slotMinutesSatisfyConstraint, toPersistedBookingRequest, zonedLocalIso, type NormalizedBookingRequest, type NormalizedTimeConstraint } from "./src/ai/booking-intelligence";
 import { beginBookingFinalization, getBookingInvariantFailures, getBookingPhase, getMissingBookingContact, recoverBookingFinalization, recoverBookingTransaction, type BookingFailureStage } from "./src/ai/booking-state-machine";
 import { enumerateCandidateMinutes, isBlockingCalendarEvent, isCanonicalSlotFree } from "./src/ai/canonical-availability";
+import { resolveAuthoritativeContact, type ContactPhoneSource } from "./src/ai/channel-contact";
 import { createRequireAuth } from "./src/auth/require-auth";
 import { createRequireBusinessPermission } from "./src/auth/require-business-access";
 import { getAuthorizationClient } from "./src/auth/supabase-auth";
@@ -5360,6 +5361,7 @@ async function savePendingBooking(chatId: string, platform: string, pending: any
       status: pending.status,
       operation: pending.operation || "new_booking",
       operationIdentity: pending.operationIdentity || null,
+      contactPhoneSource: pending.contactPhoneSource || null,
       lastFailureStage: pending.lastFailureStage || null,
       lastRollbackSucceeded: pending.lastRollbackSucceeded ?? null,
       expiredAppointmentFallback: Boolean(pending.expiredAppointmentFallback),
@@ -5465,6 +5467,7 @@ async function loadPendingBooking(chatId: string, platform: string, businessConf
         : parsed.status || "awaiting_contact",
       operation: parsed.operation || "new_booking",
       operationIdentity: parsed.operationIdentity || null,
+      contactPhoneSource: parsed.contactPhoneSource || null,
       lastFailureStage: parsed.lastFailureStage || null,
       lastRollbackSucceeded: parsed.lastRollbackSucceeded ?? null,
       expiredAppointmentFallback: Boolean(parsed.expiredAppointmentFallback),
@@ -6760,29 +6763,6 @@ function isPendingSlotConfirmation(text: string | undefined, pending: any): bool
 }
 
 
-function formatAskContactMessageForPlatform(
-  language: string,
-  platformName: string
-): string {
-  if (platformName !== "whatsapp") return formatAskContactMessage(language);
-
-  if (language === "fa") return "عالیه 😊 برای نهایی‌کردن رزرو فقط نام‌تان را بفرستید.";
-  if (language === "es") return "Perfecto 😊 Para finalizar la reserva, solo necesito tu nombre.";
-  if (language === "de") return "Perfekt 😊 Für den Abschluss brauche ich nur Ihren Namen.";
-  if (language === "ar") return "ممتاز 😊 لإتمام الحجز أحتاج فقط اسمك.";
-  if (language === "en") return "Perfect 😊 To finish the booking, I only need your name.";
-  return "Toppen! 😊 För att slutföra bokningen behöver jag bara ditt namn.";
-}
-
-function formatAskContactMessage(language: string = "sv"): string {
-  if (language === "fa") return "حتماً 😊 برای رزرو، لطفاً نام و شماره موبایل‌تان را بفرستید.";
-  if (language === "es") return "Perfecto 😊 Para reservar, necesito tu nombre y número de móvil.";
-  if (language === "de") return "Sehr gern 😊 Für die Buchung brauche ich bitte Ihren Namen und Ihre Mobilnummer.";
-  if (language === "ar") return "تمام 😊 لإتمام الحجز، أحتاج اسمك ورقم هاتفك.";
-  if (language === "en") return "Perfect 😊 To book it, I just need your name and mobile number.";
-  return "Toppen! Innan jag bokar din tid behöver jag ditt namn och mobilnummer. 😊";
-}
-
 function formatVoiceContactConfirmation(language: string, name: string, phone: string): string {
   if (language === "fa") return `برای اطمینان قبل از رزرو: نام شما «${name}» و شماره شما «${formatPersianSpokenPhone(phone)}» است. درست شنیدم؟`;
   if (language === "sv") return `För att vara säker innan jag bokar: jag hörde namnet ”${name}” och numret ”${phone}”. Stämmer det?`;
@@ -6910,7 +6890,7 @@ function guardCustomerFacingReply(sessionId: string, reply: string, fallbackLang
   }
   const pending = pendingBookings[sessionId];
   if (pending?.status === "awaiting_contact") {
-    return formatAskContactMessageForPlatform(language, normalizePlatformName(pending.platform || ""));
+    return formatMissingBookingDetailsMessage(language, getMissingBookingContact(pending));
   }
   if (pending?.status === "awaiting_time_selection" && Array.isArray(pending.offeredSlots)) {
     return formatSwedishTimeSlots(pending.offeredSlots, undefined, language);
@@ -8408,6 +8388,33 @@ async function handleUnifiedBookingEngine(params: {
   });
   const latestStrongLanguage = detectStrongLatestLanguage(text);
   let pending = await loadPendingBooking(sessionId, platformName, businessConfig);
+  const authoritativeSenderPhone = getWhatsAppConversationPhone(
+    platformName,
+    recipientUserId,
+    sessionId
+  );
+  if (pending) {
+    const entryContact = resolveAuthoritativeContact({
+      channel: platformName,
+      storedName: pending.customerName,
+      storedPhone: pending.customerPhone,
+      storedPhoneSource: pending.contactPhoneSource as ContactPhoneSource | null,
+      senderPhone: authoritativeSenderPhone
+    });
+    pending.customerName = entryContact.name;
+    pending.customerPhone = entryContact.phone;
+    pending.contactPhoneSource = entryContact.phoneSource;
+    console.log("[BookingContactPolicy]", {
+      correlationId: bookingCorrelationId,
+      channel: platformName,
+      bookingPhase: getBookingPhase(pending),
+      contactRequirement: entryContact.missing.join("+") || "complete",
+      namePresent: Boolean(entryContact.name),
+      phonePresent: Boolean(entryContact.phone),
+      phoneSourceType: entryContact.phoneSource,
+      dateLocked: Boolean(pending.selectedDate || pending.availabilityStartDate)
+    });
+  }
   let activeBookingOperationClaim: AtomicClaimHandle | null = null;
   let bookingFailureStage: BookingFailureStage | null = null;
   let rollbackActiveBookingMutation: (() => Promise<boolean>) | null = null;
@@ -8575,9 +8582,9 @@ async function handleUnifiedBookingEngine(params: {
       );
       await savePendingBooking(sessionId, platformName, pending);
       await replyAndRecord(
-        formatAskContactMessageForPlatform(
+        formatMissingBookingDetailsMessage(
           getFlowReplyLanguage(pending.language, language, text),
-          platformName
+          getMissingBookingContact(pending)
         )
       );
       return true;
@@ -12219,9 +12226,9 @@ async function handleUnifiedBookingEngine(params: {
           finalHandledPath: "awaiting_contact"
         });
         await replyAndRecord(
-          formatAskContactMessageForPlatform(
+          formatMissingBookingDetailsMessage(
             getFlowReplyLanguage(pending.language, language, text),
-            platformName
+            getMissingBookingContact(pending)
           )
         );
         return true;
@@ -12338,9 +12345,9 @@ async function handleUnifiedBookingEngine(params: {
         failureCategory: null
       });
       await replyAndRecord(
-        formatAskContactMessageForPlatform(
+        formatMissingBookingDetailsMessage(
           getFlowReplyLanguage(pending.language, language, text),
-          platformName
+          getMissingBookingContact(pending)
         )
       );
       return true;
@@ -12349,27 +12356,47 @@ async function handleUnifiedBookingEngine(params: {
     if (["awaiting_contact", "failed_recoverable"].includes(String(pending?.status || ""))) {
       const previousPendingState = String(pending.status);
       const combinedContact = extractNameAndPhone(text);
-      const nameFromMessage = combinedContact?.name || extractNameOnly(text);
-      const phoneFromMessage = combinedContact?.phone || extractPhoneOnly(text);
-      const serviceFromMessage = normalizeBookingService(text, pending.service);
-      const phoneFromChannel = getWhatsAppConversationPhone(
-        platformName,
-        recipientUserId,
-        sessionId
-      );
-
-      if (nameFromMessage) pending.customerName = nameFromMessage;
-      if (phoneFromMessage) pending.customerPhone = normalizeAcceptedPhone(phoneFromMessage);
-      if (!pending.customerPhone && phoneFromChannel) pending.customerPhone = phoneFromChannel;
+      const confirmationTransition = deterministicTransition?.reason === "slot_confirmation_accepted";
+      const resolvedContact = resolveAuthoritativeContact({
+        channel: platformName,
+        storedName: pending.customerName,
+        storedPhone: pending.customerPhone,
+        storedPhoneSource: pending.contactPhoneSource as ContactPhoneSource | null,
+        currentName: confirmationTransition
+          ? null
+          : combinedContact?.name || extractNameOnly(text),
+        currentPhone: confirmationTransition
+          ? null
+          : combinedContact?.phone || extractPhoneOnly(text),
+        senderPhone: authoritativeSenderPhone
+      });
+      pending.customerName = resolvedContact.name;
+      pending.customerPhone = resolvedContact.phone;
+      pending.contactPhoneSource = resolvedContact.phoneSource;
       if (inputMode === "voice" && /\[unclear\]/i.test(text)) {
         pending.customerName = null;
-        pending.customerPhone = phoneFromChannel || null;
+        pending.customerPhone = authoritativeSenderPhone || null;
+        pending.contactPhoneSource = authoritativeSenderPhone
+          ? "verified_sender_metadata"
+          : "missing";
       }
-      // The offered slot owns service and duration. Contact collection must not
-      // redetect either value from a name or phone message.
-      void serviceFromMessage;
 
       const missing = getMissingBookingContact(pending);
+      console.log("[BookingContactPolicy]", {
+        correlationId: bookingCorrelationId,
+        channel: platformName,
+        bookingPhase: getBookingPhase(pending),
+        contactRequirement: missing.filter((field) => field !== "service").join("+") || "complete",
+        namePresent: Boolean(pending.customerName),
+        phonePresent: Boolean(pending.customerPhone),
+        phoneSourceType: pending.contactPhoneSource || "missing",
+        dateLocked: Boolean(pending.selectedDate || pending.availabilityStartDate),
+        dateChanged: Boolean(deterministicTransition?.replaced.date),
+        timeConstraintChanged: Boolean(deterministicTransition?.replaced.time),
+        staleOffersCleared: Boolean(deterministicTransition?.invalidatesOffers),
+        finalizationAttempted: missing.length === 0,
+        normalizedErrorCategory: missing.length ? "missing_contact" : null
+      });
 
       if (missing.length > 0) {
         await savePendingBooking(sessionId, platformName, pending);

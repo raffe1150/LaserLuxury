@@ -56,6 +56,7 @@ assert.equal(detectNormalizedIntent('Vad kostar laserbehandling?'), 'general_que
 assert.equal(parseTimeConstraint('Friday after 6 pm')?.startMinutes, 1080);
 assert.equal(parseTimeConstraint('before noon')?.endMinutes, 720);
 assert.equal(parseTimeConstraint('between 16 and 18')?.kind, 'between');
+assert.deepEqual(parseTimeConstraint('13:00'), { kind: 'exact', startMinutes: 780, startInclusive: true, endInclusive: true, confidence: 'high' });
 
 const after = parseTimeConstraint('after 18')!;
 assert.equal(slotMinutesSatisfyConstraint(1080, after), false);

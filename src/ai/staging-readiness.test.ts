@@ -25,13 +25,13 @@ const engine = section(
   'async function processTelegramUpdate(',
 );
 const booking = section(
-  'if (pending?.status === "awaiting_contact")',
+  'if (["awaiting_contact", "failed_recoverable"].includes(String(pending?.status || "")))',
   'if (pending?.status === "awaiting_time_selection")',
   engine,
 );
 
 assertOrdered(booking, [
-  'const missing:',
+  'const missing = getMissingBookingContact(pending)',
   'validateCanonicalExactSlot',
   'adapter.insertAppointment',
   'const calendarVerified',

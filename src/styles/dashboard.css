@@ -85,11 +85,11 @@ body{
 /* TOP BAR */
 .topbar{
   height:64px;flex-shrink:0;
-  background:rgba(6,10,7,0.7);backdrop-filter:blur(20px);
+  background:rgba(6,10,7,.94);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);
   border-bottom:1px solid var(--border2);
   display:flex;align-items:center;justify-content:space-between;
   padding:0 28px;gap:16px;
-  position:relative;z-index:20;
+  position:sticky;top:0;z-index:20;
 }
 .topbar-title{font-family:'Syne',sans-serif;font-weight:700;font-size:16px;}
 .topbar-search{

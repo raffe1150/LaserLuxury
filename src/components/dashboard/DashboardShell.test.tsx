@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { renderToStaticMarkup } from 'react-dom/server';
 import DashboardShell, {
   getMobileActiveSection,
@@ -29,6 +30,13 @@ function assertOnlyDesktopSectionIsCurrent(markup: string, sectionId: DashboardS
 }
 
 function runTests() {
+  const dashboardCss = readFileSync(new URL('../../styles/dashboard.css', import.meta.url), 'utf8');
+  const desktopTopbarRule = dashboardCss.match(/\/\* TOP BAR \*\/\s*\.topbar\{([\s\S]*?)\}/)?.[1] || '';
+  assert.match(desktopTopbarRule, /position:sticky/);
+  assert.match(desktopTopbarRule, /top:0/);
+  assert.match(desktopTopbarRule, /z-index:20/);
+  assert.match(desktopTopbarRule, /background:rgba\(6,10,7,\.94\)/);
+
   const usageMarkup = renderShell('usage-statistics');
   assertOnlyDesktopSectionIsCurrent(usageMarkup, 'usage-statistics');
   assert.doesNotMatch(usageMarkup, /href="#notification-center" aria-current="page"/);

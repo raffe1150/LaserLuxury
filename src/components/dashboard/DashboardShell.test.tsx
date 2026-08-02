@@ -31,11 +31,26 @@ function assertOnlyDesktopSectionIsCurrent(markup: string, sectionId: DashboardS
 
 function runTests() {
   const dashboardCss = readFileSync(new URL('../../styles/dashboard.css', import.meta.url), 'utf8');
+  const shellSource = readFileSync(new URL('./DashboardShell.tsx', import.meta.url), 'utf8');
+  const mainRule = dashboardCss.match(/\/\* ── MAIN ── \*\/\s*\.main\{([\s\S]*?)\}/)?.[1] || '';
   const desktopTopbarRule = dashboardCss.match(/\/\* TOP BAR \*\/\s*\.topbar\{([\s\S]*?)\}/)?.[1] || '';
-  assert.match(desktopTopbarRule, /position:sticky/);
-  assert.match(desktopTopbarRule, /top:0/);
+  const contentRule = dashboardCss.match(/\/\* CONTENT \*\/\s*\.content\{([\s\S]*?)\}/)?.[1] || '';
+  const pageRule = dashboardCss.match(/\.dashboard-page\{([\s\S]*?)\}/)?.[1] || '';
+  assert.match(mainRule, /display:grid/);
+  assert.match(mainRule, /grid-template-rows:auto minmax\(0,1fr\)/);
+  assert.match(desktopTopbarRule, /position:relative/);
+  assert.doesNotMatch(desktopTopbarRule, /position:sticky/);
   assert.match(desktopTopbarRule, /z-index:20/);
   assert.match(desktopTopbarRule, /background:rgba\(6,10,7,\.94\)/);
+  assert.match(contentRule, /min-height:0/);
+  assert.match(contentRule, /overflow-y:auto/);
+  assert.match(pageRule, /height:100dvh/);
+  assert.ok(
+    shellSource.indexOf('<div className="topbar">') < shellSource.indexOf('<div className="content"'),
+    'the non-scrolling topbar row must precede the content scroll row',
+  );
+  assert.match(shellSource, /const content = contentRef\.current/);
+  assert.match(shellSource, /className="content" ref=\{contentRef\}/);
 
   const usageMarkup = renderShell('usage-statistics');
   assertOnlyDesktopSectionIsCurrent(usageMarkup, 'usage-statistics');

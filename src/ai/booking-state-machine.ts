@@ -56,7 +56,7 @@ export function isPositiveBookingConfirmation(text: string): boolean {
   const raw = String(text || '').normalize('NFKC').toLowerCase()
     .replace(/[!?.،,؛]+/gu, ' ').replace(/\s+/g, ' ').trim();
   if (!raw || /\b(?:no|not|nej|inte|maybe|kanske|na|nemikham|نه|خیر|شاید)\b/iu.test(raw)) return false;
-  return /^(?:yes|yes please|yeah|yep|sure|ja|ja tack|ja gärna|japp|bale|baleh|bale lotfan|baleh lotfan|are|bashe|ok|okay|okej|بله|بله لطفا|آره|اره|باشه|حتما)$/iu.test(raw);
+  return /^(?:yes|yes please|yeah|yep|sure|book it|that works|ja|ja tack|ja gärna|japp|absolut|boka den|det blir bra|bale|baleh|bale lotfan|baleh lotfan|are|khobe|bashe|ok|okay|okej|بله|بله لطفا|آره|اره|باشه|حتما)$/iu.test(raw);
 }
 
 export function beginBookingFinalization(pending: Record<string, any>): boolean {

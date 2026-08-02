@@ -112,7 +112,7 @@ const repeatedConfirmation = applyBookingTransition(confirmation, request('Ja ta
 assert.equal(repeatedConfirmation.reason, 'contact_submission_to_verified_engine');
 assert.equal(getBookingPhase(confirmation), 'awaiting_contact');
 
-for (const affirmative of ['Ja', 'Ja tack', 'Yes', 'Bale', 'بله']) {
+for (const affirmative of ['Ja', 'Ja tack', 'absolut', 'boka den', 'det blir bra', 'Yes', 'yes please', 'book it', 'that works', 'Bale', 'are', 'khobe', 'ok', 'بله', 'آره']) {
   const channelState = pending('Friday at 19:30');
   channelState.status = 'awaiting_confirmation';
   channelState.ownedOfferedSlots = [slot(19, 30)];
@@ -161,6 +161,21 @@ assert.equal(contact.operationIdentity, 'operation-1');
 contact.customerName = 'Nina';
 contact.customerPhone = '07394660356';
 assert.deepEqual(getMissingBookingContact(contact), []);
+let calendarCreates = 0;
+let databaseCreates = 0;
+let truthfulSuccessReplies = 0;
+if (contactTransition.executeBooking && beginBookingFinalization(contact)) {
+  calendarCreates += 1;
+  databaseCreates += 1;
+  truthfulSuccessReplies += 1;
+}
+assert.deepEqual(
+  { calendarCreates, databaseCreates, truthfulSuccessReplies },
+  { calendarCreates: 1, databaseCreates: 1, truthfulSuccessReplies: 1 },
+  'combined valid contact begins exactly one verified finalization',
+);
+assert.equal(beginBookingFinalization(contact), false, 'the same contact turn cannot finalize twice');
+contact.status = 'awaiting_contact';
 contact.customerPhone = '123';
 assert.deepEqual(getMissingBookingContact(contact), ['phone']);
 assert.equal(contact.dateTime, slot(19).start, 'invalid contact must preserve the selected slot');
@@ -182,6 +197,10 @@ assert.equal(contact.lastFailureStage, 'calendar_create');
 assert.equal(contact.lastRollbackSucceeded, false);
 assert.equal(contact.dateTime, slot(19).start);
 assert.equal(contact.selectedSlotEnd, slot(19).end);
+assert.equal(contact.customerName, 'Nina');
+assert.equal(contact.customerPhone, '07394660356');
+assert.equal(contact.service, 'Konsultation');
+assert.equal(contact.operationIdentity, 'operation-1');
 assert.equal(beginBookingFinalization(contact), true, 'recoverable failure can retry the same operation');
 recoverBookingFinalization(contact, 'database_verification', true);
 assert.equal(contact.lastFailureStage, 'database_verification');
@@ -232,6 +251,8 @@ assert.match(server, /lastAvailabilityConstraintKey === availabilityConstraintKe
 assert.match(server, /slotMinutesSatisfyConstraint\(zoned\.minutes, params\.normalizedConstraint\)/);
 assert.match(server, /verifiedBookingReplyAuthorizations\[sessionId\] = bookingOperationResult/);
 assert.match(server, /Boolean\(deterministicTransition\?\.runAvailability\)/);
+assert.match(server, /selectedSlotEnd: exactOwnedSlot\?\.end \|\| null/);
+assert.match(server, /calendarEvents: filteredEvents,[\s\S]{0,80}pendingEvents/);
 assert.match(server, /recoverBookingTransaction\(pending, "calendar_verification", rollbackInsertedCalendarEvent\)/);
 assert.match(server, /recoverBookingTransaction\(pending, databaseFailurePath/);
 assert.ok(server.indexOf('verifiedBookingReplyAuthorizations[sessionId] = bookingOperationResult') < server.indexOf('await notifyAdminAboutBooking('));

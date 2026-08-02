@@ -53,6 +53,7 @@ import {
 } from "./src/ai/channel-reliability";
 import { applyNormalizedRequestToPending, availabilityFieldsFromConstraint, buildSlotFingerprintSource, formatPersianSpokenPhone, getDateInTimeZone, getZonedSlotParts, isCurrentConversationTurn, normalizeBookingRequest, parseBookingDate, parseTimeConstraint, preparePersianTextForTts, registerConversationTurn, slotMinutesSatisfyConstraint, toPersistedBookingRequest, zonedLocalIso, type NormalizedBookingRequest, type NormalizedTimeConstraint } from "./src/ai/booking-intelligence";
 import { beginBookingFinalization, getBookingInvariantFailures, getBookingPhase, getMissingBookingContact, recoverBookingFinalization, recoverBookingTransaction, type BookingFailureStage } from "./src/ai/booking-state-machine";
+import { enumerateCandidateMinutes, isBlockingCalendarEvent, isCanonicalSlotFree } from "./src/ai/canonical-availability";
 import { createRequireAuth } from "./src/auth/require-auth";
 import { createRequireBusinessPermission } from "./src/auth/require-business-access";
 import { getAuthorizationClient } from "./src/auth/supabase-auth";
@@ -443,20 +444,6 @@ function normalizeLocalizedDigits(value?: string): string {
     .replace(/[٠-٩]/g, (digit) => String(arabicDigits.indexOf(digit)));
 }
 
-function isLikelyWorkingHoursMarker(e: any): boolean {
-  const summary = String(e?.summary || e?.title || "").trim().toLowerCase();
-  const description = String(e?.description || "").trim().toLowerCase();
-  const text = `${summary} ${description}`;
-
-  if (!summary) return false;
-
-  return (
-    /working\s*hours|business\s*hours|opening\s*hours|öppettider|arbetstid|schema/.test(text) ||
-    /\b\d{1,2}\s*(am|pm)\b/.test(text) ||
-    /^laser\s+luxury\s*,?\s*\d{1,2}/i.test(summary)
-  );
-}
-
 function normalizeRequestedTime(input?: string): string | null {
   if (!input) return null;
   const raw = normalizeLocalizedDigits(String(input)).trim().toLowerCase();
@@ -816,60 +803,8 @@ function formatSwedishTimeSlots(slotsArray: string[], specificTime?: string, lan
   return buildLocalizedSlotReply(slotsArray, specificTime, language);
 }
 
-function isBlockingCalendarEvent(e: any): boolean {
-  const summary = String(e?.summary || e?.title || "").trim();
-  const transparency = String(e?.transparency || "").toLowerCase();
-  const eventType = String(e?.eventType || "").toLowerCase();
-  const status = String(e?.status || "").toLowerCase();
-
-  if (status === "cancelled") return false;
-  if (transparency === "transparent") return false;
-  if (eventType === "workinglocation" || eventType === "outofoffice") return false;
-
-  // Working-hour markers must not block the whole day. Real customer events still block,
-  // even if they were not created by this bot and do not start with "Bokad:".
-  if (isLikelyWorkingHoursMarker(e)) {
-    console.log(`[Availability] Ignored working-hours marker: "${summary}"`);
-    return false;
-  }
-
-  return true;
-}
-
 function isSlotFree(startMs: number, durationMinutes: number, events: any[]): boolean {
-  const endMs = startMs + durationMinutes * 60 * 1000;
-  if (startMs < Date.now()) return false;
-  for (const e of events) {
-    if (!isBlockingCalendarEvent(e)) continue;
-    if (!e.start && !e.startTime) continue;
-    const startIso = e.start?.dateTime || e.start?.date || e.startTime;
-    const endIso = e.end?.dateTime || e.end?.date || e.endTime;
-    const eventStart = new Date(startIso).getTime();
-    const eventEnd = new Date(endIso).getTime() || (eventStart + 60 * 60 * 1000);
-    if ((startMs < eventEnd) && (endMs > eventStart)) return false;
-  }
-  return true;
-}
-
-async function verifyExactSlotIsFree(
-  adapter: CalendarAdapter,
-  dateTime: string,
-  durationMinutes: number
-): Promise<{ free: boolean; normalizedIso: string | null; reason?: string }> {
-  const normalizedIso = ensureStockholmOffset(String(dateTime || "").trim());
-  const start = new Date(normalizedIso);
-  const duration = Number(durationMinutes || 0);
-
-  if (Number.isNaN(start.getTime()) || !Number.isFinite(duration) || duration <= 0) {
-    return { free: false, normalizedIso: null, reason: "invalid_slot" };
-  }
-
-  const dateStr = stockholmDateString(start);
-  const events = await adapter.getEvents(dateStr, dateStr);
-  const free = isSlotFree(start.getTime(), duration, Array.isArray(events) ? events : []);
-
-  console.log(`[ExactSlotCheck] dateTime=${normalizedIso}, duration=${duration}, events=${Array.isArray(events) ? events.length : 0}, free=${free}`);
-  return { free, normalizedIso, reason: free ? undefined : "calendar_conflict" };
+  return isCanonicalSlotFree(startMs, durationMinutes, events);
 }
 
 type SlotSearchOptions = {
@@ -976,6 +911,8 @@ async function validateCanonicalExactSlot(params: {
   durationMinutes: number;
   excludeEventId?: string;
   offeredSlot?: OwnedOfferedSlot;
+  calendarEvents?: any[];
+  pendingEvents?: any[];
 }): Promise<ExactSlotValidationResult> {
   const { adapter, owner, start, service, durationMinutes, excludeEventId, offeredSlot } = params;
   const businessId = String(getBusinessIdFromConfig(params.businessConfig) || "");
@@ -1040,7 +977,7 @@ async function validateCanonicalExactSlot(params: {
 
   const startMs = startDate.getTime();
   const endMs = startMs + duration * 60000;
-  const calendarEvents = await adapter.getEvents(localDate, localDate);
+  const calendarEvents = params.calendarEvents || await adapter.getEvents(localDate, localDate);
   const filteredEvents = (Array.isArray(calendarEvents) ? calendarEvents : []).filter(
     (event: any) => !excludeEventId || String(event?.id || "") !== String(excludeEventId)
   );
@@ -1048,7 +985,7 @@ async function validateCanonicalExactSlot(params: {
     return { free: false, category: "calendar_conflict", normalizedIso, endIso: new Date(endMs).toISOString() };
   }
 
-  const pendingEvents = getPendingBookingBlockingEvents(owner, startMs, endMs);
+  const pendingEvents = params.pendingEvents || getPendingBookingBlockingEvents(owner, startMs, endMs);
   if (!isSlotFree(startMs, duration, pendingEvents)) {
     return { free: false, category: "pending_conflict", normalizedIso, endIso: new Date(endMs).toISOString() };
   }
@@ -1111,7 +1048,9 @@ async function createCanonicalOfferedSlots(params: {
       start,
       service: params.service,
       durationMinutes: params.durationMinutes,
-      excludeEventId: params.excludeEventId
+      excludeEventId: params.excludeEventId,
+      calendarEvents: filteredEvents,
+      pendingEvents,
     });
     if (!validation.free || !validation.normalizedIso || !validation.endIso) continue;
     displaySlots.push(label);
@@ -1159,6 +1098,15 @@ function getDailySlots(
   const timezone = options.timezone || "Europe/Stockholm";
   const normalizedRequestedTime = normalizeRequestedTime(requestedTime || "");
   const endString = endDateStr || startDateStr;
+  const minimumMinutes = timeTextToMinutes(options.minTime);
+  const maximumMinutes = timeTextToMinutes(options.maxTime);
+  const afterMinutes = timeTextToMinutes(options.afterTime);
+  const boundaryMinutes = timeTextToMinutes(options.timeBoundary?.time);
+  const excludedMinutes = new Set(
+    (options.excludedTimes || [])
+      .map((value) => timeTextToMinutes(value))
+      .filter((value): value is number => value !== null)
+  );
 
   // ClinicPilot availability window.
   // Keep this dynamic later from the business dashboard/businesses table.
@@ -1197,12 +1145,19 @@ function getDailySlots(
       const day = String(d.getUTCDate()).padStart(2, '0');
       const dStr = `${y}-${m}-${day}`;
 
-      // Alternative slots every 15 minutes, but every candidate is still checked against
-      // real calendar events. Nothing is suggested without isSlotFree() returning true.
-      for (let totalMin = BOOKING_OPEN_MINUTES; totalMin <= BOOKING_CLOSE_MINUTES - BOOKING_INTERVAL_MINUTES; totalMin += BOOKING_INTERVAL_MINUTES) {
-        const endTotal = totalMin + durationMinutes;
-        if (endTotal > BOOKING_CLOSE_MINUTES) continue;
-
+      for (const totalMin of enumerateCandidateMinutes(
+        BOOKING_OPEN_MINUTES,
+        BOOKING_CLOSE_MINUTES,
+        durationMinutes,
+        BOOKING_INTERVAL_MINUTES,
+        {
+          minMinutes: minimumMinutes,
+          maxMinutes: maximumMinutes,
+          boundaryMinutes: afterMinutes ?? boundaryMinutes,
+          boundaryKind: afterMinutes !== null ? "exclusive_lower" : options.timeBoundary?.kind,
+          excludedMinutes,
+        },
+      )) {
         const h = Math.floor(totalMin / 60);
         const min = totalMin % 60;
         const slot = makeSlot(dStr, h, min);
@@ -1214,40 +1169,7 @@ function getDailySlots(
     return candidates;
   };
 
-  const minimumMinutes = timeTextToMinutes(options.minTime);
-  const maximumMinutes = timeTextToMinutes(options.maxTime);
-  const afterMinutes = timeTextToMinutes(options.afterTime);
-  const boundaryMinutes = timeTextToMinutes(options.timeBoundary?.time);
-  const excludedMinutes = new Set(
-    (options.excludedTimes || [])
-      .map((value) => timeTextToMinutes(value))
-      .filter((value): value is number => value !== null)
-  );
-  const allCandidates = getAllFreeCandidates().filter((candidate) => {
-    if (minimumMinutes !== null && candidate.totalMin < minimumMinutes) return false;
-    if (maximumMinutes !== null && candidate.totalMin > maximumMinutes) return false;
-    if (afterMinutes !== null && candidate.totalMin <= afterMinutes) return false;
-    if (boundaryMinutes !== null) {
-      if (
-        options.timeBoundary?.kind === "exclusive_lower" &&
-        candidate.totalMin <= boundaryMinutes
-      ) return false;
-      if (
-        options.timeBoundary?.kind === "inclusive_lower" &&
-        candidate.totalMin < boundaryMinutes
-      ) return false;
-      if (
-        options.timeBoundary?.kind === "exclusive_upper" &&
-        candidate.totalMin >= boundaryMinutes
-      ) return false;
-      if (
-        options.timeBoundary?.kind === "inclusive_upper" &&
-        candidate.totalMin > boundaryMinutes
-      ) return false;
-    }
-    if (excludedMinutes.has(candidate.totalMin)) return false;
-    return true;
-  });
+  const allCandidates = getAllFreeCandidates();
 
   // If the customer requested an exact time, that exact time must win if it is actually free.
   if (normalizedRequestedTime) {
@@ -1619,7 +1541,8 @@ class GoogleCalendarAdapter implements CalendarAdapter {
         : "";
 
       // Tool-driven calls keep their own final conflict check. The deterministic booking
-      // engine can skip this duplicate read after verifyExactSlotIsFree() has just passed.
+      // The deterministic engine can skip this duplicate read after its canonical
+      // exact-slot validation has just passed.
       if (!skipConflictCheck) {
         const bookingDate = stockholmDateString(startTime);
         const existingEvents = await this.getEvents(bookingDate, bookingDate);
@@ -8613,6 +8536,19 @@ async function handleUnifiedBookingEngine(params: {
     }
   };
 
+  if (getBookingPhase(pending) === "finalizing") {
+    console.log("[BookingStateTransition]", {
+      correlationId: bookingCorrelationId,
+      businessId: currentBookingSlotOwner.businessId,
+      channel: platformName,
+      previousPhase: "finalizing",
+      eventType: "duplicate_turn_while_finalizing",
+      nextPhase: "finalizing",
+      duplicateEvent: true
+    });
+    return true;
+  }
+
   if (deterministicTransition?.replyKind === "choose_slot") {
     await replyAndRecord(formatChooseStoredSlotClarification(getFlowReplyLanguage(pending?.language, language, text)));
     return true;
@@ -11715,7 +11651,7 @@ async function handleUnifiedBookingEngine(params: {
     );
     const pendingCanAcceptAvailabilityRefinement = Boolean(
       !pending ||
-      ["awaiting_time_selection", "awaiting_confirmation"].includes(
+      ["awaiting_time_selection"].includes(
         String(pending?.status || "")
       ) ||
       Boolean(deterministicTransition?.runAvailability)
@@ -11915,6 +11851,9 @@ async function handleUnifiedBookingEngine(params: {
         const exactIso = constraint.exactTime
           ? findOfferedSlotIso(slots, constraint.exactTime)
           : null;
+        const exactOwnedSlot = exactIso
+          ? canonicalOffers.ownedSlots.find((slot) => new Date(slot.start).getTime() === new Date(exactIso).getTime())
+          : null;
         await savePendingBooking(sessionId, platformName, {
           businessConfig,
           platform: platformName,
@@ -11933,6 +11872,7 @@ async function handleUnifiedBookingEngine(params: {
           normalizedBookingRequest: toPersistedBookingRequest(authoritativeNormalizedRequest),
           lastAvailabilityConstraintKey: availabilityConstraintKey,
           dateTime: exactIso,
+          selectedSlotEnd: exactOwnedSlot?.end || null,
           durationMinutes,
           language: lockedLanguage,
           operation: "new_booking",
@@ -12131,6 +12071,9 @@ async function handleUnifiedBookingEngine(params: {
 
       if (slots.length > 0) {
         const exactIso = requestedTime ? findOfferedSlotIso(slots, requestedTime) : null;
+        const exactOwnedSlot = exactIso
+          ? canonicalOffers.ownedSlots.find((slot) => new Date(slot.start).getTime() === new Date(exactIso).getTime())
+          : null;
         await savePendingBooking(sessionId, platformName, {
           businessConfig,
           platform: platformName,
@@ -12149,6 +12092,7 @@ async function handleUnifiedBookingEngine(params: {
           availabilityConstraint: directAvailabilityConstraint,
           normalizedBookingRequest: toPersistedBookingRequest(authoritativeNormalizedRequest),
           dateTime: exactIso,
+          selectedSlotEnd: exactOwnedSlot?.end || null,
           durationMinutes,
           language: detectStrongLatestLanguage(text) || language,
           operation: "new_booking",

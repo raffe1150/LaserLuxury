@@ -62,7 +62,7 @@ assert.match(server, /send:\s*async \(reply\) => \(await sendTelegramPreferredRe
 assert.match(server, /lastAvailabilityConstraintKey === availabilityConstraintKey/);
 assert.match(server, /isSlotListRepeatRequest\(text\)/);
 assert.match(server, /offeredSlots: slots,[\s\S]{0,500}lastAvailabilityConstraintKey: availabilityConstraintKey/);
-assert.match(server, /timeBoundary\?\.kind === "exclusive_lower"[\s\S]{0,120}candidate\.totalMin <= boundaryMinutes/);
+assert.match(server, /enumerateCandidateMinutes\([\s\S]{0,300}boundaryKind: afterMinutes !== null \? "exclusive_lower" : options\.timeBoundary\?\.kind/);
 assert.match(server, /const messages = history\.slice\(-20\)/);
 assert.match(server, /parseNormalizedTimeRange\(raw\)/);
 assert.doesNotMatch(server, /if \(voice\) \{\s*let sentAudio/);

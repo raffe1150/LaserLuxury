@@ -77,6 +77,42 @@ export function scrollDashboardToTop(
   scroller.scrollTo({ top: 0, behavior: reducedMotion ? 'auto' : 'smooth' });
 }
 
+export function getDashboardSectionScrollTop(
+  sectionId: DashboardSectionId,
+  currentScrollTop: number,
+  contentTop: number,
+  sectionTop: number,
+  scrollMarginTop: number,
+): number {
+  if (sectionId === 'overview') return 0;
+  return Math.max(0, currentScrollTop + sectionTop - contentTop - scrollMarginTop);
+}
+
+export function scrollDashboardToSection(
+  scroller: { scrollTop: number; scrollTo(options: ScrollToOptions): void },
+  sectionId: DashboardSectionId,
+  contentTop: number,
+  sectionTop: number,
+  scrollMarginTop: number,
+) {
+  scroller.scrollTo({
+    top: getDashboardSectionScrollTop(
+      sectionId,
+      scroller.scrollTop,
+      contentTop,
+      sectionTop,
+      scrollMarginTop,
+    ),
+    behavior: 'auto',
+  });
+}
+
+export function resetDashboardContentScroll(
+  scroller: { scrollTo(options: ScrollToOptions): void },
+) {
+  scroller.scrollTo({ top: 0, behavior: 'auto' });
+}
+
 function MobileNavIcon({ icon }: { icon: (typeof MOBILE_NAV_ITEMS)[number]['icon'] }) {
   if (icon === 'home') {
     return (
@@ -137,6 +173,7 @@ export default function DashboardShell({
   const [activeSection, setActiveSection] = useState<DashboardSectionId>(initialActiveSection);
   const [showScrollToTop, setShowScrollToTop] = useState(false);
   const contentRef = useRef<HTMLDivElement>(null);
+  const previousBusinessIdRef = useRef(selectedBusinessId);
 
   useEffect(() => {
     if (window.location.hash) {
@@ -168,15 +205,43 @@ export default function DashboardShell({
     };
   }, []);
 
+  useEffect(() => {
+    if (previousBusinessIdRef.current !== selectedBusinessId) {
+      const content = contentRef.current;
+      if (content && content.scrollTop !== 0) {
+        resetDashboardContentScroll(content);
+      }
+      setActiveSection('overview');
+      previousBusinessIdRef.current = selectedBusinessId;
+    }
+  }, [selectedBusinessId]);
+
   const handleSectionClick = (event: MouseEvent<HTMLAnchorElement>, sectionId: DashboardSectionId) => {
     event.preventDefault();
 
+    const content = contentRef.current;
     const section = document.getElementById(sectionId);
-    if (!section) return;
+    if (!content || !section) return;
 
     setActiveSection(sectionId);
-    section.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    const scrollMarginTop = Number.parseFloat(window.getComputedStyle(section).scrollMarginTop) || 0;
+    scrollDashboardToSection(
+      content,
+      sectionId,
+      content.getBoundingClientRect().top,
+      section.getBoundingClientRect().top,
+      scrollMarginTop,
+    );
     window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
+  };
+
+  const handleBusinessSelection = (businessId: string) => {
+    const content = contentRef.current;
+    if (content && content.scrollTop !== 0) {
+      resetDashboardContentScroll(content);
+    }
+    setActiveSection('overview');
+    onBusinessChange?.(businessId);
   };
 
   const mobileActiveSection = getMobileActiveSection(activeSection);
@@ -263,7 +328,7 @@ export default function DashboardShell({
             <select
               aria-label="Selected business"
               value={selectedBusinessId || ''}
-              onChange={(event) => onBusinessChange?.(event.target.value)}
+              onChange={(event) => handleBusinessSelection(event.target.value)}
             >
               {businesses.length === 0 ? (
                 <option value="">No businesses</option>

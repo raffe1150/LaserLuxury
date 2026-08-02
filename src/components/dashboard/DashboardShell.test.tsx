@@ -3,9 +3,12 @@ import { readFileSync } from 'node:fs';
 import { renderToStaticMarkup } from 'react-dom/server';
 import DashboardShell, {
   getMobileActiveSection,
+  getDashboardSectionScrollTop,
+  resetDashboardContentScroll,
   resolveActiveDashboardSection,
   SCROLL_TO_TOP_THRESHOLD,
   scrollDashboardToTop,
+  scrollDashboardToSection,
   shouldShowScrollToTop,
   type DashboardSectionId,
 } from './DashboardShell';
@@ -51,6 +54,12 @@ function runTests() {
   );
   assert.match(shellSource, /const content = contentRef\.current/);
   assert.match(shellSource, /className="content" ref=\{contentRef\}/);
+  assert.match(shellSource, /scrollDashboardToSection\(/);
+  assert.doesNotMatch(
+    shellSource.match(/const updateNavigationState = \(\) => \{([\s\S]*?)\n    \};/)?.[1] || '',
+    /\.scrollTo\(|\.scrollIntoView\(/,
+    'scroll-spy may update active state but must never change scroll position',
+  );
 
   const usageMarkup = renderShell('usage-statistics');
   assertOnlyDesktopSectionIsCurrent(usageMarkup, 'usage-statistics');
@@ -94,6 +103,22 @@ function runTests() {
     { top: 0, behavior: 'smooth' },
     { top: 0, behavior: 'auto' },
   ]);
+
+  assert.equal(getDashboardSectionScrollTop('overview', 4200, 64, -3000, 24), 0);
+  assert.equal(getDashboardSectionScrollTop('conversations', 5480, 64, -4268, 24), 1124);
+
+  const explicitNavigationCalls: ScrollToOptions[] = [];
+  const explicitNavigationScroller = {
+    scrollTop: 5480,
+    scrollTo: (options: ScrollToOptions) => explicitNavigationCalls.push(options),
+  };
+  scrollDashboardToSection(explicitNavigationScroller, 'conversations', 64, -4268, 24);
+  resetDashboardContentScroll(explicitNavigationScroller);
+  assert.deepEqual(explicitNavigationCalls, [
+    { top: 1124, behavior: 'auto' },
+    { top: 0, behavior: 'auto' },
+  ]);
+  assert.match(shellSource, /onChange=\{\(event\) => handleBusinessSelection\(event\.target\.value\)\}/);
 
   console.log('Dashboard shell navigation and scroll tests passed.');
 }

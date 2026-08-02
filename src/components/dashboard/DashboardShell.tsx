@@ -1,4 +1,4 @@
-import { useEffect, useState, type MouseEvent, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react';
 import type { Business } from '../../types/dashboard';
 
 interface DashboardShellProps {
@@ -9,6 +9,7 @@ interface DashboardShellProps {
   onNavigate: (path: '/' | '/login' | '/dashboard') => void;
   onBusinessChange?: (businessId: string) => void;
   onSignOut?: () => void | Promise<void>;
+  initialActiveSection?: DashboardSectionId;
   children: ReactNode;
 }
 
@@ -34,6 +35,47 @@ const MOBILE_NAV_ITEMS = [
   { id: 'bookings', label: 'Bookings', icon: 'calendar' },
   { id: 'businesses', label: 'More', icon: 'more' },
 ] as const;
+
+export type DashboardSectionId = (typeof NAV_ITEMS)[number]['id'];
+type MobileSectionId = (typeof MOBILE_NAV_ITEMS)[number]['id'];
+
+export const SCROLL_TO_TOP_THRESHOLD = 500;
+
+export function resolveActiveDashboardSection(
+  sectionPositions: ReadonlyArray<{ id: DashboardSectionId; top: number }>,
+  activationLine: number,
+): DashboardSectionId {
+  let active: DashboardSectionId = 'overview';
+  let activeTop = Number.NEGATIVE_INFINITY;
+
+  for (const section of sectionPositions) {
+    if (section.top <= activationLine && section.top > activeTop) {
+      active = section.id;
+      activeTop = section.top;
+    }
+  }
+
+  return active;
+}
+
+export function getMobileActiveSection(activeSection: DashboardSectionId): MobileSectionId {
+  if (activeSection === 'overview' || activeSection === 'analytics' || activeSection === 'conversations') {
+    return activeSection;
+  }
+  if (activeSection === 'bookings' || activeSection === 'activity') return 'bookings';
+  return 'businesses';
+}
+
+export function shouldShowScrollToTop(scrollTop: number): boolean {
+  return scrollTop >= SCROLL_TO_TOP_THRESHOLD;
+}
+
+export function scrollDashboardToTop(
+  scroller: { scrollTo(options: ScrollToOptions): void },
+  reducedMotion: boolean,
+) {
+  scroller.scrollTo({ top: 0, behavior: reducedMotion ? 'auto' : 'smooth' });
+}
 
 function MobileNavIcon({ icon }: { icon: (typeof MOBILE_NAV_ITEMS)[number]['icon'] }) {
   if (icon === 'home') {
@@ -89,46 +131,44 @@ export default function DashboardShell({
   onNavigate,
   onBusinessChange,
   onSignOut,
+  initialActiveSection = 'overview',
   children,
 }: DashboardShellProps) {
-  const [activeSection, setActiveSection] = useState('overview');
+  const [activeSection, setActiveSection] = useState<DashboardSectionId>(initialActiveSection);
+  const [showScrollToTop, setShowScrollToTop] = useState(false);
+  const contentRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (window.location.hash) {
       window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
     }
 
-    const content = document.querySelector<HTMLElement>('.dashboard-page .content');
+    const content = contentRef.current;
     if (!content) return;
 
-    const updateActiveSection = () => {
+    const updateNavigationState = () => {
       const contentTop = content.getBoundingClientRect().top;
       const activationLine = contentTop + Math.min(170, window.innerHeight * 0.24);
-      let current = 'overview';
-
-      for (const item of NAV_ITEMS) {
+      const sectionPositions = NAV_ITEMS.flatMap((item) => {
         const section = document.getElementById(item.id);
-        if (!section) continue;
+        return section ? [{ id: item.id, top: section.getBoundingClientRect().top }] : [];
+      });
 
-        if (section.getBoundingClientRect().top <= activationLine) {
-          current = item.id;
-        }
-      }
-
-      setActiveSection(current);
+      setActiveSection(resolveActiveDashboardSection(sectionPositions, activationLine));
+      setShowScrollToTop(shouldShowScrollToTop(content.scrollTop));
     };
 
-    updateActiveSection();
-    content.addEventListener('scroll', updateActiveSection, { passive: true });
-    window.addEventListener('resize', updateActiveSection);
+    updateNavigationState();
+    content.addEventListener('scroll', updateNavigationState, { passive: true });
+    window.addEventListener('resize', updateNavigationState);
 
     return () => {
-      content.removeEventListener('scroll', updateActiveSection);
-      window.removeEventListener('resize', updateActiveSection);
+      content.removeEventListener('scroll', updateNavigationState);
+      window.removeEventListener('resize', updateNavigationState);
     };
   }, []);
 
-  const handleSectionClick = (event: MouseEvent<HTMLAnchorElement>, sectionId: string) => {
+  const handleSectionClick = (event: MouseEvent<HTMLAnchorElement>, sectionId: DashboardSectionId) => {
     event.preventDefault();
 
     const section = document.getElementById(sectionId);
@@ -139,16 +179,15 @@ export default function DashboardShell({
     window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
   };
 
-  const mobileActiveSection =
-    activeSection === 'overview'
-      ? 'overview'
-      : activeSection === 'analytics'
-        ? 'analytics'
-      : activeSection === 'conversations'
-        ? 'conversations'
-        : activeSection === 'bookings' || activeSection === 'activity'
-          ? 'bookings'
-          : 'businesses';
+  const mobileActiveSection = getMobileActiveSection(activeSection);
+
+  const handleScrollToTop = () => {
+    const content = contentRef.current;
+    if (!content) return;
+
+    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    scrollDashboardToTop(content, reducedMotion);
+  };
 
   return (
     <>
@@ -248,7 +287,15 @@ export default function DashboardShell({
           </div>
         </div>
 
-        <div className="content">{children}</div>
+        <div className="content" ref={contentRef}>{children}</div>
+
+        {showScrollToTop && (
+          <button className="scroll-to-top" type="button" aria-label="Back to top" onClick={handleScrollToTop}>
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="m6 15 6-6 6 6" />
+            </svg>
+          </button>
+        )}
       </div>
 
       <nav className="mobile-bottom-nav" aria-label="Mobile dashboard navigation">

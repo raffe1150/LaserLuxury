@@ -573,6 +573,7 @@ textarea.form-input{resize:vertical;min-height:140px;line-height:1.7;}
 .dashboard-page .main{
   min-width:0;
   width:calc(100% - var(--sidebar-w));
+  position:relative;
 }
 
 .dashboard-page .content{
@@ -580,6 +581,8 @@ textarea.form-input{resize:vertical;min-height:140px;line-height:1.7;}
 }
 .dashboard-page .shell-button{border:0;background:transparent;color:var(--white);cursor:pointer;text-align:left;}
 .dashboard-page .sidebar-logo{background:var(--bg2);}
+.dashboard-page .content > .mission-admin-section:last-child{margin-bottom:0;}
+.dashboard-page .content > .mission-admin-section:last-child > .dashboard-section:last-child{margin-bottom:0;}
 .dashboard-page .topbar-search select{flex:1;border:none;outline:none;background:transparent;color:var(--white);font-size:13px;font-family:'Inter',sans-serif;min-width:0;}
 .dashboard-page .topbar-search option{background:var(--bg2);color:var(--white);}
 .dashboard-section{margin-bottom:20px;}
@@ -602,6 +605,30 @@ textarea.form-input{resize:vertical;min-height:140px;line-height:1.7;}
 .conversation-title small{font-size:11.5px;color:var(--muted);font-family:'IBM Plex Mono',monospace;}
 .booking-list{display:flex;flex-direction:column;}
 .toast{position:fixed;right:24px;bottom:24px;z-index:1200;border:1px solid var(--border);background:rgba(11,16,9,0.96);color:var(--white);border-radius:12px;padding:12px 14px;box-shadow:0 20px 70px rgba(0,0,0,0.45);cursor:pointer;}
+
+.scroll-to-top{
+  position:absolute;
+  right:24px;
+  bottom:24px;
+  z-index:30;
+  width:44px;
+  height:44px;
+  border:1px solid rgba(61,220,132,.28);
+  border-radius:14px;
+  background:rgba(11,16,9,.94);
+  color:var(--green);
+  box-shadow:0 14px 36px rgba(0,0,0,.34);
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  cursor:pointer;
+  backdrop-filter:blur(14px);
+  -webkit-backdrop-filter:blur(14px);
+}
+.scroll-to-top:hover{border-color:rgba(61,220,132,.5);background:rgba(17,24,16,.98);}
+.scroll-to-top:focus-visible{outline:2px solid var(--green);outline-offset:3px;}
+.scroll-to-top svg{width:19px;height:19px;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;}
+
 @media(max-width:768px){.dashboard-page{display:block;overflow:auto;}.dashboard-search{max-width:none;width:100%;}}
 
 
@@ -3809,6 +3836,11 @@ textarea.form-input{resize:vertical;min-height:140px;line-height:1.7;}
     box-shadow:0 20px 60px rgba(0,0,0,.48);
     backdrop-filter:blur(24px);
     -webkit-backdrop-filter:blur(24px);
+  }
+
+  .scroll-to-top{
+    right:14px;
+    bottom:calc(84px + env(safe-area-inset-bottom));
   }
 
   .mobile-nav-item{

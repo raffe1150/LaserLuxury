@@ -51,7 +51,7 @@ import {
   selectTelegramDeliveryMode,
   type TelegramReplyPreference,
 } from "./src/ai/channel-reliability";
-import { applyNormalizedRequestToPending, availabilityFieldsFromConstraint, buildSlotFingerprintSource, formatPersianSpokenPhone, getDateInTimeZone, getZonedSlotParts, normalizeBookingRequest, parseBookingDate, parseTimeConstraint, preparePersianTextForTts, slotMinutesSatisfyConstraint, toPersistedBookingRequest, zonedLocalIso, type NormalizedBookingRequest, type NormalizedTimeConstraint } from "./src/ai/booking-intelligence";
+import { applyNormalizedRequestToPending, availabilityFieldsFromConstraint, buildSlotFingerprintSource, formatPersianSpokenPhone, getDateInTimeZone, getZonedSlotParts, isCurrentConversationTurn, normalizeBookingRequest, parseBookingDate, parseTimeConstraint, preparePersianTextForTts, registerConversationTurn, slotMinutesSatisfyConstraint, toPersistedBookingRequest, zonedLocalIso, type NormalizedBookingRequest, type NormalizedTimeConstraint } from "./src/ai/booking-intelligence";
 import { createRequireAuth } from "./src/auth/require-auth";
 import { createRequireBusinessPermission } from "./src/auth/require-business-access";
 import { getAuthorizationClient } from "./src/auth/supabase-auth";
@@ -6916,6 +6916,15 @@ function formatChooseStoredSlotClarification(language: string): string {
   return "Which proposed time would you like? I can show the list again if you ask.";
 }
 
+function formatNoAvailabilityRecovery(language: string): string {
+  if (language === "fa") return "برای همین روز و محدودیت زمانی، وقت آزادی پیدا نشد. روز یا بازه زمانی دیگری می‌خواهید؟";
+  if (language === "sv") return "Det finns ingen ledig tid för samma dag och tidsönskemål. Vill du prova en annan dag eller tid?";
+  if (language === "de") return "Für denselben Tag und Zeitwunsch gibt es keinen freien Termin. Möchten Sie einen anderen Tag oder Zeitraum versuchen?";
+  if (language === "es") return "No hay disponibilidad para el mismo día y horario. ¿Quieres probar otro día u horario?";
+  if (language === "ar") return "لا يوجد موعد متاح لنفس اليوم والقيد الزمني. هل تريد تجربة يوم أو وقت آخر؟";
+  return "There is no availability for that same day and time constraint. Would you like to try another day or time?";
+}
+
 function guardCustomerFacingReply(sessionId: string, reply: string, fallbackLanguage?: string): string {
   const raw = String(reply || "").trim();
   const language = getStoredFlowLanguage(sessionId) ||
@@ -8458,9 +8467,10 @@ async function handleUnifiedBookingEngine(params: {
   });
   const latestStrongLanguage = detectStrongLatestLanguage(text);
   let pending = await loadPendingBooking(sessionId, platformName, businessConfig);
-  let authoritativeNormalizedRequest = normalizedRequest, normalizedStateReplaced = false;
+  let authoritativeNormalizedRequest = normalizedRequest, normalizedStateReplaced = false, deterministicTransition: ReturnType<typeof applyNormalizedRequestToPending> | null = null;
   if (pending?.normalizedBookingRequest) {
     const merged = applyNormalizedRequestToPending(pending, normalizedRequest);
+    deterministicTransition = merged;
     authoritativeNormalizedRequest = merged.request; normalizedStateReplaced = merged.invalidatesOffers;
     if (merged.invalidatesOffers) await savePendingBooking(sessionId, platformName, pending);
   }
@@ -8578,6 +8588,11 @@ async function handleUnifiedBookingEngine(params: {
       });
     }
   };
+
+  if (deterministicTransition?.replyKind === "choose_slot") {
+    await replyAndRecord(formatChooseStoredSlotClarification(getFlowReplyLanguage(pending?.language, language, text)));
+    return true;
+  }
 
   if (appointmentStateWasInvalidated) {
     await replyAndRecord(formatStaleAppointmentStateMessage(invalidatedRescheduleLanguage || language));
@@ -11705,13 +11720,12 @@ async function handleUnifiedBookingEngine(params: {
         ? pending.offeredSlots.length
         : 0;
       if (
-        cachedOfferCountBefore > 0 &&
         availabilityConstraintKey &&
         pending?.lastAvailabilityConstraintKey === availabilityConstraintKey &&
         !isSlotListRepeatRequest(text)
       ) {
         await replyAndRecord(
-          formatChooseStoredSlotClarification(
+          (cachedOfferCountBefore > 0 ? formatChooseStoredSlotClarification : formatNoAvailabilityRecovery)(
             getFlowReplyLanguage(pending.language, language, text)
           )
         );
@@ -13382,8 +13396,10 @@ async function sendTelegramPreferredReply(params: {
   inputMode: "text" | "voice";
   config: any;
   source: string;
+  turnSequence?: number;
 }): Promise<{ sent: boolean; delivery: "text" | "voice" | "none" }> {
-  const { sessionId, chatId, reply, inputMode, config, source } = params;
+  const { sessionId, chatId, reply, inputMode, config, source, turnSequence } = params;
+  if (turnSequence !== undefined && !isCurrentConversationTurn(sessionId, turnSequence)) return { sent: false, delivery: "none" };
   const preference = telegramReplyPreferences[sessionId] ||
     updateTelegramReplyPreference(sessionId, inputMode, "");
   const delivery = selectTelegramDeliveryMode(preference, inputMode);
@@ -13536,6 +13552,8 @@ async function processTelegramUpdateClaimed(update: any, config: any, platform: 
   }
   const telegramSessionId =
     `tg:${businessId}:${telegramTokenFingerprint(telegramToken)}:${chatId}`;
+  const telegramTurnSequence = Number(update.update_id);
+  registerConversationTurn(telegramSessionId, telegramTurnSequence);
   resetSessionIfBusinessConfigChanged(telegramSessionId, config);
 
   const { apiKey } = config;
@@ -13626,6 +13644,7 @@ async function processTelegramUpdateClaimed(update: any, config: any, platform: 
         inputMode: telegramInputMode,
         config,
         source: "voice_download_failure",
+        turnSequence: telegramTurnSequence,
       });
       appendLocalHistory(telegramSessionId, "[voice unavailable]", fallback);
       return;
@@ -13638,6 +13657,7 @@ async function processTelegramUpdateClaimed(update: any, config: any, platform: 
           language: getStoredFlowLanguage(telegramSessionId) || undefined,
         })
       : null;
+    if (!isCurrentConversationTurn(telegramSessionId, telegramTurnSequence)) return;
     if (voice && !voiceTranscript) {
       const fallbackLanguage = getConversationLanguage(
         telegramSessionId,
@@ -13652,6 +13672,7 @@ async function processTelegramUpdateClaimed(update: any, config: any, platform: 
         inputMode: telegramInputMode,
         config,
         source: "voice_transcription_failure",
+        turnSequence: telegramTurnSequence,
       });
       appendLocalHistory(telegramSessionId, "[voice transcription unavailable]", fallback);
       return;
@@ -13680,6 +13701,7 @@ async function processTelegramUpdateClaimed(update: any, config: any, platform: 
           inputMode: telegramInputMode,
           config,
           source: "unified_booking_reply",
+          turnSequence: telegramTurnSequence,
         })).sent,
         postProcessPlatform: platform,
         inputMode: voice ? "voice" : "text"
@@ -13720,6 +13742,7 @@ async function processTelegramUpdateClaimed(update: any, config: any, platform: 
         inputMode: telegramInputMode,
         config,
         source: "completed_booking_thanks",
+        turnSequence: telegramTurnSequence,
       });
       appendLocalHistory(telegramSessionId, textForFlow, thanksText);
       try {
@@ -13746,6 +13769,7 @@ async function processTelegramUpdateClaimed(update: any, config: any, platform: 
         inputMode: telegramInputMode,
         config,
         source: "daily_usage_limit",
+        turnSequence: telegramTurnSequence,
       });
       appendLocalHistory(telegramSessionId, textForFlow || '[voice]', limitText);
       try {
@@ -13875,6 +13899,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
                 inputMode: telegramInputMode,
                 config,
                 source: "reschedule_tool_unified_route",
+                turnSequence: telegramTurnSequence,
               });
               return result.sent;
             },
@@ -13958,6 +13983,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       });
     }
 
+    if (!isCurrentConversationTurn(telegramSessionId, telegramTurnSequence)) return;
     history.push({ role: "user", content: Array.isArray(userMessageContent) ? "(User Voice Message)" : userMessageContent });
     history.push({ role: "assistant", content: textResponse });
     if (history.length > 24) history.splice(0, history.length - 24);
@@ -13969,6 +13995,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       inputMode: telegramInputMode,
       config,
       source: "gemini_conversation_reply",
+      turnSequence: telegramTurnSequence,
     });
     try {
       await postProcessMessage(
@@ -14018,6 +14045,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
             inputMode: fallbackInputMode,
             config,
             source: "telegram_processing_error_fallback",
+            turnSequence: telegramTurnSequence,
           });
        } catch {
           console.error("[ChannelProcessing]", {

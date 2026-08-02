@@ -1,3 +1,5 @@
+import { applyBookingTransition, mergeBookingRequest } from './booking-state-machine';
+
 export type SupportedLanguage = 'fa' | 'sv' | 'en' | 'de' | 'es' | 'ar';
 export type NormalizedIntent =
   | 'general_question'
@@ -276,33 +278,16 @@ export function mergeNormalizedBookingRequest(
   previous: NormalizedBookingRequest | PersistedNormalizedBookingRequest,
   latest: NormalizedBookingRequest,
 ): BookingRequestMergeResult {
-  const replaced = {
-    date: Boolean(latest.date && JSON.stringify(latest.date) !== JSON.stringify(previous.date)),
-    time: Boolean(latest.timeConstraint && JSON.stringify(latest.timeConstraint) !== JSON.stringify(previous.timeConstraint)),
-    service: Boolean(latest.service && latest.service.normalized !== previous.service?.normalized),
-  };
-  return {
-    request: {
-      ...previous,
-      ...latest,
-      date: latest.date || previous.date,
-      timeConstraint: latest.timeConstraint || previous.timeConstraint,
-      service: latest.service || previous.service,
-      customerCorrection: latest.customerCorrection,
-    },
-    replaced,
-    invalidatesOffers: replaced.date || replaced.time || replaced.service,
-  };
+  return mergeBookingRequest(previous, latest);
 }
 
 export function applyNormalizedRequestToPending(pending: Record<string, any>, latest: NormalizedBookingRequest) {
-  const merged = mergeNormalizedBookingRequest(pending.normalizedBookingRequest, latest);
-  if (merged.invalidatesOffers) Object.assign(pending, {
-    offeredSlots: [], ownedOfferedSlots: [], dateTime: null, selectedSlotEnd: null,
-    lastAvailabilityConstraintKey: null, normalizedBookingRequest: toPersistedBookingRequest(merged.request),
-  });
-  return merged;
+  const transition = applyBookingTransition(pending, latest);
+  pending.normalizedBookingRequest = toPersistedBookingRequest(transition.request);
+  return transition;
 }
+
+export { isCurrentConversationTurn, registerConversationTurn } from './booking-state-machine';
 
 /** Between is inclusive at both ends; before/after are strict; from is inclusive. */
 export function slotMinutesSatisfyConstraint(minutes: number, constraint?: NormalizedTimeConstraint): boolean {

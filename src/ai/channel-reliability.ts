@@ -173,7 +173,7 @@ export function resolveTelegramReplyPreference(
   if (explicitMode) return { mode: explicitMode, explicit: true };
   if (previous?.explicit) return previous;
   if (inputMode === 'voice') return { mode: 'voice', explicit: false };
-  return previous || { mode: 'auto', explicit: false };
+  return { mode: 'auto', explicit: false };
 }
 
 export function selectTelegramDeliveryMode(

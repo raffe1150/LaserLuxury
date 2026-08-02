@@ -134,7 +134,8 @@ assert.deepEqual(voiceState, textState);
 
 const server = fs.readFileSync(new URL('../../server.ts', import.meta.url), 'utf8');
 const intelligence = fs.readFileSync(new URL('./booking-intelligence.ts', import.meta.url), 'utf8');
-assert.match(intelligence, /offeredSlots: \[\][\s\S]{0,200}lastAvailabilityConstraintKey: null/);
+const stateMachine = fs.readFileSync(new URL('./booking-state-machine.ts', import.meta.url), 'utf8');
+assert.match(stateMachine, /offeredSlots: \[\][\s\S]{0,200}lastAvailabilityConstraintKey: null/);
 assert.match(server, /slotMinutesSatisfyConstraint\(zoned\.minutes, params\.normalizedConstraint\)/);
 assert.match(server, /if \(!slotsText\) return l\.busyNone\(normalizedSpecificTime\)/);
 assert.match(server, /if \(!slotsText\) return l\.none/);

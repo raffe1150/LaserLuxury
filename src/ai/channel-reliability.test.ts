@@ -31,6 +31,9 @@ assert.equal(classifyMessagingIntent('Dar morede vaghtam soal daram'), 'ambiguou
 let preference = resolveTelegramReplyPreference(null, 'voice', 'سلام');
 assert.deepEqual(preference, { mode: 'voice', explicit: false });
 assert.equal(selectTelegramDeliveryMode(preference, 'voice'), 'voice');
+preference = resolveTelegramReplyPreference(preference, 'text', 'سلام دوباره');
+assert.deepEqual(preference, { mode: 'auto', explicit: false });
+assert.equal(selectTelegramDeliveryMode(preference, 'text'), 'text');
 preference = resolveTelegramReplyPreference(preference, 'text', 'reply with voice');
 assert.deepEqual(preference, { mode: 'voice', explicit: true });
 assert.equal(selectTelegramDeliveryMode(preference, 'text'), 'voice');
@@ -65,6 +68,8 @@ assert.match(server, /parseNormalizedTimeRange\(raw\)/);
 assert.doesNotMatch(server, /if \(voice\) \{\s*let sentAudio/);
 assert.match(server, /runWithInboundMessageClaim\([\s\S]{0,300}platform: "telegram"/);
 assert.match(server, /inputMode:\s*voice \? "voice" : "text"/);
+assert.match(server, /registerConversationTurn\(telegramSessionId, telegramTurnSequence\)/);
+assert.match(server, /if \(!isCurrentConversationTurn\(telegramSessionId, telegramTurnSequence\)\) return/);
 const verifiedResult = server.indexOf('const bookingOperationResult = createBookingOperationResult');
 const successAuthorization = server.indexOf('verifiedBookingReplyAuthorizations[sessionId] = bookingOperationResult', verifiedResult);
 assert.ok(verifiedResult >= 0 && successAuthorization > verifiedResult);

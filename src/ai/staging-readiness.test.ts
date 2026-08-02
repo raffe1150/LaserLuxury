@@ -81,7 +81,7 @@ for (const channel of ['whatsapp', 'messenger', 'instagram', 'telegram']) {
   );
 }
 
-assert.match(server, /if \(voice && !voiceTranscript\)[\s\S]{0,500}return;/);
+assert.match(server, /if \(voice && !voiceTranscript\)[\s\S]{0,1200}return;/);
 assert.match(server, /audioBuffer\.byteLength !== expectedSize/);
 assert.match(server, /Persian\/Farsi \(fa-IR\)/);
 assert.match(server, /awaiting_voice_contact_confirmation/);

@@ -39,6 +39,18 @@ import {
   createBookingOperationResult,
   runAiProviderRequest,
 } from "./src/ai/reliability";
+import {
+  classifyMessagingIntent,
+  detectExplicitLanguageSwitch,
+  hasStrongLatinPersianEvidence,
+  isSlotListRepeatRequest,
+  parseNormalizedTimeRange,
+  resolveTelegramReplyPreference,
+  resolveStableConversationLanguage,
+  scoreLatinPersianEvidence,
+  selectTelegramDeliveryMode,
+  type TelegramReplyPreference,
+} from "./src/ai/channel-reliability";
 import { createRequireAuth } from "./src/auth/require-auth";
 import { createRequireBusinessPermission } from "./src/auth/require-business-access";
 import { getAuthorizationClient } from "./src/auth/supabase-auth";
@@ -570,6 +582,14 @@ function parseRescheduleTimeFollowUp(text?: string): RescheduleTimeFollowUp {
     : null;
   if (positiveBareTime && !allTimes.includes(positiveBareTime)) allTimes.push(positiveBareTime);
 
+  const normalizedTimeRange = parseNormalizedTimeRange(raw);
+  if (
+    normalizedTimeRange?.kind === "exact" &&
+    !allTimes.includes(normalizedTimeRange.time)
+  ) {
+    allTimes.push(normalizedTimeRange.time);
+  }
+
   const boundaryPatterns: Array<[TimeBoundaryKind, RegExp]> = [
     [
       "exclusive_lower",
@@ -607,8 +627,18 @@ function parseRescheduleTimeFollowUp(text?: string): RescheduleTimeFollowUp {
       )
     ]
   ];
-  let boundary: TimeBoundary | null = null;
+  let boundary: TimeBoundary | null = normalizedTimeRange && [
+    "exclusive_lower",
+    "inclusive_lower",
+    "exclusive_upper",
+  ].includes(normalizedTimeRange.kind)
+    ? {
+        kind: normalizedTimeRange.kind as TimeBoundaryKind,
+        time: (normalizedTimeRange as { time: string }).time,
+      }
+    : null;
   for (const [kind, pattern] of boundaryPatterns) {
+    if (boundary) break;
     const match = raw.match(pattern);
     if (!match) continue;
     let boundaryTime: string | null = null;
@@ -3294,6 +3324,7 @@ async function checkAndIncrementDailyUsage(params: { businessId?: string | numbe
 
 const pendingBookings: Record<string, any> = {};
 const verifiedBookingReplyAuthorizations: Record<string, BookingOperationResult> = {};
+const telegramReplyPreferences: Record<string, TelegramReplyPreference & { updatedAt: number }> = {};
 const recentlyCompletedBookings: Record<string, {
   completedAt: number;
   language: string;
@@ -5389,6 +5420,7 @@ async function savePendingBooking(chatId: string, platform: string, pending: any
       availabilityMinTime: pending.availabilityMinTime || null,
       availabilityMaxTime: pending.availabilityMaxTime || null,
       availabilityConstraint: pending.availabilityConstraint || null,
+      lastAvailabilityConstraintKey: pending.lastAvailabilityConstraintKey || null,
       language: pending.language || null,
       customerName: pending.customerName || null,
       customerPhone: pending.customerPhone || null,
@@ -5487,6 +5519,7 @@ async function loadPendingBooking(chatId: string, platform: string, businessConf
       availabilityMinTime: parsed.availabilityMinTime || null,
       availabilityMaxTime: parsed.availabilityMaxTime || null,
       availabilityConstraint: parsed.availabilityConstraint || null,
+      lastAvailabilityConstraintKey: parsed.lastAvailabilityConstraintKey || null,
       language: parsed.language || null,
       customerName: parsed.customerName || null,
       customerPhone: parsed.customerPhone || null,
@@ -6469,6 +6502,24 @@ function availabilityConstraintSlotOptions(
   };
 }
 
+function canonicalAvailabilityConstraintKey(
+  constraint?: CanonicalAvailabilityConstraint | null
+): string | null {
+  if (!constraint) return null;
+  return safeLogFingerprint(JSON.stringify({
+    startDate: constraint.startDate,
+    endDate: constraint.endDate,
+    kind: constraint.kind,
+    exactTime: constraint.exactTime || null,
+    minTime: constraint.minTime || null,
+    maxTime: constraint.maxTime || null,
+    daypart: constraint.daypart || null,
+    boundaryKind: constraint.timeBoundary?.kind || null,
+    boundaryTime: constraint.timeBoundary?.time || null,
+    rejectedTimes: constraint.rejectedTimes || [],
+  }));
+}
+
 function slotSatisfiesAvailabilityConstraint(
   startIso: string,
   constraint?: CanonicalAvailabilityConstraint | null
@@ -6829,6 +6880,33 @@ function formatLanguageMismatchRecovery(language: string, reply: string): string
   if (language === "es") return "Con gusto te ayudo en español. ¿Qué quieres saber?";
   if (language === "ar") return "يسعدني مساعدتك بالعربية. ماذا تريد أن تعرف؟";
   return "I’m happy to help in English. What would you like to know?";
+}
+
+function formatLanguageRepairAcknowledgement(language: string): string {
+  if (language === "fa") return "حق با شماست. زبان گفتگو را فارسی نگه می‌دارم. چطور می‌تونم کمکتون کنم؟";
+  if (language === "sv") return "Du har rätt. Jag fortsätter på svenska. Hur kan jag hjälpa dig?";
+  if (language === "de") return "Sie haben recht. Ich bleibe bei Deutsch. Wie kann ich helfen?";
+  if (language === "es") return "Tienes razón. Continuaré en español. ¿Cómo puedo ayudarte?";
+  if (language === "ar") return "معك حق. سأواصل باللغة العربية. كيف يمكنني مساعدتك؟";
+  return "You’re right. I’ll keep the conversation in English. How can I help?";
+}
+
+function formatAmbiguousBookingIntentClarification(language: string): string {
+  if (language === "fa") return "منظورتون رزرو جدید، تغییر زمان، لغو، یا بررسی رزرو قبلیه؟";
+  if (language === "sv") return "Menar du en ny bokning, ombokning, avbokning eller att kontrollera en tidigare bokning?";
+  if (language === "de") return "Meinen Sie eine neue Buchung, Umbuchung, Stornierung oder die Prüfung einer früheren Buchung?";
+  if (language === "es") return "¿Te refieres a una nueva reserva, cambiarla, cancelarla o consultar una reserva anterior?";
+  if (language === "ar") return "هل تقصد حجزًا جديدًا، تغيير موعد، إلغاءه، أم التحقق من حجز سابق؟";
+  return "Do you mean a new booking, rescheduling, cancellation, or checking an existing booking?";
+}
+
+function formatChooseStoredSlotClarification(language: string): string {
+  if (language === "fa") return "کدام‌یک از زمان‌های پیشنهادی را انتخاب می‌کنید؟ اگر می‌خواهید فهرست را دوباره بفرستم، بگویید «زمان‌ها را دوباره بفرست».";
+  if (language === "sv") return "Vilken av de föreslagna tiderna väljer du? Säg till om du vill att jag visar tiderna igen.";
+  if (language === "de") return "Welche der vorgeschlagenen Zeiten wählen Sie? Ich kann die Liste auf Wunsch erneut senden.";
+  if (language === "es") return "¿Cuál de las horas propuestas eliges? Puedo mostrar la lista de nuevo si quieres.";
+  if (language === "ar") return "أي وقت من الأوقات المقترحة تختار؟ يمكنني إرسال القائمة مجددًا إذا أردت.";
+  return "Which proposed time would you like? I can show the list again if you ask.";
 }
 
 function guardCustomerFacingReply(sessionId: string, reply: string, fallbackLanguage?: string): string {
@@ -7529,6 +7607,7 @@ function resetSessionIfBusinessConfigChanged(sessionId: string, config: any) {
     chatSessions[sessionId] = [];
     delete pendingBookings[sessionId];
     delete recentlyCompletedBookings[sessionId];
+    delete telegramReplyPreferences[sessionId];
     delete appointmentContexts[sessionId];
     delete appointmentSelectionContexts[sessionId];
     delete appointmentLookupContexts[sessionId];
@@ -11594,9 +11673,24 @@ async function handleUnifiedBookingEngine(params: {
     ) {
       const priorConstraintType = previousAvailabilityConstraint?.kind || "none";
       const constraint = latestAvailabilityConstraint;
+      const availabilityConstraintKey = canonicalAvailabilityConstraintKey(constraint);
       const cachedOfferCountBefore = Array.isArray(pending?.offeredSlots)
         ? pending.offeredSlots.length
         : 0;
+      if (
+        platformName === "telegram" &&
+        cachedOfferCountBefore > 0 &&
+        availabilityConstraintKey &&
+        pending?.lastAvailabilityConstraintKey === availabilityConstraintKey &&
+        !isSlotListRepeatRequest(text)
+      ) {
+        await replyAndRecord(
+          formatChooseStoredSlotClarification(
+            getFlowReplyLanguage(pending.language, language, text)
+          )
+        );
+        return true;
+      }
       const refinementDetected = Boolean(
         pending?.operation === "new_booking" &&
         derivedLatestAvailabilityConstraint
@@ -11776,6 +11870,7 @@ async function handleUnifiedBookingEngine(params: {
           availabilityMinTime: constraint.minTime || null,
           availabilityMaxTime: constraint.maxTime || null,
           availabilityConstraint: constraint,
+          lastAvailabilityConstraintKey: availabilityConstraintKey,
           dateTime: exactIso,
           durationMinutes,
           language: lockedLanguage,
@@ -11803,6 +11898,7 @@ async function handleUnifiedBookingEngine(params: {
           availabilityMinTime: constraint.minTime || null,
           availabilityMaxTime: constraint.maxTime || null,
           availabilityConstraint: constraint,
+          lastAvailabilityConstraintKey: availabilityConstraintKey,
           dateTime: null,
           selectedSlotEnd: null,
           durationMinutes,
@@ -13087,6 +13183,25 @@ async function handleUnifiedBookingEngine(params: {
     }
 
     if (pending?.status === "awaiting_time_selection") {
+      if (platformName === "telegram") {
+        if (isSlotListRepeatRequest(text)) {
+          await replyAndRecord(
+            formatSwedishTimeSlots(
+              Array.isArray(pending.offeredSlots) ? pending.offeredSlots : [],
+              undefined,
+              getFlowReplyLanguage(pending.language, language, text)
+            )
+          );
+          return true;
+        }
+        if (classifyMessagingIntent(text) === "normal") return false;
+        await replyAndRecord(
+          formatChooseStoredSlotClarification(
+            getFlowReplyLanguage(pending.language, language, text)
+          )
+        );
+        return true;
+      }
       await replyAndRecord(
         formatSwedishTimeSlots(
           Array.isArray(pending.offeredSlots) ? pending.offeredSlots : [],
@@ -13218,6 +13333,86 @@ async function routeRescheduleToolCallThroughUnified(params: {
       };
 }
 
+function updateTelegramReplyPreference(
+  sessionId: string,
+  inputMode: "text" | "voice",
+  normalizedText: string
+): TelegramReplyPreference {
+  const previous = telegramReplyPreferences[sessionId] || null;
+  const next = resolveTelegramReplyPreference(previous, inputMode, normalizedText);
+  telegramReplyPreferences[sessionId] = { ...next, updatedAt: Date.now() };
+  return next;
+}
+
+async function sendTelegramPreferredReply(params: {
+  sessionId: string;
+  chatId: string;
+  reply: string;
+  inputMode: "text" | "voice";
+  config: any;
+  source: string;
+}): Promise<{ sent: boolean; delivery: "text" | "voice" | "none" }> {
+  const { sessionId, chatId, reply, inputMode, config, source } = params;
+  const preference = telegramReplyPreferences[sessionId] ||
+    updateTelegramReplyPreference(sessionId, inputMode, "");
+  const delivery = selectTelegramDeliveryMode(preference, inputMode);
+  if (delivery === "text") {
+    const sent = await sendCustomerMessage("telegram", chatId, reply, config);
+    return { sent, delivery: sent ? "text" : "none" };
+  }
+
+  const telegramToken = normalizeTelegramBotToken(config?.telegramToken);
+  const outputPath = `/tmp/odinlink_telegram_voice_${crypto.randomUUID()}.mp3`;
+  let voiceRequestAttempted = false;
+  try {
+    const EdgeTTS = (await import("node-edge-tts")).EdgeTTS;
+    const cleanText = sanitizeTTS(reply);
+    const tts = new EdgeTTS({
+      voice: detectTtsVoiceCode(reply),
+      rate: "-10%",
+      timeout: 60_000,
+    });
+    await tts.ttsPromise(cleanText || reply, outputPath);
+    const mp3Buffer = fs.readFileSync(outputPath);
+    const formData = new FormData();
+    formData.append("chat_id", chatId);
+    formData.append("voice", new Blob([mp3Buffer as any], { type: "audio/mpeg" }), "response.mp3");
+    voiceRequestAttempted = true;
+    const response = await fetch(
+      `https://api.telegram.org/bot${telegramToken}/sendVoice`,
+      { method: "POST", body: formData as any }
+    );
+    logTelegramMessageSent({
+      token: telegramToken,
+      config,
+      source,
+      success: response.ok,
+    });
+    if (response.ok) return { sent: true, delivery: "voice" };
+  } catch (error) {
+    console.error("[TelegramReplyMode]", {
+      businessId: getBusinessIdFromConfig(config),
+      stage: voiceRequestAttempted ? "voice_send" : "tts_generation",
+      success: false,
+      errorCategory: classifyAiFailure(error),
+    });
+    // A transport exception after sendVoice began has an unknown delivery result.
+    // Do not risk sending a duplicate text reply for the same inbound update.
+    if (voiceRequestAttempted) return { sent: false, delivery: "none" };
+  } finally {
+    try {
+      if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
+    } catch {
+      console.warn("[TelegramReplyMode] temporary audio cleanup failed", {
+        businessId: getBusinessIdFromConfig(config),
+      });
+    }
+  }
+
+  const sent = await sendCustomerMessage("telegram", chatId, reply, config);
+  return { sent, delivery: sent ? "text" : "none" };
+}
+
 async function processTelegramUpdate(update: any, config: any, platform: string = "telegram-polling") {
   const telegramToken = normalizeTelegramBotToken(config?.telegramToken);
   const updateId = String(update?.update_id ?? "").trim();
@@ -13318,6 +13513,12 @@ async function processTelegramUpdateClaimed(update: any, config: any, platform: 
   try {
     const text = update.message.text;
     const voice = update.message.voice;
+    const telegramInputMode: "text" | "voice" = voice ? "voice" : "text";
+    updateTelegramReplyPreference(
+      telegramSessionId,
+      telegramInputMode,
+      String(text || "")
+    );
     if (text || voice) {
       recordAcceptedCustomerMessage({
         businessId,
@@ -13384,7 +13585,14 @@ async function processTelegramUpdateClaimed(update: any, config: any, platform: 
         config
       );
       const fallback = formatVoiceInputFailure(fallbackLanguage);
-      await sendCustomerMessage("telegram", chatId.toString(), fallback, config);
+      await sendTelegramPreferredReply({
+        sessionId: telegramSessionId,
+        chatId: chatId.toString(),
+        reply: fallback,
+        inputMode: telegramInputMode,
+        config,
+        source: "voice_download_failure",
+      });
       appendLocalHistory(telegramSessionId, "[voice unavailable]", fallback);
       return;
     }
@@ -13403,12 +13611,24 @@ async function processTelegramUpdateClaimed(update: any, config: any, platform: 
         config
       );
       const fallback = formatVoiceInputFailure(fallbackLanguage);
-      await sendCustomerMessage("telegram", chatId.toString(), fallback, config);
+      await sendTelegramPreferredReply({
+        sessionId: telegramSessionId,
+        chatId: chatId.toString(),
+        reply: fallback,
+        inputMode: telegramInputMode,
+        config,
+        source: "voice_transcription_failure",
+      });
       appendLocalHistory(telegramSessionId, "[voice transcription unavailable]", fallback);
       return;
     }
     const textForFlow = String(text || voiceTranscript || "").trim();
     if (voiceTranscript) userMessageContent = voiceTranscript;
+    updateTelegramReplyPreference(
+      telegramSessionId,
+      telegramInputMode,
+      textForFlow
+    );
 
     if (textForFlow) {
       const unifiedHandled = await handleUnifiedBookingEngine({
@@ -13419,13 +13639,14 @@ async function processTelegramUpdateClaimed(update: any, config: any, platform: 
         text: textForFlow,
         history,
         businessConfig: config,
-        send: async (reply) =>
-          await sendCustomerMessage(
-            "telegram",
-            chatId.toString(),
-            reply,
-            config
-          ),
+        send: async (reply) => (await sendTelegramPreferredReply({
+          sessionId: telegramSessionId,
+          chatId: chatId.toString(),
+          reply,
+          inputMode: telegramInputMode,
+          config,
+          source: "unified_booking_reply",
+        })).sent,
         postProcessPlatform: platform,
         inputMode: voice ? "voice" : "text"
       });
@@ -13458,19 +13679,20 @@ async function processTelegramUpdateClaimed(update: any, config: any, platform: 
     const completedBooking = getRecentCompletedBooking(telegramSessionId);
     if (textForFlow && completedBooking && isThanksOnlyText(textForFlow)) {
       const thanksText = formatThanksReply(completedBooking.language || getLockedReplyLanguage(telegramSessionId, textForFlow), completedBooking.name);
-      const response = await fetch(`https://api.telegram.org/bot${telegramToken}/sendMessage`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chat_id: chatId, text: thanksText })
-      });
-      logTelegramMessageSent({
-        token: telegramToken,
+      await sendTelegramPreferredReply({
+        sessionId: telegramSessionId,
+        chatId: chatId.toString(),
+        reply: thanksText,
+        inputMode: telegramInputMode,
         config,
         source: "completed_booking_thanks",
-        success: response.ok
       });
       appendLocalHistory(telegramSessionId, textForFlow, thanksText);
-      await postProcessMessage(chatId.toString(), platform, textForFlow, thanksText, telegramToken, apiKey, getBusinessIdFromConfig(config));
+      try {
+        await postProcessMessage(chatId.toString(), platform, textForFlow, thanksText, telegramToken, apiKey, getBusinessIdFromConfig(config));
+      } catch {
+        console.error("[TelegramReplyMode]", { businessId, stage: "post_process", success: false });
+      }
       return;
     }
 
@@ -13483,23 +13705,24 @@ async function processTelegramUpdateClaimed(update: any, config: any, platform: 
     });
     if (!usage.allowed) {
       const limitText = formatDailyLimitMessage(usageLanguage);
-      const response = await fetch(`https://api.telegram.org/bot${telegramToken}/sendMessage`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chat_id: chatId, text: limitText })
-      });
-      logTelegramMessageSent({
-        token: telegramToken,
+      await sendTelegramPreferredReply({
+        sessionId: telegramSessionId,
+        chatId: chatId.toString(),
+        reply: limitText,
+        inputMode: telegramInputMode,
         config,
         source: "daily_usage_limit",
-        success: response.ok
       });
       appendLocalHistory(telegramSessionId, textForFlow || '[voice]', limitText);
-      await postProcessMessage(chatId.toString(), platform, textForFlow || '[voice]', limitText, telegramToken, apiKey, getBusinessIdFromConfig(config));
+      try {
+        await postProcessMessage(chatId.toString(), platform, textForFlow || '[voice]', limitText, telegramToken, apiKey, getBusinessIdFromConfig(config));
+      } catch {
+        console.error("[TelegramReplyMode]", { businessId, stage: "post_process", success: false });
+      }
       return;
     }
 
-    const messages = [...history];
+    const messages = history.slice(-20);
     messages.push({ role: "user", content: userMessageContent });
     
 const businessName =
@@ -13611,18 +13834,15 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
             history,
             businessConfig: config,
             send: async (reply) => {
-              const response = await fetch(`https://api.telegram.org/bot${telegramToken}/sendMessage`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ chat_id: chatId, text: reply })
-              });
-              logTelegramMessageSent({
-                token: telegramToken,
+              const result = await sendTelegramPreferredReply({
+                sessionId: telegramSessionId,
+                chatId: chatId.toString(),
+                reply,
+                inputMode: telegramInputMode,
                 config,
                 source: "reschedule_tool_unified_route",
-                success: response.ok
               });
-              return response.ok;
+              return result.sent;
             },
             postProcessPlatform: platform
           });
@@ -13706,70 +13926,32 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
 
     history.push({ role: "user", content: Array.isArray(userMessageContent) ? "(User Voice Message)" : userMessageContent });
     history.push({ role: "assistant", content: textResponse });
+    if (history.length > 24) history.splice(0, history.length - 24);
     
-    // Voice-to-Voice vs Text-to-Text via Gemini
-    if (voice) {
-      let sentAudio = false;
-      try {
-         const EdgeTTS = (await import('node-edge-tts')).EdgeTTS;
-      
-         const voiceCode = detectTtsVoiceCode(textResponse);
-
-         const outName = `/tmp/bot_tts_${Date.now()}.mp3`;
-         const cleanText = sanitizeTTS(textResponse);
-         const finalTts = new EdgeTTS({ voice: voiceCode, rate: '-10%', timeout: 60000 });
-         await finalTts.ttsPromise(cleanText || "Förlåt, jag förstod inte.", outName);
-         
-         const mp3Buf = fs.readFileSync(outName);
-         const blob = new Blob([mp3Buf as any], { type: 'audio/mpeg' });
-         const formData = new FormData();
-         formData.append('chat_id', chatId.toString());
-         formData.append('voice', blob, 'response.mp3');
-         
-         const response = await fetch(`https://api.telegram.org/bot${telegramToken}/sendVoice`, {
-           method: 'POST',
-           body: formData as any
-         });
-         logTelegramMessageSent({
-           token: telegramToken,
-           config,
-           source: "gemini_voice_reply",
-           success: response.ok
-         });
-         fs.unlinkSync(outName);
-         sentAudio = true;
-      } catch (ttsErr) {
-        console.error("TTS generation failed:", ttsErr);
-      }
-      
-      if (!sentAudio) {
-        const response = await fetch(`https://api.telegram.org/bot${telegramToken}/sendMessage`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ chat_id: chatId, text: textResponse })
-        });
-        logTelegramMessageSent({
-          token: telegramToken,
-          config,
-          source: "gemini_voice_text_fallback",
-          success: response.ok
-        });
-      }
-      postProcessMessage(chatId.toString(), platform, userMessageContent, textResponse, telegramToken, apiKey, getBusinessIdFromConfig(config));
-    } else {
-      const response = await fetch(`https://api.telegram.org/bot${telegramToken}/sendMessage`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chat_id: chatId, text: textResponse })
+    await sendTelegramPreferredReply({
+      sessionId: telegramSessionId,
+      chatId: chatId.toString(),
+      reply: textResponse,
+      inputMode: telegramInputMode,
+      config,
+      source: "gemini_conversation_reply",
+    });
+    try {
+      await postProcessMessage(
+        chatId.toString(),
+        platform,
+        textForFlow,
+        textResponse,
+        telegramToken,
+        apiKey,
+        getBusinessIdFromConfig(config)
+      );
+    } catch {
+      console.error("[TelegramReplyMode]", {
+        businessId,
+        stage: "post_process",
+        success: false,
       });
-      logTelegramMessageSent({
-        token: telegramToken,
-        config,
-        source: "gemini_text_reply",
-        success: response.ok
-      });
-      
-      postProcessMessage(chatId.toString(), platform, userMessageContent, textResponse, telegramToken, apiKey, getBusinessIdFromConfig(config));
     }
   } catch (error: any) {
     const errorCategory = classifyAiFailure(error);
@@ -13782,24 +13964,26 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
     });
     if (update.message?.chat?.id && config.telegramToken) {
        try {
+          const fallbackInputMode: "text" | "voice" = update.message?.voice
+            ? "voice"
+            : "text";
+          updateTelegramReplyPreference(
+            telegramSessionId,
+            fallbackInputMode,
+            String(update.message?.text || "")
+          );
           const fallbackLanguage = getConversationLanguage(
             telegramSessionId,
             String(update.message?.text || ""),
             config
           );
-          const response = await fetch(`https://api.telegram.org/bot${config.telegramToken}/sendMessage`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              chat_id: update.message.chat.id,
-              text: getErrorMessageByLanguage(fallbackLanguage),
-            })
-          });
-          logTelegramMessageSent({
-            token: config.telegramToken,
+          await sendTelegramPreferredReply({
+            sessionId: telegramSessionId,
+            chatId: String(update.message.chat.id),
+            reply: getErrorMessageByLanguage(fallbackLanguage),
+            inputMode: fallbackInputMode,
             config,
             source: "telegram_processing_error_fallback",
-            success: response.ok
           });
        } catch {
           console.error("[ChannelProcessing]", {
@@ -13889,6 +14073,7 @@ function detectUserLanguage(text: string): string {
   if (/[å]/i.test(raw)) scores.sv += 3;
   if (/[ñáéíóú¿¡]/i.test(raw)) scores.es += 3;
   if (/[ßü]/i.test(raw)) scores.de += 3;
+  scores.fa += scoreLatinPersianEvidence(raw);
 
   // Strong phrase signals.
   add("fa", /\b(salam|khubi|khub|khubam|khub hastin|mikham|mikhastam|mitonam|mitoonam|baraye|vaght|saat|sate|doshanbe|seshanbe|chaharshanbe|panjshanbe|jome|shanbe|yekshanbe|emrooz|farda|bale|baleh|are|khube|chi|che|migin|migirin|shohar|shoharam|esm|esme|esmam|nam|name|shomare|shomaram|telefon|telefonam|mobail|mobile|mobilesh|ham hast|hastam|hast|sepas|mersi|merci|mamnoon|mamnun|cancel konam|laghv konam)\b/g, 3);
@@ -13926,17 +14111,7 @@ function isAmbiguousShortReply(text?: string): boolean {
 }
 
 function isExplicitLanguageSwitch(text?: string): string | null {
-  const raw = String(text || "").trim().toLowerCase();
-  if (!raw) return null;
-
-  if (/\b(english|in english|speak english|reply in english|can we continue in english)\b/.test(raw)) return "en";
-  if (/\b(svenska|på svenska|prata svenska|svara på svenska)\b/.test(raw)) return "sv";
-  if (/\b(deutsch|auf deutsch|sprechen sie deutsch|bitte deutsch)\b/.test(raw)) return "de";
-  if (/\b(español|espanol|en español|habla español|responde en español)\b/.test(raw)) return "es";
-  if (/\b(farsi|persian|فارسی|به فارسی|فارسی صحبت کنیم)\b/u.test(raw)) return "fa";
-  if (/\b(arabic|عربي|العربية|بالعربية|تكلم عربي|تحدث العربية)\b/u.test(raw)) return "ar";
-
-  return null;
+  return detectExplicitLanguageSwitch(String(text || ""));
 }
 
 
@@ -13962,7 +14137,9 @@ function hasStrongLanguageEvidence(language: string, text?: string): boolean {
     return /\b(hola|quiero|me\s+gustaría|me\s+gustaria|cita|reservar|reserva|tratamiento|mi\s+nombre|mi\s+teléfono|mi\s+telefono|la\s+próxima|la\s+proxima)\b/i.test(lower);
   }
   if (language === "fa") {
-    return /[پچژگۀک‌ی]/u.test(raw) || /\b(salam|mikham|mikhastam|baraye|vaght|saat|sate|doshanbe|seshanbe|chaharshanbe|panjshanbe|jome|shanbe|yekshanbe|esme|esmam|shomare|shomaram|telefonam)\b/i.test(lower);
+    return /[پچژگۀک‌ی]/u.test(raw) ||
+      hasStrongLatinPersianEvidence(raw) ||
+      /\b(salam|mikham|mikhastam|baraye|vaght|saat|sate|doshanbe|seshanbe|chaharshanbe|panjshanbe|jome|shanbe|yekshanbe|esme|esmam|shomare|shomaram|telefonam)\b/i.test(lower);
   }
   if (language === "ar") {
     return /(مرحب|أهلا|اهلا|السلام|موعد|حجز|احجز|أحجز|علاج|جلسة|الساعة|الخميس|الاثنين|الثلاثاء|الأربعاء|الاربعاء|الجمعة|السبت|الأحد|الاحد|اسمي|هاتفي|رقمي)/u.test(raw);
@@ -14017,6 +14194,8 @@ function detectStrongLatestLanguage(text?: string): string | null {
     return "ar";
   }
 
+  if (hasStrongLatinPersianEvidence(raw)) return "fa";
+
   if (
     /\b(hej+|hejsan|hallå|kan du|kan jag|har jag|hos er|mår du|vad heter du|vem är du|jag vill|jag ska|jag behöver|hur lång|hur långt|hur länge|ändra min tid|flytta min tid|måndag|tisdag|onsdag|torsdag|fredag|lördag|söndag|klockan|vilken tid|konsultation|boka|bokning|ledig|passar|mitt namn|mitt nummer|mobilnummer)\b/i.test(raw)
   ) return "sv";
@@ -14025,7 +14204,7 @@ function detectStrongLatestLanguage(text?: string): string | null {
     /\b(man|mikham|mikhastam|mitonam|mitoonam|baraye|vaght|moshavere|moshavereh|cheghadr tool|esmam|esme man|shomare|shomaram|khobe|bale|lotfan|cancel konam|laghv konam|2shanbe|3shanbe|4shanbe|5shanbe)\b/i.test(raw)
   ) return "fa";
 
-  if (/\b(i want|can i|how long|duration|monday|tuesday|wednesday|appointment|consultation|book|booking|my name)\b/i.test(raw)) return "en";
+  if (/\b(hello|hi there|what do you do|what services|why did you change (?:the )?language|i want|can i|how long|duration|monday|tuesday|wednesday|appointment|consultation|book|booking|my name)\b/i.test(raw)) return "en";
   if (/\b(ich|möchte|termin|montag|dienstag|beratung)\b/i.test(raw)) return "de";
   if (/\b(quiero|cita|lunes|martes|consulta)\b/i.test(raw)) return "es";
 
@@ -14145,9 +14324,11 @@ function getConversationLanguage(chatId: string, latestText?: string, businessCo
   ) {
     chatLanguages[chatId] = strongLatest;
     updateActiveFlowLanguage(chatId, strongLatest);
-    console.log(
-      `[LanguageLock] meaningful language switch previous=${storedFlowLanguage || previous || "none"} with=${strongLatest} chatId=${chatId}`
-    );
+    console.log("[LanguageLock] meaningful language switch", {
+      previous: storedFlowLanguage || previous || "none",
+      selected: strongLatest,
+      sessionKey: safeLogFingerprint(chatId),
+    });
     return strongLatest;
   }
 
@@ -14157,8 +14338,11 @@ function getConversationLanguage(chatId: string, latestText?: string, businessCo
     return storedFlowLanguage;
   }
 
-  if (previous && (!isMeaningfulLanguageMessage(text) || shouldKeepPreviousConversationLanguage(chatId, text))) {
-    return previous;
+  // A prior conversation language is authoritative unless an explicit switch or
+  // strongly evidenced meaningful switch was accepted above. Latin characters alone
+  // are never evidence that a Persian/Finglish conversation became English.
+  if (previous) {
+    return resolveStableConversationLanguage(previous, detected);
   }
 
   if (text) {
@@ -14972,18 +15156,67 @@ async function processWhatsAppMessageClaimed(message: any, metadata: any, config
       return;
     }
 
-    const unifiedHandled = await handleUnifiedBookingEngine({
-      sessionId: chatId,
-      platformName: "whatsapp",
-      platformLogName: "WhatsApp",
-      recipientUserId: from,
-      text: textMessage,
-      history,
-      businessConfig,
-      send: (reply) => sendWhatsAppMessage(from, reply, businessConfig),
-      postProcessPlatform: platform
-    });
-    if (unifiedHandled) return;
+    const whatsappIntent = classifyMessagingIntent(textMessage);
+    const replyWhatsAppOnce = async (reply: string) => {
+      await sendWhatsAppMessage(from, reply, businessConfig);
+      appendLocalHistory(chatId, textMessage, reply);
+      try {
+        await postProcessMessage(
+          chatId,
+          platform,
+          textMessage,
+          reply,
+          businessConfig?.telegramToken,
+          businessConfig?.apiKey,
+          getBusinessIdFromConfig(businessConfig)
+        );
+      } catch {
+        console.error("[WhatsAppIntent]", {
+          businessId: getBusinessIdFromConfig(businessConfig),
+          stage: "post_process",
+          success: false,
+        });
+      }
+    };
+
+    if (whatsappIntent === "language_repair") {
+      await replyWhatsAppOnce(formatLanguageRepairAcknowledgement(userLanguage));
+      return;
+    }
+    if (whatsappIntent === "ambiguous") {
+      await replyWhatsAppOnce(formatAmbiguousBookingIntentClarification(userLanguage));
+      return;
+    }
+
+    const clearlyNonBookingTurn = whatsappIntent === "normal" &&
+      !isNewBookingRequestText(textMessage) &&
+      !isExplicitNewBookingPivotText(textMessage) &&
+      !isExistingAppointmentLookupIntent(textMessage) &&
+      !isRescheduleIntent(textMessage) &&
+      !isCancellationIntent(textMessage) &&
+      !resolveExplicitBookingDate(textMessage) &&
+      !inferRequestedTimeFromText(textMessage);
+
+    if (!clearlyNonBookingTurn) {
+      const unifiedHandled = await handleUnifiedBookingEngine({
+        sessionId: chatId,
+        platformName: "whatsapp",
+        platformLogName: "WhatsApp",
+        recipientUserId: from,
+        text: textMessage,
+        history,
+        businessConfig,
+        send: (reply) => sendWhatsAppMessage(from, reply, businessConfig),
+        postProcessPlatform: platform
+      });
+      if (unifiedHandled) return;
+    } else {
+      nonMutatingSupportTurns[chatId] = Date.now();
+      console.log("[WhatsAppIntent] normal conversation bypassed booking management", {
+        businessId: getBusinessIdFromConfig(businessConfig),
+        language: userLanguage,
+      });
+    }
 
     const messages = [...history];
     messages.push({ role: "user", content: textMessage });

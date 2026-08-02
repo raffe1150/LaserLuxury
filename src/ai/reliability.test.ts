@@ -116,7 +116,7 @@ async function runTests() {
     );
   }
   assert.match(server, /inputMode:\s*voice\s*\?\s*["']voice["']\s*:\s*["']text["']/);
-  assert.match(server, /if \(voice && !voiceTranscript\)[\s\S]{0,500}return;/);
+  assert.match(server, /if \(voice && !voiceTranscript\)[\s\S]{0,1200}return;/);
   assert.match(server, /awaiting_voice_contact_confirmation/);
   assert.match(server, /const bookingOperationResult\s*=\s*createBookingOperationResult/);
   assert.match(server, /verifiedBookingReplyAuthorizations\[sessionId\]\s*=\s*bookingOperationResult/);

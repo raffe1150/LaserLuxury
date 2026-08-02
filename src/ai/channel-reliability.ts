@@ -1,3 +1,5 @@
+import { detectNormalizedIntent, parseTimeConstraint } from './booking-intelligence';
+
 export type MessagingIntent =
   | 'normal'
   | 'language_repair'
@@ -138,6 +140,10 @@ export function classifyMessagingIntent(text: string): MessagingIntent {
     /(?:کارتون چیه|چه خدماتی|چه کاری)/u.test(raw)
   ) return 'normal';
 
+  const sharedIntent = detectNormalizedIntent(raw);
+  if (sharedIntent === 'new_booking') return 'new_booking';
+  if (sharedIntent === 'booking_lookup') return 'existing_booking_lookup';
+  if (sharedIntent === 'clarification') return 'ambiguous';
   if (/\b(?:appointment|booking|bokning|tid|vaght|vaghtam|rezerv|وقت|رزرو)\b/iu.test(raw)) {
     return 'ambiguous';
   }
@@ -195,6 +201,14 @@ export function parseNormalizedTimeRange(text: string): NormalizedTimeRange {
     .replace(/\s+/g, ' ')
     .trim();
   if (!raw) return null;
+  const shared = parseTimeConstraint(raw);
+  if (shared?.kind === 'after' && shared.startMinutes !== undefined) return { kind: 'exclusive_lower', time: minutesToClock(shared.startMinutes) };
+  if (shared?.kind === 'from' && shared.startMinutes !== undefined) return { kind: 'inclusive_lower', time: minutesToClock(shared.startMinutes) };
+  if (shared?.kind === 'before' && shared.endMinutes !== undefined) return { kind: 'exclusive_upper', time: minutesToClock(shared.endMinutes) };
+  if (shared?.kind === 'exact' && shared.startMinutes !== undefined) return { kind: 'exact', time: minutesToClock(shared.startMinutes) };
+  if (shared?.kind === 'between' && shared.startMinutes !== undefined && shared.endMinutes !== undefined) {
+    return { kind: 'window', minTime: minutesToClock(shared.startMinutes), maxTime: minutesToClock(shared.endMinutes) };
+  }
   const token = String.raw`([01]?\d|2[0-3])(?:[\.:](\d{2}))?`;
 
   const between = raw.match(new RegExp(String.raw`(?:between|mellan|bin|بین)\s*${token}\s*(?:and|och|ta|تا|و)\s*${token}`, 'iu'));
@@ -219,6 +233,10 @@ export function parseNormalizedTimeRange(text: string): NormalizedTimeRange {
     return { kind: 'relative_later' };
   }
   return null;
+}
+
+function minutesToClock(minutes: number): string {
+  return `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`;
 }
 
 export function isSlotListRepeatRequest(text: string): boolean {

@@ -51,6 +51,7 @@ import {
   selectTelegramDeliveryMode,
   type TelegramReplyPreference,
 } from "./src/ai/channel-reliability";
+import { applyNormalizedRequestToPending, availabilityFieldsFromConstraint, buildSlotFingerprintSource, formatPersianSpokenPhone, getDateInTimeZone, getZonedSlotParts, normalizeBookingRequest, parseBookingDate, parseTimeConstraint, preparePersianTextForTts, slotMinutesSatisfyConstraint, toPersistedBookingRequest, zonedLocalIso, type NormalizedBookingRequest, type NormalizedTimeConstraint } from "./src/ai/booking-intelligence";
 import { createRequireAuth } from "./src/auth/require-auth";
 import { createRequireBusinessPermission } from "./src/auth/require-business-access";
 import { getAuthorizationClient } from "./src/auth/supabase-auth";
@@ -781,9 +782,7 @@ function buildLocalizedSlotReply(slotsArray: string[], specificTime?: string, la
   slotsArray.forEach(slot => {
     const iso = parseSlotIso(slot);
     if (iso) {
-      const d = new Date(iso);
-      const dateStr = `${l.days[d.getDay()]} ${d.getDate()} ${l.months[d.getMonth()]}`;
-      const timeStr = d.toLocaleTimeString('sv-SE', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Stockholm' });
+      const [localDate, localTime] = iso.split('T'); const d = new Date(`${localDate}T12:00:00Z`); const dateStr = `${l.days[d.getUTCDay()]} ${d.getUTCDate()} ${l.months[d.getUTCMonth()]}`; const timeStr = localTime.slice(0, 5);
       if (normalizedSpecificTime && timeStr === normalizedSpecificTime) foundSpecificSlot = { dateStr, timeStr };
       if (!dayMap.has(dateStr)) dayMap.set(dateStr, []);
       dayMap.get(dateStr)!.push(timeStr);
@@ -879,6 +878,7 @@ type SlotSearchOptions = {
   timeBoundary?: TimeBoundary;
   excludedTimes?: string[];
   selectFirstAvailable?: boolean;
+  timezone?: string;
 };
 
 const BOOKING_OPEN_MINUTES = 9 * 60;
@@ -978,6 +978,7 @@ async function validateCanonicalExactSlot(params: {
 }): Promise<ExactSlotValidationResult> {
   const { adapter, owner, start, service, durationMinutes, excludeEventId, offeredSlot } = params;
   const businessId = String(getBusinessIdFromConfig(params.businessConfig) || "");
+  const timezone = String(params.businessConfig?.timezone || "Europe/Stockholm");
   const platform = normalizePlatformName(owner.platform);
   const userId = normalizePlatformUserId(platform, owner.userId);
   if (!businessId || businessId !== owner.businessId || !platform || !userId) {
@@ -990,9 +991,7 @@ async function validateCanonicalExactSlot(params: {
     }
     const expectedEndMs =
       new Date(ensureStockholmOffset(start)).getTime() + Number(durationMinutes) * 60000;
-    const offeredLocalDate = stockholmDateString(
-      new Date(ensureStockholmOffset(start))
-    );
+    const offeredLocalDate = getZonedSlotParts(ensureStockholmOffset(start), timezone)?.date || "";
     if (
       Date.now() - Number(offeredSlot.generatedAt || 0) > PENDING_BOOKING_TTL_MS ||
       Number(offeredSlot.durationMinutes) !== Number(durationMinutes) ||
@@ -1019,9 +1018,9 @@ async function validateCanonicalExactSlot(params: {
     return { free: false, category: "invalid_slot", normalizedIso: null, endIso: null };
   }
 
-  const localDate = stockholmDateString(startDate);
+  const localDate = getZonedSlotParts(normalizedIso, timezone)?.date || stockholmDateString(startDate);
   const localTime = startDate.toLocaleTimeString("sv-SE", {
-    timeZone: "Europe/Stockholm",
+    timeZone: timezone,
     hour: "2-digit",
     minute: "2-digit"
   });
@@ -1072,12 +1071,14 @@ async function createCanonicalOfferedSlots(params: {
   requestedTime?: string;
   options?: SlotSearchOptions;
   excludeEventId?: string;
+  normalizedConstraint?: NormalizedTimeConstraint;
 }): Promise<{ displaySlots: string[]; ownedSlots: OwnedOfferedSlot[] }> {
+  const timezone = String(params.businessConfig?.timezone || "Europe/Stockholm");
   const events = await params.adapter.getEvents(params.startDate, params.endDate);
   const pendingEvents = getPendingBookingBlockingEvents(
     params.owner,
-    new Date(localStockholmDateBoundary(params.startDate, false)).getTime(),
-    new Date(localStockholmDateBoundary(params.endDate, true)).getTime()
+    new Date(zonedLocalIso(params.startDate, "00:00:00", timezone)).getTime(),
+    new Date(zonedLocalIso(params.endDate, "23:59:59", timezone)).getTime()
   );
   const filteredEvents = (Array.isArray(events) ? events : []).filter(
     (event: any) => !params.excludeEventId || String(event?.id || "") !== String(params.excludeEventId)
@@ -1089,16 +1090,19 @@ async function createCanonicalOfferedSlots(params: {
       [...filteredEvents, ...pendingEvents],
       params.durationMinutes,
       params.requestedTime,
-      params.options || {}
+      { ...(params.options || {}), timezone }
     )
   });
   const displaySlots: string[] = [];
   const ownedSlots: OwnedOfferedSlot[] = [];
   const generatedAt = Date.now();
+  let rejectedByConstraint = 0;
 
   for (const label of generated) {
     const start = parseSlotIso(label);
     if (!start) continue;
+    const zoned = getZonedSlotParts(start, timezone);
+    if (!zoned || zoned.date < params.startDate || zoned.date > params.endDate || !slotMinutesSatisfyConstraint(zoned.minutes, params.normalizedConstraint)) { rejectedByConstraint++; continue; }
     const validation = await validateCanonicalExactSlot({
       adapter: params.adapter,
       owner: params.owner,
@@ -1129,6 +1133,7 @@ async function createCanonicalOfferedSlots(params: {
     businessScopePresent: Boolean(params.owner.businessId),
     operation: "availability",
     offeredSlotCount: ownedSlots.length,
+    candidateSlotCount: generated.length, rejectedByConstraint, timezone,
     serviceDuration: params.durationMinutes,
     validatorResultCategory: ownedSlots.length > 0 ? "available" : "no_validated_slots"
   });
@@ -1150,16 +1155,17 @@ function getDailySlots(
   requestedTime?: string,
   options: SlotSearchOptions = {}
 ) {
+  const timezone = options.timezone || "Europe/Stockholm";
   const normalizedRequestedTime = normalizeRequestedTime(requestedTime || "");
   const endString = endDateStr || startDateStr;
 
   // ClinicPilot availability window.
   // Keep this dynamic later from the business dashboard/businesses table.
-  const formatter = new Intl.DateTimeFormat('en-US', { timeZone: 'Europe/Stockholm', hour: '2-digit', minute: '2-digit', hour12: false });
-  const dayFormatter = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Stockholm', weekday: 'long' });
+  const formatter = new Intl.DateTimeFormat('en-US', { timeZone: timezone, hour: '2-digit', minute: '2-digit', hour12: false });
+  const dayFormatter = new Intl.DateTimeFormat('sv-SE', { timeZone: timezone, weekday: 'long' });
 
   const makeSlot = (dStr: string, hour: number, minute: number) => {
-    const isoString = `${dStr}T${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:00${getStockholmUtcOffset(dStr)}`;
+    const isoString = zonedLocalIso(dStr, `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:00`, timezone);
     const slotD = new Date(isoString);
     let weekday = dayFormatter.format(slotD);
     weekday = weekday.charAt(0).toUpperCase() + weekday.slice(1);
@@ -3480,6 +3486,7 @@ type CanonicalAvailabilityConstraint = {
   daypart?: "morning" | "afternoon" | "evening";
   rejectedTimes: string[];
   generatedFromLatestRequestAt: number;
+  timezone?: string;
 };
 
 type AvailabilitySearchContext = {
@@ -5420,6 +5427,7 @@ async function savePendingBooking(chatId: string, platform: string, pending: any
       availabilityMinTime: pending.availabilityMinTime || null,
       availabilityMaxTime: pending.availabilityMaxTime || null,
       availabilityConstraint: pending.availabilityConstraint || null,
+      normalizedBookingRequest: pending.normalizedBookingRequest || null,
       lastAvailabilityConstraintKey: pending.lastAvailabilityConstraintKey || null,
       language: pending.language || null,
       customerName: pending.customerName || null,
@@ -5519,6 +5527,7 @@ async function loadPendingBooking(chatId: string, platform: string, businessConf
       availabilityMinTime: parsed.availabilityMinTime || null,
       availabilityMaxTime: parsed.availabilityMaxTime || null,
       availabilityConstraint: parsed.availabilityConstraint || null,
+      normalizedBookingRequest: parsed.normalizedBookingRequest || null,
       lastAvailabilityConstraintKey: parsed.lastAvailabilityConstraintKey || null,
       language: parsed.language || null,
       customerName: parsed.customerName || null,
@@ -6377,19 +6386,21 @@ function availabilityTimeRelation(boundary?: TimeBoundary | null): string | null
 function deriveCanonicalAvailabilityConstraint(
   text: string,
   businessConfig: any,
-  previous?: CanonicalAvailabilityConstraint | null
+  previous?: CanonicalAvailabilityConstraint | null,
+  normalized?: NormalizedBookingRequest,
+  latestTime?: NormalizedTimeConstraint
 ): CanonicalAvailabilityConstraint | null {
-  const range = parseAvailabilityRangeRequest(text, businessConfig);
-  const explicitDate = resolveExplicitBookingDate(text);
-  const timeWindow = extractAvailabilityTimeWindow(text);
+  const needsLegacyDateRange = extractRequestedWeekdays(text).length > 1 || /\b20\d{2}-\d{2}-\d{2}\s*(?:to|through|till|-)\s*20\d{2}-\d{2}-\d{2}\b/iu.test(text);
+  const sharedDate = !needsLegacyDateRange ? normalized?.date || parseBookingDate(text, String(businessConfig?.timezone || "Europe/Stockholm")) : undefined;
+  const range = sharedDate ? null : parseAvailabilityRangeRequest(text, businessConfig);
+  const explicitDate = sharedDate?.value || resolveExplicitBookingDate(text);
+  const authoritativeTime = latestTime || (!normalized ? parseTimeConstraint(text) : undefined);
+  const retainedTime = authoritativeTime ? undefined : normalized?.timeConstraint;
+  const timeWindow = authoritativeTime ? null : extractAvailabilityTimeWindow(text);
   const timeFollowUp = parseRescheduleTimeFollowUp(text);
   const daypart = inferRequestedDaypart(text);
   const broadensToWholeDay = isWholeDayAvailabilityRequest(text);
-  const dateComponent = getAvailabilityDateComponent(
-    text,
-    businessConfig,
-    previous?.startDate
-  );
+  const dateComponent = sharedDate ? { detected: true, kind: sharedDate.kind === "weekday" ? "weekday" as const : "explicit_date" as const, resolvedDate: sharedDate.value || null, endDate: sharedDate.value || null, weekday: sharedDate.weekday === undefined ? null : ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"][sharedDate.weekday] } : getAvailabilityDateComponent(text, businessConfig, previous?.startDate);
   const hasDateSignal = Boolean(range || explicitDate);
   const refersToSameDay = /\b(?:that\s+day|same\s+day|den\s+dagen|samma\s+dag|diesem\s+tag|gleichen\s+tag|ese\s+d[ií]a|mismo\s+d[ií]a|hamoon\s+rooz|hamon\s+rooz)\b/i.test(text) ||
     /(?:همون|همان)\s*روز|ذلك\s*اليوم|نفس\s*اليوم/u.test(text);
@@ -6410,14 +6421,18 @@ function deriveCanonicalAvailabilityConstraint(
     broadensToWholeDay ||
     refinesActiveDate;
   const startDate =
+    sharedDate?.value ||
     range?.startDate ||
     explicitDate ||
     (inheritPreviousDate ? previous?.startDate : undefined);
   const endDate =
+    sharedDate?.value ||
     range?.endDate ||
     explicitDate ||
     (inheritPreviousDate ? previous?.endDate : undefined);
   if (!startDate || !endDate) return null;
+  const todayInBusinessTimezone = getDateInTimeZone(new Date(), String(businessConfig?.timezone || "Europe/Stockholm"));
+  if (startDate < todayInBusinessTimezone || endDate < todayInBusinessTimezone) return null;
 
   const common = {
     startDate,
@@ -6427,7 +6442,8 @@ function deriveCanonicalAvailabilityConstraint(
       : "inherited" as const,
     ...(dateComponent.weekday ? { weekday: dateComponent.weekday } : {}),
     rejectedTimes: [...timeFollowUp.rejectedTimes],
-    generatedFromLatestRequestAt: Date.now()
+    generatedFromLatestRequestAt: Date.now(),
+    timezone: String(businessConfig?.timezone || "Europe/Stockholm")
   };
 
   // A date/weekday-only follow-up inside an active availability flow is a fresh
@@ -6439,7 +6455,7 @@ function deriveCanonicalAvailabilityConstraint(
       !timeWindow &&
       !timeFollowUp.explicitTime &&
       !timeFollowUp.boundary &&
-      !daypart
+      !daypart && !retainedTime
     )
   ) {
     return { ...common, kind: startDate === endDate ? "whole_day" : "date_range", rejectedTimes: [] };
@@ -6484,6 +6500,7 @@ function deriveCanonicalAvailabilityConstraint(
       maxTime: daypartOptions.maxTime
     };
   }
+  if (retainedTime) return { ...common, ...availabilityFieldsFromConstraint(retainedTime) } as CanonicalAvailabilityConstraint;
   return range
     ? { ...common, kind: startDate === endDate ? "whole_day" : "date_range", rejectedTimes: [] }
     : null;
@@ -6503,21 +6520,10 @@ function availabilityConstraintSlotOptions(
 }
 
 function canonicalAvailabilityConstraintKey(
-  constraint?: CanonicalAvailabilityConstraint | null
+  constraint: CanonicalAvailabilityConstraint,
+  context: { businessId: string; service: string; timezone: string; durationMinutes: number; time?: NormalizedTimeConstraint }
 ): string | null {
-  if (!constraint) return null;
-  return safeLogFingerprint(JSON.stringify({
-    startDate: constraint.startDate,
-    endDate: constraint.endDate,
-    kind: constraint.kind,
-    exactTime: constraint.exactTime || null,
-    minTime: constraint.minTime || null,
-    maxTime: constraint.maxTime || null,
-    daypart: constraint.daypart || null,
-    boundaryKind: constraint.timeBoundary?.kind || null,
-    boundaryTime: constraint.timeBoundary?.time || null,
-    rejectedTimes: constraint.rejectedTimes || [],
-  }));
+  return safeLogFingerprint(buildSlotFingerprintSource({ businessId: context.businessId, service: context.service, date: `${constraint.startDate}/${constraint.endDate}`, timezone: context.timezone, constraint: context.time, durationMinutes: context.durationMinutes }));
 }
 
 function slotSatisfiesAvailabilityConstraint(
@@ -6528,9 +6534,10 @@ function slotSatisfiesAvailabilityConstraint(
   const date = new Date(ensureStockholmOffset(String(startIso || "")));
   if (Number.isNaN(date.getTime())) return false;
 
-  const localDate = stockholmDateString(date);
-  const localTime = getStockholmTimeFromIso(startIso);
-  const slotMinutes = timeTextToMinutes(localTime || "");
+  const zoned = getZonedSlotParts(startIso, constraint?.timezone || "Europe/Stockholm");
+  const localDate = zoned?.date || "";
+  const slotMinutes = zoned?.minutes ?? null;
+  const localTime = slotMinutes === null ? null : `${String(Math.floor(slotMinutes / 60)).padStart(2, "0")}:${String(slotMinutes % 60).padStart(2, "0")}`;
   if (
     !localTime ||
     slotMinutes === null ||
@@ -6847,7 +6854,7 @@ function formatAskContactMessage(language: string = "sv"): string {
 }
 
 function formatVoiceContactConfirmation(language: string, name: string, phone: string): string {
-  if (language === "fa") return `برای اطمینان قبل از رزرو: نام شما «${name}» و شماره شما «${phone}» است. درست شنیدم؟`;
+  if (language === "fa") return `برای اطمینان قبل از رزرو: نام شما «${name}» و شماره شما «${formatPersianSpokenPhone(phone)}» است. درست شنیدم؟`;
   if (language === "sv") return `För att vara säker innan jag bokar: jag hörde namnet ”${name}” och numret ”${phone}”. Stämmer det?`;
   if (language === "de") return `Zur Sicherheit vor der Buchung: Ich habe den Namen „${name}“ und die Nummer „${phone}“ verstanden. Stimmt das?`;
   if (language === "es") return `Para confirmar antes de reservar: entendí el nombre «${name}» y el número «${phone}». ¿Es correcto?`;
@@ -8388,7 +8395,7 @@ async function handleUnifiedBookingEngine(params: {
     platformName,
     platformLogName,
     recipientUserId,
-    text,
+    text: inboundText,
     history,
     businessConfig,
     send,
@@ -8396,7 +8403,15 @@ async function handleUnifiedBookingEngine(params: {
     inputMode = "text"
   } = params;
 
+  const normalizedRequest = normalizeBookingRequest({
+    businessId: getBusinessIdFromConfig(businessConfig) || "unscoped", channel: platformName,
+    conversationKey: sessionId, inputMode, text: inboundText,
+    activeLanguage: getStoredFlowLanguage(sessionId) as any, timezone: String(businessConfig?.timezone || "Europe/Stockholm")
+  });
+  const text = normalizedRequest.normalizedText;
+
   if (!text) return false;
+  console.log("[BookingIntelligence]", { correlationId: safeLogFingerprint(`${sessionId}:${Date.now()}`), businessId: getBusinessIdFromConfig(businessConfig), channel: platformName, sourceMode: inputMode, detectedLanguage: normalizedRequest.language, detectedIntent: normalizedRequest.intent, normalizedDateKind: normalizedRequest.date?.kind || null, normalizedDate: normalizedRequest.date?.value || null, timeConstraintKind: normalizedRequest.timeConstraint?.kind || "none", correctionApplied: Boolean(normalizedRequest.customerCorrection), clarificationRequired: normalizedRequest.requiresClarification, parserFailureCategory: normalizedRequest.clarificationReason || null });
   delete nonMutatingSupportTurns[sessionId];
 
   const currentAppointmentStateOwner: AppointmentStateOwner = {
@@ -8443,9 +8458,16 @@ async function handleUnifiedBookingEngine(params: {
   });
   const latestStrongLanguage = detectStrongLatestLanguage(text);
   let pending = await loadPendingBooking(sessionId, platformName, businessConfig);
+  let authoritativeNormalizedRequest = normalizedRequest, normalizedStateReplaced = false;
+  if (pending?.normalizedBookingRequest) {
+    const merged = applyNormalizedRequestToPending(pending, normalizedRequest);
+    authoritativeNormalizedRequest = merged.request; normalizedStateReplaced = merged.invalidatesOffers;
+    if (merged.invalidatesOffers) await savePendingBooking(sessionId, platformName, pending);
+  }
+  console.log("[BookingNormalizedState]", { correlationId: bookingCorrelationId, timezone: String(businessConfig?.timezone || "Europe/Stockholm"), sourceMode: inputMode, correctionApplied: Boolean(normalizedRequest.customerCorrection), stateReplaced: normalizedStateReplaced });
   let entryRescheduleContext = getRescheduleContext(sessionId);
   let entryCancellationContext = getCancellationContext(sessionId);
-  const entryExplicitNewBookingRequest = isExplicitNewBookingPivotText(text);
+  const entryExplicitNewBookingRequest = normalizedRequest.intent === "new_booking" || isExplicitNewBookingPivotText(text);
   const entryPendingOwnedSlot = pending?.dateTime
     ? findOwnedOfferedSlot(pending, pending.dateTime)
     : null;
@@ -11613,7 +11635,9 @@ async function handleUnifiedBookingEngine(params: {
       : deriveCanonicalAvailabilityConstraint(
           text,
           businessConfig,
-          previousAvailabilityConstraint
+          previousAvailabilityConstraint,
+          authoritativeNormalizedRequest,
+          normalizedRequest.timeConstraint
         );
     let latestAvailabilityConstraint = derivedLatestAvailabilityConstraint || (
       explicitNewBookingRequested
@@ -11673,12 +11697,14 @@ async function handleUnifiedBookingEngine(params: {
     ) {
       const priorConstraintType = previousAvailabilityConstraint?.kind || "none";
       const constraint = latestAvailabilityConstraint;
-      const availabilityConstraintKey = canonicalAvailabilityConstraintKey(constraint);
+      const fingerprintService = normalizeBookingService(inferServiceFromRecentContext(text, history), storedAvailability?.service || pending?.service || getDefaultBookingServiceForBusiness(businessConfig) || "Bokning");
+      const fingerprintResolvedDuration = platformName === "telegram" ? await resolveServiceDurationMinutes(fingerprintService, null, businessConfig) : null;
+      const fingerprintDuration = storedAvailability?.durationMinutes || Number(pending?.durationMinutes || 0) || Number(fingerprintResolvedDuration || 0) || getDefaultBookingDurationForService(fingerprintService) || inferBookingDurationFromContext(text, history);
+      const availabilityConstraintKey = canonicalAvailabilityConstraintKey(constraint, { businessId: currentAppointmentStateOwner.businessId, service: fingerprintService, timezone: String(businessConfig?.timezone || "Europe/Stockholm"), durationMinutes: fingerprintDuration, time: authoritativeNormalizedRequest.timeConstraint });
       const cachedOfferCountBefore = Array.isArray(pending?.offeredSlots)
         ? pending.offeredSlots.length
         : 0;
       if (
-        platformName === "telegram" &&
         cachedOfferCountBefore > 0 &&
         availabilityConstraintKey &&
         pending?.lastAvailabilityConstraintKey === availabilityConstraintKey &&
@@ -11717,6 +11743,7 @@ async function handleUnifiedBookingEngine(params: {
         pendingStatusBefore: pending?.status || "none",
         cachedOfferCountBefore,
         cachedReplySuppressed: refinementDetected && cachedOfferCountBefore > 0,
+        fingerprintChanged: pending?.lastAvailabilityConstraintKey !== availabilityConstraintKey,
         canonicalConstraintKind: constraint.kind,
         canonicalBoundaryMinutes:
           timeTextToMinutes(constraint.timeBoundary?.time),
@@ -11730,22 +11757,20 @@ async function handleUnifiedBookingEngine(params: {
         pending = null;
       }
       const inferredService = normalizeBookingService(
-        inferServiceFromRecentContext(text, history),
+        fingerprintService,
         storedAvailability?.service ||
           priorPendingBooking?.service ||
           recoveredServiceForNewBooking ||
           getDefaultBookingServiceForBusiness(businessConfig) ||
           "Bokning"
       );
-      const resolvedTelegramDuration = platformName === "telegram"
-        ? await resolveServiceDurationMinutes(inferredService, null, businessConfig)
-        : null;
+      const resolvedTelegramDuration = fingerprintResolvedDuration;
       const durationMinutes = storedAvailability?.durationMinutes ||
         Number(priorPendingBooking?.durationMinutes || 0) ||
         Number(recoveredDurationForNewBooking || 0) ||
         Number(resolvedTelegramDuration || 0) ||
         getDefaultBookingDurationForService(inferredService) ||
-        inferBookingDurationFromContext(text, history);
+        fingerprintDuration;
       const lockedLanguage =
         storedAvailability?.language ||
         priorPendingBooking?.language ||
@@ -11766,7 +11791,8 @@ async function handleUnifiedBookingEngine(params: {
             service: inferredService,
             durationMinutes,
             requestedTime: constraint.exactTime,
-            options: availabilityConstraintSlotOptions(constraint)
+            options: availabilityConstraintSlotOptions(constraint),
+            normalizedConstraint: authoritativeNormalizedRequest.timeConstraint,
           })
         : { displaySlots: [], ownedSlots: [] };
       const slots = canonicalOffers.displaySlots;
@@ -11870,6 +11896,7 @@ async function handleUnifiedBookingEngine(params: {
           availabilityMinTime: constraint.minTime || null,
           availabilityMaxTime: constraint.maxTime || null,
           availabilityConstraint: constraint,
+          normalizedBookingRequest: toPersistedBookingRequest(authoritativeNormalizedRequest),
           lastAvailabilityConstraintKey: availabilityConstraintKey,
           dateTime: exactIso,
           durationMinutes,
@@ -11898,6 +11925,7 @@ async function handleUnifiedBookingEngine(params: {
           availabilityMinTime: constraint.minTime || null,
           availabilityMaxTime: constraint.maxTime || null,
           availabilityConstraint: constraint,
+          normalizedBookingRequest: toPersistedBookingRequest(authoritativeNormalizedRequest),
           lastAvailabilityConstraintKey: availabilityConstraintKey,
           dateTime: null,
           selectedSlotEnd: null,
@@ -11991,6 +12019,7 @@ async function handleUnifiedBookingEngine(params: {
           selectedDate: firstIso ? stockholmDateString(new Date(firstIso)) : startDate,
           offeredSlots: slots,
           ownedOfferedSlots: canonicalOffers.ownedSlots,
+          normalizedBookingRequest: toPersistedBookingRequest(authoritativeNormalizedRequest),
           dateTime: null,
           durationMinutes,
           language: detectStrongLatestLanguage(text) || language,
@@ -12048,7 +12077,8 @@ async function handleUnifiedBookingEngine(params: {
         service: finalService,
         durationMinutes,
         requestedTime,
-        options: availabilityConstraintSlotOptions(directAvailabilityConstraint)
+        options: availabilityConstraintSlotOptions(directAvailabilityConstraint),
+        normalizedConstraint: authoritativeNormalizedRequest.timeConstraint,
       });
       const slots = canonicalOffers.displaySlots;
       const reply = formatSwedishTimeSlots(slots, requestedTime, language);
@@ -12083,6 +12113,7 @@ async function handleUnifiedBookingEngine(params: {
           availabilityMinTime: directAvailabilityConstraint.minTime || null,
           availabilityMaxTime: directAvailabilityConstraint.maxTime || null,
           availabilityConstraint: directAvailabilityConstraint,
+          normalizedBookingRequest: toPersistedBookingRequest(authoritativeNormalizedRequest),
           dateTime: exactIso,
           durationMinutes,
           language: detectStrongLatestLanguage(text) || language,
@@ -12598,7 +12629,7 @@ async function handleUnifiedBookingEngine(params: {
         bookingSlotOwnerMatches(selectedOwnedSlot, currentBookingSlotOwner) &&
         new Date(selectedOwnedSlot.start).getTime() === new Date(finalIso).getTime() &&
         new Date(selectedOwnedSlot.end).getTime() === new Date(exactCheck.endIso).getTime() &&
-        stockholmDateString(new Date(finalIso)) === selectedDate &&
+        getZonedSlotParts(finalIso, String(businessConfig?.timezone || "Europe/Stockholm"))?.date === selectedDate &&
         slotSatisfiesAvailabilityConstraint(
           finalIso,
           pending.availabilityConstraint
@@ -13366,7 +13397,10 @@ async function sendTelegramPreferredReply(params: {
   let voiceRequestAttempted = false;
   try {
     const EdgeTTS = (await import("node-edge-tts")).EdgeTTS;
-    const cleanText = sanitizeTTS(reply);
+    const ttsReadyReply = /[\u0600-\u06ff]/u.test(reply)
+      ? preparePersianTextForTts(reply)
+      : reply;
+    const cleanText = sanitizeTTS(ttsReadyReply);
     const tts = new EdgeTTS({
       voice: detectTtsVoiceCode(reply),
       rate: "-10%",

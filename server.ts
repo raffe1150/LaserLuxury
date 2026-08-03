@@ -55,8 +55,8 @@ import { applyNormalizedRequestToPending, availabilityFieldsFromConstraint, buil
 import { beginBookingFinalization, getBookingInvariantFailures, getBookingPhase, getMissingBookingContact, recoverBookingFinalization, recoverBookingTransaction, type BookingFailureStage } from "./src/ai/booking-state-machine";
 import { enumerateCandidateMinutes, isBlockingCalendarEvent, isCanonicalSlotFree } from "./src/ai/canonical-availability";
 import { resolveAuthoritativeContact, type ContactPhoneSource } from "./src/ai/channel-contact";
-import { CURRENT_BOOKING_STATE_VERSION, normalizePendingBookingState, resolveAuthoritativeOperation } from "./src/ai/booking-operation-state";
-import { formatDeterministicRecovery, type DeterministicFailureCategory } from "./src/ai/booking-recovery";
+import { CURRENT_BOOKING_STATE_VERSION, normalizePendingBookingState, operationFromCurrentIntent, resolveAuthoritativeOperation } from "./src/ai/booking-operation-state";
+import { formatDeterministicRecovery, isGenericBookingRetry, type DeterministicFailureCategory } from "./src/ai/booking-recovery";
 import { createRequireAuth } from "./src/auth/require-auth";
 import { createRequireBusinessPermission } from "./src/auth/require-business-access";
 import { getAuthorizationClient } from "./src/auth/supabase-auth";
@@ -5409,7 +5409,11 @@ async function savePendingBooking(chatId: string, platform: string, pending: any
       operationIdentity: pending.operationIdentity || null,
       contactPhoneSource: pending.contactPhoneSource || null,
       lastFailureStage: pending.lastFailureStage || null,
+      failedStage: pending.failedStage || pending.lastFailureStage || null,
       lastRollbackSucceeded: pending.lastRollbackSucceeded ?? null,
+      expectedInput: pending.expectedInput || null,
+      retryEligible: pending.retryEligible ?? null,
+      mutationProgress: pending.mutationProgress || null,
       expiredAppointmentFallback: Boolean(pending.expiredAppointmentFallback),
       createdAt: pending.createdAt || Date.now(),
       updatedAt: pending.updatedAt,
@@ -5539,7 +5543,11 @@ async function loadPendingBooking(chatId: string, platform: string, businessConf
       operationIdentity: parsed.operationIdentity || null,
       contactPhoneSource: parsed.contactPhoneSource || null,
       lastFailureStage: parsed.lastFailureStage || null,
+      failedStage: parsed.failedStage || parsed.lastFailureStage || null,
       lastRollbackSucceeded: parsed.lastRollbackSucceeded ?? null,
+      expectedInput: parsed.expectedInput || null,
+      retryEligible: parsed.retryEligible ?? null,
+      mutationProgress: parsed.mutationProgress || null,
       expiredAppointmentFallback: Boolean(parsed.expiredAppointmentFallback),
       businessId: String(parsed.business_id || getBusinessIdFromConfig(businessConfig) || ""),
       userId: normalizePlatformUserId(platform, String(parsed.userId || chatId)),
@@ -8465,6 +8473,11 @@ async function handleUnifiedBookingEngine(params: {
   const bookingCorrelationId = crypto.randomUUID();
   const bookingStartedAt = Date.now();
   let pending = await loadPendingBooking(sessionId, platformName, businessConfig);
+  const normalizedRequest = normalizeBookingRequest({
+    businessId: getBusinessIdFromConfig(businessConfig) || "unscoped", channel: platformName,
+    conversationKey: sessionId, inputMode, text,
+    activeLanguage: getStoredFlowLanguage(sessionId) as any, timezone: String(businessConfig?.timezone || "Europe/Stockholm")
+  });
   let entryRescheduleContext = getRescheduleContext(sessionId);
   let entryCancellationContext = getCancellationContext(sessionId);
   let entryOperation = resolveAuthoritativeOperation({
@@ -8501,13 +8514,53 @@ async function handleUnifiedBookingEngine(params: {
     });
   }
 
-  const normalizedRequest = normalizeBookingRequest({
-    businessId: getBusinessIdFromConfig(businessConfig) || "unscoped", channel: platformName,
-    conversationKey: sessionId, inputMode, text,
-    activeLanguage: getStoredFlowLanguage(sessionId) as any, timezone: String(businessConfig?.timezone || "Europe/Stockholm")
-  });
+  const explicitCurrentOperation = operationFromCurrentIntent(normalizedRequest.intent);
+  if (explicitCurrentOperation !== "none" && explicitCurrentOperation !== entryOperation.operation) {
+    const selectedAppointment = entryCancellationContext?.appointment || entryRescheduleContext?.appointment || appointmentContexts[sessionId]?.appointment;
+    if (entryOperation.operation === "cancellation") clearCancellationContext(sessionId);
+    if (entryOperation.operation === "reschedule") clearRescheduleContext(sessionId);
+    if (entryOperation.operation === "appointment_lookup") clearAppointmentLookupContext(sessionId);
+    if (entryOperation.operation === "new_booking" && pending) {
+      await clearPendingBooking(sessionId);
+      pending = null;
+    }
+    if (selectedAppointment && explicitCurrentOperation !== "new_booking") {
+      appointmentContexts[sessionId] = {
+        appointment: selectedAppointment,
+        savedAt: Date.now(),
+        language: entryCancellationContext?.language || entryRescheduleContext?.language || getStoredFlowLanguage(sessionId) || normalizedRequest.language,
+      };
+    }
+    if (explicitCurrentOperation === "new_booking") {
+      clearAppointmentConversationState(sessionId);
+    }
+    entryCancellationContext = getCancellationContext(sessionId);
+    entryRescheduleContext = getRescheduleContext(sessionId);
+    entryOperation = resolveAuthoritativeOperation({
+      currentIntent: explicitCurrentOperation,
+      pending,
+      reschedule: entryRescheduleContext,
+      cancellation: entryCancellationContext,
+      lookup: appointmentLookupContexts[sessionId] || null,
+    });
+    console.log("[BookingOperationSwitch]", {
+      channel: platformName,
+      operation: explicitCurrentOperation,
+      phase: entryOperation.phase,
+      expectedInput: entryOperation.expectedInput,
+      failedStage: pending?.failedStage || pending?.lastFailureStage || null,
+      recoveryAction: "explicit_current_intent_override",
+      contactComplete: Boolean(pending?.customerName && pending?.customerPhone),
+      selectedSlotExisted: Boolean(pending?.dateTime && pending?.selectedSlotEnd),
+      selectedAppointmentPreserved: Boolean(selectedAppointment && explicitCurrentOperation !== "new_booking"),
+      mutationStarted: Boolean(pending?.mutationProgress?.calendarStarted),
+    });
+  }
   console.log("[BookingIntelligence]", { correlationId: safeLogFingerprint(`${sessionId}:${Date.now()}`), businessId: getBusinessIdFromConfig(businessConfig), channel: platformName, sourceMode: inputMode, detectedLanguage: normalizedRequest.language, detectedIntent: normalizedRequest.intent, normalizedDateKind: normalizedRequest.date?.kind || null, normalizedDate: normalizedRequest.date?.value || null, timeConstraintKind: normalizedRequest.timeConstraint?.kind || "none", correctionApplied: Boolean(normalizedRequest.customerCorrection), clarificationRequired: normalizedRequest.requiresClarification, parserFailureCategory: normalizedRequest.clarificationReason || null });
   const language = getConversationLanguage(sessionId, text, businessConfig);
+  let activeBookingOperationClaim: AtomicClaimHandle | null = null;
+  let bookingFailureStage: BookingFailureStage | null = null;
+  let rollbackActiveBookingMutation: (() => Promise<boolean>) | null = null;
   const logBookingContinuationState = (
     fields: Parameters<typeof writeBookingContinuationState>[0]
   ) => writeBookingContinuationState({
@@ -8516,6 +8569,19 @@ async function handleUnifiedBookingEngine(params: {
     language: pending?.language || language,
     durationMs: Date.now() - bookingStartedAt,
     ...fields,
+  });
+  const logRecoveryState = (recoveryAction: string) => console.error("[BookingRecoveryState]", {
+    channel: platformName,
+    operation: pending?.operation || entryOperation.operation,
+    phase: pending ? getBookingPhase(pending) : entryOperation.phase,
+    expectedInput: pending?.expectedInput || entryOperation.expectedInput,
+    failedStage: pending?.failedStage || pending?.lastFailureStage || bookingFailureStage || null,
+    recoveryAction,
+    contactComplete: Boolean(pending?.customerName && pending?.customerPhone),
+    selectedSlotExisted: Boolean(pending?.dateTime && pending?.selectedSlotEnd),
+    calendarMutationStarted: Boolean(pending?.mutationProgress?.calendarStarted),
+    databaseMutationStarted: Boolean(pending?.mutationProgress?.databaseStarted),
+    idempotencyMutationStarted: Boolean(pending?.mutationProgress?.settlementStarted || pending?.operationIdentity),
   });
   const latestStrongLanguage = detectStrongLatestLanguage(text);
   const authoritativeSenderPhone = getWhatsAppConversationPhone(
@@ -8545,9 +8611,6 @@ async function handleUnifiedBookingEngine(params: {
       dateLocked: Boolean(pending.selectedDate || pending.availabilityStartDate)
     });
   }
-  let activeBookingOperationClaim: AtomicClaimHandle | null = null;
-  let bookingFailureStage: BookingFailureStage | null = null;
-  let rollbackActiveBookingMutation: (() => Promise<boolean>) | null = null;
   let authoritativeNormalizedRequest = normalizedRequest, normalizedStateReplaced = false, deterministicTransition: ReturnType<typeof applyNormalizedRequestToPending> | null = null;
   if (pending?.normalizedBookingRequest) {
     const previousPhase = getBookingPhase(pending);
@@ -11775,7 +11838,9 @@ async function handleUnifiedBookingEngine(params: {
     let latestAvailabilityConstraint = derivedLatestAvailabilityConstraint || (
       explicitNewBookingRequested
         ? recoveredConstraintForNewBooking || null
-        : null
+        : pending?.lastFailureStage === "availability" && isGenericBookingRetry(text)
+          ? previousAvailabilityConstraint || null
+          : null
     );
     let outsideOriginalRange = false;
     if (
@@ -11909,6 +11974,39 @@ async function handleUnifiedBookingEngine(params: {
       const adapter = getCalendarAdapter(businessConfig);
       const searchIsWithinConfiguredWindow =
         constraint.startDate <= constraint.endDate;
+      pending = {
+        ...(priorPendingBooking || {}),
+        businessConfig,
+        platform: platformName,
+        service: inferredService,
+        selectedDate: constraint.startDate === constraint.endDate ? constraint.startDate : null,
+        offeredSlots: [],
+        ownedOfferedSlots: [],
+        availabilityStartDate: constraint.startDate,
+        availabilityEndDate: constraint.endDate,
+        availabilityMinTime: constraint.minTime || null,
+        availabilityMaxTime: constraint.maxTime || null,
+        availabilityConstraint: constraint,
+        normalizedBookingRequest: toPersistedBookingRequest(authoritativeNormalizedRequest),
+        lastAvailabilityConstraintKey: null,
+        dateTime: null,
+        selectedSlotEnd: null,
+        durationMinutes,
+        language: lockedLanguage,
+        operation: "new_booking",
+        expectedInput: "retry_or_correction",
+        lastFailureStage: "availability",
+        failedStage: "availability",
+        retryEligible: true,
+        mutationProgress: {
+          calendarStarted: false, calendarVerified: false, databaseStarted: false,
+          databaseVerified: false, settlementStarted: false,
+        },
+        customerPhone: priorPendingBooking?.customerPhone || getWhatsAppConversationPhone(platformName, recipientUserId, sessionId),
+        status: "awaiting_time_selection"
+      };
+      await savePendingBooking(sessionId, platformName, pending);
+      bookingFailureStage = "availability";
       const canonicalOffers = searchIsWithinConfiguredWindow
         ? await createCanonicalOfferedSlots({
             adapter,
@@ -11924,6 +12022,11 @@ async function handleUnifiedBookingEngine(params: {
           })
         : { displaySlots: [], ownedSlots: [] };
       const slots = canonicalOffers.displaySlots;
+      bookingFailureStage = null;
+      pending.lastFailureStage = null;
+      pending.failedStage = null;
+      pending.retryEligible = null;
+      pending.expectedInput = "slot_selection";
       const bookingDateComponent = getAvailabilityDateComponent(
         text,
         businessConfig,
@@ -12506,6 +12609,17 @@ async function handleUnifiedBookingEngine(params: {
 
     if (["awaiting_contact", "failed_recoverable"].includes(String(pending?.status || ""))) {
       const previousPendingState = String(pending.status);
+      if (previousPendingState === "failed_recoverable" && pending.retryEligible === false) {
+        const blockedRetryCategory: DeterministicFailureCategory =
+          pending.lastFailureStage === "calendar_verification" ? "calendar_verification_failed" :
+          pending.lastFailureStage === "database_insert" ? "database_insert_failed" :
+          pending.lastFailureStage === "database_verification" ? "database_verification_failed" :
+          pending.lastFailureStage === "idempotency_settlement" ? "idempotency_settlement_failed" :
+          "calendar_create_failed";
+        logRecoveryState("manual_reconciliation_required");
+        await replyAndRecord(formatDeterministicRecovery(blockedRetryCategory, getFlowReplyLanguage(pending.language, language, text)));
+        return true;
+      }
       const combinedContact = extractNameAndPhone(text);
       const confirmationTransition = deterministicTransition?.reason === "slot_confirmation_accepted";
       const resolvedContact = resolveAuthoritativeContact({
@@ -13434,6 +13548,7 @@ async function handleUnifiedBookingEngine(params: {
       await savePendingBooking(sessionId, platformName, pending);
       console.error("[BookingTransactionRecovery]", { correlationId: bookingCorrelationId, businessId: currentBookingSlotOwner.businessId, channel: platformName, stage: bookingFailureStage || "unexpected", rollbackSucceeded });
     }
+    logRecoveryState(activeBookingOperationClaim ? "rollback_and_safe_retry" : "resume_authoritative_state");
     console.error("[UnifiedBookingFailure]", { correlationId: bookingCorrelationId, businessId: currentBookingSlotOwner.businessId, channel: platformName, previousPhase: "finalizing", eventType: "booking_transaction", nextPhase: pending ? getBookingPhase(pending) : "idle", selectedSlotPresent: Boolean(pending?.dateTime), operationStatus: pending?.status || null, failureStage: bookingFailureStage || "unexpected", failureCategory: classifyAiFailure(error), duplicateEvent: false });
 
     const languageAfterError =
@@ -14788,7 +14903,7 @@ async function recordAppointmentFromBooking(params: {
           .eq("business_id", businessId)
           .eq("platform", params.platform)
           .eq("user_id", String(params.userId));
-        return null;
+        return { ...data, status: "verification_failed", __bookingFailureStage: "database_verification" };
       }
       if (!verifiedRow) {
         await supabase
@@ -14798,8 +14913,9 @@ async function recordAppointmentFromBooking(params: {
           .eq("business_id", businessId)
           .eq("platform", params.platform)
           .eq("user_id", String(params.userId));
+        return { ...data, status: "verification_failed", __bookingFailureStage: "database_verification" };
       }
-      return verifiedRow || null;
+      return verifiedRow;
     }
   } catch (err) {
     console.error("recordAppointmentFromBooking error:", err);
@@ -19797,7 +19913,17 @@ export const priority1hUnifiedEngineTestBoundary = {
         });
       },
     });
-    return { handled, replies };
+    return {
+      handled,
+      replies,
+      pending: pendingBookings[params.sessionId] ? structuredClone(pendingBookings[params.sessionId]) : null,
+      operation: resolveAuthoritativeOperation({
+        pending: pendingBookings[params.sessionId] || null,
+        reschedule: rescheduleContexts[params.sessionId] || null,
+        cancellation: cancellationContexts[params.sessionId] || null,
+        lookup: appointmentLookupContexts[params.sessionId] || null,
+      }),
+    };
   },
   telegramDelivery(sessionId: string, inputMode: "text" | "voice", text: string) {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");

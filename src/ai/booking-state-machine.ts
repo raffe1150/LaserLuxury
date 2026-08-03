@@ -30,6 +30,7 @@ export type BookingPhase =
   | 'failed_recoverable';
 
 export type BookingFailureStage =
+  | 'availability'
   | 'final_validation'
   | 'calendar_create'
   | 'calendar_verification'
@@ -68,7 +69,17 @@ export function beginBookingFinalization(pending: Record<string, any>): boolean 
 export function recoverBookingFinalization(pending: Record<string, any>, stage: BookingFailureStage, rollbackSucceeded?: boolean): void {
   pending.status = 'failed_recoverable';
   pending.lastFailureStage = stage;
+  pending.failedStage = stage;
   pending.lastRollbackSucceeded = rollbackSucceeded ?? null;
+  pending.expectedInput = 'retry_or_correction';
+  pending.retryEligible = rollbackSucceeded !== false;
+  pending.mutationProgress = {
+    calendarStarted: !['availability', 'final_validation', 'unexpected'].includes(stage),
+    calendarVerified: ['database_insert', 'database_verification', 'idempotency_settlement'].includes(stage),
+    databaseStarted: ['database_insert', 'database_verification', 'idempotency_settlement'].includes(stage),
+    databaseVerified: stage === 'idempotency_settlement',
+    settlementStarted: stage === 'idempotency_settlement',
+  };
 }
 
 export async function recoverBookingTransaction(

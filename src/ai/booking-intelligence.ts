@@ -125,7 +125,7 @@ export function detectNormalizedIntent(text: string): NormalizedIntent {
   if (!raw) return 'unknown';
   if (/\b(?:why|chera|varför).{0,30}(?:language|zaban|språk).{0,30}(?:change|avaz|switch|ändra)\b/iu.test(raw) || /چرا.{0,20}(?:زبان).{0,20}(?:عوض|تغییر)/u.test(raw)) return 'general_question';
   if (/\b(?:cancel|avboka|laghv).{0,25}(?:appointment|booking|tid|vaght|rezerv)?\b/iu.test(raw) || /(?:لغو|کنسل).{0,20}(?:وقت|رزرو)/u.test(raw)) return 'cancellation';
-  if (/\b(?:reschedule|move|change|ändra|flytta|taghir|avaz).{0,30}(?:appointment|booking|tid|vaght|rezerv)\b/iu.test(raw) || /(?:تغییر|عوض).{0,20}(?:وقت|رزرو)/u.test(raw)) return 'reschedule';
+  if (/(?:^|\s)(?:reschedule|move|change|ändra|flytta|taghir|avaz).{0,30}(?:appointment|booking|time|tid|vaght|rezerv)(?=\s|$)/iu.test(raw) || /(?:^|\s)boka\s+om(?=\s|$)/iu.test(raw) || /\b(?:avaz|taghir)\s+(?:bedam|konam)\b/iu.test(raw) || /(?:تغییر|عوض).{0,20}(?:وقت|رزرو|کنم|بدم)/u.test(raw)) return 'reschedule';
   if (/\b(?:do i have|did i book|check|har jag|aya).{0,30}(?:appointment|booking|tid|vaght|rezerv)\b/iu.test(raw) || /(?:آیا|میشه).{0,24}(?:وقت|رزرو).{0,24}(?:دارم|کردم)/u.test(raw)) return 'booking_lookup';
 
   const bookingNoun = /\b(?:appointment|booking|consultation|slot|boka|bokning|tid|konsultation|vaght|rezerv|moshavereh?|laser)\b/iu.test(raw) || /(?:وقت|رزرو|مشاوره|لیزر)/u.test(raw);

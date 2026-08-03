@@ -1,6 +1,6 @@
 import { isInvalidCustomerNameToken } from './channel-contact';
 
-export const CURRENT_BOOKING_STATE_VERSION = 2;
+export const CURRENT_BOOKING_STATE_VERSION = 3;
 
 export type BookingOperation =
   | 'none'
@@ -43,6 +43,14 @@ export type BookingStateNormalization = {
   resetReason: BookingStateResetReason | null;
   repairs: string[];
 };
+
+export function operationFromCurrentIntent(intent?: string | null): BookingOperation {
+  if (intent === 'new_booking') return 'new_booking';
+  if (intent === 'reschedule') return 'reschedule';
+  if (intent === 'cancellation') return 'cancellation';
+  if (intent === 'booking_lookup' || intent === 'existing_booking_lookup') return 'appointment_lookup';
+  return 'none';
+}
 
 const OPERATIONS = new Set<BookingOperation>([
   'none', 'new_booking', 'reschedule', 'cancellation', 'appointment_lookup',
@@ -166,6 +174,19 @@ export function normalizePendingBookingState(input: unknown): BookingStateNormal
     repairs.push('orphaned_finalizing_recovered');
   }
 
+  if (phase === 'failed_recoverable') {
+    state.retryEligible = state.retryEligible !== false;
+    state.expectedInput = state.expectedInput || 'retry_or_correction';
+    state.failedStage = state.failedStage || state.lastFailureStage || 'unexpected';
+    state.mutationProgress = state.mutationProgress || {
+      calendarStarted: false,
+      calendarVerified: false,
+      databaseStarted: false,
+      databaseVerified: false,
+      settlementStarted: false,
+    };
+  }
+
   state.bookingStateVersion = CURRENT_BOOKING_STATE_VERSION;
   state.operation = operation;
   return {
@@ -180,6 +201,7 @@ export function normalizePendingBookingState(input: unknown): BookingStateNormal
 }
 
 export function resolveAuthoritativeOperation(input: {
+  currentIntent?: BookingOperation | null;
   pending?: Record<string, any> | null;
   reschedule?: Record<string, any> | null;
   cancellation?: Record<string, any> | null;
@@ -194,7 +216,9 @@ export function resolveAuthoritativeOperation(input: {
   }
   if (input.pending) active.push((input.pending.operation || 'new_booking') as BookingOperation);
   const distinct = Array.from(new Set(active));
-  const operation = distinct[0] || 'none';
+  const operation = input.currentIntent && input.currentIntent !== 'none'
+    ? input.currentIntent
+    : distinct[0] || 'none';
   let phase: CanonicalBookingPhase = 'idle';
   if (operation === 'new_booking') {
     phase = canonicalPhaseFromLegacy(input.pending);

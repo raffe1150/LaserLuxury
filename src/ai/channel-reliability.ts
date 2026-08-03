@@ -120,7 +120,8 @@ export function classifyMessagingIntent(text: string): MessagingIntent {
     /\b(?:reschedule|move|change|taghir|avaz).{0,30}(?:appointment|booking|time|tid|vaght|vaghtam|rezerv)\b/iu.test(raw) ||
     /\b(?:appointment|booking|time|tid|vaght|vaghtam|rezerv).{0,30}(?:reschedule|move|change|taghir|avaz)\b/iu.test(raw) ||
     /\b(?:ändra|flytta|boka om).{0,24}(?:tid|bokning)?\b/iu.test(raw) ||
-    /(?:تغییر|عوض).{0,24}(?:وقت|رزرو)/u.test(raw)
+    /\b(?:avaz|taghir)\s+(?:bedam|konam)\b/iu.test(raw) ||
+    /(?:تغییر|عوض).{0,24}(?:وقت|رزرو|کنم|بدم)/u.test(raw)
   ) return 'reschedule';
 
   if (

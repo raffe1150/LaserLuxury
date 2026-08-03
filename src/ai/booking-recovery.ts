@@ -61,3 +61,9 @@ export function formatDeterministicRecovery(category: DeterministicFailureCatego
   const localized = messages[language] || messages.en;
   return localized[category] || messages.en[category];
 }
+
+export function isGenericBookingRetry(text?: string | null): boolean {
+  const value = String(text || '').normalize('NFKC').trim().toLowerCase()
+    .replace(/[!?.،,؛]+/gu, ' ').replace(/\s+/g, ' ');
+  return /^(?:try again|retry|please try again|dobare emtehan kon|dobare talash kon|bazam emtehan kon|دوباره امتحان کن|دوباره تلاش کن)$/iu.test(value);
+}

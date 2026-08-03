@@ -3518,6 +3518,18 @@ function hasAppointmentConversationState(sessionId: string): boolean {
   );
 }
 
+function shouldDispatchWhatsAppUnifiedBooking(chatId: string, text: string, intent = classifyMessagingIntent(text)): boolean {
+  if (intent === "language_repair" || intent === "ambiguous") return false;
+  const clearlyNonBooking = intent === "normal" &&
+    !pendingBookings[chatId] && !hasAppointmentConversationState(chatId) &&
+    !extractNameAndPhone(text) && !extractPhoneOnly(text) && !extractNameOnly(text) &&
+    !isNewBookingRequestText(text) && !isExplicitNewBookingPivotText(text) &&
+    !isExistingAppointmentLookupIntent(text) && !isRescheduleIntent(text) &&
+    !isCancellationIntent(text) && !resolveExplicitBookingDate(text) &&
+    !inferRequestedTimeFromText(text);
+  return !clearlyNonBooking;
+}
+
 function clearAppointmentConversationState(sessionId: string) {
   delete appointmentContexts[sessionId];
   delete appointmentSelectionContexts[sessionId];
@@ -4240,6 +4252,10 @@ function logInstagramCancellationDiagnostic(details: {
   outerFallbackSuppressed?: boolean;
   duplicateConfirmationSuppressed?: boolean;
   completedCancellationStatusQueryReply?: boolean;
+  adminNotificationAttempted?: boolean;
+  adminNotificationSucceeded?: boolean;
+  operationCleared?: boolean;
+  fallthroughPrevented?: boolean;
 }) {
   console.log("[InstagramCancellation]", details);
 }
@@ -8798,8 +8814,13 @@ async function handleUnifiedBookingEngine(params: {
     const logCancellationDiagnostic = (
       details: Parameters<typeof logInstagramCancellationDiagnostic>[0]
     ) => {
-      if (platformName !== "instagram") return;
-      logInstagramCancellationDiagnostic(details);
+      console.log("[CancellationFlow]", {
+        channel: platformName, businessId, operation: "cancellation",
+        phase: cancellationContexts[sessionId]?.lastOperation || "completed",
+        expectedInput: cancellationContexts[sessionId] ? "cancellation_confirmation" : "none",
+        stateVersion: CURRENT_BOOKING_STATE_VERSION, ...details,
+      });
+      if (platformName === "instagram") logInstagramCancellationDiagnostic(details);
     };
     const stateOwner = appointmentStateOwners[sessionId];
     if (!stateOwner || !appointmentStateOwnerMatches(stateOwner, currentAppointmentStateOwner)) {
@@ -9219,13 +9240,16 @@ async function handleUnifiedBookingEngine(params: {
     }
 
     try {
+      logCancellationDiagnostic({ adminNotificationAttempted: true });
       await notifyAdminAboutCancellation(
         businessConfig,
         platformName,
         appointment,
         context.reason || "Not provided"
       );
+      logCancellationDiagnostic({ adminNotificationSucceeded: true });
     } catch (notifyError) {
+      logCancellationDiagnostic({ adminNotificationSucceeded: false });
       console.error("[CancellationNotify] crashed:", notifyError);
     }
 
@@ -9238,6 +9262,7 @@ async function handleUnifiedBookingEngine(params: {
       clearAppointmentLookupContext(sessionId);
       delete appointmentStateOwners[sessionId];
       clearConversationFlowLanguage(sessionId);
+      logCancellationDiagnostic({ operationCleared: true, fallthroughPrevented: true });
     } catch (cleanupError) {
       // Persistence and operation settlement are already complete. Cleanup must never
       // escape into a platform fallback and contradict the verified success response.
@@ -15539,14 +15564,7 @@ async function processWhatsAppMessageClaimed(message: any, metadata: any, config
       return;
     }
 
-    const clearlyNonBookingTurn = whatsappIntent === "normal" &&
-      !isNewBookingRequestText(textMessage) &&
-      !isExplicitNewBookingPivotText(textMessage) &&
-      !isExistingAppointmentLookupIntent(textMessage) &&
-      !isRescheduleIntent(textMessage) &&
-      !isCancellationIntent(textMessage) &&
-      !resolveExplicitBookingDate(textMessage) &&
-      !inferRequestedTimeFromText(textMessage);
+    const clearlyNonBookingTurn = !shouldDispatchWhatsAppUnifiedBooking(chatId, textMessage, whatsappIntent);
 
     if (!clearlyNonBookingTurn) {
       const unifiedHandled = await handleUnifiedBookingEngine({
@@ -19867,7 +19885,7 @@ export const priority1hUnifiedEngineTestBoundary = {
       });
     }
   },
-  async turn(params: Omit<Parameters<typeof handleUnifiedBookingEngine>[0], "send" | "history" | "postProcessPlatform" | "platformLogName">) {
+  async turn(params: Omit<Parameters<typeof handleUnifiedBookingEngine>[0], "send" | "history" | "postProcessPlatform" | "platformLogName"> & { sendResult?: boolean; sendThrows?: boolean }) {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
     const replies: string[] = [];
     const handled = await handleUnifiedBookingEngine({
@@ -19875,7 +19893,11 @@ export const priority1hUnifiedEngineTestBoundary = {
       history: chatSessions[params.sessionId] || [],
       platformLogName: params.platformName,
       postProcessPlatform: params.platformName,
-      send: async (reply) => { replies.push(reply); return true; },
+      send: async (reply) => {
+        if (params.sendThrows) throw new Error("injected_customer_delivery_failure");
+        if (params.sendResult === false) return false;
+        replies.push(reply); return true;
+      },
     });
     return {
       handled,
@@ -19887,6 +19909,8 @@ export const priority1hUnifiedEngineTestBoundary = {
         cancellation: cancellationContexts[params.sessionId] || null,
         lookup: appointmentLookupContexts[params.sessionId] || null,
       }),
+      appointment: appointmentContexts[params.sessionId]?.appointment ? structuredClone(appointmentContexts[params.sessionId].appointment) : null,
+      selection: appointmentSelectionContexts[params.sessionId] ? structuredClone(appointmentSelectionContexts[params.sessionId]) : null,
     };
   },
   async inboundTurn(params: Omit<Parameters<typeof handleUnifiedBookingEngine>[0], "send" | "history" | "postProcessPlatform" | "platformLogName"> & { eventId: string }) {
@@ -19929,6 +19953,9 @@ export const priority1hUnifiedEngineTestBoundary = {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
     const preference = updateTelegramReplyPreference(sessionId, inputMode, text);
     return { preference, delivery: selectTelegramDeliveryMode(preference, inputMode) };
+  },
+  whatsappWouldDispatch(sessionId: string, text: string) {
+    return shouldDispatchWhatsAppUnifiedBooking(sessionId, text);
   },
 };
 

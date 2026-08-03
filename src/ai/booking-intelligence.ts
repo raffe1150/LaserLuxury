@@ -232,10 +232,10 @@ export function parseBookingDate(text: string, timezone: string, now = new Date(
   if (/\b(?:tomorrow|imorgon|farda)\b/iu.test(raw) || /فردا/u.test(raw)) return { kind: 'relative_date', value: addIsoDays(today.iso, 1), relative: 'tomorrow', confidence: 'high' };
   if (/\b(?:today|idag|emrooz|emruz)\b/iu.test(raw) || /امروز/u.test(raw)) return { kind: 'relative_date', value: today.iso, relative: 'today', confidence: 'high' };
   const weekdays: Array<[number, RegExp]> = [
-    [0, /\b(?:sunday|söndag|yekshanbe)\b|یک ?شنبه/iu], [1, /\b(?:monday|måndag|doshanbe)\b|دو ?شنبه/iu],
-    [2, /\b(?:tuesday|tisdag|seshanbe)\b|سه ?شنبه/iu], [3, /\b(?:wednesday|onsdag|chaharshanbe)\b|چهار ?شنبه/iu],
-    [4, /\b(?:thursday|torsdag|panjshanbe)\b|پنج ?شنبه/iu], [5, /\b(?:friday|fredag|jomeh?)\b|جمعه/iu],
-    [6, /\b(?:saturday|lördag|shanbe)\b|(?<!یک |دو |سه |چهار |پنج )شنبه/iu],
+    [0, /\b(?:sunday|söndag|yek\s*shanbe|1\s*shanbe)\b|یک ?شنبه/iu], [1, /\b(?:monday|måndag|do\s*shanbe|2\s*shanbe)\b|دو ?شنبه/iu],
+    [2, /\b(?:tuesday|tisdag|se\s*shanbe|3\s*shanbe)\b|سه ?شنبه/iu], [3, /\b(?:wednesday|onsdag|chahar\s*shanbe|4\s*shanbe)\b|چهار ?شنبه/iu],
+    [4, /\b(?:thursday|torsdag|panj\s*shanbe|5\s*shanbe)\b|پنج ?شنبه/iu], [5, /\b(?:friday|fredag|jomeh?)\b|جمعه/iu],
+    [6, /\b(?:saturday|lördag|(?<![1-5])shanbe)\b|(?<!یک |دو |سه |چهار |پنج )شنبه/iu],
   ];
   const matched = weekdays.find(([, pattern]) => pattern.test(raw));
   if (!matched) return undefined;

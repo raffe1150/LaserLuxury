@@ -85,6 +85,12 @@ export async function runAiProviderRequest<T>(options: {
 export function containsUnverifiedBookingSuccessClaim(text: string): boolean {
   const value = String(text || '').normalize('NFKC');
   const lower = value.toLowerCase();
+  const explicitNonSuccess =
+    /\b(?:not|isn'?t|wasn'?t|could not|couldn'?t|unable to)\b.{0,35}\b(?:booked|confirmed|reserved|created|secured|verify|verified)\b/i.test(lower) ||
+    /\b(?:inte|ej|kunde inte)\b.{0,35}\b(?:bokad|bekräftad|reserverad|verifiera|verifierad)\b/i.test(lower) ||
+    /(?:تأیید نشده|رزرو نشده|ثبت نشد|نتوانستم.{0,25}(?:تأیید|ثبت|رزرو))/u.test(value) ||
+    /(?:لم يتم.{0,25}(?:الحجز|التأكيد)|تعذر.{0,25}(?:الحجز|التأكيد|التحقق))/u.test(value);
+  if (explicitNonSuccess) return false;
   return (
     /\b(?:appointment|booking|slot|time)\b.{0,40}\b(?:booked|confirmed|reserved|created|secured)\b/i.test(lower) ||
     /\b(?:booked|confirmed|reserved|created|secured)\b.{0,40}\b(?:appointment|booking|slot|time)\b/i.test(lower) ||

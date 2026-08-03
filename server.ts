@@ -51,10 +51,12 @@ import {
   selectTelegramDeliveryMode,
   type TelegramReplyPreference,
 } from "./src/ai/channel-reliability";
-import { applyNormalizedRequestToPending, availabilityFieldsFromConstraint, buildSlotFingerprintSource, formatPersianSpokenPhone, getDateInTimeZone, getZonedSlotParts, isCurrentConversationTurn, normalizeBookingRequest, parseBookingDate, parseTimeConstraint, preparePersianTextForTts, registerConversationTurn, slotMinutesSatisfyConstraint, toPersistedBookingRequest, zonedLocalIso, type NormalizedBookingRequest, type NormalizedTimeConstraint } from "./src/ai/booking-intelligence";
+import { applyNormalizedRequestToPending, availabilityFieldsFromConstraint, buildSlotFingerprintSource, formatPersianSpokenPhone, getDateInTimeZone, getZonedSlotParts, isCurrentConversationTurn, normalizeBookingRequest, normalizeConversationText, parseBookingDate, parseTimeConstraint, preparePersianTextForTts, registerConversationTurn, slotMinutesSatisfyConstraint, toPersistedBookingRequest, zonedLocalIso, type NormalizedBookingRequest, type NormalizedTimeConstraint } from "./src/ai/booking-intelligence";
 import { beginBookingFinalization, getBookingInvariantFailures, getBookingPhase, getMissingBookingContact, recoverBookingFinalization, recoverBookingTransaction, type BookingFailureStage } from "./src/ai/booking-state-machine";
 import { enumerateCandidateMinutes, isBlockingCalendarEvent, isCanonicalSlotFree } from "./src/ai/canonical-availability";
 import { resolveAuthoritativeContact, type ContactPhoneSource } from "./src/ai/channel-contact";
+import { CURRENT_BOOKING_STATE_VERSION, normalizePendingBookingState, resolveAuthoritativeOperation } from "./src/ai/booking-operation-state";
+import { formatDeterministicRecovery, type DeterministicFailureCategory } from "./src/ai/booking-recovery";
 import { createRequireAuth } from "./src/auth/require-auth";
 import { createRequireBusinessPermission } from "./src/auth/require-business-access";
 import { getAuthorizationClient } from "./src/auth/supabase-auth";
@@ -344,6 +346,7 @@ async function handleSystemAnalysisLog(chatId: string, analysis: any) {
     }
 }
 async function postProcessMessage(chatId: string, platform: string, userMessage: string, agentResponse: string, tgToken?: string, aiConfigKey?: string, businessId?: string | null) {
+  if (priority1hTestDependencies?.postProcess) return priority1hTestDependencies.postProcess();
   if (!supabase) return;
   try {
     const canonicalPlatform = normalizePlatformName(platform);
@@ -393,6 +396,24 @@ interface CalendarAdapter {
   verifyEventDeleted?(eventId: string): Promise<boolean> | boolean;
   getEvents(startDate: string, endDate: string): Promise<any> | any;
 }
+
+type Priority1hTestDependencies = {
+  calendarAdapter?: CalendarAdapter;
+  supabaseClient?: any;
+  recordAppointment?: (params: any) => Promise<any | null>;
+  validateAppointment?: (appointment: any) => Promise<any | null>;
+  updateAppointmentRow?: (appointment: any, start: string, end: string) => Promise<any | null>;
+  cancelAppointmentRow?: (appointment: any) => Promise<any | null>;
+  claimOperation?: (params: any) => Promise<any>;
+  settleOperation?: (handle: any, status: "completed" | "failed") => Promise<boolean>;
+  postProcess?: () => Promise<void>;
+  notifyBooking?: () => Promise<boolean>;
+  notifyReschedule?: () => Promise<boolean>;
+  notifyCancellation?: () => Promise<boolean>;
+  incrementUsage?: (params: any) => Promise<{ allowed: boolean; count: number; limit: number }>;
+};
+
+let priority1hTestDependencies: Priority1hTestDependencies | null = null;
 
 
 function getLastSundayOfMonth(year: number, monthIndex: number): number {
@@ -1635,6 +1656,7 @@ class GoogleCalendarAdapter implements CalendarAdapter {
 }
 
 function getCalendarAdapter(config: any): CalendarAdapter {
+  if (priority1hTestDependencies?.calendarAdapter) return priority1hTestDependencies.calendarAdapter;
   if (config.calendarProvider === 'google' || 
       (!config.calendarProvider && process.env.GOOGLE_CLIENT_EMAIL && process.env.GOOGLE_PRIVATE_KEY && (config.googleCalendarId || process.env.GOOGLE_CALENDAR_ID))) {
     const email = config.googleClientEmail || process.env.GOOGLE_CLIENT_EMAIL;
@@ -1829,6 +1851,11 @@ function calendarEventBusinessMarkerMatches(event: any, businessScope: string): 
     ""
   ).trim();
   return !markedBusiness || markedBusiness === String(businessScope || "").trim();
+}
+
+function isLikelyWorkingHoursMarker(event: any): boolean {
+  const title = normalizeLookupText(String(event?.summary || event?.title || ""));
+  return /^(working hours|opening hours|business hours|oppettider|arbetstid)$/.test(title);
 }
 
 function calendarEventHasExactPhone(event: any, phone: string): boolean {
@@ -3198,9 +3225,10 @@ function formatDailyLimitMessage(language: string = 'en'): string {
 }
 
 async function checkAndIncrementDailyUsage(params: { businessId?: string | number | null; platform: string; userId: string; language?: string; limit?: number; }) {
+  if (priority1hTestDependencies?.incrementUsage) return priority1hTestDependencies.incrementUsage(params);
   const limit = Number(params.limit || DAILY_CUSTOMER_MESSAGE_LIMIT || 15);
   const businessId = params.businessId ? String(params.businessId) : '0';
-  const platform = String(params.platform || 'unknown');
+  const platform = normalizePlatformName(String(params.platform || 'unknown'));
   const userId = String(params.userId || 'unknown');
   const usageDate = getStockholmUsageDate();
 
@@ -3209,44 +3237,57 @@ async function checkAndIncrementDailyUsage(params: { businessId?: string | numbe
   }
 
   try {
-    const { data, error } = await supabase
-      .from('message_usage')
-      .select('id,message_count')
-      .eq('business_id', businessId)
-      .eq('platform', platform)
-      .eq('user_id', userId)
-      .eq('usage_date', usageDate)
-      .maybeSingle();
-
-    if (error) {
-      console.error('[UsageLimit] lookup error. Allowing message so production does not break:', JSON.stringify(error));
-      return { allowed: true, count: 0, limit, reason: 'lookup_error' };
-    }
-
-    const currentCount = Number(data?.message_count || 0);
-    if (currentCount >= limit) {
-      console.log(`[UsageLimit] blocked business=${businessId}, platform=${platform}, user=${userId}, date=${usageDate}, count=${currentCount}, limit=${limit}`);
-      return { allowed: false, count: currentCount, limit, reason: 'limit_reached' };
-    }
-
-    if (data?.id) {
-      const { error: updateError } = await supabase
+    // Compare-and-swap prevents two different claimed inbound messages from
+    // reading the same count and losing one increment on concurrent workers.
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const { data, error } = await supabase
         .from('message_usage')
-        .update({ message_count: currentCount + 1, updated_at: new Date().toISOString() })
-        .eq('id', data.id);
-      if (updateError) console.error('[UsageLimit] update error:', JSON.stringify(updateError));
-      return { allowed: true, count: currentCount + 1, limit };
-    }
+        .select('id,message_count')
+        .eq('business_id', businessId)
+        .eq('platform', platform)
+        .eq('user_id', userId)
+        .eq('usage_date', usageDate)
+        .maybeSingle();
 
-    const { error: insertError } = await supabase.from('message_usage').insert([{
-      business_id: businessId,
-      platform,
-      user_id: userId,
-      usage_date: usageDate,
-      message_count: 1
-    }]);
-    if (insertError) console.error('[UsageLimit] insert error:', JSON.stringify(insertError));
-    return { allowed: true, count: 1, limit };
+      if (error) {
+        console.error('[UsageLimit] lookup error. Allowing message so production does not break:', JSON.stringify(error));
+        return { allowed: true, count: 0, limit, reason: 'lookup_error' };
+      }
+
+      const currentCount = Number(data?.message_count || 0);
+      if (currentCount >= limit) {
+        console.log(`[UsageLimit] blocked business=${businessId}, platform=${platform}, user=${userId}, date=${usageDate}, count=${currentCount}, limit=${limit}`);
+        return { allowed: false, count: currentCount, limit, reason: 'limit_reached' };
+      }
+
+      if (data?.id) {
+        const { data: updated, error: updateError } = await supabase
+          .from('message_usage')
+          .update({ message_count: currentCount + 1, updated_at: new Date().toISOString() })
+          .eq('id', data.id)
+          .eq('message_count', currentCount)
+          .select('id,message_count')
+          .maybeSingle();
+        if (!updateError && updated?.id) return { allowed: true, count: Number(updated.message_count), limit };
+        if (updateError) console.error('[UsageLimit] compare-and-swap update error:', JSON.stringify(updateError));
+        continue;
+      }
+
+      const { error: insertError } = await supabase.from('message_usage').insert([{
+        business_id: businessId,
+        platform,
+        user_id: userId,
+        usage_date: usageDate,
+        message_count: 1
+      }]);
+      if (!insertError) return { allowed: true, count: 1, limit };
+      if (!isDuplicateInsertError(insertError)) {
+        console.error('[UsageLimit] insert error:', JSON.stringify(insertError));
+        return { allowed: true, count: 0, limit, reason: 'insert_error' };
+      }
+    }
+    console.error('[UsageLimit] contention retries exhausted. Allowing message without a false limit response.');
+    return { allowed: true, count: 0, limit, reason: 'contention_exhausted' };
   } catch (err) {
     console.error('[UsageLimit] crashed. Allowing message so production does not break:', err);
     return { allowed: true, count: 0, limit, reason: 'crashed' };
@@ -3814,6 +3855,9 @@ async function validateStoredAppointmentForMutation(
   businessConfig: any,
   adapter: CalendarAdapter
 ): Promise<any | null> {
+  if (priority1hTestDependencies?.validateAppointment) {
+    return priority1hTestDependencies.validateAppointment(appointment);
+  }
   if (!appointment || !isActiveAppointmentStatus(appointment?.status)) return null;
 
   const businessId = String(getBusinessIdFromConfig(businessConfig) || "");
@@ -5335,11 +5379,13 @@ async function savePendingBooking(chatId: string, platform: string, pending: any
   pending.platform = normalizePlatformName(platform);
   pending.userId = getPendingOwnedUserId(pending, pending.platform, chatId);
   pending.sessionId = chatId;
+  pending.bookingStateVersion = CURRENT_BOOKING_STATE_VERSION;
   pendingBookings[chatId] = pending;
   if (!supabase) return;
   try {
     const minimal = {
       type: "pending_booking",
+      bookingStateVersion: CURRENT_BOOKING_STATE_VERSION,
       platform,
       service: pending.service,
       dateTime: pending.dateTime || null,
@@ -5404,6 +5450,29 @@ async function loadPendingBooking(chatId: string, platform: string, businessConf
       return null;
     }
     const inMemory = pendingBookings[chatId];
+    const normalized = normalizePendingBookingState(inMemory);
+    if (!normalized.state) {
+      console.warn("[BookingStateReset]", {
+        channel: normalizePlatformName(platform),
+        stateVersion: Number(inMemory.bookingStateVersion || 0),
+        currentStateVersion: CURRENT_BOOKING_STATE_VERSION,
+        resetReason: normalized.resetReason,
+      });
+      await clearPendingBooking(chatId);
+      return null;
+    }
+    Object.assign(inMemory, normalized.state);
+    if (normalized.migratedFromVersion !== null || normalized.repairs.length > 0) {
+      console.log("[BookingStateNormalized]", {
+        channel: normalizePlatformName(platform),
+        operation: normalized.operation,
+        phase: normalized.phase,
+        expectedInput: normalized.expectedInput,
+        previousStateVersion: normalized.migratedFromVersion,
+        stateVersion: CURRENT_BOOKING_STATE_VERSION,
+        repairs: normalized.repairs,
+      });
+    }
     if (inMemory.status === "awaiting_slot_selection") {
       inMemory.status = "awaiting_time_selection";
     }
@@ -5444,6 +5513,7 @@ async function loadPendingBooking(chatId: string, platform: string, businessConf
     if (parsed?.platform && parsed.platform !== platform) return null;
     const pending = {
       businessConfig,
+      bookingStateVersion: Number(parsed.bookingStateVersion || 0),
       platform,
       service: parsed.service || "Bokning",
       dateTime: parsed.dateTime || null,
@@ -5483,6 +5553,29 @@ async function loadPendingBooking(chatId: string, platform: string, businessConf
         0
       )
     };
+    const normalized = normalizePendingBookingState(pending);
+    if (!normalized.state) {
+      console.warn("[BookingStateReset]", {
+        channel: normalizePlatformName(platform),
+        stateVersion: Number(pending.bookingStateVersion || 0),
+        currentStateVersion: CURRENT_BOOKING_STATE_VERSION,
+        resetReason: normalized.resetReason,
+      });
+      await clearPendingBooking(chatId);
+      return null;
+    }
+    Object.assign(pending, normalized.state);
+    if (normalized.migratedFromVersion !== null || normalized.repairs.length > 0) {
+      console.log("[BookingStateNormalized]", {
+        channel: normalizePlatformName(platform),
+        operation: normalized.operation,
+        phase: normalized.phase,
+        expectedInput: normalized.expectedInput,
+        previousStateVersion: normalized.migratedFromVersion,
+        stateVersion: CURRENT_BOOKING_STATE_VERSION,
+        repairs: normalized.repairs,
+      });
+    }
     const expectedBusinessId = String(getBusinessIdFromConfig(businessConfig) || "");
     const expectedUserId = getPendingOwnedUserId(pending, platform, chatId);
     if (
@@ -5745,6 +5838,7 @@ async function notifyAdminAboutBooking(
   dateTime: string,
   service?: string
 ) {
+  if (priority1hTestDependencies?.notifyBooking) return priority1hTestDependencies.notifyBooking();
   const notifyText = formatNewBookingAdminNotification({
     businessConfig,
     platformLabel,
@@ -5885,6 +5979,7 @@ async function notifyAdminAboutReschedule(
   newDateTime: string,
   service?: string
 ) {
+  if (priority1hTestDependencies?.notifyReschedule) return priority1hTestDependencies.notifyReschedule();
   const businessTimeZone = String(businessConfig?.timezone || activeConfig?.timezone || "Europe/Stockholm").trim() || "Europe/Stockholm";
   const formatAdminDateTime = (dateTime: string) => {
     if (!dateTime) return "Saknas";
@@ -5913,6 +6008,7 @@ async function notifyAdminAboutCancellation(
   appointment: any,
   reason: string
 ) {
+  if (priority1hTestDependencies?.notifyCancellation) return priority1hTestDependencies.notifyCancellation();
   const customerName = String(appointment?.customerName || "Okänd kund").trim();
   const phone = String(appointment?.phone || "Saknas").trim();
   const service = String(appointment?.service || "Bokning").trim();
@@ -7054,6 +7150,7 @@ async function claimAtomicOperation(params: {
   exactId: string;
   businessId?: string;
 }): Promise<AtomicClaimHandle> {
+  if (priority1hTestDependencies?.claimOperation) return priority1hTestDependencies.claimOperation(params);
   const platform = normalizePlatformName(params.platform);
   const tenantScope = String(params.tenantScope || "").trim();
   const exactId = String(params.exactId || "").trim();
@@ -7193,6 +7290,7 @@ async function settleAtomicOperation(
   handle: AtomicClaimHandle,
   status: "completed" | "failed"
 ): Promise<boolean> {
+  if (priority1hTestDependencies?.settleOperation) return priority1hTestDependencies.settleOperation(handle, status);
   if (!handle.claimed) return false;
   const now = Date.now();
   const state: AtomicClaimState = {
@@ -8333,15 +8431,9 @@ async function handleUnifiedBookingEngine(params: {
     inputMode = "text"
   } = params;
 
-  const normalizedRequest = normalizeBookingRequest({
-    businessId: getBusinessIdFromConfig(businessConfig) || "unscoped", channel: platformName,
-    conversationKey: sessionId, inputMode, text: inboundText,
-    activeLanguage: getStoredFlowLanguage(sessionId) as any, timezone: String(businessConfig?.timezone || "Europe/Stockholm")
-  });
-  const text = normalizedRequest.normalizedText;
+  const text = normalizeConversationText(inboundText);
 
   if (!text) return false;
-  console.log("[BookingIntelligence]", { correlationId: safeLogFingerprint(`${sessionId}:${Date.now()}`), businessId: getBusinessIdFromConfig(businessConfig), channel: platformName, sourceMode: inputMode, detectedLanguage: normalizedRequest.language, detectedIntent: normalizedRequest.intent, normalizedDateKind: normalizedRequest.date?.kind || null, normalizedDate: normalizedRequest.date?.value || null, timeConstraintKind: normalizedRequest.timeConstraint?.kind || "none", correctionApplied: Boolean(normalizedRequest.customerCorrection), clarificationRequired: normalizedRequest.requiresClarification, parserFailureCategory: normalizedRequest.clarificationReason || null });
   delete nonMutatingSupportTurns[sessionId];
 
   const currentAppointmentStateOwner: AppointmentStateOwner = {
@@ -8361,22 +8453,61 @@ async function handleUnifiedBookingEngine(params: {
     rescheduleContexts[sessionId]?.language ||
     "";
   let appointmentStateWasInvalidated = false;
-  const suppliedIdentityPhone = extractPhoneOnly(text) || undefined;
   if (
     (storedAppointmentStateOwner || hasAppointmentConversationState(sessionId)) &&
-    (
-      !appointmentStateOwnerMatches(storedAppointmentStateOwner, currentAppointmentStateOwner) ||
-      appointmentIdentityKeyConflictsCanonical(storedAppointmentStateOwner?.identityKey, suppliedIdentityPhone)
-    )
+    !appointmentStateOwnerMatches(storedAppointmentStateOwner, currentAppointmentStateOwner)
   ) {
     console.warn("[AppointmentState]", { event: "stale_or_cross_identity_state_cleared", sessionKey: safeLogFingerprint(sessionId) });
     appointmentStateWasInvalidated = true;
     clearAppointmentConversationState(sessionId);
   }
 
-  const language = getConversationLanguage(sessionId, text, businessConfig);
   const bookingCorrelationId = crypto.randomUUID();
   const bookingStartedAt = Date.now();
+  let pending = await loadPendingBooking(sessionId, platformName, businessConfig);
+  let entryRescheduleContext = getRescheduleContext(sessionId);
+  let entryCancellationContext = getCancellationContext(sessionId);
+  let entryOperation = resolveAuthoritativeOperation({
+    pending,
+    reschedule: entryRescheduleContext,
+    cancellation: entryCancellationContext,
+    lookup: appointmentLookupContexts[sessionId] || null,
+  });
+
+  // Reconcile legacy physical stores immediately. From this point onward one canonical
+  // operation owns the turn, before language, contact, availability, or AI processing.
+  if (entryOperation.conflict) {
+    if (entryOperation.operation === "cancellation") {
+      clearRescheduleContext(sessionId);
+      if (pending) await clearPendingBooking(sessionId);
+      pending = null;
+    } else if (entryOperation.operation === "reschedule") {
+      clearCancellationContext(sessionId);
+      if (pending) await clearPendingBooking(sessionId);
+      pending = null;
+    } else if (entryOperation.operation === "appointment_lookup") {
+      clearCancellationContext(sessionId);
+      clearRescheduleContext(sessionId);
+      if (pending) await clearPendingBooking(sessionId);
+      pending = null;
+    }
+    entryRescheduleContext = getRescheduleContext(sessionId);
+    entryCancellationContext = getCancellationContext(sessionId);
+    entryOperation = resolveAuthoritativeOperation({
+      pending,
+      reschedule: entryRescheduleContext,
+      cancellation: entryCancellationContext,
+      lookup: appointmentLookupContexts[sessionId] || null,
+    });
+  }
+
+  const normalizedRequest = normalizeBookingRequest({
+    businessId: getBusinessIdFromConfig(businessConfig) || "unscoped", channel: platformName,
+    conversationKey: sessionId, inputMode, text,
+    activeLanguage: getStoredFlowLanguage(sessionId) as any, timezone: String(businessConfig?.timezone || "Europe/Stockholm")
+  });
+  console.log("[BookingIntelligence]", { correlationId: safeLogFingerprint(`${sessionId}:${Date.now()}`), businessId: getBusinessIdFromConfig(businessConfig), channel: platformName, sourceMode: inputMode, detectedLanguage: normalizedRequest.language, detectedIntent: normalizedRequest.intent, normalizedDateKind: normalizedRequest.date?.kind || null, normalizedDate: normalizedRequest.date?.value || null, timeConstraintKind: normalizedRequest.timeConstraint?.kind || "none", correctionApplied: Boolean(normalizedRequest.customerCorrection), clarificationRequired: normalizedRequest.requiresClarification, parserFailureCategory: normalizedRequest.clarificationReason || null });
+  const language = getConversationLanguage(sessionId, text, businessConfig);
   const logBookingContinuationState = (
     fields: Parameters<typeof writeBookingContinuationState>[0]
   ) => writeBookingContinuationState({
@@ -8387,7 +8518,6 @@ async function handleUnifiedBookingEngine(params: {
     ...fields,
   });
   const latestStrongLanguage = detectStrongLatestLanguage(text);
-  let pending = await loadPendingBooking(sessionId, platformName, businessConfig);
   const authoritativeSenderPhone = getWhatsAppConversationPhone(
     platformName,
     recipientUserId,
@@ -8429,8 +8559,16 @@ async function handleUnifiedBookingEngine(params: {
     console.log("[BookingStateTransition]", { correlationId: bookingCorrelationId, businessId: currentBookingSlotOwner.businessId, channel: platformName, previousPhase, eventType: merged.reason, nextPhase: getBookingPhase(pending), selectedSlotPresent: Boolean(pending.dateTime && findOwnedOfferedSlot(pending, pending.dateTime)), operationStatus: pending.status || null, invariantOk: invariantFailures.length === 0, invariantFailures, failureStage: null, failureCategory: null, duplicateEvent: false });
   }
   console.log("[BookingNormalizedState]", { correlationId: bookingCorrelationId, timezone: String(businessConfig?.timezone || "Europe/Stockholm"), sourceMode: inputMode, correctionApplied: Boolean(normalizedRequest.customerCorrection), stateReplaced: normalizedStateReplaced });
-  let entryRescheduleContext = getRescheduleContext(sessionId);
-  let entryCancellationContext = getCancellationContext(sessionId);
+  console.log("[BookingOperationRouter]", {
+    correlationId: bookingCorrelationId,
+    businessId: currentBookingSlotOwner.businessId,
+    channel: platformName,
+    activeOperation: entryOperation.operation,
+    phase: entryOperation.phase,
+    expectedInput: entryOperation.expectedInput,
+    stateVersion: pending?.bookingStateVersion || CURRENT_BOOKING_STATE_VERSION,
+    conflictDetected: entryOperation.conflict,
+  });
   const entryExplicitNewBookingRequest = normalizedRequest.intent === "new_booking" || isExplicitNewBookingPivotText(text);
   const entryPendingOwnedSlot = pending?.dateTime
     ? findOwnedOfferedSlot(pending, pending.dateTime)
@@ -8704,14 +8842,14 @@ async function handleUnifiedBookingEngine(params: {
       eventIdMatch
     });
     if (
-      !(adapter instanceof GoogleCalendarAdapter) ||
+      (!(adapter instanceof GoogleCalendarAdapter) && process.env.NODE_ENV !== "test") ||
       !calendarIdMatch ||
       !eventIdMatch ||
       !eventStartMatches ||
       !eventBusinessMatches ||
       (!exactChannelOwner && !exactAppointmentPhone)
     ) {
-      await replyAndRecord(getErrorMessageByLanguage(context.language));
+      await replyAndRecord(formatDeterministicRecovery("cancellation_failed", context.language));
       return true;
     }
 
@@ -8825,7 +8963,7 @@ async function handleUnifiedBookingEngine(params: {
       } else {
         clearCancellationContext(sessionId);
       }
-      await replyAndRecord(getErrorMessageByLanguage(context.language));
+      await replyAndRecord(formatDeterministicRecovery("cancellation_failed", context.language));
       return true;
     };
 
@@ -8850,24 +8988,28 @@ async function handleUnifiedBookingEngine(params: {
 
     let updatedRow: any = null;
     if (appointment?.source === "appointments_table") {
-      if (!supabase || !appointment?.id) {
+      if ((!supabase && !priority1hTestDependencies?.cancelAppointmentRow) || !appointment?.id) {
         return failCancellation("database_unavailable");
       }
       databaseUpdateAttempted = true;
       let dbError: any = null;
       try {
-        let updateQuery = supabase
-          .from("appointments")
-          .update({ status: "cancelled" })
-          .eq("id", appointment.id)
-          .eq("business_id", businessId);
-        if (appointment.platform) updateQuery = updateQuery.eq("platform", appointment.platform);
-        if (appointment.userId) updateQuery = updateQuery.eq("user_id", appointment.userId);
-        const result = await updateQuery
-          .select("id,platform,user_id,service,status,business_id")
-          .maybeSingle();
-        updatedRow = result.data;
-        dbError = result.error;
+        if (priority1hTestDependencies?.cancelAppointmentRow) {
+          updatedRow = await priority1hTestDependencies.cancelAppointmentRow(appointment);
+        } else {
+          let updateQuery = supabase
+            .from("appointments")
+            .update({ status: "cancelled" })
+            .eq("id", appointment.id)
+            .eq("business_id", businessId);
+          if (appointment.platform) updateQuery = updateQuery.eq("platform", appointment.platform);
+          if (appointment.userId) updateQuery = updateQuery.eq("user_id", appointment.userId);
+          const result = await updateQuery
+            .select("id,platform,user_id,service,status,business_id")
+            .maybeSingle();
+          updatedRow = result.data;
+          dbError = result.error;
+        }
       } catch (databaseError) {
         console.error("[Cancellation] Database update crashed:", databaseError);
         return failCancellation("database_update_crashed");
@@ -9331,7 +9473,7 @@ async function handleUnifiedBookingEngine(params: {
     }
 
     const adapter = getCalendarAdapter(businessConfig);
-    if (!adapter.updateAppointment || !adapter.getEventById || !supabase) {
+    if (!adapter.updateAppointment || !adapter.getEventById || (!supabase && !priority1hTestDependencies?.updateAppointmentRow)) {
       rememberRescheduleContext(sessionId, context.appointment, lockedLanguage, context.requestedDate, context.requestedTime, {
         ...context,
         lastOperation: "update_failed"
@@ -9505,16 +9647,24 @@ async function handleUnifiedBookingEngine(params: {
     }
 
     databaseUpdateAttempted = true;
-    let dbUpdateQuery = supabase
-        .from("appointments")
-        .update({ start_time: newStartIso, end_time: newEndIso })
-        .eq("id", liveAppointment.id)
-        .eq("business_id", businessId);
-    if (liveAppointment.platform) dbUpdateQuery = dbUpdateQuery.eq("platform", liveAppointment.platform);
-    if (liveAppointment.userId) dbUpdateQuery = dbUpdateQuery.eq("user_id", liveAppointment.userId);
-    const { data: updatedRow, error: dbUpdateError } = await dbUpdateQuery
-      .select("id,customer_name,phone_number,platform,user_id,service,start_time,end_time,status,business_id")
-      .maybeSingle();
+    let updatedRow: any = null;
+    let dbUpdateError: any = null;
+    if (priority1hTestDependencies?.updateAppointmentRow) {
+      updatedRow = await priority1hTestDependencies.updateAppointmentRow(liveAppointment, newStartIso, newEndIso);
+    } else {
+      let dbUpdateQuery = supabase
+          .from("appointments")
+          .update({ start_time: newStartIso, end_time: newEndIso })
+          .eq("id", liveAppointment.id)
+          .eq("business_id", businessId);
+      if (liveAppointment.platform) dbUpdateQuery = dbUpdateQuery.eq("platform", liveAppointment.platform);
+      if (liveAppointment.userId) dbUpdateQuery = dbUpdateQuery.eq("user_id", liveAppointment.userId);
+      const result = await dbUpdateQuery
+        .select("id,customer_name,phone_number,platform,user_id,service,start_time,end_time,status,business_id")
+        .maybeSingle();
+      updatedRow = result.data;
+      dbUpdateError = result.error;
+    }
     databaseWasUpdated = Boolean(updatedRow && !dbUpdateError);
 
     const updatedRowPlatform = normalizePlatformName(String(updatedRow?.platform || ""));
@@ -10398,6 +10548,7 @@ async function handleUnifiedBookingEngine(params: {
     const rescheduleRequested =
       !authoritativeTelegramNewBooking &&
       !explicitNewBookingRequested &&
+      !appointmentLookupRequested &&
       (isRescheduleIntent(text) || recoveryIntent);
     const cancellationRequested =
       !authoritativeTelegramNewBooking &&
@@ -12833,7 +12984,10 @@ async function handleUnifiedBookingEngine(params: {
           finalHandledPath: "localized_failure"
         });
         await replyAndRecord(
-          getErrorMessageByLanguage(getFlowReplyLanguage(pending.language, language, text))
+          formatDeterministicRecovery(
+            "calendar_create_failed",
+            getFlowReplyLanguage(pending.language, language, text)
+          )
         );
         return true;
       }
@@ -12964,7 +13118,8 @@ async function handleUnifiedBookingEngine(params: {
           finalHandledPath: "calendar_verification_failed"
         });
         await replyAndRecord(
-          getErrorMessageByLanguage(
+          formatDeterministicRecovery(
+            "calendar_verification_failed",
             getFlowReplyLanguage(pending.language, language, text)
           )
         );
@@ -13061,7 +13216,8 @@ async function handleUnifiedBookingEngine(params: {
           finalHandledPath: databaseFailurePath
         });
         await replyAndRecord(
-          getErrorMessageByLanguage(
+          formatDeterministicRecovery(
+            databaseInserted ? "database_verification_failed" : "database_insert_failed",
             getFlowReplyLanguage(pending.language, language, text)
           )
         );
@@ -13107,7 +13263,8 @@ async function handleUnifiedBookingEngine(params: {
           failureCategory: "idempotency_settlement_failed",
         });
         await replyAndRecord(
-          getErrorMessageByLanguage(
+          formatDeterministicRecovery(
+            "idempotency_settlement_failed",
             getFlowReplyLanguage(pending.language, language, text)
           )
         );
@@ -13283,7 +13440,14 @@ async function handleUnifiedBookingEngine(params: {
       pending?.language ||
       getConversationLanguage(sessionId, text);
 
-    await replyAndRecord(getErrorMessageByLanguage(languageAfterError));
+    const recoveryCategory: DeterministicFailureCategory =
+      bookingFailureStage === "calendar_create" ? "calendar_create_failed" :
+      bookingFailureStage === "calendar_verification" ? "calendar_verification_failed" :
+      bookingFailureStage === "database_insert" ? "database_insert_failed" :
+      bookingFailureStage === "database_verification" ? "database_verification_failed" :
+      bookingFailureStage === "idempotency_settlement" ? "idempotency_settlement_failed" :
+      "calendar_unavailable";
+    await replyAndRecord(formatDeterministicRecovery(recoveryCategory, languageAfterError));
     return true;
   }
 }
@@ -13593,6 +13757,34 @@ async function processTelegramUpdateClaimed(update: any, config: any, platform: 
         messageType: voice && !text ? "voice" : "text",
       });
     }
+
+    // The inbound claim owns usage accounting. Count before any deterministic
+    // booking return so booking, lookup, reschedule and cancellation are included.
+    const inboundUsageLanguage = getConversationLanguage(
+      telegramSessionId,
+      String(text || ""),
+      config
+    );
+    const inboundUsage = await checkAndIncrementDailyUsage({
+      businessId,
+      platform: "telegram",
+      userId: telegramSessionId,
+      language: inboundUsageLanguage
+    });
+    if (!inboundUsage.allowed) {
+      const limitText = formatDailyLimitMessage(inboundUsageLanguage);
+      await sendTelegramPreferredReply({
+        sessionId: telegramSessionId,
+        chatId: chatId.toString(),
+        reply: limitText,
+        inputMode: telegramInputMode,
+        config,
+        source: "daily_usage_limit",
+        turnSequence: telegramTurnSequence,
+      });
+      appendLocalHistory(telegramSessionId, text || '[voice]', limitText);
+      return;
+    }
     
     
     const ai = new GoogleGenAI({ apiKey: apiKey || process.env.GEMINI_API_KEY });
@@ -13754,33 +13946,6 @@ async function processTelegramUpdateClaimed(update: any, config: any, platform: 
       appendLocalHistory(telegramSessionId, textForFlow, thanksText);
       try {
         await postProcessMessage(chatId.toString(), platform, textForFlow, thanksText, telegramToken, apiKey, getBusinessIdFromConfig(config));
-      } catch {
-        console.error("[TelegramReplyMode]", { businessId, stage: "post_process", success: false });
-      }
-      return;
-    }
-
-    const usageLanguage = getConversationLanguage(telegramSessionId, textForFlow);
-    const usage = await checkAndIncrementDailyUsage({
-      businessId: getBusinessIdFromConfig(config),
-      platform,
-      userId: telegramSessionId,
-      language: usageLanguage
-    });
-    if (!usage.allowed) {
-      const limitText = formatDailyLimitMessage(usageLanguage);
-      await sendTelegramPreferredReply({
-        sessionId: telegramSessionId,
-        chatId: chatId.toString(),
-        reply: limitText,
-        inputMode: telegramInputMode,
-        config,
-        source: "daily_usage_limit",
-        turnSequence: telegramTurnSequence,
-      });
-      appendLocalHistory(telegramSessionId, textForFlow || '[voice]', limitText);
-      try {
-        await postProcessMessage(chatId.toString(), platform, textForFlow || '[voice]', limitText, telegramToken, apiKey, getBusinessIdFromConfig(config));
       } catch {
         console.error("[TelegramReplyMode]", { businessId, stage: "post_process", success: false });
       }
@@ -14551,6 +14716,7 @@ async function recordAppointmentFromBooking(params: {
   dateTime: string;
   durationMinutes?: number;
 }): Promise<any | null> {
+  if (priority1hTestDependencies?.recordAppointment) return priority1hTestDependencies.recordAppointment(params);
   if (!supabase) {
     console.error("Appointment DB insert skipped: Supabase client is not configured.");
     return null;
@@ -16281,6 +16447,19 @@ async function processMessengerUpdateClaimed(webhookEvent: any, config: any, pla
     language: textMessage ? userLanguage : undefined,
   });
 
+  const inboundUsage = await checkAndIncrementDailyUsage({
+    businessId: getBusinessIdFromConfig(businessConfig),
+    platform: "messenger",
+    userId: chatId,
+    language: userLanguage
+  });
+  if (!inboundUsage.allowed) {
+    const limitText = formatDailyLimitMessage(userLanguage);
+    await sendMessengerMessage(senderId, limitText, businessConfig);
+    appendLocalHistory(chatId, textMessage || '[voice]', limitText);
+    return;
+  }
+
   try {
     if (textMessage) {
       if (!chatSessions[chatId as any]) chatSessions[chatId as any] = [];
@@ -16347,20 +16526,6 @@ async function processMessengerUpdateClaimed(webhookEvent: any, config: any, pla
       } else {
         userMessageForLog = "[Messenger Voice Message]";
       }
-    }
-
-    const usage = await checkAndIncrementDailyUsage({
-      businessId: getBusinessIdFromConfig(businessConfig),
-      platform,
-      userId: chatId,
-      language: userLanguage
-    });
-    if (!usage.allowed) {
-      const limitText = formatDailyLimitMessage(userLanguage);
-      await sendMessengerMessage(senderId, limitText, businessConfig);
-      appendLocalHistory(chatId, textMessage || userMessageForLog, limitText);
-      await postProcessMessage(chatId, platform, userMessageForLog, limitText, businessConfig?.telegramToken, businessConfig?.apiKey, getBusinessIdFromConfig(businessConfig));
-      return;
     }
 
     const messages = [...history];
@@ -16783,6 +16948,19 @@ async function processInstagramUpdateClaimed(webhook_event: any, config: any, pl
     language: textMessage ? userLanguage : undefined,
   });
 
+  const inboundUsage = await checkAndIncrementDailyUsage({
+    businessId: getBusinessIdFromConfig(businessConfig),
+    platform: "instagram",
+    userId: chatId,
+    language: userLanguage
+  });
+  if (!inboundUsage.allowed) {
+    const limitText = formatDailyLimitMessage(userLanguage);
+    await sendInstagramMessage(senderId, limitText, getBusinessInstagramToken(businessConfig));
+    appendLocalHistory(chatId, textMessage || '[voice]', limitText);
+    return;
+  }
+
   try {
     if (!chatSessions[chatId as any]) chatSessions[chatId as any] = [];
     const history = chatSessions[chatId as any];
@@ -16892,20 +17070,6 @@ if (contentType === "video/mp4") {
         );
         return;
       }
-    }
-
-    const usage = await checkAndIncrementDailyUsage({
-      businessId: getBusinessIdFromConfig(businessConfig),
-      platform,
-      userId: chatId,
-      language: userLanguage
-    });
-    if (!usage.allowed) {
-      const limitText = formatDailyLimitMessage(userLanguage);
-      await sendInstagramMessage(senderId, limitText, getBusinessInstagramToken(businessConfig));
-      appendLocalHistory(chatId, textMessage || userMessageForLog, limitText);
-      await postProcessMessage(chatId, platform, userMessageForLog, limitText, businessConfig?.telegramToken, businessConfig?.apiKey, getBusinessIdFromConfig(businessConfig));
-      return;
     }
 
     const messages = [...history];
@@ -19525,4 +19689,121 @@ Generate the final production-ready system prompt now.
   });
 }
 
-startServer().catch(console.error);
+export const priority1hUnifiedEngineTestBoundary = {
+  configure(dependencies: Priority1hTestDependencies) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    priority1hTestDependencies = dependencies;
+    supabase = dependencies.supabaseClient || null;
+  },
+  reset() {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    priority1hTestDependencies = null;
+    for (const key of Object.keys(pendingBookings)) delete pendingBookings[key];
+    for (const key of Object.keys(rescheduleContexts)) delete rescheduleContexts[key];
+    for (const key of Object.keys(cancellationContexts)) delete cancellationContexts[key];
+    for (const key of Object.keys(appointmentLookupContexts)) delete appointmentLookupContexts[key];
+    for (const key of Object.keys(appointmentSelectionContexts)) delete appointmentSelectionContexts[key];
+    for (const key of Object.keys(appointmentContexts)) delete appointmentContexts[key];
+    for (const key of Object.keys(appointmentStateOwners)) delete appointmentStateOwners[key];
+    for (const key of Object.keys(availabilitySearchContexts)) delete availabilitySearchContexts[key];
+    for (const key of Object.keys(recentlyCompletedBookings)) delete recentlyCompletedBookings[key];
+    for (const key of Object.keys(telegramReplyPreferences)) delete telegramReplyPreferences[key];
+    atomicClaims.clear();
+    supabase = null;
+  },
+  seedOwnedAppointment(params: {
+    sessionId: string;
+    platform: "whatsapp" | "messenger" | "instagram" | "telegram";
+    userId: string;
+    businessConfig: any;
+    appointment: any;
+    operation: "lookup" | "reschedule" | "cancellation";
+    selectedNewStartTime?: string;
+  }) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    const owner: AppointmentStateOwner = {
+      sessionId: params.sessionId,
+      businessId: getAppointmentBusinessScope(params.businessConfig),
+      platform: params.platform,
+      userId: normalizePlatformUserId(params.platform, params.userId),
+      identityKey: `channel:${params.platform}:${normalizePlatformUserId(params.platform, params.userId)}`,
+    };
+    appointmentStateOwners[params.sessionId] = owner;
+    appointmentContexts[params.sessionId] = { appointment: params.appointment, savedAt: Date.now(), language: "en" };
+    if (params.operation === "lookup") {
+      rememberAppointmentLookupContext(params.sessionId, "en", false, "upcoming", false, { operation: "lookup" });
+    } else if (params.operation === "cancellation") {
+      rememberCancellationContext(params.sessionId, params.appointment, "en", params.businessConfig);
+    } else {
+      const selected = String(params.selectedNewStartTime || "");
+      const duration = getAppointmentDurationMinutes(params.appointment);
+      const end = selected ? new Date(new Date(selected).getTime() + duration * 60_000).toISOString() : undefined;
+      rememberRescheduleContext(params.sessionId, params.appointment, "en", selected ? stockholmDateString(new Date(selected)) : null, selected ? getStockholmTimeFromIso(selected) : null, {
+        selectedNewStartTime: selected || undefined,
+        selectedEndTime: end,
+        offeredSlots: selected ? [selected] : [],
+        ownedOfferedSlots: selected && end ? [{
+          start: selected, end, durationMinutes: duration, service: params.appointment.service,
+          businessId: owner.businessId, platform: owner.platform, userId: owner.userId,
+          generatedAt: Date.now(), searchStartDate: stockholmDateString(new Date(selected)), searchEndDate: stockholmDateString(new Date(selected)),
+        }] : [],
+        lastOperation: selected ? "awaiting_confirmation" : "awaiting_target",
+      });
+    }
+  },
+  async turn(params: Omit<Parameters<typeof handleUnifiedBookingEngine>[0], "send" | "history" | "postProcessPlatform" | "platformLogName">) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    const replies: string[] = [];
+    const handled = await handleUnifiedBookingEngine({
+      ...params,
+      history: chatSessions[params.sessionId] || [],
+      platformLogName: params.platformName,
+      postProcessPlatform: params.platformName,
+      send: async (reply) => { replies.push(reply); return true; },
+    });
+    return {
+      handled,
+      replies,
+      pending: pendingBookings[params.sessionId] ? structuredClone(pendingBookings[params.sessionId]) : null,
+      operation: resolveAuthoritativeOperation({
+        pending: pendingBookings[params.sessionId] || null,
+        reschedule: rescheduleContexts[params.sessionId] || null,
+        cancellation: cancellationContexts[params.sessionId] || null,
+        lookup: appointmentLookupContexts[params.sessionId] || null,
+      }),
+    };
+  },
+  async inboundTurn(params: Omit<Parameters<typeof handleUnifiedBookingEngine>[0], "send" | "history" | "postProcessPlatform" | "platformLogName"> & { eventId: string }) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    const replies: string[] = [];
+    let handled = false;
+    await runWithInboundMessageClaim({
+      tenantScope: String(getBusinessIdFromConfig(params.businessConfig) || "test"),
+      businessId: String(getBusinessIdFromConfig(params.businessConfig) || ""),
+      platform: params.platformName,
+      messageId: params.eventId,
+      handler: async () => {
+        await checkAndIncrementDailyUsage({
+          businessId: getBusinessIdFromConfig(params.businessConfig),
+          platform: params.platformName,
+          userId: params.sessionId,
+        });
+        handled = await handleUnifiedBookingEngine({
+          ...params,
+          history: chatSessions[params.sessionId] || [],
+          platformLogName: params.platformName,
+          postProcessPlatform: params.platformName,
+          send: async (reply) => { replies.push(reply); return true; },
+        });
+      },
+    });
+    return { handled, replies };
+  },
+  telegramDelivery(sessionId: string, inputMode: "text" | "voice", text: string) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    const preference = updateTelegramReplyPreference(sessionId, inputMode, text);
+    return { preference, delivery: selectTelegramDeliveryMode(preference, inputMode) };
+  },
+};
+
+if (process.env.NODE_ENV !== "test") startServer().catch(console.error);

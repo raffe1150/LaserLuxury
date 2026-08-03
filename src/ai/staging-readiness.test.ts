@@ -59,7 +59,8 @@ const settlementFailure = section(
   'const bookingOperationResult',
   booking,
 );
-assert.match(settlementFailure, /getErrorMessageByLanguage/);
+assert.match(settlementFailure, /formatDeterministicRecovery\([\s\S]*"idempotency_settlement_failed"/);
+assert.doesNotMatch(settlementFailure, /getErrorMessageByLanguage/);
 assert.match(booking, /bookingOperationClaim\.duplicateStatus === "completed"[\s\S]{0,120}clearPendingBooking/);
 assert.doesNotMatch(booking, /runAiProviderRequest[\s\S]{0,300}insertAppointment|insertAppointment[\s\S]{0,300}runAiProviderRequest/);
 

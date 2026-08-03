@@ -55,6 +55,9 @@ async function runTests() {
   assert.equal(containsUnverifiedBookingSuccessClaim('Din tid för konsultation är nu bokad.'), true);
   assert.equal(containsUnverifiedBookingSuccessClaim('وقت شما رزرو شد.'), true);
   assert.equal(containsUnverifiedBookingSuccessClaim('I can help you choose a time.'), false);
+  assert.equal(containsUnverifiedBookingSuccessClaim('I have not confirmed the booking.'), false);
+  assert.equal(containsUnverifiedBookingSuccessClaim('Bokningen är inte bekräftad.'), false);
+  assert.equal(containsUnverifiedBookingSuccessClaim('رزرو تأیید نشده است.'), false);
 
   const successfulBooking = createBookingOperationResult({
     calendarCreated: true,

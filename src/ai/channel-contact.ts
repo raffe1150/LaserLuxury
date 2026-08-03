@@ -19,7 +19,7 @@ export function isInvalidCustomerNameToken(name?: string | null): boolean {
   const value = String(name || '').normalize('NFKC').trim().toLowerCase()
     .replace(/[!?.،,؛]+/gu, ' ').replace(/\s+/g, ' ');
   if (!value) return true;
-  return /^(?:bale|baleh|بله|آره|اره|yes|yes please|yeah|yep|ja|ja tack|nej|no|ok|okay|okej|merci|thanks|thank you|tack|sure|absolut|book it|boka den|that works|det blir bra|konsultation|consultation|booking|bokning|laser|bikini|full body|helkropp|today|tomorrow|idag|imorgon|monday|tuesday|wednesday|thursday|friday|saturday|sunday|måndag|tisdag|onsdag|torsdag|fredag|lördag|söndag|morning|afternoon|evening)$/iu.test(value) ||
+  return /^(?:bale|baleh|بله|آره|اره|yes|yes please|yeah|yep|ja|ja tack|nej|no|ok|okay|okej|merci|mersi|مرسی|mamnoon|ممنون|thanks|thank you|tack|sure|absolut|book it|boka den|that works|det blir bra|konsultation|consultation|booking|bokning|laser|bikini|full body|helkropp|today|tomorrow|idag|imorgon|monday|tuesday|wednesday|thursday|friday|saturday|sunday|måndag|tisdag|onsdag|torsdag|fredag|lördag|söndag|morning|afternoon|evening)$/iu.test(value) ||
     /^(?:kl(?:ockan)?|at|saat|sate|ساعت)?\s*\d{1,2}(?::\d{2})?$/iu.test(value);
 }
 

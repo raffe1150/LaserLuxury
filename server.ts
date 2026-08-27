@@ -5056,9 +5056,10 @@ async function resolveServiceDurationMinutes(
   }
 
   const services = Array.isArray(businessConfig?.services) ? businessConfig.services : [];
+  const configuredService = findConfiguredBookingService(service, businessConfig);
   for (const item of services) {
-    const name = String(item?.name || item?.service || item?.title || "").toLowerCase();
-    if (!serviceKey || !name.includes(serviceKey)) continue;
+    const name = String(item?.name || item?.service || item?.title || "").trim();
+    if (!configuredService || name !== configuredService) continue;
     const parsed = parseConfiguredDuration(
       item?.durationMinutes ?? item?.duration_minutes ?? item?.duration
     );
@@ -5274,6 +5275,29 @@ function normalizeBookingService(text?: string, fallback?: string): string {
 
   const existing = String(fallback || "").trim();
   return existing || "Bokning";
+}
+
+function findConfiguredBookingService(requestedService: string, businessConfig: any): string | null {
+  const requested = String(requestedService || "").trim();
+  if (!requested) return null;
+  const names = (Array.isArray(businessConfig?.services) ? businessConfig.services : [])
+    .map((item: any) => String(item?.name || item?.service || item?.title || "").trim())
+    .filter(Boolean);
+  const lower = requested.toLowerCase();
+  const direct = names.filter((name: string) => {
+    const configured = name.toLowerCase();
+    return configured === lower || configured.includes(lower) || lower.includes(configured);
+  });
+  if (direct.length === 1) return direct[0];
+  if (direct.length > 1) return null;
+  const canonical = normalizeBookingService(requested, "Bokning");
+  if (canonical === "Bokning") return null;
+  const matches = names.filter((name: string) => normalizeBookingService(name, "Bokning") === canonical);
+  return matches.length === 1 ? matches[0] : null;
+}
+
+function resolveConfiguredBookingService(text: string, businessConfig: any, fallback?: string): string {
+  return findConfiguredBookingService(text, businessConfig) || normalizeBookingService(text, fallback);
 }
 
 function getWhatsAppConversationPhone(
@@ -6811,11 +6835,28 @@ function findOwnedOfferedSlot(pending: any, startIso?: string | null): OwnedOffe
 }
 
 function selectOwnedOfferedSlot(text: string, pending: any): OwnedOfferedSlot | null {
+  const explicitDate = resolveExplicitBookingDate(text);
   const selectedIso = selectRescheduleOfferedSlot(
     text,
     Array.isArray(pending?.offeredSlots) ? pending.offeredSlots : []
   );
-  return findOwnedOfferedSlot(pending, selectedIso);
+  const selected = findOwnedOfferedSlot(pending, selectedIso);
+  if (selected && (!explicitDate || stockholmDateString(new Date(ensureStockholmOffset(selected.start))) === explicitDate)) {
+    return selected;
+  }
+  const times = new Set(
+    Array.from(normalizeLocalizedDigits(String(text || "")).matchAll(/(?:^|\s)([01]?\d|2[0-3])[\.:]([0-5]\d)(?=[^\d]|$)/g))
+      .map((match) => `${String(Number(match[1])).padStart(2, "0")}:${match[2]}`)
+  );
+  if (times.size === 0) return null;
+  const matches = (Array.isArray(pending?.ownedOfferedSlots) ? pending.ownedOfferedSlots : [])
+    .filter((slot: OwnedOfferedSlot) => {
+      const start = new Date(ensureStockholmOffset(String(slot?.start || "")));
+      if (Number.isNaN(start.getTime())) return false;
+      if (explicitDate && stockholmDateString(start) !== explicitDate) return false;
+      return times.has(start.toLocaleTimeString("sv-SE", { timeZone: "Europe/Stockholm", hour: "2-digit", minute: "2-digit" }));
+    });
+  return matches.length === 1 ? matches[0] : null;
 }
 
 function isExistingAppointmentLookupIntent(text?: string): boolean {
@@ -11897,11 +11938,14 @@ async function handleUnifiedBookingEngine(params: {
         pending?.status !== "inserting"
       )
     );
+    const currentOwnedSlotSelection = pending?.status === "awaiting_time_selection"
+      ? selectOwnedOfferedSlot(text, pending)
+      : null;
     const pendingCanAcceptAvailabilityRefinement = Boolean(
       !pending ||
-      ["awaiting_time_selection"].includes(
+      (!currentOwnedSlotSelection && ["awaiting_time_selection"].includes(
         String(pending?.status || "")
-      ) ||
+      )) ||
       Boolean(deterministicTransition?.runAvailability)
     );
     if (
@@ -11916,7 +11960,7 @@ async function handleUnifiedBookingEngine(params: {
     ) {
       const priorConstraintType = previousAvailabilityConstraint?.kind || "none";
       const constraint = latestAvailabilityConstraint;
-      const fingerprintService = normalizeBookingService(inferServiceFromRecentContext(text, history), storedAvailability?.service || pending?.service || getDefaultBookingServiceForBusiness(businessConfig) || "Bokning");
+      const fingerprintService = resolveConfiguredBookingService(inferServiceFromRecentContext(text, history), businessConfig, storedAvailability?.service || pending?.service || getDefaultBookingServiceForBusiness(businessConfig) || "Bokning");
       const fingerprintResolvedDuration = platformName === "telegram" ? await resolveServiceDurationMinutes(fingerprintService, null, businessConfig) : null;
       const fingerprintDuration = storedAvailability?.durationMinutes || Number(pending?.durationMinutes || 0) || Number(fingerprintResolvedDuration || 0) || getDefaultBookingDurationForService(fingerprintService) || inferBookingDurationFromContext(text, history);
       const availabilityConstraintKey = canonicalAvailabilityConstraintKey(constraint, { businessId: currentAppointmentStateOwner.businessId, service: fingerprintService, timezone: String(businessConfig?.timezone || "Europe/Stockholm"), durationMinutes: fingerprintDuration, time: authoritativeNormalizedRequest.timeConstraint });
@@ -11974,8 +12018,9 @@ async function handleUnifiedBookingEngine(params: {
         await clearPendingBooking(sessionId);
         pending = null;
       }
-      const inferredService = normalizeBookingService(
+      const inferredService = resolveConfiguredBookingService(
         fingerprintService,
+        businessConfig,
         storedAvailability?.service ||
           priorPendingBooking?.service ||
           recoveredServiceForNewBooking ||
@@ -12247,7 +12292,7 @@ async function handleUnifiedBookingEngine(params: {
       const adapter = getCalendarAdapter(businessConfig);
       const startDate = stockholmDateString(new Date());
       const endDate = addDaysToStockholmDate(startDate, 7);
-      const service = normalizeBookingService(inferServiceFromRecentContext(text, history), "Bokning");
+      const service = resolveConfiguredBookingService(inferServiceFromRecentContext(text, history), businessConfig, "Bokning");
       const finalService = service !== "Bokning"
         ? service
         : (getDefaultBookingServiceForBusiness(businessConfig) || "Bokning");
@@ -12310,7 +12355,7 @@ async function handleUnifiedBookingEngine(params: {
         text,
         ...(history || []).slice(-10).map((item: any) => item?.content || "")
       ].join(" ");
-      const detectedService = normalizeBookingService(contextText, "Bokning");
+      const detectedService = resolveConfiguredBookingService(contextText, businessConfig, "Bokning");
       const defaultService = getDefaultBookingServiceForBusiness(businessConfig);
       const finalService =
         detectedService !== "Bokning"

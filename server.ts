@@ -8668,8 +8668,11 @@ async function handleUnifiedBookingEngine(params: {
       dateLocked: Boolean(pending.selectedDate || pending.availabilityStartDate)
     });
   }
+  const entryOwnedSlotSelection = pending?.status === "awaiting_time_selection"
+    ? selectOwnedOfferedSlot(text, pending)
+    : null;
   let authoritativeNormalizedRequest = normalizedRequest, normalizedStateReplaced = false, deterministicTransition: ReturnType<typeof applyNormalizedRequestToPending> | null = null;
-  if (pending?.normalizedBookingRequest) {
+  if (pending?.normalizedBookingRequest && !entryOwnedSlotSelection) {
     const previousPhase = getBookingPhase(pending);
     const merged = applyNormalizedRequestToPending(pending, normalizedRequest);
     deterministicTransition = merged;
@@ -11938,9 +11941,9 @@ async function handleUnifiedBookingEngine(params: {
         pending?.status !== "inserting"
       )
     );
-    const currentOwnedSlotSelection = pending?.status === "awaiting_time_selection"
+    const currentOwnedSlotSelection = entryOwnedSlotSelection || (pending?.status === "awaiting_time_selection"
       ? selectOwnedOfferedSlot(text, pending)
-      : null;
+      : null);
     const pendingCanAcceptAvailabilityRefinement = Boolean(
       !pending ||
       (!currentOwnedSlotSelection && ["awaiting_time_selection"].includes(
@@ -12444,7 +12447,7 @@ async function handleUnifiedBookingEngine(params: {
 
     if (pending?.status === "awaiting_time_selection") {
       const selectedTime = inferRequestedTimeFromText(text);
-      const selectedOwnedSlot = selectOwnedOfferedSlot(text, pending);
+      const selectedOwnedSlot = entryOwnedSlotSelection || selectOwnedOfferedSlot(text, pending);
       const selectedIso = selectedOwnedSlot?.start || null;
 
       if (selectedIso && selectedOwnedSlot) {

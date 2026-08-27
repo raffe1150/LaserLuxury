@@ -5310,6 +5310,70 @@ function findConfiguredBookingService(requestedService: string, businessConfig: 
   return matches.length === 1 ? matches[0] : null;
 }
 
+function getConfiguredBookingServiceNames(businessConfig: any): string[] {
+  return [...new Set(
+    (Array.isArray(businessConfig?.services) ? businessConfig.services : [])
+      .map((item: any) => String(item?.name || item?.service || item?.title || "").trim())
+      .filter(Boolean)
+  )];
+}
+
+function extractConcreteRequestedService(text?: string): string | null {
+  const raw = String(text || "").replace(/\s+/g, " ").trim();
+  if (!raw) return null;
+
+  const token = String.raw`[\p{L}\p{M}][\p{L}\p{M}'’\-]*`;
+  const candidate = String.raw`${token}(?:\s+${token}){0,4}?`;
+  const patterns = [
+    new RegExp(String.raw`\b(?:book|schedule|reserve)\s+(?:an?\s+)?(${candidate})(?=\s+(?:at|on)\s+\d{1,2}(?::\d{2})?|[.!?]|$)`, "iu"),
+    new RegExp(String.raw`\b(?:boka|reservera)\s+(?:(?:en|ett)\s+)?(${candidate})(?=\s+(?:kl(?:ockan)?\.?)\s*\d{1,2}(?::\d{2})?|[.!?]|$)`, "iu"),
+    new RegExp(String.raw`\bich\s+(?:möchte|moechte|will)\s+(?:gern(?:e)?\s+)?(?:(?:eine[nmrs]?)\s+)?(${candidate})(?=\s+(?:um|am)\s+\d{1,2}(?::\d{2})?|\s+buchen\b|[.!?]|$)`, "iu"),
+    new RegExp(String.raw`\b(?:quiero|quisiera|me\s+gustar[ií]a)\s+(?:reservar|agendar)\s+(?:(?:un|una|el|la)\s+)?(${candidate})(?=\s+(?:a\s+las|el)\s+\d{1,2}(?::\d{2})?|[.!?]|$)`, "iu"),
+    new RegExp(String.raw`\b(?:mikham|mikhastam)\s+(?:ye\s+)?(${candidate})(?=\s+(?:saat|sate)\s+\d{1,2}(?::\d{2})?|\s+(?:book|rezerv)\b)`, "iu"),
+  ];
+
+  for (const pattern of patterns) {
+    const match = raw.match(pattern);
+    const extracted = String(match?.[1] || "").trim();
+    if (!extracted) continue;
+    if (/^(?:appointment|booking|time|slot|tid|bokning|termin|cita|reserva|service|tjänst)$/iu.test(extracted)) continue;
+    return extracted;
+  }
+
+  return null;
+}
+
+function formatUnsupportedServiceBookingReply(
+  language: string,
+  requestedService: string,
+  configuredServices: string[]
+): string {
+  const options = configuredServices.join(", ");
+  if (language === "sv") return `Jag kan inte matcha “${requestedService}” mot en bokningsbar tjänst. Tillgängliga tjänster är: ${options}. Vilka av dem vill du välja för bokningen?`;
+  if (language === "de") return `Ich kann „${requestedService}“ keiner buchbaren Leistung zuordnen. Verfügbar sind: ${options}. Für welche davon möchten Sie buchen?`;
+  if (language === "es") return `No puedo asociar «${requestedService}» con un servicio reservable. Los servicios disponibles son: ${options}. ¿Qué servicio quieres reservar para tu cita?`;
+  if (language === "fa") return `نمی‌توانم «${requestedService}» را با یکی از خدمات قابل رزرو تطبیق بدهم. خدمات موجود: ${options}. کدام را می‌خواهید رزرو کنید؟`;
+  if (language === "ar") return `لا أستطيع مطابقة «${requestedService}» مع خدمة قابلة للحجز. الخدمات المتاحة: ${options}. أي خدمة تريد حجزها؟`;
+  return `I cannot match “${requestedService}” to a bookable service. Available services are: ${options}. Which one would you like to book?`;
+}
+
+function formatConfiguredServiceDatePrompt(language: string, service: string, requestedTime?: string): string {
+  const retainedTime = requestedTime
+    ? language === "de" ? ` Die gewünschte Uhrzeit ${requestedTime} habe ich vorgemerkt.`
+      : language === "sv" ? ` Jag har sparat önskemålet om kl ${requestedTime}.`
+        : language === "es" ? ` He conservado la hora solicitada, ${requestedTime}.`
+          : language === "fa" ? ` ساعت درخواستی ${requestedTime} را نگه داشتم.`
+            : language === "ar" ? ` احتفظت بالوقت المطلوب ${requestedTime}.`
+              : ` I kept your requested time of ${requestedTime}.`
+    : "";
+  if (language === "sv") return `Jag har valt ${service}. Vilka datum finns i åtanke för bokningen?${retainedTime}`;
+  if (language === "de") return `Ich habe ${service} ausgewählt. Für welches Datum möchten Sie buchen?${retainedTime}`;
+  if (language === "es") return `Quiero confirmar ${service}. ¿Para qué fecha quieres reservar?${retainedTime}`;
+  if (language === "fa") return `${service} قابل رزرو است. برای چه تاریخی می‌خواهید رزرو کنید؟${retainedTime}`;
+  if (language === "ar") return `يمكن حجز ${service}. ما التاريخ الذي تريد الحجز فيه؟${retainedTime}`;
+  return `${service} is bookable. What date would you like to book?${retainedTime}`;
+}
+
 function resolveConfiguredBookingService(text: string, businessConfig: any, fallback?: string): string {
   return findConfiguredBookingService(text, businessConfig) || normalizeBookingService(text, fallback);
 }
@@ -8585,6 +8649,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
   const bookingCorrelationId = crypto.randomUUID();
   const bookingStartedAt = Date.now();
   let pending = await loadPendingBooking(sessionId, platformName, businessConfig);
+  const entryPendingLanguage = pending?.language || null;
   const normalizationStrongLanguage = detectStrongLatestLanguage(text);
   const normalizationActiveLanguage =
     normalizationStrongLanguage &&
@@ -8885,6 +8950,80 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
       });
     }
   };
+
+  const configuredServiceNames = getConfiguredBookingServiceNames(businessConfig);
+  if (pending?.status === "awaiting_service") {
+    const serviceResolutionLanguage = entryPendingLanguage || pending.language || language;
+    pending.language = serviceResolutionLanguage;
+    lockConversationFlowLanguage(sessionId, serviceResolutionLanguage, "booking");
+    const selectedConfiguredService = findConfiguredBookingService(text, businessConfig);
+    if (selectedConfiguredService) {
+      pending.service = selectedConfiguredService;
+      pending.durationMinutes = await resolveServiceDurationMinutes(
+        selectedConfiguredService,
+        null,
+        businessConfig
+      );
+      pending.status = "awaiting_date_or_time";
+      pending.expectedInput = "date_or_constraint";
+      await savePendingBooking(sessionId, platformName, pending);
+      await replyAndRecord(formatConfiguredServiceDatePrompt(
+        serviceResolutionLanguage,
+        selectedConfiguredService,
+        pending.requestedTime || undefined
+      ));
+      return true;
+    }
+
+    const nextUnsupportedService = extractConcreteRequestedService(text);
+    if (nextUnsupportedService) pending.requestedService = nextUnsupportedService;
+    const nextRequestedTime = inferRequestedTimeFromText(text);
+    if (nextRequestedTime) pending.requestedTime = nextRequestedTime;
+    pending.expectedInput = "service";
+    await savePendingBooking(sessionId, platformName, pending);
+    await replyAndRecord(formatUnsupportedServiceBookingReply(
+      serviceResolutionLanguage,
+      pending.requestedService || "service",
+      configuredServiceNames
+    ));
+    return true;
+  }
+
+  const concreteRequestedService = extractConcreteRequestedService(text);
+  if (
+    !pending &&
+    concreteRequestedService &&
+    configuredServiceNames.length > 0 &&
+    !findConfiguredBookingService(concreteRequestedService, businessConfig)
+  ) {
+    const requestedTime = inferRequestedTimeFromText(text);
+    pending = {
+      businessConfig,
+      platform: platformName,
+      service: "Bokning",
+      requestedService: concreteRequestedService,
+      requestedTime,
+      selectedDate: null,
+      offeredSlots: [],
+      ownedOfferedSlots: [],
+      dateTime: null,
+      selectedSlotEnd: null,
+      durationMinutes: null,
+      language,
+      operation: "new_booking",
+      expectedInput: "service",
+      customerPhone: getWhatsAppConversationPhone(platformName, recipientUserId, sessionId),
+      status: "awaiting_service"
+    };
+    lockConversationFlowLanguage(sessionId, language, "booking");
+    await savePendingBooking(sessionId, platformName, pending);
+    await replyAndRecord(formatUnsupportedServiceBookingReply(
+      language,
+      concreteRequestedService,
+      configuredServiceNames
+    ));
+    return true;
+  }
 
   if (getBookingPhase(pending) === "finalizing") {
     console.log("[BookingStateTransition]", {

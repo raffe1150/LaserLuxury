@@ -458,6 +458,20 @@ function getAppointmentBusinessScope(config: any): string {
   return calendarId ? `calendar:${calendarId}` : "";
 }
 
+function getScopedChannelSessionId(
+  platform: "whatsapp" | "messenger" | "instagram",
+  userId: string,
+  businessConfig: any,
+  tenantScope?: string
+): string {
+  const prefix = platform === "whatsapp" ? "wa_" : platform === "messenger" ? "ms_" : "ig_";
+  const normalizedUserId = normalizePlatformUserId(platform, userId);
+  const businessScope = String(getAppointmentBusinessScope(businessConfig) || tenantScope || "").trim();
+  return businessScope
+    ? `${prefix}${encodeURIComponent(businessScope)}:${normalizedUserId}`
+    : `${prefix}${normalizedUserId}`;
+}
+
 function normalizeLocalizedDigits(value?: string): string {
   const persianDigits = "۰۱۲۳۴۵۶۷۸۹";
   const arabicDigits = "٠١٢٣٤٥٦٧٨٩";
@@ -8471,7 +8485,7 @@ async function startAllBusinessTelegramPollers() {
 
 type UnifiedBookingSend = (text: string) => Promise<any>;
 
-async function handleUnifiedBookingEngine(params: {
+type UnifiedBookingEngineParams = {
   sessionId: string;
   platformName: "whatsapp" | "messenger" | "instagram" | "telegram";
   platformLogName: string;
@@ -8482,7 +8496,48 @@ async function handleUnifiedBookingEngine(params: {
   send: UnifiedBookingSend;
   postProcessPlatform: string;
   inputMode?: "text" | "voice";
-}): Promise<boolean> {
+};
+
+const unifiedBookingTurnTails = new Map<string, Promise<void>>();
+const latestUnifiedBookingTurn = new Map<string, symbol>();
+
+async function runSerializedUnifiedBookingTurn<T>(sessionId: string, work: () => Promise<T>): Promise<T> {
+  const previousTail = unifiedBookingTurnTails.get(sessionId) || Promise.resolve();
+  let releaseCurrentTurn!: () => void;
+  const currentTurn = new Promise<void>((resolve) => { releaseCurrentTurn = resolve; });
+  const currentTail = previousTail.catch(() => undefined).then(() => currentTurn);
+  unifiedBookingTurnTails.set(sessionId, currentTail);
+
+  await previousTail.catch(() => undefined);
+  try {
+    return await work();
+  } finally {
+    releaseCurrentTurn();
+    if (unifiedBookingTurnTails.get(sessionId) === currentTail) {
+      unifiedBookingTurnTails.delete(sessionId);
+    }
+  }
+}
+
+async function handleUnifiedBookingEngine(params: UnifiedBookingEngineParams): Promise<boolean> {
+  const turnToken = Symbol(params.sessionId);
+  latestUnifiedBookingTurn.set(params.sessionId, turnToken);
+  try {
+    return await runSerializedUnifiedBookingTurn(params.sessionId, () => handleUnifiedBookingEngineTurn({
+      ...params,
+      send: async (reply) => {
+        if (latestUnifiedBookingTurn.get(params.sessionId) !== turnToken) return false;
+        return params.send(reply);
+      },
+    }));
+  } finally {
+    if (latestUnifiedBookingTurn.get(params.sessionId) === turnToken) {
+      latestUnifiedBookingTurn.delete(params.sessionId);
+    }
+  }
+}
+
+async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams): Promise<boolean> {
   const {
     sessionId,
     platformName,
@@ -8530,10 +8585,17 @@ async function handleUnifiedBookingEngine(params: {
   const bookingCorrelationId = crypto.randomUUID();
   const bookingStartedAt = Date.now();
   let pending = await loadPendingBooking(sessionId, platformName, businessConfig);
+  const normalizationStrongLanguage = detectStrongLatestLanguage(text);
+  const normalizationActiveLanguage =
+    normalizationStrongLanguage &&
+    isMeaningfulLanguageMessage(text) &&
+    hasStrongLanguageEvidence(normalizationStrongLanguage, text)
+      ? normalizationStrongLanguage
+      : getStoredFlowLanguage(sessionId);
   const normalizedRequest = normalizeBookingRequest({
     businessId: getBusinessIdFromConfig(businessConfig) || "unscoped", channel: platformName,
     conversationKey: sessionId, inputMode, text,
-    activeLanguage: getStoredFlowLanguage(sessionId) as any, timezone: String(businessConfig?.timezone || "Europe/Stockholm")
+    activeLanguage: normalizationActiveLanguage as any, timezone: String(businessConfig?.timezone || "Europe/Stockholm")
   });
   let entryRescheduleContext = getRescheduleContext(sessionId);
   let entryCancellationContext = getCancellationContext(sessionId);
@@ -8780,8 +8842,14 @@ async function handleUnifiedBookingEngine(params: {
   }
 
   const replyAndRecord = async (reply: string) => {
-    const guardedReply = guardCustomerFacingReply(sessionId, reply, language);
-    await send(guardedReply);
+    const replyLanguage = getFlowReplyLanguage(
+      pending?.language || getStoredFlowLanguage(sessionId),
+      language,
+      text,
+    );
+    const guardedReply = guardCustomerFacingReply(sessionId, reply, replyLanguage);
+    const deliveryResult = await send(guardedReply);
+    if (deliveryResult === false) return;
     appendLocalHistory(sessionId, text, guardedReply);
     try {
       await postProcessMessage(
@@ -12037,11 +12105,13 @@ async function handleUnifiedBookingEngine(params: {
         Number(resolvedTelegramDuration || 0) ||
         getDefaultBookingDurationForService(inferredService) ||
         fingerprintDuration;
-      const lockedLanguage =
-        storedAvailability?.language ||
-        priorPendingBooking?.language ||
-        getStoredFlowLanguage(sessionId) ||
-        language;
+      const lockedLanguage = resolveActiveBookingLanguage({
+        latestText: text,
+        pendingLanguage: priorPendingBooking?.language,
+        currentLanguage: language,
+        availabilityLanguage: storedAvailability?.language,
+        storedFallbackLanguage: getStoredFlowLanguage(sessionId),
+      });
       lockConversationFlowLanguage(sessionId, lockedLanguage, "availability");
 
       const adapter = getCalendarAdapter(businessConfig);
@@ -14695,7 +14765,7 @@ function lockConversationFlowLanguage(
   const normalized = ["sv", "fa", "de", "es", "ar", "en"].includes(language) ? language : "en";
   const existing = conversationFlowLanguages[chatId];
   conversationFlowLanguages[chatId] = {
-    language: existing?.language || normalized,
+    language: normalized,
     flowType,
     createdAt: existing?.createdAt || Date.now(),
     updatedAt: Date.now()
@@ -14708,9 +14778,34 @@ function clearConversationFlowLanguage(chatId: string) {
 }
 
 function getFlowReplyLanguage(storedLanguage: string | undefined | null, currentLanguage: string, latestText?: string): string {
-  const explicitSwitch = isExplicitLanguageSwitch(latestText);
-  if (explicitSwitch) return explicitSwitch;
-  return storedLanguage || currentLanguage || "en";
+  return resolveActiveBookingLanguage({
+    latestText,
+    pendingLanguage: storedLanguage,
+    currentLanguage,
+  });
+}
+
+function normalizeSupportedConversationLanguage(language?: string | null): string | null {
+  const normalized = String(language || "").trim().toLowerCase();
+  return ["sv", "fa", "de", "es", "ar", "en"].includes(normalized)
+    ? normalized
+    : null;
+}
+
+function resolveActiveBookingLanguage(params: {
+  latestText?: string;
+  pendingLanguage?: string | null;
+  currentLanguage?: string | null;
+  availabilityLanguage?: string | null;
+  storedFallbackLanguage?: string | null;
+}): string {
+  const explicitSwitch = isExplicitLanguageSwitch(params.latestText);
+  return normalizeSupportedConversationLanguage(explicitSwitch) ||
+    normalizeSupportedConversationLanguage(params.pendingLanguage) ||
+    normalizeSupportedConversationLanguage(params.currentLanguage) ||
+    normalizeSupportedConversationLanguage(params.availabilityLanguage) ||
+    normalizeSupportedConversationLanguage(params.storedFallbackLanguage) ||
+    "en";
 }
 
 function getConversationLanguage(chatId: string, latestText?: string, businessConfig?: any): string {
@@ -14736,7 +14831,7 @@ function getConversationLanguage(chatId: string, latestText?: string, businessCo
           : /^(?:ar|arabic|العربية)/u.test(businessLanguageRaw) ? "ar"
             : /^(?:en|english)/.test(businessLanguageRaw) ? "en"
               : null;
-  const detected = strongLatest || businessLanguage || (text ? detectUserLanguage(text) : null) || "en";
+  const detected = strongLatest || (text ? detectUserLanguage(text) : null) || businessLanguage || "en";
 
   if (
     strongLatest &&
@@ -15171,10 +15266,10 @@ function getBusinessInstagramToken(businessConfig: any) {
   );
 }
 
-async function sendInstagramMessage(recipientId: string, text: string, accessToken?: string) {
+async function sendInstagramMessage(recipientId: string, text: string, accessToken?: string, sessionId?: string) {
   const token = cleanInstagramToken(accessToken);
   const safeText = guardCustomerFacingReply(
-    `ig_${normalizePlatformUserId("instagram", recipientId)}`,
+    sessionId || `ig_${normalizePlatformUserId("instagram", recipientId)}`,
     text
   );
 
@@ -15414,7 +15509,7 @@ async function sendWhatsAppMessage(to: string, text: string, businessConfig: any
   const token = getBusinessWhatsAppToken(businessConfig);
   const phoneNumberId = getBusinessWhatsAppPhoneNumberId(businessConfig);
   const safeText = guardCustomerFacingReply(
-    `wa_${normalizePlatformUserId("whatsapp", to)}`,
+    getScopedChannelSessionId("whatsapp", to, businessConfig, phoneNumberId),
     text
   );
 
@@ -15497,8 +15592,8 @@ async function processWhatsAppMessageClaimed(message: any, metadata: any, config
     messageLength: textMessage.length,
   });
 
-  const chatId = `wa_${from}`;
-  let userLanguage = chatLanguages[chatId] || "en";
+  let chatId = `wa_${from}`;
+  let userLanguage = "en";
 
   let businessConfig: any = { ...activeConfig, ...(config || {}) };
   let whatsappBusinessScopeVerified = !supabase && Boolean(
@@ -15550,6 +15645,7 @@ async function processWhatsAppMessageClaimed(message: any, metadata: any, config
     return;
   }
 
+  chatId = getScopedChannelSessionId("whatsapp", from, businessConfig, phoneNumberId);
   resetSessionIfBusinessConfigChanged(chatId, businessConfig);
   userLanguage = getConversationLanguage(chatId, textMessage || "", businessConfig);
   recordAcceptedCustomerMessage({
@@ -15862,7 +15958,7 @@ function getBusinessMessengerPageId(businessConfig: any) {
 async function sendMessengerMessage(recipientId: string, text: string, businessConfig: any) {
   const token = getBusinessMessengerToken(businessConfig);
   const safeText = guardCustomerFacingReply(
-    `ms_${normalizePlatformUserId("messenger", recipientId)}`,
+    getScopedChannelSessionId("messenger", recipientId, businessConfig, getBusinessMessengerPageId(businessConfig)),
     text
   );
 
@@ -16564,8 +16660,8 @@ async function processMessengerUpdateClaimed(webhookEvent: any, config: any, pla
     `senderPresent=${Boolean(senderId)} businessPagePresent=${Boolean(recipientId)}`
   );
 
-  const chatId = `ms_${senderId}`;
-  let userLanguage = chatLanguages[chatId] || "en";
+  let chatId = `ms_${senderId}`;
+  let userLanguage = "en";
 
   let businessConfig: any = { ...activeConfig, ...(config || {}) };
   let messengerBusinessScopeVerified = !supabase && Boolean(
@@ -16614,6 +16710,7 @@ async function processMessengerUpdateClaimed(webhookEvent: any, config: any, pla
     return;
   }
 
+  chatId = getScopedChannelSessionId("messenger", senderId, businessConfig, recipientId);
   resetSessionIfBusinessConfigChanged(chatId, businessConfig);
   userLanguage = getConversationLanguage(chatId, textMessage || "", businessConfig);
   recordAcceptedCustomerMessage({
@@ -17061,8 +17158,8 @@ async function processInstagramUpdateClaimed(webhook_event: any, config: any, pl
     messageLength: textMessage.length,
   });
 
-  const chatId = `ig_${senderId}`;
-  let userLanguage = chatLanguages[chatId] || "en";
+  let chatId = `ig_${senderId}`;
+  let userLanguage = "en";
 
   let businessConfig: any = { ...activeConfig, ...(config || {}) };
   let businessRecord: any = null;
@@ -17115,6 +17212,7 @@ async function processInstagramUpdateClaimed(webhook_event: any, config: any, pl
     return;
   }
 
+  chatId = getScopedChannelSessionId("instagram", senderId, businessConfig, recipientId);
   resetSessionIfBusinessConfigChanged(chatId, businessConfig);
   userLanguage = getConversationLanguage(chatId, textMessage || "", businessConfig);
   recordAcceptedCustomerMessage({
@@ -17138,7 +17236,7 @@ async function processInstagramUpdateClaimed(webhook_event: any, config: any, pl
   });
   if (!inboundUsage.allowed) {
     const limitText = formatDailyLimitMessage(userLanguage);
-    await sendInstagramMessage(senderId, limitText, getBusinessInstagramToken(businessConfig));
+    await sendInstagramMessage(senderId, limitText, getBusinessInstagramToken(businessConfig), chatId);
     appendLocalHistory(chatId, textMessage || '[voice]', limitText);
     return;
   }
@@ -17163,7 +17261,8 @@ async function processInstagramUpdateClaimed(webhook_event: any, config: any, pl
         send: (reply) => sendInstagramMessage(
           senderId,
           reply,
-          getBusinessInstagramToken(businessConfig)
+          getBusinessInstagramToken(businessConfig),
+          chatId
         ),
         postProcessPlatform: platform
       });
@@ -17173,7 +17272,7 @@ async function processInstagramUpdateClaimed(webhook_event: any, config: any, pl
     const completedBooking = getRecentCompletedBooking(chatId);
     if (textMessage && completedBooking && isThanksOnlyText(textMessage || "")) {
       const thanksText = formatThanksReply(completedBooking.language || userLanguage, completedBooking.name);
-      await sendInstagramMessage(senderId, thanksText, getBusinessInstagramToken(businessConfig));
+      await sendInstagramMessage(senderId, thanksText, getBusinessInstagramToken(businessConfig), chatId);
       appendLocalHistory(chatId, textMessage || "", thanksText);
       await postProcessMessage(chatId, platform, userMessageForLog, thanksText, businessConfig?.telegramToken, businessConfig?.apiKey, getBusinessIdFromConfig(businessConfig));
       return;
@@ -17227,7 +17326,8 @@ if (contentType === "video/mp4") {
             send: (reply) => sendInstagramMessage(
               senderId,
               reply,
-              getBusinessInstagramToken(businessConfig)
+              getBusinessInstagramToken(businessConfig),
+              chatId
             ),
             postProcessPlatform: platform
           });
@@ -17248,7 +17348,8 @@ if (contentType === "video/mp4") {
                   : userLanguage === "ar"
                     ? "عذرًا، لم أتمكن من سماع الرسالة الصوتية الآن. يرجى كتابة رسالتك."
                     : "Sorry, I couldn’t listen to the voice message just now. Please type your message instead.",
-         getBusinessInstagramToken(businessConfig)
+         getBusinessInstagramToken(businessConfig),
+         chatId
         );
         return;
       }
@@ -17451,7 +17552,8 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
             send: (reply) => sendInstagramMessage(
               senderId,
               reply,
-              getBusinessInstagramToken(businessConfig)
+              getBusinessInstagramToken(businessConfig),
+              chatId
             ),
             postProcessPlatform: platform
           });
@@ -17574,7 +17676,8 @@ if (isVoiceMessage) {
                   ? "🎧 استمع هنا:"
                   : "🎧 Listen here:"
       } ${voiceReply.url}`,
-      instagramToken
+      instagramToken,
+      chatId
     );
 
     sentVoiceReply = true;
@@ -17588,10 +17691,10 @@ if (isVoiceMessage) {
   }
 
   if (!sentVoiceReply) {
-    await sendInstagramMessage(senderId, textResponse, instagramToken);
+    await sendInstagramMessage(senderId, textResponse, instagramToken, chatId);
   }
 } else {
-  await sendInstagramMessage(senderId, textResponse, instagramToken);
+  await sendInstagramMessage(senderId, textResponse, instagramToken, chatId);
 }
 try {
   await postProcessMessage(chatId, platform, userMessageForLog, textResponse, businessConfig?.telegramToken, businessConfig?.apiKey, getBusinessIdFromConfig(businessConfig));
@@ -19872,6 +19975,42 @@ Generate the final production-ready system prompt now.
 }
 
 export const priority1hUnifiedEngineTestBoundary = {
+  channelSessionId(
+    platform: "whatsapp" | "messenger" | "instagram",
+    userId: string,
+    businessConfig: any,
+    tenantScope?: string,
+  ) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    return getScopedChannelSessionId(platform, userId, businessConfig, tenantScope);
+  },
+  seedPending(sessionId: string, pending: any) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    pendingBookings[sessionId] = structuredClone(pending);
+  },
+  seedFlowLanguage(
+    sessionId: string,
+    language: string,
+    flowType: ConversationFlowLanguageContext["flowType"] = "booking",
+  ) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    const normalized = ["sv", "fa", "de", "es", "ar", "en"].includes(language) ? language : "en";
+    conversationFlowLanguages[sessionId] = {
+      language: normalized,
+      flowType,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    chatLanguages[sessionId] = normalized;
+  },
+  conversationState(sessionId: string) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    return {
+      language: getStoredFlowLanguage(sessionId),
+      pending: pendingBookings[sessionId] ? structuredClone(pendingBookings[sessionId]) : null,
+      availability: availabilitySearchContexts[sessionId] ? structuredClone(availabilitySearchContexts[sessionId]) : null,
+    };
+  },
   configure(dependencies: Priority1hTestDependencies) {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
     priority1hTestDependencies = dependencies;
@@ -19890,6 +20029,10 @@ export const priority1hUnifiedEngineTestBoundary = {
     for (const key of Object.keys(availabilitySearchContexts)) delete availabilitySearchContexts[key];
     for (const key of Object.keys(recentlyCompletedBookings)) delete recentlyCompletedBookings[key];
     for (const key of Object.keys(telegramReplyPreferences)) delete telegramReplyPreferences[key];
+    for (const key of Object.keys(chatLanguages)) delete chatLanguages[key];
+    for (const key of Object.keys(conversationFlowLanguages)) delete conversationFlowLanguages[key];
+    unifiedBookingTurnTails.clear();
+    latestUnifiedBookingTurn.clear();
     atomicClaims.clear();
     supabase = null;
   },

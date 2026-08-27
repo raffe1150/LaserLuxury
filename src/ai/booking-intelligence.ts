@@ -113,9 +113,34 @@ export function normalizeTranscribedText(text: string): string {
   return normalized.replace(/\s+/g, ' ').trim();
 }
 
+function detectGrammaticalLatinLanguage(text: string): SupportedLanguage | null {
+  const lower = normalizeConversationText(text).toLowerCase();
+  const scores: Record<'sv' | 'de' | 'es' | 'en', number> = { sv: 0, de: 0, es: 0, en: 0 };
+  const add = (language: keyof typeof scores, pattern: RegExp, weight: number) => {
+    const matches = lower.match(pattern);
+    if (matches) scores[language] += matches.length * weight;
+  };
+
+  add('sv', /\b(vilka?|finns|jag|mig|du|den|det|för|någon|några)\b/gu, 2);
+  add('sv', /\b(lediga?|tider?)\b/gu, 2);
+  add('de', /\b(welche[rsn]?|ich|mich|gibt\s+es|am|für)\b/gu, 2);
+  add('de', /\b(freie[nrms]?|zeiten?|termine?)\b/gu, 2);
+  add('es', /\b(qué|cuáles?|hay|quiero|para|el|la)\b/gu, 2);
+  add('es', /\b(horas?|disponibles?|citas?)\b/gu, 2);
+  add('en', /\b(what|which|i|me|are\s+there|for|on)\b/gu, 2);
+  add('en', /\b(available|times?|appointments?)\b/gu, 2);
+
+  const ranked = Object.entries(scores).sort((a, b) => b[1] - a[1]);
+  return ranked[0][1] >= 6 && ranked[0][1] > ranked[1][1]
+    ? ranked[0][0] as SupportedLanguage
+    : null;
+}
+
 function detectLanguage(text: string, active?: SupportedLanguage): SupportedLanguage {
   if (/[\u0600-\u06ff]/u.test(text)) return 'fa';
-  if (/\b(?:jag|vill|boka|fredag|före|efter|klockan|mellan|tid)\b/iu.test(text)) return 'sv';
+  const grammaticalLanguage = detectGrammaticalLatinLanguage(text);
+  if (grammaticalLanguage) return grammaticalLanguage;
+  if (/\b(?:jag|vill|boka|fredag|före|efter|klockan|mellan|tider?|lediga?)\b/iu.test(text)) return 'sv';
   if (/\b(?:mikham|mitoni|vaght|jomeh?|baraye|ghabl|sate?|moshavereh?|chera|zaban)\b/iu.test(text)) return 'fa';
   return active || 'en';
 }

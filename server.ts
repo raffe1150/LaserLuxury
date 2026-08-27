@@ -14547,6 +14547,29 @@ function detectTtsVoiceCode(text: string): string {
 
   return "en-US-AriaNeural";
 }
+function detectGrammaticalLatinLanguage(text?: string): string | null {
+  const lower = String(text || "").trim().toLowerCase();
+  if (!lower) return null;
+
+  const scores: Record<"sv" | "de" | "es" | "en", number> = { sv: 0, de: 0, es: 0, en: 0 };
+  const add = (language: keyof typeof scores, pattern: RegExp, weight: number) => {
+    const matches = lower.match(pattern);
+    if (matches) scores[language] += matches.length * weight;
+  };
+
+  add("sv", /\b(vilka?|finns|jag|mig|du|den|det|för|någon|några)\b/gu, 2);
+  add("sv", /\b(lediga?|tider?)\b/gu, 2);
+  add("de", /\b(welche[rsn]?|ich|mich|gibt\s+es|am|für)\b/gu, 2);
+  add("de", /\b(freie[nrms]?|zeiten?|termine?)\b/gu, 2);
+  add("es", /\b(qué|cuáles?|hay|quiero|para|el|la)\b/gu, 2);
+  add("es", /\b(horas?|disponibles?|citas?)\b/gu, 2);
+  add("en", /\b(what|which|i|me|are\s+there|for|on)\b/gu, 2);
+  add("en", /\b(available|times?|appointments?)\b/gu, 2);
+
+  const ranked = Object.entries(scores).sort((a, b) => b[1] - a[1]);
+  return ranked[0][1] >= 6 && ranked[0][1] > ranked[1][1] ? ranked[0][0] : null;
+}
+
 function detectUserLanguage(text: string): string {
   if (!text) return "en";
 
@@ -14569,6 +14592,9 @@ function detectUserLanguage(text: string): string {
     return "ar";
   }
 
+  const grammaticalLanguage = detectGrammaticalLatinLanguage(raw);
+  if (grammaticalLanguage) return grammaticalLanguage;
+
   const scores: Record<string, number> = { en: 0, sv: 0, de: 0, es: 0, fa: 0, ar: 0 };
   const add = (lang: string, pattern: RegExp, weight = 1) => {
     const matches = lower.match(pattern);
@@ -14585,7 +14611,7 @@ function detectUserLanguage(text: string): string {
   add("fa", /\b(salam|khubi|khub|khubam|khub hastin|mikham|mikhastam|mitonam|mitoonam|baraye|vaght|saat|sate|doshanbe|seshanbe|chaharshanbe|panjshanbe|jome|shanbe|yekshanbe|emrooz|farda|bale|baleh|are|khube|chi|che|migin|migirin|shohar|shoharam|esm|esme|esmam|nam|name|shomare|shomaram|telefon|telefonam|mobail|mobile|mobilesh|ham hast|hastam|hast|sepas|mersi|merci|mamnoon|mamnun|cancel konam|laghv konam)\b/g, 3);
   add("de", /\b(hallo|guten|danke|bitte|termin|uhr|morgen|nachmittag|buchen|buchung|behandlung|ganzkörper|ganzkoerper|körper|koerper|ich möchte|ich moechte|ich will|mein name|meine nummer|telefonnummer|nummer ist|montag|dienstag|mittwoch|donnerstag|freitag|samstag|sonntag)\b/g, 4);
   add("en", /\b(hi|hello|hey|thanks|thank you|yes|no|please|appointment|book|booking|available|next week|today|tomorrow|friday|thursday|wednesday|tuesday|monday|saturday|sunday|treatment|bikini|fullbody|full body|my name is|my phone is|phone|number|i want|i would like|i can|can i|could i)\b/g, 2);
-  add("sv", /\b(hej|hejsan|tack|tusen tack|ja tack|nej|jag|vill|ska|ha|boka|bokning|tid|ledig|behandling|klockan|kl|vad heter du|vem är du|mitt namn|mitt nummer|mobilnummer|telefonnummer|måndag|tisdag|onsdag|torsdag|fredag|lördag|söndag|idag|imorgon)\b/g, 2);
+  add("sv", /\b(hej|hejsan|tack|tusen tack|ja tack|nej|jag|vill|ska|ha|boka|bokning|tider?|lediga?|behandling|klockan|kl|vad heter du|vem är du|mitt namn|mitt nummer|mobilnummer|telefonnummer|måndag|tisdag|onsdag|torsdag|fredag|lördag|söndag|idag|imorgon)\b/g, 2);
   add("es", /\b(hola|gracias|por favor|quiero|cita|reservar|reserva|tratamiento|mañana|manana|hora|semana|lunes|martes|miércoles|miercoles|jueves|viernes|sábado|sabado|domingo|mi nombre|mi teléfono|telefono)\b/g, 3);
   add("ar", /\b(marhaba|salam|shukran|maw3ed|maw'ed|hajz|bukra|alyawm|naam|la)\b/g, 2);
 
@@ -14626,6 +14652,8 @@ function hasStrongLanguageEvidence(language: string, text?: string): boolean {
   const lower = raw.toLowerCase();
   if (!raw) return false;
 
+  if (detectGrammaticalLatinLanguage(raw) === language) return true;
+
   // These patterns are intentionally stronger than the normal detector. They are used
   // to allow a new real message to override an old chat language, even when the message
   // also contains a time like 16:30. Short replies like "yes", "ok", "tack", "merci"
@@ -14634,7 +14662,7 @@ function hasStrongLanguageEvidence(language: string, text?: string): boolean {
     return /\b(hi|hello|hey|i\s+want|i\s+would\s+like|i\s+can|can\s+i|could\s+i|how\s+long|duration|appointment|consultation|book|booking|available|next\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday|week)|my\s+name\s+is|my\s+phone\s+is|pedicure|treatment|quick\s+refresh)\b/i.test(lower);
   }
   if (language === "sv") {
-    return /\b(hej|hejsan|hallå|kan\s+du|kan\s+jag|har\s+jag|hos\s+er|mår\s+du|vad\s+heter\s+du|vem\s+är\s+du|jag\s+vill|jag\s+ska|jag\s+kan|jag\s+behöver|hur\s+lång|hur\s+långt|hur\s+länge|ändra\s+min\s+tid|flytta\s+min\s+tid|boka|bokning|ledig|behandling|konsultation|nästa\s+(måndag|tisdag|onsdag|torsdag|fredag|lördag|söndag)|mitt\s+namn|mitt\s+nummer|mobilnummer)\b/i.test(lower);
+    return /\b(hej|hejsan|hallå|kan\s+du|kan\s+jag|har\s+jag|hos\s+er|mår\s+du|vad\s+heter\s+du|vem\s+är\s+du|jag\s+vill|jag\s+ska|jag\s+kan|jag\s+behöver|hur\s+lång|hur\s+långt|hur\s+länge|ändra\s+min\s+tid|flytta\s+min\s+tid|boka|bokning|tider?|lediga?|behandling|konsultation|nästa\s+(måndag|tisdag|onsdag|torsdag|fredag|lördag|söndag)|mitt\s+namn|mitt\s+nummer|mobilnummer)\b/i.test(lower);
   }
   if (language === "de") {
     return /\b(hallo|guten|ich\s+möchte|ich\s+moechte|ich\s+will|termin|buchen|buchung|behandlung|ganzkörper|ganzkoerper|mein\s+name|meine\s+nummer|telefonnummer|nächsten|naechsten)\b/i.test(lower);
@@ -14702,8 +14730,11 @@ function detectStrongLatestLanguage(text?: string): string | null {
 
   if (hasStrongLatinPersianEvidence(raw)) return "fa";
 
+  const grammaticalLanguage = detectGrammaticalLatinLanguage(raw);
+  if (grammaticalLanguage) return grammaticalLanguage;
+
   if (
-    /\b(hej+|hejsan|hallå|kan du|kan jag|har jag|hos er|mår du|vad heter du|vem är du|jag vill|jag ska|jag behöver|hur lång|hur långt|hur länge|ändra min tid|flytta min tid|måndag|tisdag|onsdag|torsdag|fredag|lördag|söndag|klockan|vilken tid|konsultation|boka|bokning|ledig|passar|mitt namn|mitt nummer|mobilnummer)\b/i.test(raw)
+    /\b(hej+|hejsan|hallå|kan du|kan jag|har jag|hos er|mår du|vad heter du|vem är du|jag vill|jag ska|jag behöver|hur lång|hur långt|hur länge|ändra min tid|flytta min tid|måndag|tisdag|onsdag|torsdag|fredag|lördag|söndag|klockan|vilken tid|konsultation|boka|bokning|tider?|lediga?|passar|mitt namn|mitt nummer|mobilnummer)\b/i.test(raw)
   ) return "sv";
 
   if (

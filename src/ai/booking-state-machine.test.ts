@@ -134,7 +134,7 @@ const repeatedConfirmation = applyBookingTransition(confirmation, request('Ja ta
 assert.equal(repeatedConfirmation.reason, 'contact_submission_to_verified_engine');
 assert.equal(getBookingPhase(confirmation), 'awaiting_contact');
 
-for (const affirmative of ['Ja', 'Ja tack', 'absolut', 'boka den', 'det blir bra', 'Yes', 'yes please', 'book it', 'that works', 'Bale', 'are', 'khobe', 'ok', 'بله', 'آره']) {
+for (const affirmative of ['Ja', 'Ja tack', 'absolut', 'boka den', 'det blir bra', 'Ja, det låter bra. Kan du boka den tiden åt mig?', 'Yes', 'yes please', 'book it', 'that works', 'Bale', 'are', 'khobe', 'ok', 'بله', 'آره']) {
   const channelState = pending('Friday at 19:30');
   channelState.status = 'awaiting_confirmation';
   channelState.ownedOfferedSlots = [slot(19, 30)];
@@ -144,6 +144,7 @@ for (const affirmative of ['Ja', 'Ja tack', 'absolut', 'boka den', 'det blir bra
   assert.equal(getBookingPhase(channelState), 'awaiting_contact');
 }
 assert.equal(isPositiveBookingConfirmation('Nej tack'), false);
+assert.equal(isPositiveBookingConfirmation('Ja, men boka en annan tid på fredag'), false);
 const brokenConfirmation = { ...confirmation, status: 'awaiting_confirmation', selectedSlotEnd: null };
 assert.deepEqual(getBookingInvariantFailures(brokenConfirmation), ['confirmation_requires_one_owned_slot']);
 
@@ -274,6 +275,10 @@ assert.match(server, /slotMinutesSatisfyConstraint\(zoned\.minutes, params\.norm
 assert.match(server, /verifiedBookingReplyAuthorizations\[sessionId\] = bookingOperationResult/);
 assert.match(server, /Boolean\(deterministicTransition\?\.runAvailability\)/);
 assert.match(server, /selectedSlotEnd: exactOwnedSlot\?\.end \|\| null/);
+assert.match(server, /const pendingSlotConfirmationAtEntry = isPendingSlotConfirmation\(text, pending\)/);
+assert.match(server, /!pendingSlotConfirmationAtEntry &&[\s\S]{0,80}!entryOwnedSlotSelection/);
+assert.match(server, /const continuesOwnedBooking = Boolean\([\s\S]{0,500}entryPendingOwnedSlot/);
+assert.match(server, /!continuesOwnedBooking &&[\s\S]{0,120}isExplicitNewBookingPivotText\(text\)/);
 assert.match(server, /calendarEvents: filteredEvents,[\s\S]{0,80}pendingEvents/);
 assert.match(server, /recoverBookingTransaction\(pending, "calendar_verification", rollbackInsertedCalendarEvent\)/);
 assert.match(server, /recoverBookingTransaction\(pending, databaseFailurePath/);

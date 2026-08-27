@@ -6910,7 +6910,7 @@ function isPastAppointmentLookupIntent(text?: string): boolean {
 }
 
 function isPendingSlotConfirmation(text: string | undefined, pending: any): boolean {
-  if (!pending || pending.status !== "awaiting_confirmation") return false;
+  if (!pending || !["awaiting_confirmation", "awaiting_contact"].includes(String(pending.status || ""))) return false;
 
   const raw = String(text || "").trim();
   if (!raw) return false;
@@ -8730,11 +8730,16 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
       dateLocked: Boolean(pending.selectedDate || pending.availabilityStartDate)
     });
   }
+  const pendingSlotConfirmationAtEntry = isPendingSlotConfirmation(text, pending);
   const entryOwnedSlotSelection = pending?.status === "awaiting_time_selection"
     ? selectOwnedOfferedSlot(text, pending)
     : null;
   let authoritativeNormalizedRequest = normalizedRequest, normalizedStateReplaced = false, deterministicTransition: ReturnType<typeof applyNormalizedRequestToPending> | null = null;
-  if (pending?.normalizedBookingRequest && !entryOwnedSlotSelection) {
+  if (
+    pending?.normalizedBookingRequest &&
+    !pendingSlotConfirmationAtEntry &&
+    !entryOwnedSlotSelection
+  ) {
     const previousPhase = getBookingPhase(pending);
     const merged = applyNormalizedRequestToPending(pending, normalizedRequest);
     deterministicTransition = merged;
@@ -8754,10 +8759,19 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
     stateVersion: pending?.bookingStateVersion || CURRENT_BOOKING_STATE_VERSION,
     conflictDetected: entryOperation.conflict,
   });
-  const entryExplicitNewBookingRequest = normalizedRequest.intent === "new_booking" || isExplicitNewBookingPivotText(text);
   const entryPendingOwnedSlot = pending?.dateTime
     ? findOwnedOfferedSlot(pending, pending.dateTime)
     : null;
+  const continuesOwnedBooking = Boolean(
+    pending?.operation === "new_booking" &&
+    entryPendingOwnedSlot &&
+    ["awaiting_slot_confirmation", "awaiting_contact", "failed_recoverable"].includes(getBookingPhase(pending)) &&
+    (isPositiveBookingConfirmation(text) || pendingSlotConfirmationAtEntry)
+  );
+  const entryExplicitNewBookingRequest =
+    deterministicTransition?.reason !== "slot_confirmation_accepted" &&
+    !continuesOwnedBooking &&
+    (normalizedRequest.intent === "new_booking" || isExplicitNewBookingPivotText(text));
   const authoritativeTelegramNewBooking = Boolean(
     platformName === "telegram" &&
     pending?.operation === "new_booking" &&

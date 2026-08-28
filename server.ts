@@ -51,7 +51,7 @@ import {
   selectTelegramDeliveryMode,
   type TelegramReplyPreference,
 } from "./src/ai/channel-reliability";
-import { applyNormalizedRequestToPending, availabilityFieldsFromConstraint, buildSlotFingerprintSource, formatPersianSpokenPhone, getDateInTimeZone, getZonedSlotParts, isCurrentConversationTurn, normalizeBookingRequest, normalizeConversationText, parseBookingDate, parseTimeConstraint, preparePersianTextForTts, registerConversationTurn, slotMinutesSatisfyConstraint, toPersistedBookingRequest, zonedLocalIso, type NormalizedBookingRequest, type NormalizedTimeConstraint } from "./src/ai/booking-intelligence";
+import { applyNormalizedRequestToPending, availabilityFieldsFromConstraint, buildSlotFingerprintSource, formatPersianSpokenPhone, getDateInTimeZone, getZonedSlotParts, isCurrentConversationTurn, normalizeBookingRequest, normalizeConversationText, parseBookingDate, parseNamedBookingDateParts, parseTimeConstraint, preparePersianTextForTts, registerConversationTurn, slotMinutesSatisfyConstraint, toPersistedBookingRequest, zonedLocalIso, type NormalizedBookingRequest, type NormalizedTimeConstraint } from "./src/ai/booking-intelligence";
 import { beginBookingFinalization, getBookingInvariantFailures, getBookingPhase, getMissingBookingContact, recoverBookingFinalization, recoverBookingTransaction, type BookingFailureStage } from "./src/ai/booking-state-machine";
 import { enumerateCandidateMinutes, isBlockingCalendarEvent, isCanonicalSlotFree } from "./src/ai/canonical-availability";
 import { resolveAuthoritativeContact, type ContactPhoneSource } from "./src/ai/channel-contact";
@@ -5506,6 +5506,8 @@ async function savePendingBooking(chatId: string, platform: string, pending: any
       bookingStateVersion: CURRENT_BOOKING_STATE_VERSION,
       platform,
       service: pending.service,
+      requestedService: pending.requestedService || null,
+      requestedTime: pending.requestedTime || null,
       dateTime: pending.dateTime || null,
       selectedSlotEnd: pending.selectedSlotEnd || null,
       selectedDate: pending.selectedDate || null,
@@ -5638,6 +5640,8 @@ async function loadPendingBooking(chatId: string, platform: string, businessConf
       bookingStateVersion: Number(parsed.bookingStateVersion || 0),
       platform,
       service: parsed.service || "Bokning",
+      requestedService: parsed.requestedService || null,
+      requestedTime: parsed.requestedTime || null,
       dateTime: parsed.dateTime || null,
       selectedSlotEnd: parsed.selectedSlotEnd || null,
       selectedDate: parsed.selectedDate || null,
@@ -6197,12 +6201,11 @@ function resolveExplicitBookingDate(text?: string): string | null {
 
   // A written calendar date is authoritative even when the same message also
   // contains a weekday, for example "onsdag 22 juli" or "22 juli, inte nästa onsdag".
-  const namedDate = raw.match(/\b(?:den\s+)?(\d{1,2})\s+(januari|februari|mars|april|maj|juni|juli|augusti|september|oktober|november|december)(?:\s+(20\d{2}))?\b/i);
+  const namedDate = parseNamedBookingDateParts(raw);
   if (namedDate) {
-    const monthNames = ["januari", "februari", "mars", "april", "maj", "juni", "juli", "augusti", "september", "oktober", "november", "december"];
-    const year = Number(namedDate[3] || today.slice(0, 4));
-    const month = monthNames.indexOf(namedDate[2].toLowerCase()) + 1;
-    const day = Number(namedDate[1]);
+    const year = namedDate.year || Number(today.slice(0, 4));
+    const month = namedDate.month;
+    const day = namedDate.day;
     const check = new Date(Date.UTC(year, month - 1, day));
     if (check.getUTCFullYear() === year && check.getUTCMonth() === month - 1 && check.getUTCDate() === day) {
       return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
@@ -8601,6 +8604,41 @@ async function handleUnifiedBookingEngine(params: UnifiedBookingEngineParams): P
   }
 }
 
+function getPendingNormalizedBookingRequest(
+  pending: any,
+  current: NormalizedBookingRequest
+): NormalizedBookingRequest | null {
+  if (!pending) return null;
+  const previous = pending.normalizedBookingRequest || {};
+  const pendingDate = String(
+    pending.selectedDate ||
+    (
+      pending.availabilityStartDate &&
+      pending.availabilityStartDate === pending.availabilityEndDate
+        ? pending.availabilityStartDate
+        : ""
+    )
+  ).trim();
+  const pendingTime = parseTimeConstraint(String(pending.requestedTime || ""));
+  const pendingService = String(pending.service || "").trim();
+  const hydrated: NormalizedBookingRequest = {
+    intent: previous.intent || (pending.operation === "new_booking" ? "new_booking" : current.intent),
+    language: previous.language || pending.language || current.language,
+    sourceMode: current.sourceMode,
+    normalizedText: "",
+    requiresClarification: Boolean(previous.requiresClarification),
+    ...previous,
+    ...(previous.service || !pendingService || pendingService === "Bokning"
+      ? {}
+      : { service: { raw: pendingService, normalized: pendingService, confidence: "high" as const } }),
+    ...(previous.date || !/^20\d{2}-\d{2}-\d{2}$/.test(pendingDate)
+      ? {}
+      : { date: { kind: "exact_date" as const, value: pendingDate, confidence: "high" as const } }),
+    ...(previous.timeConstraint || !pendingTime ? {} : { timeConstraint: pendingTime }),
+  };
+  return hydrated;
+}
+
 async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams): Promise<boolean> {
   const {
     sessionId,
@@ -8800,11 +8838,9 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
     ? selectOwnedOfferedSlot(text, pending)
     : null;
   let authoritativeNormalizedRequest = normalizedRequest, normalizedStateReplaced = false, deterministicTransition: ReturnType<typeof applyNormalizedRequestToPending> | null = null;
-  if (
-    pending?.normalizedBookingRequest &&
-    !pendingSlotConfirmationAtEntry &&
-    !entryOwnedSlotSelection
-  ) {
+  const pendingNormalizedRequest = getPendingNormalizedBookingRequest(pending, normalizedRequest);
+  if (pendingNormalizedRequest && !pendingSlotConfirmationAtEntry && !entryOwnedSlotSelection) {
+    pending.normalizedBookingRequest = toPersistedBookingRequest(pendingNormalizedRequest);
     const previousPhase = getBookingPhase(pending);
     const merged = applyNormalizedRequestToPending(pending, normalizedRequest);
     deterministicTransition = merged;
@@ -12415,6 +12451,8 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
           businessConfig,
           platform: platformName,
           service: inferredService,
+          requestedService: priorPendingBooking?.requestedService || null,
+          requestedTime: constraint.exactTime || null,
           selectedDate:
             constraint.startDate === constraint.endDate
               ? constraint.startDate
@@ -12445,6 +12483,8 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
           businessConfig,
           platform: platformName,
           service: inferredService,
+          requestedService: priorPendingBooking?.requestedService || null,
+          requestedTime: constraint.exactTime || null,
           selectedDate:
             constraint.startDate === constraint.endDate
               ? constraint.startDate
@@ -20215,6 +20255,10 @@ export const priority1hUnifiedEngineTestBoundary = {
   resolveConversationLanguage(sessionId: string, text: string, businessConfig: any) {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
     return getConversationLanguage(sessionId, text, businessConfig);
+  },
+  resolveExplicitBookingDate(text: string) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    return resolveExplicitBookingDate(text);
   },
   configure(dependencies: Priority1hTestDependencies) {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");

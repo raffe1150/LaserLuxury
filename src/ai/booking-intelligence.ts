@@ -221,6 +221,39 @@ export function getDateInTimeZone(date: Date, timezone: string): string {
   return zonedDateParts(date, timezone).iso;
 }
 
+const namedBookingMonths: Record<string, number> = {
+  january: 1, januari: 1, januar: 1, ژانویه: 1,
+  february: 2, februari: 2, februar: 2, فوریه: 2,
+  march: 3, mars: 3, märz: 3, maerz: 3, مارس: 3,
+  april: 4, آوریل: 4,
+  may: 5, maj: 5, mai: 5, مه: 5,
+  june: 6, juni: 6, ژوئن: 6,
+  july: 7, juli: 7, ژوئیه: 7,
+  august: 8, augusti: 8, اوت: 8,
+  september: 9, سپتامبر: 9,
+  october: 10, oktober: 10, اکتبر: 10,
+  november: 11, نوامبر: 11,
+  december: 12, dezember: 12, دسامبر: 12,
+};
+const namedBookingMonthPattern = Object.keys(namedBookingMonths)
+  .sort((left, right) => right.length - left.length)
+  .map(value => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+  .join('|');
+
+export function parseNamedBookingDateParts(text: string): { day: number; month: number; year?: number } | null {
+  const raw = normalizeConversationText(text).toLowerCase();
+  const match = raw.match(new RegExp(
+    `(?:^|\\s)(\\d{1,2})(?::e|\\.)?\\s+(${namedBookingMonthPattern})(?:\\s+(20\\d{2}))?(?=\\s|[.!?,;]|$)`,
+    'iu',
+  ));
+  if (!match) return null;
+  return {
+    day: Number(match[1]),
+    month: namedBookingMonths[match[2].toLowerCase()],
+    ...(match[3] ? { year: Number(match[3]) } : {}),
+  };
+}
+
 function addIsoDays(iso: string, days: number): string {
   const date = new Date(`${iso}T12:00:00Z`);
   date.setUTCDate(date.getUTCDate() + days);
@@ -236,19 +269,10 @@ export function parseBookingDate(text: string, timezone: string, now = new Date(
     if (!Number.isNaN(candidate.getTime()) && candidate.toISOString().slice(0, 10) === isoMatch[1] && isoMatch[1] >= today.iso) return { kind: 'exact_date', value: isoMatch[1], confidence: 'high' };
     return undefined;
   }
-  const monthNames: Record<string, number> = {
-    january: 1, januari: 1, ژانویه: 1, february: 2, februari: 2, فوریه: 2,
-    march: 3, mars: 3, مارس: 3, april: 4, آوریل: 4, may: 5, maj: 5, مه: 5,
-    june: 6, juni: 6, ژوئن: 6, july: 7, juli: 7, ژوئیه: 7,
-    august: 8, augusti: 8, اوت: 8, september: 9, سپتامبر: 9,
-    october: 10, oktober: 10, اکتبر: 10, november: 11, نوامبر: 11,
-    december: 12, december_sv: 12, دسامبر: 12,
-  };
-  const named = raw.match(/(?:^|\s)(\d{1,2})(?::e)?\s+(january|januari|ژانویه|february|februari|فوریه|march|mars|مارس|april|آوریل|may|maj|مه|june|juni|ژوئن|july|juli|ژوئیه|august|augusti|اوت|september|سپتامبر|october|oktober|اکتبر|november|نوامبر|december|دسامبر)(?:\s+(20\d{2}))?(?:\s|$)/iu);
+  const named = parseNamedBookingDateParts(raw);
   if (named) {
-    const month = monthNames[named[2].toLowerCase()];
-    const year = Number(named[3] || today.iso.slice(0, 4));
-    const candidate = `${year}-${String(month).padStart(2, '0')}-${String(Number(named[1])).padStart(2, '0')}`;
+    const year = named.year || Number(today.iso.slice(0, 4));
+    const candidate = `${year}-${String(named.month).padStart(2, '0')}-${String(named.day).padStart(2, '0')}`;
     const parsed = new Date(`${candidate}T12:00:00Z`);
     if (!Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === candidate && candidate >= today.iso) return { kind: 'exact_date', value: candidate, confidence: 'high' };
     return undefined;

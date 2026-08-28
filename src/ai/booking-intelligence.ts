@@ -184,18 +184,28 @@ export function parseTimeConstraint(text: string): NormalizedTimeConstraint | un
     .replace(/\bnoon\b/giu, '12:00')
     .replace(/ظهر/gu, '12:00');
   if (!raw || /\[(?:unclear|نامفهوم)\]/iu.test(raw)) return undefined;
-  const token = String.raw`([01]?\d|2[0-3])(?:[\.:](\d{2}))?\s*(am|pm)?\s*(morning|afternoon|evening|morgon|eftermiddag|kväll|صبح|بعدازظهر|عصر)?`;
-  const between = raw.match(new RegExp(String.raw`(?:between|mellan|bin|بین)\s*(?:klockan|saat|sate|ساعت)?\s*${token}\s*(?:and|och|ta|تا|و)\s*(?:klockan|saat|sate|ساعت)?\s*${token}`, 'iu'));
+  const rejectedExplicitTime = new RegExp(
+    String.raw`(?:[01]?\d|2[0-3])(?:[\.:]\d{2})?\s*(?:uhr)?[^\p{N}]{0,24}(?:passt\s+nicht|no\s+me\s+va|لا\s+تناسبني)`,
+    'iu',
+  );
+  if (rejectedExplicitTime.test(raw)) return undefined;
+
+  const token = String.raw`([01]?\d|2[0-3])(?:[\.:](\d{2}))?\s*(am|pm)?\s*(morning|afternoon|evening|morgon|eftermiddag|kväll|abend|tarde|noche|صبح|بعدازظهر|عصر|المساء)?`;
+  const clockMarker = String.raw`(?:klockan|saat|sate|ساعت|(?:ال)?ساعة)`;
+  const between = raw.match(new RegExp(
+    String.raw`(?:between|mellan|bin|بین|zwischen|entre(?:\s+las?)?|بين)\s*(?:${clockMarker})?\s*${token}\s*(?:uhr)?\s*(?:and|och|ta|تا|و|und|y)\s*(?:las?\s+|${clockMarker}\s*)?${token}\s*(?:uhr)?`,
+    'iu',
+  ));
   if (between) {
     const start = clockToMinutes(between[1], between[2], between[3], between[4]);
     const end = clockToMinutes(between[5], between[6], between[7], between[8]);
     if (start !== null && end !== null && start < end) return { kind: 'between', startMinutes: start, endMinutes: end, startInclusive: true, endInclusive: true, confidence: 'high' };
   }
   const rules: Array<[NormalizedTimeConstraint['kind'], RegExp, boolean, boolean]> = [
-    ['after', new RegExp(String.raw`(?:after|efter(?: klockan)?|bad az(?: sate?)?|بعد از(?: ساعت)?)\s*${token}`, 'iu'), false, false],
-    ['before', new RegExp(String.raw`(?:before|före(?: klockan)?|ghabl az(?: sate?)?|قبل از(?: ساعت)?)\s*${token}`, 'iu'), false, false],
+    ['after', new RegExp(String.raw`(?:after|efter(?: klockan)?|bad az(?: sate?)?|بعد از(?: ساعت)?|nach(?:\s+um)?|despu[eé]s\s+de\s+las?|بعد\s+(?:ال)?ساعة)\s*${token}\s*(?:uhr)?`, 'iu'), false, false],
+    ['before', new RegExp(String.raw`(?:before|före(?: klockan)?|ghabl az(?: sate?)?|قبل از(?: ساعت)?|vor(?:\s+um)?|antes\s+de\s+las?|قبل\s+(?:ال)?ساعة)\s*${token}\s*(?:uhr)?`, 'iu'), false, false],
     ['from', new RegExp(String.raw`(?:from|från(?: klockan)?|az(?: sate?)?|از(?: ساعت)?)\s*${token}`, 'iu'), true, false],
-    ['exact', new RegExp(String.raw`(?:at|klockan|kl\.?|um|a\s+las|saat|sate|ساعت)\s*${token}`, 'iu'), true, true],
+    ['exact', new RegExp(String.raw`(?:at|klockan|kl\.?|um|a\s+las|saat|sate|ساعت|(?:ال)?ساعة)\s*${token}\s*(?:uhr)?`, 'iu'), true, true],
   ];
   for (const [kind, pattern, startInclusive, endInclusive] of rules) {
     const match = raw.match(pattern);
@@ -210,8 +220,8 @@ export function parseTimeConstraint(text: string): NormalizedTimeConstraint | un
     return { kind: 'exact', startMinutes: Number(bareExact[1]) * 60 + Number(bareExact[2]), startInclusive: true, endInclusive: true, confidence: 'high' };
   }
   if (/\b(?:morning|morgon)\b/iu.test(raw) || /صبح/u.test(raw)) return { kind: 'morning', startMinutes: 9 * 60, endMinutes: 12 * 60, startInclusive: true, endInclusive: false, confidence: 'high' };
-  if (/\b(?:afternoon|eftermiddag)\b/iu.test(raw) || /بعدازظهر/u.test(raw)) return { kind: 'afternoon', startMinutes: 12 * 60, endMinutes: 17 * 60, startInclusive: true, endInclusive: false, confidence: 'high' };
-  if (/\b(?:evening|kväll)\b/iu.test(raw) || /عصر/u.test(raw)) return { kind: 'evening', startMinutes: 17 * 60, endMinutes: 20 * 60, startInclusive: true, endInclusive: true, confidence: 'high' };
+  if (/\b(?:afternoon|eftermiddag|tarde)\b/iu.test(raw) || /بعدازظهر/u.test(raw)) return { kind: 'afternoon', startMinutes: 12 * 60, endMinutes: 17 * 60, startInclusive: true, endInclusive: false, confidence: 'high' };
+  if (/\b(?:evening|kväll|abend|noche)\b/iu.test(raw) || /(?:عصر|المساء)/u.test(raw)) return { kind: 'evening', startMinutes: 17 * 60, endMinutes: 20 * 60, startInclusive: true, endInclusive: true, confidence: 'high' };
   return undefined;
 }
 

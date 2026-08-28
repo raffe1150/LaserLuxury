@@ -14827,9 +14827,25 @@ function shouldAllowLatestLanguageOverride(chatId: string, previous: string | un
   if (isThanksOnlyText(text)) return false;
   if (isAffirmativeBookingText(text)) return false;
 
-  // While a booking is waiting for name/phone, keep the already chosen language.
-  // A customer may provide contact info in English even if the conversation started in Swedish.
-  if (pendingBookings[chatId]) return false;
+  const pending = pendingBookings[chatId];
+  if (pending) {
+    const configuredService = findConfiguredBookingService(text, pending.businessConfig);
+    if (configuredService) {
+      const lowerText = text.toLowerCase();
+      const lowerService = configuredService.toLowerCase();
+      const serviceIndex = lowerText.indexOf(lowerService);
+      const remainingText = serviceIndex >= 0
+        ? `${text.slice(0, serviceIndex)} ${text.slice(serviceIndex + configuredService.length)}`.trim()
+        : text;
+      const remainingLanguage = detectStrongLatestLanguage(remainingText);
+      const hasNaturalLanguageEvidence = Boolean(
+        remainingLanguage === detected &&
+        isMeaningfulLanguageMessage(remainingText) &&
+        hasStrongLanguageEvidence(detected, remainingText)
+      );
+      if (!hasNaturalLanguageEvidence) return false;
+    }
+  }
   if (getRecentCompletedBooking(chatId)) return false;
   if (extractNameAndPhone(text)) return false;
 
@@ -15016,21 +15032,22 @@ function getConversationLanguage(chatId: string, latestText?: string, businessCo
             : /^(?:en|english)/.test(businessLanguageRaw) ? "en"
               : null;
   const detected = strongLatest || (text ? detectUserLanguage(text) : null) || businessLanguage || "en";
+  const latestLanguageCandidate = strongLatest || "";
 
-  if (
-    strongLatest &&
-    strongLatest !== (storedFlowLanguage || previous) &&
-    isMeaningfulLanguageMessage(text) &&
-    hasStrongLanguageEvidence(strongLatest, text)
-  ) {
-    chatLanguages[chatId] = strongLatest;
-    updateActiveFlowLanguage(chatId, strongLatest);
+  if (shouldAllowLatestLanguageOverride(
+    chatId,
+    storedFlowLanguage || previous,
+    latestLanguageCandidate,
+    text,
+  )) {
+    chatLanguages[chatId] = latestLanguageCandidate;
+    updateActiveFlowLanguage(chatId, latestLanguageCandidate);
     console.log("[LanguageLock] meaningful language switch", {
       previous: storedFlowLanguage || previous || "none",
-      selected: strongLatest,
+      selected: latestLanguageCandidate,
       sessionKey: safeLogFingerprint(chatId),
     });
-    return strongLatest;
+    return latestLanguageCandidate;
   }
 
   if (storedFlowLanguage) {
@@ -20194,6 +20211,10 @@ export const priority1hUnifiedEngineTestBoundary = {
       pending: pendingBookings[sessionId] ? structuredClone(pendingBookings[sessionId]) : null,
       availability: availabilitySearchContexts[sessionId] ? structuredClone(availabilitySearchContexts[sessionId]) : null,
     };
+  },
+  resolveConversationLanguage(sessionId: string, text: string, businessConfig: any) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    return getConversationLanguage(sessionId, text, businessConfig);
   },
   configure(dependencies: Priority1hTestDependencies) {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");

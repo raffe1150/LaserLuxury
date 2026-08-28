@@ -190,7 +190,7 @@ export function parseTimeConstraint(text: string): NormalizedTimeConstraint | un
     ['after', new RegExp(String.raw`(?:after|efter(?: klockan)?|bad az(?: sate?)?|بعد از(?: ساعت)?)\s*${token}`, 'iu'), false, false],
     ['before', new RegExp(String.raw`(?:before|före(?: klockan)?|ghabl az(?: sate?)?|قبل از(?: ساعت)?)\s*${token}`, 'iu'), false, false],
     ['from', new RegExp(String.raw`(?:from|från(?: klockan)?|az(?: sate?)?|از(?: ساعت)?)\s*${token}`, 'iu'), true, false],
-    ['exact', new RegExp(String.raw`(?:at|klockan|kl\.?|saat|sate|ساعت)\s*${token}`, 'iu'), true, true],
+    ['exact', new RegExp(String.raw`(?:at|klockan|kl\.?|um|a\s+las|saat|sate|ساعت)\s*${token}`, 'iu'), true, true],
   ];
   for (const [kind, pattern, startInclusive, endInclusive] of rules) {
     const match = raw.match(pattern);
@@ -222,18 +222,18 @@ export function getDateInTimeZone(date: Date, timezone: string): string {
 }
 
 const namedBookingMonths: Record<string, number> = {
-  january: 1, januari: 1, januar: 1, ژانویه: 1,
-  february: 2, februari: 2, februar: 2, فوریه: 2,
-  march: 3, mars: 3, märz: 3, maerz: 3, مارس: 3,
-  april: 4, آوریل: 4,
-  may: 5, maj: 5, mai: 5, مه: 5,
-  june: 6, juni: 6, ژوئن: 6,
-  july: 7, juli: 7, ژوئیه: 7,
-  august: 8, augusti: 8, اوت: 8,
-  september: 9, سپتامبر: 9,
-  october: 10, oktober: 10, اکتبر: 10,
-  november: 11, نوامبر: 11,
-  december: 12, dezember: 12, دسامبر: 12,
+  january: 1, januari: 1, januar: 1, enero: 1, ژانویه: 1, يناير: 1,
+  february: 2, februari: 2, februar: 2, febrero: 2, فوریه: 2, فبراير: 2,
+  march: 3, mars: 3, märz: 3, maerz: 3, marzo: 3, مارس: 3,
+  april: 4, abril: 4, آوریل: 4, أبريل: 4, إبريل: 4, ابريل: 4,
+  may: 5, maj: 5, mai: 5, mayo: 5, مه: 5, مايو: 5,
+  june: 6, juni: 6, junio: 6, ژوئن: 6, يونيو: 6,
+  july: 7, juli: 7, julio: 7, ژوئیه: 7, يوليو: 7,
+  august: 8, augusti: 8, agosto: 8, اوت: 8, أغسطس: 8, اغسطس: 8,
+  september: 9, septiembre: 9, سپتامبر: 9, سبتمبر: 9,
+  october: 10, oktober: 10, octubre: 10, اکتبر: 10, أكتوبر: 10, اكتوبر: 10,
+  november: 11, noviembre: 11, نوامبر: 11, نوفمبر: 11,
+  december: 12, dezember: 12, diciembre: 12, دسامبر: 12, ديسمبر: 12,
 };
 const namedBookingMonthPattern = Object.keys(namedBookingMonths)
   .sort((left, right) => right.length - left.length)
@@ -242,15 +242,26 @@ const namedBookingMonthPattern = Object.keys(namedBookingMonths)
 
 export function parseNamedBookingDateParts(text: string): { day: number; month: number; year?: number } | null {
   const raw = normalizeConversationText(text).toLowerCase();
-  const match = raw.match(new RegExp(
-    `(?:^|\\s)(\\d{1,2})(?::e|\\.)?\\s+(${namedBookingMonthPattern})(?:\\s+(20\\d{2}))?(?=\\s|[.!?,;]|$)`,
+  const dayFirst = raw.match(new RegExp(
+    `(?:^|\\s)(\\d{1,2})(?::[ae]|\\.|st|nd|rd|th)?\\s+(?:de\\s+)?(${namedBookingMonthPattern})(?:\\s+(?:de\\s+)?(20\\d{2}))?(?=\\s|[.!?,;]|$)`,
     'iu',
   ));
-  if (!match) return null;
+  if (dayFirst) {
+    return {
+      day: Number(dayFirst[1]),
+      month: namedBookingMonths[dayFirst[2].toLowerCase()],
+      ...(dayFirst[3] ? { year: Number(dayFirst[3]) } : {}),
+    };
+  }
+  const monthFirst = raw.match(new RegExp(
+    `(?:^|\\s)(${namedBookingMonthPattern})\\s+(\\d{1,2})(?:st|nd|rd|th)?(?:,?\\s+(20\\d{2}))?(?=\\s|[.!?,;]|$)`,
+    'iu',
+  ));
+  if (!monthFirst) return null;
   return {
-    day: Number(match[1]),
-    month: namedBookingMonths[match[2].toLowerCase()],
-    ...(match[3] ? { year: Number(match[3]) } : {}),
+    day: Number(monthFirst[2]),
+    month: namedBookingMonths[monthFirst[1].toLowerCase()],
+    ...(monthFirst[3] ? { year: Number(monthFirst[3]) } : {}),
   };
 }
 
@@ -258,6 +269,28 @@ function addIsoDays(iso: string, days: number): string {
   const date = new Date(`${iso}T12:00:00Z`);
   date.setUTCDate(date.getUTCDate() + days);
   return date.toISOString().slice(0, 10);
+}
+
+const bookingWeekdayPatterns: Array<[number, RegExp]> = [
+  [0, /\b(?:sunday|söndag|sondag|sonntag|domingo|yek\s*shanbe|yekshanbe|1\s*shanbe)\b|یک\s*شنبه|الأحد|الاحد/giu],
+  [1, /\b(?:monday|måndag|mandag|montag|lunes|do\s*shanbe|doshanbe|2\s*shanbe)\b|دو\s*شنبه|الاثنين|الإثنين/giu],
+  [2, /\b(?:tuesday|tisdag|dienstag|martes|se\s*shanbe|seshanbe|3\s*shanbe)\b|سه\s*شنبه|الثلاثاء/giu],
+  [3, /\b(?:wednesday|onsdag|mittwoch|miércoles|miercoles|chahar\s*shanbe|chaharshanbe|4\s*shanbe)\b|چهار\s*شنبه|چهارشنبه|الأربعاء|الاربعاء/giu],
+  [4, /\b(?:thursday|torsdag|donnerstag|jueves|panj\s*shanbe|panjshanbe|5\s*shanbe)\b|پنج\s*شنبه|پنجشنبه|الخميس/giu],
+  [5, /\b(?:friday|fredag|freitag|viernes|jome|jomeh)\b|جمعه|الجمعة/giu],
+  [6, /\b(?:saturday|lördag|lordag|samstag|sábado|sabado|(?<!yek\s)(?<!do\s)(?<!se\s)(?<!chahar\s)(?<!panj\s)(?<![1-5]\s)shanbe)\b|(?<!یک\s)(?<!دو\s)(?<!سه\s)(?<!چهار\s)(?<!پنج\s)شنبه|السبت/giu],
+];
+
+export function extractBookingWeekdays(text: string): Array<{ index: number; position: number }> {
+  const raw = normalizeConversationText(text).toLowerCase();
+  const matches: Array<{ index: number; position: number }> = [];
+  for (const [index, pattern] of bookingWeekdayPatterns) {
+    for (const match of raw.matchAll(pattern)) {
+      const position = Number(match.index || 0);
+      if (!matches.some(item => item.position === position)) matches.push({ index, position });
+    }
+  }
+  return matches.sort((left, right) => left.position - right.position);
 }
 
 export function parseBookingDate(text: string, timezone: string, now = new Date()): NormalizedBookingRequest['date'] | undefined {
@@ -277,22 +310,16 @@ export function parseBookingDate(text: string, timezone: string, now = new Date(
     if (!Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === candidate && candidate >= today.iso) return { kind: 'exact_date', value: candidate, confidence: 'high' };
     return undefined;
   }
-  if (/\b(?:day after tomorrow|i övermorgon|övermorgon|pas farda|pasfarda)\b/iu.test(raw) || /پس ?فردا/u.test(raw)) return { kind: 'relative_date', value: addIsoDays(today.iso, 2), relative: 'day_after_tomorrow', confidence: 'high' };
-  if (/\b(?:tomorrow|imorgon|farda)\b/iu.test(raw) || /فردا/u.test(raw)) return { kind: 'relative_date', value: addIsoDays(today.iso, 1), relative: 'tomorrow', confidence: 'high' };
-  if (/\b(?:today|idag|emrooz|emruz)\b/iu.test(raw) || /امروز/u.test(raw)) return { kind: 'relative_date', value: today.iso, relative: 'today', confidence: 'high' };
-  const weekdays: Array<[number, RegExp]> = [
-    [0, /\b(?:sunday|söndag|yek\s*shanbe|1\s*shanbe)\b|یک ?شنبه/iu], [1, /\b(?:monday|måndag|do\s*shanbe|2\s*shanbe)\b|دو ?شنبه/iu],
-    [2, /\b(?:tuesday|tisdag|se\s*shanbe|3\s*shanbe)\b|سه ?شنبه/iu], [3, /\b(?:wednesday|onsdag|chahar\s*shanbe|4\s*shanbe)\b|چهار ?شنبه/iu],
-    [4, /\b(?:thursday|torsdag|panj\s*shanbe|5\s*shanbe)\b|پنج ?شنبه/iu], [5, /\b(?:friday|fredag|jomeh?)\b|جمعه/iu],
-    [6, /\b(?:saturday|lördag|(?<![1-5])shanbe)\b|(?<!یک |دو |سه |چهار |پنج )شنبه/iu],
-  ];
-  const matched = weekdays.find(([, pattern]) => pattern.test(raw));
+  if (/(?:^|\s)(?:day after tomorrow|i övermorgon|övermorgon|übermorgen|uebermorgen|pasado mañana|pasado manana|pas farda|pasfarda)(?=\s|[.!?,;]|$)/iu.test(raw) || /پس ?فردا|بعد\s+(?:غد[\u064B-\u065F]*ا?|بكر[ةه])/u.test(raw)) return { kind: 'relative_date', value: addIsoDays(today.iso, 2), relative: 'day_after_tomorrow', confidence: 'high' };
+  if (/\b(?:tomorrow|imorgon|morgen|mañana|manana|farda)\b/iu.test(raw) || /فردا|غد[\u064B-\u065F]*ا?|بكر[ةه]/u.test(raw)) return { kind: 'relative_date', value: addIsoDays(today.iso, 1), relative: 'tomorrow', confidence: 'high' };
+  if (/\b(?:today|idag|heute|hoy|emrooz|emruz)\b/iu.test(raw) || /امروز|اليوم/u.test(raw)) return { kind: 'relative_date', value: today.iso, relative: 'today', confidence: 'high' };
+  const matched = extractBookingWeekdays(raw)[0];
   if (!matched) return undefined;
-  const isNext = /\b(?:next|nästa|ayande)\b/iu.test(raw) || /آینده/u.test(raw);
-  let days = (matched[0] - today.weekday + 7) % 7;
+  const isNext = /\b(?:next|nästa|nächste[rsnm]?|naechste[rsnm]?|próxim[oa]|proxim[oa]|ayande)\b/iu.test(raw) || /آینده|القادم(?:ة)?|التالي(?:ة)?/u.test(raw);
+  let days = (matched.index - today.weekday + 7) % 7;
   if (isNext) days = days === 0 ? 7 : days + 7;
   else if (days === 0 && !/\bthis\b|\bdenna\b|همین|این/u.test(raw)) days = 7;
-  return { kind: 'weekday', value: addIsoDays(today.iso, days), weekday: matched[0], confidence: 'high' };
+  return { kind: 'weekday', value: addIsoDays(today.iso, days), weekday: matched.index, confidence: 'high' };
 }
 
 function inferService(text: string): NormalizedBookingRequest['service'] | undefined {

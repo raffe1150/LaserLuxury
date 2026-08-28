@@ -51,7 +51,7 @@ import {
   selectTelegramDeliveryMode,
   type TelegramReplyPreference,
 } from "./src/ai/channel-reliability";
-import { applyNormalizedRequestToPending, availabilityFieldsFromConstraint, buildSlotFingerprintSource, formatPersianSpokenPhone, getDateInTimeZone, getZonedSlotParts, isCurrentConversationTurn, normalizeBookingRequest, normalizeConversationText, parseBookingDate, parseNamedBookingDateParts, parseTimeConstraint, preparePersianTextForTts, registerConversationTurn, slotMinutesSatisfyConstraint, toPersistedBookingRequest, zonedLocalIso, type NormalizedBookingRequest, type NormalizedTimeConstraint } from "./src/ai/booking-intelligence";
+import { applyNormalizedRequestToPending, availabilityFieldsFromConstraint, buildSlotFingerprintSource, extractBookingWeekdays, formatPersianSpokenPhone, getDateInTimeZone, getZonedSlotParts, isCurrentConversationTurn, normalizeBookingRequest, normalizeConversationText, parseBookingDate, parseNamedBookingDateParts, parseTimeConstraint, preparePersianTextForTts, registerConversationTurn, slotMinutesSatisfyConstraint, toPersistedBookingRequest, zonedLocalIso, type NormalizedBookingRequest, type NormalizedTimeConstraint } from "./src/ai/booking-intelligence";
 import { beginBookingFinalization, getBookingInvariantFailures, getBookingPhase, getMissingBookingContact, recoverBookingFinalization, recoverBookingTransaction, type BookingFailureStage } from "./src/ai/booking-state-machine";
 import { enumerateCandidateMinutes, isBlockingCalendarEvent, isCanonicalSlotFree } from "./src/ai/canonical-availability";
 import { resolveAuthoritativeContact, type ContactPhoneSource } from "./src/ai/channel-contact";
@@ -6222,6 +6222,11 @@ function resolveExplicitBookingDate(text?: string): string | null {
     return `${year}-${String(Number(numeric[2])).padStart(2, "0")}-${String(Number(numeric[1])).padStart(2, "0")}`;
   }
 
+  // Reuse canonical forward-looking relative-date and weekday normalization so
+  // multilingual booking continuations cannot diverge from availability parsing.
+  const sharedDate = parseBookingDate(raw, "Europe/Stockholm");
+  if (sharedDate?.value) return sharedDate.value;
+
   // Relative dates must still be resolved before weekday parsing. This is critical for
   // rescheduling messages such as "imorgon kl 18:30" and "farda saate 18:30".
   if (/\b(idag|today|heute|hoy|emruz|emrooz)\b/i.test(raw) || /(?:امروز|اليوم)/u.test(raw)) return today;
@@ -6294,26 +6299,7 @@ function getConfiguredBookingWindowDays(config: any): number {
 }
 
 function extractRequestedWeekdays(text?: string): Array<{ index: number; position: number }> {
-  const raw = normalizeLocalizedDigits(String(text || ""))
-    .toLowerCase()
-    .replace(/\u200c/g, " ");
-  const definitions: Array<[number, RegExp]> = [
-    [0, /\b(?:söndag|sondag|sunday|sonntag|domingo|yek\s*shanbe|yekshanbe|1\s*shanbe)\b|یک\s*شنبه|الأحد|الاحد/giu],
-    [1, /\b(?:måndag|mandag|monday|montag|lunes|do\s*shanbe|doshanbe|2\s*shanbe)\b|دو\s*شنبه|الاثنين|الإثنين/giu],
-    [2, /\b(?:tisdag|tuesday|dienstag|martes|se\s*shanbe|seshanbe|3\s*shanbe)\b|سه\s*شنبه|الثلاثاء/giu],
-    [3, /\b(?:onsdag|wednesday|mittwoch|miércoles|miercoles|chahar\s*shanbe|chaharshanbe|4\s*shanbe)\b|چهار\s*شنبه|چهارشنبه|الأربعاء|الاربعاء/giu],
-    [4, /\b(?:torsdag|thursday|donnerstag|jueves|panj\s*shanbe|panjshanbe|5\s*shanbe)\b|پنج\s*شنبه|پنجشنبه|الخميس/giu],
-    [5, /\b(?:fredag|friday|freitag|viernes|jome|jomeh)\b|جمعه|الجمعة/giu],
-    [6, /\b(?:lördag|lordag|saturday|samstag|sábado|sabado|(?<!yek\s)(?<!do\s)(?<!se\s)(?<!chahar\s)(?<!panj\s)(?<![1-5]\s)shanbe)\b|(?<!یک\s)(?<!دو\s)(?<!سه\s)(?<!چهار\s)(?<!پنج\s)شنبه|السبت/giu]
-  ];
-  const matches: Array<{ index: number; position: number }> = [];
-  for (const [index, pattern] of definitions) {
-    for (const match of raw.matchAll(pattern)) {
-      const position = Number(match.index || 0);
-      if (!matches.some((item) => item.position === position)) matches.push({ index, position });
-    }
-  }
-  return matches.sort((a, b) => a.position - b.position);
+  return extractBookingWeekdays(String(text || ""));
 }
 
 function nextStockholmWeekdayDate(weekday: number, fromDate: string): string {

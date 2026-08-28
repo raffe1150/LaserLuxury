@@ -10,6 +10,7 @@ import { AnalyticsMetricsError, validateAnalyticsMetricsOptions } from './valida
 const METRIC_COLUMNS = 'event_name,occurred_at,platform,service_name_snapshot';
 const METRIC_EVENTS = [
   'booking_created',
+  'booking_completed',
   'booking_rescheduled',
   'booking_cancelled',
   'customer_message_received',

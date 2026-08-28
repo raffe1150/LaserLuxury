@@ -1,17 +1,28 @@
 import {
   ANALYTICS_SCHEMA_VERSION,
   type AnalyticsMetadata,
+  type AnalyticsEventName,
   type BigintIdentifier,
   type RecordableAnalyticsEvent,
   type ValidatedAnalyticsEvent,
 } from './event-types';
 
-const APPROVED_EVENT_NAMES = new Set<RecordableAnalyticsEvent['event_name']>([
+const APPROVED_EVENT_NAMES = new Set<AnalyticsEventName>([
+  'conversation_started',
+  'assistant_response_sent',
+  'booking_started',
+  'availability_requested',
+  'slot_offered',
+  'slot_selected',
+  'booking_completed',
+  'booking_failed',
+  'booking_abandoned',
   'booking_created',
   'booking_cancelled',
   'booking_rescheduled',
   'customer_message_received',
   'human_message_sent',
+  'conversation_resolved',
 ]);
 
 const FORBIDDEN_METADATA_KEYS = new Set([
@@ -22,6 +33,12 @@ const FORBIDDEN_METADATA_KEYS = new Set([
   'customer_name',
   'message',
   'message_text',
+  'customer_message',
+  'customer_message_text',
+  'assistant_message',
+  'assistant_message_text',
+  'raw_customer_message',
+  'raw_assistant_message',
   'text',
   'access_token',
   'token',
@@ -114,8 +131,53 @@ function normalizedMetadataKey(key: string): string {
     .toLowerCase();
 }
 
-function validateMetadataValue(value: unknown, visited: WeakSet<object>): void {
-  if (value === null || typeof value === 'string' || typeof value === 'boolean') return;
+function isIntentionalOpaqueMetadataKey(key: string): boolean {
+  return /(?:^|_)(?:id|uuid|hash|key|fingerprint|checksum)$/.test(key);
+}
+
+function isNormalAnalyticsDateOrTime(value: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}(?:[T ][0-9:.+-]+Z?)?$/.test(value)
+    || /^\d{1,2}:\d{2}(?::\d{2})?(?:Z|[+-]\d{2}:\d{2})?$/.test(value);
+}
+
+function looksLikeObviousPhone(value: string, key: string): boolean {
+  if (isNormalAnalyticsDateOrTime(value)) return false;
+  if (!/^\+?[\d\s().-]+$/.test(value)) return false;
+  const digits = value.replace(/\D/g, '');
+  if (digits.length < 8 || digits.length > 15) return false;
+  const hasExplicitPhoneFormatting = value.startsWith('+') || /[\s().]/.test(value);
+  return hasExplicitPhoneFormatting || !isIntentionalOpaqueMetadataKey(key);
+}
+
+function looksLikeObviousCredential(value: string): boolean {
+  return /^Bearer\s+\S{16,}$/i.test(value)
+    || /^(?:sk-(?:proj-)?|gh[pousr]_|xox[baprs]-|ya29\.|sb_(?:secret|publishable)_)[A-Za-z0-9._-]{12,}$/.test(value)
+    || /^AKIA[0-9A-Z]{16}$/.test(value)
+    || /^\d{6,12}:[A-Za-z0-9_-]{20,}$/.test(value)
+    || /^[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}$/.test(value)
+    || /(?:token|secret|api[_ -]?key|password)\s*[:=]\s*\S{8,}/i.test(value);
+}
+
+function validateMetadataString(value: string, key: string): void {
+  const normalized = value.trim();
+  if (
+    looksLikeObviousPhone(normalized, key)
+    || looksLikeObviousCredential(normalized)
+  ) {
+    validationError('metadata_sensitive_value');
+  }
+}
+
+function validateMetadataValue(
+  value: unknown,
+  visited: WeakSet<object>,
+  containingKey = '',
+): void {
+  if (value === null || typeof value === 'boolean') return;
+  if (typeof value === 'string') {
+    validateMetadataString(value, containingKey);
+    return;
+  }
 
   if (typeof value === 'number') {
     if (!Number.isFinite(value)) validationError('metadata');
@@ -127,7 +189,7 @@ function validateMetadataValue(value: unknown, visited: WeakSet<object>): void {
   visited.add(value);
 
   if (Array.isArray(value)) {
-    for (const item of value) validateMetadataValue(item, visited);
+    for (const item of value) validateMetadataValue(item, visited, containingKey);
     return;
   }
 
@@ -135,10 +197,11 @@ function validateMetadataValue(value: unknown, visited: WeakSet<object>): void {
   if (prototype !== Object.prototype && prototype !== null) validationError('metadata');
 
   for (const [key, nestedValue] of Object.entries(value)) {
-    if (FORBIDDEN_METADATA_KEYS.has(normalizedMetadataKey(key))) {
+    const normalizedKey = normalizedMetadataKey(key);
+    if (FORBIDDEN_METADATA_KEYS.has(normalizedKey)) {
       validationError('metadata_forbidden_key');
     }
-    validateMetadataValue(nestedValue, visited);
+    validateMetadataValue(nestedValue, visited, normalizedKey);
   }
 }
 
@@ -188,6 +251,45 @@ function optionalCustomerKey(value: unknown): string | null | undefined {
   return customerKey;
 }
 
+const CHANNEL_ALIASES: Readonly<Record<string, string>> = Object.freeze({
+  telegram_polling: 'telegram',
+  telegram_webhook: 'telegram',
+  telegram: 'telegram',
+  whatsapp_webhook: 'whatsapp',
+  whatsapp: 'whatsapp',
+  instagram_webhook: 'instagram',
+  instagram: 'instagram',
+  facebook_messenger: 'messenger',
+  messenger_webhook: 'messenger',
+  messenger: 'messenger',
+  web: 'website',
+  web_chat: 'website',
+  website_chat: 'website',
+  website: 'website',
+});
+
+/** @internal */
+export function normalizeAnalyticsChannel(
+  value: unknown,
+  fallbackPlatform?: unknown,
+): string | null | undefined {
+  if (value === undefined && fallbackPlatform === undefined) return undefined;
+  if (value === null && fallbackPlatform === undefined) return null;
+
+  const candidate = String(value === null || value === undefined || value === 'messaging'
+    ? fallbackPlatform ?? ''
+    : value)
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  if (!candidate || candidate.length > TEXT_LIMITS.channel) validationError('channel');
+
+  const normalized = CHANNEL_ALIASES[candidate] || candidate;
+  if (!/^[a-z][a-z0-9_]*$/.test(normalized)) validationError('channel');
+  return normalized;
+}
+
 /** @internal */
 export function validateAnalyticsEvent(value: unknown): ValidatedAnalyticsEvent {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
@@ -196,7 +298,7 @@ export function validateAnalyticsEvent(value: unknown): ValidatedAnalyticsEvent 
 
   const event = value as Record<string, unknown>;
   const eventName = requiredText(event.event_name, 'event_name');
-  if (!APPROVED_EVENT_NAMES.has(eventName as RecordableAnalyticsEvent['event_name'])) {
+  if (!APPROVED_EVENT_NAMES.has(eventName as AnalyticsEventName)) {
     validationError('event_name');
   }
 
@@ -218,7 +320,7 @@ export function validateAnalyticsEvent(value: unknown): ValidatedAnalyticsEvent 
     booking_id: optionalBigintIdentifier(event.booking_id),
     customer_key: optionalCustomerKey(event.customer_key),
     platform: optionalText(event.platform, 'platform'),
-    channel: optionalText(event.channel, 'channel'),
+    channel: normalizeAnalyticsChannel(event.channel, event.platform),
     service_id: optionalText(event.service_id, 'service_id'),
     service_name_snapshot: optionalText(
       event.service_name_snapshot,

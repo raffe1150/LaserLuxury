@@ -1,28 +1,43 @@
-import { FormEvent, useEffect, useState, type CSSProperties } from 'react';
+import { FormEvent, useEffect, useRef, useState } from 'react';
 import BookingsPanel from '../components/dashboard/BookingsPanel';
 import ConversationsPanel from '../components/dashboard/ConversationsPanel';
 import DashboardShell from '../components/dashboard/DashboardShell';
+import NotificationCenter from '../components/dashboard/NotificationCenter';
 import {
-  Activity,
   BusinessSettings,
-  ChannelSettings,
-  NotificationCenter,
+  BusinessToneControls,
   SystemPromptEditor,
   UsageStatistics,
 } from '../components/dashboard/DashboardSections';
+import IntegrationCenter from '../components/dashboard/IntegrationCenter';
 import HealthStatus from '../components/dashboard/HealthStatus';
 import AnalyticsPage from '../components/dashboard/analytics/AnalyticsPage';
 import { api, loadDashboardData } from '../services/api';
 import { useAuth } from '../auth/AuthProvider';
 import dashboardCss from '../styles/dashboard.css?raw';
 import type { Business, DashboardData, IntegrationKey } from '../types/dashboard';
+import type {
+  DashboardCountMetric,
+  DashboardEstimatedValueMetric,
+} from '../dashboard/contracts';
+import {
+  DashboardI18nProvider,
+  localizeDashboardDom,
+  useDashboardI18n,
+} from '../i18n/dashboard';
 
 interface DashboardProps {
   onNavigate: (path: '/' | '/login' | '/dashboard') => void;
 }
 
-export default function Dashboard({ onNavigate }: DashboardProps) {
+export default function Dashboard(props: DashboardProps) {
+  return <DashboardI18nProvider><DashboardContent {...props} /></DashboardI18nProvider>;
+}
+
+function DashboardContent({ onNavigate }: DashboardProps) {
   const { signOut } = useAuth();
+  const { locale, direction } = useDashboardI18n();
+  const pageRef = useRef<HTMLDivElement>(null);
   const [selectedBusinessId, setSelectedBusinessId] = useState<string>(() => {
     return localStorage.getItem('odinlink_selected_business') || '';
   });
@@ -33,6 +48,9 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
   const [refreshKey, setRefreshKey] = useState(0);
   const [addBusinessOpen, setAddBusinessOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Business | null>(null);
+  const [notificationUnreadCount, setNotificationUnreadCount] = useState(0);
+  const [notificationRefreshKey, setNotificationRefreshKey] = useState(0);
+  const notificationRefreshTimer = useRef<number | null>(null);
 
   useEffect(() => {
     const style = document.createElement('style');
@@ -41,6 +59,12 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
     document.head.appendChild(style);
     return () => style.remove();
   }, []);
+
+  useEffect(() => {
+    const page = pageRef.current;
+    if (!page) return;
+    return localizeDashboardDom(page, locale);
+  }, [locale]);
 
   useEffect(() => {
     let active = true;
@@ -110,13 +134,40 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
   }, [selectedBusiness?.id]);
 
   const handleBusinessChange = (businessId: string) => {
+    setNotificationUnreadCount(0);
     setSelectedBusinessId(businessId);
     localStorage.setItem('odinlink_selected_business', businessId);
   };
 
+  const scheduleNotificationRefresh = () => {
+    if (notificationRefreshTimer.current !== null) window.clearTimeout(notificationRefreshTimer.current);
+    notificationRefreshTimer.current = window.setTimeout(() => {
+      setNotificationRefreshKey((value) => value + 1);
+      setRefreshKey((value) => value + 1);
+      notificationRefreshTimer.current = null;
+    }, 500);
+  };
+
+  useEffect(() => () => {
+    if (notificationRefreshTimer.current !== null) window.clearTimeout(notificationRefreshTimer.current);
+  }, []);
+
   const handleSaved = (message: string, refresh = false) => {
     setToast(message);
     if (refresh) setRefreshKey((value) => value + 1);
+  };
+
+  const handleBusinessUpdated = (updatedBusiness: Business) => {
+    setData((current) => {
+      if (!current || current.selectedBusiness?.id !== updatedBusiness.id) return current;
+      return {
+        ...current,
+        selectedBusiness: updatedBusiness,
+        businesses: current.businesses.map((business) =>
+          business.id === updatedBusiness.id ? updatedBusiness : business
+        ),
+      };
+    });
   };
 
   useEffect(() => {
@@ -132,14 +183,11 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
     setToast('Testing connection...');
 
     try {
-      const result = await api.testIntegration(
+      const result = await api.refreshIntegrationHealth(
         selectedBusiness.id,
         integrationKey,
+        true,
       );
-
-      if (!result.ok) {
-        throw new Error(result.message || 'Connection test failed');
-      }
 
       setData((current) => {
         if (!current) return current;
@@ -147,24 +195,13 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
         return {
           ...current,
           health: current.health.map((item) =>
-            item.key === integrationKey
-              ? {
-                  ...item,
-                  status:
-                    integrationKey === 'google_calendar'
-                      ? 'synced'
-                      : 'connected',
-                  detail:
-                    integrationKey === 'google_calendar'
-                      ? 'Synced'
-                      : 'Connected',
-                }
-              : item,
+            item.key === integrationKey ? result.data : item,
           ),
         };
       });
 
-      setToast(null);
+      setToast(result.data.status === 'connected' || result.data.status === 'synced' ? null : result.data.detail);
+      return result.data;
     } catch (err) {
       const message = getReadableApiError(
         err instanceof Error ? err.message : 'Connection test failed',
@@ -188,6 +225,17 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
       });
 
       setToast(message);
+      return {
+        key: integrationKey,
+        label: integrationKey,
+        status: 'error' as const,
+        detail: 'Connection failed',
+        lastCheckedAt: null,
+        stale: true,
+        refreshInProgress: false,
+        reasonCode: 'check_failed' as const,
+        action: 'retry' as const,
+      };
     }
   };
 
@@ -222,13 +270,14 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
   };
 
   return (
-    <div className="dashboard-page">
+    <div className="dashboard-page" ref={pageRef} dir={direction} lang={locale} data-dashboard-locale={locale}>
       <DashboardShell
         title="Dashboard"
         businesses={data?.businesses || []}
         selectedBusinessId={selectedBusiness?.id || selectedBusinessId}
         businessName={selectedBusiness?.name}
         onBusinessChange={handleBusinessChange}
+        notificationUnreadCount={notificationUnreadCount}
         onNavigate={onNavigate}
         onSignOut={async () => {
           await signOut();
@@ -254,50 +303,34 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
 
             <AnalyticsPage businessId={selectedBusiness.id} />
 
-            <section id="conversations" className="mission-section">
+            <section className="mission-section">
               <div className="mission-section-head">
                 <div>
                   <div className="mission-eyebrow">ODINLINK INBOX</div>
                   <h2>Customer conversations</h2>
-                  <p>See who OdinLink helped, what needs attention and the latest customer activity.</p>
-                </div>
-                <div className="mission-total-pill">
-                  {data.conversations.length} total
+                  <p>Review recent conversations, their current status and the latest customer activity.</p>
                 </div>
               </div>
 
               <ConversationsPanel
-                conversations={data.conversations.slice(0, 4)}
+                key={selectedBusiness.id}
                 businessId={selectedBusiness.id}
               />
-
-              {data.conversations.length > 4 && (
-                <div className="more-conversations-card">
-                  <div>
-                    <strong>+{data.conversations.length - 4} more conversations</strong>
-                    <span>Open the full inbox to review every customer interaction.</span>
-                  </div>
-                  <button
-                    className="mission-link-button"
-                    type="button"
-                    onClick={() => setToast('Full Inbox will be added in the next sprint')}
-                  >
-                    Open full inbox →
-                  </button>
-                </div>
-              )}
             </section>
 
-            <section id="bookings" className="mission-section">
+            <section className="mission-section">
               <div className="mission-section-head">
                 <div>
-                  <div className="mission-eyebrow">TODAY</div>
-                  <h2>Bookings and activity</h2>
-                  <p>See the customer outcomes OdinLink is creating for the business.</p>
+                  <div className="mission-eyebrow">BOOKING WORKSPACE</div>
+                  <h2>Bookings</h2>
+                  <p>Review upcoming, pending and historical appointments for the business.</p>
                 </div>
               </div>
-              <BookingsPanel bookings={data.bookings} />
-              <Activity conversations={data.conversations} bookings={data.bookings} health={data.health} />
+              <BookingsPanel
+                key={selectedBusiness.id}
+                businessId={selectedBusiness.id}
+                timezone={selectedBusiness.timezone}
+              />
             </section>
 
             <section className="mission-section mission-admin-section">
@@ -309,8 +342,14 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
                 </div>
               </div>
 
-              <HealthStatus health={data.health} onTest={testIntegration} />
-              <NotificationCenter health={data.health} bookings={data.bookings} />
+              <HealthStatus key={selectedBusiness.id} businessId={selectedBusiness.id} onHealthChanged={scheduleNotificationRefresh} />
+              <NotificationCenter
+                key={selectedBusiness.id}
+                businessId={selectedBusiness.id}
+                timezone={selectedBusiness.timezone}
+                onUnreadCountChange={setNotificationUnreadCount}
+                refreshKey={notificationRefreshKey}
+              />
               <UsageStatistics usage={data.usage} />
               <BusinessesCard
                 businesses={data.businesses}
@@ -322,8 +361,14 @@ export default function Dashboard({ onNavigate }: DashboardProps) {
               <BusinessSettings business={selectedBusiness} onSaved={handleSaved} />
               <CancellationSettings business={selectedBusiness} onSaved={handleSaved} />
               <AdminNotificationSettings business={selectedBusiness} onSaved={handleSaved} />
+              <BusinessToneControls
+                key={selectedBusiness.id}
+                business={selectedBusiness}
+                onSaved={handleSaved}
+                onBusinessUpdated={handleBusinessUpdated}
+              />
               <SystemPromptEditor business={selectedBusiness} onSaved={handleSaved} />
-              <ChannelSettings
+              <IntegrationCenter
                 business={selectedBusiness}
                 health={data.health}
                 onSaved={handleSaved}
@@ -699,45 +744,61 @@ function MissionControl({
   business: Business;
   data: DashboardData;
 }) {
-  const totalConversations = data.conversations.length;
-  const attentionCount = data.conversations.filter(needsHumanAttention).length;
-  const handledByOdinLink = Math.max(totalConversations - attentionCount, 0);
-  const automationRate =
-    totalConversations > 0
-      ? Math.round((handledByOdinLink / totalConversations) * 100)
-      : 0;
-
-  const estimatedMinutesSaved = handledByOdinLink * 4;
-  const estimatedStaffValue = Math.round((estimatedMinutesSaved / 60) * 300);
-  const bookingCount = data.bookings.length;
-  const greeting = getGreeting();
+  const { locale, t } = useDashboardI18n();
+  const summary = data.dashboardSummary.status === 'available'
+    ? data.dashboardSummary.data
+    : null;
+  const conversationsMetric = summary?.conversationsToday;
+  // The single primary booking KPI consumes the canonical backend field directly.
+  const canonicalBookingMetric = summary?.completedBookingsToday;
+  const conversationValue = formatCountMetric(conversationsMetric, locale);
+  const bookingValue = formatCountMetric(canonicalBookingMetric, locale);
+  const estimatedValue = formatEstimatedBookingValue(summary?.estimatedBookingValue, locale, t);
+  const estimatedValueMetric = summary?.estimatedBookingValue;
+  const operationalStatus = summary?.operationalStatus || {
+    state: 'unavailable' as const,
+    title: 'Status unavailable',
+    detail: 'The current dashboard summary could not be loaded.',
+    activeNotificationCount: null,
+    healthIssueCount: null,
+  };
+  const greeting = t(getGreeting());
   const displayBusinessName = formatBusinessName(business.name);
-  const connectedChannelCount = data.health.filter((item) =>
-    ['connected', 'synced', 'healthy', 'active'].includes(String(item.status).toLowerCase()),
-  ).length;
-  const monitoringCopy = connectedChannelCount > 0
-    ? `Working across ${connectedChannelCount} connected ${connectedChannelCount === 1 ? 'channel' : 'channels'}`
-    : 'Working across your connected channels';
-
-  const automationLabel =
-    automationRate >= 95
-      ? 'Excellent'
-      : automationRate >= 80
-        ? 'Strong'
-        : automationRate >= 60
-          ? 'Moderate'
-          : 'Needs attention';
+  const metricScope = summary
+    ? `${summary.scope.startDate} · ${summary.scope.timezone}`
+    : 'Current data unavailable';
+  const statusClass = operationalStatus.state === 'attention'
+    ? 'attention'
+    : operationalStatus.state === 'operational'
+      ? 'clear'
+      : 'unavailable';
+  const actionTarget = operationalStatus.activeNotificationCount && operationalStatus.activeNotificationCount > 0
+    ? 'notification-center'
+    : 'health';
 
   return (
     <section id="overview" className="mission-control">
       <div className="mission-hero">
         <div className="mission-hero-content">
-          <div className="mission-live-status">
-            <div className="mission-live-badge">
-              <span />
-              OdinLink Active
+          <div className="mission-hero-topline">
+            <div className="mission-live-status">
+              <div className="mission-live-badge">
+                <span />
+                Today’s overview
+              </div>
+              <span className="mission-monitoring-copy">{metricScope}</span>
             </div>
-            <span className="mission-monitoring-copy">{monitoringCopy}</span>
+            <button
+              className={`mission-status-indicator ${statusClass}`}
+              type="button"
+              title={t(operationalStatus.detail)}
+              aria-label={`${t(operationalStatus.title)}. ${t(operationalStatus.detail)}`}
+              onClick={() => document.getElementById(actionTarget)?.scrollIntoView({ behavior: 'smooth' })}
+            >
+              <i aria-hidden="true" />
+              <span>{t(operationalStatus.title)}</span>
+              <b aria-hidden="true">→</b>
+            </button>
           </div>
 
           <p className="mission-greeting">{greeting} <span aria-hidden="true">👋</span></p>
@@ -745,141 +806,29 @@ function MissionControl({
 
           <div className="hero-results-block">
             <div className="hero-results-label">TODAY’S RESULTS</div>
-            <div className="hero-result-grid">
-              <HeroResult icon="customers" value={String(totalConversations)} label="Customers helped" />
-              <HeroResult icon="bookings" value={String(bookingCount)} label="Appointments booked" />
-              <HeroResult icon="time" value={formatMinutesLong(estimatedMinutesSaved)} label="Saved for your team" />
+            <div className="hero-result-grid dashboard-primary-kpis">
+              <HeroResult
+                icon="customers"
+                value={conversationValue}
+                label={metricLabel('Conversations today', conversationsMetric, t)}
+                detail={countMetricDetail(conversationsMetric, 'Canonical conversation starts', t)}
+              />
+              <HeroResult
+                icon="bookings"
+                value={bookingValue}
+                label={metricLabel('Completed bookings today', canonicalBookingMetric, t)}
+                detail={countMetricDetail(canonicalBookingMetric, 'Booked or completed appointment records', t)}
+              />
+              <HeroResult
+                icon="value"
+                value={estimatedValue.value}
+                label={estimatedMetricLabel(estimatedValueMetric, t)}
+                detail={estimatedValue.detail}
+                accent
+              />
             </div>
           </div>
         </div>
-
-        <div className={attentionCount > 0 ? 'mission-hero-summary attention' : 'mission-hero-summary clear'}>
-          <div className="mission-hero-summary-label">
-            <i aria-hidden="true" />
-            <span>Today</span>
-          </div>
-          <strong>
-            {attentionCount > 0
-              ? `${attentionCount} ${attentionCount === 1 ? 'conversation needs' : 'conversations need'} your attention`
-              : 'Everything is running smoothly'}
-          </strong>
-          <small>{attentionCount > 0 ? 'Open the inbox to review.' : 'No action required.'}</small>
-        </div>
-      </div>
-
-      <div className="mission-impact-card">
-        <div className="mission-impact-head">
-          <div className="mission-impact-copy">
-            <div className="mission-eyebrow">BUSINESS IMPACT</div>
-            <h2>How OdinLink performed today</h2>
-            <p>Customer service, automation, bookings and estimated value in one clear view.</p>
-          </div>
-
-          <div className="automation-score-card">
-            <div
-              className="automation-ring"
-              style={{ '--automation': `${automationRate}%` } as CSSProperties}
-              aria-label={`${automationRate}% automation score`}
-            >
-              <div>
-                <strong>{automationRate}%</strong>
-              </div>
-            </div>
-            <div className="automation-score-copy">
-              <span>AUTOMATION SCORE</span>
-              <strong>{automationLabel}</strong>
-              <small>
-                {attentionCount > 0
-                  ? `${attentionCount} ${attentionCount === 1 ? 'conversation needs' : 'conversations need'} human help`
-                  : 'All conversations handled without human help'}
-              </small>
-            </div>
-          </div>
-        </div>
-
-        <div className="mission-metrics">
-          <ImpactMetric
-            eyebrow="CUSTOMER ACTIVITY"
-            value={String(totalConversations)}
-            label="Customers helped today"
-            detail={totalConversations === 1 ? 'One customer received a response' : `${totalConversations} customer conversations handled`}
-          />
-          <ImpactMetric
-            eyebrow="AUTOMATION"
-            value={`${automationRate}%`}
-            label="Fully automated"
-            detail={
-              attentionCount > 0
-                ? `${attentionCount} ${attentionCount === 1 ? 'conversation required' : 'conversations required'} human help`
-                : 'No manual intervention required'
-            }
-          />
-          <ImpactMetric
-            eyebrow="BOOKING SUCCESS"
-            value={String(bookingCount)}
-            label="Appointments booked"
-            detail={bookingCount > 0 ? 'Created directly by OdinLink' : 'No appointments booked yet'}
-          />
-          <ImpactMetric
-            eyebrow="BUSINESS VALUE"
-            value={estimatedStaffValue.toLocaleString('sv-SE')}
-            label="Value created today"
-            detail={`≈ ${formatMinutesLong(estimatedMinutesSaved)} returned to your team`}
-            accent
-          />
-        </div>
-
-        <div className="mission-value-strip compact">
-          <div className="mission-value-icon">↗</div>
-          <div className="mission-value-main">
-            <span>Value created today</span>
-            <strong>{estimatedStaffValue.toLocaleString('sv-SE')} <em>SEK</em></strong>
-          </div>
-          <div className="mission-value-detail">
-            <span>≈ {formatMinutesLong(estimatedMinutesSaved)} back</span>
-            <small>Calculated using your hourly value</small>
-          </div>
-        </div>
-      </div>
-
-      <div className={attentionCount > 0 ? 'action-center needs-attention' : 'action-center all-clear'}>
-        <div className="action-center-status">
-          <div className="action-center-icon" aria-hidden="true">
-            {attentionCount > 0 ? '!' : '✓'}
-          </div>
-          <div className="action-center-copy">
-            <div className="mission-eyebrow">ACTION CENTER</div>
-            <h3>
-              {attentionCount > 0
-                ? `${attentionCount} ${attentionCount === 1 ? 'conversation needs' : 'conversations need'} your attention`
-                : 'Everything is handled'}
-            </h3>
-            <p>
-              {attentionCount > 0
-                ? 'OdinLink has flagged conversations that need a human response.'
-                : 'OdinLink is actively serving customers. No action is required right now.'}
-            </p>
-          </div>
-        </div>
-
-        <div className="action-center-summary">
-          <div className="action-center-summary-item">
-            <span>STATUS</span>
-            <strong>{attentionCount > 0 ? 'Needs attention' : 'All clear'}</strong>
-          </div>
-          <div className="action-center-summary-item">
-            <span>HUMAN ACTIONS</span>
-            <strong>{attentionCount}</strong>
-          </div>
-        </div>
-
-        <button
-          className="mission-action-button"
-          type="button"
-          onClick={() => document.getElementById('conversations')?.scrollIntoView({ behavior: 'smooth' })}
-        >
-          {attentionCount > 0 ? 'Review now' : 'Open inbox'} →
-        </button>
       </div>
     </section>
   );
@@ -889,13 +838,17 @@ function HeroResult({
   icon,
   value,
   label,
+  detail,
+  accent = false,
 }: {
-  icon: 'customers' | 'bookings' | 'time';
+  icon: 'customers' | 'bookings' | 'value';
   value: string;
   label: string;
+  detail: string;
+  accent?: boolean;
 }) {
   return (
-    <div className="hero-result-item">
+    <div className={accent ? 'hero-result-item accent' : 'hero-result-item'}>
       <div className="hero-result-icon" aria-hidden="true">
         {icon === 'customers' && (
           <svg viewBox="0 0 24 24" fill="none">
@@ -912,77 +865,21 @@ function HeroResult({
             <path d="m9 16 2 2 4-4" />
           </svg>
         )}
-        {icon === 'time' && (
+        {icon === 'value' && (
           <svg viewBox="0 0 24 24" fill="none">
-            <circle cx="12" cy="12" r="9" />
-            <path d="M12 7v5l3 2" />
+            <path d="M4 19V9M10 19V5M16 19v-7M22 19H2" />
+            <path d="m4 7 6-4 6 5 5-4" />
           </svg>
         )}
       </div>
       <div className="hero-result-copy">
         <strong>{value}</strong>
         <span>{label}</span>
+        <small>{detail}</small>
       </div>
     </div>
   );
 }
-
-function ImpactMetric({
-  eyebrow,
-  value,
-  label,
-  detail,
-  accent = false,
-}: {
-  eyebrow: string;
-  value: string;
-  label: string;
-  detail: string;
-  accent?: boolean;
-}) {
-  return (
-    <div className={accent ? 'impact-metric accent' : 'impact-metric'}>
-      <div className="impact-metric-eyebrow">{eyebrow}</div>
-      <strong>{value}</strong>
-      <span>{label}</span>
-      <small>{detail}</small>
-    </div>
-  );
-}
-
-function needsHumanAttention(conversation: unknown) {
-  if (!conversation || typeof conversation !== 'object') return false;
-
-  const record = conversation as Record<string, unknown>;
-  const booleanFlags = [
-    record.needs_human,
-    record.needsHuman,
-    record.requires_human,
-    record.requiresHuman,
-    record.human_attention,
-    record.humanAttention,
-    record.escalated,
-  ];
-
-  if (booleanFlags.some((value) => value === true)) return true;
-
-  const status = String(
-    record.status ||
-    record.state ||
-    record.handoff_status ||
-    record.handoffStatus ||
-    '',
-  ).toLowerCase();
-
-  return [
-    'needs_human',
-    'human_required',
-    'waiting_for_human',
-    'escalated',
-    'takeover',
-  ].some((value) => status.includes(value));
-}
-
 
 function formatBusinessName(name: string) {
   const normalized = String(name || '').trim().replace(/\s+/g, ' ');
@@ -1004,18 +901,58 @@ function getGreeting() {
   return 'Good evening';
 }
 
-function formatMinutes(minutes: number) {
-  if (minutes < 60) return `${minutes}m`;
-  const hours = Math.floor(minutes / 60);
-  const remaining = minutes % 60;
-  return remaining ? `${hours}h ${remaining}m` : `${hours}h`;
+function formatCountMetric(metric: DashboardCountMetric | undefined, locale = 'en'): string {
+  return metric && metric.value !== null ? new Intl.NumberFormat(locale).format(metric.value) : '—';
 }
 
-function formatMinutesLong(minutes: number) {
-  if (minutes < 60) return `${minutes} min`;
-  const hours = Math.floor(minutes / 60);
-  const remaining = minutes % 60;
-  return remaining ? `${hours} hr ${remaining} min` : `${hours} hr`;
+type TranslateDashboard = (source: string, values?: Readonly<Record<string, string | number>>) => string;
+
+function metricLabel(label: string, metric: DashboardCountMetric | undefined, t: TranslateDashboard): string {
+  if (!metric || metric.quality === 'unavailable') return t('{label} · unavailable', { label: t(label) });
+  return metric.quality === 'partial' ? t('{label} · partial', { label: t(label) }) : t(label);
+}
+
+function estimatedMetricLabel(metric: DashboardEstimatedValueMetric | undefined, t: TranslateDashboard): string {
+  if (!metric || metric.quality === 'unavailable') return t('{label} · unavailable', { label: t('Estimated booking value today') });
+  return metric.quality === 'partial'
+    ? t('{label} · partial', { label: t('Estimated booking value today') })
+    : t('Estimated booking value today');
+}
+
+function countMetricDetail(metric: DashboardCountMetric | undefined, definition: string, t: TranslateDashboard): string {
+  if (!metric || metric.quality === 'unavailable') return t('Data unavailable — not reported as zero');
+  if (metric.quality === 'partial') return t('Partial coverage · {definition}', { definition: t(definition) });
+  return metric.value === 0 ? t('Zero · {definition}', { definition: t(definition) }) : t(definition);
+}
+
+function formatEstimatedBookingValue(metric: DashboardEstimatedValueMetric | undefined, locale = 'en', t: TranslateDashboard = (source) => source): {
+  value: string;
+  detail: string;
+} {
+  if (!metric || metric.quality === 'unavailable') {
+    return {
+      value: '—',
+      detail: metric && metric.completedBookingCount > 0
+        ? t('Unavailable · 0 of {total} bookings have a configured price', { total: metric.completedBookingCount })
+        : t('Data unavailable — not reported as zero'),
+    };
+  }
+  if (metric.completedBookingCount === 0) {
+    return { value: '0', detail: t('Zero completed bookings in the canonical today window') };
+  }
+  const value = metric.amounts
+    .map(({ amount, currency }) => `${new Intl.NumberFormat(locale).format(amount)} ${currency}`)
+    .join(' + ') || '0';
+  if (metric.quality === 'partial') {
+    return {
+      value,
+      detail: t('Partial coverage · {known} of {total} bookings priced', { known: metric.knownPriceCount, total: metric.completedBookingCount }),
+    };
+  }
+  return {
+    value,
+    detail: t('{known} of {total} bookings matched configured prices', { known: metric.knownPriceCount, total: metric.completedBookingCount }),
+  };
 }
 
 function BusinessesCard({
@@ -1031,6 +968,7 @@ function BusinessesCard({
   onCreate: () => void;
   onDelete: (business: Business) => void;
 }) {
+  const { t } = useDashboardI18n();
   return (
     <section id="businesses" className="card dashboard-section">
       <div className="card-header">
@@ -1060,7 +998,13 @@ function BusinessesCard({
             <div className="biz-info">
               <div className="biz-name">{business.name}</div>
               <div className="biz-meta">
-                {[business.industry, business.timezone, business.language].filter(Boolean).join(' · ') || 'Business tenant'}
+                {business.industry || business.timezone || business.language ? <>
+                  {business.industry && <span translate="no">{business.industry}</span>}
+                  {business.industry && (business.timezone || business.language) && ' · '}
+                  {business.timezone && <bdi dir="ltr">{business.timezone}</bdi>}
+                  {business.timezone && business.language && ' · '}
+                  {business.language && <bdi dir="ltr">{business.language}</bdi>}
+                </> : t('Business tenant')}
               </div>
             </div>
             <span className={business.id === selectedBusinessId ? 'status-chip connected' : 'status-chip disconnected'}>

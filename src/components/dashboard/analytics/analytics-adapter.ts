@@ -1,40 +1,41 @@
-import { createDemoAnalyticsData } from './analytics-demo-data';
+import { api } from '../../../services/api';
 import type {
   AnalyticsDatePreset,
-  DashboardAnalyticsData,
+  DashboardAnalyticsAdapter,
   DashboardAnalyticsRequest,
 } from './analytics-types';
 
-const PRESET_DAYS: Record<AnalyticsDatePreset, number> = {
-  '7d': 7,
-  '30d': 30,
-  '90d': 90,
-};
-
-export function buildAnalyticsDateRange(
+export function analyticsWindowForSelection(
   preset: AnalyticsDatePreset,
-  now = new Date(),
-): Pick<DashboardAnalyticsRequest, 'from' | 'to'> {
-  const to = new Date(now);
-  if (!Number.isFinite(to.getTime())) throw new Error('Analytics date range is unavailable.');
-  const from = new Date(Date.UTC(
-    to.getUTCFullYear(),
-    to.getUTCMonth(),
-    to.getUTCDate() - (PRESET_DAYS[preset] - 1),
-  ));
-  return { from: from.toISOString(), to: to.toISOString() };
+  customStartDate = '',
+  customEndDate = '',
+): DashboardAnalyticsRequest['window'] | null {
+  if (preset === 'today') return { preset: 'today' };
+  if (preset === '7d') return { preset: 'last_7_days' };
+  if (preset === '30d') return { preset: 'last_30_days' };
+  if (!customStartDate || !customEndDate) return null;
+  return { preset: 'custom', startDate: customStartDate, endDate: customEndDate };
 }
 
-/** Phase K demo boundary. Phase J replaces only this function's implementation. */
-export async function getDashboardAnalytics(
-  request: DashboardAnalyticsRequest,
-): Promise<DashboardAnalyticsData> {
-  if (!Number.isSafeInteger(request.businessId) || request.businessId <= 0) {
-    throw new Error('Analytics are unavailable for the selected business.');
-  }
-  if (!Number.isFinite(Date.parse(request.from)) || !Number.isFinite(Date.parse(request.to))) {
-    throw new Error('Analytics are unavailable for the selected period.');
-  }
-  await Promise.resolve();
-  return createDemoAnalyticsData(request);
+export function analyticsRequestKey(request: DashboardAnalyticsRequest): string {
+  const { window } = request;
+  return window.preset === 'custom'
+    ? `${request.businessId}:custom:${window.startDate}:${window.endDate}`
+    : `${request.businessId}:${window.preset}`;
 }
+
+export function createAnalyticsRequestGuard() {
+  let latest = 0;
+  return {
+    begin() {
+      const identity = ++latest;
+      return { isCurrent: () => identity === latest };
+    },
+    invalidate() {
+      latest += 1;
+    },
+  };
+}
+
+export const getDashboardAnalytics: DashboardAnalyticsAdapter = (request, signal) =>
+  api.getBusinessAnalyticsSummary(request.businessId, request.window, signal);

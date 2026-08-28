@@ -27,6 +27,8 @@ assert.equal(classifyMessagingIntent('Mikham vaghtam ro taghir bedam'), 'resched
 assert.equal(classifyMessagingIntent('Mikham vaghtam ro laghv konam'), 'cancellation');
 assert.equal(classifyMessagingIntent('Aya man vaght ghabli daram?'), 'existing_booking_lookup');
 assert.equal(classifyMessagingIntent('Dar morede vaghtam soal daram'), 'ambiguous');
+assert.equal(classifyMessagingIntent('هل لديكم موعد متاح بعد الساعة 15 يوم الجمعة 25 سبتمبر 2026؟'), 'new_booking');
+assert.equal(classifyMessagingIntent('¿Tienen alguna cita después de las 15:00 el viernes 18 de septiembre de 2026?'), 'new_booking');
 
 let preference = resolveTelegramReplyPreference(null, 'voice', 'سلام');
 assert.deepEqual(preference, { mode: 'voice', explicit: false });

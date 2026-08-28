@@ -98,6 +98,19 @@ assert.equal(unchangedTransition.runAvailability, false);
 assert.equal(unchanged.lastAvailabilityConstraintKey, 'old-fingerprint');
 assert.equal(unchanged.offeredSlots.length, 1);
 
+const ambiguousDateState = pending('Friday at 10:00');
+const ambiguousDateSnapshot = structuredClone(ambiguousDateState);
+const ambiguousDateTransition = applyBookingTransition(
+  ambiguousDateState,
+  request('Hej, jag vill boka en tid fredag den 10 september 2026 klockan 09:00.')
+);
+assert.equal(ambiguousDateTransition.handled, true);
+assert.equal(ambiguousDateTransition.replyKind, 'booking_clarification');
+assert.equal(ambiguousDateTransition.reason, 'weekday_explicit_date_conflict');
+assert.equal(ambiguousDateTransition.runAvailability, false);
+assert.equal(ambiguousDateTransition.executeBooking, false);
+assert.deepEqual(ambiguousDateState, ambiguousDateSnapshot);
+
 const unavailable = pending();
 unavailable.offeredSlots = [];
 unavailable.ownedOfferedSlots = [];
@@ -134,7 +147,7 @@ const repeatedConfirmation = applyBookingTransition(confirmation, request('Ja ta
 assert.equal(repeatedConfirmation.reason, 'contact_submission_to_verified_engine');
 assert.equal(getBookingPhase(confirmation), 'awaiting_contact');
 
-for (const affirmative of ['Ja', 'Ja tack', 'absolut', 'boka den', 'det blir bra', 'Yes', 'yes please', 'book it', 'that works', 'Bale', 'are', 'khobe', 'ok', 'بله', 'آره']) {
+for (const affirmative of ['Ja', 'Ja tack', 'absolut', 'boka den', 'det blir bra', 'Ja, det låter bra. Kan du boka den tiden åt mig?', 'Yes', 'yes please', 'book it', 'that works', 'Bale', 'are', 'khobe', 'ok', 'بله', 'آره']) {
   const channelState = pending('Friday at 19:30');
   channelState.status = 'awaiting_confirmation';
   channelState.ownedOfferedSlots = [slot(19, 30)];
@@ -270,16 +283,64 @@ assert.equal(isCurrentConversationTurn('turn-test', 11), true);
 
 const server = readFileSync(new URL('../../server.ts', import.meta.url), 'utf8');
 assert.match(server, /lastAvailabilityConstraintKey === availabilityConstraintKey[\s\S]{0,300}formatNoAvailabilityRecovery/);
-assert.match(server, /slotMinutesSatisfyConstraint\(zoned\.minutes, params\.normalizedConstraint\)/);
+assert.match(server, /slotMinutesSatisfyConstraint\(minutes, params\.normalizedConstraint\)/);
 assert.match(server, /verifiedBookingReplyAuthorizations\[sessionId\] = bookingOperationResult/);
 assert.match(server, /Boolean\(deterministicTransition\?\.runAvailability\)/);
 assert.match(server, /selectedSlotEnd: exactOwnedSlot\?\.end \|\| null/);
-assert.match(server, /calendarEvents: filteredEvents,[\s\S]{0,80}pendingEvents/);
+assert.match(
+  server,
+  /calendarEvents:\s*snapshot\.calendarEvents,\s*pendingEvents:\s*snapshot\.pendingEvents/
+);
 assert.match(server, /recoverBookingTransaction\(pending, "calendar_verification", rollbackInsertedCalendarEvent\)/);
 assert.match(server, /recoverBookingTransaction\(pending, databaseFailurePath/);
 assert.ok(server.indexOf('verifiedBookingReplyAuthorizations[sessionId] = bookingOperationResult') < server.indexOf('await notifyAdminAboutBooking('));
 for (const channel of ['whatsapp', 'messenger', 'instagram', 'telegram']) {
   assert.match(server, new RegExp(`platformName:\\s*["']${channel}["'][\\s\\S]{0,500}handleUnifiedBookingEngine|handleUnifiedBookingEngine\\([\\s\\S]{0,500}platformName:\\s*["']${channel}["']`));
+}
+
+
+{
+  const state = pending('Friday at 14');
+  state.status = 'awaiting_confirmation';
+  state.dateTime = '2026-08-14T14:00:00+02:00';
+  state.selectedSlotEnd = '2026-08-14T14:30:00+02:00';
+  state.ownedOfferedSlots = [
+    {
+      start: '2026-08-14T14:00:00+02:00',
+      end: '2026-08-14T14:30:00+02:00'
+    }
+  ];
+
+  const transition =
+    applyBookingTransition(
+      state,
+      request('Friday morning instead')
+    );
+
+  assert.equal(
+    transition.reason,
+    'explicit_constraint_replacement'
+  );
+
+  assert.equal(
+    state.status,
+    'awaiting_time_selection'
+  );
+
+  assert.equal(
+    state.dateTime,
+    null
+  );
+
+  assert.deepEqual(
+    state.ownedOfferedSlots,
+    []
+  );
+
+  assert.deepEqual(
+    getBookingInvariantFailures(state),
+    []
+  );
 }
 
 console.log('booking state machine tests passed');

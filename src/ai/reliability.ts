@@ -38,6 +38,10 @@ export function isRetryableAiFailure(category: AiFailureCategory): boolean {
   return category === 'RATE_LIMIT' || category === 'PROVIDER_UNAVAILABLE' || category === 'NETWORK';
 }
 
+export function normalizeAiResponseText(value: unknown): string {
+  return typeof value === 'string' ? value : '';
+}
+
 export async function runAiProviderRequest<T>(options: {
   invoke: (attempt: number) => Promise<T>;
   timeoutMs: number;

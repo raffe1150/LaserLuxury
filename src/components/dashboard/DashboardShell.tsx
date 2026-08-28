@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react';
 import type { Business } from '../../types/dashboard';
+import { DASHBOARD_LOCALE_OPTIONS, useDashboardI18n } from '../../i18n/dashboard';
 
 interface DashboardShellProps {
   title: string;
@@ -10,6 +11,7 @@ interface DashboardShellProps {
   onBusinessChange?: (businessId: string) => void;
   onSignOut?: () => void | Promise<void>;
   initialActiveSection?: DashboardSectionId;
+  notificationUnreadCount?: number;
   children: ReactNode;
 }
 
@@ -21,10 +23,10 @@ const NAV_ITEMS = [
   { id: 'bookings', label: 'Bookings' },
   { id: 'businesses', label: 'Businesses' },
   { id: 'business-settings', label: 'Business Settings' },
+  { id: 'ai-tone', label: 'AI Tone' },
   { id: 'prompt-editor', label: 'Prompt Editor' },
   { id: 'channel-settings', label: 'Channel Settings' },
   { id: 'usage-statistics', label: 'Usage' },
-  { id: 'activity', label: 'Activity' },
   { id: 'notification-center', label: 'Notifications' },
 ] as const;
 
@@ -62,7 +64,7 @@ export function getMobileActiveSection(activeSection: DashboardSectionId): Mobil
   if (activeSection === 'overview' || activeSection === 'analytics' || activeSection === 'conversations') {
     return activeSection;
   }
-  if (activeSection === 'bookings' || activeSection === 'activity') return 'bookings';
+  if (activeSection === 'bookings') return 'bookings';
   return 'businesses';
 }
 
@@ -168,8 +170,10 @@ export default function DashboardShell({
   onBusinessChange,
   onSignOut,
   initialActiveSection = 'overview',
+  notificationUnreadCount = 0,
   children,
 }: DashboardShellProps) {
+  const { locale, setLocale, t } = useDashboardI18n();
   const [activeSection, setActiveSection] = useState<DashboardSectionId>(initialActiveSection);
   const [showScrollToTop, setShowScrollToTop] = useState(false);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -274,7 +278,7 @@ export default function DashboardShell({
           Odinlink
         </button>
 
-        <nav className="sidebar-nav" aria-label="Dashboard sections">
+        <nav className="sidebar-nav" aria-label={t('Dashboard sections')}>
           {NAV_ITEMS.map((item, index) => (
             <div key={item.id}>
               {'group' in item && item.group && (
@@ -282,7 +286,7 @@ export default function DashboardShell({
                   className="nav-group-label"
                   style={index > 0 ? { marginTop: 8 } : undefined}
                 >
-                  {item.group}
+                  {t(item.group)}
                 </div>
               )}
               <a
@@ -291,7 +295,12 @@ export default function DashboardShell({
                 aria-current={activeSection === item.id ? 'page' : undefined}
                 onClick={(event) => handleSectionClick(event, item.id)}
               >
-                {item.label}
+                <span>{t(item.label)}</span>
+                {item.id === 'notification-center' && notificationUnreadCount > 0 && (
+                  <span className="nav-badge" aria-label={t('{count} unread notifications', { count: notificationUnreadCount })}>
+                    {notificationUnreadCount > 99 ? '99+' : notificationUnreadCount}
+                  </span>
+                )}
               </a>
             </div>
           ))}
@@ -300,15 +309,15 @@ export default function DashboardShell({
         <div className="sidebar-footer">
           <div className="avatar">{businessName?.slice(0, 1).toUpperCase() || 'B'}</div>
           <div>
-            <div className="sidebar-user-name">{businessName || 'Select business'}</div>
-            <div className="sidebar-user-role">Tenant dashboard</div>
+            <div className="sidebar-user-name" translate="no">{businessName || t('Select business')}</div>
+            <div className="sidebar-user-role">{t('Tenant dashboard')}</div>
           </div>
         </div>
       </aside>
 
       <div className="main">
         <div className="topbar">
-          <button className="mobile-brand shell-button" type="button" onClick={() => onNavigate('/')} aria-label="Open OdinLink landing page">
+          <button className="mobile-brand shell-button" type="button" onClick={() => onNavigate('/')} aria-label={t('Open OdinLink landing page')}>
             <svg width="30" height="30" viewBox="0 0 36 36" fill="none">
               <rect width="36" height="36" rx="10" fill="#3ddc84" />
               <path d="M10 22 L18 10 L26 22" stroke="#060a07" strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round" />
@@ -318,7 +327,7 @@ export default function DashboardShell({
             <span>Odinlink</span>
           </button>
 
-          <span className="topbar-title">{title}</span>
+          <span className="topbar-title">{t(title)}</span>
 
           <div className="topbar-search">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9">
@@ -326,15 +335,15 @@ export default function DashboardShell({
               <path d="M20 20L16.65 16.65" />
             </svg>
             <select
-              aria-label="Selected business"
+              aria-label={t('Selected business')}
               value={selectedBusinessId || ''}
               onChange={(event) => handleBusinessSelection(event.target.value)}
             >
               {businesses.length === 0 ? (
-                <option value="">No businesses</option>
+                <option value="">{t('No businesses')}</option>
               ) : (
                 businesses.map((business) => (
-                  <option key={business.id} value={business.id}>
+                  <option key={business.id} value={business.id} translate="no">
                     {business.name}
                   </option>
                 ))
@@ -343,11 +352,23 @@ export default function DashboardShell({
           </div>
 
           <div className="topbar-right">
+            <label className="dashboard-language-control">
+              <span>{t('Dashboard language')}</span>
+              <select
+                aria-label={t('Dashboard language')}
+                value={locale}
+                onChange={(event) => setLocale(event.target.value as typeof locale)}
+              >
+                {DASHBOARD_LOCALE_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value} lang={option.value}>{option.label}</option>
+                ))}
+              </select>
+            </label>
             <button className="topbar-btn ghost" type="button" onClick={() => void onSignOut?.()}>
-              Sign out
+              {t('Sign out')}
             </button>
             <button className="topbar-btn ghost" type="button" onClick={() => onNavigate('/')}>
-              Landing
+              {t('Landing')}
             </button>
           </div>
         </div>
@@ -355,7 +376,7 @@ export default function DashboardShell({
         <div className="content" ref={contentRef}>{children}</div>
 
         {showScrollToTop && (
-          <button className="scroll-to-top" type="button" aria-label="Back to top" onClick={handleScrollToTop}>
+          <button className="scroll-to-top" type="button" aria-label={t('Back to top')} onClick={handleScrollToTop}>
             <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
               <path d="m6 15 6-6 6 6" />
             </svg>
@@ -363,7 +384,7 @@ export default function DashboardShell({
         )}
       </div>
 
-      <nav className="mobile-bottom-nav" aria-label="Mobile dashboard navigation">
+      <nav className="mobile-bottom-nav" aria-label={t('Mobile dashboard navigation')}>
         {MOBILE_NAV_ITEMS.map((item) => (
           <a
             key={item.id}
@@ -373,7 +394,7 @@ export default function DashboardShell({
             onClick={(event) => handleSectionClick(event, item.id)}
           >
             <MobileNavIcon icon={item.icon} />
-            <span>{item.label}</span>
+            <span>{t(item.label)}</span>
           </a>
         ))}
       </nav>

@@ -1,3 +1,5 @@
+import type { BusinessToneConfig } from '../ai/tone-controls';
+
 export interface Business {
   id: string;
   name: string;
@@ -5,6 +7,7 @@ export interface Business {
   timezone?: string;
   language?: string;
   systemPrompt?: string;
+  toneConfig?: BusinessToneConfig;
   createdAt?: string;
   updatedAt?: string;
 }
@@ -53,4 +56,3 @@ export interface ChannelConnection {
   maskedCredential?: string;
   updatedAt?: string;
 }
-

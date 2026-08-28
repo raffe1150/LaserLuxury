@@ -38,6 +38,9 @@ export type AnalyticsReconciliationReport = {
   coverage: {
     exactIdempotencyDuplicates: 'checked' | 'partial_scan';
     bookingCreated: 'deferred_missing_appointment_index';
+    bookingCompleted: 'checked' | 'partial_scan';
+    authoritativeAppointments: 'checked' | 'partial_scan';
+    funnelOrdering: 'checked_when_conversation_correlated' | 'partial_scan';
     bookingCancelled: 'not_deterministically_reconcilable';
     bookingRescheduled: 'latest_event_only';
     customerMessageReceived: 'internal_quality_only';
@@ -93,6 +96,10 @@ export type ReconciliationAnalyticsEventRow = {
 export type ReconciliationAppointmentRow = {
   id: unknown;
   business_id: unknown;
+  service: unknown;
+  platform: unknown;
+  status: unknown;
+  created_at: unknown;
   start_time: unknown;
 };
 

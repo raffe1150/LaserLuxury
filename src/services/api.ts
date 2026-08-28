@@ -1,16 +1,33 @@
 import type {
   Booking,
+  BookingPage,
+  BookingView,
+  ActivityCategory,
+  ActivityPage,
   Business,
   BusinessStats,
   Conversation,
+  ConversationPage,
+  ConversationThreadPage,
   DashboardData,
   IntegrationHealth,
+  IntegrationKey,
+  NotificationFilter,
+  NotificationPage,
   PlatformPerformance,
   UsageInfo,
 } from '../types/dashboard';
 import { getBrowserSupabaseClient, getCurrentAccessToken } from '../auth/supabase-browser';
+import type {
+  AnalyticsReconciliationStatus,
+  BusinessAnalyticsApiRequest,
+  BusinessAnalyticsApiResponse,
+} from '../analytics/api-contracts';
+import type { DashboardTodaySummary } from '../dashboard/contracts';
+import { normalizeBusinessToneConfig } from '../ai/tone-controls';
+import type { ConversationActivityRange, ConversationStatusFilter } from '../conversations/inbox';
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || '';
+const API_BASE = import.meta.env?.VITE_API_BASE_URL || '';
 
 export class ApiRequestError extends Error {
   readonly status: number;
@@ -92,6 +109,15 @@ const defaultUsage: UsageInfo = {
   limit: 0,
 };
 
+function analyticsWindowQuery(window: BusinessAnalyticsApiRequest): string {
+  const query = new URLSearchParams({ window: window.preset });
+  if (window.preset === 'custom') {
+    query.set('startDate', window.startDate);
+    query.set('endDate', window.endDate);
+  }
+  return query.toString();
+}
+
 export const api = {
   getBusinesses: async () => normalizeBusinesses(await request<unknown>('/api/businesses')),
   createBusiness: (payload: Partial<Business>) =>
@@ -115,12 +141,75 @@ export const api = {
     }),
   getBusinessStats: (businessId: string) =>
     request<BusinessStats>(`/api/businesses/${businessId}/stats`),
-  getIntegrationHealth: (businessId: string) =>
-    request<IntegrationHealth[]>(`/api/businesses/${businessId}/integrations/health`),
+  getBusinessAnalyticsSummary: (
+    businessId: string,
+    window: BusinessAnalyticsApiRequest,
+    signal?: AbortSignal,
+  ) => request<BusinessAnalyticsApiResponse>(
+    `/api/businesses/${encodeURIComponent(businessId)}/analytics/summary?${analyticsWindowQuery(window)}`,
+    { signal },
+  ),
+  getBusinessAnalyticsReconciliation: (
+    businessId: string,
+    window: BusinessAnalyticsApiRequest,
+  ) => request<AnalyticsReconciliationStatus>(
+    `/api/businesses/${encodeURIComponent(businessId)}/analytics/reconciliation?${analyticsWindowQuery(window)}`,
+  ),
+  getDashboardSummary: (businessId: string, signal?: AbortSignal) =>
+    request<DashboardTodaySummary>(
+      `/api/businesses/${encodeURIComponent(businessId)}/dashboard/summary`,
+      { signal },
+    ),
+  getIntegrationHealth: (businessId: string, signal?: AbortSignal) =>
+    request<IntegrationHealth[]>(`/api/businesses/${businessId}/integrations/health`, { signal }),
+  refreshIntegrationHealth: (
+    businessId: string,
+    integration: IntegrationKey,
+    force = false,
+    signal?: AbortSignal,
+  ) => request<{ success: boolean; data: IntegrationHealth }>(
+    `/api/businesses/${encodeURIComponent(businessId)}/integrations/health/refresh`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ integration, force }),
+      signal,
+    },
+  ),
   getPlatformPerformance: (businessId: string) =>
     request<PlatformPerformance>(`/api/businesses/${businessId}/performance`),
+  getConversationPage: (
+    businessId: string,
+    options: { limit?: number; cursor?: number; search?: string; channel?: string; status?: ConversationStatusFilter; range?: ConversationActivityRange } = {},
+    signal?: AbortSignal,
+  ) => {
+    const query = new URLSearchParams();
+    if (options.limit) query.set('limit', String(options.limit));
+    if (options.cursor) query.set('cursor', String(options.cursor));
+    if (options.search) query.set('search', options.search);
+    if (options.channel && options.channel !== 'all') query.set('channel', options.channel);
+    if (options.status && options.status !== 'all') query.set('status', options.status);
+    if (options.range && options.range !== 'recent') query.set('range', options.range);
+    return request<ConversationPage>(
+      `/api/businesses/${encodeURIComponent(businessId)}/conversations?${query}`,
+      { signal },
+    );
+  },
   getConversations: (businessId: string) =>
-    request<Conversation[]>(`/api/businesses/${businessId}/conversations`),
+    api.getConversationPage(businessId, { limit: 50 }).then((page) => page.items),
+  getConversationThread: (
+    businessId: string,
+    conversationId: string,
+    options: { limit?: number; cursor?: number } = {},
+    signal?: AbortSignal,
+  ) => {
+    const query = new URLSearchParams();
+    if (options.limit) query.set('limit', String(options.limit));
+    if (options.cursor) query.set('cursor', String(options.cursor));
+    return request<ConversationThreadPage>(
+      `/api/businesses/${encodeURIComponent(businessId)}/conversations/${encodeURIComponent(conversationId)}?${query}`,
+      { signal },
+    );
+  },
   markConversationRead: (businessId: string, conversationId: string) =>
     request<{ success: boolean; updatedCount?: number }>(
       `/api/businesses/${businessId}/conversations/${encodeURIComponent(
@@ -135,7 +224,7 @@ export const api = {
     conversationId: string,
     text: string,
   ) =>
-    request<{ success: boolean; messageId?: string }>(
+    request<{ success: boolean; messageId?: string; createdAt?: string }>(
       `/api/businesses/${businessId}/conversations/${encodeURIComponent(
         conversationId,
       )}/messages`,
@@ -146,6 +235,60 @@ export const api = {
     ),
   getBookings: (businessId: string) =>
     request<Booking[]>(`/api/businesses/${businessId}/bookings`),
+  getBookingPage: (
+    businessId: string,
+    options: { limit?: number; cursor?: number; view?: BookingView; search?: string; timezone?: string } = {},
+    signal?: AbortSignal,
+  ) => {
+    const query = new URLSearchParams();
+    query.set('limit', String(options.limit || 25));
+    query.set('view', options.view || 'upcoming');
+    if (options.cursor) query.set('cursor', String(options.cursor));
+    if (options.search) query.set('search', options.search);
+    if (options.timezone) query.set('timezone', options.timezone);
+    return request<BookingPage>(
+      `/api/businesses/${encodeURIComponent(businessId)}/bookings?${query}`,
+      { signal },
+    );
+  },
+  getActivityPage: (
+    businessId: string,
+    options: { limit?: number; cursor?: number; category?: 'all' | ActivityCategory } = {},
+    signal?: AbortSignal,
+  ) => {
+    const query = new URLSearchParams();
+    query.set('limit', String(options.limit || 30));
+    if (options.cursor) query.set('cursor', String(options.cursor));
+    if (options.category && options.category !== 'all') query.set('category', options.category);
+    return request<ActivityPage>(
+      `/api/businesses/${encodeURIComponent(businessId)}/activity?${query}`,
+      { signal },
+    );
+  },
+  getNotificationPage: (
+    businessId: string,
+    options: { limit?: number; cursor?: number; filter?: NotificationFilter } = {},
+    signal?: AbortSignal,
+  ) => {
+    const query = new URLSearchParams();
+    query.set('limit', String(options.limit || 25));
+    if (options.cursor) query.set('cursor', String(options.cursor));
+    if (options.filter && options.filter !== 'all') query.set('filter', options.filter);
+    return request<NotificationPage>(
+      `/api/businesses/${encodeURIComponent(businessId)}/notifications?${query}`,
+      { signal },
+    );
+  },
+  markNotificationRead: (businessId: string, notificationId: string) =>
+    request<{ success: boolean; unreadCount: number }>(
+      `/api/businesses/${encodeURIComponent(businessId)}/notifications/${encodeURIComponent(notificationId)}/read`,
+      { method: 'PUT' },
+    ),
+  markAllNotificationsRead: (businessId: string) =>
+    request<{ success: boolean; unreadCount: number }>(
+      `/api/businesses/${encodeURIComponent(businessId)}/notifications/read-all`,
+      { method: 'PUT' },
+    ),
   getUsage: (businessId: string) =>
     request<UsageInfo>(`/api/businesses/${businessId}/usage`),
   getCancellationSettings: (businessId: string) =>
@@ -191,7 +334,7 @@ function normalizeBusinesses(response: unknown): Business[] {
   return rows.map(normalizeBusiness);
 }
 
-function normalizeBusiness(row: unknown): Business {
+export function normalizeBusiness(row: unknown): Business {
   const raw = (row || {}) as Record<string, unknown>;
   const item = ((raw.business || raw.data || raw) || {}) as Record<string, unknown>;
   const id = stringValue(item.id || item.business_id || item.businessId);
@@ -204,11 +347,52 @@ function normalizeBusiness(row: unknown): Business {
     name,
     industry: optionalString(item.industry || item.business_type || item.businessType),
     timezone: optionalString(item.timezone || item.time_zone || item.timeZone),
+    workingHours:
+      item.working_hours && typeof item.working_hours === 'object'
+        ? item.working_hours as Business['workingHours']
+        : item.workingHours && typeof item.workingHours === 'object'
+          ? item.workingHours as Business['workingHours']
+          : undefined,
     language: optionalString(item.language || item.default_language || item.defaultLanguage) as Business['language'],
     plan: optionalString(item.plan || item.subscription_plan || item.subscriptionPlan),
     systemPrompt: optionalString(
       item.custom_system_prompt || item.system_prompt || item.systemPrompt || item.prompt,
     ),
+    toneConfig: normalizeBusinessToneConfig(item.ai_tone_config || item.toneConfig || item.tone_config),
+    services: Array.isArray(item.services)
+      ? item.services
+          .filter(
+            (service): service is Record<string, unknown> =>
+              Boolean(service) &&
+              typeof service === 'object' &&
+              !Array.isArray(service),
+          )
+          .map((service) => ({
+            name: stringValue(service.name).trim(),
+            durationMinutes: Number(
+              service.durationMinutes ?? service.duration_minutes ?? 0,
+            ),
+            price:
+              service.price === null ||
+              service.price === undefined ||
+              service.price === ''
+                ? null
+                : Number(service.price),
+            currency: stringValue(service.currency || 'SEK')
+              .trim()
+              .toUpperCase(),
+            active:
+              service.active === undefined
+                ? true
+                : Boolean(service.active),
+          }))
+          .filter(
+            (service) =>
+              Boolean(service.name) &&
+              Number.isFinite(service.durationMinutes) &&
+              service.durationMinutes > 0,
+          )
+      : undefined,
     calendarId: optionalString(item.calendar_id || item.calendarId || item.google_calendar_id || item.googleCalendarId),
     bokadirektBusinessId: optionalString(item.bokadirekt_business_id || item.bokadirektBusinessId),
     telegramToken: optionalString(item.telegram_bot_token || item.telegram_token || item.telegramToken),
@@ -234,14 +418,17 @@ function normalizeBusiness(row: unknown): Business {
   };
 }
 
-function toBackendBusinessPayload(payload: Partial<Business>): Record<string, unknown> {
+export function toBackendBusinessPayload(payload: Partial<Business>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   setAliases(out, ['businessName', 'business_name', 'name'], payload.name);
   setAliases(out, ['businessType', 'business_type', 'industry'], payload.industry);
   setAliases(out, ['timezone', 'time_zone'], payload.timezone);
+  setAliases(out, ['workingHours', 'working_hours'], payload.workingHours);
+  setAliases(out, ['services'], payload.services);
   setAliases(out, ['language', 'default_language'], payload.language);
   setAliases(out, ['plan', 'subscription_plan'], payload.plan);
   setAliases(out, ['systemPrompt', 'custom_system_prompt', 'system_prompt'], payload.systemPrompt);
+  setAliases(out, ['ai_tone_config'], payload.toneConfig);
   setAliases(out, ['calendarId', 'calendar_id', 'google_calendar_id'], payload.calendarId);
   setAliases(out, ['bokadirektBusinessId', 'bokadirekt_business_id'], payload.bokadirektBusinessId);
   setAliases(out, ['telegramToken', 'telegram_bot_token', 'telegram_token'], payload.telegramToken, true);
@@ -309,16 +496,20 @@ export async function loadDashboardData(selectedBusinessId?: string): Promise<Da
       bookings: [],
       usage: defaultUsage,
       bookingsChart: [],
+      dashboardSummary: { status: 'unavailable' },
     };
   }
 
-  const [stats, health, performance, conversations, bookings, usage] = await Promise.all([
+  const [stats, health, performance, conversations, bookings, usage, dashboardSummary] = await Promise.all([
     api.getBusinessStats(selectedBusiness.id).catch(() => emptyStats),
     api.getIntegrationHealth(selectedBusiness.id).catch(() => defaultHealth),
     api.getPlatformPerformance(selectedBusiness.id).catch(() => defaultPerformance),
     api.getConversations(selectedBusiness.id).catch(() => []),
     api.getBookings(selectedBusiness.id).catch(() => []),
     api.getUsage(selectedBusiness.id).catch(() => defaultUsage),
+    api.getDashboardSummary(selectedBusiness.id)
+      .then((summary) => ({ status: 'available' as const, data: summary }))
+      .catch(() => ({ status: 'unavailable' as const })),
   ]);
 
   return {
@@ -331,6 +522,7 @@ export async function loadDashboardData(selectedBusinessId?: string): Promise<Da
     bookings,
     usage,
     bookingsChart: buildBookingsChart(bookings),
+    dashboardSummary,
   };
 }
 

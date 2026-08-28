@@ -36,19 +36,20 @@ function ratio(counts: ActivityCounts): number | null {
 
 function addEvent(counts: ActivityCounts, eventName: unknown): void {
   if (eventName === 'customer_message_received') counts.messagesReceived += 1;
-  else if (eventName === 'booking_created') counts.bookingsCreated += 1;
+  else if (eventName === 'booking_created' || eventName === 'booking_completed') counts.bookingsCreated += 1;
   else if (eventName === 'booking_rescheduled') counts.bookingsRescheduled += 1;
   else if (eventName === 'booking_cancelled') counts.bookingsCancelled += 1;
 }
 
 function addBookingEvent(counts: BookingCounts, eventName: unknown): void {
-  if (eventName === 'booking_created') counts.bookingsCreated += 1;
+  if (eventName === 'booking_created' || eventName === 'booking_completed') counts.bookingsCreated += 1;
   else if (eventName === 'booking_rescheduled') counts.bookingsRescheduled += 1;
   else if (eventName === 'booking_cancelled') counts.bookingsCancelled += 1;
 }
 
 function isBookingEvent(eventName: unknown): boolean {
   return eventName === 'booking_created'
+    || eventName === 'booking_completed'
     || eventName === 'booking_rescheduled'
     || eventName === 'booking_cancelled';
 }

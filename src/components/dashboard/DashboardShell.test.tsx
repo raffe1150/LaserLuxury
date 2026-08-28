@@ -13,11 +13,12 @@ import DashboardShell, {
   type DashboardSectionId,
 } from './DashboardShell';
 
-function renderShell(activeSection: DashboardSectionId): string {
+function renderShell(activeSection: DashboardSectionId, notificationUnreadCount = 0): string {
   return renderToStaticMarkup(
     <DashboardShell
       title="Dashboard"
       initialActiveSection={activeSection}
+      notificationUnreadCount={notificationUnreadCount}
       onNavigate={() => undefined}
     >
       <section id="overview">Dashboard</section>
@@ -71,9 +72,13 @@ function runTests() {
   assert.doesNotMatch(notificationsMarkup, /href="#usage-statistics" aria-current="page"/);
 
   assert.notEqual(usageMarkup, notificationsMarkup, 'changing sections must update aria-current');
+  const notificationsWithBadge = renderShell('notification-center', 7);
+  assert.match(notificationsWithBadge, /aria-label="7 unread notifications"/);
+  assert.match(notificationsWithBadge, />7<\/span>/);
+  assert.doesNotMatch(notificationsMarkup, /unread notifications/);
   assert.equal(getMobileActiveSection('usage-statistics'), 'businesses');
   assert.equal(getMobileActiveSection('notification-center'), 'businesses');
-  assert.equal(getMobileActiveSection('activity'), 'bookings');
+  assert.doesNotMatch(notificationsMarkup, /href="#activity"|>Activity<\/span>/);
 
   assert.equal(
     resolveActiveDashboardSection([

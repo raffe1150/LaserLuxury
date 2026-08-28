@@ -54,10 +54,104 @@ export function getBookingPhase(pending?: Record<string, any> | null): BookingPh
 }
 
 export function isPositiveBookingConfirmation(text: string): boolean {
-  const raw = String(text || '').normalize('NFKC').toLowerCase()
-    .replace(/[!?.،,؛]+/gu, ' ').replace(/\s+/g, ' ').trim();
-  if (!raw || /\b(?:no|not|nej|inte|maybe|kanske|na|nemikham|نه|خیر|شاید)\b/iu.test(raw)) return false;
-  return /^(?:yes|yes please|yeah|yep|sure|book it|that works|ja|ja tack|ja gärna|japp|absolut|boka den|det blir bra|bale|baleh|bale lotfan|baleh lotfan|are|khobe|bashe|ok|okay|okej|بله|بله لطفا|آره|اره|باشه|حتما)$/iu.test(raw);
+  const raw = String(text || '').normalize('NFKD').toLowerCase()
+    .replace(/[\u0300-\u036f\u064B-\u065F\u0670]/gu, '')
+    .replace(/[يى]/gu, 'ی').replace(/ك/gu, 'ک').replace(/\u200c/gu, ' ')
+    .replace(/[^\p{L}\p{N}]+/gu, ' ').replace(/\s+/g, ' ').trim();
+  if (!raw) return false;
+
+  // A semantic slot reference is confirmation only when it contains no competing
+  // instruction. The transition below separately requires one selected owned slot.
+  const conflictingIntent = [
+    /(?:^|\s)(?:no|not|dont|do not|maybe|perhaps|unsure|nej|inte|kanske|osaker|nein|nicht|vielleicht|unsicher|quizas|tal vez|na|nemikham|shayad)(?:\s|$)/u,
+    /(?:^|\s)(?:نه|خیر|نکنید|نکن|شاید|نمیدانم|مطمئن نیستم|لا|ليس|ربما|غير متاكد)(?:\s|$)/u,
+    /\b(?:cancel|cancellation|avboka|stornieren|cancelar|cancela|laghv)\b/u,
+    /(?:لغو|کنسل|ألغ|الغ)/u,
+    /\b(?:reschedule|move|change|another|different|instead|byta|andra|flytta|ann?an|istallet|verschieben|andern|stattdessen|cambiar|cambio|otra|otro|diferente|taghir|avaz|dige)\b/u,
+    /(?:تغییر|عوض|دیگر|دیگه|روزش|بدلا|بدلاً)/u,
+    /\b(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|mandag|tisdag|onsdag|torsdag|fredag|lordag|sondag|montag|dienstag|mittwoch|donnerstag|freitag|samstag|sonntag|lunes|martes|miercoles|jueves|viernes|sabado|domingo|jomeh?)\b/u,
+    /(?:دوشنبه|سه شنبه|چهارشنبه|پنجشنبه|جمعه|شنبه|الاحد|الاثنين|الثلاثاء|الاربعاء|الخميس|الجمعة|السبت)/u,
+    /\b\d{1,2}(?:(?:\s|:|\.)\d{2})?(?:\s*(?:am|pm|uhr))?\b/u,
+    /\b(?:laser|laserbehandlung|consultation|konsultation|consulta|tratamiento|behandlung|service)\b/u,
+    /(?:لیزر|مشاوره|خدمة|خدمه)/u,
+    /\b(?:new appointment|new booking|ny tid|neuer termin|nueva cita|nueva reserva|vaght jadid)\b/u,
+    /(?:وقت جدید|رزرو جدید|موعد جديد|حجز جديد)/u,
+  ];
+  if (conflictingIntent.some(pattern => pattern.test(raw))) return false;
+
+  const simpleAffirmative = /^(?:yes|yes please|yeah|yep|sure|correct|confirm|confirm it|book it|book that one|that works|that time|ok|okay|ja|ja tack|ja garna|ja bitte|ja gerne|japp|absolut|gerne|boka den|det blir bra|si|si por favor|si claro|claro|نعم|نعم من فضلك|اجل|موافق|بله|بله لطفا|اره|باشه|حتما|bale|baleh|bale lotfan|baleh lotfan|are|khobe|bashe|hamoon vaght|hamon vaght|همون وقت|همان وقت)$/u;
+  if (simpleAffirmative.test(raw)) return true;
+
+  const affirmativeWithPolitenessOnly = /^(?:yes|yeah|sure|ja|japp|si|claro|نعم|اجل|موافق|بله|اره|باشه|bale|baleh|are|bashe)(?: please| thanks| thank you| tack| garna| snalla| danke| gerne| bitte| gracias| por favor| شکرا| من فضلک| مرسی| ممنون| لطفا| متشکرم| سپاس| mersi| merci| mamnoon| mamnun| lotfan| sepas)+$/u;
+  if (affirmativeWithPolitenessOnly.test(raw)) return true;
+
+  const affirmativeAgreement = [
+    /^ja(?: det)? (?:gar )?(?:fint|bra)(?: for mig)?$/u,
+    /^yes (?:that )?(?:works|is fine)(?: for me)?$/u,
+    /^ja (?:das )?(?:passt|ist gut)(?: fur mich)?$/u,
+    /^si (?:esta bien|me va bien)(?: para mi)?$/u,
+    /^(?:نعم|اجل|موافق) (?:هذا )?(?:مناسب|جيد)(?: لی)?$/u,
+    /^(?:بله|اره|باشه) (?:خوبه|مناسبه|برای من خوبه)$/u,
+    /^(?:bale|are|bashe) (?:khube|monasebe|baraye man khube)$/u,
+  ];
+  if (affirmativeAgreement.some(pattern => pattern.test(raw))) return true;
+
+  // Natural confirmations often combine an affirmative with a short positive
+  // reaction or a question about the information needed to finish. The conflict
+  // guard above has already rejected changed dates, times, services and operations,
+  // so these are safe continuations of one authoritative selected slot.
+  const affirmativeLead = /^(?:yes|yeah|yep|sure|ja|japp|absolut|si|claro|نعم|اجل|موافق|بله|اره|باشه|bale|baleh|are|bashe)(?: please| tack| garna| لطفا)?(?=\s|$)/u;
+  const confirmationContinuation =
+    /\b(?:book|confirm|finalize|finish|information|details|great|perfect|wonderful|boka|bekrafta|slutfora|uppgifter|information|jattebra|perfekt|utmärkt|utmarkt|reserva|confirma|finalizar|reservar|buchen|bestatigen|abschliessen)\b/u.test(raw) ||
+    /(?:رزرو|تایید|تکمیل|اطلاعات|عالی|خیلی خوب|احجز|تأكيد|إكمال|معلومات)/u.test(raw);
+
+  // A customer may confirm the authoritative selected slot and provide
+  // contact details in the same turn, for example:
+  // "Yes, my name is Ada 0701234567".
+  //
+  // The conflicting-intent guard above still wins first, so a message that
+  // changes date, time, service, cancellation or reschedule intent cannot be
+  // misclassified as confirmation merely because it also contains contact data.
+  const contactContinuation =
+    /\b(?:my name is|name is|i am|i'm|mein name ist|ich hei(?:ss|ß)e|me llamo|mi nombre es|jag heter|mitt namn är|mitt namn ar|phone|phone number|telephone|telefon|telefonnummer|telefono|numero de telefono)\b/u.test(raw) ||
+    /(?:اسم من|نام من|شماره من|شماره تلفن|اسمي|رقم هاتفي|رقم الهاتف)/u.test(raw) ||
+    /(?:^|\s)\+?\d(?:[\s-]?\d){6,14}(?:\s|$)/u.test(raw);
+
+  if (
+    affirmativeLead.test(raw) &&
+    (confirmationContinuation || contactContinuation)
+  ) return true;
+
+  const currentSlotContinuation = [
+    // English
+    /^(?:yes(?: please)? )?(?:please )?(?:book|confirm) it(?: for me)?$/u,
+    /^(?:yes(?: please)? )?(?:please )?(?:book|confirm) (?:that|this|the same|same|the proposed|proposed|the selected|selected) (?:time|slot|appointment)$/u,
+    /^yes (?:please )?(?:confirm|book) that appointment$/u,
+    /^yes (?:that|the same) time works(?: please)? (?:book|confirm) it$/u,
+    /^please (?:book|confirm) (?:that|this|the same|same) (?:time|slot|appointment)$/u,
+    // Swedish
+    /^ja(?: tack| garna)? (?:boka|bekrafta) (?:den|det)(?: at mig)?$/u,
+    /^ja(?: tack| garna)? boka (?:den tiden|samma tid|den)$/u,
+    /^(?:den|samma) tiden passar boka den(?: garna)?$/u,
+    // German
+    /^ja(?: bitte)? buchen sie (?:diese zeit|diesen termin)$/u,
+    /^ja buchen sie (?:diese zeit|diesen termin)$/u,
+    /^ja der termin passt bitte buchen$/u,
+    // Spanish (accents are removed during normalization)
+    /^si(?: por favor)? reserva (?:esa hora|esa cita)$/u,
+    /^si (?:esa hora|esa cita) esta bien (?:reserva|reservala|confirmala)$/u,
+    // Arabic
+    /^نعم احجز (?:ذلک|نفس|هذا) الموعد(?: من فضلک)?$/u,
+    /^نعم هذا الموعد مناسب احجزه$/u,
+    // Persian
+    /^(?:بله|اره|باشه)(?: لطفا)? (?:ان|آن|اون|این|همان|همون) را برای من رزرو (?:کنید|کن)$/u,
+    /^(?:بله|اره|باشه)(?: لطفا)?(?: برای)? (?:همان|همون|همین|این) (?:زمان|ساعت|وقت)(?: را| رو)?(?: رزرو (?:کنید|کن))?$/u,
+    /^(?:همان|همون|همین|این) (?:زمان|ساعت|وقت) (?:را|رو) رزرو (?:کنید|کن)$/u,
+    // Transliterated Persian / Finglish
+    /^(?:bale|baleh|are|bashe)(?: lotfan)?(?: baraye)? (?:hamoon|hamon) (?:saat|vaght)(?: ro)?(?: rezerv kon(?:id)?)?$/u,
+    /^(?:hamoon|hamon) (?:saat|vaght) ro rezerv kon(?:id)?$/u,
+  ];
+  return currentSlotContinuation.some(pattern => pattern.test(raw));
 }
 
 export function beginBookingFinalization(pending: Record<string, any>): boolean {
@@ -159,6 +253,9 @@ export function decideBookingTransition(pending: Record<string, any>, latest: No
   const changed = replaced.date || replaced.time || replaced.service;
   const base = { invalidateAvailability: false, runAvailability: false, requestContact: false, executeBooking: false, replyKind: 'none' as const, replaced };
 
+  if (latest.requiresClarification) {
+    return { ...base, handled: true, replyKind: 'booking_clarification', reason: latest.clarificationReason || 'booking_clarification' };
+  }
   if (latest.intent === 'cancellation') return { ...base, handled: false, reason: 'explicit_cancellation' };
   if (latest.intent === 'reschedule') return { ...base, handled: false, reason: 'explicit_reschedule' };
   // A new date/service can share the old slot's clock time but must never select
@@ -179,6 +276,14 @@ export function decideBookingTransition(pending: Record<string, any>, latest: No
   if (affirmative && getBookingPhase(pending) === 'awaiting_slot_confirmation' && selectedPendingSlot) {
     return { ...base, handled: true, nextState: 'awaiting_contact', selectedSlot: selectedPendingSlot, requestContact: true, reason: 'slot_confirmation_accepted' };
   }
+  if (
+    affirmative &&
+    getBookingPhase(pending) === 'awaiting_slot_selection' &&
+    pending.readOnlyExactAvailabilityInquiry === true &&
+    slots.length === 1
+  ) {
+    return { ...base, handled: true, nextState: 'awaiting_contact', selectedSlot: slots[0], requestContact: true, reason: 'slot_confirmation_accepted' };
+  }
   if (['awaiting_contact', 'failed_recoverable'].includes(getBookingPhase(pending))) {
     return { ...base, handled: false, executeBooking: true, reason: 'contact_submission_to_verified_engine' };
   }
@@ -198,6 +303,7 @@ export function applyBookingTransition(pending: Record<string, any>, latest: Nor
     request.service = previous.service;
   }
   if (decision.invalidateAvailability) Object.assign(pending, {
+    status: 'awaiting_time_selection',
     offeredSlots: [], ownedOfferedSlots: [], dateTime: null, selectedSlotEnd: null,
     lastAvailabilityConstraintKey: null, operationIdentity: null, lastFailureStage: null, lastRollbackSucceeded: null,
   });

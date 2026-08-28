@@ -1,69 +1,18 @@
-export type DashboardAnalyticsPlatform =
-  | 'telegram'
-  | 'whatsapp'
-  | 'messenger'
-  | 'instagram';
+import type {
+  BusinessAnalyticsApiRequest,
+  BusinessAnalyticsApiResponse,
+} from '../../../analytics/api-contracts';
 
-export type DashboardAnalyticsData = {
-  generatedAt: string;
-  scope: {
-    businessId: number;
-    from: string;
-    to: string;
-    timezone: 'UTC';
-  };
-  completeness: {
-    truncated: boolean;
-    checkedEvents: number;
-    maxEvents: number;
-  };
-  summary: {
-    messagesReceived: number;
-    bookingsCreated: number;
-    bookingsRescheduled: number;
-    bookingsCancelled: number;
-    netBookingActivity: number;
-    bookingMessageRatio: number | null;
-  };
-  platforms: Array<{
-    platform: DashboardAnalyticsPlatform;
-    messagesReceived: number;
-    bookingsCreated: number;
-    bookingsRescheduled: number;
-    bookingsCancelled: number;
-    bookingMessageRatio: number | null;
-  }>;
-  services: {
-    rows: Array<{
-      serviceName: string;
-      bookingsCreated: number;
-      bookingsRescheduled: number;
-      bookingsCancelled: number;
-    }>;
-    unattributed: {
-      bookingsCreated: number;
-      bookingsRescheduled: number;
-      bookingsCancelled: number;
-    };
-    truncated: boolean;
-  };
-  daily: Array<{
-    date: string;
-    messagesReceived: number;
-    bookingsCreated: number;
-    bookingsRescheduled: number;
-    bookingsCancelled: number;
-  }>;
-};
+export type DashboardAnalyticsData = BusinessAnalyticsApiResponse;
 
-export type AnalyticsDatePreset = '7d' | '30d' | '90d';
+export type AnalyticsDatePreset = 'today' | '7d' | '30d' | 'custom';
 
 export type DashboardAnalyticsRequest = {
-  businessId: number;
-  from: string;
-  to: string;
+  businessId: string;
+  window: BusinessAnalyticsApiRequest;
 };
 
 export type DashboardAnalyticsAdapter = (
   request: DashboardAnalyticsRequest,
+  signal?: AbortSignal,
 ) => Promise<DashboardAnalyticsData>;

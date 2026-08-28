@@ -9,20 +9,31 @@ import type {
 } from './types';
 
 const SUPPORTED_EVENT_NAMES = new Set([
+  'conversation_started',
+  'assistant_response_sent',
+  'booking_started',
+  'availability_requested',
+  'slot_offered',
+  'slot_selected',
+  'booking_completed',
+  'booking_failed',
+  'booking_abandoned',
   'booking_created',
   'booking_rescheduled',
   'booking_cancelled',
   'customer_message_received',
 ]);
 
-const BOOKING_EVENT_NAMES = new Set([
+const BOOKING_REFERENCE_EVENT_NAMES = new Set([
+  'booking_completed',
   'booking_created',
   'booking_rescheduled',
   'booking_cancelled',
 ]);
 
-const DEFERRED_EVENT_NAMES = new Set(['human_message_sent']);
-const CANONICAL_PLATFORMS = new Set(['telegram', 'whatsapp', 'messenger', 'instagram']);
+const COMPLETION_EVENT_NAMES = new Set(['booking_completed', 'booking_created']);
+const DEFERRED_EVENT_NAMES = new Set(['human_message_sent', 'conversation_resolved']);
+const CANONICAL_PLATFORMS = new Set(['telegram', 'whatsapp', 'messenger', 'instagram', 'website']);
 const OPTIONAL_TEXT_FIELDS = [
   'conversation_id',
   'customer_key',
@@ -58,6 +69,28 @@ const EVENT_CONTRACTS: Record<string, {
   outcome: string;
   sources: ReadonlySet<string>;
 }> = {
+  conversation_started: {
+    category: 'conversation', actor: 'system', outcome: 'started',
+    sources: new Set(['telegram_provider_update', 'whatsapp_webhook', 'messenger_webhook', 'instagram_webhook']),
+  },
+  booking_started: {
+    category: 'booking', actor: 'system', outcome: 'started', sources: new Set(['unified_booking_engine']),
+  },
+  availability_requested: {
+    category: 'booking', actor: 'system', outcome: 'requested', sources: new Set(['unified_booking_engine']),
+  },
+  slot_offered: {
+    category: 'booking', actor: 'system', outcome: 'available', sources: new Set(['unified_booking_engine']),
+  },
+  slot_selected: {
+    category: 'booking', actor: 'system', outcome: 'selected', sources: new Set(['unified_booking_engine']),
+  },
+  booking_completed: {
+    category: 'booking', actor: 'system', outcome: 'success', sources: new Set(['unified_booking_engine']),
+  },
+  booking_failed: {
+    category: 'booking', actor: 'system', outcome: 'failure', sources: new Set(['unified_booking_engine']),
+  },
   booking_created: {
     category: 'booking',
     actor: 'ai',
@@ -83,6 +116,7 @@ const EVENT_CONTRACTS: Record<string, {
     sources: new Set([
       'telegram_polling',
       'telegram_webhook',
+      'telegram_provider_update',
       'whatsapp_webhook',
       'messenger_webhook',
       'instagram_webhook',
@@ -278,7 +312,7 @@ function validateEventRows(input: ReconciliationCheckInput, collector: IssueColl
       }
     }
 
-    if (BOOKING_EVENT_NAMES.has(eventName) && !bookingId) {
+    if (BOOKING_REFERENCE_EVENT_NAMES.has(eventName) && !bookingId) {
       collector.add({ code: 'INVALID_BOOKING_ID', severity: 'error', ...context });
     }
 
@@ -306,7 +340,7 @@ function validateEventRows(input: ReconciliationCheckInput, collector: IssueColl
       } else if (!CANONICAL_PLATFORMS.has(platform)) {
         collector.add({ code: 'NON_CANONICAL_PLATFORM', severity: 'error', ...context });
       }
-      if (text(row.channel).trim() !== 'messaging') {
+      if (text(row.channel).trim() !== platform) {
         collector.add({ code: 'MESSAGE_CHANNEL_INVALID', severity: 'error', ...context });
       }
     } else if (platform && !CANONICAL_PLATFORMS.has(platform)) {
@@ -365,6 +399,7 @@ function validateEventRows(input: ReconciliationCheckInput, collector: IssueColl
 function detectDuplicates(events: ReconciliationAnalyticsEventRow[], collector: IssueCollector): void {
   const exactKeys = new Map<string, ReconciliationAnalyticsEventRow>();
   const created = new Map<string, ReconciliationAnalyticsEventRow>();
+  const completed = new Map<string, ReconciliationAnalyticsEventRow>();
   const cancelled = new Map<string, ReconciliationAnalyticsEventRow>();
   const rescheduled = new Map<string, ReconciliationAnalyticsEventRow>();
 
@@ -384,6 +419,11 @@ function detectDuplicates(events: ReconciliationAnalyticsEventRow[], collector: 
     if (!businessId || !bookingId) continue;
 
     const bookingKey = `${businessId}:${bookingId}`;
+    if (COMPLETION_EVENT_NAMES.has(eventName)) {
+      if (completed.has(bookingKey)) {
+        collector.add({ code: 'DUPLICATE_BOOKING_COMPLETION', severity: 'critical', ...context });
+      } else completed.set(bookingKey, row);
+    }
     if (eventName === 'booking_created') {
       if (created.has(bookingKey)) {
         collector.add({ code: 'DUPLICATE_BOOKING_CREATED', severity: 'error', ...context });
@@ -414,10 +454,11 @@ function reconcileBookings(input: ReconciliationCheckInput, collector: IssueColl
   }
 
   const latestReschedule = new Map<string, ReconciliationAnalyticsEventRow>();
+  const completions = new Set<string>();
 
   for (const event of input.events) {
     const eventName = text(event.event_name).trim();
-    if (!BOOKING_EVENT_NAMES.has(eventName)) continue;
+    if (!BOOKING_REFERENCE_EVENT_NAMES.has(eventName)) continue;
     const businessId = positiveSafeInteger(event.business_id);
     const bookingId = positiveSafeInteger(event.booking_id);
     if (!businessId || !bookingId) continue;
@@ -426,8 +467,10 @@ function reconcileBookings(input: ReconciliationCheckInput, collector: IssueColl
     const context = eventContext(event);
     if (!appointment) {
       collector.add({
-        code: 'BOOKING_EVENT_ORPHAN_UNRESOLVED',
-        severity: 'warning',
+        code: COMPLETION_EVENT_NAMES.has(eventName)
+          ? 'COMPLETION_WITHOUT_AUTHORITATIVE_APPOINTMENT'
+          : 'BOOKING_EVENT_ORPHAN_UNRESOLVED',
+        severity: COMPLETION_EVENT_NAMES.has(eventName) ? 'critical' : 'warning',
         ...context,
         safeContext: { classification: 'possible_deleted_operational_record_or_unknown' },
       });
@@ -446,6 +489,23 @@ function reconcileBookings(input: ReconciliationCheckInput, collector: IssueColl
     }
 
     const bookingKey = `${businessId}:${bookingId}`;
+    if (COMPLETION_EVENT_NAMES.has(eventName)) {
+      completions.add(bookingKey);
+      const eventService = text(event.service_name_snapshot).toLocaleLowerCase();
+      const appointmentService = text(appointment.service).toLocaleLowerCase();
+      if (eventService && appointmentService && eventService !== appointmentService) {
+        collector.add({ code: 'COMPLETION_SERVICE_MISMATCH', severity: 'error', ...context });
+      }
+      const eventChannel = text(event.channel) || text(event.platform);
+      const appointmentChannel = text(appointment.platform);
+      if (eventChannel && appointmentChannel && eventChannel !== appointmentChannel) {
+        collector.add({ code: 'COMPLETION_CHANNEL_MISMATCH', severity: 'error', ...context });
+      }
+      const appointmentStatus = text(appointment.status).toLowerCase();
+      if (appointmentStatus && appointmentStatus !== 'booked' && appointmentStatus !== 'completed') {
+        collector.add({ code: 'COMPLETION_APPOINTMENT_STATUS_MISMATCH', severity: 'critical', ...context });
+      }
+    }
     if (eventName === 'booking_rescheduled') {
       const existing = latestReschedule.get(bookingKey);
       const existingOccurred = existing ? validDateMs(existing.occurred_at) : null;
@@ -478,6 +538,88 @@ function reconcileBookings(input: ReconciliationCheckInput, collector: IssueColl
         severity: 'error',
         ...context,
       });
+    }
+  }
+
+  const fromMs = validDateMs(input.scope.from);
+  const toMs = validDateMs(input.scope.to);
+  for (const appointment of input.appointments) {
+    const appointmentId = positiveSafeInteger(appointment.id);
+    const businessId = positiveSafeInteger(appointment.business_id);
+    const createdAtMs = validDateMs(appointment.created_at);
+    const status = text(appointment.status).toLowerCase();
+    if (
+      !appointmentId
+      || businessId !== input.scope.businessId
+      || createdAtMs === null
+      || fromMs === null
+      || toMs === null
+      || createdAtMs < fromMs
+      || createdAtMs >= toMs
+      || (status !== 'booked' && status !== 'completed')
+    ) continue;
+    if (!completions.has(`${businessId}:${appointmentId}`)) {
+      collector.add({
+        code: input.scanTruncated
+          ? 'APPOINTMENT_COMPLETION_UNVERIFIED_PARTIAL_SCAN'
+          : 'AUTHORITATIVE_APPOINTMENT_MISSING_COMPLETION',
+        severity: input.scanTruncated ? 'info' : 'warning',
+        businessId,
+        bookingId: appointmentId,
+        safeContext: { appointmentStatus: status },
+      });
+    }
+  }
+}
+
+function detectImpossibleFunnelOrdering(
+  events: ReconciliationAnalyticsEventRow[],
+  collector: IssueCollector,
+): void {
+  const order = [
+    'booking_started',
+    'availability_requested',
+    'slot_offered',
+    'slot_selected',
+    'booking_completed',
+  ] as const;
+  const conversations = new Map<string, Map<string, ReconciliationAnalyticsEventRow>>();
+  for (const event of events) {
+    const eventName = text(event.event_name).trim();
+    if (!order.includes(eventName as typeof order[number])) continue;
+    const businessId = positiveSafeInteger(event.business_id);
+    const conversationId = text(event.conversation_id).trim();
+    const occurredAt = validDateMs(event.occurred_at);
+    if (!businessId || !conversationId || occurredAt === null) continue;
+    const key = `${businessId}:${conversationId}`;
+    const stages = conversations.get(key) || new Map<string, ReconciliationAnalyticsEventRow>();
+    const existing = stages.get(eventName);
+    const existingAt = existing ? validDateMs(existing.occurred_at) : null;
+    if (!existing || existingAt === null || occurredAt < existingAt) stages.set(eventName, event);
+    conversations.set(key, stages);
+  }
+
+  for (const stages of conversations.values()) {
+    let previous: ReconciliationAnalyticsEventRow | undefined;
+    for (const eventName of order) {
+      const current = stages.get(eventName);
+      if (!current) continue;
+      if (previous) {
+        const previousAt = validDateMs(previous.occurred_at);
+        const currentAt = validDateMs(current.occurred_at);
+        if (previousAt !== null && currentAt !== null && currentAt < previousAt) {
+          collector.add({
+            code: 'IMPOSSIBLE_FUNNEL_ORDER',
+            severity: 'warning',
+            ...eventContext(current),
+            safeContext: {
+              previousStage: text(previous.event_name),
+              currentStage: eventName,
+            },
+          });
+        }
+      }
+      previous = current;
     }
   }
 }
@@ -517,6 +659,7 @@ export function buildAnalyticsReconciliationReport(
   validateEventRows(input, collector);
   detectDuplicates(input.events, collector);
   reconcileBookings(input, collector);
+  detectImpossibleFunnelOrdering(input.events, collector);
   const volume = buildVolume(input.events);
 
   if (input.scanTruncated) {
@@ -546,6 +689,9 @@ export function buildAnalyticsReconciliationReport(
     coverage: {
       exactIdempotencyDuplicates: input.scanTruncated ? 'partial_scan' : 'checked',
       bookingCreated: 'deferred_missing_appointment_index',
+      bookingCompleted: input.scanTruncated ? 'partial_scan' : 'checked',
+      authoritativeAppointments: input.scanTruncated ? 'partial_scan' : 'checked',
+      funnelOrdering: input.scanTruncated ? 'partial_scan' : 'checked_when_conversation_correlated',
       bookingCancelled: 'not_deterministically_reconcilable',
       bookingRescheduled: 'latest_event_only',
       customerMessageReceived: 'internal_quality_only',

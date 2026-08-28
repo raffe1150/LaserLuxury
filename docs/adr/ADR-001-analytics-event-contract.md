@@ -15,18 +15,28 @@ OdinLink will use a lightweight, append-only analytics event layer. Analytics ev
 
 ### Approved V1 events
 
+- `conversation_started`
+- `assistant_response_sent`
+- `booking_started`
+- `availability_requested`
+- `slot_offered`
+- `slot_selected`
+- `booking_completed`
+- `booking_failed`
+- `booking_abandoned` (only where deterministically knowable)
 - `booking_created`
 - `booking_rescheduled`
 - `booking_cancelled`
 - `customer_message_received`
 - `human_message_sent`
 
+`booking_created`, `human_message_sent`, and the existing lifecycle names remain
+valid for historical compatibility. New verified bookings use
+`booking_completed`.
+
 ### Postponed events
 
-- `conversation_started`
 - `conversation_resolved`
-- `ai_message_sent`
-- `booking_requested`
 - `booking_intent_detected`
 - `lost_opportunity`
 - `recovered_opportunity`
@@ -87,6 +97,13 @@ is inserted.
 12. The frontend reads metrics through authorized backend APIs.
 13. Existing monthly usage tables are not authoritative analytics sources.
 14. Existing operational tables are not replaced.
+15. `channel` stores the canonical transport (`telegram`, `whatsapp`,
+    `instagram`, `messenger`, `website`, or a normalized future channel), not a
+    generic transport family such as `messaging`.
+16. Provider message IDs drive message idempotency; appointment IDs drive
+    completed-booking idempotency; funnel transitions use their stable
+    conversation/constraint/slot identity. The database uniqueness boundary is
+    `(business_id, idempotency_key)`.
 
 ## Consequences
 

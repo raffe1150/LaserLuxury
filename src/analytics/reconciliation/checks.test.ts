@@ -21,7 +21,7 @@ function event(overrides: Partial<ReconciliationAnalyticsEventRow> = {}): Reconc
     booking_id: 10,
     customer_key: null,
     platform: 'telegram',
-    channel: 'messaging',
+    channel: 'telegram',
     service_id: null,
     service_name_snapshot: 'Consultation',
     language: 'en',
@@ -38,7 +38,11 @@ function event(overrides: Partial<ReconciliationAnalyticsEventRow> = {}): Reconc
 }
 
 function appointment(overrides: Partial<ReconciliationAppointmentRow> = {}): ReconciliationAppointmentRow {
-  return { id: 10, business_id: 1, start_time: '2026-08-02T10:00:00.000Z', ...overrides };
+  return {
+    id: 10, business_id: 1, service: 'Consultation', platform: 'telegram',
+    status: 'booked', created_at: '2026-08-01T10:00:00.000Z',
+    start_time: '2026-08-02T10:00:00.000Z', ...overrides,
+  };
 }
 
 function report(input: Partial<ReconciliationCheckInput> = {}) {
@@ -116,7 +120,7 @@ async function runTests(): Promise<void> {
   assert.equal(mismatch.summary.criticalCount > 0, true);
 
   const orphan = report({ events: [event()], appointments: [] });
-  assert.ok(hasCode(orphan, 'BOOKING_EVENT_ORPHAN_UNRESOLVED'));
+  assert.ok(hasCode(orphan, 'COMPLETION_WITHOUT_AUTHORITATIVE_APPOINTMENT'));
 }
 
 {
@@ -138,7 +142,8 @@ async function runTests(): Promise<void> {
 {
   const message = {
     event_name: 'customer_message_received', event_category: 'conversation', booking_id: null,
-    source: 'telegram_webhook', actor: 'customer', outcome: 'received', idempotency_key: 'message:1',
+    source: 'telegram_provider_update', actor: 'customer', outcome: 'received',
+    channel: 'telegram', idempotency_key: 'message:1',
   } satisfies Partial<ReconciliationAnalyticsEventRow>;
   const cases: Array<[string, Partial<ReconciliationAnalyticsEventRow>]> = [
     ['UNSUPPORTED_SCHEMA_VERSION', { schema_version: 2 }],
@@ -200,6 +205,7 @@ function fakeClient(input: {
         },
         gte() { return chain; },
         lte() { return chain; },
+        lt() { return chain; },
         order() { return chain; },
         in(column: string, values: unknown[]) {
           calls.push({ table, method: 'in', column });
@@ -223,6 +229,59 @@ function fakeClient(input: {
     },
   } as unknown as SupabaseClient;
   return { client, calls };
+}
+
+{
+  const completed = (id: string, bookingId = 10) => event({
+    id,
+    event_name: 'booking_completed',
+    actor: 'system',
+    booking_id: bookingId,
+    idempotency_key: `completed:${id}`,
+  });
+  const duplicate = report({
+    events: [
+      completed('00000000-0000-4000-8000-000000000101'),
+      completed('00000000-0000-4000-8000-000000000102'),
+    ],
+    appointments: [appointment()],
+  });
+  assert.ok(hasCode(duplicate, 'DUPLICATE_BOOKING_COMPLETION'));
+
+  const missing = report({ appointments: [appointment()] });
+  assert.ok(hasCode(missing, 'AUTHORITATIVE_APPOINTMENT_MISSING_COMPLETION'));
+
+  const mismatch = report({
+    events: [completed('00000000-0000-4000-8000-000000000103')],
+    appointments: [appointment({ service: 'Other', platform: 'whatsapp' })],
+  });
+  assert.ok(hasCode(mismatch, 'COMPLETION_SERVICE_MISMATCH'));
+  assert.ok(hasCode(mismatch, 'COMPLETION_CHANNEL_MISMATCH'));
+}
+
+{
+  const funnel = (name: string, occurredAt: string, id: number) => event({
+    id: `00000000-0000-4000-8000-${String(id).padStart(12, '0')}`,
+    event_name: name,
+    booking_id: name === 'booking_completed' ? 10 : null,
+    actor: 'system',
+    outcome: name === 'booking_started' ? 'started'
+      : name === 'availability_requested' ? 'requested'
+        : name === 'slot_offered' ? 'available'
+          : name === 'slot_selected' ? 'selected'
+            : 'success',
+    conversation_id: 'correlated-conversation',
+    occurred_at: occurredAt,
+    recorded_at: occurredAt,
+    idempotency_key: `funnel:${id}`,
+  });
+  const impossible = report({
+    events: [
+      funnel('booking_started', '2026-08-01T10:00:00.000Z', 201),
+      funnel('slot_offered', '2026-08-01T09:00:00.000Z', 202),
+    ],
+  });
+  assert.ok(hasCode(impossible, 'IMPOSSIBLE_FUNNEL_ORDER'));
 }
 
 {
@@ -263,8 +322,8 @@ function fakeClient(input: {
   }, fake.client);
   assert.equal(loaded.events.length, 3);
   assert.equal(loaded.scanTruncated, true);
-  assert.equal(fake.calls.filter((call) => call.method === 'range').length, 2);
-  assert.equal(fake.calls.filter((call) => call.method === 'eq' && call.column === 'business_id').length, 2);
+  assert.equal(fake.calls.filter((call) => call.method === 'range').length, 3);
+  assert.equal(fake.calls.filter((call) => call.method === 'eq' && call.column === 'business_id').length, 3);
 }
 
 {
@@ -281,8 +340,10 @@ function fakeClient(input: {
   const empty = report();
   assert.equal(empty.summary.issueCount, 0);
   assert.deepEqual(empty.volume, []);
-  const partial = report({ scanTruncated: true });
+  const partial = report({ scanTruncated: true, appointments: [appointment()] });
   assert.ok(hasCode(partial, 'SCAN_LIMIT_REACHED'));
+  assert.ok(hasCode(partial, 'APPOINTMENT_COMPLETION_UNVERIFIED_PARTIAL_SCAN'));
+  assert.equal(hasCode(partial, 'AUTHORITATIVE_APPOINTMENT_MISSING_COMPLETION'), false);
   assert.equal(partial.coverage.exactIdempotencyDuplicates, 'partial_scan');
 }
 

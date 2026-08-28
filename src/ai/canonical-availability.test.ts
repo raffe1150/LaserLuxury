@@ -51,6 +51,35 @@ assert.equal(between10And12.at(-1), 12 * 60);
 assert.equal(isBlockingCalendarEvent({ summary: 'Display', transparency: 'transparent' }), false);
 assert.equal(isBlockingCalendarEvent({ summary: 'Opening hours' }), false);
 assert.equal(isBlockingCalendarEvent({ summary: 'Customer booking' }), true);
+assert.equal(isCanonicalSlotFree(at('10:00'), 30, [{ summary: 'Closed', start: { date }, end: { date: '2099-08-04' } }], 0), false);
+
+// Exact/range equivalence across supported intervals, durations, overlaps, and inclusivity.
+for (const duration of [15, 30, 45]) {
+  for (const interval of [15, 30]) {
+    const blockingEvents = [event('10:30', '11:00'), event('11:30', '11:45', 'Pending appointment hold')];
+    const range = enumerateCandidateMinutes(9 * 60, 13 * 60, duration, interval, {
+      minMinutes: 10 * 60,
+      maxMinutes: 12 * 60,
+    });
+    const enumeratedFree = range.filter((value) => {
+      const hour = String(Math.floor(value / 60)).padStart(2, '0');
+      const minute = String(value % 60).padStart(2, '0');
+      return isCanonicalSlotFree(at(`${hour}:${minute}`), duration, blockingEvents, 0);
+    });
+    for (const value of range) {
+      const hour = String(Math.floor(value / 60)).padStart(2, '0');
+      const minute = String(value % 60).padStart(2, '0');
+      assert.equal(
+        enumeratedFree.includes(value),
+        isCanonicalSlotFree(at(`${hour}:${minute}`), duration, blockingEvents, 0),
+        `range/exact predicate mismatch duration=${duration} interval=${interval} minute=${value}`,
+      );
+    }
+  }
+}
+
+assert.ok(enumerateCandidateMinutes(540, 780, 30, 15, { boundaryMinutes: 720, boundaryKind: 'inclusive_upper' }).includes(720));
+assert.ok(enumerateCandidateMinutes(540, 780, 30, 15, { boundaryMinutes: 720, boundaryKind: 'inclusive_lower' }).includes(720));
 
 for (const channel of ['instagram', 'messenger', 'whatsapp', 'telegram']) {
   assert.deepEqual(

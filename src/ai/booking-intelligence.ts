@@ -26,6 +26,7 @@ export type NormalizedBookingRequest = {
   date?: {
     kind: 'exact_date' | 'weekday' | 'relative_date' | 'date_range';
     value?: string;
+    endValue?: string;
     weekday?: number;
     relative?: string;
     confidence: 'high' | 'medium' | 'low';
@@ -36,6 +37,12 @@ export type NormalizedBookingRequest = {
   normalizedText: string;
   requiresClarification: boolean;
   clarificationReason?: string;
+  dateConflict?: {
+    kind: 'weekday_explicit_date_conflict';
+    explicitDate: string;
+    weekdayDate: string;
+    requestedWeekday: number;
+  };
 };
 
 export type ConversationInput = {
@@ -114,24 +121,87 @@ export function normalizeTranscribedText(text: string): string {
 }
 
 function detectLanguage(text: string, active?: SupportedLanguage): SupportedLanguage {
+  if (/[أإؤئءةىيك]/u.test(text) || /(?:هل|لديكم|حجز|متاح|الساعة|يوم|الجمعة|سبتمبر)/u.test(text)) return 'ar';
   if (/[\u0600-\u06ff]/u.test(text)) return 'fa';
   if (/\b(?:jag|vill|boka|fredag|före|efter|klockan|mellan|tid)\b/iu.test(text)) return 'sv';
+  if (/\b(?:haben sie|termin|uhr|montag|dienstag|mittwoch|donnerstag|freitag|samstag|sonntag|später|spaeter)\b/iu.test(text)) return 'de';
+  if (/\b(?:tienen|cita|reserva|disponible|viernes|después|despues|septiembre)\b/iu.test(text)) return 'es';
   if (/\b(?:mikham|mitoni|vaght|jomeh?|baraye|ghabl|sate?|moshavereh?|chera|zaban)\b/iu.test(text)) return 'fa';
   return active || 'en';
+}
+
+export function isServiceGuidanceRequest(text: string): boolean {
+  const raw = normalizeConversationText(text).toLowerCase().trim();
+  if (!raw) return false;
+
+  const patterns = [
+    // English
+    /\b(?:which|what)\s+(?:service|treatment)\b.{0,40}\b(?:right|best|suitable|recommend)/iu,
+    /\b(?:help|recommend|advise)\b.{0,40}\b(?:choose|select|service|treatment)\b/iu,
+    /\b(?:don't|do not|not sure|unsure)\b.{0,40}\b(?:which|what)\b.{0,20}\b(?:service|treatment)\b/iu,
+
+    // Swedish
+    /\b(?:vilken|vilka)\s+(?:tjänst|behandling)\b.{0,40}\b(?:passar|bäst|rätt|rekommender)/iu,
+    /\b(?:hjälp|hjälpa|rekommendera|råd)\b.{0,40}\b(?:välja|tjänst|behandling)\b/iu,
+    /\b(?:vet inte|osäker)\b.{0,40}\b(?:vilken|vad)\b.{0,20}\b(?:tjänst|behandling)\b/iu,
+    /\bvet\s+(?:fortfarande\s+)?inte\b.{0,50}\b(?:vilken|vad)\b.{0,28}\b(?:typ\s+av\s+)?(?:tjänst|behandling)\b/iu,
+    /\b(?:behöver|vill)\s+(?:först\s+)?(?:veta|förstå)\b.{0,50}\b(?:vilken|vilka|vad)\b.{0,30}\b(?:tjänst|tjänster|behandling|behandlingar)\b/iu,
+    /\b(?:beskriv|förklara)\b.{0,50}\b(?:tjänst|tjänster|behandling|behandlingar)\b/iu,
+    /\b(?:ge|visa|nämn)\b.{0,24}\b(?:exempel|översikt)\b.{0,32}\b(?:tjänster|behandlingar)\b/iu,
+
+    // German
+    /\b(?:welche|welcher)\s+(?:behandlung|dienstleistung)\b.{0,40}\b(?:passt|geeignet|richtig|empfehl)/iu,
+    /\b(?:helfen|hilfe|empfehlen|beratung)\b.{0,40}\b(?:wählen|behandlung|dienstleistung)\b/iu,
+
+    // Spanish
+    /\b(?:qué|que|cuál|cual)\s+(?:servicio|tratamiento)\b.{0,40}\b(?:mejor|adecuado|conviene|recomiend)/iu,
+    /\b(?:ayuda|ayudar|recomendar|aconsejar)\b.{0,40}\b(?:elegir|servicio|tratamiento)\b/iu,
+
+    // Persian
+    /(?:نمی.?دونم|نمی.?دانم|مطمئن نیستم).{0,40}(?:کدوم|کدام|چه).{0,24}(?:سرویس|خدمت|درمان|کار)/u,
+    /(?:کمک|راهنمایی|پیشنهاد).{0,40}(?:انتخاب|سرویس|خدمت|درمان)/u,
+
+    // Arabic
+    /(?:لا أعرف|لست متأكد|مش عارف).{0,40}(?:أي|ما).{0,24}(?:خدمة|علاج)/u,
+    /(?:ساعدني|مساعدة|أنصحني|نصيحة|اقترح).{0,40}(?:اختيار|خدمة|علاج)/u,
+  ];
+
+  return patterns.some((pattern) => pattern.test(raw));
+}
+
+export function isReadOnlyAvailabilityInquiry(text: string): boolean {
+  const raw = normalizeConversationText(text).toLowerCase().trim();
+  if (!raw) return false;
+  const availabilityLanguage =
+    /\b(?:available|availability|free|open|ledig|ledigt|lediga|frei|freier|verfügbar|verfugbar|disponible|disponibles|libre|libres)\b/iu.test(raw) ||
+    /(?:خالی|آزاد|متاح|متوفر|شاغر)/u.test(raw);
+  const questionForm = /[?؟]$/u.test(raw) ||
+    /^(?:is|are|do|does|can|could|är|finns|har|ist|sind|haben|hay|tienen|es|está|esta|آیا|هل)\b/iu.test(raw);
+  const explicitBookingAction =
+    /\b(?:book|book it|reserve|schedule|boka|boka den|reservera|buchen|reservieren|reservar|resérvala|reservala|quiero|möchte|mochte|want)\b/iu.test(raw) ||
+    /(?:احجز|أحجز|حجزه|رزرو (?:کن|کنید)|می ?خوام|می ?خواهم)/u.test(raw);
+  return availabilityLanguage && questionForm && !explicitBookingAction;
 }
 
 export function detectNormalizedIntent(text: string): NormalizedIntent {
   const raw = normalizeConversationText(text).toLowerCase();
   if (!raw) return 'unknown';
+
+  // Service-selection guidance is informational, not permission to start
+  // availability discovery. Once the customer actually chooses a service
+  // and asks to book it, normal booking classification applies.
+  if (isServiceGuidanceRequest(raw)) return 'general_question';
   if (/\b(?:why|chera|varför).{0,30}(?:language|zaban|språk).{0,30}(?:change|avaz|switch|ändra)\b/iu.test(raw) || /چرا.{0,20}(?:زبان).{0,20}(?:عوض|تغییر)/u.test(raw)) return 'general_question';
   if (/\b(?:cancel|avboka|laghv).{0,25}(?:appointment|booking|tid|vaght|rezerv)?\b/iu.test(raw) || /(?:لغو|کنسل).{0,20}(?:وقت|رزرو)/u.test(raw)) return 'cancellation';
   if (/(?:^|\s)(?:reschedule|move|change|ändra|flytta|taghir|avaz).{0,30}(?:appointment|booking|time|tid|vaght|rezerv)(?=\s|$)/iu.test(raw) || /(?:^|\s)boka\s+om(?=\s|$)/iu.test(raw) || /\b(?:avaz|taghir)\s+(?:bedam|konam)\b/iu.test(raw) || /(?:تغییر|عوض).{0,20}(?:وقت|رزرو|کنم|بدم)/u.test(raw)) return 'reschedule';
-  if (/\b(?:do i have|did i book|check|har jag|aya).{0,30}(?:appointment|booking|tid|vaght|rezerv)\b/iu.test(raw) || /(?:آیا|میشه).{0,24}(?:وقت|رزرو).{0,24}(?:دارم|کردم)/u.test(raw)) return 'booking_lookup';
+  if (/\b(?:do i have|did i book|check|har jag|aya).{0,30}(?:appointment|booking|tid|vaght|rezerv)\b/iu.test(raw) || /(?:آیا|میشه).{0,24}(?:وقت|رزرو).{0,24}(?:دارم|کردم)|(?:هل\s+لدي(?=\s|$).{0,24}(?:موعد|حجز)|هل\s+حجزت|متى\s+موعدي|تحقق\s+من\s+موعدي)/u.test(raw)) return 'booking_lookup';
 
-  const bookingNoun = /\b(?:appointment|booking|consultation|slot|boka|bokning|tid|konsultation|vaght|rezerv|moshavereh?|laser)\b/iu.test(raw) || /(?:وقت|رزرو|مشاوره|لیزر)/u.test(raw);
-  const bookingAction = /\b(?:book|want|need|available|have anything|boka|vill|behöver|finns|har ni|mikham|mikhastam|mitoni|bدي|begiram|dari)\b/iu.test(raw) || /(?:می ?خوام|می ?خواهم|می ?تونی|وقت داری|بگیرم|بگیری)/u.test(raw);
-  const dateOrTime = /\b(?:today|tomorrow|friday|monday|tuesday|wednesday|thursday|saturday|sunday|fredag|måndag|tisdag|onsdag|torsdag|lördag|söndag|jomeh?|shanbe|sate?|after|before|efter|före)\b/iu.test(raw) || /(?:امروز|فردا|جمعه|شنبه|ساعت|بعد از|قبل از)/u.test(raw);
+  const bookingNoun = /\b(?:appointment|booking|consultation|slot|time|boka|bokning|tid|konsultation|termin|cita|reserva|reservación|reservacion|vaght|rezerv|moshavereh?|laser)\b/iu.test(raw) || /(?:وقت|رزرو|مشاوره|لیزر|موعد|مواعيد|حجز)/u.test(raw);
+  const bookingAction = /\b(?:book|want|need|available|have anything|have any time|do you have any time|boka|vill|behöver|finns|har ni|haben sie|möchte|mochte|buchen|tienen|hay|disponible|disponibles|mikham|mikhastam|mitoni|bدي|begiram|dari)\b/iu.test(raw) || /(?:می ?خوام|می ?خواهم|می ?تونی|وقت داری|بگیرم|بگیری|متاح|متوفر|شاغر)/u.test(raw);
+  const directBookingAction = /\b(?:book|boka|buchen|reservieren|reservar)\b/iu.test(raw);
+  const dateOrTime = /\b(?:today|tomorrow|friday|monday|tuesday|wednesday|thursday|saturday|sunday|fredag|måndag|tisdag|onsdag|torsdag|lördag|söndag|morgen|uhr|montag|dienstag|mittwoch|donnerstag|freitag|samstag|sonntag|lunes|martes|miércoles|miercoles|jueves|viernes|sábado|sabado|domingo|después|despues|antes|später|spaeter|jomeh?|shanbe|sate?|after|before|efter|före)\b/iu.test(raw) || /(?:امروز|فردا|جمعه|شنبه|ساعت|بعد از|قبل از)/u.test(raw);
   if ((bookingNoun && bookingAction) || (bookingNoun && dateOrTime)) return 'new_booking';
+  if (directBookingAction && dateOrTime) return 'new_booking';
   if (bookingNoun) return 'clarification';
   return 'general_question';
 }
@@ -148,24 +218,90 @@ function clockToMinutes(hourText: string, minuteText?: string, meridiemText?: st
   return hour * 60 + minute;
 }
 
+const NAMED_MONTH_NUMBERS: Record<string, number> = {
+  january: 1, januari: 1, januar: 1, enero: 1, ژانویه: 1, يناير: 1,
+  february: 2, februari: 2, februar: 2, febrero: 2, فوریه: 2, فبراير: 2,
+  march: 3, mars: 3, märz: 3, marz: 3, marzo: 3, مارس: 3,
+  april: 4, abril: 4, آوریل: 4, أبريل: 4, ابريل: 4,
+  may: 5, maj: 5, mai: 5, mayo: 5, مه: 5, مايو: 5,
+  june: 6, juni: 6, junio: 6, ژوئن: 6, يونيو: 6,
+  july: 7, juli: 7, julio: 7, ژوئیه: 7, يوليو: 7,
+  august: 8, augusti: 8, agosto: 8, اوت: 8, أغسطس: 8, اغسطس: 8,
+  september: 9, septiembre: 9, سپتامبر: 9, سبتمبر: 9,
+  october: 10, oktober: 10, octubre: 10, اکتبر: 10, أكتوبر: 10, اكتوبر: 10,
+  november: 11, noviembre: 11, نوامبر: 11, نوفمبر: 11,
+  december: 12, dezember: 12, diciembre: 12, دسامبر: 12, ديسمبر: 12,
+};
+const NAMED_MONTH_PATTERN = Object.keys(NAMED_MONTH_NUMBERS)
+  .sort((a, b) => b.length - a.length)
+  .join('|');
+const DATE_RANGE_CONNECTOR_PATTERN = String.raw`(?:and|och|to|through|till|until|und|bis|y|hasta|a|-|تا|و|إلى|الى)`;
+
+function matchNamedCalendarDateRange(text: string): {
+  startDay: string;
+  endDay: string;
+  month: string;
+  year?: string;
+} | null {
+  const raw = normalizeConversationText(text).toLowerCase().replace(/[–—]/g, '-');
+  const dayFirst = new RegExp(
+    String.raw`(?:^|\s)(\d{1,2})(?::e|e|a|º|ª)?\s*${DATE_RANGE_CONNECTOR_PATTERN}\s*(\d{1,2})(?::e|e|a|º|ª)?\s+(${NAMED_MONTH_PATTERN})(?:\s+(20\d{2}))?(?=\s|[?.!,]|$)`,
+    'iu'
+  );
+  const monthFirst = new RegExp(
+    String.raw`(?:^|\s)(${NAMED_MONTH_PATTERN})\s+(\d{1,2})(?::e|e|a|º|ª)?\s*${DATE_RANGE_CONNECTOR_PATTERN}\s*(\d{1,2})(?::e|e|a|º|ª)?(?:\s+(20\d{2}))?(?=\s|[?.!,]|$)`,
+    'iu'
+  );
+  const dayMatch = raw.match(dayFirst);
+  if (dayMatch) {
+    return { startDay: dayMatch[1], endDay: dayMatch[2], month: dayMatch[3], year: dayMatch[4] };
+  }
+  const monthMatch = raw.match(monthFirst);
+  if (!monthMatch) return null;
+  return { startDay: monthMatch[2], endDay: monthMatch[3], month: monthMatch[1], year: monthMatch[4] };
+}
+
+export function parseNamedBookingDateRange(
+  text: string,
+  timezone: string,
+  now = new Date()
+): { startDate: string; endDate: string } | null {
+  const match = matchNamedCalendarDateRange(text);
+  if (!match) return null;
+  const startDay = Number(match.startDay);
+  const endDay = Number(match.endDay);
+  const month = NAMED_MONTH_NUMBERS[String(match.month || '').toLowerCase()];
+  const year = Number(match.year || zonedDateParts(now, timezone).iso.slice(0, 4));
+  if (!month || startDay < 1 || endDay < startDay || endDay > 31) return null;
+  const startDate = `${year}-${String(month).padStart(2, '0')}-${String(startDay).padStart(2, '0')}`;
+  const endDate = `${year}-${String(month).padStart(2, '0')}-${String(endDay).padStart(2, '0')}`;
+  const valid = (value: string) => {
+    const date = new Date(`${value}T12:00:00Z`);
+    return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
+  };
+  return valid(startDate) && valid(endDate) ? { startDate, endDate } : null;
+}
+
 export function parseTimeConstraint(text: string): NormalizedTimeConstraint | undefined {
   const raw = normalizeTranscribedText(text)
     .toLowerCase()
     .replace(/\bnoon\b/giu, '12:00')
     .replace(/ظهر/gu, '12:00');
   if (!raw || /\[(?:unclear|نامفهوم)\]/iu.test(raw)) return undefined;
-  const token = String.raw`([01]?\d|2[0-3])(?:[\.:](\d{2}))?\s*(am|pm)?\s*(morning|afternoon|evening|morgon|eftermiddag|kväll|صبح|بعدازظهر|عصر)?`;
-  const between = raw.match(new RegExp(String.raw`(?:between|mellan|bin|بین)\s*(?:klockan|saat|sate|ساعت)?\s*${token}\s*(?:and|och|ta|تا|و)\s*(?:klockan|saat|sate|ساعت)?\s*${token}`, 'iu'));
+  const token = String.raw`(2[0-3]|[01]?\d)(?:[\.:](\d{2}))?\s*(am|pm)?\s*(morning|afternoon|evening|morgon|eftermiddag|kväll|صبح|بعدازظهر|عصر)?`;
+  const between = matchNamedCalendarDateRange(raw)
+    ? null
+    : raw.match(new RegExp(String.raw`(?:between|mellan|entre|bin|بین)\s*(?:klockan|a\s+las|saat|sate|ساعت)?\s*${token}\s*(?:and|och|y|ta|تا|و)\s*(?:klockan|a\s+las|saat|sate|ساعت)?\s*${token}`, 'iu'));
   if (between) {
     const start = clockToMinutes(between[1], between[2], between[3], between[4]);
     const end = clockToMinutes(between[5], between[6], between[7], between[8]);
     if (start !== null && end !== null && start < end) return { kind: 'between', startMinutes: start, endMinutes: end, startInclusive: true, endInclusive: true, confidence: 'high' };
   }
   const rules: Array<[NormalizedTimeConstraint['kind'], RegExp, boolean, boolean]> = [
-    ['after', new RegExp(String.raw`(?:after|efter(?: klockan)?|bad az(?: sate?)?|بعد از(?: ساعت)?)\s*${token}`, 'iu'), false, false],
-    ['before', new RegExp(String.raw`(?:before|före(?: klockan)?|ghabl az(?: sate?)?|قبل از(?: ساعت)?)\s*${token}`, 'iu'), false, false],
-    ['from', new RegExp(String.raw`(?:from|från(?: klockan)?|az(?: sate?)?|از(?: ساعت)?)\s*${token}`, 'iu'), true, false],
-    ['exact', new RegExp(String.raw`(?:at|klockan|kl\.?|saat|sate|ساعت)\s*${token}`, 'iu'), true, true],
+    ['after', new RegExp(String.raw`(?:(?:after|later than)(?:\s+at)?|efter(?:\s+kl(?:ockan)?\.?)?|senare än(?:\s+kl(?:ockan)?\.?)?|nach(?:\s+dem)?|später als|spaeter als|despu[eé]s de(?:\s+las?)?|bad az(?: sa(?:a)?t(?:e)?)?|بعد از(?: ساعت)?|بعد(?:\s+الساعة|\s+ساعة))\s*${token}`, 'iu'), false, false],
+    ['before', new RegExp(String.raw`(?:before|innan(?:\s+kl(?:ockan)?\.?)?|före(?:\s+kl(?:ockan)?\.?)?|vor|antes de(?:\s+las?)?|ghabl az(?: sate?)?|قبل از(?: ساعت)?|قبل(?:\s+الساعة|\s+ساعة))\s*${token}`, 'iu'), false, false],
+    ['from', new RegExp(String.raw`(?:from|från(?: klockan)?|desde(?:\s+las?)?|az(?: sate?)?|از(?: ساعت)?|من(?:\s+الساعة|\s+ساعة))\s*${token}`, 'iu'), true, false],
+    ['exact', new RegExp(String.raw`(?:at|klockan|kl\.?|um|a\s+las?|saat|sate|ساعت)\s*${token}(?:\s*uhr)?`, 'iu'), true, true],
   ];
   for (const [kind, pattern, startInclusive, endInclusive] of rules) {
     const match = raw.match(pattern);
@@ -179,9 +315,26 @@ export function parseTimeConstraint(text: string): NormalizedTimeConstraint | un
   if (bareExact) {
     return { kind: 'exact', startMinutes: Number(bareExact[1]) * 60 + Number(bareExact[2]), startInclusive: true, endInclusive: true, confidence: 'high' };
   }
-  if (/\b(?:morning|morgon)\b/iu.test(raw) || /صبح/u.test(raw)) return { kind: 'morning', startMinutes: 9 * 60, endMinutes: 12 * 60, startInclusive: true, endInclusive: false, confidence: 'high' };
-  if (/\b(?:afternoon|eftermiddag)\b/iu.test(raw) || /بعدازظهر/u.test(raw)) return { kind: 'afternoon', startMinutes: 12 * 60, endMinutes: 17 * 60, startInclusive: true, endInclusive: false, confidence: 'high' };
-  if (/\b(?:evening|kväll)\b/iu.test(raw) || /عصر/u.test(raw)) return { kind: 'evening', startMinutes: 17 * 60, endMinutes: 20 * 60, startInclusive: true, endInclusive: true, confidence: 'high' };
+  const germanClock = raw.match(/\b([01]?\d|2[0-3])(?:[\.:]([0-5]\d))?\s*uhr\b/u);
+  if (germanClock) {
+    return { kind: 'exact', startMinutes: Number(germanClock[1]) * 60 + Number(germanClock[2] || 0), startInclusive: true, endInclusive: true, confidence: 'high' };
+  }
+  // A clock token inside explicit slot-selection wording is authoritative. Requiring
+  // the whole message to be only the clock caused ordinary selections such as
+  // "I'll take the 11:00 slot" to bypass the deterministic owned-slot transition.
+  const contextualExact = raw.match(/(?:^|[^\d])([01]?\d|2[0-3])[\.:]([0-5]\d)(?!\d)/u);
+  if (
+    contextualExact &&
+    (
+      /\b(?:slot|time|appointment|take|choose|want|prefer|book|works|perfect|fine|tid|tiden|väljer|valjer|vill ha|passar|perfekt|utmärkt|utmarkt|boka|termin|hora|cita)\b/iu.test(raw) ||
+      /(?:وقت|زمان|ساعت|رزرو|موعد)/u.test(raw)
+    )
+  ) {
+    return { kind: 'exact', startMinutes: Number(contextualExact[1]) * 60 + Number(contextualExact[2]), startInclusive: true, endInclusive: true, confidence: 'high' };
+  }
+  if (/\b(?:morning|morgon(?:en)?)\b/iu.test(raw) || /صبح/u.test(raw)) return { kind: 'morning', startMinutes: 9 * 60, endMinutes: 12 * 60, startInclusive: true, endInclusive: false, confidence: 'high' };
+  if (/\b(?:afternoon|eftermiddag(?:en)?)\b/iu.test(raw) || /بعدازظهر/u.test(raw)) return { kind: 'afternoon', startMinutes: 12 * 60, endMinutes: 17 * 60, startInclusive: true, endInclusive: false, confidence: 'high' };
+  if (/\b(?:evening|kväll(?:en)?)\b/iu.test(raw) || /(?:عصر|مساء)/u.test(raw)) return { kind: 'evening', startMinutes: 17 * 60, endMinutes: 21 * 60, startInclusive: true, endInclusive: false, confidence: 'high' };
   return undefined;
 }
 
@@ -190,6 +343,17 @@ function zonedDateParts(date: Date, timezone: string): { iso: string; weekday: n
   const get = (type: string) => parts.find(part => part.type === type)?.value || '';
   const weekday = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(get('weekday'));
   return { iso: `${get('year')}-${get('month')}-${get('day')}`, weekday };
+}
+
+function zonedClockMinutes(date: Date, timezone: string): number {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: timezone,
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(date);
+  const get = (type: string) => Number(parts.find(part => part.type === type)?.value || 0);
+  return get('hour') * 60 + get('minute');
 }
 
 export function getDateInTimeZone(date: Date, timezone: string): string {
@@ -202,7 +366,85 @@ function addIsoDays(iso: string, days: number): string {
   return date.toISOString().slice(0, 10);
 }
 
-export function parseBookingDate(text: string, timezone: string, now = new Date()): NormalizedBookingRequest['date'] | undefined {
+export type CanonicalRelativeDateSemantic =
+  | 'today'
+  | 'tomorrow'
+  | 'day_after_tomorrow';
+
+export function resolveRelativeBookingDateSemantic(
+  semantic: CanonicalRelativeDateSemantic,
+  timezone: string,
+  now: Date,
+): NonNullable<NormalizedBookingRequest['date']> | null {
+  const dayOffset = semantic === 'today'
+    ? 0
+    : semantic === 'tomorrow'
+      ? 1
+      : semantic === 'day_after_tomorrow'
+        ? 2
+        : null;
+  if (dayOffset === null || Number.isNaN(now.getTime())) return null;
+  const today = zonedDateParts(now, timezone).iso;
+  return {
+    kind: 'relative_date',
+    value: addIsoDays(today, dayOffset),
+    relative: semantic,
+    confidence: 'high',
+  };
+}
+
+const BOOKING_WEEKDAYS: Array<[number, RegExp]> = [
+  [0, /\b(?:sunday|söndag|sonntag|domingo|yek\s*shanbe|1\s*shanbe)\b|یک ?شنبه|(?:الأحد|الاحد)/iu], [1, /\b(?:monday|måndag|montag|lunes|do\s*shanbe|2\s*shanbe)\b|دو ?شنبه|(?:الإثنين|الاثنين|الإثنان|الاثنان)/iu],
+  [2, /\b(?:tuesday|tisdag|dienstag|martes|se\s*shanbe|3\s*shanbe)\b|سه ?شنبه|الثلاثاء/iu], [3, /\b(?:wednesday|onsdag|mittwoch|miércoles|miercoles|chahar\s*shanbe|4\s*shanbe)\b|چهار ?شنبه|(?:الأربعاء|الاربعاء)/iu],
+  [4, /\b(?:thursday|torsdag|donnerstag|jueves|panj\s*shanbe|5\s*shanbe)\b|پنج ?شنبه|الخميس/iu], [5, /\b(?:friday|fredag|freitag|viernes|jomeh?)\b|جمعه|الجمعة/iu],
+  [6, /\b(?:saturday|lördag|samstag|sábado|sabado|(?<![1-5])shanbe)\b|(?<!یک |دو |سه |چهار |پنج )شنبه|السبت/iu],
+];
+
+function extractBookingWeekday(text: string): number | undefined {
+  return BOOKING_WEEKDAYS.find(([, pattern]) => pattern.test(text))?.[0];
+}
+
+export function getBookingWeekdayReference(text: string): {
+  weekday: number;
+  qualifier: 'bare' | 'this' | 'next';
+} | undefined {
+  const raw = normalizeConversationText(text).toLowerCase();
+  const weekday = extractBookingWeekday(raw);
+  if (weekday === undefined) return undefined;
+  if (/\b(?:next|nästa|ayande)\b/iu.test(raw) || /آینده/u.test(raw)) {
+    return { weekday, qualifier: 'next' };
+  }
+  if (/\bthis\b|\bdenna\b|همین|این/u.test(raw)) {
+    return { weekday, qualifier: 'this' };
+  }
+  return { weekday, qualifier: 'bare' };
+}
+
+function resolveNearestWeekdayDate(explicitDate: string, requestedWeekday: number): string {
+  const actualWeekday = new Date(`${explicitDate}T12:00:00Z`).getUTCDay();
+  const forwardDays = (requestedWeekday - actualWeekday + 7) % 7;
+  const nearestDays = forwardDays <= 3 ? forwardDays : forwardDays - 7;
+  return addIsoDays(explicitDate, nearestDays);
+}
+
+function detectWeekdayExplicitDateConflict(
+  text: string,
+  parsedDate: NormalizedBookingRequest['date'] | undefined,
+): NormalizedBookingRequest['dateConflict'] | undefined {
+  if (parsedDate?.kind !== 'exact_date' || !parsedDate.value) return undefined;
+  const requestedWeekday = extractBookingWeekday(text);
+  if (requestedWeekday === undefined) return undefined;
+  const weekdayDate = resolveNearestWeekdayDate(parsedDate.value, requestedWeekday);
+  if (weekdayDate === parsedDate.value) return undefined;
+  return {
+    kind: 'weekday_explicit_date_conflict',
+    explicitDate: parsedDate.value,
+    weekdayDate,
+    requestedWeekday,
+  };
+}
+
+function parseBookingDateCandidate(text: string, timezone: string, now = new Date()): NormalizedBookingRequest['date'] | undefined {
   const raw = normalizeConversationText(text).toLowerCase();
   const today = zonedDateParts(now, timezone);
   const isoMatch = raw.match(/\b(20\d{2}-\d{2}-\d{2})\b/);
@@ -212,38 +454,84 @@ export function parseBookingDate(text: string, timezone: string, now = new Date(
     return undefined;
   }
   const monthNames: Record<string, number> = {
-    january: 1, januari: 1, ژانویه: 1, february: 2, februari: 2, فوریه: 2,
-    march: 3, mars: 3, مارس: 3, april: 4, آوریل: 4, may: 5, maj: 5, مه: 5,
-    june: 6, juni: 6, ژوئن: 6, july: 7, juli: 7, ژوئیه: 7,
-    august: 8, augusti: 8, اوت: 8, september: 9, سپتامبر: 9,
-    october: 10, oktober: 10, اکتبر: 10, november: 11, نوامبر: 11,
-    december: 12, december_sv: 12, دسامبر: 12,
+    january: 1, januari: 1, januar: 1, enero: 1, ژانویه: 1, february: 2, februari: 2, februar: 2, febrero: 2, فوریه: 2,
+    march: 3, mars: 3, märz: 3, marz: 3, marzo: 3, مارس: 3, april: 4, abril: 4, آوریل: 4, may: 5, maj: 5, mai: 5, mayo: 5, مه: 5,
+    june: 6, juni: 6, junio: 6, ژوئن: 6, july: 7, juli: 7, julio: 7, ژوئیه: 7,
+    august: 8, augusti: 8, agosto: 8, اوت: 8, آگوست: 8, أغسطس: 8, اغسطس: 8, september: 9, septiembre: 9, سپتامبر: 9, سبتمبر: 9,
+    october: 10, oktober: 10, octubre: 10, اکتبر: 10, أكتوبر: 10, اكتوبر: 10, november: 11, noviembre: 11, نوامبر: 11, نوفمبر: 11,
+    december: 12, december_sv: 12, dezember: 12, diciembre: 12, دسامبر: 12, ديسمبر: 12,
   };
-  const named = raw.match(/(?:^|\s)(\d{1,2})(?::e)?\s+(january|januari|ژانویه|february|februari|فوریه|march|mars|مارس|april|آوریل|may|maj|مه|june|juni|ژوئن|july|juli|ژوئیه|august|augusti|اوت|september|سپتامبر|october|oktober|اکتبر|november|نوامبر|december|دسامبر)(?:\s+(20\d{2}))?(?:\s|$)/iu);
-  if (named) {
-    const month = monthNames[named[2].toLowerCase()];
-    const year = Number(named[3] || today.iso.slice(0, 4));
-    const candidate = `${year}-${String(month).padStart(2, '0')}-${String(Number(named[1])).padStart(2, '0')}`;
+  const named = raw.match(/(?:^|\s)(\d{1,2})(?::e|\.)?\s+(?:de\s+)?(january|januari|januar|enero|ژانویه|يناير|february|februari|februar|febrero|فوریه|فبراير|march|mars|märz|marz|marzo|مارس|april|abril|آوریل|أبريل|ابريل|may|maj|mai|mayo|مه|مايو|june|juni|junio|ژوئن|يونيو|july|juli|julio|ژوئیه|يوليو|august|augusti|agosto|اوت|آگوست|أغسطس|اغسطس|september|septiembre|سپتامبر|سبتمبر|october|oktober|octubre|اکتبر|أكتوبر|اكتوبر|november|noviembre|نوامبر|نوفمبر|december|dezember|diciembre|دسامبر|ديسمبر)(?:\s+(?:de\s+)?(20\d{2}))?(?:\s|[,.!?]|$)/iu);
+
+  const monthFirstNamed = raw.match(/(?:^|\s)(january|february|march|april|may|june|july|august|september|october|november|december)\s+(\d{1,2})(?:st|nd|rd|th)?(?:,\s*|\s+)?(20\d{2})?(?=\s|[,.!?]|$)/iu);
+
+  const namedMonth = named
+    ? named[2]
+    : monthFirstNamed?.[1];
+
+  const namedDay = named
+    ? named[1]
+    : monthFirstNamed?.[2];
+
+  const namedYear = named
+    ? named[3]
+    : monthFirstNamed?.[3];
+
+  if (namedMonth && namedDay) {
+    const month = monthNames[namedMonth.toLowerCase()];
+    const year = Number(namedYear || today.iso.slice(0, 4));
+    const candidate = `${year}-${String(month).padStart(2, '0')}-${String(Number(namedDay)).padStart(2, '0')}`;
     const parsed = new Date(`${candidate}T12:00:00Z`);
-    if (!Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === candidate && candidate >= today.iso) return { kind: 'exact_date', value: candidate, confidence: 'high' };
+
+    if (
+      !Number.isNaN(parsed.getTime()) &&
+      parsed.toISOString().slice(0, 10) === candidate &&
+      candidate >= today.iso
+    ) {
+      return { kind: 'exact_date', value: candidate, confidence: 'high' };
+    }
+
     return undefined;
   }
   if (/\b(?:day after tomorrow|i övermorgon|övermorgon|pas farda|pasfarda)\b/iu.test(raw) || /پس ?فردا/u.test(raw)) return { kind: 'relative_date', value: addIsoDays(today.iso, 2), relative: 'day_after_tomorrow', confidence: 'high' };
-  if (/\b(?:tomorrow|imorgon|farda)\b/iu.test(raw) || /فردا/u.test(raw)) return { kind: 'relative_date', value: addIsoDays(today.iso, 1), relative: 'tomorrow', confidence: 'high' };
+  const germanTomorrow = /\bmorgen\b/iu.test(raw) && !/\bam\s+morgen\b/iu.test(raw);
+  if (/\b(?:tomorrow|imorgon|farda)\b/iu.test(raw) || germanTomorrow || /فردا/u.test(raw)) return { kind: 'relative_date', value: addIsoDays(today.iso, 1), relative: 'tomorrow', confidence: 'high' };
   if (/\b(?:today|idag|emrooz|emruz)\b/iu.test(raw) || /امروز/u.test(raw)) return { kind: 'relative_date', value: today.iso, relative: 'today', confidence: 'high' };
-  const weekdays: Array<[number, RegExp]> = [
-    [0, /\b(?:sunday|söndag|yek\s*shanbe|1\s*shanbe)\b|یک ?شنبه/iu], [1, /\b(?:monday|måndag|do\s*shanbe|2\s*shanbe)\b|دو ?شنبه/iu],
-    [2, /\b(?:tuesday|tisdag|se\s*shanbe|3\s*shanbe)\b|سه ?شنبه/iu], [3, /\b(?:wednesday|onsdag|chahar\s*shanbe|4\s*shanbe)\b|چهار ?شنبه/iu],
-    [4, /\b(?:thursday|torsdag|panj\s*shanbe|5\s*shanbe)\b|پنج ?شنبه/iu], [5, /\b(?:friday|fredag|jomeh?)\b|جمعه/iu],
-    [6, /\b(?:saturday|lördag|(?<![1-5])shanbe)\b|(?<!یک |دو |سه |چهار |پنج )شنبه/iu],
-  ];
-  const matched = weekdays.find(([, pattern]) => pattern.test(raw));
-  if (!matched) return undefined;
-  const isNext = /\b(?:next|nästa|ayande)\b/iu.test(raw) || /آینده/u.test(raw);
-  let days = (matched[0] - today.weekday + 7) % 7;
-  if (isNext) days = days === 0 ? 7 : days + 7;
-  else if (days === 0 && !/\bthis\b|\bdenna\b|همین|این/u.test(raw)) days = 7;
-  return { kind: 'weekday', value: addIsoDays(today.iso, days), weekday: matched[0], confidence: 'high' };
+  const weekdayReference = getBookingWeekdayReference(raw);
+  if (!weekdayReference) return undefined;
+  const requestedWeekday = weekdayReference.weekday;
+  let days = (requestedWeekday - today.weekday + 7) % 7;
+  if (weekdayReference.qualifier === 'next') days = days === 0 ? 7 : days + 7;
+  else if (days === 0) {
+    const explicitTime = parseTimeConstraint(raw);
+    const exactTimeIsStillAhead = explicitTime?.kind === 'exact' &&
+      explicitTime.startMinutes !== undefined &&
+      explicitTime.startMinutes > zonedClockMinutes(now, timezone);
+    const isThisWeekday = weekdayReference.qualifier === 'this';
+    if (!exactTimeIsStillAhead && !isThisWeekday) days = 7;
+    else if (explicitTime?.kind === 'exact' && !exactTimeIsStillAhead) days = 7;
+  }
+  return { kind: 'weekday', value: addIsoDays(today.iso, days), weekday: requestedWeekday, confidence: 'high' };
+}
+
+export function getBookingDateConflict(
+  text: string,
+  timezone: string,
+  now = new Date(),
+): NormalizedBookingRequest['dateConflict'] | undefined {
+  const normalizedText = normalizeConversationText(text).toLowerCase();
+  return detectWeekdayExplicitDateConflict(
+    normalizedText,
+    parseBookingDateCandidate(normalizedText, timezone, now),
+  );
+}
+
+export function parseBookingDate(text: string, timezone: string, now = new Date()): NormalizedBookingRequest['date'] | undefined {
+  const candidate = parseBookingDateCandidate(text, timezone, now);
+  return detectWeekdayExplicitDateConflict(
+    normalizeConversationText(text).toLowerCase(),
+    candidate,
+  ) ? undefined : candidate;
 }
 
 function inferService(text: string): NormalizedBookingRequest['service'] | undefined {
@@ -257,12 +545,38 @@ export function normalizeBookingRequest(input: ConversationInput): NormalizedBoo
   const normalizedText = input.inputMode === 'voice' ? normalizeTranscribedText(input.text) : normalizeConversationText(input.text);
   const language = detectLanguage(normalizedText, input.activeLanguage);
   const intent = detectNormalizedIntent(normalizedText);
-  const date = parseBookingDate(normalizedText, input.timezone, input.now);
-  const timeConstraint = parseTimeConstraint(normalizedText);
+  const namedDateRange = parseNamedBookingDateRange(
+    normalizedText,
+    input.timezone,
+    input.now
+  );
+  const parsedDate = namedDateRange
+    ? {
+        kind: 'date_range' as const,
+        value: namedDateRange.startDate,
+        endValue: namedDateRange.endDate,
+        confidence: 'high' as const,
+      }
+    : parseBookingDateCandidate(normalizedText, input.timezone, input.now);
+  const dateConflict = namedDateRange
+    ? undefined
+    : detectWeekdayExplicitDateConflict(normalizedText.toLowerCase(), parsedDate);
+  const date = dateConflict ? undefined : parsedDate;
+  const parsedTimeConstraint = parseTimeConstraint(normalizedText);
+  // An explicit named date range is also an authoritative replacement of a
+  // previously selected date/time. Persist `none` so state merging cannot retain
+  // an old exact clock merely because this turn has no narrower time preference.
+  const timeConstraint = parsedTimeConstraint || (namedDateRange
+    ? {
+        kind: 'none' as const,
+        confidence: 'high' as const,
+      }
+    : undefined);
   const service = inferService(normalizedText);
   const correction = /\b(?:no|not|meant|instead|nej|menade|istället|na|manzuram)\b/iu.test(normalizedText) || /(?:نه|منظورم|به جاش)/u.test(normalizedText);
   const unclearCritical = /\[(?:unclear|نامفهوم)\]/iu.test(normalizedText) && /(?:time|date|day|at|klockan|saat|sate|ساعت|روز|تاریخ)/iu.test(normalizedText);
   const ambiguousTime = (/\b(?:at|klockan|saat|sate)\s+(?:[1-9]|1[0-2])\b/iu.test(normalizedText) && !timeConstraint) || unclearCritical;
+  const requiresClarification = ambiguousTime || Boolean(dateConflict);
   return {
     intent,
     language,
@@ -272,8 +586,15 @@ export function normalizeBookingRequest(input: ConversationInput): NormalizedBoo
     ...(correction ? { customerCorrection: { replacesDate: Boolean(date), replacesTime: Boolean(timeConstraint), replacesService: Boolean(service) } } : {}),
     sourceMode: input.inputMode,
     normalizedText,
-    requiresClarification: ambiguousTime,
-    ...(ambiguousTime ? { clarificationReason: unclearCritical ? 'unclear_critical_segment' : 'ambiguous_12_hour_time' } : {}),
+    requiresClarification,
+    ...(dateConflict ? { dateConflict } : {}),
+    ...(requiresClarification ? {
+      clarificationReason: dateConflict
+        ? 'weekday_explicit_date_conflict'
+        : unclearCritical
+          ? 'unclear_critical_segment'
+          : 'ambiguous_12_hour_time'
+    } : {}),
   };
 }
 
@@ -287,7 +608,9 @@ export function mergeNormalizedBookingRequest(
 
 export function applyNormalizedRequestToPending(pending: Record<string, any>, latest: NormalizedBookingRequest) {
   const transition = applyBookingTransition(pending, latest);
-  pending.normalizedBookingRequest = toPersistedBookingRequest(transition.request);
+  if (!latest.requiresClarification) {
+    pending.normalizedBookingRequest = toPersistedBookingRequest(transition.request);
+  }
   return transition;
 }
 

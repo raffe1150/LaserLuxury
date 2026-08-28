@@ -4,6 +4,32 @@ export type AnalyticsSchemaVersion = typeof ANALYTICS_SCHEMA_VERSION;
 export type BigintIdentifier = number;
 export type AnalyticsMetadata = Record<string, unknown>;
 
+export type CanonicalAnalyticsChannel =
+  | 'telegram'
+  | 'whatsapp'
+  | 'instagram'
+  | 'messenger'
+  | 'website'
+  | (string & {});
+
+export type AnalyticsEventName =
+  | 'conversation_started'
+  | 'customer_message_received'
+  | 'assistant_response_sent'
+  | 'booking_started'
+  | 'availability_requested'
+  | 'slot_offered'
+  | 'slot_selected'
+  | 'booking_completed'
+  | 'booking_failed'
+  | 'booking_abandoned'
+  // Existing V1 lifecycle events remain valid for historical compatibility.
+  | 'booking_created'
+  | 'booking_cancelled'
+  | 'booking_rescheduled'
+  | 'human_message_sent'
+  | 'conversation_resolved';
+
 interface AnalyticsEventFields {
   business_id: BigintIdentifier;
   event_category: string;
@@ -27,6 +53,10 @@ interface AnalyticsEventFields {
   metadata?: AnalyticsMetadata;
 }
 
+export interface CanonicalAnalyticsEvent extends AnalyticsEventFields {
+  event_name: AnalyticsEventName;
+}
+
 export interface BookingCreated extends AnalyticsEventFields {
   event_name: 'booking_created';
 }
@@ -39,7 +69,7 @@ export interface BookingRescheduled extends AnalyticsEventFields {
   event_name: 'booking_rescheduled';
 }
 
-/** Defined for future use; conversation lifecycle events remain postponed. */
+/** Conversation entry is emitted idempotently from accepted customer messages. */
 export interface ConversationStarted extends AnalyticsEventFields {
   event_name: 'conversation_started';
 }
@@ -58,6 +88,7 @@ export interface MessageSent extends AnalyticsEventFields {
 }
 
 export type RecordableAnalyticsEvent =
+  | CanonicalAnalyticsEvent
   | BookingCreated
   | BookingCancelled
   | BookingRescheduled

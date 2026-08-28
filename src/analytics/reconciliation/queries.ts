@@ -30,7 +30,7 @@ const EVENT_COLUMNS = [
   'idempotency_key',
 ].join(',');
 
-const APPOINTMENT_COLUMNS = 'id,business_id,start_time';
+const APPOINTMENT_COLUMNS = 'id,business_id,service,platform,status,created_at,start_time';
 
 let reconciliationClient: SupabaseClient | null = null;
 
@@ -102,7 +102,7 @@ function normalizeScope(options: AnalyticsReconciliationOptions): {
   if (!from) throw new AnalyticsReconciliationError('boundary_required');
 
   const to = isoTimestamp(options.to) || new Date().toISOString();
-  if (Date.parse(from) > Date.parse(to)) {
+  if (Date.parse(from) >= Date.parse(to)) {
     throw new AnalyticsReconciliationError('invalid_options');
   }
 
@@ -135,7 +135,7 @@ async function fetchEvents(input: {
       .select(EVENT_COLUMNS)
       .eq('business_id', input.businessId)
       .gte('occurred_at', input.from)
-      .lte('occurred_at', input.to)
+      .lt('occurred_at', input.to)
       .order('occurred_at', { ascending: true })
       .order('id', { ascending: true })
       .range(rows.length, rows.length + pageLength - 1);
@@ -180,6 +180,35 @@ async function fetchReferencedAppointments(
   return rows;
 }
 
+async function fetchWindowAppointments(input: {
+  client: SupabaseClient;
+  businessId: number;
+  from: string;
+  to: string;
+  pageSize: number;
+  maxRows: number;
+}): Promise<{ rows: ReconciliationAppointmentRow[]; truncated: boolean }> {
+  const targetRows = input.maxRows + 1;
+  const rows: ReconciliationAppointmentRow[] = [];
+  while (rows.length < targetRows) {
+    const pageLength = Math.min(input.pageSize, targetRows - rows.length);
+    const { data, error } = await input.client
+      .from('appointments')
+      .select(APPOINTMENT_COLUMNS)
+      .eq('business_id', input.businessId)
+      .gte('created_at', input.from)
+      .lt('created_at', input.to)
+      .order('created_at', { ascending: true })
+      .order('id', { ascending: true })
+      .range(rows.length, rows.length + pageLength - 1);
+    if (error) throw new AnalyticsReconciliationError('query_failed');
+    if (!Array.isArray(data) || data.length === 0) break;
+    rows.push(...data as unknown as ReconciliationAppointmentRow[]);
+    if (data.length < pageLength) break;
+  }
+  return { rows: rows.slice(0, input.maxRows), truncated: rows.length > input.maxRows };
+}
+
 /** @internal Test seam; the client is deliberately not part of public options. */
 export async function loadReconciliationRows(
   options: AnalyticsReconciliationOptions,
@@ -197,16 +226,21 @@ export async function loadReconciliationRows(
   const scope = normalizeScope(options);
   const client = injectedClient || getReconciliationClient();
   const eventResult = await fetchEvents({ client, ...scope });
-  const appointments = await fetchReferencedAppointments(
-    client,
-    scope.businessId,
-    eventResult.rows,
-  );
+  const [windowAppointments, referencedAppointments] = await Promise.all([
+    fetchWindowAppointments({ client, ...scope }),
+    fetchReferencedAppointments(client, scope.businessId, eventResult.rows),
+  ]);
+  const appointmentMap = new Map<string, ReconciliationAppointmentRow>();
+  for (const appointment of [...windowAppointments.rows, ...referencedAppointments]) {
+    const id = String(appointment.id || '').trim();
+    if (id) appointmentMap.set(id, appointment);
+  }
+  const appointments = Array.from(appointmentMap.values());
 
   return {
     events: eventResult.rows,
     appointments,
-    scanTruncated: eventResult.truncated,
+    scanTruncated: eventResult.truncated || windowAppointments.truncated,
     businessId: scope.businessId,
     from: scope.from,
     to: scope.to,

@@ -47,6 +47,26 @@ async function insertAnalyticsEvent(event: ValidatedAnalyticsEvent): Promise<voi
   }
 }
 
+export type AnalyticsPersistence = (event: ValidatedAnalyticsEvent) => Promise<void>;
+
+export type AnalyticsRecorder = Readonly<{
+  record(event: RecordableAnalyticsEvent): Promise<void>;
+}>;
+
+const DEFAULT_PERSISTENCE_TIMEOUT_MS = 1_500;
+
+async function withTimeout(operation: Promise<void>, timeoutMs: number): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new AnalyticsDatabaseError('timeout')), timeoutMs);
+  });
+  try {
+    await Promise.race([operation, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 function safeErrorDiagnostic(error: unknown): {
   error_class: string;
   error_code?: string;
@@ -78,22 +98,44 @@ function safeErrorDiagnostic(error: unknown): {
   };
 }
 
-async function record(event: RecordableAnalyticsEvent): Promise<void> {
-  let safeContext: { business_id?: number; event_name?: string } = {};
+/**
+ * Creates a fail-open recorder. Validation, persistence and timeout failures are
+ * contained here and are never rethrown into an operational workflow.
+ *
+ * @internal Exported for focused failure-isolation tests.
+ */
+export function createAnalyticsRecorder(options: {
+  persist?: AnalyticsPersistence;
+  timeoutMs?: number;
+  reportError?: (message: string, context: Record<string, unknown>) => void;
+} = {}): AnalyticsRecorder {
+  const persist = options.persist || insertAnalyticsEvent;
+  const timeoutMs = options.timeoutMs ?? DEFAULT_PERSISTENCE_TIMEOUT_MS;
+  const reportError = options.reportError || ((message, context) => console.error(message, context));
 
-  try {
-    const validatedEvent = validateAnalyticsEvent(event);
-    safeContext = {
-      business_id: validatedEvent.business_id,
-      event_name: validatedEvent.event_name,
-    };
-    await insertAnalyticsEvent(validatedEvent);
-  } catch (error) {
-    console.error('[Analytics] Event recording failed.', {
-      ...safeContext,
-      ...safeErrorDiagnostic(error),
-    });
-  }
+  return Object.freeze({
+    async record(event: RecordableAnalyticsEvent): Promise<void> {
+      let safeContext: { business_id?: number; event_name?: string } = {};
+      try {
+        const validatedEvent = validateAnalyticsEvent(event);
+        safeContext = {
+          business_id: validatedEvent.business_id,
+          event_name: validatedEvent.event_name,
+        };
+        await withTimeout(Promise.resolve().then(() => persist(validatedEvent)), timeoutMs);
+      } catch (error) {
+        reportError('[Analytics] Event recording failed.', {
+          ...safeContext,
+          ...safeErrorDiagnostic(error),
+        });
+      }
+    },
+  });
 }
 
-export const analytics = Object.freeze({ record });
+export const analytics = createAnalyticsRecorder();
+
+/** Canonical public boundary used by runtime instrumentation. */
+export function recordAnalyticsEvent(event: RecordableAnalyticsEvent): Promise<void> {
+  return analytics.record(event);
+}

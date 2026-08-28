@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 
 const CUSTOMER_KEY_DOMAIN = 'analytics-customer-key:v1';
+const CORRELATION_ID_DOMAIN = 'analytics-correlation-id:v1';
 const MINIMUM_HASH_SECRET_BYTES = 32;
 
 function encodeParts(parts: readonly string[]): string {
@@ -63,5 +64,31 @@ export function createCustomerKey(input: {
       .digest('hex');
   } catch {
     return reportCustomerKeyFailure('unexpected_hash_error');
+  }
+}
+
+/**
+ * Produces a tenant-separated opaque conversation correlation. Raw provider
+ * session/customer identifiers must never be written to analytics_events.
+ *
+ * @internal
+ */
+export function createAnalyticsCorrelationId(input: {
+  businessId: number;
+  identifier: string;
+}): string | null {
+  try {
+    if (!Number.isSafeInteger(input.businessId) || input.businessId <= 0) return null;
+    const identifier = String(input.identifier || '').trim().normalize('NFKC');
+    const secret = process.env.ANALYTICS_HASH_SECRET;
+    if (!identifier || !secret || Buffer.byteLength(secret, 'utf8') < MINIMUM_HASH_SECRET_BYTES) {
+      return null;
+    }
+    return crypto
+      .createHmac('sha256', secret)
+      .update(encodeParts([CORRELATION_ID_DOMAIN, String(input.businessId), identifier]), 'utf8')
+      .digest('hex');
+  } catch {
+    return null;
   }
 }

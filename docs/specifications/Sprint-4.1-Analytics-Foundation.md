@@ -48,9 +48,10 @@ Introduce the additive analytics storage layer without changing existing operati
 
 Create an isolated recorder whose failures are contained and cannot interrupt authoritative business workflows.
 
-### Phase D — Integrate `booking_created`
+### Phase D — Integrate verified booking completion
 
-Record the event only after the authoritative booking operation has succeeded.
+Record `booking_completed` only after the authoritative booking operation has
+succeeded. Retain `booking_created` as a historical compatibility name.
 
 ### Phase E — Integrate booking lifecycle events
 
@@ -59,6 +60,13 @@ Integrate `booking_rescheduled` and `booking_cancelled` after their respective a
 ### Phase F — Integrate messaging events
 
 Integrate `customer_message_received` and `human_message_sent` at verified success boundaries.
+
+### Phase F.1 — Initial booking funnel observation
+
+Observe the narrow deterministic path through `booking_started`,
+`availability_requested`, `slot_offered`, `slot_selected`, `booking_completed`,
+and `booking_failed`. Do not treat offers or selections as revenue. Emit
+`booking_abandoned` only after a future deterministic abandonment policy exists.
 
 ### Phase G — Reconciliation and validation
 
@@ -99,4 +107,3 @@ Provide authorized backend queries with explicit metric definitions, periods, fr
 - No migration or executable code is created.
 - No package or deployment configuration is changed.
 - The Git diff contains documentation-only changes.
-

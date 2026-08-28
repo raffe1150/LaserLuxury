@@ -1,110 +1,146 @@
-import { useEffect, useMemo, useState } from 'react';
-import { buildAnalyticsDateRange, getDashboardAnalytics } from './analytics-adapter';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  analyticsRequestKey,
+  analyticsWindowForSelection,
+  createAnalyticsRequestGuard,
+  getDashboardAnalytics,
+} from './analytics-adapter';
 import type {
   AnalyticsDatePreset,
   DashboardAnalyticsAdapter,
   DashboardAnalyticsData,
-  DashboardAnalyticsPlatform,
+  DashboardAnalyticsRequest,
 } from './analytics-types';
+import { useDashboardI18n } from '../../../i18n/dashboard';
 
-const PLATFORM_DETAILS: Array<{
-  key: DashboardAnalyticsPlatform;
-  label: string;
-  logo: string;
-}> = [
-  { key: 'telegram', label: 'Telegram', logo: '/logos/telegram.webp' },
-  { key: 'whatsapp', label: 'WhatsApp', logo: '/logos/whatsapp-logo.webp' },
-  { key: 'messenger', label: 'Messenger', logo: '/logos/messenger.webp' },
-  { key: 'instagram', label: 'Instagram', logo: '/logos/instagram.webp' },
-];
+const PLATFORM_DETAILS = {
+  telegram: { label: 'Telegram', logo: '/logos/telegram.webp' },
+  whatsapp: { label: 'WhatsApp', logo: '/logos/whatsapp-logo.webp' },
+  messenger: { label: 'Messenger', logo: '/logos/messenger.webp' },
+  instagram: { label: 'Instagram', logo: '/logos/instagram.webp' },
+} as const;
 
 const PRESETS: Array<{ value: AnalyticsDatePreset; label: string }> = [
-  { value: '7d', label: 'Last 7 days' },
-  { value: '30d', label: 'Last 30 days' },
-  { value: '90d', label: 'Last 90 days' },
+  { value: 'today', label: 'Today' },
+  { value: '7d', label: '7 days' },
+  { value: '30d', label: '30 days' },
+  { value: 'custom', label: 'Custom' },
 ];
+
+type WorkspaceTab = 'overview' | 'channels' | 'services';
 
 type AnalyticsPageProps = {
   businessId: string;
   adapter?: DashboardAnalyticsAdapter;
-  mode?: 'demo' | 'live';
 };
 
 type ViewState =
   | { status: 'loading' }
+  | { status: 'custom' }
   | { status: 'error'; message: string }
-  | { status: 'success'; data: DashboardAnalyticsData };
+  | { status: 'success'; data: DashboardAnalyticsData; requestKey: string };
 
-export default function AnalyticsPage({
-  businessId,
-  adapter = getDashboardAnalytics,
-  mode = 'demo',
-}: AnalyticsPageProps) {
+export default function AnalyticsPage({ businessId, adapter = getDashboardAnalytics }: AnalyticsPageProps) {
   const [preset, setPreset] = useState<AnalyticsDatePreset>('30d');
+  const [customStartDate, setCustomStartDate] = useState('');
+  const [customEndDate, setCustomEndDate] = useState('');
   const [retryKey, setRetryKey] = useState(0);
   const [state, setState] = useState<ViewState>({ status: 'loading' });
-  const range = useMemo(() => buildAnalyticsDateRange(preset), [preset]);
+  const requestGuard = useRef(createAnalyticsRequestGuard());
+  const window = useMemo(
+    () => analyticsWindowForSelection(preset, customStartDate, customEndDate),
+    [customEndDate, customStartDate, preset],
+  );
+  const request = useMemo<DashboardAnalyticsRequest | null>(
+    () => window ? { businessId, window } : null,
+    [businessId, window],
+  );
+  const currentRequestKey = request ? analyticsRequestKey(request) : null;
+  const visibleState: ViewState = state.status === 'success' && state.requestKey !== currentRequestKey
+    ? (request ? { status: 'loading' } : { status: 'custom' })
+    : state;
 
   useEffect(() => {
-    let active = true;
-    const numericBusinessId = Number(businessId);
+    if (!request) {
+      requestGuard.current.invalidate();
+      setState({ status: 'custom' });
+      return;
+    }
+    const controller = new AbortController();
+    const identity = requestGuard.current.begin();
+    const requestKey = analyticsRequestKey(request);
     setState({ status: 'loading' });
-    adapter({ businessId: numericBusinessId, ...range })
+    adapter(request, controller.signal)
       .then((data) => {
-        if (active) setState({ status: 'success', data });
+        if (identity.isCurrent()) setState({ status: 'success', data, requestKey });
       })
-      .catch(() => {
-        if (active) {
-          setState({
-            status: 'error',
-            message: 'Analytics could not be loaded. Please try again.',
-          });
+      .catch((error: unknown) => {
+        if (identity.isCurrent() && !(error instanceof DOMException && error.name === 'AbortError')) {
+          setState({ status: 'error', message: 'Analytics could not be loaded. Please try again.' });
         }
       });
     return () => {
-      active = false;
+      controller.abort();
+      if (identity.isCurrent()) requestGuard.current.invalidate();
     };
-  }, [adapter, businessId, range, retryKey]);
+  }, [adapter, request, retryKey]);
 
   return (
     <section id="analytics" className="mission-section analytics-section" aria-labelledby="analytics-title">
-      <AnalyticsHeader preset={preset} onPresetChange={setPreset} />
-      {state.status === 'loading' && <AnalyticsLoading />}
-      {state.status === 'error' && (
-        <AnalyticsError message={state.message} onRetry={() => setRetryKey((value) => value + 1)} />
+      <AnalyticsHeader
+        preset={preset}
+        customStartDate={customStartDate}
+        customEndDate={customEndDate}
+        onPresetChange={setPreset}
+        onCustomStartDateChange={setCustomStartDate}
+        onCustomEndDateChange={setCustomEndDate}
+      />
+      {visibleState.status === 'loading' && <AnalyticsLoading />}
+      {visibleState.status === 'custom' && <AnalyticsCustomRangePrompt />}
+      {visibleState.status === 'error' && (
+        <AnalyticsError message={visibleState.message} onRetry={() => setRetryKey((value) => value + 1)} />
       )}
-      {state.status === 'success' && <AnalyticsDashboardView data={state.data} mode={mode} />}
+      {visibleState.status === 'success' && <AnalyticsDashboardView data={visibleState.data} />}
     </section>
   );
 }
 
 function AnalyticsHeader({
   preset,
+  customStartDate,
+  customEndDate,
   onPresetChange,
+  onCustomStartDateChange,
+  onCustomEndDateChange,
 }: {
   preset: AnalyticsDatePreset;
+  customStartDate: string;
+  customEndDate: string;
   onPresetChange: (preset: AnalyticsDatePreset) => void;
+  onCustomStartDateChange: (value: string) => void;
+  onCustomEndDateChange: (value: string) => void;
 }) {
   return (
     <div className="analytics-header">
       <div>
         <div className="mission-eyebrow">BUSINESS INTELLIGENCE</div>
         <h2 id="analytics-title">Analytics</h2>
-        <p>A clear view of message and booking activity for the selected business.</p>
+        <p>Performance, demand and booking outcomes at a glance.</p>
       </div>
       <fieldset className="analytics-range" aria-label="Analytics date range">
         <legend className="analytics-visually-hidden">Date range</legend>
         {PRESETS.map((option) => (
-          <button
-            key={option.value}
-            className={preset === option.value ? 'active' : ''}
-            type="button"
-            aria-pressed={preset === option.value}
-            onClick={() => onPresetChange(option.value)}
-          >
+          <button key={option.value} className={preset === option.value ? 'active' : ''} type="button" aria-pressed={preset === option.value} onClick={() => onPresetChange(option.value)}>
             {option.label}
           </button>
         ))}
+        {preset === 'custom' && (
+          <span className="analytics-custom-range">
+            <label><span className="analytics-visually-hidden">Custom start date</span><input type="date" value={customStartDate} onChange={(event) => onCustomStartDateChange(event.target.value)} /></label>
+            <span aria-hidden="true">–</span>
+            <label><span className="analytics-visually-hidden">Custom end date</span><input type="date" value={customEndDate} onChange={(event) => onCustomEndDateChange(event.target.value)} /></label>
+          </span>
+        )}
       </fieldset>
     </div>
   );
@@ -112,300 +148,185 @@ function AnalyticsHeader({
 
 export function AnalyticsDashboardView({
   data,
-  mode = 'demo',
+  initialTab = 'overview',
 }: {
   data: DashboardAnalyticsData;
-  mode?: 'demo' | 'live';
+  initialTab?: WorkspaceTab;
 }) {
-  const empty = data.summary.messagesReceived === 0
-    && data.summary.bookingsCreated === 0
-    && data.summary.bookingsRescheduled === 0
-    && data.summary.bookingsCancelled === 0;
+  const { t } = useDashboardI18n();
+  const [tab, setTab] = useState<WorkspaceTab>(initialTab);
 
   return (
-    <div className="analytics-view" aria-live="polite">
-      <AnalyticsDataStatus data={data} mode={mode} />
-      {empty ? <AnalyticsEmpty /> : (
+    <div className="analytics-workspace" aria-live="polite">
+      <div className="analytics-workspace-bar">
+        <nav className="analytics-tabs" aria-label="Analytics views">
+          {(['overview', 'channels', 'services'] as const).map((value) => (
+            <button key={value} type="button" className={tab === value ? 'active' : ''} aria-pressed={tab === value} onClick={() => setTab(value)}>
+              {t(value[0].toUpperCase() + value.slice(1))}
+            </button>
+          ))}
+        </nav>
+        <AnalyticsDataStatus data={data} />
+      </div>
+      {data.dataQuality.status === 'unavailable' ? <AnalyticsUnavailable /> : (
         <>
-          <AnalyticsSummaryCards data={data} />
-          <AnalyticsDailyTrend data={data} />
-          <div className="analytics-breakdown-grid">
-            <AnalyticsPlatformBreakdown data={data} />
-            <AnalyticsServiceBreakdown data={data} />
-          </div>
-          <aside className="analytics-interpretation-note">
-            <span aria-hidden="true">i</span>
-            <div>
-              <h3>How to read these figures</h3>
-              <ul>
-                <li>Net booking activity is bookings created minus cancellations during this period; it is not the number of currently active appointments.</li>
-                <li>Bookings per message compares booking events with inbound messages. It is not a customer-level conversion rate.</li>
-                <li>Service names reflect the name stored when each event occurred.</li>
-              </ul>
-            </div>
-          </aside>
+          {tab === 'overview' && <AnalyticsOverview data={data} />}
+          {tab === 'channels' && <AnalyticsChannelTable data={data} />}
+          {tab === 'services' && <AnalyticsServiceTable data={data} />}
         </>
       )}
     </div>
   );
 }
 
-function AnalyticsDataStatus({
-  data,
-  mode,
-}: {
-  data: DashboardAnalyticsData;
-  mode: 'demo' | 'live';
-}) {
-  const status = mode === 'demo'
-    ? 'Demo analytics'
-    : data.completeness.truncated ? 'Partial data' : 'Complete';
+function AnalyticsDataStatus({ data }: { data: DashboardAnalyticsData }) {
+  const { locale, t } = useDashboardI18n();
+  const status = data.dataQuality.status === 'complete' ? 'Complete data'
+    : data.dataQuality.status === 'partial' ? 'Partial data coverage'
+      : 'Data unavailable';
   return (
-    <div className="analytics-status-row">
-      <div className={`analytics-demo-badge ${mode}`}><span />{status}</div>
-      <span className="analytics-status-context">
-        {mode === 'demo' ? 'Sample data — not live business performance' : 'Recorded analytics events'}
-      </span>
-      <span className="analytics-updated">
-        {mode === 'demo' ? 'Preview updated ' : 'Updated '}
-        <time dateTime={data.generatedAt}>{formatTimestamp(data.generatedAt)}</time>
-      </span>
-      {data.completeness.truncated && (
-        <div className="analytics-partial" role="status">
-          This report contains partial data for the selected period.
-        </div>
-      )}
+    <details className={`analytics-quality ${data.dataQuality.status}`}>
+      <summary><span aria-hidden="true" />{status}<b aria-hidden="true">ⓘ</b></summary>
+      <div className="analytics-quality-popover">
+        <strong>{status}</strong>
+        <p>{t('{events} events and {appointments} authoritative appointments checked.', { events: formatNumber(data.dataQuality.checkedEvents, locale), appointments: formatNumber(data.dataQuality.checkedAppointments, locale) })}</p>
+        {data.dataQuality.status !== 'complete' && <p>Some metrics may not represent the entire selected period.</p>}
+        <p>Updated <time dateTime={data.generatedAt}>{formatTimestamp(data.generatedAt, locale)}</time>.</p>
+      </div>
+    </details>
+  );
+}
+
+function AnalyticsOverview({ data }: { data: DashboardAnalyticsData }) {
+  return (
+    <div className="analytics-overview">
+      <AnalyticsKpiStrip data={data} />
     </div>
   );
 }
 
-function AnalyticsSummaryCards({ data }: { data: DashboardAnalyticsData }) {
+function AnalyticsKpiStrip({ data }: { data: DashboardAnalyticsData }) {
+  const { locale, t } = useDashboardI18n();
+  const conversationCoverage = data.dataQuality.conversations;
+  const conversationValue = conversationCoverage === 'complete'
+    ? formatNumber(data.conversations.totalConversations, locale)
+    : '—';
+  const conversationContext = conversationCoverage === 'complete'
+    ? 'Conversation starts'
+    : conversationCoverage === 'partial'
+      ? 'Incomplete event coverage'
+      : 'Conversation data unavailable';
+  const value = formatRevenueEstimate(data, locale);
+  const revenueContext = data.revenue.coverage === 'complete'
+    ? 'Configured prices · not payments'
+    : data.revenue.coverage === 'partial'
+      ? t('{known} of {total} bookings priced · not payments', { known: formatNumber(data.revenue.revenueKnownCount, locale), total: formatNumber(data.revenue.completedBookingCount, locale) })
+      : 'Configured price coverage unavailable';
   const cards = [
-    { label: 'Bookings created', value: formatNumber(data.summary.bookingsCreated), tone: 'created', description: 'New booking events', importance: 'featured' },
-    { label: 'Messages received', value: formatNumber(data.summary.messagesReceived), tone: 'messages', description: 'Inbound customer activity', importance: 'primary' },
-    { label: 'Net booking activity', value: formatSigned(data.summary.netBookingActivity), tone: 'net', description: 'Bookings created minus cancellations', importance: 'primary' },
-    { label: 'Reschedules', value: formatNumber(data.summary.bookingsRescheduled), tone: 'rescheduled', description: 'Booking time changes', importance: 'supporting' },
-    { label: 'Cancellations', value: formatNumber(data.summary.bookingsCancelled), tone: 'cancelled', description: 'Cancelled booking events', importance: 'supporting' },
-    {
-      label: 'Bookings per message',
-      value: formatRatio(data.summary.bookingMessageRatio),
-      tone: 'ratio',
-      description: 'Booking activity relative to inbound messages',
-      importance: 'supporting',
-      title: 'This compares booking events with received message events. It is not a customer-level conversion rate.',
-    },
+    { label: 'New conversations', value: conversationValue, note: conversationContext, tone: conversationCoverage === 'complete' ? 'green' : 'caution' },
+    { label: 'Completed bookings', value: formatNumber(data.funnel.bookingCompleted, locale), note: 'Verified completions', tone: 'blue' },
+    { label: 'Estimated booking value', value, note: revenueContext, tone: data.revenue.coverage === 'complete' ? 'gold' : 'caution' },
   ];
   return (
-    <div className="analytics-kpi-grid" aria-label="Analytics summary">
+    <div className="analytics-kpi-strip" aria-label="Business performance summary">
       {cards.map((card) => (
-        <article className={`analytics-kpi ${card.tone} ${card.importance}`} key={card.label} title={card.title}>
-          <div className="analytics-kpi-heading"><i aria-hidden="true" /><span>{card.label}</span></div>
+        <article className={`analytics-kpi-card ${card.tone}`} key={card.label}>
+          <span>{card.label}</span>
           <strong>{card.value}</strong>
-          <p>{card.description}</p>
+          <small>{card.note}</small>
         </article>
       ))}
     </div>
   );
 }
 
-function AnalyticsDailyTrend({ data }: { data: DashboardAnalyticsData }) {
-  const width = 900;
-  const height = 280;
-  const plot = { left: 42, right: 18, top: 20, bottom: 42 };
-  const maxValue = Math.max(1, ...data.daily.flatMap((day) => [
-    day.messagesReceived,
-    day.bookingsCreated,
-    day.bookingsRescheduled,
-    day.bookingsCancelled,
-  ]));
-  const x = (index: number) => plot.left
-    + (index * (width - plot.left - plot.right)) / Math.max(1, data.daily.length - 1);
-  const y = (value: number) => plot.top
-    + (1 - value / maxValue) * (height - plot.top - plot.bottom);
-  const series = [
-    { key: 'messagesReceived', label: 'Messages', color: '#3ddc84', dash: undefined, priority: 'primary', width: 3 },
-    { key: 'bookingsCreated', label: 'Bookings', color: '#7aa7ff', dash: undefined, priority: 'primary', width: 2.75 },
-    { key: 'bookingsRescheduled', label: 'Reschedules', color: '#f2c66d', dash: '6 6', priority: 'supporting', width: 1.5 },
-    { key: 'bookingsCancelled', label: 'Cancellations', color: '#ef7f87', dash: '3 6', priority: 'supporting', width: 1.5 },
-  ] as const;
-  const labelEvery = Math.max(1, Math.ceil(data.daily.length / 6));
-  const baseline = height - plot.bottom;
-  const messagesArea = [
-    `${plot.left},${baseline}`,
-    ...data.daily.map((day, index) => `${x(index)},${y(day.messagesReceived)}`),
-    `${width - plot.right},${baseline}`,
-  ].join(' ');
-
+export function AnalyticsChannelTable({ data }: { data: DashboardAnalyticsData }) {
+  const { locale, t } = useDashboardI18n();
+  const rows = data.channels.map((channel) => ({
+    ...channel,
+    identity: PLATFORM_DETAILS[channel.channel as keyof typeof PLATFORM_DETAILS],
+  }));
   return (
-    <article className="analytics-panel analytics-trend-panel">
-      <div className="analytics-panel-head">
-        <div>
-          <span className="analytics-panel-eyebrow">ACTIVITY OVER TIME</span>
-          <h3>Daily activity</h3>
-          <p>See how customer messages and booking activity changed during this period. Dates are grouped by UTC day.</p>
-        </div>
-        <div className="analytics-legend" aria-label="Chart legend">
-          {series.map((item) => <span className={item.priority} key={item.key}><i style={{ background: item.color }} />{item.label}</span>)}
-        </div>
+    <article className="analytics-module analytics-table-module">
+      <div className="analytics-module-head"><div><span>CHANNEL PERFORMANCE</span><h3>Where bookings come from</h3></div><small>{t(rows.length === 1 ? '{count} active channel in this period' : '{count} active channels in this period', { count: rows.length })}</small></div>
+      <div className="analytics-compact-table" role="table" aria-label="Channel performance">
+        <div className="analytics-table-row header" role="row"><span role="columnheader">Channel</span><span role="columnheader">Conversations</span><span role="columnheader">Completed</span><span role="columnheader">Conversion</span><span role="columnheader">Needs attention</span></div>
+        {rows.map((row) => (
+          <div className="analytics-table-row" role="row" key={row.channel}>
+            <span role="cell" className="analytics-table-identity">{row.identity && <img src={row.identity.logo} alt="" />}<strong>{row.identity?.label || titleCase(row.channel)}</strong></span>
+            <strong role="cell">{data.dataQuality.conversations === 'complete' ? formatNumber(row.conversations, locale) : '—'}</strong>
+            <strong role="cell">{formatNumber(row.bookingCompleted, locale)}</strong>
+            <strong role="cell">{formatRatio(data.dataQuality.status === 'complete' ? row.conversionRate : null, locale)}</strong>
+            <span role="cell" className={row.failures > 0 || row.noAvailability > 0 ? 'analytics-attention' : ''}>{t('{failed} failed · {unavailable} unavailable', { failed: formatNumber(row.failures, locale), unavailable: formatNumber(row.noAvailability, locale) })}</span>
+          </div>
+        ))}
       </div>
-      <figure className="analytics-chart-wrap">
-        <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-labelledby="analytics-chart-title analytics-chart-desc">
-          <title id="analytics-chart-title">Daily analytics activity in UTC</title>
-          <desc id="analytics-chart-desc">{chartSummary(data)}</desc>
-          <defs>
-            <linearGradient id="analytics-messages-area" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="#3ddc84" stopOpacity="0.14" />
-              <stop offset="100%" stopColor="#3ddc84" stopOpacity="0" />
-            </linearGradient>
-          </defs>
-          {[0, 1 / 3, 2 / 3, 1].map((position) => {
-            const lineY = plot.top + position * (height - plot.top - plot.bottom);
-            const value = Math.round(maxValue * (1 - position));
-            return (
-              <g key={position}>
-                <line className="analytics-grid-line" x1={plot.left} x2={width - plot.right} y1={lineY} y2={lineY} />
-                <text className="analytics-axis-value" x={plot.left - 10} y={lineY + 4}>{value}</text>
-              </g>
-            );
-          })}
-          <polygon className="analytics-message-area" points={messagesArea} fill="url(#analytics-messages-area)" />
-          {series.map((item) => (
-            <polyline
-              className={`analytics-chart-series ${item.priority}`}
-              key={item.key}
-              fill="none"
-              stroke={item.color}
-              strokeDasharray={item.dash}
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={item.width}
-              points={data.daily.map((day, index) => `${x(index)},${y(day[item.key])}`).join(' ')}
-            />
-          ))}
-          {data.daily.map((day, index) => (
-            (index % labelEvery === 0 || index === data.daily.length - 1) && (
-              <text key={day.date} className="analytics-axis-date" x={x(index)} y={height - 14} textAnchor="middle">
-                {formatShortDate(day.date)}
-              </text>
-            )
-          ))}
-        </svg>
-        <figcaption className="analytics-visually-hidden">{chartSummary(data)}</figcaption>
-      </figure>
+      {rows.length === 0 && <p className="analytics-table-empty">No channel activity was recorded in this period.</p>}
     </article>
   );
 }
 
-function AnalyticsPlatformBreakdown({ data }: { data: DashboardAnalyticsData }) {
-  const rows = PLATFORM_DETAILS.map((platform) => ({
-    ...platform,
-    data: data.platforms.find((item) => item.platform === platform.key),
-  })).sort((left, right) => (right.data?.messagesReceived || 0) - (left.data?.messagesReceived || 0));
-  const maxMessages = Math.max(1, ...rows.map((row) => row.data?.messagesReceived || 0));
-
+export function AnalyticsServiceTable({ data }: { data: DashboardAnalyticsData }) {
+  const { locale } = useDashboardI18n();
+  const completeCoverage = data.dataQuality.status === 'complete';
+  const rows = [...data.services].sort((left, right) => right.bookingCompleted - left.bookingCompleted || right.bookingStarted - left.bookingStarted);
   return (
-    <article className="analytics-panel analytics-breakdown-panel">
-      <div className="analytics-panel-head">
-        <div><span className="analytics-panel-eyebrow">CHANNEL MIX</span><h3>Platform performance</h3><p>Compare inbound activity and booking events across connected channels.</p></div>
+    <article className="analytics-module analytics-table-module">
+      <div className="analytics-module-head"><div><span>SERVICE PERFORMANCE</span><h3>What customers book</h3></div><small>Ranked by completed bookings</small></div>
+      <div className="analytics-compact-table services" role="table" aria-label="Service performance">
+        <div className="analytics-table-row header" role="row"><span role="columnheader">Service</span><span role="columnheader">Demand</span><span role="columnheader">Started</span><span role="columnheader">Completed</span><span role="columnheader">Conversion</span></div>
+        {rows.map((row, index) => (
+          <div className="analytics-table-row" role="row" key={`${row.serviceName || 'unattributed'}-${index}`}>
+            <span role="cell" className="analytics-service-name"><i>{formatNumber(index + 1, locale)}</i><strong translate={row.serviceName ? 'no' : undefined}>{row.serviceName || 'Unattributed'}</strong></span>
+            <strong role="cell">{completeCoverage ? formatNumber(row.availabilityRequests, locale) : '—'}</strong>
+            <strong role="cell">{completeCoverage ? formatNumber(row.bookingStarted, locale) : '—'}</strong>
+            <strong role="cell">{formatNumber(row.bookingCompleted, locale)}</strong>
+            <strong role="cell">{formatRatio(completeCoverage ? row.conversionRate : null, locale)}</strong>
+          </div>
+        ))}
       </div>
-      <div className="analytics-performance-list" role="list" aria-label="Platform performance">
-        {rows.map((platform) => {
-          const row = platform.data;
-          const messages = row?.messagesReceived || 0;
-          return (
-            <div className="analytics-performance-row" role="listitem" key={platform.key}>
-              <div className="analytics-performance-main">
-                <span className="analytics-platform"><img src={platform.logo} alt="" /><strong>{platform.label}</strong></span>
-                <div className="analytics-performance-primary">
-                  <span><strong>{formatNumber(messages)}</strong><small>Messages</small></span>
-                  <span><strong>{formatNumber(row?.bookingsCreated || 0)}</strong><small>Bookings</small></span>
-                </div>
-              </div>
-              <div className="analytics-activity-track" aria-hidden="true"><span style={{ width: `${(messages / maxMessages) * 100}%` }} /></div>
-              <dl className="analytics-performance-secondary">
-                <div><dt>Moved</dt><dd>{formatNumber(row?.bookingsRescheduled || 0)}</dd></div>
-                <div><dt>Cancelled</dt><dd>{formatNumber(row?.bookingsCancelled || 0)}</dd></div>
-                <div><dt>Bookings/message</dt><dd>{formatRatio(row?.bookingMessageRatio ?? null)}</dd></div>
-              </dl>
-            </div>
-          );
-        })}
-      </div>
-    </article>
-  );
-}
-
-function AnalyticsServiceBreakdown({ data }: { data: DashboardAnalyticsData }) {
-  const unattributedTotal = data.services.unattributed.bookingsCreated
-    + data.services.unattributed.bookingsRescheduled
-    + data.services.unattributed.bookingsCancelled;
-  const rows = [
-    ...data.services.rows.map((service) => ({ ...service, unattributed: false })),
-    ...(unattributedTotal > 0 ? [{ serviceName: 'Unattributed', ...data.services.unattributed, unattributed: true }] : []),
-  ];
-  const maxCreated = Math.max(1, ...rows.map((row) => row.bookingsCreated));
-
-  return (
-    <article className="analytics-panel analytics-breakdown-panel">
-      <div className="analytics-panel-head">
-        <div><span className="analytics-panel-eyebrow">SERVICE MIX</span><h3>Service performance</h3><p>Booking activity using the service name stored with each event.</p></div>
-      </div>
-      <div className="analytics-service-list" role="list" aria-label="Service performance">
-        {rows.map((service) => {
-          const total = service.bookingsCreated + service.bookingsRescheduled + service.bookingsCancelled;
-          return (
-            <div className={`analytics-service-row${service.unattributed ? ' unattributed' : ''}`} role="listitem" key={service.serviceName}>
-              <div className="analytics-service-heading">
-                <strong>{service.serviceName}</strong>
-                <span><b>{formatNumber(service.bookingsCreated)}</b> created</span>
-              </div>
-              <div className="analytics-activity-track service" aria-hidden="true"><span style={{ width: `${(service.bookingsCreated / maxCreated) * 100}%` }} /></div>
-              <dl className="analytics-service-secondary">
-                <div><dt>Moved</dt><dd>{formatNumber(service.bookingsRescheduled)}</dd></div>
-                <div><dt>Cancelled</dt><dd>{formatNumber(service.bookingsCancelled)}</dd></div>
-                <div><dt>Total activity</dt><dd>{formatNumber(total)}</dd></div>
-              </dl>
-            </div>
-          );
-        })}
-      </div>
-      {data.services.truncated && <p className="analytics-service-note">Showing top services for this period.</p>}
+      {rows.length === 0 && <p className="analytics-table-empty">No service activity was recorded in this period.</p>}
+      <p className="analytics-table-footnote">Service-level value is not shown because the backend does not currently attribute known-price estimates by service.</p>
     </article>
   );
 }
 
 export function AnalyticsLoading() {
-  return <div className="analytics-loading" aria-live="polite" aria-busy="true"><div className="analytics-skeleton status" /><div className="analytics-skeleton-grid">{Array.from({ length: 6 }, (_, index) => <div className="analytics-skeleton card" key={index} />)}</div><div className="analytics-skeleton chart" /><div className="analytics-skeleton-breakdowns"><div className="analytics-skeleton panel" /><div className="analytics-skeleton panel" /></div><span className="analytics-visually-hidden">Loading analytics</span></div>;
+  return <div className="analytics-loading" aria-live="polite" aria-busy="true"><div className="analytics-skeleton analytics-skeleton-bar" /><div className="analytics-skeleton-grid">{Array.from({ length: 3 }, (_, index) => <div className="analytics-skeleton card" key={index} />)}</div><span className="analytics-visually-hidden">Loading analytics</span></div>;
 }
 
-function AnalyticsEmpty() {
-  return <div className="analytics-state"><div className="analytics-state-icon" aria-hidden="true">○</div><h3>No analytics activity was recorded for this period.</h3><p>Try selecting a wider date range.</p></div>;
+function AnalyticsCustomRangePrompt() {
+  return <div className="analytics-state"><div className="analytics-state-icon" aria-hidden="true">○</div><h3>Select a custom date range</h3><p>Choose a start and end date to load business-local analytics.</p></div>;
+}
+
+function AnalyticsUnavailable() {
+  return <div className="analytics-state"><div className="analytics-state-icon" aria-hidden="true">!</div><h3>Analytics coverage is unavailable</h3><p>No zero-value performance claim is being made.</p></div>;
 }
 
 export function AnalyticsError({ message, onRetry }: { message: string; onRetry: () => void }) {
   return <div className="analytics-state error" role="alert"><div className="analytics-state-icon" aria-hidden="true">!</div><h3>Analytics are temporarily unavailable</h3><p>{message}</p><button type="button" onClick={onRetry}>Try again</button></div>;
 }
 
-function formatNumber(value: number): string {
-  return new Intl.NumberFormat().format(value);
+function formatRevenueEstimate(data: DashboardAnalyticsData, locale = 'en'): string {
+  if (data.revenue.coverage === 'unavailable' || data.revenue.estimatedRevenueFromKnownPrices.length === 0) return '—';
+  return data.revenue.estimatedRevenueFromKnownPrices
+    .map(({ currency, amount }) => new Intl.NumberFormat(locale, { style: 'currency', currency, maximumFractionDigits: 0 }).format(amount))
+    .join(' + ');
 }
 
-function formatSigned(value: number): string {
-  return value > 0 ? `+${formatNumber(value)}` : formatNumber(value);
+function formatNumber(value: number, locale = 'en'): string {
+  return new Intl.NumberFormat(locale).format(value);
 }
 
-function formatRatio(value: number | null): string {
-  return value === null ? '—' : new Intl.NumberFormat(undefined, { style: 'percent', maximumFractionDigits: 1 }).format(value);
+function formatRatio(value: number | null, locale = 'en'): string {
+  return value === null ? '—' : new Intl.NumberFormat(locale, { style: 'percent', maximumFractionDigits: 1 }).format(value);
 }
 
-function formatTimestamp(value: string): string {
-  return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value));
+function formatTimestamp(value: string, locale = 'en'): string {
+  return new Intl.DateTimeFormat(locale, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value));
 }
 
-function formatShortDate(value: string): string {
-  return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' }).format(new Date(`${value}T00:00:00Z`));
-}
 
-function chartSummary(data: DashboardAnalyticsData): string {
-  return `${data.daily.length} UTC days. ${data.summary.messagesReceived} messages received, ${data.summary.bookingsCreated} bookings created, ${data.summary.bookingsRescheduled} reschedules and ${data.summary.bookingsCancelled} cancellations.`;
+function titleCase(value: string): string {
+  return value.replace(/[_-]+/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
 }

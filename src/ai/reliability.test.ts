@@ -5,6 +5,7 @@ import {
   classifyAiFailure,
   containsUnverifiedBookingSuccessClaim,
   createBookingOperationResult,
+  normalizeAiResponseText,
   runAiProviderRequest,
 } from './reliability';
 
@@ -50,6 +51,8 @@ async function runTests() {
 
   assert.equal(classifyAiFailure(new Error('429 quota exceeded')), 'RATE_LIMIT');
   assert.equal(classifyAiFailure(new Error('fetch failed: ECONNRESET')), 'NETWORK');
+  assert.equal(normalizeAiResponseText(undefined), '', 'tool-only AI responses may omit text');
+  assert.equal(normalizeAiResponseText('Available slots'), 'Available slots');
   assert.equal(containsUnverifiedBookingSuccessClaim('Your appointment is confirmed.'), true);
   assert.equal(containsUnverifiedBookingSuccessClaim('Din tid är nu bokad.'), true);
   assert.equal(containsUnverifiedBookingSuccessClaim('Din tid för konsultation är nu bokad.'), true);

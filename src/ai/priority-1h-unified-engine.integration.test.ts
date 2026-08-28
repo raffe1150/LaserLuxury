@@ -116,7 +116,15 @@ for (const failure of ['calendar_create', 'calendar_verify', 'database_insert', 
   assert.equal(failed.pending?.status, 'failed_recoverable');
 }
 
-for (const [index, confirmation] of ['Ja tack', 'Bale', 'Yes', 'بله'].entries()) {
+for (const [index, confirmation] of [
+  'Yes, please book that time.',
+  'Ja tack, boka den tiden.',
+  'بله، لطفاً برای همان ساعت رزرو کنید.',
+  'bale lotfan hamoon saat ro rezerv kon',
+  'Ja, bitte buchen Sie diese Zeit.',
+  'Sí, por favor reserva esa hora.',
+  'نعم، احجز ذلك الموعد من فضلك.',
+].entries()) {
   const { counters, events } = fixture();
   const session = `wa_4670000000${index}`;
   const recipient = `4670000000${index}`;
@@ -126,6 +134,9 @@ for (const [index, confirmation] of ['Ja tack', 'Bale', 'Yes', 'بله'].entries
   assert.equal(correction.pending?.status, 'awaiting_confirmation');
   const confirmed = await turn(session, 'whatsapp', recipient, confirmation);
   assert.equal(confirmed.pending?.status, 'awaiting_contact');
+  assert.equal(confirmed.pending?.dateTime, correction.pending?.dateTime, 'selected owned slot remains authoritative');
+  assert.equal(confirmed.pending?.lastAvailabilityConstraintKey, correction.pending?.lastAvailabilityConstraintKey, 'confirmation does not invalidate availability');
+  assert.equal(confirmed.replies.length, 1, 'confirmation emits only the contact request');
   assert.match(confirmed.replies[0], /name|namn|نام/u);
   const completed = await turn(session, 'whatsapp', recipient, 'Arman 03585353563');
   assert.equal(completed.pending, null);

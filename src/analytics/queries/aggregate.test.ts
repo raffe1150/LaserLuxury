@@ -146,7 +146,7 @@ async function runTests(): Promise<void> {
 
   const complete = aggregate([
     event('customer_message_received'),
-    event('booking_created', { service_name_snapshot: 'Consultation' }),
+    event('booking_completed', { service_name_snapshot: 'Consultation' }),
     event('booking_rescheduled', { service_name_snapshot: 'Consultation' }),
     event('booking_rescheduled', { service_name_snapshot: 'Consultation' }),
     event('booking_cancelled'),

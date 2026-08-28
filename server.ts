@@ -19,6 +19,16 @@ import type {
   AppointmentStateOwner,
 } from "./booking-security";
 import {
+  buildBusinessPromptWithTone,
+  normalizeBusinessToneConfig,
+} from "./src/ai/tone-controls";
+import {
+  renderDeterministicAvailabilityReply,
+  renderDeterministicBookingConfirmation,
+  renderDeterministicMissingDetailsReply,
+} from "./src/ai/deterministic-booking-presentation";
+import { applyBusinessToneConfigUpdate } from "./src/business/business-tone-update";
+import {
   appointmentIdentityKeyConflicts,
   appointmentStateOwnerMatches,
   detectAppointmentLookupMode,
@@ -30,13 +40,20 @@ import {
   selectSecureAppointmentRows,
   selectSecureCalendarEvents,
 } from "./booking-security";
-import { analytics } from "./src/analytics";
+import {
+  analytics,
+  createAnalyticsCorrelationId,
+  createInboundMessageAnalyticsIdentity,
+  recordBookingOutcome,
+  recordRuntimeAnalyticsEvent,
+} from "./src/analytics";
 import {
   AiReliabilityError,
   type BookingOperationResult,
   classifyAiFailure,
   containsUnverifiedBookingSuccessClaim,
   createBookingOperationResult,
+  normalizeAiResponseText,
   runAiProviderRequest,
 } from "./src/ai/reliability";
 import {
@@ -51,16 +68,95 @@ import {
   selectTelegramDeliveryMode,
   type TelegramReplyPreference,
 } from "./src/ai/channel-reliability";
-import { applyNormalizedRequestToPending, availabilityFieldsFromConstraint, buildSlotFingerprintSource, formatPersianSpokenPhone, getDateInTimeZone, getZonedSlotParts, isCurrentConversationTurn, normalizeBookingRequest, normalizeConversationText, parseBookingDate, parseTimeConstraint, preparePersianTextForTts, registerConversationTurn, slotMinutesSatisfyConstraint, toPersistedBookingRequest, zonedLocalIso, type NormalizedBookingRequest, type NormalizedTimeConstraint } from "./src/ai/booking-intelligence";
-import { beginBookingFinalization, getBookingInvariantFailures, getBookingPhase, getMissingBookingContact, recoverBookingFinalization, recoverBookingTransaction, type BookingFailureStage } from "./src/ai/booking-state-machine";
+import { applyNormalizedRequestToPending, availabilityFieldsFromConstraint, buildSlotFingerprintSource, formatPersianSpokenPhone, getBookingDateConflict, getBookingWeekdayReference, getDateInTimeZone, getZonedSlotParts, isCurrentConversationTurn, isReadOnlyAvailabilityInquiry, isServiceGuidanceRequest, normalizeConversationText, parseBookingDate, parseNamedBookingDateRange, parseTimeConstraint, preparePersianTextForTts, registerConversationTurn, resolveRelativeBookingDateSemantic, slotMinutesSatisfyConstraint, toPersistedBookingRequest, zonedLocalIso, type NormalizedBookingRequest, type NormalizedTimeConstraint } from "./src/ai/booking-intelligence";
+import { beginBookingFinalization, getBookingInvariantFailures, getBookingPhase, getMissingBookingContact, isPositiveBookingConfirmation, recoverBookingFinalization, recoverBookingTransaction, type BookingFailureStage } from "./src/ai/booking-state-machine";
 import { enumerateCandidateMinutes, isBlockingCalendarEvent, isCanonicalSlotFree } from "./src/ai/canonical-availability";
 import { resolveAuthoritativeContact, type ContactPhoneSource } from "./src/ai/channel-contact";
+import { understandBookingTurn } from "./src/ai/understanding/understand-booking-turn";
+import type { UnderstandingProviderInput } from "./src/ai/understanding/provider";
+import { createConfiguredUnderstandingShadowRuntime } from "./src/ai/understanding/shadow";
+import {
+  createConfiguredUnderstandingAdoptionRuntime,
+  resolveControlledUnderstandingAdoption,
+  type ControlledUnderstandingCandidates,
+  type UnderstandingAdoptionRuntime,
+} from "./src/ai/understanding/adoption";
 import { CURRENT_BOOKING_STATE_VERSION, normalizePendingBookingState, operationFromCurrentIntent, resolveAuthoritativeOperation } from "./src/ai/booking-operation-state";
 import { formatDeterministicRecovery, isGenericBookingRetry, type DeterministicFailureCategory } from "./src/ai/booking-recovery";
+import {
+  advanceUnresolvedDateConflictClarification,
+  beginOrAdvanceDateConflictClarification,
+  formatDateConflictClarification,
+  isDateConflictClarificationState,
+  resolveDateConflictClarification,
+  type DateConflictClarificationState,
+  type DateConflictClarificationStage,
+} from "./src/ai/date-conflict-clarification";
 import { createRequireAuth } from "./src/auth/require-auth";
 import { createRequireBusinessPermission } from "./src/auth/require-business-access";
 import { getAuthorizationClient } from "./src/auth/supabase-auth";
 import type { AuthenticatedRequest, BusinessPermission } from "./src/auth/types";
+import { createAnalyticsApiRouter } from "./src/analytics/api-router";
+import { createDashboardSummaryRouter } from "./src/dashboard/api-router";
+import type { DashboardOperationalSources } from "./src/dashboard/summary";
+import {
+  collectConversationSourcePages,
+  collectConversationMatchPage,
+  conversationMatchesStatusFilter,
+  conversationActivityCutoff,
+  normalizeConversationActivityRange,
+  normalizeConversationChannel,
+  normalizeConversationStatusFilter,
+  parseConversationId,
+  toConversationMessage,
+  type ConversationActivityRange,
+} from "./src/conversations/inbox";
+import {
+  bookingMatchesView,
+  sortBookingsStable,
+} from "./src/bookings/workspace";
+import {
+  projectBookingFailureNotifications,
+  projectHealthNotifications,
+  resolvedHealthConditionKeys,
+  type NotificationProjection,
+} from "./src/notifications/model";
+import {
+  HEALTH_CHECK_TIMEOUT_MS,
+  getIntegrationHealthSnapshot,
+  invalidateIntegrationHealthCache,
+  isIntegrationConfigured,
+  refreshIntegrationHealth,
+  type IntegrationHealthConfig,
+} from "./src/health/integration-health";
+import type { IntegrationKey } from "./src/types/dashboard";
+import {
+  getOdinLinkStartupPolicy,
+  registerHealthEndpoint,
+} from "./src/runtime/local-test-mode";
+import {
+  TEST_EXECUTION_SCHEMA_VERSION,
+  authenticateTestBridgeRequest,
+  createSupabaseTestExecutionStore,
+  createTestExecutionRecord,
+  getTestExecutionTtlMs,
+  hashTestExecutionId,
+  isValidTestExecutionId,
+  testExecutionFingerprintFromHash,
+  type StoredTestExecution,
+  type TestExecutionStore,
+} from "./src/runtime/test-bridge-security";
+import {
+  attachTestExecutionResourceProvenance,
+  createSupabaseTestExecutionResourceProvenanceStore,
+  getTestExecutionCorrelationMaxAgeMs,
+  resolveInferredTestExecutionContext,
+  type TestExecutionResourceProvenanceStore,
+} from "./src/runtime/test-execution-provenance";
+
+const odinLinkStartupPolicy = getOdinLinkStartupPolicy();
+const structuredUnderstandingShadowRuntime = createConfiguredUnderstandingShadowRuntime();
+const structuredUnderstandingAdoptionRuntime = createConfiguredUnderstandingAdoptionRuntime();
 
 let supabase: any = null;
 const DASHBOARD_BUSINESS_COLUMNS = [
@@ -69,7 +165,10 @@ const DASHBOARD_BUSINESS_COLUMNS = [
   'industry',
   'timezone',
   'language',
+  'working_hours',
+  'services',
   'custom_system_prompt',
+  'ai_tone_config',
   'google_calendar_id',
   'instagram_page_id',
   'instagram_account_id',
@@ -259,7 +358,7 @@ async function generateContentWithFallback(ai: GoogleGenAI | null, options: {
   
   let safeText = "";
   try {
-     safeText = response.text;
+     safeText = normalizeAiResponseText(response.text);
   } catch(e) {
      const parts = response.candidates?.[0]?.content?.parts || [];
      safeText = parts.map((p:any) => p.text || "").join("");
@@ -394,7 +493,11 @@ interface CalendarAdapter {
   cancelAppointment?(eventId: string): Promise<any> | any;
   getEventById?(eventId: string): Promise<any | null> | any | null;
   verifyEventDeleted?(eventId: string): Promise<boolean> | boolean;
-  getEvents(startDate: string, endDate: string): Promise<any> | any;
+  getEvents(
+    startDate: string,
+    endDate: string,
+    options?: { throwOnReadFailure?: boolean }
+  ): Promise<any> | any;
 }
 
 type Priority1hTestDependencies = {
@@ -411,9 +514,49 @@ type Priority1hTestDependencies = {
   notifyReschedule?: () => Promise<boolean>;
   notifyCancellation?: () => Promise<boolean>;
   incrementUsage?: (params: any) => Promise<{ allowed: boolean; count: number; limit: number }>;
+  loadBusinessConfigById?: (businessId: string) => Promise<any> | any;
+  sendReminder?: (appointment: any, reminderType: "24h" | "2h", businessConfig: any) => Promise<boolean> | boolean;
+  testExecutionStore?: TestExecutionStore | null;
+  testExecutionProvenanceStore?: TestExecutionResourceProvenanceStore | null;
+  testBridgeNow?: () => number;
+  structuredUnderstandingAdoptionRuntime?: UnderstandingAdoptionRuntime | null;
+  bookingLanguageTrace?: (event: {
+    stage: string;
+    sessionId: string;
+    currentLanguage?: string | null;
+    flowLanguage?: string | null;
+    pendingLanguage?: string | null;
+    availabilityLanguage?: string | null;
+    presentationLanguage?: string | null;
+    detectedLanguage?: string | null;
+    explicitSwitch?: string | null;
+    inputFingerprint?: string | null;
+  }) => void;
 };
 
 let priority1hTestDependencies: Priority1hTestDependencies | null = null;
+
+type BookingLanguageTraceEvent = Parameters<
+  NonNullable<Priority1hTestDependencies["bookingLanguageTrace"]>
+>[0];
+
+function emitBookingLanguageTrace(event: BookingLanguageTraceEvent): void {
+  priority1hTestDependencies?.bookingLanguageTrace?.(event);
+  if (process.env.ODINLINK_BOOKING_LANGUAGE_TRACE !== "1") return;
+
+  console.log("[BookingLanguageRuntime]", {
+    stage: event.stage,
+    sessionFingerprint: safeLogFingerprint(event.sessionId),
+    currentLanguage: event.currentLanguage ?? null,
+    flowLanguage: event.flowLanguage ?? null,
+    pendingLanguage: event.pendingLanguage ?? null,
+    availabilityLanguage: event.availabilityLanguage ?? null,
+    presentationLanguage: event.presentationLanguage ?? null,
+    detectedLanguage: event.detectedLanguage ?? null,
+    explicitSwitch: event.explicitSwitch ?? null,
+    inputFingerprint: event.inputFingerprint ?? null,
+  });
+}
 
 
 function getLastSundayOfMonth(year: number, monthIndex: number): number {
@@ -458,6 +601,20 @@ function getAppointmentBusinessScope(config: any): string {
   return calendarId ? `calendar:${calendarId}` : "";
 }
 
+function getScopedChannelSessionId(
+  platform: "whatsapp" | "messenger" | "instagram",
+  userId: string,
+  businessConfig: any,
+  tenantScope?: string
+): string {
+  const prefix = platform === "whatsapp" ? "wa_" : platform === "messenger" ? "ms_" : "ig_";
+  const normalizedUserId = normalizePlatformUserId(platform, userId);
+  const businessScope = String(getAppointmentBusinessScope(businessConfig) || tenantScope || "").trim();
+  return businessScope
+    ? `${prefix}${encodeURIComponent(businessScope)}:${normalizedUserId}`
+    : `${prefix}${normalizedUserId}`;
+}
+
 function normalizeLocalizedDigits(value?: string): string {
   const persianDigits = "۰۱۲۳۴۵۶۷۸۹";
   const arabicDigits = "٠١٢٣٤٥٦٧٨٩";
@@ -484,8 +641,8 @@ function inferRequestedTimeFromText(text?: string): string | null {
   // Prefer explicit clock words so phone numbers like 0738... are not mistaken for times.
   const patterns = [
     /(?:kl|klockan|clock|saat|saate|hora|las|at)\s*[\.:]?\s*(\d{1,2})(?:[\.:](\d{2}))?/i,
-    /(?:^|\s)(\d{1,2})[\.:](\d{2})(?:\s|$)/i,
-    /(?:^|\s)(\d{1,2})\s*(?:am|pm)(?:\s|$)/i,
+    /(?:^|\s)(\d{1,2})[\.:](\d{2})(?=[^\d]|$)/i,
+    /(?:^|\s)(\d{1,2})\s*(?:am|pm)(?=[^\p{L}\p{N}]|$)/iu,
   ];
 
   for (const pattern of patterns) {
@@ -565,7 +722,7 @@ function parseRescheduleTimeFollowUp(text?: string): RescheduleTimeFollowUp {
     if (meridiem === "am" && hour === 12) hour = 0;
     return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
   };
-  const timeToken = String.raw`([01]?\d|2[0-3])(?:[\.:](\d{2}))?\s*(am|pm)?`;
+  const timeToken = String.raw`(2[0-3]|[01]?\d)(?:[\.:](\d{2}))?\s*(am|pm)?(?!\d)`;
   const rejectedTimes: string[] = [];
   const negativePatterns = [
     new RegExp(String.raw`(?:not|don['’]?t\s+want|do\s+not\s+want|cannot|can['’]?t|inte|vill\s+inte\s+ha|kan\s+inte|nicht|lieber\s+nicht|kann\s+ich\s+nicht|no\s+(?:a\s+las|quiero)|no\s+puedo|ليس|لا\s+(?:أريد|استطيع|أستطيع)|نمی[\u200c\s]?(?:خوام|خواهم|تونم|توانم)|نمي\s*(?:خوام|تونم)|اون\s+ساعت\s+نه|آن\s+ساعت\s+نه)[^\d]{0,24}${timeToken}`, "giu"),
@@ -605,7 +762,7 @@ function parseRescheduleTimeFollowUp(text?: string): RescheduleTimeFollowUp {
     [
       "exclusive_lower",
       new RegExp(
-        String.raw`(?:after|later\s+than|efter(?:\s+kl(?:ockan)?\.?)?|senare\s+[aä]n|nach|sp[aä]ter\s+als|despu[eé]s\s+de(?:\s+las)?|m[aá]s\s+tarde\s+que|bade?(?:\s+az)?(?:\s+sa{1,2}t(?:e)?)?|بعد\s+از(?:\s+ساعت)?|دیرتر\s+از|بعد\s+الساعة)\s*${timeToken}`,
+        String.raw`(?:(?:after|later\s+than)(?:\s+at)?|efter(?:\s+kl(?:ockan)?\.?)?|senare\s+[aä]n|nach|sp[aä]ter\s+als|despu[eé]s\s+de(?:\s+las)?|m[aá]s\s+tarde\s+que|bade?(?:\s+az)?(?:\s+sa{1,2}t(?:e)?)?|بعد\s+از(?:\s+ساعت)?|دیرتر\s+از|بعد\s+الساعة)\s*${timeToken}`,
         "iu"
       )
     ],
@@ -633,7 +790,7 @@ function parseRescheduleTimeFollowUp(text?: string): RescheduleTimeFollowUp {
     [
       "approximate",
       new RegExp(
-        String.raw`(?:around|about|cirka|ungef[aä]r|gegen|aproximadamente|sobre\s+las|hodude?|حدود(?:\s+ساعت)?|تقریباً|تقريبا|حوالي\s+الساعة)\s*${timeToken}`,
+        String.raw`(?:around|(?<!how\s)about|cirka|ungef[aä]r|gegen|aproximadamente|sobre\s+las|hodude?|حدود(?:\s+ساعت)?|تقریباً|تقريبا|حوالي\s+الساعة)\s*${timeToken}`,
         "iu"
       )
     ]
@@ -718,7 +875,7 @@ function extractAvailableSlotTimes(slotsString?: string): Set<string> {
   return times;
 }
 
-function buildLocalizedSlotReply(slotsArray: string[], specificTime?: string, language: string = "sv"): string {
+function buildLocalizedSlotReply(slotsArray: string[], specificTime?: string, language: string = "sv", toneConfig?: unknown): string {
   const normalizedSpecificTime = normalizeRequestedTime(specificTime || "") || undefined;
   const dayMap = new Map<string, string[]>();
   let foundSpecificSlot: any = null;
@@ -727,61 +884,31 @@ function buildLocalizedSlotReply(slotsArray: string[], specificTime?: string, la
     sv: {
       months: ["januari", "februari", "mars", "april", "maj", "juni", "juli", "augusti", "september", "oktober", "november", "december"],
       days: ["söndag", "måndag", "tisdag", "onsdag", "torsdag", "fredag", "lördag"],
-      yes: (d: string, t: string) => `Ja, ${d} kl ${t} är ledig! Ska jag boka den åt dig?`,
-      none: "Jag hittade tyvärr inga lediga tider för den perioden. Har du något annat datum i åtanke? 😊",
-      busyNone: (t: string) => `Tyvärr är kl ${t} redan bokat, och jag hittade inga andra lediga tider för den perioden. Har du något annat datum i åtanke? 😊`,
-      busyAlternatives: (t: string, slots: string) => `Tyvärr är kl ${t} inte ledig. Men jag hittade lediga tider ${slots}. Vilken passar dig bäst? 😊`,
-      found: (slots: string) => `Jag hittade lediga tider ${slots}. Vilken av dessa tider passar dig bäst? 😊`,
       at: "kl", and: "och", also: "samt"
     },
     fa: {
       months: ["ژانویه", "فوریه", "مارس", "آوریل", "مه", "ژوئن", "ژوئیه", "اوت", "سپتامبر", "اکتبر", "نوامبر", "دسامبر"],
       days: ["یکشنبه", "دوشنبه", "سه‌شنبه", "چهارشنبه", "پنجشنبه", "جمعه", "شنبه"],
-      yes: (d: string, t: string) => `بله، ${d} ساعت ${t} خالی است. می‌خواهید برایتان رزرو کنم؟`,
-      none: "متأسفانه برای این بازه زمان خالی پیدا نکردم. تاریخ دیگری مدنظرتان هست؟ 😊",
-      busyNone: (t: string) => `متأسفانه ساعت ${t} پر است و زمان خالی دیگری پیدا نکردم. تاریخ دیگری مدنظرتان هست؟ 😊`,
-      busyAlternatives: (t: string, slots: string) => `متأسفانه ساعت ${t} خالی نیست. این زمان‌ها خالی هستند: ${slots}. کدام مناسب شماست؟ 😊`,
-      found: (slots: string) => `این زمان‌ها خالی هستند: ${slots}. کدام برای شما مناسب‌تر است؟ 😊`,
       at: "ساعت", and: "و", also: "همچنین"
     },
     es: {
       months: ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"],
       days: ["domingo", "lunes", "martes", "miércoles", "jueves", "viernes", "sábado"],
-      yes: (d: string, t: string) => `Sí, ${d} a las ${t} está libre. ¿Quieres que lo reserve?`,
-      none: "Lo siento, no encontré horas libres en ese período. ¿Tienes otra fecha en mente? 😊",
-      busyNone: (t: string) => `Lo siento, las ${t} ya están ocupadas y no encontré otras horas libres. ¿Tienes otra fecha? 😊`,
-      busyAlternatives: (t: string, slots: string) => `Lo siento, las ${t} no están libres. Tengo estas horas: ${slots}. ¿Cuál te va mejor? 😊`,
-      found: (slots: string) => `Tengo estas horas libres: ${slots}. ¿Cuál te va mejor? 😊`,
       at: "a las", and: "y", also: "también"
     },
     de: {
       months: ["Januar", "Februar", "März", "April", "Mai", "Juni", "Juli", "August", "September", "Oktober", "November", "Dezember"],
       days: ["Sonntag", "Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag"],
-      yes: (d: string, t: string) => `Ja, ${d} um ${t} Uhr ist verfügbar. Möchten Sie den Termin buchen?`,
-      none: "Leider habe ich für diesen Zeitraum keine freien Zeiten gefunden. Haben Sie ein anderes Datum im Sinn? 😊",
-      busyNone: (t: string) => `Leider ist ${t} Uhr nicht verfügbar und ich habe keine anderen freien Zeiten gefunden. Haben Sie ein anderes Datum im Sinn? 😊`,
-      busyAlternatives: (t: string, slots: string) => `Leider ist ${t} Uhr nicht verfügbar. Ich habe diese freien Zeiten gefunden: ${slots}. Welche passt Ihnen am besten? 😊`,
-      found: (slots: string) => `Ich habe diese freien Zeiten gefunden: ${slots}. Welche passt Ihnen am besten? 😊`,
       at: "um", and: "und", also: "sowie"
     },
     ar: {
       months: ["يناير", "فبراير", "مارس", "أبريل", "مايو", "يونيو", "يوليو", "أغسطس", "سبتمبر", "أكتوبر", "نوفمبر", "ديسمبر"],
       days: ["الأحد", "الاثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت"],
-      yes: (d: string, t: string) => `نعم، ${d} الساعة ${t} متاح. هل تريد أن أحجزه لك؟`,
-      none: "للأسف لم أجد مواعيد متاحة في هذه الفترة. هل لديك تاريخ آخر؟ 😊",
-      busyNone: (t: string) => `للأسف الساعة ${t} غير متاحة ولم أجد مواعيد أخرى. هل لديك تاريخ آخر؟ 😊`,
-      busyAlternatives: (t: string, slots: string) => `للأسف الساعة ${t} غير متاحة. هذه المواعيد متاحة: ${slots}. أي وقت يناسبك؟ 😊`,
-      found: (slots: string) => `هذه المواعيد متاحة: ${slots}. أي وقت يناسبك؟ 😊`,
       at: "الساعة", and: "و", also: "وأيضًا"
     },
     en: {
       months: ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"],
       days: ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"],
-      yes: (d: string, t: string) => `Yes, ${d} at ${t} is available. Would you like me to book it?`,
-      none: "Sorry, I couldn’t find any available times for that period. Do you have another date in mind? 😊",
-      busyNone: (t: string) => `Sorry, ${t} is already booked and I couldn’t find other available times. Do you have another date? 😊`,
-      busyAlternatives: (t: string, slots: string) => `Sorry, ${t} is not available. I found these times: ${slots}. Which one suits you best? 😊`,
-      found: (slots: string) => `I found these available times: ${slots}. Which one suits you best? 😊`,
       at: "at", and: "and", also: "also"
     }
   };
@@ -799,7 +926,13 @@ function buildLocalizedSlotReply(slotsArray: string[], specificTime?: string, la
     }
   });
 
-  if (normalizedSpecificTime && foundSpecificSlot) return l.yes(foundSpecificSlot.dateStr, foundSpecificSlot.timeStr);
+  if (normalizedSpecificTime && foundSpecificSlot) {
+    return renderDeterministicAvailabilityReply(lang, {
+      kind: "available_exact",
+      date: foundSpecificSlot.dateStr,
+      time: foundSpecificSlot.timeStr,
+    }, toneConfig);
+  }
 
   const sentences: string[] = [];
   for (const [dateStr, timesRaw] of dayMap.entries()) {
@@ -814,19 +947,24 @@ function buildLocalizedSlotReply(slotsArray: string[], specificTime?: string, la
 
   const slotsText = sentences.join(`, ${l.also} `);
   if (normalizedSpecificTime && !foundSpecificSlot) {
-    if (!slotsText) return l.busyNone(normalizedSpecificTime);
-    return l.busyAlternatives(normalizedSpecificTime, slotsText);
+    if (!slotsText) return renderDeterministicAvailabilityReply(lang, { kind: "busy_none", requestedTime: normalizedSpecificTime }, toneConfig);
+    return renderDeterministicAvailabilityReply(lang, { kind: "busy_alternatives", requestedTime: normalizedSpecificTime, slots: slotsText }, toneConfig);
   }
-  if (!slotsText) return l.none;
-  return l.found(slotsText);
+  if (!slotsText) return renderDeterministicAvailabilityReply(lang, { kind: "none" }, toneConfig);
+  return renderDeterministicAvailabilityReply(lang, { kind: "found", slots: slotsText }, toneConfig);
 }
 
-function formatSwedishTimeSlots(slotsArray: string[], specificTime?: string, language: string = "sv"): string {
-  return buildLocalizedSlotReply(slotsArray, specificTime, language);
+function formatSwedishTimeSlots(slotsArray: string[], specificTime?: string, language: string = "sv", toneConfig?: unknown): string {
+  return buildLocalizedSlotReply(slotsArray, specificTime, language, toneConfig);
 }
 
-function isSlotFree(startMs: number, durationMinutes: number, events: any[]): boolean {
-  return isCanonicalSlotFree(startMs, durationMinutes, events);
+function isSlotFree(
+  startMs: number,
+  durationMinutes: number,
+  events: any[],
+  nowMs: number = Date.now()
+): boolean {
+  return isCanonicalSlotFree(startMs, durationMinutes, events, nowMs);
 }
 
 type SlotSearchOptions = {
@@ -842,6 +980,135 @@ type SlotSearchOptions = {
 const BOOKING_OPEN_MINUTES = 9 * 60;
 const BOOKING_CLOSE_MINUTES = 20 * 60;
 const BOOKING_INTERVAL_MINUTES = 15;
+
+const WEEKDAY_KEYS = [
+  "sunday",
+  "monday",
+  "tuesday",
+  "wednesday",
+  "thursday",
+  "friday",
+  "saturday",
+] as const;
+
+type BusinessWorkingInterval = {
+  start: string;
+  end: string;
+};
+
+type BusinessWorkingDay = {
+  date: string;
+  weekday: typeof WEEKDAY_KEYS[number];
+  intervals: BusinessWorkingInterval[];
+  closed: boolean;
+  source: "business_config" | "legacy_default";
+};
+
+function normalizeWorkingClock(value: unknown): string | null {
+  const raw = String(value ?? "").trim();
+  const match = raw.match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) return null;
+
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+
+  if (
+    !Number.isInteger(hours) ||
+    !Number.isInteger(minutes) ||
+    hours < 0 ||
+    hours > 23 ||
+    minutes < 0 ||
+    minutes > 59
+  ) {
+    return null;
+  }
+
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
+}
+
+function resolveBusinessWorkingDay(
+  businessConfig: any,
+  date: string
+): BusinessWorkingDay {
+  const parsed = new Date(`${date}T00:00:00Z`);
+
+  if (Number.isNaN(parsed.getTime())) {
+    return {
+      date,
+      weekday: "monday",
+      intervals: [],
+      closed: true,
+      source: "legacy_default",
+    };
+  }
+
+  const weekday = WEEKDAY_KEYS[parsed.getUTCDay()];
+  const rawWorkingHours =
+    businessConfig?.workingHours ??
+    businessConfig?.working_hours ??
+    null;
+
+  if (
+    rawWorkingHours &&
+    typeof rawWorkingHours === "object" &&
+    !Array.isArray(rawWorkingHours) &&
+    Object.prototype.hasOwnProperty.call(rawWorkingHours, weekday)
+  ) {
+    const rawIntervals = Array.isArray(rawWorkingHours[weekday])
+      ? rawWorkingHours[weekday]
+      : [];
+
+    const intervals = rawIntervals
+      .map((interval: any) => {
+        const start = normalizeWorkingClock(interval?.start);
+        const end = normalizeWorkingClock(interval?.end);
+
+        if (!start || !end) return null;
+
+        const startMinutes = timeTextToMinutes(start);
+        const endMinutes = timeTextToMinutes(end);
+
+        if (
+          startMinutes === null ||
+          endMinutes === null ||
+          startMinutes >= endMinutes
+        ) {
+          return null;
+        }
+
+        return { start, end };
+      })
+      .filter((interval): interval is BusinessWorkingInterval => Boolean(interval));
+
+    return {
+      date,
+      weekday,
+      intervals,
+      closed: intervals.length === 0,
+      source: "business_config",
+    };
+  }
+
+  // Backward-compatible legacy behavior until each business has configured
+  // its own weekly working hours in Business Settings.
+  const legacyWeekendClosed =
+    parsed.getUTCDay() === 0 || parsed.getUTCDay() === 6;
+
+  return {
+    date,
+    weekday,
+    intervals: legacyWeekendClosed
+      ? []
+      : [
+          {
+            start: `${String(Math.floor(BOOKING_OPEN_MINUTES / 60)).padStart(2, "0")}:${String(BOOKING_OPEN_MINUTES % 60).padStart(2, "0")}`,
+            end: `${String(Math.floor(BOOKING_CLOSE_MINUTES / 60)).padStart(2, "0")}:${String(BOOKING_CLOSE_MINUTES % 60).padStart(2, "0")}`,
+          },
+        ],
+    closed: legacyWeekendClosed,
+    source: "legacy_default",
+  };
+}
 
 type BookingSlotOwner = {
   businessId: string;
@@ -878,6 +1145,13 @@ type ExactSlotValidationResult = {
   endIso: string | null;
 };
 
+type CanonicalAvailabilitySnapshot = {
+  calendarEvents: any[];
+  pendingEvents: any[];
+  calendarEventCount: number;
+  pendingHoldCount: number;
+};
+
 function bookingSlotOwnerMatches(slot: OwnedOfferedSlot, owner: BookingSlotOwner): boolean {
   return Boolean(
     slot.businessId &&
@@ -894,32 +1168,17 @@ function getPendingBookingBlockingEvents(
   endMs: number
 ): any[] {
   return Object.entries(pendingBookings)
-    .filter(([sessionId, pending]) => {
-      if (sessionId === owner.sessionId || !pending || isPendingBookingExpired(pending)) return false;
-      if (!["awaiting_confirmation", "awaiting_contact", "failed_recoverable", "inserting"].includes(String(pending.status || ""))) return false;
-      const pendingBusinessId = String(
-        pending.businessId ||
-        getBusinessIdFromConfig(pending.businessConfig) ||
-        ""
-      );
-      const pendingPlatform = normalizePlatformName(pending.platform || "");
-      const pendingUserId = normalizePlatformUserId(pendingPlatform, String(pending.userId || ""));
-      if (
-        pendingBusinessId !== owner.businessId ||
-        !pendingPlatform ||
-        !pendingUserId
-      ) return false;
-      const pendingStart = new Date(ensureStockholmOffset(String(pending.dateTime || ""))).getTime();
-      const pendingDuration = Number(pending.durationMinutes || 0);
-      const pendingEnd = pendingStart + pendingDuration * 60000;
-      return Number.isFinite(pendingStart) && pendingDuration > 0 && pendingStart < endMs && pendingEnd > startMs;
-    })
-    .map(([, pending]) => ({
-      startTime: ensureStockholmOffset(String(pending.dateTime || "")),
-      endTime: new Date(
-        new Date(ensureStockholmOffset(String(pending.dateTime || ""))).getTime() +
-        Number(pending.durationMinutes || 0) * 60000
-      ).toISOString(),
+    .map(([sessionId, pending]) => evaluatePendingAvailabilityRecord(
+      sessionId,
+      pending,
+      owner,
+      startMs,
+      endMs
+    ))
+    .filter(record => record.isCanonicalOverlappingBlocker)
+    .map(record => ({
+      startTime: record.normalizedStart,
+      endTime: new Date(record.pendingEndMs).toISOString(),
       summary: "Pending appointment hold"
     }));
 }
@@ -935,6 +1194,7 @@ async function validateCanonicalExactSlot(params: {
   offeredSlot?: OwnedOfferedSlot;
   calendarEvents?: any[];
   pendingEvents?: any[];
+  nowMs?: number;
 }): Promise<ExactSlotValidationResult> {
   const { adapter, owner, start, service, durationMinutes, excludeEventId, offeredSlot } = params;
   const businessId = String(getBusinessIdFromConfig(params.businessConfig) || "");
@@ -952,6 +1212,33 @@ async function validateCanonicalExactSlot(params: {
     const expectedEndMs =
       new Date(ensureStockholmOffset(start)).getTime() + Number(durationMinutes) * 60000;
     const offeredLocalDate = getZonedSlotParts(ensureStockholmOffset(start), timezone)?.date || "";
+
+    console.log("[OwnedOfferValidationTrace]", {
+      ownerMatch: bookingSlotOwnerMatches(offeredSlot, owner),
+      requestedService: String(service || ""),
+      offeredService: String(offeredSlot.service || ""),
+      serviceMatch: String(offeredSlot.service || "") === String(service || ""),
+      requestedDuration: Number(durationMinutes),
+      offeredDuration: Number(offeredSlot.durationMinutes),
+      durationMatch: Number(offeredSlot.durationMinutes) === Number(durationMinutes),
+      requestedStart: ensureStockholmOffset(start),
+      offeredStart: offeredSlot.start,
+      startMatch:
+        new Date(offeredSlot.start).getTime() ===
+        new Date(ensureStockholmOffset(start)).getTime(),
+      expectedEnd: new Date(expectedEndMs).toISOString(),
+      offeredEnd: offeredSlot.end,
+      endMatch: new Date(offeredSlot.end).getTime() === expectedEndMs,
+      offerAgeMs: Date.now() - Number(offeredSlot.generatedAt || 0),
+      ttlMs: PENDING_BOOKING_TTL_MS,
+      freshnessMatch:
+        Date.now() - Number(offeredSlot.generatedAt || 0) <=
+        PENDING_BOOKING_TTL_MS,
+      offeredLocalDate,
+      searchStartDate: offeredSlot.searchStartDate || null,
+      searchEndDate: offeredSlot.searchEndDate || null
+    });
+
     if (
       Date.now() - Number(offeredSlot.generatedAt || 0) > PENDING_BOOKING_TTL_MS ||
       Number(offeredSlot.durationMinutes) !== Number(durationMinutes) ||
@@ -985,13 +1272,32 @@ async function validateCanonicalExactSlot(params: {
     minute: "2-digit"
   });
   const startMinutes = timeTextToMinutes(localTime);
-  const endMinutes = Number(startMinutes) + duration;
-  if (
-    startMinutes === null ||
-    startMinutes < BOOKING_OPEN_MINUTES ||
-    endMinutes > BOOKING_CLOSE_MINUTES
-  ) {
-    return { free: false, category: "outside_working_hours", normalizedIso, endIso: null };
+  const endMinutes = startMinutes === null ? null : startMinutes + duration;
+  const workingDay = resolveBusinessWorkingDay(params.businessConfig, localDate);
+
+  const insideWorkingInterval =
+    startMinutes !== null &&
+    endMinutes !== null &&
+    !workingDay.closed &&
+    workingDay.intervals.some((interval) => {
+      const intervalStartMinutes = timeTextToMinutes(interval.start);
+      const intervalEndMinutes = timeTextToMinutes(interval.end);
+
+      return (
+        intervalStartMinutes !== null &&
+        intervalEndMinutes !== null &&
+        startMinutes >= intervalStartMinutes &&
+        endMinutes <= intervalEndMinutes
+      );
+    });
+
+  if (!insideWorkingInterval) {
+    return {
+      free: false,
+      category: "outside_working_hours",
+      normalizedIso,
+      endIso: null
+    };
   }
   if (startMinutes % BOOKING_INTERVAL_MINUTES !== 0) {
     return { free: false, category: "invalid_interval", normalizedIso, endIso: null };
@@ -999,16 +1305,64 @@ async function validateCanonicalExactSlot(params: {
 
   const startMs = startDate.getTime();
   const endMs = startMs + duration * 60000;
+  const bookingBufferMinutes = resolveBusinessBookingBufferMinutes(params.businessConfig);
+  const bookingBufferMs = bookingBufferMinutes * 60000;
+
+  const applyBookingBufferToEvents = (events: any[]): any[] =>
+    events.map((event: any) => {
+      if (!isBlockingCalendarEvent(event)) return event;
+
+      const rawStart =
+        event?.start?.dateTime ||
+        event?.start?.date ||
+        event?.startTime;
+
+      const rawEnd =
+        event?.end?.dateTime ||
+        event?.end?.date ||
+        event?.endTime;
+
+      const eventStartMs = new Date(String(rawStart || "")).getTime();
+      const parsedEndMs = new Date(String(rawEnd || "")).getTime();
+
+      if (!Number.isFinite(eventStartMs)) return event;
+
+      const eventEndMs = Number.isFinite(parsedEndMs)
+        ? parsedEndMs
+        : eventStartMs + 60 * 60_000;
+
+      return {
+        ...event,
+        startTime: new Date(eventStartMs - bookingBufferMs).toISOString(),
+        endTime: new Date(eventEndMs + bookingBufferMs).toISOString(),
+        start: undefined,
+        end: undefined
+      };
+    });
+
   const calendarEvents = params.calendarEvents || await adapter.getEvents(localDate, localDate);
   const filteredEvents = (Array.isArray(calendarEvents) ? calendarEvents : []).filter(
     (event: any) => !excludeEventId || String(event?.id || "") !== String(excludeEventId)
   );
-  if (!isSlotFree(startMs, duration, filteredEvents)) {
+  const bufferedCalendarEvents =
+    bookingBufferMinutes > 0
+      ? applyBookingBufferToEvents(filteredEvents)
+      : filteredEvents;
+
+  if (!isSlotFree(startMs, duration, bufferedCalendarEvents, params.nowMs ?? Date.now())) {
     return { free: false, category: "calendar_conflict", normalizedIso, endIso: new Date(endMs).toISOString() };
   }
 
-  const pendingEvents = params.pendingEvents || getPendingBookingBlockingEvents(owner, startMs, endMs);
-  if (!isSlotFree(startMs, duration, pendingEvents)) {
+  const pendingEvents =
+    params.pendingEvents ||
+    getPendingBookingBlockingEvents(owner, startMs, endMs);
+
+  const bufferedPendingEvents =
+    bookingBufferMinutes > 0
+      ? applyBookingBufferToEvents(pendingEvents)
+      : pendingEvents;
+
+  if (!isSlotFree(startMs, duration, bufferedPendingEvents, params.nowMs ?? Date.now())) {
     return { free: false, category: "pending_conflict", normalizedIso, endIso: new Date(endMs).toISOString() };
   }
 
@@ -1017,6 +1371,82 @@ async function validateCanonicalExactSlot(params: {
     category: "available",
     normalizedIso,
     endIso: new Date(endMs).toISOString()
+  };
+}
+
+async function loadCanonicalAvailabilitySnapshot(params: {
+  adapter: CalendarAdapter;
+  owner: BookingSlotOwner;
+  businessConfig: any;
+  startDate: string;
+  endDate: string;
+  excludeEventId?: string;
+  throwOnCalendarReadFailure?: boolean;
+}): Promise<CanonicalAvailabilitySnapshot> {
+  const timezone = String(params.businessConfig?.timezone || "Europe/Stockholm");
+  const events = await params.adapter.getEvents(params.startDate, params.endDate, {
+    throwOnReadFailure: params.throwOnCalendarReadFailure,
+  });
+  const calendarEvents = (Array.isArray(events) ? events : []).filter(
+    (event: any) => !params.excludeEventId || String(event?.id || "") !== String(params.excludeEventId)
+  );
+  const pendingEvents = getPendingBookingBlockingEvents(
+    params.owner,
+    new Date(zonedLocalIso(params.startDate, "00:00:00", timezone)).getTime(),
+    new Date(zonedLocalIso(params.endDate, "23:59:59", timezone)).getTime()
+  );
+  return {
+    calendarEvents,
+    pendingEvents,
+    calendarEventCount: calendarEvents.length,
+    pendingHoldCount: pendingEvents.length,
+  };
+}
+
+async function findNearestFutureCanonicalAvailability(params: {
+  adapter: CalendarAdapter;
+  owner: BookingSlotOwner;
+  businessConfig: any;
+  fromDateExclusive: string;
+  service: string;
+  durationMinutes: number;
+  maxDays: number;
+}): Promise<{
+  date: string | null;
+  displaySlots: string[];
+  ownedSlots: OwnedOfferedSlot[];
+}> {
+  const boundedDays = Math.max(1, Math.min(Number(params.maxDays || 1), 365));
+
+  for (let offset = 1; offset <= boundedDays; offset++) {
+    const date = addDaysToStockholmDate(params.fromDateExclusive, offset);
+    const workingDay = resolveBusinessWorkingDay(params.businessConfig, date);
+
+    if (workingDay.closed) continue;
+
+    const offers = await createCanonicalOfferedSlots({
+      adapter: params.adapter,
+      owner: params.owner,
+      businessConfig: params.businessConfig,
+      startDate: date,
+      endDate: date,
+      service: params.service,
+      durationMinutes: params.durationMinutes,
+    });
+
+    if (offers.ownedSlots.length > 0) {
+      return {
+        date,
+        displaySlots: offers.displaySlots,
+        ownedSlots: offers.ownedSlots,
+      };
+    }
+  }
+
+  return {
+    date: null,
+    displaySlots: [],
+    ownedSlots: [],
   };
 }
 
@@ -1032,70 +1462,120 @@ async function createCanonicalOfferedSlots(params: {
   options?: SlotSearchOptions;
   excludeEventId?: string;
   normalizedConstraint?: NormalizedTimeConstraint;
+  snapshot?: CanonicalAvailabilitySnapshot;
+  now?: Date;
 }): Promise<{ displaySlots: string[]; ownedSlots: OwnedOfferedSlot[] }> {
   const timezone = String(params.businessConfig?.timezone || "Europe/Stockholm");
-  const events = await params.adapter.getEvents(params.startDate, params.endDate);
-  const pendingEvents = getPendingBookingBlockingEvents(
-    params.owner,
-    new Date(zonedLocalIso(params.startDate, "00:00:00", timezone)).getTime(),
-    new Date(zonedLocalIso(params.endDate, "23:59:59", timezone)).getTime()
-  );
-  const filteredEvents = (Array.isArray(events) ? events : []).filter(
-    (event: any) => !params.excludeEventId || String(event?.id || "") !== String(params.excludeEventId)
-  );
-  const generated = getSlotsArray({
-    available_slots_string: getDailySlots(
-      params.startDate,
-      params.endDate,
-      [...filteredEvents, ...pendingEvents],
-      params.durationMinutes,
-      params.requestedTime,
-      { ...(params.options || {}), timezone }
-    )
-  });
-  const displaySlots: string[] = [];
-  const ownedSlots: OwnedOfferedSlot[] = [];
+  const snapshot = params.snapshot || await loadCanonicalAvailabilitySnapshot(params);
+  const minimumMinutes = timeTextToMinutes(params.options?.minTime);
+  const maximumMinutes = timeTextToMinutes(params.options?.maxTime);
+  const boundaryMinutes = timeTextToMinutes(params.options?.afterTime) ?? timeTextToMinutes(params.options?.timeBoundary?.time);
+  const boundaryKind = params.options?.afterTime ? "exclusive_lower" : params.options?.timeBoundary?.kind;
+  const excludedMinutes = new Set((params.options?.excludedTimes || []).map(timeTextToMinutes).filter((value): value is number => value !== null));
+  const requestedMinutes = timeTextToMinutes(params.requestedTime);
+  const formatter = new Intl.DateTimeFormat("en-US", { timeZone: timezone, hour: "2-digit", minute: "2-digit", hour12: false });
+  const dayFormatter = new Intl.DateTimeFormat("sv-SE", { timeZone: timezone, weekday: "long" });
+  const freeCandidates: Array<{ label: string; slot: OwnedOfferedSlot; minutes: number; dayIndex: number }> = [];
   const generatedAt = Date.now();
-  let rejectedByConstraint = 0;
+  let totalGeneratedCandidates = 0, constraintRejectedCount = 0, calendarBlockedCount = 0, pendingHoldBlockedCount = 0;
+  const startDay = new Date(`${params.startDate}T00:00:00Z`);
+  const endDay = new Date(`${params.endDate}T00:00:00Z`);
+  let dayIndex = 0;
+  for (let day = new Date(startDay); day <= endDay; day.setUTCDate(day.getUTCDate() + 1), dayIndex++) {
+    const date = day.toISOString().slice(0, 10);
+    const workingDay = resolveBusinessWorkingDay(params.businessConfig, date);
 
-  for (const label of generated) {
-    const start = parseSlotIso(label);
-    if (!start) continue;
-    const zoned = getZonedSlotParts(start, timezone);
-    if (!zoned || zoned.date < params.startDate || zoned.date > params.endDate || !slotMinutesSatisfyConstraint(zoned.minutes, params.normalizedConstraint)) { rejectedByConstraint++; continue; }
-    const validation = await validateCanonicalExactSlot({
-      adapter: params.adapter,
-      owner: params.owner,
-      businessConfig: params.businessConfig,
-      start,
-      service: params.service,
-      durationMinutes: params.durationMinutes,
-      excludeEventId: params.excludeEventId,
-      calendarEvents: filteredEvents,
-      pendingEvents,
-    });
-    if (!validation.free || !validation.normalizedIso || !validation.endIso) continue;
-    displaySlots.push(label);
-    ownedSlots.push({
-      start: validation.normalizedIso,
-      end: validation.endIso,
-      durationMinutes: params.durationMinutes,
-      service: params.service,
-      businessId: params.owner.businessId,
-      platform: normalizePlatformName(params.owner.platform),
-      userId: normalizePlatformUserId(params.owner.platform, params.owner.userId),
-      generatedAt,
-      searchStartDate: params.startDate,
-      searchEndDate: params.endDate
-    });
+    if (workingDay.closed) continue;
+
+    for (const interval of workingDay.intervals) {
+      const intervalStartMinutes = timeTextToMinutes(interval.start);
+      const intervalEndMinutes = timeTextToMinutes(interval.end);
+
+      if (
+        intervalStartMinutes === null ||
+        intervalEndMinutes === null ||
+        intervalStartMinutes >= intervalEndMinutes
+      ) {
+        continue;
+      }
+
+      for (const minutes of enumerateCandidateMinutes(
+        intervalStartMinutes,
+        intervalEndMinutes,
+        params.durationMinutes,
+        BOOKING_INTERVAL_MINUTES
+      )) {
+        totalGeneratedCandidates++;
+      const boundaryAllowed = boundaryMinutes === null ||
+        (boundaryKind === "exclusive_lower" ? minutes > boundaryMinutes :
+          boundaryKind === "inclusive_lower" ? minutes >= boundaryMinutes :
+            boundaryKind === "exclusive_upper" ? minutes < boundaryMinutes :
+              boundaryKind === "inclusive_upper" ? minutes <= boundaryMinutes : true);
+      const optionAllowed =
+        (minimumMinutes === null || minutes >= minimumMinutes) &&
+        (maximumMinutes === null || minutes <= maximumMinutes) &&
+        boundaryAllowed &&
+        !excludedMinutes.has(minutes);
+      if (!optionAllowed || !slotMinutesSatisfyConstraint(minutes, params.normalizedConstraint)) { constraintRejectedCount++; continue; }
+      const start = zonedLocalIso(date, `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}:00`, timezone);
+      const validation = await validateCanonicalExactSlot({
+        adapter: params.adapter, owner: params.owner, businessConfig: params.businessConfig,
+        start, service: params.service, durationMinutes: params.durationMinutes,
+        calendarEvents: snapshot.calendarEvents,
+        pendingEvents: snapshot.pendingEvents,
+        nowMs: (params.now ?? new Date()).getTime(),
+      });
+      if (!validation.free || !validation.normalizedIso || !validation.endIso) {
+        if (validation.category === "calendar_conflict") calendarBlockedCount++;
+        if (validation.category === "pending_conflict") pendingHoldBlockedCount++;
+        continue;
+      }
+      let weekday = dayFormatter.format(new Date(validation.normalizedIso));
+      weekday = weekday.charAt(0).toUpperCase() + weekday.slice(1);
+      freeCandidates.push({
+        label: `${weekday} kl ${formatter.format(new Date(validation.normalizedIso))} (ISO: ${validation.normalizedIso})`,
+        minutes, dayIndex,
+        slot: {
+          start: validation.normalizedIso, end: validation.endIso, durationMinutes: params.durationMinutes,
+          service: params.service, businessId: params.owner.businessId,
+          platform: normalizePlatformName(params.owner.platform), userId: normalizePlatformUserId(params.owner.platform, params.owner.userId),
+          generatedAt, searchStartDate: params.startDate, searchEndDate: params.endDate
+        }
+      });
+      }
+    }
   }
+
+  const preferredMinutes = [840, 870, 900, 780, 960, 750, 660, 1020, 600, 1080, 540];
+  const ranked = freeCandidates.sort((a, b) => {
+    if (requestedMinutes !== null) return Math.abs(a.minutes - requestedMinutes) - Math.abs(b.minutes - requestedMinutes) || a.dayIndex - b.dayIndex || a.minutes - b.minutes;
+    if (params.options?.selectFirstAvailable) return a.dayIndex - b.dayIndex || a.minutes - b.minutes;
+    if (boundaryKind === "exclusive_lower" || boundaryKind === "inclusive_lower") return a.dayIndex - b.dayIndex || a.minutes - b.minutes;
+    if (boundaryKind === "exclusive_upper" || boundaryKind === "inclusive_upper") return a.dayIndex - b.dayIndex || b.minutes - a.minutes;
+    const score = (candidate: typeof a) => Math.min(...preferredMinutes.map((preferred, index) => Math.abs(candidate.minutes - preferred) + index * 20)) + candidate.dayIndex * 1000;
+    return score(a) - score(b) || new Date(a.slot.start).getTime() - new Date(b.slot.start).getTime();
+  }).slice(0, 3);
+  const displaySlots = ranked.map((candidate) => candidate.label);
+  const ownedSlots = ranked.map((candidate) => candidate.slot);
 
   console.log("[BookingFlow]", {
     platform: normalizePlatformName(params.owner.platform),
     businessScopePresent: Boolean(params.owner.businessId),
     operation: "availability",
     offeredSlotCount: ownedSlots.length,
-    candidateSlotCount: generated.length, rejectedByConstraint, timezone,
+    candidateSlotCount: totalGeneratedCandidates,
+    outsideWorkingHoursCount: 0,
+    rejectedByConstraint: constraintRejectedCount,
+    calendarBlockedCount,
+    pendingHoldBlockedCount,
+    freeCandidateCount: freeCandidates.length,
+    calendarEventCount: snapshot.calendarEventCount,
+    pendingHoldCount: snapshot.pendingHoldCount,
+    slotInterval: BOOKING_INTERVAL_MINUTES,
+    boundaryKind: boundaryKind || null,
+    lowerMinuteBoundary: boundaryKind?.includes("lower") ? boundaryMinutes : null,
+    upperMinuteBoundary: boundaryKind?.includes("upper") ? boundaryMinutes : null,
+    timezone,
     serviceDuration: params.durationMinutes,
     validatorResultCategory: ownedSlots.length > 0 ? "available" : "no_validated_slots"
   });
@@ -1291,15 +1771,28 @@ class MockCalendarAdapter implements CalendarAdapter {
 class GenericCalendarAdapter implements CalendarAdapter {
   constructor(private apiUrl: string, private apiKey?: string) {}
 
-  async getEvents(startDate: string, endDate: string) {
+  async getEvents(
+    startDate: string,
+    endDate: string,
+    options?: { throwOnReadFailure?: boolean }
+  ) {
     try {
       const headers: any = {};
       if (this.apiKey) headers['Authorization'] = `Bearer ${this.apiKey}`;
       const res = await fetch(`${this.apiUrl}/events?startDate=${startDate}&endDate=${endDate}`, { headers });
-      if (!res.ok) return [];
+      if (!res.ok) {
+        if (options?.throwOnReadFailure) {
+          throw new Error(`Calendar read failed with status ${res.status}`);
+        }
+        return [];
+      }
       const data = await res.json().catch(() => ({}));
+      if (options?.throwOnReadFailure && !Array.isArray(data.events) && !Array.isArray(data.items)) {
+        throw new Error("Calendar read returned an invalid response");
+      }
       return data.events || data.items || [];
     } catch(e) {
+      if (options?.throwOnReadFailure) throw e;
       return [];
     }
   }
@@ -1422,7 +1915,11 @@ class GoogleCalendarAdapter implements CalendarAdapter {
     return this.calendarId;
   }
 
-  async getEvents(startDate: string, endDate: string) {
+  async getEvents(
+    startDate: string,
+    endDate: string,
+    options?: { throwOnReadFailure?: boolean }
+  ) {
     try {
       const timeMin = new Date(localStockholmDateBoundary(startDate, false)).toISOString();
       const timeMax = new Date(localStockholmDateBoundary(endDate, true)).toISOString();
@@ -1436,6 +1933,7 @@ class GoogleCalendarAdapter implements CalendarAdapter {
       return res.data.items || [];
     } catch(e: any) {
       console.error("Google Calendar getEvents Error:", e.message);
+      if (options?.throwOnReadFailure) throw e;
       return [];
     }
   }
@@ -1925,14 +2423,14 @@ function isOlderAppointmentHistoryConfirmation(text?: string): boolean {
     /\b(längre tillbaka|äldre period|äldre bokning|older|further back|search earlier|قبل‌تر|قدیمی‌تر)\b/iu.test(raw);
 }
 
-function resolveAppointmentLookupRange(args: any): {
+function resolveAppointmentLookupRange(args: any, now: Date = new Date()): {
   lookupMode: AppointmentLookupMode;
   startDate: string;
   endDate: string;
   historyWindowLimited: boolean;
   olderHistorySearched: boolean;
 } {
-  const today = stockholmDateString(new Date());
+  const today = stockholmDateString(now);
   const lookupText = String(args?.lookupText || "");
   const explicitDates = extractExplicitAppointmentLookupDates(lookupText);
   const requestedStartDate = isValidLookupDate(args?.startDate) ? String(args.startDate) : "";
@@ -2199,15 +2697,16 @@ async function findCustomerAppointments(
   args: any,
   customerId: string,
   platform: string,
-  businessConfig?: any
+  businessConfig?: any,
+  now: Date = new Date()
 ) {
-  const lookupRange = resolveAppointmentLookupRange(args);
+  const lookupRange = resolveAppointmentLookupRange(args, now);
   const { lookupMode, startDate, endDate, historyWindowLimited, olderHistorySearched } = lookupRange;
   const phone = String(args?.phone || "");
   const name = String(args?.name || "");
   const normalizedPlatform = normalizePlatformName(platform);
   const normalizedCustomerId = normalizePlatformUserId(normalizedPlatform, customerId);
-  const now = Date.now();
+  const nowMs = now.getTime();
   const rangeStartMs = stockholmLocalDayStartMs(startDate);
   const rangeEndMs = stockholmLocalDayStartMs(addDaysToStockholmDate(endDate, 1)) - 1;
   const businessId = getBusinessIdFromConfig(businessConfig);
@@ -2300,7 +2799,7 @@ async function findCustomerAppointments(
           phone: verifiedPhone
         },
         lookupMode,
-        now,
+        nowMs,
         rangeStartMs,
         rangeEndMs
       );
@@ -2486,7 +2985,7 @@ async function findCustomerAppointments(
       exactMessengerEvents,
       { platform: "messenger", userId: normalizedCustomerId, phone: "" },
       lookupMode,
-      now,
+      nowMs,
       rangeStartMs,
       rangeEndMs,
       getEventStartIso
@@ -2503,7 +3002,7 @@ async function findCustomerAppointments(
         verifiedPhoneEvents,
         { platform: "messenger", userId: "", phone: verifiedPhone },
         lookupMode,
-        now,
+        nowMs,
         rangeStartMs,
         rangeEndMs,
         getEventStartIso
@@ -2525,8 +3024,8 @@ async function findCustomerAppointments(
             if (!isActiveAppointmentStatus(event?.status)) return false;
             const startMs = new Date(getEventStartIso(event)).getTime();
             if (!Number.isFinite(startMs) || startMs < rangeStartMs || startMs > rangeEndMs) return false;
-            if (lookupMode === "upcoming") return startMs >= now;
-            if (lookupMode === "history") return startMs <= now;
+            if (lookupMode === "upcoming") return startMs >= nowMs;
+            if (lookupMode === "history") return startMs <= nowMs;
             return true;
           }),
           identityKey: `channel:${normalizedPlatform}:${normalizedCustomerId}`,
@@ -2536,7 +3035,7 @@ async function findCustomerAppointments(
           verifiedPhoneEvents,
           { platform: normalizedPlatform, userId: normalizedCustomerId, phone: verifiedPhone },
           lookupMode,
-          now,
+          nowMs,
           rangeStartMs,
           rangeEndMs,
           getEventStartIso
@@ -2555,8 +3054,8 @@ async function findCustomerAppointments(
         if (!Number.isFinite(startMs) || startMs < rangeStartMs || startMs > rangeEndMs) {
           return false;
         }
-        if (lookupMode === "upcoming" && startMs < now) return false;
-        if (lookupMode === "history" && startMs > now) return false;
+        if (lookupMode === "upcoming" && startMs < nowMs) return false;
+        if (lookupMode === "history" && startMs > nowMs) return false;
 
         const privateProperties = event?.extendedProperties?.private || {};
         const markedPlatform = normalizePlatformName(
@@ -2710,12 +3209,14 @@ async function findOwnedAppointmentForMutation(
   args: any,
   customerId: string,
   platform: string,
-  businessConfig: any
+  businessConfig: any,
+  now: Date = new Date()
 ): Promise<{
   result: any;
   pastAppointment: any | null;
   temporalState: AppointmentTemporalState | null;
 }> {
+  const nowMs = now.getTime();
   if (isValidLookupDate(args?.requestedDate)) {
     const exactDate = String(args.requestedDate);
     const exact = await findCustomerAppointments(
@@ -2724,20 +3225,21 @@ async function findOwnedAppointmentForMutation(
         ...args,
         startDate: exactDate,
         endDate: exactDate,
-        lookupMode: exactDate < stockholmDateString(new Date()) ? "history" : "today",
+        lookupMode: exactDate < stockholmDateString(now) ? "history" : "today",
         includePast: true,
         lookupText: exactDate,
         lookupPath: `${String(args?.lookupPath || "mutation")}_requested_date`
       },
       customerId,
       platform,
-      businessConfig
+      businessConfig,
+      now
     );
     if (exact?.found) {
       const appointments = Array.isArray(exact.appointments) ? exact.appointments : [];
       const futureOrActive = appointments.find(
         (appointment: any) =>
-          classifyAppointmentTemporalState(appointment) === "future_or_active"
+          classifyAppointmentTemporalState(appointment, nowMs) === "future_or_active"
       );
       if (futureOrActive) {
         return {
@@ -2748,7 +3250,7 @@ async function findOwnedAppointmentForMutation(
       }
       const past = appointments
         .filter((appointment: any) =>
-          classifyAppointmentTemporalState(appointment) !== "future_or_active"
+          classifyAppointmentTemporalState(appointment, nowMs) !== "future_or_active"
         )
         .sort(
           (a: any, b: any) =>
@@ -2759,7 +3261,7 @@ async function findOwnedAppointmentForMutation(
         return {
           result: { ...exact, appointments: [past] },
           pastAppointment: past,
-          temporalState: classifyAppointmentTemporalState(past)
+          temporalState: classifyAppointmentTemporalState(past, nowMs)
         };
       }
     }
@@ -2776,7 +3278,8 @@ async function findOwnedAppointmentForMutation(
     },
     customerId,
     platform,
-    businessConfig
+    businessConfig,
+    now
   );
   if (upcoming?.found) {
     return { result: upcoming, pastAppointment: null, temporalState: "future_or_active" };
@@ -2793,10 +3296,11 @@ async function findOwnedAppointmentForMutation(
     },
     customerId,
     platform,
-    businessConfig
+    businessConfig,
+    now
   );
   const activeToday = (Array.isArray(today?.appointments) ? today.appointments : [])
-    .filter((appointment: any) => classifyAppointmentTemporalState(appointment) === "future_or_active")
+    .filter((appointment: any) => classifyAppointmentTemporalState(appointment, nowMs) === "future_or_active")
     .sort((a: any, b: any) => new Date(a.end || a.start).getTime() - new Date(b.end || b.start).getTime());
   if (activeToday.length > 0) {
     return {
@@ -2806,7 +3310,7 @@ async function findOwnedAppointmentForMutation(
     };
   }
   const expiredToday = (Array.isArray(today?.appointments) ? today.appointments : [])
-    .filter((appointment: any) => classifyAppointmentTemporalState(appointment) === "expired_today")
+    .filter((appointment: any) => classifyAppointmentTemporalState(appointment, nowMs) === "expired_today")
     .sort((a: any, b: any) => new Date(b.end || b.start).getTime() - new Date(a.end || a.start).getTime())[0];
   if (expiredToday) {
     return { result: today, pastAppointment: expiredToday, temporalState: "expired_today" };
@@ -2823,10 +3327,11 @@ async function findOwnedAppointmentForMutation(
     },
     customerId,
     platform,
-    businessConfig
+    businessConfig,
+    now
   );
   const recentPast = (Array.isArray(recent?.appointments) ? recent.appointments : [])
-    .filter((appointment: any) => classifyAppointmentTemporalState(appointment) === "recent_past")
+    .filter((appointment: any) => classifyAppointmentTemporalState(appointment, nowMs) === "recent_past")
     .sort((a: any, b: any) => new Date(b.end || b.start).getTime() - new Date(a.end || a.start).getTime())[0];
   if (recentPast) {
     return { result: recent, pastAppointment: recentPast, temporalState: "recent_past" };
@@ -2857,7 +3362,11 @@ function formatPastAppointmentMutationReply(
   return `I found your previous appointment on ${dateText} at ${timeText}. It has already passed and cannot be moved. Would you like help booking a new appointment?`;
 }
 
-function formatAppointmentLookupReply(result: any, language: string = "en"): string {
+function formatAppointmentLookupReply(
+  result: any,
+  language: string = "en",
+  nowMs: number = Date.now()
+): string {
   const lang = ["sv", "fa", "de", "es", "ar", "en"].includes(language) ? language : "en";
 
   if (!result?.found && result?.verifiedPhoneAccepted) {
@@ -2938,7 +3447,8 @@ function formatAppointmentLookupReply(result: any, language: string = "en"): str
 
   if (result.appointments.length === 1) {
     const temporalState = classifyAppointmentTemporalState(
-      result.appointments[0]
+      result.appointments[0],
+      nowMs
     );
     if (temporalState !== "future_or_active") {
       return formatPastAppointmentMutationReply(
@@ -3004,7 +3514,7 @@ const calendarTools: any = [{
           startDate: { type: "STRING", description: "Start date in YYYY-MM-DD format." },
           endDate: { type: "STRING", description: "End date in YYYY-MM-DD format. If only asking for one day, this can be omitted." },
           requestedTime: { type: "STRING", description: "MANDATORY if the user explicitly requested a specific time, including formats like 15:30, 15.30, 15, or kl 15.50. Normalize to HH:mm, for example 15:50." },
-          durationMinutes: { type: "INTEGER", description: "The length of the requested booking in minutes. MANDATORY: Calculate this as (treatment duration + 15 min buffer). Example: Bikinilinje is 20 min -> durationMinutes = 35." }
+          durationMinutes: { type: "INTEGER", description: "The actual service duration in minutes. Do not add scheduling buffers; the server applies business booking-buffer rules deterministically." }
         },
         required: ["startDate", "durationMinutes"]
       }
@@ -3046,7 +3556,7 @@ const calendarTools: any = [{
           phone: { type: "STRING", description: "The customer's mobile number. Must be explicitly collected." },
           service: { type: "STRING", description: "The service being booked." },
           dateTime: { type: "STRING", description: "The requested start time in ISO 8601 format." },
-          durationMinutes: { type: "INTEGER", description: "The length of the booking in minutes. Calculate as (treatment duration + 15 min buffer)." }
+          durationMinutes: { type: "INTEGER", description: "The actual service duration in minutes. Do not add scheduling buffers; the server applies business booking-buffer rules deterministically." }
         },
         required: ["name", "phone", "service", "dateTime", "durationMinutes"]
       }
@@ -3073,13 +3583,26 @@ function isInterveningNonMutatingQuestion(text?: string): boolean {
   if (!raw) return false;
   const asksAboutPaymentOrPolicy =
     /\b(?:pay|payment|paying|cost|price|fee|twice|double|betala|betalning|kostar|pris|avgift|två gånger|tva ganger|dubbelt|zahlen|zahlung|kosten|preis|zweimal|pagar|pago|cuesta|precio|doble|do bar|hazine|هزینه|پرداخت|دوبار|السعر|الدفع|مرتين)\b/iu.test(raw);
-  if (!asksAboutPaymentOrPolicy) return false;
+  const asksForServiceInformationBeforeBooking = Boolean(
+    /\b(?:konsultation(?:en)?|consultation|tjänst(?:en)?|behandling(?:en)?|service|treatment|beratung|consulta)\b/iu.test(raw) &&
+    /\b(?:berätta|förklara|veta|innebär|går till|förvänta|går igenom|before i book|tell me|explain|what happens|what to expect|wie läuft|erklären|qué incluye|explicar)\b/iu.test(raw)
+  );
+  if (!asksAboutPaymentOrPolicy && !asksForServiceInformationBeforeBooking) return false;
   return !(
     isExplicitNewBookingPivotText(raw) ||
     isRescheduleIntent(raw) ||
     isCancellationIntent(raw) ||
     isExistingAppointmentLookupIntent(raw)
   );
+}
+
+function suppressBookingCtaDuringSupportTurn(sessionId: string, reply: string): string {
+  if (!nonMutatingSupportTurns[sessionId] || !pendingBookings[sessionId]) return reply;
+  const withoutTrailingCta = String(reply || "").replace(
+    /\s*(?:passar|skulle|vill|ska)\b(?=[\s\S]{0,220}\b(?:boka|bokning|tid(?:en)?)\b)[\s\S]{0,220}[?？]\s*$/iu,
+    ""
+  ).trim();
+  return withoutTrailingCta || reply;
 }
 
 function getGeminiSupportTools(sessionId?: string): any {
@@ -3093,11 +3616,15 @@ function getGeminiSupportTools(sessionId?: string): any {
     "rescheduleAppointment",
     "cancelAppointment"
   ]);
+  const serviceGuidanceActive = Boolean(
+    sessionId && pendingBookings[sessionId]?.status === "awaiting_service"
+  );
   return calendarTools.map((group: any) => ({
     ...group,
     functionDeclarations: (group.functionDeclarations || []).filter((declaration: any) => {
       const name = String(declaration?.name || "");
       if (forbiddenMutations.has(name)) return false;
+      if (serviceGuidanceActive && name === "checkSlots") return false;
       if (supportOnly && ["checkSlots", "findCustomerAppointments"].includes(name)) return false;
       return true;
     })
@@ -3106,7 +3633,8 @@ function getGeminiSupportTools(sessionId?: string): any {
 
 function formatAuthoritativeBookingContinuation(
   sessionId: string,
-  language: string
+  language: string,
+  toneConfig?: unknown,
 ): string {
   const pending = pendingBookings[sessionId];
   if (pending?.status === "awaiting_contact") {
@@ -3114,7 +3642,7 @@ function formatAuthoritativeBookingContinuation(
     if (!pending.customerName) missing.push("name");
     if (!pending.customerPhone) missing.push("phone");
     if (!pending.service || pending.service === "Bokning") missing.push("service");
-    return formatMissingBookingDetailsMessage(language, missing);
+    return formatMissingBookingDetailsMessage(language, missing, toneConfig);
   }
   if (
     pending?.status === "awaiting_confirmation" &&
@@ -3123,14 +3651,15 @@ function formatAuthoritativeBookingContinuation(
     return formatSwedishTimeSlots(
       Array.isArray(pending.offeredSlots) ? pending.offeredSlots : [],
       getStockholmTimeFromIso(String(pending.dateTime)) || undefined,
-      language
+      language,
+      toneConfig,
     );
   }
   if (
     pending?.status === "awaiting_time_selection" &&
     Array.isArray(pending.offeredSlots)
   ) {
-    return formatSwedishTimeSlots(pending.offeredSlots, undefined, language);
+    return formatSwedishTimeSlots(pending.offeredSlots, undefined, language, toneConfig);
   }
   if (language === "sv") return "Jag fortsätter gärna med bokningen här. Vilken tid vill du välja?";
   if (language === "fa") return "حتماً، رزرو را همین‌جا ادامه می‌دهیم. کدام زمان را انتخاب می‌کنید؟";
@@ -3144,8 +3673,14 @@ function selectAuthoritativeGeminiFunctionCalls(
   calls: any[],
   sessionId?: string
 ): any[] {
+  const serviceGuidanceActive = Boolean(
+    sessionId && pendingBookings[sessionId]?.status === "awaiting_service"
+  );
   const available = Array.isArray(calls)
-    ? calls.filter((call) => String(call?.function?.name || "").trim())
+    ? calls.filter((call) => {
+        const name = String(call?.function?.name || "").trim();
+        return Boolean(name) && !(serviceGuidanceActive && name === "checkSlots");
+      })
     : [];
   if (available.length <= 1) return available;
 
@@ -3304,6 +3839,7 @@ const recentlyCompletedBookings: Record<string, {
   service?: string;
   durationMinutes?: number;
   dateTime?: string;
+  bookingOperation?: Extract<BookingOperationResult, { ok: true }>;
 }> = {};
 const appointmentContexts: Record<string, { appointment: any; savedAt: number; language: string }> = {};
 const appointmentSelectionContexts: Record<string, { appointments: any[]; savedAt: number; language: string; intent?: "reschedule" | "cancel" | "lookup" }> = {};
@@ -3453,6 +3989,7 @@ type CanonicalAvailabilityConstraint = {
   rejectedTimes: string[];
   generatedFromLatestRequestAt: number;
   timezone?: string;
+  selectFirstAvailable?: boolean;
 };
 
 type AvailabilitySearchContext = {
@@ -4379,9 +4916,27 @@ function isGenericBookingRequestWithoutDate(text?: string): boolean {
   if (!raw || resolveExplicitBookingDate(raw)) return false;
   if (isExistingAppointmentLookupIntent(raw) || isRescheduleIntent(raw)) return false;
 
-  const hasBookingIntent = /\b(boka|bokning|tid|appointment|book|booking|vaght|وقت|رزرو|möte|meeting)\b/i.test(raw);
+  const hasBookingIntent =
+    /\b(?:boka|bokning|tid|appointment|book|booking|vaght|mote|möte|meeting|termin|buchung|buchen|cita|reserva|reservar)\b/iu.test(raw) ||
+    /(?:وقت|رزرو|موعد|حجز|احجز)/u.test(raw);
   const hasService = inferServiceFromText(raw) !== "Bokning";
   return hasBookingIntent && hasService;
+}
+
+function isBookingGoalWithUnresolvedService(text?: string): boolean {
+  const raw = String(text || "").trim();
+  if (!raw || !isServiceGuidanceRequest(raw)) return false;
+  return /\b(?:boka|bokning|book|booking|appointment|termin|buchen|cita|reservar|vaght|rezerv)\b/iu.test(raw) ||
+    /(?:وقت|رزرو|موعد|حجز)/u.test(raw);
+}
+
+function isResolvedServiceSelection(text?: string): boolean {
+  const raw = String(text || "").trim();
+  if (!raw || inferServiceFromText(raw) === "Bokning") return false;
+  if (isGenericBookingRequestWithoutDate(raw)) return true;
+  if (isServiceGuidanceRequest(raw)) return false;
+  return /\b(?:låter bra|passar(?: mig)?|jag väljer|jag tar|sounds good|works for me|i choose|i'll take|ich nehme|passt mir|elijo|me quedo con|khube|monasebe)\b/iu.test(raw) ||
+    /(?:خوبه|مناسبه|انتخاب می.?کنم|موافق|أختار|مناسب لي)/u.test(raw);
 }
 
 function formatAppointmentNameReply(appointment: any, language: string): string {
@@ -4619,114 +5174,7 @@ function isCompoundAffirmativeReply(text?: string): boolean {
     .replace(/\bja{2,}\b/gu, "ja")
     .replace(/\bye+s{2,}\b/gu, "yes")
     .replace(/\bba+l+e+h{0,2}\b/gu, "bale");
-  if (!raw || isThanksOnlyText(raw)) return false;
-
-  // A polite word must never turn a negative or uncertain answer into confirmation.
-  const negativeOrUncertain = [
-    /\b(?:no|not|dont|do not|cannot|cant|maybe|perhaps|unsure)\b/u,
-    /\b(?:nej|inte|kanske|osaker)\b/u,
-    /\b(?:nein|nicht|vielleicht|unsicher)\b/u,
-    /\b(?:no|quizas|tal vez|no se)\b/u,
-    /(?:^|\s)(?:نه|خیر|نمیدانم|شاید|مطمئن نیستم)(?:\s|$)/u,
-    /(?:^|\s)(?:لا|ليس|ربما|غير متاكد)(?:\s|$)/u,
-    /\b(?:na|nemikham|nemitonam|shayad)\b/u
-  ];
-  if (negativeOrUncertain.some((pattern) => pattern.test(raw))) return false;
-
-  const affirmativeContinuationPatterns = [
-    /^ja(?: det)? (?:gar )?(?:fint|bra)(?: for mig)?$/u,
-    /^yes (?:that )?(?:works|is fine)(?: for me)?$/u,
-    /^ja (?:das )?(?:passt|ist gut)(?: fur mich)?$/u,
-    /^si (?:esta bien|me va bien)(?: para mi)?$/u,
-    /^(?:نعم|اجل|موافق) (?:هذا )?(?:مناسب|جيد)(?: لي)?$/u,
-    /^(?:بله|اره|باشه) (?:خوبه|مناسبه|برای من خوبه)$/u,
-    /^(?:bale|are|bashe) (?:khube|monasebe|baraye man khube)$/u
-  ];
-  if (affirmativeContinuationPatterns.some((pattern) => pattern.test(raw))) return true;
-
-  const affirmativePrefixes = [
-    "yes please",
-    "yes",
-    "sure",
-    "correct",
-    "confirm it",
-    "confirm",
-    "book that one",
-    "move it",
-    "that time",
-    "ok",
-    "okay",
-    "ja tack",
-    "ja garna",
-    "ja bitte",
-    "ja gerne",
-    "ja",
-    "gerne",
-    "si por favor",
-    "si claro",
-    "si",
-    "claro",
-    "نعم من فضلك",
-    "نعم",
-    "اجل",
-    "موافق",
-    "بله لطفا",
-    "بله",
-    "اره",
-    "باشه",
-    "bale lotfan",
-    "baleh lotfan",
-    "bale",
-    "baleh",
-    "are",
-    "bashe",
-    "hamoon vaght",
-    "hamon vaght",
-    "همون وقت",
-    "همان وقت"
-  ].sort((a, b) => b.length - a.length);
-  const politeSuffixes = new Set([
-    "please",
-    "thanks",
-    "thank",
-    "you",
-    "thankyou",
-    "tack",
-    "garna",
-    "snalla",
-    "danke",
-    "gerne",
-    "bitte",
-    "vielen",
-    "gracias",
-    "por",
-    "favor",
-    "شكرا",
-    "شکرا",
-    "جزيلا",
-    "من",
-    "فضلك",
-    "مرسی",
-    "ممنون",
-    "لطفا",
-    "متشکرم",
-    "سپاس",
-    "mersi",
-    "merci",
-    "mamnoon",
-    "mamnun",
-    "lotfan",
-    "sepas"
-  ]);
-
-  for (const prefix of affirmativePrefixes) {
-    if (raw !== prefix && !raw.startsWith(`${prefix} `)) continue;
-    const suffix = raw.slice(prefix.length).trim();
-    if (!suffix) return true;
-    const suffixTokens = suffix.split(" ");
-    if (suffixTokens.every((token) => politeSuffixes.has(token))) return true;
-  }
-  return false;
+  return Boolean(raw && !isThanksOnlyText(raw) && isPositiveBookingConfirmation(raw));
 }
 
 function isRescheduleConfirmation(text?: string): boolean {
@@ -4791,6 +5239,136 @@ function isPendingBookingExpired(pending: any): boolean {
   const createdAt = Number(pending?.createdAt || pending?.created_at || 0);
   if (!createdAt) return false;
   return Date.now() - createdAt > PENDING_BOOKING_TTL_MS;
+}
+
+const PENDING_AVAILABILITY_BLOCKING_STATUSES = new Set([
+  "awaiting_confirmation",
+  "awaiting_contact",
+  "failed_recoverable",
+  "inserting",
+]);
+
+function pendingHasLegitimateOwnedSlotClaim(params: {
+  pending: any;
+  businessId: string;
+  platform: string;
+  userId: string;
+  startMs: number;
+  endMs: number;
+  durationMinutes: number;
+}): boolean {
+  if (
+    !params.pending?.dateTime ||
+    !params.pending?.selectedSlotEnd ||
+    !params.businessId ||
+    !params.platform ||
+    !params.userId ||
+    !Number.isFinite(params.startMs) ||
+    !Number.isFinite(params.endMs) ||
+    params.durationMinutes <= 0
+  ) return false;
+
+  if (
+    String(params.pending.status || "") === "failed_recoverable" &&
+    params.pending.retryEligible !== true
+  ) return false;
+
+  const selectedEndMs = new Date(
+    ensureStockholmOffset(String(params.pending.selectedSlotEnd || ""))
+  ).getTime();
+  if (selectedEndMs !== params.endMs) return false;
+
+  return (Array.isArray(params.pending.ownedOfferedSlots)
+    ? params.pending.ownedOfferedSlots
+    : []
+  ).some((slot: OwnedOfferedSlot) =>
+    String(slot?.businessId || "") === params.businessId &&
+    normalizePlatformName(slot?.platform || "") === params.platform &&
+    normalizePlatformUserId(params.platform, String(slot?.userId || "")) === params.userId &&
+    Number(slot?.durationMinutes || 0) === params.durationMinutes &&
+    new Date(ensureStockholmOffset(String(slot?.start || ""))).getTime() === params.startMs &&
+    new Date(ensureStockholmOffset(String(slot?.end || ""))).getTime() === params.endMs
+  );
+}
+
+function evaluatePendingAvailabilityRecord(
+  sessionId: string,
+  pending: any,
+  owner: BookingSlotOwner,
+  requestedStartMs: number,
+  requestedEndMs: number
+) {
+  const pendingBusinessId = String(
+    pending?.businessId ||
+    getBusinessIdFromConfig(pending?.businessConfig) ||
+    ""
+  );
+  const pendingPlatform = normalizePlatformName(pending?.platform || "");
+  const pendingUserId = normalizePlatformUserId(
+    pendingPlatform,
+    String(pending?.userId || "")
+  );
+  const normalizedStart = ensureStockholmOffset(String(pending?.dateTime || ""));
+  const pendingStartMs = new Date(normalizedStart).getTime();
+  const pendingDurationMinutes = Number(pending?.durationMinutes || 0);
+  const pendingEndMs = pendingStartMs + pendingDurationMinutes * 60000;
+  const isExpired = Boolean(pending) && isPendingBookingExpired(pending);
+  const hasBlockingStatus = PENDING_AVAILABILITY_BLOCKING_STATUSES.has(
+    String(pending?.status || "")
+  );
+  const sameBusiness = pendingBusinessId === owner.businessId;
+  const belongsToRequestingOwner = Boolean(
+    sessionId === owner.sessionId ||
+    (
+      sameBusiness &&
+      pendingPlatform === normalizePlatformName(owner.platform) &&
+      pendingUserId === normalizePlatformUserId(owner.platform, owner.userId)
+    )
+  );
+  const hasCanonicalOwner = Boolean(pendingPlatform && pendingUserId);
+  const hasLegitimateOwnedSlotClaim = pendingHasLegitimateOwnedSlotClaim({
+    pending,
+    businessId: pendingBusinessId,
+    platform: pendingPlatform,
+    userId: pendingUserId,
+    startMs: pendingStartMs,
+    endMs: pendingEndMs,
+    durationMinutes: pendingDurationMinutes,
+  });
+  const overlapsRequestedInterval = Boolean(
+    Number.isFinite(pendingStartMs) &&
+    pendingDurationMinutes > 0 &&
+    pendingStartMs < requestedEndMs &&
+    pendingEndMs > requestedStartMs
+  );
+  const isActiveBlockingPending = Boolean(
+    pending &&
+    !belongsToRequestingOwner &&
+    !isExpired &&
+    hasBlockingStatus &&
+    sameBusiness &&
+    hasCanonicalOwner &&
+    hasLegitimateOwnedSlotClaim
+  );
+
+  return {
+    pending,
+    sessionId,
+    pendingBusinessId,
+    pendingPlatform,
+    normalizedStart,
+    pendingStartMs,
+    pendingEndMs,
+    pendingDurationMinutes,
+    isExpired,
+    hasBlockingStatus,
+    hasLegitimateOwnedSlotClaim,
+    belongsToRequestingOwner,
+    sameBusiness,
+    overlapsRequestedInterval,
+    isActiveBlockingPending,
+    isCanonicalOverlappingBlocker: isActiveBlockingPending && overlapsRequestedInterval,
+  };
 }
 
 function isPendingBookingActiveForGreeting(pending: any): boolean {
@@ -4863,7 +5441,8 @@ function rememberCompletedBooking(
   name?: string,
   service?: string,
   durationMinutes?: number,
-  dateTime?: string
+  dateTime?: string,
+  bookingOperation?: BookingOperationResult,
 ) {
   recentlyCompletedBookings[chatId] = {
     completedAt: Date.now(),
@@ -4871,7 +5450,8 @@ function rememberCompletedBooking(
     name,
     service,
     durationMinutes,
-    dateTime
+    dateTime,
+    bookingOperation: bookingOperation?.ok ? structuredClone(bookingOperation) : undefined,
   };
   clearConversationFlowLanguage(chatId);
 }
@@ -4885,6 +5465,19 @@ function getRecentCompletedBooking(chatId: string) {
     return null;
   }
   return item;
+}
+
+function isRecentCompletedBookingStatusQuestion(text?: string): boolean {
+  const raw = String(text || "").trim();
+  if (!raw || isExplicitNewBookingPivotText(raw)) return false;
+  const normalized = raw.toLowerCase().replace(/[!?.,،؟؛]/g, " ").replace(/\s+/g, " ").trim();
+
+  return (
+    /\b(?:can|could|would)\s+you\s+(?:please\s+)?(?:confirm|check|verify)\s+(?:my|the)?\s*(?:booking|appointment)\b/iu.test(normalized) ||
+    /\b(?:is|was)\s+(?:my|the)\s+(?:booking|appointment)\s+(?:confirmed|successful|booked)\b/iu.test(normalized) ||
+    /(?:هل\s+يمكنك|هل\s+تستطيع|ممكن).{0,24}(?:تأكيد|تؤكد|التحقق).{0,24}(?:الحجز|الموعد)/u.test(normalized) ||
+    /هل\s+(?:الحجز|الموعد).{0,16}(?:مؤكد|تم)/u.test(normalized)
+  );
 }
 
 function inferServiceFromText(text?: string): string {
@@ -4901,14 +5494,15 @@ function inferServiceFromText(text?: string): string {
   const compactServiceCollapsed = compactService.replace(/([a-z])\1+/g, "$1");
 
   if (
-    /\b(konsultation|consultation|consulting|consult|konsultasjon|konsultasion|konsiltation|konstitution|knstilution|konstlution|konstultion|konslutation|moshavere|moshavereh|mashavere|mashavereh|مشاوره)\b/i.test(raw) ||
+    /\b(konsultation|consultation|consulting|consult|consulta|beratung|konsultasjon|konsultasion|konsiltation|konstitution|knstilution|konstlution|konstultion|konslutation|moshavere|moshavereh|mashavere|mashavereh)\b/i.test(raw) ||
+    /(?:مشاوره|استشارة)/u.test(raw) ||
     /^(?:kons|cons|konst|knst).*(?:ult|lult|lut).*(?:ation|tion|ion)?$/i.test(compactServiceCollapsed) ||
     /^m[ao]sh?a?v?e?r(?:e|eh|h)?$/i.test(compactServiceCollapsed)
   ) return "Konsultation";
 
   if (raw.includes("bikini")) return "Bikinilinjebehandling";
   if (raw.includes("helkropp") || raw.includes("hel kropp") || raw.includes("full body") || raw.includes("fullbody") || raw.includes("full-body") || raw.includes("hellkropp") || raw.includes("helkrop")) return "Helkropp laserbehandling";
-  if (raw.includes("laser")) return "Laserbehandling";
+  if (raw.includes("laser") || raw.includes("لیزر") || raw.includes("ليزر")) return "Laserbehandling";
   if (raw.includes("ansikte")) return "Ansiktsbehandling";
   if (raw.includes("ben")) return "Benbehandling";
   if (raw.includes("arm")) return "Armbehandling";
@@ -4977,6 +5571,53 @@ function getDefaultBookingServiceForBusiness(config: any): string | null {
 
 function getDefaultBookingDurationForService(service?: string): number | null {
   return normalizeBookingService(service, service) === "Konsultation" ? 30 : null;
+}
+
+
+function resolveBusinessBookingBufferMinutes(businessConfig: any): number {
+  const directCandidates = [
+    businessConfig?.bookingBufferMinutes,
+    businessConfig?.booking_buffer_minutes,
+    businessConfig?.appointmentBufferMinutes,
+    businessConfig?.appointment_buffer_minutes,
+    businessConfig?.bufferMinutes,
+    businessConfig?.buffer_minutes
+  ];
+
+  for (const value of directCandidates) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed) && parsed >= 0 && parsed <= 180) {
+      return Math.round(parsed);
+    }
+  }
+
+  const prompt = String(
+    businessConfig?.systemPrompt ||
+    businessConfig?.system_prompt ||
+    ""
+  );
+
+  if (!prompt) return 0;
+
+  const patterns = [
+    /(?:keep|leave|allow|require)\s+(\d{1,3})\s*(?:min|minutes)\s+(?:between|after)\s+(?:appointments|bookings|services)/i,
+    /(\d{1,3})\s*(?:min|minutes)\s+(?:buffer|gap)\s+(?:between|after)\s+(?:appointments|bookings|services)/i,
+    /(?:buffer|gap)\s*(?:of|:)?\s*(\d{1,3})\s*(?:min|minutes)/i,
+    /(?:ha|lämna|lägg|behåll)\s+(\d{1,3})\s*(?:min|minuter)\s+(?:mellan|efter)\s+(?:bokningar|tider|besök|tjänster)/i,
+    /(\d{1,3})\s*(?:min|minuter)\s+(?:mellan|efter)\s+(?:bokningar|tider|besök|tjänster)/i
+  ];
+
+  for (const pattern of patterns) {
+    const match = prompt.match(pattern);
+    if (!match) continue;
+
+    const parsed = Number(match[1]);
+    if (Number.isFinite(parsed) && parsed >= 0 && parsed <= 180) {
+      return Math.round(parsed);
+    }
+  }
+
+  return 0;
 }
 
 function isServiceDurationQuestion(text?: string): boolean {
@@ -5056,9 +5697,10 @@ async function resolveServiceDurationMinutes(
   }
 
   const services = Array.isArray(businessConfig?.services) ? businessConfig.services : [];
+  const configuredService = findConfiguredBookingService(service, businessConfig);
   for (const item of services) {
-    const name = String(item?.name || item?.service || item?.title || "").toLowerCase();
-    if (!serviceKey || !name.includes(serviceKey)) continue;
+    const name = String(item?.name || item?.service || item?.title || "").trim();
+    if (!configuredService || name !== configuredService) continue;
     const parsed = parseConfiguredDuration(
       item?.durationMinutes ?? item?.duration_minutes ?? item?.duration
     );
@@ -5130,6 +5772,73 @@ function appendLocalHistory(chatId: string, userMessage: string, botMessage: str
   chatSessions[chatId].push({ role: "assistant", content: botMessage || "" });
 }
 
+
+function normalizeAssistantReplyForRepetition(value?: string): string {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function hasRecentAssistantReplyRepetition(
+  sessionId: string,
+  candidateReply: string
+): boolean {
+  const candidate = normalizeAssistantReplyForRepetition(candidateReply);
+  if (!candidate || candidate.length < 20) return false;
+
+  const history = Array.isArray(chatSessions[sessionId])
+    ? chatSessions[sessionId]
+    : [];
+
+  const recentAssistantReplies = history
+    .filter((entry: any) => entry?.role === "assistant")
+    .slice(-6)
+    .map((entry: any) =>
+      normalizeAssistantReplyForRepetition(
+        typeof entry?.content === "string" ? entry.content : ""
+      )
+    )
+    .filter(Boolean);
+
+  const candidateWords = new Set(candidate.split(" ").filter(Boolean));
+
+  return recentAssistantReplies.some((previous: string) => {
+    if (previous === candidate) return true;
+
+    const previousWords = new Set(previous.split(" ").filter(Boolean));
+    if (candidateWords.size < 5 || previousWords.size < 5) return false;
+
+    let overlap = 0;
+    for (const word of candidateWords) {
+      if (previousWords.has(word)) overlap++;
+    }
+
+    const similarity =
+      overlap / Math.max(candidateWords.size, previousWords.size);
+
+    return similarity >= 0.82;
+  });
+}
+
+function guardGeneralAiReplyRepetition(
+  sessionId: string,
+  candidateReply: string,
+  language: string
+): string {
+  if (!hasRecentAssistantReplyRepetition(sessionId, candidateReply)) {
+    return candidateReply;
+  }
+
+  console.warn("[ConversationRepetitionGuard]", {
+    sessionId,
+    action: "blocked_repeated_general_ai_reply"
+  });
+
+  return formatGreetingDuringActiveBooking(language);
+}
+
 function cleanCustomerNameCandidate(candidate?: string): string {
   let s = String(candidate || "").trim();
   if (!s) return "";
@@ -5161,6 +5870,33 @@ function cleanCustomerNameCandidate(candidate?: string): string {
   return words.slice(0, 2).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ").trim();
 }
 
+function extractExplicitEnglishBookingName(text?: string): string | null {
+  const raw = String(text || "").trim();
+  if (!raw) return null;
+  const nameWords = "[A-Za-zÅÄÖåäöÉéÜüÁáÍíÓóÚúÑñÇçŞşĞğ'-]{2,}";
+  const patterns = [
+    new RegExp(`\\b(?:under|for)\\s+(${nameWords}\\s+${nameWords})(?=\\s+with\\s+(?:the\\s+)?(?:phone|mobile)(?:\\s+number)?\\b)`, "i"),
+    new RegExp(`\\b(?:please\\s+)?book(?:\\s+it)?\\s+for\\s+(${nameWords}\\s+${nameWords})(?=\\s+(?:(?:at|on)\\b[\\s\\S]*\\b)?with\\s+(?:the\\s+)?(?:phone|mobile)(?:\\s+number)?\\b)`, "i")
+  ];
+  const blocked = new Set([
+    "appointment", "august", "booking", "consultation", "friday", "laser",
+    "mobile", "monday", "phone", "saturday", "service", "sunday",
+    "thursday", "treatment", "tuesday", "wednesday"
+  ]);
+
+  for (const pattern of patterns) {
+    const candidate = raw.match(pattern)?.[1]?.trim() || "";
+    const words = candidate.split(/\s+/);
+    if (
+      words.length !== 2 ||
+      words.some((word) => !/^[A-ZÅÄÖÉÜÁÍÓÚÑÇŞĞ][A-Za-zÅÄÖåäöÉéÜüÁáÍíÓóÚúÑñÇçŞşĞğ'-]+$/.test(word)) ||
+      words.some((word) => blocked.has(word.toLowerCase()))
+    ) continue;
+    return cleanCustomerNameCandidate(candidate) || null;
+  }
+  return null;
+}
+
 function extractNameAndPhone(text?: string): { name: string; phone: string } | null {
   const raw = normalizeLocalizedDigits(String(text || "")).trim();
   if (!raw) return null;
@@ -5172,6 +5908,10 @@ function extractNameAndPhone(text?: string): { name: string; phone: string } | n
   if (phone.replace(/\D/g, "").length < 7) return null;
 
   const beforePhone = raw.slice(0, phoneMatch.index).trim();
+  const explicitEnglishBookingName = extractExplicitEnglishBookingName(raw);
+  if (explicitEnglishBookingName) {
+    return { name: explicitEnglishBookingName, phone };
+  }
 
   // Strong pattern extraction, in priority order. This avoids names like
   // "shumare ham" or "meine ist" being saved from contact phrases.
@@ -5196,9 +5936,16 @@ function extractNameAndPhone(text?: string): { name: string; phone: string } | n
     }
   }
 
-  // Fallback: remove common contact words and use the remaining person-like word before phone.
-  const fallback = cleanCustomerNameCandidate(beforePhone);
-  if (fallback) return { name: fallback, phone };
+  // Fallback is intentionally limited to a standalone one/two-word contact payload.
+  // Long booking/date sentences must not contribute arbitrary leading words as names.
+  const standaloneBeforePhone = beforePhone
+    .replace(/\b(?:and|with)\s+(?:the\s+)?(?:phone|mobile)(?:\s+number)?\s*$/i, "")
+    .replace(/[,:;.]+$/g, "")
+    .trim();
+  if (/^[A-Za-zÅÄÖåäöÉéÜüÖöÄäÁáÍíÓóÚúÑñÇçŞşĞğ'\-]{2,}(?:\s+[A-Za-zÅÄÖåäöÉéÜüÖöÄäÁáÍíÓóÚúÑñÇçŞşĞğ'\-]{2,})?$/.test(standaloneBeforePhone)) {
+    const fallback = cleanCustomerNameCandidate(standaloneBeforePhone);
+    if (fallback) return { name: fallback, phone };
+  }
 
   return null;
 }
@@ -5231,6 +5978,9 @@ function maskPhoneForDiagnostic(phone?: string): string {
 function extractNameOnly(text?: string): string | null {
   const raw = String(text || "").trim();
   if (!raw) return null;
+
+  const explicitEnglishBookingName = extractExplicitEnglishBookingName(raw);
+  if (explicitEnglishBookingName) return explicitEnglishBookingName;
 
   const patterns: RegExp[] = [
     /(?:mitt\s+namn\s+är|jag\s+heter)\s+([A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,}(?:\s+[A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,})?)/i,
@@ -5276,6 +6026,52 @@ function normalizeBookingService(text?: string, fallback?: string): string {
   return existing || "Bokning";
 }
 
+function findConfiguredBookingService(
+  requestedService: string,
+  businessConfig: any
+): string | null {
+  const requested = String(requestedService || "").trim();
+  if (!requested) return null;
+
+  const configuredNames = (Array.isArray(businessConfig?.services)
+    ? businessConfig.services
+    : [])
+    .map((item: any) =>
+      String(item?.name || item?.service || item?.title || "").trim()
+    )
+    .filter(Boolean);
+  const requestedLower = requested.toLowerCase();
+
+  const directMatches = configuredNames.filter((name: string) => {
+    const configuredLower = name.toLowerCase();
+    return configuredLower === requestedLower ||
+      configuredLower.includes(requestedLower) ||
+      requestedLower.includes(configuredLower);
+  });
+  if (directMatches.length === 1) return directMatches[0];
+  if (directMatches.length > 1) return null;
+
+  const requestedCanonical = normalizeBookingService(requested, "Bokning");
+  if (requestedCanonical === "Bokning") return null;
+
+  const canonicalMatches = configuredNames.filter((name: string) =>
+    normalizeBookingService(name, "Bokning") === requestedCanonical
+  );
+  return canonicalMatches.length === 1 ? canonicalMatches[0] : null;
+}
+
+function resolveConfiguredBookingService(
+  text: string,
+  businessConfig: any,
+  fallback?: string
+): string {
+  const raw = String(text || "").trim();
+  const configuredMatch = findConfiguredBookingService(raw, businessConfig);
+  if (configuredMatch) return configuredMatch;
+
+  return normalizeBookingService(raw, fallback);
+}
+
 function getWhatsAppConversationPhone(
   platformName: string,
   recipientUserId: string,
@@ -5294,53 +6090,10 @@ function getWhatsAppConversationPhone(
 
 function formatMissingBookingDetailsMessage(
   language: string,
-  missing: Array<"name" | "phone" | "service">
+  missing: Array<"name" | "phone" | "service">,
+  toneConfig?: unknown,
 ): string {
-  const needsName = missing.includes("name");
-  const needsPhone = missing.includes("phone");
-  const needsService = missing.includes("service");
-
-  if (language === "fa") {
-    if (needsName && needsPhone) return "برای نهایی‌کردن رزرو فقط نام و شماره موبایل‌تان را بفرستید. 😊";
-    if (needsName) return "فقط نام‌تان را بفرستید تا رزرو را نهایی کنم. 😊";
-    if (needsPhone) return "فقط شماره موبایل‌تان را بفرستید تا رزرو را نهایی کنم. 😊";
-    if (needsService) return "لطفاً بفرمایید کدام خدمت را می‌خواهید رزرو کنید. 😊";
-  }
-
-  if (language === "en") {
-    if (needsName && needsPhone) return "To finish the booking, I only need your name and mobile number. 😊";
-    if (needsName) return "I only need your name to finish the booking. 😊";
-    if (needsPhone) return "I only need your mobile number to finish the booking. 😊";
-    if (needsService) return "Which service would you like to book? 😊";
-  }
-
-  if (language === "de") {
-    if (needsName && needsPhone) return "Zum Abschluss brauche ich nur Ihren Namen und Ihre Mobilnummer. 😊";
-    if (needsName) return "Ich brauche nur noch Ihren Namen. 😊";
-    if (needsPhone) return "Ich brauche nur noch Ihre Mobilnummer. 😊";
-    if (needsService) return "Welche Behandlung möchten Sie buchen? 😊";
-  }
-
-  if (language === "es") {
-    if (needsName && needsPhone) return "Para finalizar, solo necesito tu nombre y número de móvil. 😊";
-    if (needsName) return "Solo necesito tu nombre para finalizar la reserva. 😊";
-    if (needsPhone) return "Solo necesito tu número de móvil para finalizar la reserva. 😊";
-    if (needsService) return "¿Qué servicio quieres reservar? 😊";
-  }
-
-  if (language === "ar") {
-    if (needsName && needsPhone) return "لإتمام الحجز، أحتاج فقط اسمك ورقم هاتفك. 😊";
-    if (needsName) return "أحتاج فقط اسمك لإتمام الحجز. 😊";
-    if (needsPhone) return "أحتاج فقط رقم هاتفك لإتمام الحجز. 😊";
-    if (needsService) return "ما الخدمة التي تريد حجزها؟ 😊";
-  }
-
-  if (needsName && needsPhone) return "För att slutföra bokningen behöver jag bara ditt namn och mobilnummer. 😊";
-  if (needsName) return "Jag behöver bara ditt namn för att slutföra bokningen. 😊";
-  if (needsPhone) return "Jag behöver bara ditt mobilnummer för att slutföra bokningen. 😊";
-  if (needsService) return "Vilken tjänst vill du boka? 😊";
-
-  return "Jag har allt jag behöver för att slutföra bokningen. 😊";
+  return renderDeterministicMissingDetailsReply(language, missing, toneConfig);
 }
 
 function getPendingOwnedUserId(
@@ -5415,6 +6168,9 @@ async function savePendingBooking(chatId: string, platform: string, pending: any
       availabilityMaxTime: pending.availabilityMaxTime || null,
       availabilityConstraint: pending.availabilityConstraint || null,
       normalizedBookingRequest: pending.normalizedBookingRequest || null,
+      dateConflictClarification: isDateConflictClarificationState(pending.dateConflictClarification)
+        ? pending.dateConflictClarification
+        : null,
       lastAvailabilityConstraintKey: pending.lastAvailabilityConstraintKey || null,
       language: pending.language || null,
       customerName: pending.customerName || null,
@@ -5452,9 +6208,21 @@ async function savePendingBooking(chatId: string, platform: string, pending: any
     if (existing?.user_id) {
       const { error } = await supabase.from("appointments_leads").update(updateData).eq("user_id", chatId);
       if (error) console.error("Pending booking lead update error:", JSON.stringify(error));
+      if (!error) emitBookingLanguageTrace({
+        stage: "pending_persisted",
+        sessionId: chatId,
+        pendingLanguage: pending.language || null,
+        flowLanguage: getStoredFlowLanguage(chatId),
+      });
     } else {
       const { error } = await supabase.from("appointments_leads").insert([updateData]);
       if (error) console.error("Pending booking lead insert error:", JSON.stringify(error));
+      if (!error) emitBookingLanguageTrace({
+        stage: "pending_persisted",
+        sessionId: chatId,
+        pendingLanguage: pending.language || null,
+        flowLanguage: getStoredFlowLanguage(chatId),
+      });
     }
   } catch (err) {
     console.error("savePendingBooking crashed:", err);
@@ -5547,6 +6315,9 @@ async function loadPendingBooking(chatId: string, platform: string, businessConf
       availabilityMaxTime: parsed.availabilityMaxTime || null,
       availabilityConstraint: parsed.availabilityConstraint || null,
       normalizedBookingRequest: parsed.normalizedBookingRequest || null,
+      dateConflictClarification: isDateConflictClarificationState(parsed.dateConflictClarification)
+        ? parsed.dateConflictClarification
+        : null,
       lastAvailabilityConstraintKey: parsed.lastAvailabilityConstraintKey || null,
       language: parsed.language || null,
       customerName: parsed.customerName || null,
@@ -5619,7 +6390,12 @@ async function loadPendingBooking(chatId: string, platform: string, businessConf
       await clearPendingBooking(chatId);
       return null;
     }
-    if (!pending.dateTime && !pending.selectedDate && !pending.availabilityStartDate) return null;
+    if (
+      !pending.dateTime &&
+      !pending.selectedDate &&
+      !pending.availabilityStartDate &&
+      !isDateConflictClarificationState(pending.dateConflictClarification)
+    ) return null;
     if (isPendingBookingExpired(pending)) {
       console.log("[DeterministicBooking]", { event: "expired_database_state_cleared", sessionKey: safeLogFingerprint(chatId) });
       await clearPendingBooking(chatId);
@@ -5718,7 +6494,12 @@ async function sendCustomerMessage(platform: string, recipientId: string, messag
 
   if (channel === "whatsapp") return await sendWhatsAppMessage(recipient, message, businessConfig);
   if (channel === "messenger") return await sendMessengerMessage(recipient, message, businessConfig);
-  if (channel === "instagram") return await sendInstagramMessage(recipient, message, getBusinessInstagramToken(businessConfig));
+  if (channel === "instagram") return await sendInstagramMessage(
+    recipient,
+    message,
+    getBusinessInstagramToken(businessConfig),
+    getScopedChannelSessionId("instagram", recipient, businessConfig)
+  );
 
   if (channel === "telegram") {
     const token = businessConfig?.telegramToken || activeConfig?.telegramToken || process.env.TELEGRAM_TOKEN || process.env.TELEGRAM_BOT_TOKEN;
@@ -6088,13 +6869,18 @@ function resolveExplicitBookingDate(text?: string): string | null {
     .trim();
   if (!raw) return null;
 
+  if (getBookingDateConflict(raw, "Europe/Stockholm")) return null;
+
+  const sharedExplicitDate = parseBookingDate(raw, "Europe/Stockholm");
+  if (sharedExplicitDate?.kind === "exact_date" && sharedExplicitDate.value) {
+    return sharedExplicitDate.value;
+  }
+
   const today = stockholmDateString(new Date());
 
   const iso = raw.match(/\b(20\d{2})-(\d{2})-(\d{2})\b/);
   if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
 
-  // A written calendar date is authoritative even when the same message also
-  // contains a weekday, for example "onsdag 22 juli" or "22 juli, inte nästa onsdag".
   const namedDate = raw.match(/\b(?:den\s+)?(\d{1,2})\s+(januari|februari|mars|april|maj|juni|juli|augusti|september|oktober|november|december)(?:\s+(20\d{2}))?\b/i);
   if (namedDate) {
     const monthNames = ["januari", "februari", "mars", "april", "maj", "juni", "juli", "augusti", "september", "oktober", "november", "december"];
@@ -6211,15 +6997,6 @@ function extractRequestedWeekdays(text?: string): Array<{ index: number; positio
   return matches.sort((a, b) => a.position - b.position);
 }
 
-function nextStockholmWeekdayDate(weekday: number, fromDate: string): string {
-  const [year, month, day] = fromDate.split("-").map(Number);
-  const from = new Date(Date.UTC(year, month - 1, day));
-  let daysAhead = (weekday - from.getUTCDay() + 7) % 7;
-  if (daysAhead === 0) daysAhead = 7;
-  from.setUTCDate(from.getUTCDate() + daysAhead);
-  return from.toISOString().slice(0, 10);
-}
-
 function normalizeWindowClock(hoursText: string, minutesText?: string): string | null {
   const hours = Number(hoursText);
   const minutes = Number(minutesText || 0);
@@ -6255,7 +7032,52 @@ function extractAvailabilityTimeWindow(text?: string): {
   return selected;
 }
 
-function parseAvailabilityRangeRequest(text: string, businessConfig: any): AvailabilityRangeRequest | null {
+function isInclusiveForwardAvailabilityFromDateRequest(text?: string): boolean {
+  const raw = normalizeLocalizedDigits(String(text || ""))
+    .normalize("NFKC")
+    .trim()
+    .toLowerCase()
+    .replace(/\u200c/g, " ");
+
+  if (!raw) return false;
+
+  return (
+    /\b(?:eller\s+senare|eller\s+senare\s+datum)\b/iu.test(raw) ||
+    /\b(?:or\s+later|or\s+after)\b/iu.test(raw) ||
+    /\b(?:oder\s+später|oder\s+spaeter)\b/iu.test(raw) ||
+    /\b(?:o\s+después|o\s+despues|o\s+más\s+tarde|o\s+mas\s+tarde)\b/iu.test(raw)
+  );
+}
+
+function isForwardAvailabilityAfterDateRequest(text?: string): boolean {
+  const raw = normalizeLocalizedDigits(String(text || ""))
+    .normalize("NFKC")
+    .trim()
+    .toLowerCase()
+    .replace(/\u200c/g, " ");
+
+  if (!raw) return false;
+
+  return (
+    /\b(?:after|following)\s+(?:the\s+)?(?:date\s+)?(?:20\d{2}-\d{2}-\d{2}|\d{1,2}(?:st|nd|rd|th)?\s+(?:january|february|march|april|may|june|july|august|september|october|november|december)|(?:january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2}(?:st|nd|rd|th)?)/iu.test(raw) ||
+    /\b(?:nearest|soonest|earliest|next)\s+(?:available\s+)?(?:time|slot|appointment)?\s*after\b/iu.test(raw) ||
+
+    /\b(?:efter)\s+(?:den\s+)?(?:\d{1,2})(?:\s+[a-zåäö]+)?/iu.test(raw) ||
+    /\b(?:närmast|tidigast|första\s+lediga|nästa\s+lediga)\s+efter\b/iu.test(raw) ||
+
+    /\b(?:nach)\s+(?:dem\s+)?(?:\d{1,2})(?:\s+(?:januar|februar|märz|maerz|april|mai|juni|juli|august|september|oktober|november|dezember))\b/iu.test(raw) ||
+    /\b(?:después|despues)\s+(?:del?\s+)?(?:\d{1,2})(?:\s+de\s+[a-záéíóúñ]+)?/iu.test(raw) ||
+
+    /(?:بعد\s+از|پس\s+از)\s*(?:تاریخ\s*)?[\d۰-۹٠-٩]+/u.test(raw) ||
+    /(?:بعد|بعد\s+من)\s*(?:تاريخ\s*)?[\d٠-٩۰-۹]+/u.test(raw)
+  );
+}
+
+function parseAvailabilityRangeRequest(
+  text: string,
+  businessConfig: any,
+  now: Date = new Date()
+): AvailabilityRangeRequest | null {
   const raw = normalizeLocalizedDigits(String(text || ""))
     .trim()
     .toLowerCase()
@@ -6263,7 +7085,13 @@ function parseAvailabilityRangeRequest(text: string, businessConfig: any): Avail
     .replace(/[–—]/g, "-");
   if (!raw) return null;
 
-  const timeWindow = extractAvailabilityTimeWindow(raw);
+  const namedDateRange = parseNamedBookingDateRange(
+    raw,
+    String(businessConfig?.timezone || "Europe/Stockholm"),
+    now
+  );
+  // Bare day numbers in a named calendar range are dates, not a clock window.
+  const timeWindow = namedDateRange ? null : extractAvailabilityTimeWindow(raw);
   const minTime = timeWindow?.minTime || null;
   const maxTime = timeWindow?.maxTime || null;
   const hasValidWindow = Boolean(timeWindow);
@@ -6284,6 +7112,21 @@ function parseAvailabilityRangeRequest(text: string, businessConfig: any): Avail
     explicitStartDate = isoRange[1];
     explicitEndDate = isoRange[2];
   }
+  if (!explicitStartDate && namedDateRange) {
+    explicitStartDate = namedDateRange.startDate;
+    explicitEndDate = namedDateRange.endDate;
+  }
+  if (!explicitStartDate) {
+    const sharedExplicitDate = parseBookingDate(
+      raw,
+      String(businessConfig?.timezone || "Europe/Stockholm"),
+      now
+    );
+    if (sharedExplicitDate?.kind === "exact_date" && sharedExplicitDate.value) {
+      explicitStartDate = sharedExplicitDate.value;
+      explicitEndDate = sharedExplicitDate.value;
+    }
+  }
   if (!explicitStartDate) {
     const numericRange = raw.match(/\b(\d{1,2})[/.](\d{1,2})\s*(?:till|to|through|–|-)\s*(\d{1,2})[/.](\d{1,2})(?:[/.](20\d{2}))?\b/i);
     if (numericRange) {
@@ -6300,7 +7143,8 @@ function parseAvailabilityRangeRequest(text: string, businessConfig: any): Avail
   if (!flexibleDays && !explicitStartDate && weekdays.length === 0) return null;
   if (!hasValidWindow && !weekdays.length && !explicitStartDate) return null;
 
-  const today = stockholmDateString(new Date());
+  const businessTimezone = String(businessConfig?.timezone || "Europe/Stockholm");
+  const today = getDateInTimeZone(now, businessTimezone);
   if (flexibleDays) {
     return {
       startDate: today,
@@ -6311,6 +7155,41 @@ function parseAvailabilityRangeRequest(text: string, businessConfig: any): Avail
   }
 
   if (explicitStartDate && explicitEndDate) {
+    if (
+      explicitStartDate === explicitEndDate &&
+      isInclusiveForwardAvailabilityFromDateRequest(raw)
+    ) {
+      return {
+        startDate: explicitStartDate,
+        endDate: addDaysToStockholmDate(
+          explicitStartDate,
+          getConfiguredBookingWindowDays(businessConfig)
+        ),
+        ...(hasValidWindow ? { minTime: minTime!, maxTime: maxTime! } : {}),
+        flexibleDays: false
+      };
+    }
+
+    if (
+      explicitStartDate === explicitEndDate &&
+      isForwardAvailabilityAfterDateRequest(raw)
+    ) {
+      const forwardStartDate = addDaysToStockholmDate(
+        explicitStartDate,
+        1
+      );
+
+      return {
+        startDate: forwardStartDate,
+        endDate: addDaysToStockholmDate(
+          forwardStartDate,
+          getConfiguredBookingWindowDays(businessConfig)
+        ),
+        ...(hasValidWindow ? { minTime: minTime!, maxTime: maxTime! } : {}),
+        flexibleDays: false
+      };
+    }
+
     return {
       startDate: explicitStartDate,
       endDate: explicitEndDate,
@@ -6319,7 +7198,7 @@ function parseAvailabilityRangeRequest(text: string, businessConfig: any): Avail
     };
   }
 
-  const startDate = nextStockholmWeekdayDate(weekdays[0].index, today);
+  const startDate = parseBookingDate(raw, businessTimezone, now)?.value || today;
   let endDate = startDate;
   if (weekdays.length >= 2 && hasRangeConnector) {
     const [year, month, day] = startDate.split("-").map(Number);
@@ -6441,15 +7320,43 @@ function deriveCanonicalAvailabilityConstraint(
   businessConfig: any,
   previous?: CanonicalAvailabilityConstraint | null,
   normalized?: NormalizedBookingRequest,
-  latestTime?: NormalizedTimeConstraint
+  latestTime?: NormalizedTimeConstraint,
+  now: Date = new Date()
 ): CanonicalAvailabilityConstraint | null {
-  const needsLegacyDateRange = extractRequestedWeekdays(text).length > 1 || /\b20\d{2}-\d{2}-\d{2}\s*(?:to|through|till|-)\s*20\d{2}-\d{2}-\d{2}\b/iu.test(text);
-  const sharedDate = !needsLegacyDateRange ? normalized?.date || parseBookingDate(text, String(businessConfig?.timezone || "Europe/Stockholm")) : undefined;
-  const range = sharedDate ? null : parseAvailabilityRangeRequest(text, businessConfig);
+  const timezone = String(businessConfig?.timezone || "Europe/Stockholm");
+  if (getBookingDateConflict(text, timezone, now)) return null;
+  const parsedRange = parseAvailabilityRangeRequest(
+    text,
+    businessConfig,
+    now
+  );
+  const hasMultiDayRange = Boolean(parsedRange && parsedRange.startDate !== parsedRange.endDate);
+  const sharedDate = !hasMultiDayRange
+    ? normalized?.date || parseBookingDate(
+        text,
+        timezone,
+        now
+      )
+    : undefined;
+  const range = sharedDate ? null : parsedRange;
   const explicitDate = sharedDate?.value || resolveExplicitBookingDate(text);
   const authoritativeTime = latestTime || (!normalized ? parseTimeConstraint(text) : undefined);
-  const retainedTime = authoritativeTime ? undefined : normalized?.timeConstraint;
-  const timeWindow = authoritativeTime ? null : extractAvailabilityTimeWindow(text);
+  const latestTurnHasExplicitAvailabilityDate =
+    Boolean(parsedRange || parseBookingDate(text, timezone, now)?.value);
+
+  const retainedTime =
+    authoritativeTime || latestTurnHasExplicitAvailabilityDate
+      ? undefined
+      : normalized?.timeConstraint;
+
+  const namedCalendarDateRange = parseNamedBookingDateRange(
+    text,
+    timezone,
+    now
+  );
+  const timeWindow = authoritativeTime || namedCalendarDateRange
+    ? null
+    : extractAvailabilityTimeWindow(text);
   const timeFollowUp = parseRescheduleTimeFollowUp(text);
   const daypart = inferRequestedDaypart(text);
   const broadensToWholeDay = isWholeDayAvailabilityRequest(text);
@@ -6469,22 +7376,31 @@ function deriveCanonicalAvailabilityConstraint(
       daypart
     )
   );
+  const weekdayReference = getBookingWeekdayReference(text);
+  const retainsRepeatedBareWeekday = Boolean(
+    previous &&
+    previous.startDate === previous.endDate &&
+    sharedDate?.kind === 'weekday' &&
+    weekdayReference?.qualifier === 'bare' &&
+    !isAlternativeAvailabilityRequest(text) &&
+    new Date(`${previous.startDate}T12:00:00Z`).getUTCDay() === weekdayReference.weekday
+  );
   const inheritPreviousDate =
     refersToSameDay ||
     broadensToWholeDay ||
     refinesActiveDate;
   const startDate =
-    sharedDate?.value ||
+    (retainsRepeatedBareWeekday ? previous?.startDate : sharedDate?.value) ||
     range?.startDate ||
     explicitDate ||
     (inheritPreviousDate ? previous?.startDate : undefined);
   const endDate =
-    sharedDate?.value ||
+    (retainsRepeatedBareWeekday ? previous?.endDate : sharedDate?.value) ||
     range?.endDate ||
     explicitDate ||
     (inheritPreviousDate ? previous?.endDate : undefined);
   if (!startDate || !endDate) return null;
-  const todayInBusinessTimezone = getDateInTimeZone(new Date(), String(businessConfig?.timezone || "Europe/Stockholm"));
+  const todayInBusinessTimezone = getDateInTimeZone(now, timezone);
   if (startDate < todayInBusinessTimezone || endDate < todayInBusinessTimezone) return null;
 
   const common = {
@@ -6494,10 +7410,26 @@ function deriveCanonicalAvailabilityConstraint(
       ? dateComponent.kind || undefined
       : "inherited" as const,
     ...(dateComponent.weekday ? { weekday: dateComponent.weekday } : {}),
-    rejectedTimes: [...timeFollowUp.rejectedTimes],
+    rejectedTimes: Array.from(new Set([
+      ...(refersToSameDay && !timeFollowUp.explicitTime
+        ? previous?.rejectedTimes || []
+        : []),
+      ...timeFollowUp.rejectedTimes,
+    ])),
     generatedFromLatestRequestAt: Date.now(),
-    timezone: String(businessConfig?.timezone || "Europe/Stockholm")
+    timezone: String(businessConfig?.timezone || "Europe/Stockholm"),
+    ...(isEarliestAvailabilityRequest(text) ? { selectFirstAvailable: true } : {})
   };
+
+  // The latest turn's normalized time constraint is authoritative. It must be
+  // applied before any merged prior constraint or text fallback can reconstruct
+  // an incompatible range/daypart/boundary from pending state.
+  if (authoritativeTime) {
+    return {
+      ...common,
+      ...availabilityFieldsFromConstraint(authoritativeTime)
+    } as CanonicalAvailabilityConstraint;
+  }
 
   // A date/weekday-only follow-up inside an active availability flow is a fresh
   // whole-day request. It must not inherit a rejected exact time or old bounds.
@@ -6553,7 +7485,15 @@ function deriveCanonicalAvailabilityConstraint(
       maxTime: daypartOptions.maxTime
     };
   }
-  if (retainedTime) return { ...common, ...availabilityFieldsFromConstraint(retainedTime) } as CanonicalAvailabilityConstraint;
+  if (retainedTime && retainedTime.kind !== "none") {
+    return { ...common, ...availabilityFieldsFromConstraint(retainedTime) } as CanonicalAvailabilityConstraint;
+  }
+  if (refersToSameDay) {
+    return {
+      ...common,
+      kind: startDate === endDate ? "whole_day" : "date_range",
+    };
+  }
   return range
     ? { ...common, kind: startDate === endDate ? "whole_day" : "date_range", rejectedTimes: [] }
     : null;
@@ -6566,6 +7506,7 @@ function availabilityConstraintSlotOptions(
     ...(constraint.minTime ? { minTime: constraint.minTime } : {}),
     ...(constraint.maxTime ? { maxTime: constraint.maxTime } : {}),
     ...(constraint.timeBoundary ? { timeBoundary: constraint.timeBoundary } : {}),
+    ...(constraint.selectFirstAvailable ? { selectFirstAvailable: true } : {}),
     ...(Array.isArray(constraint.rejectedTimes) && constraint.rejectedTimes.length
       ? { excludedTimes: constraint.rejectedTimes }
       : {})
@@ -6576,7 +7517,7 @@ function canonicalAvailabilityConstraintKey(
   constraint: CanonicalAvailabilityConstraint,
   context: { businessId: string; service: string; timezone: string; durationMinutes: number; time?: NormalizedTimeConstraint }
 ): string | null {
-  return safeLogFingerprint(buildSlotFingerprintSource({ businessId: context.businessId, service: context.service, date: `${constraint.startDate}/${constraint.endDate}`, timezone: context.timezone, constraint: context.time, durationMinutes: context.durationMinutes }));
+  return safeLogFingerprint(buildSlotFingerprintSource({ businessId: context.businessId, service: context.service, date: `${constraint.startDate}/${constraint.endDate}/${constraint.selectFirstAvailable ? "earliest" : "preferred"}`, timezone: context.timezone, constraint: context.time, durationMinutes: context.durationMinutes }));
 }
 
 function slotSatisfiesAvailabilityConstraint(
@@ -6638,11 +7579,61 @@ function isAlternativeAvailabilityRequest(text?: string): boolean {
   return /\b(other|alternative|another|andra|alternativa|någon annan dag|andra dagar|outside|utanför|dagar efter|roo?z(?:e|hay)? dige|روز(?:های)? دیگر)\b/i.test(raw);
 }
 
+function isPendingSelectionRejectionRequest(text: string, pending: any): boolean {
+  if (
+    !pending?.dateTime ||
+    !["awaiting_confirmation", "awaiting_contact", "failed_recoverable"].includes(
+      String(pending?.status || "")
+    ) ||
+    isCancellationIntent(text) ||
+    isRescheduleIntent(text)
+  ) return false;
+
+  const followUp = parseRescheduleTimeFollowUp(text);
+  const selectedTime = getStockholmTimeFromIso(String(pending.dateTime || ""));
+  if (
+    followUp.rejectsCurrentSelection &&
+    (
+      followUp.rejectedTimes.length === 0 ||
+      !selectedTime ||
+      followUp.rejectedTimes.includes(selectedTime)
+    )
+  ) return true;
+
+  const raw = normalizeConfirmationReply(text);
+  return (
+    /\b(?:(?:no|not that)\s+)?(?:another|different|other)\s+(?:time|slot|appointment)\b/iu.test(raw) ||
+    /\b(?:nej|inte den|annan|annat)\s+(?:tid|tiden|klockslag)\b/iu.test(raw) ||
+    /\b(?:nein|nicht diese|andere)\s+(?:zeit|uhrzeit|termin)\b/iu.test(raw) ||
+    /\b(?:no esa|otra|diferente)\s+(?:hora|cita)\b/iu.test(raw) ||
+    /(?:نه|اون\s*وقت\s*نه|آن\s*وقت\s*نه|وقت\s*(?:دیگه|دیگر)|زمان\s*(?:دیگه|دیگر))/u.test(raw) ||
+    /(?:لا|ليس هذا الموعد|موعد آخر|وقت آخر)/u.test(raw)
+  );
+}
+
+function isEarliestAvailabilityRequest(text?: string): boolean {
+  const raw = normalizeLocalizedDigits(String(text || ""))
+    .normalize("NFKC")
+    .trim()
+    .toLowerCase();
+  if (!raw) return false;
+  return (
+    /\b(?:earliest|first\s+available|soonest|next\s+available|first\s+(?:free|open)\s+(?:time|slot|appointment))\b/iu.test(raw) ||
+    /\b(?:tidigaste|första\s+lediga|närmast\s+lediga|nästa\s+lediga|närmast\s+efter|så\s+snart\s+som\s+möjligt|så\s+tidigt\s+som\s+möjligt)\b/iu.test(raw) ||
+    /\b(?:as\s+soon\s+as\s+possible|nearest\s+after|soonest\s+after|earliest\s+after)\b/iu.test(raw) ||
+    /\b(?:früheste|erste\s+freie|nächste\s+freie)\b/iu.test(raw) ||
+    /\b(?:más\s+tempran[oa]|primera\s+(?:hora|cita)\s+disponible|próxima\s+(?:hora|cita)\s+disponible)\b/iu.test(raw) ||
+    /(?:زودترین|اولین\s+(?:وقت|زمان)\s+(?:خالی|آزاد)|نزدیکترین\s+وقت)/u.test(raw) ||
+    /(?:أقرب\s+موعد|أول\s+موعد\s+متاح|أبكر\s+موعد)/u.test(raw)
+  );
+}
+
 function formatRangeAvailabilityReply(
   slots: string[],
   language: string,
   request: AvailabilityRangeRequest,
-  outsideOriginalRange: boolean
+  outsideOriginalRange: boolean,
+  toneConfig?: unknown,
 ): string {
   if (slots.length === 0) {
     if (language === "sv") return `Jag hittar inga lediga tider mellan ${request.minTime || "öppning"} och ${request.maxTime || "stängning"} i det önskade intervallet. Vill du att jag söker andra dagar?`;
@@ -6653,7 +7644,7 @@ function formatRangeAvailabilityReply(
     return `I can’t find an available time between ${request.minTime || "opening"} and ${request.maxTime || "closing"} in the requested range. Shall I check other days?`;
   }
 
-  const base = buildLocalizedSlotReply(slots, undefined, language);
+  const base = buildLocalizedSlotReply(slots, undefined, language, toneConfig);
   if (!outsideOriginalRange) return base;
   if (language === "sv") return `Utanför det ursprungliga intervallet hittade jag: ${base}`;
   if (language === "fa") return `خارج از بازه اولیه این زمان‌ها خالی هستند: ${base}`;
@@ -6666,11 +7657,12 @@ function formatRangeAvailabilityReply(
 function formatSlotNoLongerAvailable(
   language: string,
   selectedTime: string | undefined,
-  alternatives: string[]
+  alternatives: string[],
+  toneConfig?: unknown,
 ): string {
   const time = normalizeRequestedTime(selectedTime || "") || selectedTime || "";
   const alternativeText = alternatives.length > 0
-    ? buildLocalizedSlotReply(alternatives, undefined, language)
+    ? buildLocalizedSlotReply(alternatives, undefined, language, toneConfig)
     : "";
   if (language === "sv") {
     return alternatives.length > 0
@@ -6761,6 +7753,7 @@ function inferBookingDurationFromContext(text: string, history: any[]): number {
 }
 
 function isBookingConversationContext(text: string, history: any[]): boolean {
+  if (isReadOnlyAvailabilityInquiry(text)) return true;
   const combined = [
     ...(history || []).slice(-10).map((item: any) =>
       typeof item?.content === "string" ? item.content : ""
@@ -6811,11 +7804,55 @@ function findOwnedOfferedSlot(pending: any, startIso?: string | null): OwnedOffe
 }
 
 function selectOwnedOfferedSlot(text: string, pending: any): OwnedOfferedSlot | null {
+  const explicitDate = resolveExplicitBookingDate(text);
   const selectedIso = selectRescheduleOfferedSlot(
     text,
     Array.isArray(pending?.offeredSlots) ? pending.offeredSlots : []
   );
-  return findOwnedOfferedSlot(pending, selectedIso);
+  const selectedOwnedSlot = findOwnedOfferedSlot(pending, selectedIso);
+  if (
+    selectedOwnedSlot &&
+    (
+      !explicitDate ||
+      stockholmDateString(
+        new Date(ensureStockholmOffset(selectedOwnedSlot.start))
+      ) === explicitDate
+    )
+  ) return selectedOwnedSlot;
+
+  // A longer slot-selection turn can contain contact details after the clock
+  // value. Resolve that explicit value only against already-owned offers and
+  // fail closed unless it identifies exactly one offer.
+  const explicitClockTimes = new Set(
+    Array.from(normalizeLocalizedDigits(String(text || "")).matchAll(/(?:^|\s)([01]?\d|2[0-3])[\.:]([0-5]\d)(?=[^\d]|$)/g))
+      .map((match) => `${String(Number(match[1])).padStart(2, "0")}:${match[2]}`)
+  );
+  if (explicitClockTimes.size === 0) return null;
+
+  const matchingOwnedSlots = (Array.isArray(pending?.ownedOfferedSlots) ? pending.ownedOfferedSlots : [])
+    .filter((slot: OwnedOfferedSlot) => {
+      const start = new Date(ensureStockholmOffset(String(slot?.start || "")));
+      if (Number.isNaN(start.getTime())) return false;
+      if (
+        explicitDate &&
+        stockholmDateString(start) !== explicitDate
+      ) return false;
+      const localTime = start.toLocaleTimeString("sv-SE", {
+        timeZone: "Europe/Stockholm",
+        hour: "2-digit",
+        minute: "2-digit"
+      });
+      return explicitClockTimes.has(localTime);
+    });
+  return matchingOwnedSlots.length === 1 ? matchingOwnedSlots[0] : null;
+}
+
+function selectUniqueOwnedOfferedSlotByTime(time: string, pending: any): OwnedOfferedSlot | null {
+  const normalized = normalizeRequestedTime(time);
+  if (!normalized) return null;
+  const matching = (Array.isArray(pending?.ownedOfferedSlots) ? pending.ownedOfferedSlots : [])
+    .filter((slot: OwnedOfferedSlot) => getStockholmTimeFromIso(String(slot?.start || "")) === normalized);
+  return matching.length === 1 ? matching[0] : null;
 }
 
 function isExistingAppointmentLookupIntent(text?: string): boolean {
@@ -6832,7 +7869,7 @@ function isExistingAppointmentLookupIntent(text?: string): boolean {
     /\b(nemidonam|نمی.?دونم|motmaen nistam|مطمئن نیستم).*(vaght|وقت|رزرو|booking|boka)\b/i,
     /\b(habe ich|kannst du prüfen|wann ist).*(termin|buchung)\b/i,
     /\b(tengo|puedes comprobar|cuándo es).*(cita|reserva)\b/i,
-    /(هل لدي|هل حجزت|متى موعدي|تحقق من موعدي)/i
+    /(?:هل لدي(?=\s|$)|هل حجزت|متى موعدي|تحقق من موعدي)/i
   ];
 
   return lookupPatterns.some((pattern) => pattern.test(raw));
@@ -6854,13 +7891,21 @@ function isPastAppointmentLookupIntent(text?: string): boolean {
     /(?:دیروز|قرار قبلی|وقت قبلی|أمس|امس|موعد سابق)/u.test(raw);
 }
 
+function hasExplicitEntityBearingBookingConfirmation(text?: string): boolean {
+  const raw = normalizeConfirmationReply(text);
+  if (!raw || !/^(?:yes|yeah|yep|sure)\b/u.test(raw)) return false;
+  if (!/\b(?:please\s+)?book\s+it\b/u.test(raw)) return false;
+  return !/\b(?:no|not|dont|do not|maybe|perhaps|instead|change|different|another|cancel|reschedule)\b/u.test(raw);
+}
+
 function isPendingSlotConfirmation(text: string | undefined, pending: any): boolean {
-  if (!pending || pending.status !== "awaiting_confirmation") return false;
+  if (!pending || !["awaiting_confirmation", "awaiting_contact"].includes(String(pending.status || ""))) return false;
 
   const raw = String(text || "").trim();
   if (!raw) return false;
 
   if (isAffirmativeBookingText(raw)) return true;
+  if (hasExplicitEntityBearingBookingConfirmation(raw)) return true;
 
   const selectedTime = inferRequestedTimeFromText(raw);
   if (!selectedTime) return false;
@@ -6880,6 +7925,16 @@ function isPendingSlotConfirmation(text: string | undefined, pending: any): bool
   // must count as confirmation, even without words such as "yes" or "ok".
   return /\b(khube|khob|good|works|fine|passar|bra|går bra|okej|ok|mitonam|می.?تونم|خوبه|مناسبه|باشه|بله|آره|yes|ja|vale|bien|gut)\b/i.test(raw)
     || raw.replace(/\s+/g, "") === selectedTime.replace(":", "");
+}
+
+function hasExplicitSelectedSlotBookingAuthorization(text?: string): boolean {
+  const raw = normalizeConversationText(String(text || "")).toLowerCase();
+  if (/\b(?:no|not|dont|do not|maybe|perhaps|instead|change|different|another|cancel|reschedule)\b/iu.test(raw)) {
+    return false;
+  }
+  return /\b(?:(?:kan|skulle)\s+du\s+)?(?:gärna\s+)?(?:boka|reservera)\s+(?:den\s+tiden|tiden|den)\b/iu.test(raw) ||
+    /\b(?:can|could|would)\s+you\s+(?:please\s+)?book\s+(?:it|that\s+one|that\s+slot|the\s+slot)\b/iu.test(raw) ||
+    /\bplease\s+book\s+(?:it|that\s+one|that\s+slot|the\s+slot)\b/iu.test(raw);
 }
 
 
@@ -6955,11 +8010,17 @@ function formatNoAvailabilityRecovery(language: string): string {
   return "There is no availability for that same day and time constraint. Would you like to try another day or time?";
 }
 
-function guardCustomerFacingReply(sessionId: string, reply: string, fallbackLanguage?: string): string {
-  const raw = String(reply || "").trim();
-  const language = getStoredFlowLanguage(sessionId) ||
+function guardCustomerFacingReply(sessionId: string, reply: string, fallbackLanguage?: string, toneConfig?: unknown): string {
+  const raw = suppressBookingCtaDuringSupportTurn(
+    sessionId,
+    String(reply || "").trim()
+  );
+  // When the caller has resolved the language for this inbound turn, that immutable
+  // turn decision must win over mutable/restored session state. Send-only callers that
+  // have no turn language continue to use the stored flow language.
+  const language = fallbackLanguage ||
+    getStoredFlowLanguage(sessionId) ||
     chatLanguages[sessionId] ||
-    fallbackLanguage ||
     "en";
   if (!raw) return getErrorMessageByLanguage(language);
 
@@ -6971,13 +8032,14 @@ function guardCustomerFacingReply(sessionId: string, reply: string, fallbackLang
         verifiedSuccessPresent: false,
         successClaimBlocked: true,
       });
-      return formatAuthoritativeBookingContinuation(sessionId, language);
+      return formatAuthoritativeBookingContinuation(sessionId, language, toneConfig);
     }
     return formatBookingSavedMessage(
       language,
       verified.customerName || "",
       verified.serviceName,
-      verified.startTime
+      verified.startTime,
+      toneConfig,
     );
   }
 
@@ -7006,14 +8068,14 @@ function guardCustomerFacingReply(sessionId: string, reply: string, fallbackLang
     return formatRescheduleConfirmation(language, reschedule.selectedNewStartTime);
   }
   if (Array.isArray(reschedule?.offeredSlots) && reschedule.offeredSlots.length > 0) {
-    return formatSwedishTimeSlots(reschedule.offeredSlots, reschedule.requestedTime, language);
+    return formatSwedishTimeSlots(reschedule.offeredSlots, reschedule.requestedTime, language, toneConfig);
   }
   const pending = pendingBookings[sessionId];
   if (pending?.status === "awaiting_contact") {
-    return formatMissingBookingDetailsMessage(language, getMissingBookingContact(pending));
+    return formatMissingBookingDetailsMessage(language, getMissingBookingContact(pending), toneConfig);
   }
   if (pending?.status === "awaiting_time_selection" && Array.isArray(pending.offeredSlots)) {
-    return formatSwedishTimeSlots(pending.offeredSlots, undefined, language);
+    return formatSwedishTimeSlots(pending.offeredSlots, undefined, language, toneConfig);
   }
   return formatLanguageMismatchRecovery(language, raw);
 }
@@ -7060,22 +8122,22 @@ function localizeServiceName(service: string, language: string): string {
 
 function formatLocalizedDateTime(dateTime: string, language: string, timeZone: string = "Europe/Stockholm") {
   const start = new Date(ensureStockholmOffset(dateTime));
-  const localeMap: Record<string, string> = { fa: "fa-IR", sv: "sv-SE", en: "en-GB", de: "de-DE", es: "es-ES", ar: "ar-SA" };
+  const localeMap: Record<string, string> = { fa: "fa-IR-u-ca-gregory", sv: "sv-SE", en: "en-GB", de: "de-DE", es: "es-ES", ar: "ar-SA" };
   const locale = localeMap[language] || "en-GB";
   const dateText = start.toLocaleDateString(locale, { timeZone, weekday: "long", day: "numeric", month: "long" });
   const timeText = start.toLocaleTimeString("sv-SE", { timeZone, hour: "2-digit", minute: "2-digit" });
   return { dateText, timeText };
 }
 
-function formatBookingSavedMessage(language: string, name: string, service: string, dateTime: string): string {
+function formatBookingSavedMessage(language: string, name: string, service: string, dateTime: string, toneConfig?: unknown): string {
   const { dateText, timeText } = formatLocalizedDateTime(dateTime, language);
   const localizedService = localizeServiceName(service, language);
-  if (language === "fa") return `عالی ${name}! وقت شما برای ${localizedService} در ${dateText} ساعت ${timeText} رزرو شد. 😊`;
-  if (language === "es") return `Perfecto ${name}! Tu cita para ${localizedService} está reservada el ${dateText} a las ${timeText}. 😊`;
-  if (language === "de") return `Perfekt ${name}! Ihr Termin für ${localizedService} ist am ${dateText} um ${timeText} gebucht. 😊`;
-  if (language === "ar") return `تمام ${name}! تم حجز موعدك لـ ${localizedService} يوم ${dateText} الساعة ${timeText}. 😊`;
-  if (language === "en") return `Perfect ${name}! Your appointment for ${localizedService} is booked on ${dateText} at ${timeText}. 😊`;
-  return `Härligt ${name}! Din tid för ${localizedService} är nu bokad ${dateText} kl ${timeText}. Vi ser fram emot att träffa dig! 😊`;
+  return renderDeterministicBookingConfirmation(language, {
+    name,
+    service: localizedService,
+    date: dateText,
+    time: timeText,
+  }, toneConfig);
 }
 
 let globalWaitUntil = 0;
@@ -7118,6 +8180,7 @@ type AtomicClaimHandle = {
   claimed: boolean;
   keyHash: string;
   storageId: string;
+  storagePlatform: string;
   state: AtomicClaimState;
   duplicateStatus?: AtomicClaimState["status"];
 };
@@ -7127,6 +8190,15 @@ const IDEMPOTENCY_COMPLETED_TTL_MS = 24 * 60 * 60 * 1000;
 const IDEMPOTENCY_PROCESSING_TTL_MS = 2 * 60 * 1000;
 const IDEMPOTENCY_RETRY_DELAY_MS = 5 * 1000;
 const IDEMPOTENCY_MAX_ATTEMPTS = 3;
+const configuredExhaustedBookingCooldownMs = Number(
+  process.env.IDEMPOTENCY_EXHAUSTED_BOOKING_COOLDOWN_MS
+);
+const IDEMPOTENCY_EXHAUSTED_BOOKING_COOLDOWN_MS = Math.max(
+  IDEMPOTENCY_RETRY_DELAY_MS,
+  Number.isFinite(configuredExhaustedBookingCooldownMs)
+    ? configuredExhaustedBookingCooldownMs
+    : 15 * 60 * 1000
+);
 
 function isDuplicateInsertError(error: any): boolean {
   const code = String(error?.code || "");
@@ -7160,11 +8232,30 @@ function parseAtomicClaimState(value: any): AtomicClaimState | null {
   }
 }
 
-function atomicClaimMayRetry(state: AtomicClaimState, now: number): boolean {
-  if (state.attempts >= IDEMPOTENCY_MAX_ATTEMPTS) return false;
-  if (state.status === "failed") return now >= Number(state.retryAfter || 0);
-  return state.status === "processing" &&
-    now - Number(state.updatedAt || state.claimedAt || 0) > IDEMPOTENCY_PROCESSING_TTL_MS;
+type AtomicClaimRetryMode = "increment" | "reset_exhausted_booking";
+
+function atomicClaimRetryMode(
+  state: AtomicClaimState,
+  now: number
+): AtomicClaimRetryMode | null {
+  if (state.status === "completed") return null;
+  if (state.status === "failed") {
+    if (state.attempts < IDEMPOTENCY_MAX_ATTEMPTS) {
+      return now >= Number(state.retryAfter || 0) ? "increment" : null;
+    }
+    if (state.type !== "booking_operation_claim") return null;
+    const exhaustedCooldownEndsAt = Math.max(
+      Number(state.retryAfter || 0),
+      Number(state.updatedAt || state.claimedAt || 0) +
+        IDEMPOTENCY_EXHAUSTED_BOOKING_COOLDOWN_MS
+    );
+    return now >= exhaustedCooldownEndsAt ? "reset_exhausted_booking" : null;
+  }
+  if (state.attempts >= IDEMPOTENCY_MAX_ATTEMPTS) return null;
+  return now - Number(state.updatedAt || state.claimedAt || 0) >
+    IDEMPOTENCY_PROCESSING_TTL_MS
+    ? "increment"
+    : null;
 }
 
 async function claimAtomicOperation(params: {
@@ -7189,20 +8280,25 @@ async function claimAtomicOperation(params: {
       ? "resop"
       : "cancelop";
   const storageId = `${claimPrefix}_${keyHash.slice(0, 48)}`;
+  const storagePlatform = `idempotency:${platform}`;
   const existingMemory = atomicClaims.get(keyHash);
+  const existingMemoryRetryMode = existingMemory
+    ? atomicClaimRetryMode(existingMemory, now)
+    : null;
 
   if (existingMemory) {
     if (
       existingMemory.status === "completed" &&
       now - existingMemory.updatedAt <= IDEMPOTENCY_COMPLETED_TTL_MS
     ) {
-      return { claimed: false, keyHash, storageId, state: existingMemory, duplicateStatus: "completed" };
+      return { claimed: false, keyHash, storageId, storagePlatform, state: existingMemory, duplicateStatus: "completed" };
     }
-    if (!atomicClaimMayRetry(existingMemory, now)) {
+    if (!existingMemoryRetryMode) {
       return {
         claimed: false,
         keyHash,
         storageId,
+        storagePlatform,
         state: existingMemory,
         duplicateStatus: existingMemory.status
       };
@@ -7212,18 +8308,20 @@ async function claimAtomicOperation(params: {
   const nextState: AtomicClaimState = {
     type: params.type,
     status: "processing",
-    attempts: Number(existingMemory?.attempts || 0) + 1,
+    attempts: existingMemoryRetryMode === "reset_exhausted_booking"
+      ? 1
+      : Number(existingMemory?.attempts || 0) + 1,
     claimedAt: now,
     updatedAt: now
   };
 
   // Setting the process-local claim before the first await makes concurrent deliveries
-  // on the same instance atomic. Supabase adds cross-instance atomicity via user_id's
-  // existing unique constraint.
+  // on the same instance atomic. Supabase adds cross-instance atomicity through the
+  // partial unique index covering idempotency rows only.
   atomicClaims.set(keyHash, nextState);
 
   if (!supabase) {
-    return { claimed: true, keyHash, storageId, state: nextState };
+    return { claimed: true, keyHash, storageId, storagePlatform, state: nextState };
   }
 
   const serialized = JSON.stringify(nextState);
@@ -7231,13 +8329,13 @@ async function claimAtomicOperation(params: {
     .from("appointments_leads")
     .insert([{
       user_id: storageId,
-      platform: `idempotency:${platform}`,
+      platform: storagePlatform,
       business_id: params.businessId || null,
       ai_summary: serialized
     }]);
 
   if (!insertError) {
-    return { claimed: true, keyHash, storageId, state: nextState };
+    return { claimed: true, keyHash, storageId, storagePlatform, state: nextState };
   }
 
   if (!isDuplicateInsertError(insertError)) {
@@ -7247,13 +8345,14 @@ async function claimAtomicOperation(params: {
       type: params.type,
       errorCode: String(insertError?.code || "storage_error")
     });
-    return { claimed: false, keyHash, storageId, state: nextState, duplicateStatus: "failed" };
+    return { claimed: false, keyHash, storageId, storagePlatform, state: nextState, duplicateStatus: "failed" };
   }
 
   const { data: storedRow, error: readError } = await supabase
     .from("appointments_leads")
     .select("ai_summary")
     .eq("user_id", storageId)
+    .eq("platform", storagePlatform)
     .maybeSingle();
   if (readError || !storedRow) {
     atomicClaims.delete(keyHash);
@@ -7262,16 +8361,20 @@ async function claimAtomicOperation(params: {
       type: params.type,
       errorCode: String(readError?.code || "missing_claim")
     });
-    return { claimed: false, keyHash, storageId, state: nextState, duplicateStatus: "processing" };
+    return { claimed: false, keyHash, storageId, storagePlatform, state: nextState, duplicateStatus: "processing" };
   }
 
   const storedState = parseAtomicClaimState(storedRow.ai_summary);
-  if (!storedState || !atomicClaimMayRetry(storedState, now)) {
+  const storedRetryMode = storedState
+    ? atomicClaimRetryMode(storedState, now)
+    : null;
+  if (!storedState || !storedRetryMode) {
     if (storedState) atomicClaims.set(keyHash, storedState);
     return {
       claimed: false,
       keyHash,
       storageId,
+      storagePlatform,
       state: storedState || nextState,
       duplicateStatus: storedState?.status || "processing"
     };
@@ -7280,7 +8383,9 @@ async function claimAtomicOperation(params: {
   const retryState: AtomicClaimState = {
     ...storedState,
     status: "processing",
-    attempts: storedState.attempts + 1,
+    attempts: storedRetryMode === "reset_exhausted_booking"
+      ? 1
+      : storedState.attempts + 1,
     claimedAt: now,
     updatedAt: now,
     retryAfter: undefined
@@ -7292,6 +8397,7 @@ async function claimAtomicOperation(params: {
     .from("appointments_leads")
     .update({ ai_summary: JSON.stringify(retryState) })
     .eq("user_id", storageId)
+    .eq("platform", storagePlatform)
     .eq("ai_summary", previousSerialized)
     .select("user_id")
     .maybeSingle();
@@ -7301,13 +8407,14 @@ async function claimAtomicOperation(params: {
       claimed: false,
       keyHash,
       storageId,
+      storagePlatform,
       state: storedState,
       duplicateStatus: storedState.status
     };
   }
 
   atomicClaims.set(keyHash, retryState);
-  return { claimed: true, keyHash, storageId, state: retryState };
+  return { claimed: true, keyHash, storageId, storagePlatform, state: retryState };
 }
 
 async function settleAtomicOperation(
@@ -7332,6 +8439,7 @@ async function settleAtomicOperation(
       .from("appointments_leads")
       .update({ ai_summary: JSON.stringify(state) })
       .eq("user_id", handle.storageId)
+      .eq("platform", handle.storagePlatform)
       .select("user_id")
       .maybeSingle();
     if (!error && data?.user_id === handle.storageId) return true;
@@ -7406,6 +8514,7 @@ function normalizeAcceptedMessageTimestamp(
 
 function recordAcceptedCustomerMessage(params: {
   businessId: unknown;
+  sessionId: string;
   platform: AcceptedCustomerMessagePlatform;
   source:
     | "telegram_polling"
@@ -7416,34 +8525,59 @@ function recordAcceptedCustomerMessage(params: {
   messageId: unknown;
   occurredAt: string;
   messageType: "text" | "voice";
+  providerScope?: string;
   language?: string;
 }): void {
   const messageId = String(params.messageId || "").trim();
   if (!messageId) return;
 
-  const messageIdentity = crypto
-    .createHash("sha256")
-    .update(messageId, "utf8")
-    .digest("hex");
+  const businessId = Number(params.businessId);
+  if (!Number.isSafeInteger(businessId) || businessId <= 0) return;
+
+  const messageIdentity = createInboundMessageAnalyticsIdentity({
+    channel: params.platform,
+    transportSource: params.source,
+    providerMessageId: messageId,
+    providerScope: params.providerScope,
+  });
+  if (!messageIdentity) return;
   const language = String(params.language || "").trim();
 
-  void analytics.record({
-    business_id: Number(params.businessId),
-    event_name: "customer_message_received",
-    event_category: "conversation",
-    occurred_at: params.occurredAt,
-    schema_version: 1,
-    source: params.source,
-    actor: "customer",
-    outcome: "received",
-    idempotency_key: `customer-message-received:v1:${params.platform}:${messageIdentity}`,
-    platform: params.platform,
-    channel: "messaging",
-    ...(language && language.length <= 20 ? { language } : {}),
-    metadata: {
-      message_type: params.messageType,
+  const conversationId = createAnalyticsCorrelationId({
+    businessId,
+    identifier: params.sessionId,
+  });
+  if (conversationId) {
+    void recordRuntimeAnalyticsEvent(
+      "conversation_started",
+      "conversation",
+      "started",
+      {
+        businessId,
+        channel: params.platform,
+        source: messageIdentity.source,
+        sourceEventId: conversationId,
+        sessionId: params.sessionId,
+        occurredAt: params.occurredAt,
+      },
+    );
+  }
+
+  void recordRuntimeAnalyticsEvent(
+    "customer_message_received",
+    "conversation",
+    "received",
+    {
+      businessId,
+      channel: params.platform,
+      source: messageIdentity.source,
+      sourceEventId: messageIdentity.sourceEventId,
+      sessionId: params.sessionId,
+      occurredAt: params.occurredAt,
+      ...(language && language.length <= 20 ? { language } : {}),
+      metadata: { message_type: params.messageType },
     },
-  }).catch(() => undefined);
+  );
 }
 
 function maskToken(token?: string) {
@@ -7612,6 +8746,7 @@ function normalizeBusinessConfig(row: any) {
     admin_whatsapp_number: adminWhatsAppNumber,
     googleCalendarId: row.google_calendar_id,
     systemPrompt: row.custom_system_prompt,
+    toneConfig: normalizeBusinessToneConfig(row.ai_tone_config),
     instagramAccessToken: row.instagram_access_token,
     instagramToken: row.instagram_access_token,
     instagramAccountId: row.instagram_account_id,
@@ -7635,6 +8770,18 @@ function normalizeBusinessConfig(row: any) {
       activeConfig.booking_window_days ??
       30
     ),
+    workingHours:
+      row.working_hours ??
+      row.workingHours ??
+      activeConfig.workingHours ??
+      activeConfig.working_hours ??
+      null,
+    working_hours:
+      row.working_hours ??
+      row.workingHours ??
+      activeConfig.working_hours ??
+      activeConfig.workingHours ??
+      null,
     services: Array.isArray(row.services) ? row.services : activeConfig.services,
     serviceDurations: row.service_durations || activeConfig.serviceDurations || activeConfig.service_durations,
     calendarProvider: "google",
@@ -7647,7 +8794,9 @@ function makeBusinessConfigVersion(config: any): string {
   const businessId = getBusinessIdFromConfig(config) || "no-business";
   const businessName = config?.businessName || config?.business_name || "";
   const prompt = config?.systemPrompt || "";
+  const toneConfigVersion = JSON.stringify(normalizeBusinessToneConfig(config?.toneConfig ?? config?.ai_tone_config));
   const calendarId = config?.googleCalendarId || "";
+
   const cancellationPolicy = [
     Boolean(config?.allowCancellation ?? config?.allow_cancellation ?? false),
     Number(config?.cancellationDeadlineMinutes ?? config?.cancellation_deadline_minutes ?? 0),
@@ -7655,7 +8804,47 @@ function makeBusinessConfigVersion(config: any): string {
     Number(config?.cancellationFeeAmount ?? config?.cancellation_fee_amount ?? 0),
     String(config?.cancellationFeeCurrency ?? config?.cancellation_fee_currency ?? "SEK")
   ].join("|");
-  return crypto.createHash("sha1").update(`${businessId}|${businessName}|${calendarId}|${prompt}|${cancellationPolicy}`).digest("hex");
+
+  const servicesVersion = JSON.stringify(
+    Array.isArray(config?.services) ? config.services : []
+  );
+
+  const serviceDurationsVersion = JSON.stringify(
+    config?.serviceDurations ??
+    config?.service_durations ??
+    {}
+  );
+
+  const workingHoursVersion = JSON.stringify(
+    config?.workingHours ??
+    config?.working_hours ??
+    null
+  );
+
+  const bookingWindowVersion = String(
+    config?.bookingWindowDays ??
+    config?.booking_window_days ??
+    config?.advance_booking_days ??
+    30
+  );
+
+  return crypto
+    .createHash("sha1")
+    .update(
+      [
+        businessId,
+        businessName,
+        calendarId,
+        prompt,
+        toneConfigVersion,
+        cancellationPolicy,
+        servicesVersion,
+        serviceDurationsVersion,
+        workingHoursVersion,
+        bookingWindowVersion
+      ].join("|")
+    )
+    .digest("hex");
 }
 
 function resetSessionIfBusinessConfigChanged(sessionId: string, config: any) {
@@ -7827,6 +9016,11 @@ async function startTelegramPolling(
   config: any,
   source: string = "unspecified"
 ) {
+  if (!odinLinkStartupPolicy.telegramPollersEnabled) {
+    console.log("[OdinLinkLocalTestMode] Telegram polling disabled.");
+    return;
+  }
+
   const token = normalizeTelegramBotToken(config?.telegramToken);
   if (!token) {
     console.log("[TelegramPollingStopped]", {
@@ -8430,7 +9624,7 @@ async function startAllBusinessTelegramPollers() {
 
 type UnifiedBookingSend = (text: string) => Promise<any>;
 
-async function handleUnifiedBookingEngine(params: {
+type UnifiedBookingEngineParams = {
   sessionId: string;
   platformName: "whatsapp" | "messenger" | "instagram" | "telegram";
   platformLogName: string;
@@ -8441,7 +9635,57 @@ async function handleUnifiedBookingEngine(params: {
   send: UnifiedBookingSend;
   postProcessPlatform: string;
   inputMode?: "text" | "voice";
-}): Promise<boolean> {
+  shadowEligibleCustomerTurn?: boolean;
+  now?: Date;
+};
+
+const unifiedBookingTurnTails = new Map<string, Promise<void>>();
+const latestUnifiedBookingTurn = new Map<string, symbol>();
+
+async function runSerializedUnifiedBookingTurn<T>(sessionId: string, work: () => Promise<T>): Promise<T> {
+  const previousTail = unifiedBookingTurnTails.get(sessionId) || Promise.resolve();
+  let releaseCurrentTurn!: () => void;
+  const currentTurn = new Promise<void>((resolve) => { releaseCurrentTurn = resolve; });
+  const currentTail = previousTail.catch(() => undefined).then(() => currentTurn);
+  unifiedBookingTurnTails.set(sessionId, currentTail);
+
+  await previousTail.catch(() => undefined);
+  try {
+    return await work();
+  } finally {
+    releaseCurrentTurn();
+    if (unifiedBookingTurnTails.get(sessionId) === currentTail) {
+      unifiedBookingTurnTails.delete(sessionId);
+    }
+  }
+}
+
+async function handleUnifiedBookingEngine(params: UnifiedBookingEngineParams): Promise<boolean> {
+  const turnToken = Symbol(params.sessionId);
+  latestUnifiedBookingTurn.set(params.sessionId, turnToken);
+  try {
+    return await runSerializedUnifiedBookingTurn(params.sessionId, () => handleUnifiedBookingEngineTurn({
+      ...params,
+      send: async (reply) => {
+        if (latestUnifiedBookingTurn.get(params.sessionId) !== turnToken) {
+          console.log("[UnifiedBooking]", {
+            event: "superseded_turn_reply_suppressed",
+            platform: params.platformName,
+            sessionKey: safeLogFingerprint(params.sessionId),
+          });
+          return false;
+        }
+        return params.send(reply);
+      },
+    }));
+  } finally {
+    if (latestUnifiedBookingTurn.get(params.sessionId) === turnToken) {
+      latestUnifiedBookingTurn.delete(params.sessionId);
+    }
+  }
+}
+
+async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams): Promise<boolean> {
   const {
     sessionId,
     platformName,
@@ -8454,6 +9698,9 @@ async function handleUnifiedBookingEngine(params: {
     postProcessPlatform,
     inputMode = "text"
   } = params;
+  const deterministicToneConfig = normalizeBusinessToneConfig(businessConfig?.toneConfig);
+  const appointmentTurnNow = params.now ?? new Date();
+  const appointmentTurnNowMs = appointmentTurnNow.getTime();
 
   const text = normalizeConversationText(inboundText);
 
@@ -8489,11 +9736,444 @@ async function handleUnifiedBookingEngine(params: {
   const bookingCorrelationId = crypto.randomUUID();
   const bookingStartedAt = Date.now();
   let pending = await loadPendingBooking(sessionId, platformName, businessConfig);
-  const normalizedRequest = normalizeBookingRequest({
+  emitBookingLanguageTrace({
+    stage: "pending_loaded",
+    sessionId,
+    flowLanguage: getStoredFlowLanguage(sessionId),
+    pendingLanguage: pending?.language || null,
+    availabilityLanguage: availabilitySearchContexts[sessionId]?.language || null,
+    detectedLanguage: detectStrongLatestLanguage(text),
+    explicitSwitch: isExplicitLanguageSwitch(text),
+    inputFingerprint: safeLogFingerprint(text),
+  });
+  const recordBookingFunnelEvent = (
+    eventName: "booking_started" | "availability_requested" | "slot_offered" | "slot_selected",
+    outcome: string,
+    sourceEventId: string,
+    details: { serviceName?: string | null; metadata?: Record<string, unknown> } = {},
+  ): void => {
+    const businessId = Number(currentBookingSlotOwner.businessId);
+    if (!Number.isSafeInteger(businessId) || businessId <= 0 || !sourceEventId) return;
+    void recordRuntimeAnalyticsEvent(eventName, "booking", outcome, {
+      businessId,
+      channel: platformName,
+      source: "unified_booking_engine",
+      sourceEventId,
+      sessionId,
+      serviceName: details.serviceName,
+      language: pending?.language || undefined,
+      metadata: details.metadata,
+    });
+  };
+  const recordDeterministicBookingFailure = (
+    reasonCode: string,
+    sourceEventId?: string,
+  ): void => {
+    const businessId = Number(currentBookingSlotOwner.businessId);
+    if (!Number.isSafeInteger(businessId) || businessId <= 0) return;
+    void recordBookingOutcome({
+      businessId,
+      channel: platformName,
+      source: "unified_booking_engine",
+      sourceEventId: `${sourceEventId || pending?.operationIdentity || bookingCorrelationId}:${reasonCode}`,
+      sessionId,
+      serviceName: pending?.service || null,
+      language: pending?.language || undefined,
+      succeeded: false,
+      reasonCode,
+    });
+  };
+  const normalizationStrongLanguage = detectStrongLatestLanguage(text);
+  const normalizationActiveLanguage =
+    normalizationStrongLanguage &&
+    isMeaningfulLanguageMessage(text) &&
+    hasStrongLanguageEvidence(normalizationStrongLanguage, text)
+      ? normalizationStrongLanguage
+      : getStoredFlowLanguage(sessionId);
+
+  let structuredUnderstandingShadowOptions: Parameters<typeof understandBookingTurn>[1] | undefined;
+  let structuredProviderInput: UnderstandingProviderInput | null = null;
+  let deterministicCurrentName: string | null = null;
+  let deterministicCurrentPhone: string | null = null;
+  const activeStructuredUnderstandingAdoptionRuntime =
+    priority1hTestDependencies?.structuredUnderstandingAdoptionRuntime !== undefined
+      ? priority1hTestDependencies.structuredUnderstandingAdoptionRuntime
+      : structuredUnderstandingAdoptionRuntime.runtime;
+  const controlledAdoptionEligible = Boolean(
+    activeStructuredUnderstandingAdoptionRuntime &&
+    params.shadowEligibleCustomerTurn === true &&
+    inputMode === "text"
+  );
+  if (
+    (structuredUnderstandingShadowRuntime.observer || controlledAdoptionEligible) &&
+    params.shadowEligibleCustomerTurn === true &&
+    inputMode === "text"
+  ) {
+    try {
+      const shadowCombinedContact = extractNameAndPhone(text);
+      deterministicCurrentName = shadowCombinedContact?.name || extractNameOnly(text);
+      deterministicCurrentPhone = shadowCombinedContact?.phone || extractPhoneOnly(text);
+      const configuredServiceNames = (Array.isArray(businessConfig?.services) ? businessConfig.services : [])
+        .map((item: any) => String(item?.name || item?.service || item?.title || "").trim())
+        .filter(Boolean)
+        .slice(0, 50);
+      structuredProviderInput = {
+        message: text,
+        inputMode,
+        ...(normalizationActiveLanguage ? { activeLanguage: normalizationActiveLanguage } : {}),
+        timezone: String(businessConfig?.timezone || "Europe/Stockholm"),
+        currentTimeIso: appointmentTurnNow.toISOString(),
+        configuredServices: configuredServiceNames,
+        context: {
+          bookingPhase: pending ? getBookingPhase(pending) : "idle",
+          offeredSlotCount: Array.isArray(pending?.offeredSlots) ? pending.offeredSlots.length : 0,
+          selectedSlotPresent: Boolean(pending?.dateTime),
+          knownFields: [
+            ...(pending?.service ? ["service" as const] : []),
+            ...(pending?.selectedDate || pending?.availabilityStartDate ? ["date" as const] : []),
+            ...(pending?.dateTime ? ["time" as const] : []),
+            ...(pending?.customerName ? ["name" as const] : []),
+            ...(pending?.customerPhone ? ["phone" as const] : []),
+          ],
+        },
+      };
+      if (!controlledAdoptionEligible && structuredUnderstandingShadowRuntime.observer) {
+        structuredUnderstandingShadowOptions = {
+          shadowObserver: structuredUnderstandingShadowRuntime.observer,
+          shadow: {
+            correlationId: bookingCorrelationId,
+            eligible: true,
+            providerInput: structuredProviderInput,
+            legacySignals: {
+              confirmation: isPositiveBookingConfirmation(text) || isAffirmativeBookingText(text),
+              rejection: isPendingSelectionRejectionRequest(text, pending),
+              namePresent: Boolean(deterministicCurrentName),
+              phonePresent: Boolean(deterministicCurrentPhone),
+              slotReferencePresent: Boolean(inferRequestedTimeFromText(text)),
+            },
+          },
+        };
+      }
+    } catch {
+      structuredUnderstandingShadowOptions = undefined;
+      structuredProviderInput = null;
+    }
+  }
+  let normalizedRequest = understandBookingTurn({
     businessId: getBusinessIdFromConfig(businessConfig) || "unscoped", channel: platformName,
     conversationKey: sessionId, inputMode, text,
-    activeLanguage: getStoredFlowLanguage(sessionId) as any, timezone: String(businessConfig?.timezone || "Europe/Stockholm")
-  });
+    activeLanguage: normalizationActiveLanguage as any, timezone: String(businessConfig?.timezone || "Europe/Stockholm"),
+    ...(params.now === undefined ? {} : { now: params.now })
+  }, structuredUnderstandingShadowOptions);
+  let controlledUnderstandingCandidates: ControlledUnderstandingCandidates = Object.freeze({});
+  if (
+    controlledAdoptionEligible &&
+    structuredProviderInput &&
+    activeStructuredUnderstandingAdoptionRuntime
+  ) {
+    const providerUnderstanding = await activeStructuredUnderstandingAdoptionRuntime.evaluate(
+      structuredProviderInput,
+      bookingCorrelationId,
+    );
+    if (providerUnderstanding) {
+      const resolution = resolveControlledUnderstandingAdoption({
+        provider: providerUnderstanding,
+        legacy: {
+          intent: normalizedRequest.intent,
+          relativeDate: normalizedRequest.date
+            ? normalizedRequest.date.kind === "relative_date"
+              ? normalizedRequest.date.relative || null
+              : `${normalizedRequest.date.kind}:${normalizedRequest.date.value || "present"}`
+            : null,
+          blocksNewBookingIntent: Boolean(
+            pending ||
+            isPendingSelectionRejectionRequest(text, pending) ||
+            cancellationContexts[sessionId] ||
+            rescheduleContexts[sessionId] ||
+            appointmentLookupContexts[sessionId]
+          ),
+          blocksRelativeDate: Boolean(
+            pending?.selectedDate ||
+            pending?.availabilityStartDate ||
+            (pending?.dateTime && findOwnedOfferedSlot(pending, pending.dateTime))
+          ),
+          time: inferRequestedTimeFromText(text) || getStockholmTimeFromIso(String(pending?.dateTime || "")),
+          confirmation: (isPositiveBookingConfirmation(text) || isAffirmativeBookingText(text)) ? true : undefined,
+          rejection: isPendingSelectionRejectionRequest(text, pending) ? true : undefined,
+          name: deterministicCurrentName || pending?.customerName || null,
+          phone: deterministicCurrentPhone || pending?.customerPhone || null,
+        },
+        validateOwnedTime: (candidate) => {
+          const owned = pending ? selectUniqueOwnedOfferedSlotByTime(candidate, pending) : null;
+          return owned ? getStockholmTimeFromIso(owned.start) : null;
+        },
+        validateName: (candidate) => resolveAuthoritativeContact({
+          channel: platformName,
+          currentName: candidate,
+        }).name,
+        validatePhone: (candidate) => resolveAuthoritativeContact({
+          channel: platformName,
+          currentPhone: candidate,
+        }).phone,
+      });
+      controlledUnderstandingCandidates = resolution.candidates;
+      activeStructuredUnderstandingAdoptionRuntime.emitDecisions(
+        bookingCorrelationId,
+        resolution.decisions,
+      );
+      const adoptedRelativeDate = controlledUnderstandingCandidates.relativeDate
+        ? resolveRelativeBookingDateSemantic(
+            controlledUnderstandingCandidates.relativeDate,
+            String(businessConfig?.timezone || "Europe/Stockholm"),
+            appointmentTurnNow,
+          )
+        : null;
+      if (controlledUnderstandingCandidates.bookingIntent || adoptedRelativeDate) {
+        normalizedRequest = {
+          ...normalizedRequest,
+          ...(controlledUnderstandingCandidates.bookingIntent
+            ? { intent: controlledUnderstandingCandidates.bookingIntent }
+            : {}),
+          ...(adoptedRelativeDate ? { date: adoptedRelativeDate } : {}),
+        };
+      }
+    }
+  }
+
+  const deliverDateConflictClarification = async (
+    state: DateConflictClarificationState,
+    stage: DateConflictClarificationStage,
+    resolvedLanguage?: string,
+  ): Promise<void> => {
+    if (stage === "suppressed_duplicate") {
+      console.log("[BookingDateClarification]", {
+        correlationId: bookingCorrelationId,
+        businessId: currentBookingSlotOwner.businessId,
+        channel: platformName,
+        attemptCount: state.attemptCount,
+        responseMode: stage,
+        duplicateEvent: false,
+      });
+      return;
+    }
+    const clarificationLanguage = resolvedLanguage || getConversationLanguage(sessionId, text, businessConfig);
+    const clarification = guardCustomerFacingReply(
+      sessionId,
+      formatDateConflictClarification(state, clarificationLanguage, stage),
+      clarificationLanguage,
+    );
+    console.log("[BookingDateClarification]", {
+      correlationId: bookingCorrelationId,
+      businessId: currentBookingSlotOwner.businessId,
+      channel: platformName,
+      attemptCount: state.attemptCount,
+      responseMode: stage,
+      duplicateEvent: false,
+    });
+    const deliveryResult = await send(clarification);
+    if (deliveryResult === false) return;
+    appendLocalHistory(sessionId, text, clarification);
+    try {
+      await postProcessMessage(
+        recipientUserId,
+        postProcessPlatform,
+        text,
+        clarification,
+        businessConfig?.telegramToken,
+        businessConfig?.apiKey,
+        getBusinessIdFromConfig(businessConfig),
+      );
+    } catch {
+      console.error("[BookingPostProcess]", {
+        businessId: getBusinessIdFromConfig(businessConfig),
+        channel: platformName,
+        stage: "post_process",
+        success: false,
+        bookingOutcomeCode: "POST_PROCESS_FAILED",
+      });
+    }
+  };
+
+  const activeDateClarification = isDateConflictClarificationState(
+    pending?.dateConflictClarification,
+  ) ? pending.dateConflictClarification : null;
+
+  if (activeDateClarification && !normalizedRequest.dateConflict) {
+    const operationSwitch = operationFromCurrentIntent(normalizedRequest.intent);
+    if (["cancellation", "reschedule", "appointment_lookup"].includes(operationSwitch)) {
+      if (activeDateClarification.ownsPendingShell) {
+        await clearPendingBooking(sessionId);
+        pending = null;
+      } else if (pending) {
+        delete pending.dateConflictClarification;
+        pending.expectedInput = activeDateClarification.previousExpectedInput || pending.expectedInput;
+        await savePendingBooking(sessionId, platformName, pending);
+      }
+    } else {
+      // Resolve the active customer language before persisting any clarification
+      // transition. getConversationLanguage() may update the in-memory pending shell
+      // after a meaningful switch; saving first would leave ai_summary with the stale
+      // language for another process/instance to reload on a short choice such as "2".
+      const clarificationLanguage = getConversationLanguage(sessionId, text, businessConfig);
+      if (pending) pending.language = clarificationLanguage;
+      const resolution = resolveDateConflictClarification({
+        state: activeDateClarification,
+        input: text,
+        normalizedRequest,
+      });
+      if (resolution) {
+        normalizedRequest = {
+          ...normalizedRequest,
+          intent: "new_booking",
+          date: {
+            kind: "exact_date",
+            value: resolution.date,
+            confidence: "high",
+          },
+          ...(normalizedRequest.timeConstraint || !activeDateClarification.proposedTimeConstraint
+            ? {}
+            : { timeConstraint: activeDateClarification.proposedTimeConstraint }),
+          ...(normalizedRequest.service || !activeDateClarification.proposedService
+            ? {}
+            : { service: activeDateClarification.proposedService }),
+          requiresClarification: false,
+          clarificationReason: undefined,
+          dateConflict: undefined,
+        };
+        if (pending) {
+          delete pending.dateConflictClarification;
+          pending.expectedInput = activeDateClarification.previousExpectedInput || "date_or_constraint";
+          await savePendingBooking(sessionId, platformName, pending);
+          emitBookingLanguageTrace({
+            stage: "date_conflict_resolved",
+            sessionId,
+            currentLanguage: clarificationLanguage,
+            flowLanguage: getStoredFlowLanguage(sessionId),
+            pendingLanguage: pending.language || null,
+          });
+        }
+        console.log("[BookingDateClarification]", {
+          correlationId: bookingCorrelationId,
+          businessId: currentBookingSlotOwner.businessId,
+          channel: platformName,
+          attemptCount: activeDateClarification.attemptCount,
+          resolution: resolution.source,
+          resolvedDate: resolution.date,
+        });
+      } else {
+        const advanced = advanceUnresolvedDateConflictClarification(activeDateClarification, text);
+        if (pending) {
+          pending.dateConflictClarification = advanced.state;
+          pending.expectedInput = "date_conflict_choice";
+          await savePendingBooking(sessionId, platformName, pending);
+        }
+        await deliverDateConflictClarification(advanced.state, advanced.stage, clarificationLanguage);
+        return true;
+      }
+    }
+  }
+
+  if (
+    normalizedRequest.clarificationReason === "weekday_explicit_date_conflict" &&
+    normalizedRequest.dateConflict
+  ) {
+    const clarificationLanguage = getConversationLanguage(sessionId, text, businessConfig);
+    if (pending) pending.language = clarificationLanguage;
+    const priorClarification = isDateConflictClarificationState(pending?.dateConflictClarification)
+      ? pending.dateConflictClarification
+      : null;
+    const ownsPendingShell = priorClarification?.ownsPendingShell || !pending;
+    const clarificationState = beginOrAdvanceDateConflictClarification({
+      existing: priorClarification,
+      conflict: normalizedRequest.dateConflict,
+      input: text,
+      previousExpectedInput: priorClarification?.previousExpectedInput || pending?.expectedInput || null,
+      ownsPendingShell,
+      proposedTimeConstraint: normalizedRequest.timeConstraint,
+      proposedService: normalizedRequest.service,
+    });
+    if (!pending) {
+      const baselineRequest: any = toPersistedBookingRequest(normalizedRequest);
+      baselineRequest.requiresClarification = false;
+      delete baselineRequest.clarificationReason;
+      delete baselineRequest.dateConflict;
+      pending = {
+        businessConfig,
+        platform: platformName,
+        businessId: currentBookingSlotOwner.businessId,
+        userId: currentBookingSlotOwner.userId,
+        sessionId,
+        operation: "new_booking",
+        status: "awaiting_date_or_time",
+        expectedInput: "date_conflict_choice",
+        service: normalizedRequest.service?.normalized || null,
+        normalizedBookingRequest: baselineRequest,
+        offeredSlots: [],
+        ownedOfferedSlots: [],
+        dateTime: null,
+        selectedSlotEnd: null,
+        language: clarificationLanguage,
+        dateConflictClarification: clarificationState.state,
+      };
+    } else {
+      pending.dateConflictClarification = clarificationState.state;
+      pending.expectedInput = "date_conflict_choice";
+    }
+    await savePendingBooking(sessionId, platformName, pending);
+    emitBookingLanguageTrace({
+      stage: "date_conflict_persisted",
+      sessionId,
+      currentLanguage: clarificationLanguage,
+      flowLanguage: getStoredFlowLanguage(sessionId),
+      pendingLanguage: pending.language || null,
+      presentationLanguage: clarificationLanguage,
+    });
+    console.log("[BookingIntelligence]", {
+      correlationId: safeLogFingerprint(`${sessionId}:${Date.now()}`),
+      businessId: getBusinessIdFromConfig(businessConfig),
+      channel: platformName,
+      sourceMode: inputMode,
+      detectedLanguage: normalizedRequest.language,
+      detectedIntent: normalizedRequest.intent,
+      normalizedDateKind: null,
+      normalizedDate: null,
+      timeConstraintKind: normalizedRequest.timeConstraint?.kind || "none",
+      correctionApplied: false,
+      clarificationRequired: true,
+      parserFailureCategory: normalizedRequest.clarificationReason,
+    });
+    await deliverDateConflictClarification(
+      clarificationState.state,
+      clarificationState.stage,
+      clarificationLanguage,
+    );
+    return true;
+  }
+  const entryStrongLanguage = detectStrongLatestLanguage(text);
+  if (
+    pending &&
+    normalizedRequest.intent === "new_booking" &&
+    entryStrongLanguage &&
+    pending.language &&
+    pending.language !== entryStrongLanguage &&
+    isMeaningfulLanguageMessage(text) &&
+    hasStrongLanguageEvidence(entryStrongLanguage, text)
+  ) {
+    console.log("[BookingFlow]", {
+      platform: platformName,
+      operation: "new_booking",
+      stateType: pending.status || "pending",
+      previousLanguage: pending.language,
+      selectedLanguage: entryStrongLanguage,
+      staleStateReason: "new_logical_conversation_language_boundary",
+      finalHandledPath: "stale_pending_cleared_before_routing",
+    });
+    await clearPendingBooking(sessionId);
+    delete availabilitySearchContexts[sessionId];
+    clearConversationFlowLanguage(sessionId);
+    chatLanguages[sessionId] = entryStrongLanguage;
+    pending = null;
+  }
   let entryRescheduleContext = getRescheduleContext(sessionId);
   let entryCancellationContext = getCancellationContext(sessionId);
   let entryOperation = resolveAuthoritativeOperation({
@@ -8574,6 +10254,17 @@ async function handleUnifiedBookingEngine(params: {
   }
   console.log("[BookingIntelligence]", { correlationId: safeLogFingerprint(`${sessionId}:${Date.now()}`), businessId: getBusinessIdFromConfig(businessConfig), channel: platformName, sourceMode: inputMode, detectedLanguage: normalizedRequest.language, detectedIntent: normalizedRequest.intent, normalizedDateKind: normalizedRequest.date?.kind || null, normalizedDate: normalizedRequest.date?.value || null, timeConstraintKind: normalizedRequest.timeConstraint?.kind || "none", correctionApplied: Boolean(normalizedRequest.customerCorrection), clarificationRequired: normalizedRequest.requiresClarification, parserFailureCategory: normalizedRequest.clarificationReason || null });
   const language = getConversationLanguage(sessionId, text, businessConfig);
+  emitBookingLanguageTrace({
+    stage: "turn_language_resolved",
+    sessionId,
+    currentLanguage: language,
+    flowLanguage: getStoredFlowLanguage(sessionId),
+    pendingLanguage: pending?.language || null,
+    availabilityLanguage: availabilitySearchContexts[sessionId]?.language || null,
+    detectedLanguage: normalizedRequest.language || null,
+    explicitSwitch: isExplicitLanguageSwitch(text),
+    inputFingerprint: safeLogFingerprint(text),
+  });
   let activeBookingOperationClaim: AtomicClaimHandle | null = null;
   let bookingFailureStage: BookingFailureStage | null = null;
   let rollbackActiveBookingMutation: (() => Promise<boolean>) | null = null;
@@ -8606,11 +10297,20 @@ async function handleUnifiedBookingEngine(params: {
     sessionId
   );
   if (pending) {
+    const currentCombinedContact = pending.operation === "new_booking"
+      ? extractNameAndPhone(text)
+      : null;
     const entryContact = resolveAuthoritativeContact({
       channel: platformName,
       storedName: pending.customerName,
       storedPhone: pending.customerPhone,
       storedPhoneSource: pending.contactPhoneSource as ContactPhoneSource | null,
+      currentName: pending.operation === "new_booking"
+        ? currentCombinedContact?.name || extractNameOnly(text) || controlledUnderstandingCandidates.name
+        : null,
+      currentPhone: pending.operation === "new_booking"
+        ? currentCombinedContact?.phone || extractPhoneOnly(text) || controlledUnderstandingCandidates.phone
+        : null,
       senderPhone: authoritativeSenderPhone
     });
     pending.customerName = entryContact.name;
@@ -8627,8 +10327,54 @@ async function handleUnifiedBookingEngine(params: {
       dateLocked: Boolean(pending.selectedDate || pending.availabilityStartDate)
     });
   }
+  const pendingSlotConfirmationAtEntry = isPendingSlotConfirmation(text, pending) || Boolean(
+    controlledUnderstandingCandidates.confirmation &&
+    pending?.operation === "new_booking" &&
+    pending?.dateTime &&
+    findOwnedOfferedSlot(pending, pending.dateTime)
+  );
+
+  console.log("[PendingConfirmationTrace]", {
+    text,
+    pendingStatus: pending?.status || null,
+    bookingPhase: pending ? getBookingPhase(pending) : null,
+    pendingDateTime: pending?.dateTime || null,
+    ownedSlotFound: Boolean(
+      pending?.dateTime &&
+      findOwnedOfferedSlot(pending, pending.dateTime)
+    ),
+    affirmativeBookingText: isAffirmativeBookingText(text),
+    positiveBookingConfirmation: isPositiveBookingConfirmation(text),
+    pendingSlotConfirmationAtEntry
+  });
   let authoritativeNormalizedRequest = normalizedRequest, normalizedStateReplaced = false, deterministicTransition: ReturnType<typeof applyNormalizedRequestToPending> | null = null;
-  if (pending?.normalizedBookingRequest) {
+  const entryOwnedSlotSelection = pending?.status === "awaiting_time_selection"
+    ? selectOwnedOfferedSlot(text, pending) || (
+        controlledUnderstandingCandidates.time
+          ? selectUniqueOwnedOfferedSlotByTime(controlledUnderstandingCandidates.time, pending)
+          : null
+      )
+    : null;
+  const previousNormalizedService = String(
+    pending?.normalizedBookingRequest?.service?.normalized || ""
+  ).trim().toLowerCase();
+  const latestNormalizedService = String(
+    normalizedRequest.service?.normalized || ""
+  ).trim().toLowerCase();
+  const entrySelectionPreservesOwnedOffers = Boolean(
+    entryOwnedSlotSelection &&
+    !normalizedRequest.customerCorrection &&
+    (
+      !latestNormalizedService ||
+      !previousNormalizedService ||
+      latestNormalizedService === previousNormalizedService
+    )
+  );
+  if (
+    pending?.normalizedBookingRequest &&
+    !pendingSlotConfirmationAtEntry &&
+    !entrySelectionPreservesOwnedOffers
+  ) {
     const previousPhase = getBookingPhase(pending);
     const merged = applyNormalizedRequestToPending(pending, normalizedRequest);
     deterministicTransition = merged;
@@ -8648,10 +10394,23 @@ async function handleUnifiedBookingEngine(params: {
     stateVersion: pending?.bookingStateVersion || CURRENT_BOOKING_STATE_VERSION,
     conflictDetected: entryOperation.conflict,
   });
-  const entryExplicitNewBookingRequest = normalizedRequest.intent === "new_booking" || isExplicitNewBookingPivotText(text);
   const entryPendingOwnedSlot = pending?.dateTime
     ? findOwnedOfferedSlot(pending, pending.dateTime)
     : null;
+  // A natural confirmation can contain the language's ordinary booking verb
+  // (for example "boka den tiden" or "همان ساعت رزرو کنید"). Once one owned
+  // slot is selected, confirmations remain continuations even if repeated while
+  // contact details are still missing; they must not become a new-booking pivot.
+  const continuesOwnedBooking = Boolean(
+    pending?.operation === "new_booking" &&
+    entryPendingOwnedSlot &&
+    ["awaiting_slot_confirmation", "awaiting_contact", "failed_recoverable"].includes(getBookingPhase(pending)) &&
+    (isPositiveBookingConfirmation(text) || pendingSlotConfirmationAtEntry)
+  );
+  const entryExplicitNewBookingRequest =
+    deterministicTransition?.reason !== "slot_confirmation_accepted" &&
+    !continuesOwnedBooking &&
+    (normalizedRequest.intent === "new_booking" || isExplicitNewBookingPivotText(text));
   const authoritativeTelegramNewBooking = Boolean(
     platformName === "telegram" &&
     pending?.operation === "new_booking" &&
@@ -8736,8 +10495,31 @@ async function handleUnifiedBookingEngine(params: {
   }
 
   const replyAndRecord = async (reply: string) => {
-    const guardedReply = guardCustomerFacingReply(sessionId, reply, language);
-    await send(guardedReply);
+    // Presentation and the final safety guard must resolve language from the same
+    // active-flow source. A short continuation (for example "13:00 Uhr" or "2")
+    // must not let a stale/default turn language make the guard replace an already
+    // localized deterministic booking reply in another language.
+    const replyLanguage = getFlowReplyLanguage(
+      pending?.language || getStoredFlowLanguage(sessionId),
+      language,
+      text,
+    );
+    const guardedReply = guardCustomerFacingReply(
+      sessionId,
+      reply,
+      replyLanguage,
+      businessConfig?.toneConfig,
+    );
+    emitBookingLanguageTrace({
+      stage: "final_reply_guard",
+      sessionId,
+      currentLanguage: language,
+      flowLanguage: getStoredFlowLanguage(sessionId),
+      pendingLanguage: pending?.language || null,
+      presentationLanguage: replyLanguage,
+    });
+    const deliveryResult = await send(guardedReply);
+    if (deliveryResult === false) return;
     appendLocalHistory(sessionId, text, guardedReply);
     try {
       await postProcessMessage(
@@ -8773,6 +10555,86 @@ async function handleUnifiedBookingEngine(params: {
     return true;
   }
 
+  const completedBookingStatusContext = !pending
+    ? getRecentCompletedBooking(sessionId)
+    : null;
+  if (
+    completedBookingStatusContext?.bookingOperation?.ok &&
+    isRecentCompletedBookingStatusQuestion(text)
+  ) {
+    const completedLanguage = getFlowReplyLanguage(
+      completedBookingStatusContext.language,
+      language,
+      text,
+    );
+    verifiedBookingReplyAuthorizations[sessionId] =
+      completedBookingStatusContext.bookingOperation;
+    try {
+      await replyAndRecord(
+        formatBookingSavedMessage(
+          completedLanguage,
+          completedBookingStatusContext.bookingOperation.customerName || "",
+          completedBookingStatusContext.bookingOperation.serviceName,
+          completedBookingStatusContext.bookingOperation.startTime,
+          deterministicToneConfig,
+        ),
+      );
+    } finally {
+      delete verifiedBookingReplyAuthorizations[sessionId];
+    }
+    return true;
+  }
+
+  // Service guidance suspends a new-booking goal while releasing every stale
+  // slot/date constraint. The existing awaiting_service phase lets a later
+  // explicit service selection resume availability without replaying old offers.
+  if (
+    normalizedRequest.intent === "general_question" &&
+    isServiceGuidanceRequest(text) &&
+    !isResolvedServiceSelection(text) &&
+    (pending?.operation === "new_booking" || isBookingGoalWithUnresolvedService(text))
+  ) {
+    const releasedSelectedSlot = Boolean(pending?.dateTime);
+    delete availabilitySearchContexts[sessionId];
+    pending = {
+      businessConfig,
+      platform: platformName,
+      service: "Bokning",
+      selectedDate: null,
+      availabilityStartDate: null,
+      availabilityEndDate: null,
+      availabilityConstraint: null,
+      offeredSlots: [],
+      ownedOfferedSlots: [],
+      dateTime: null,
+      selectedSlotEnd: null,
+      durationMinutes: null,
+      language: pending?.language || language,
+      operation: "new_booking",
+      customerName: pending?.customerName || null,
+      customerPhone: pending?.customerPhone || getWhatsAppConversationPhone(
+        platformName,
+        recipientUserId,
+        sessionId
+      ),
+      contactPhoneSource: pending?.contactPhoneSource || null,
+      status: "awaiting_service"
+    };
+    await savePendingBooking(sessionId, platformName, pending);
+    console.log("[BookingTurnOwnership]", {
+      correlationId: bookingCorrelationId,
+      businessId: currentBookingSlotOwner.businessId,
+      channel: platformName,
+      pendingStatus: "released_for_service_guidance",
+      normalizedIntent: normalizedRequest.intent,
+      action: "suspend_booking_for_service_guidance",
+      pendingPreserved: true,
+      releasedSelectedSlot
+    });
+
+    return false;
+  }
+
   if (deterministicTransition?.replyKind === "choose_slot") {
     await replyAndRecord(formatChooseStoredSlotClarification(getFlowReplyLanguage(pending?.language, language, text)));
     return true;
@@ -8801,7 +10663,8 @@ async function handleUnifiedBookingEngine(params: {
       await replyAndRecord(
         formatMissingBookingDetailsMessage(
           getFlowReplyLanguage(pending.language, language, text),
-          getMissingBookingContact(pending)
+          getMissingBookingContact(pending),
+          deterministicToneConfig
         )
       );
       return true;
@@ -8840,12 +10703,13 @@ async function handleUnifiedBookingEngine(params: {
       await replyAndRecord(formatStaleAppointmentStateMessage(context.language));
       return true;
     }
-    if (classifyAppointmentTemporalState(appointment) !== "future_or_active") {
+    const temporalState = classifyAppointmentTemporalState(appointment, appointmentTurnNowMs);
+    if (temporalState !== "future_or_active") {
       clearCancellationContext(sessionId);
       await replyAndRecord(
         formatPastAppointmentMutationReply(
           appointment,
-          classifyAppointmentTemporalState(appointment),
+          temporalState,
           context.language
         )
       );
@@ -9526,7 +11390,7 @@ async function handleUnifiedBookingEngine(params: {
         : undefined,
       lastOperation: "awaiting_slot_selection"
     });
-    await replyAndRecord(formatSwedishTimeSlots(offeredSlots, requestedTime || undefined, lockedLanguage));
+    await replyAndRecord(formatSwedishTimeSlots(offeredSlots, requestedTime || undefined, lockedLanguage, deterministicToneConfig));
     return true;
   };
   // Backward-compatible name retained for existing focused source-level regressions.
@@ -10055,7 +11919,10 @@ async function handleUnifiedBookingEngine(params: {
         await replyAndRecord(formatStaleAppointmentStateMessage(lockedLanguage));
         return true;
       }
-      const temporalState = classifyAppointmentTemporalState(priorityReschedule.appointment);
+      const temporalState = classifyAppointmentTemporalState(
+        priorityReschedule.appointment,
+        appointmentTurnNowMs
+      );
       if (temporalState !== "future_or_active") {
         clearAppointmentConversationState(sessionId);
         rememberPastAppointmentRecovery(
@@ -10266,7 +12133,8 @@ async function handleUnifiedBookingEngine(params: {
             formatSwedishTimeSlots(
               priorityReschedule.offeredSlots,
               priorityReschedule.requestedTime,
-              lockedLanguage
+              lockedLanguage,
+              deterministicToneConfig
             )
           );
           return true;
@@ -10469,7 +12337,8 @@ async function handleUnifiedBookingEngine(params: {
 
     if (
       pending?.operation === "new_booking" &&
-      isInterveningNonMutatingQuestion(text)
+      isInterveningNonMutatingQuestion(text) &&
+      !isPendingSelectionRejectionRequest(text, pending)
     ) {
       nonMutatingSupportTurns[sessionId] = Date.now();
       lockConversationFlowLanguage(
@@ -10506,7 +12375,8 @@ async function handleUnifiedBookingEngine(params: {
         },
         recipientUserId,
         platformName,
-        businessConfig
+        businessConfig,
+        appointmentTurnNow
       );
       const verifiedAppointments = Array.isArray(phoneVerification?.appointments)
         ? phoneVerification.appointments
@@ -10590,7 +12460,7 @@ async function handleUnifiedBookingEngine(params: {
       }
       if (Array.isArray(enrichedContext.offeredSlots) && enrichedContext.offeredSlots.length > 0) {
         await replyAndRecord(
-          formatSwedishTimeSlots(enrichedContext.offeredSlots, undefined, lockedLanguage)
+          formatSwedishTimeSlots(enrichedContext.offeredSlots, undefined, lockedLanguage, deterministicToneConfig)
         );
         return true;
       }
@@ -10601,7 +12471,12 @@ async function handleUnifiedBookingEngine(params: {
       return true;
     }
 
-    if (pending && (explicitNewBookingRequested || isNewBookingRequestText(text))) {
+    if (
+      pending &&
+      !entryOwnedSlotSelection &&
+      !continuesOwnedBooking &&
+      (explicitNewBookingRequested || isNewBookingRequestText(text))
+    ) {
       console.log("[UnifiedBooking]", { event: "stale_pending_cleared", platform: platformName, sessionKey: safeLogFingerprint(sessionId) });
       await clearPendingBooking(sessionId);
       pending = null;
@@ -10678,7 +12553,8 @@ async function handleUnifiedBookingEngine(params: {
     let rememberedAppointment = getAppointmentContext(sessionId);
     if (rememberedAppointment && (rescheduleRequested || cancellationRequested)) {
       const temporalState = classifyAppointmentTemporalState(
-        rememberedAppointment.appointment
+        rememberedAppointment.appointment,
+        appointmentTurnNowMs
       );
       if (temporalState !== "future_or_active") {
         const lockedLanguage = getFlowReplyLanguage(
@@ -10741,7 +12617,8 @@ async function handleUnifiedBookingEngine(params: {
         },
         recipientUserId,
         platformName,
-        businessConfig
+        businessConfig,
+        appointmentTurnNow
       );
       const lookupResult = mutationLookup.result;
 
@@ -10856,7 +12733,9 @@ async function handleUnifiedBookingEngine(params: {
             return true;
           }
         }
-        await replyAndRecord(formatAppointmentLookupReply(lookupResult, language));
+        await replyAndRecord(
+          formatAppointmentLookupReply(lookupResult, language, appointmentTurnNowMs)
+        );
         return true;
       }
     }
@@ -11200,7 +13079,8 @@ async function handleUnifiedBookingEngine(params: {
         await replyAndRecord(
           formatAppointmentLookupReply(
             { found: true, needsContactDetails: false, appointments: [selection.appointment] },
-            lockedLanguage
+            lockedLanguage,
+            appointmentTurnNowMs
           )
         );
         return true;
@@ -11419,7 +13299,8 @@ async function handleUnifiedBookingEngine(params: {
         },
         recipientUserId,
         platformName,
-        businessConfig
+        businessConfig,
+        appointmentTurnNow
       );
       const lookupResult = mutationLookup.result;
 
@@ -11561,7 +13442,7 @@ async function handleUnifiedBookingEngine(params: {
                   ? "not_found"
                   : "need_attribute"
             )
-          : formatAppointmentLookupReply(lookupResult, lockedLanguage)
+          : formatAppointmentLookupReply(lookupResult, lockedLanguage, appointmentTurnNowMs)
       );
       return true;
     }
@@ -11602,7 +13483,8 @@ async function handleUnifiedBookingEngine(params: {
         },
         recipientUserId,
         platformName,
-        businessConfig
+        businessConfig,
+        appointmentTurnNow
       );
       rememberAppointmentContext(sessionId, lookupResult, activeLookupContext.language || language, currentAppointmentStateOwner);
       if (lookupResult?.found) clearAppointmentLookupContext(sessionId);
@@ -11670,7 +13552,11 @@ async function handleUnifiedBookingEngine(params: {
                   ? "not_found"
                   : "need_attribute"
             )
-          : formatAppointmentLookupReply(lookupResult, activeLookupContext.language || language)
+          : formatAppointmentLookupReply(
+              lookupResult,
+              activeLookupContext.language || language,
+              appointmentTurnNowMs
+            )
       );
       return true;
     }
@@ -11702,7 +13588,8 @@ async function handleUnifiedBookingEngine(params: {
         lookupArgs,
         recipientUserId,
         platformName,
-        businessConfig
+        businessConfig,
+        appointmentTurnNow
       );
       rememberAppointmentContext(sessionId, lookupResult, language, currentAppointmentStateOwner);
       if (lookupResult?.found) clearAppointmentLookupContext(sessionId);
@@ -11773,7 +13660,7 @@ async function handleUnifiedBookingEngine(params: {
                 ? "not_found"
                 : "need_attribute"
           )
-        : formatAppointmentLookupReply(lookupResult, language);
+        : formatAppointmentLookupReply(lookupResult, language, appointmentTurnNowMs);
       console.log(`[UnifiedBooking] Lookup platform=${platformName}, found=${Boolean(lookupResult?.found)}`);
       await replyAndRecord(reply);
       return true;
@@ -11785,6 +13672,19 @@ async function handleUnifiedBookingEngine(params: {
       return true;
     }
 
+    const currentTurnCombinedContact = extractNameAndPhone(text);
+    const currentTurnBookingContact = resolveAuthoritativeContact({
+      channel: platformName,
+      currentName:
+        currentTurnCombinedContact?.name ||
+        extractNameOnly(text) ||
+        controlledUnderstandingCandidates.name,
+      currentPhone:
+        currentTurnCombinedContact?.phone ||
+        extractPhoneOnly(text) ||
+        controlledUnderstandingCandidates.phone,
+      senderPhone: authoritativeSenderPhone,
+    });
     let storedAvailability = availabilitySearchContexts[sessionId];
     if (storedAvailability && Date.now() - storedAvailability.savedAt > PENDING_BOOKING_TTL_MS) {
       delete availabilitySearchContexts[sessionId];
@@ -11849,7 +13749,8 @@ async function handleUnifiedBookingEngine(params: {
       pendingOwnedOffer &&
       new Date(pendingOwnedOffer.start).getTime() ===
         new Date(ensureStockholmOffset(String(pending.dateTime))).getTime() &&
-      (extractNameAndPhone(text) || extractPhoneOnly(text) || extractNameOnly(text))
+      (extractNameAndPhone(text) || extractPhoneOnly(text) || extractNameOnly(text) ||
+        controlledUnderstandingCandidates.name || controlledUnderstandingCandidates.phone)
     );
     const derivedLatestAvailabilityConstraint = ownedAwaitingContactInput
       ? null
@@ -11858,9 +13759,77 @@ async function handleUnifiedBookingEngine(params: {
           businessConfig,
           previousAvailabilityConstraint,
           authoritativeNormalizedRequest,
-          normalizedRequest.timeConstraint
+          normalizedRequest.timeConstraint,
+          params.now ?? new Date()
         );
-    let latestAvailabilityConstraint = derivedLatestAvailabilityConstraint || (
+    const pendingSelectionRejected = isPendingSelectionRejectionRequest(text, pending);
+    // Rejection recovery deliberately widens a selected exact slot back to the
+    // canonical same-day constraint below. Keep the persisted/secondary
+    // normalized constraint consistent with that recovery constraint; otherwise
+    // the stale exact time is applied a second time by candidate generation and
+    // intersects with its own exclusion, rejecting every same-day candidate.
+    const latestAvailabilityConstraintHasTime = Boolean(
+      derivedLatestAvailabilityConstraint?.exactTime ||
+      derivedLatestAvailabilityConstraint?.minTime ||
+      derivedLatestAvailabilityConstraint?.maxTime ||
+      derivedLatestAvailabilityConstraint?.timeBoundary ||
+      derivedLatestAvailabilityConstraint?.daypart
+    );
+
+    const clearStaleNormalizedAvailabilityTime = Boolean(
+      derivedLatestAvailabilityConstraint &&
+      !latestAvailabilityConstraintHasTime &&
+      (
+        derivedLatestAvailabilityConstraint.startDate !==
+          previousAvailabilityConstraint?.startDate ||
+        derivedLatestAvailabilityConstraint.endDate !==
+          previousAvailabilityConstraint?.endDate ||
+        derivedLatestAvailabilityConstraint.kind !==
+          previousAvailabilityConstraint?.kind
+      )
+    );
+
+    const availabilityNormalizedRequest: NormalizedBookingRequest =
+      pendingSelectionRejected || clearStaleNormalizedAvailabilityTime
+        ? {
+            ...authoritativeNormalizedRequest,
+            timeConstraint: { kind: "none", confidence: "high" },
+          }
+        : authoritativeNormalizedRequest;
+    const rejectedPendingTime = pendingSelectionRejected
+      ? getStockholmTimeFromIso(String(pending?.dateTime || ""))
+      : null;
+    const rejectedSelectionConstraint = pendingSelectionRejected &&
+      rejectedPendingTime &&
+      previousAvailabilityConstraint
+        ? {
+            ...previousAvailabilityConstraint,
+            kind: (["exact_time", "approximate_time"].includes(previousAvailabilityConstraint.kind)
+              ? previousAvailabilityConstraint.startDate === previousAvailabilityConstraint.endDate
+                ? "whole_day"
+                : "date_range"
+              : previousAvailabilityConstraint.kind) as AvailabilityConstraintKind,
+            exactTime: undefined,
+            timeBoundary: previousAvailabilityConstraint.kind === "approximate_time"
+              ? undefined
+              : previousAvailabilityConstraint.timeBoundary,
+            rejectedTimes: Array.from(new Set([
+              ...(previousAvailabilityConstraint.rejectedTimes || []),
+              rejectedPendingTime,
+            ])),
+            generatedFromLatestRequestAt: Date.now(),
+          }
+        : null;
+    if (process.env.NODE_ENV === "test" && String(sessionId).startsWith("ig_")) {
+      console.log("DEBUG CANONICAL AVAILABILITY:", {
+        sessionId,
+        normalizedDate: normalizedRequest.date,
+        authoritativeDate: authoritativeNormalizedRequest.date,
+        derivedConstraint: derivedLatestAvailabilityConstraint,
+      });
+    }
+
+    let latestAvailabilityConstraint = rejectedSelectionConstraint || derivedLatestAvailabilityConstraint || (
       explicitNewBookingRequested
         ? recoveredConstraintForNewBooking || null
         : pending?.lastFailureStage === "availability" && isGenericBookingRetry(text)
@@ -11897,12 +13866,18 @@ async function handleUnifiedBookingEngine(params: {
         pending?.status !== "inserting"
       )
     );
+    const currentOwnedSlotSelection = entryOwnedSlotSelection || (
+      pending?.status === "awaiting_time_selection"
+        ? selectOwnedOfferedSlot(text, pending)
+        : null
+    );
     const pendingCanAcceptAvailabilityRefinement = Boolean(
       !pending ||
-      ["awaiting_time_selection"].includes(
+      (!currentOwnedSlotSelection && ["awaiting_time_selection"].includes(
         String(pending?.status || "")
-      ) ||
-      Boolean(deterministicTransition?.runAvailability)
+      )) ||
+      Boolean(deterministicTransition?.runAvailability) ||
+      pendingSelectionRejected
     );
     if (
       pendingCanAcceptAvailabilityRefinement &&
@@ -11916,16 +13891,29 @@ async function handleUnifiedBookingEngine(params: {
     ) {
       const priorConstraintType = previousAvailabilityConstraint?.kind || "none";
       const constraint = latestAvailabilityConstraint;
-      const fingerprintService = normalizeBookingService(inferServiceFromRecentContext(text, history), storedAvailability?.service || pending?.service || getDefaultBookingServiceForBusiness(businessConfig) || "Bokning");
+      const fingerprintService = resolveConfiguredBookingService(
+        `${history.slice(-8).map((m: any) => typeof m.content === "string" ? m.content : "").join(" ")} ${text || ""}`,
+        businessConfig,
+        storedAvailability?.service ||
+          pending?.service ||
+          getDefaultBookingServiceForBusiness(businessConfig) ||
+          "Bokning"
+      );
       const fingerprintResolvedDuration = platformName === "telegram" ? await resolveServiceDurationMinutes(fingerprintService, null, businessConfig) : null;
-      const fingerprintDuration = storedAvailability?.durationMinutes || Number(pending?.durationMinutes || 0) || Number(fingerprintResolvedDuration || 0) || getDefaultBookingDurationForService(fingerprintService) || inferBookingDurationFromContext(text, history);
-      const availabilityConstraintKey = canonicalAvailabilityConstraintKey(constraint, { businessId: currentAppointmentStateOwner.businessId, service: fingerprintService, timezone: String(businessConfig?.timezone || "Europe/Stockholm"), durationMinutes: fingerprintDuration, time: authoritativeNormalizedRequest.timeConstraint });
+      const fingerprintDuration =
+        Number(fingerprintResolvedDuration || 0) ||
+        storedAvailability?.durationMinutes ||
+        Number(pending?.durationMinutes || 0) ||
+        getDefaultBookingDurationForService(fingerprintService) ||
+        inferBookingDurationFromContext(text, history);
+      const availabilityConstraintKey = canonicalAvailabilityConstraintKey(constraint, { businessId: currentAppointmentStateOwner.businessId, service: fingerprintService, timezone: String(businessConfig?.timezone || "Europe/Stockholm"), durationMinutes: fingerprintDuration, time: availabilityNormalizedRequest.timeConstraint });
       const cachedOfferCountBefore = Array.isArray(pending?.offeredSlots)
         ? pending.offeredSlots.length
         : 0;
       if (
         availabilityConstraintKey &&
         pending?.lastAvailabilityConstraintKey === availabilityConstraintKey &&
+        !pendingSelectionRejected &&
         !isSlotListRepeatRequest(text)
       ) {
         await replyAndRecord(
@@ -11974,8 +13962,9 @@ async function handleUnifiedBookingEngine(params: {
         await clearPendingBooking(sessionId);
         pending = null;
       }
-      const inferredService = normalizeBookingService(
+      const inferredService = resolveConfiguredBookingService(
         fingerprintService,
+        businessConfig,
         storedAvailability?.service ||
           priorPendingBooking?.service ||
           recoveredServiceForNewBooking ||
@@ -11983,18 +13972,30 @@ async function handleUnifiedBookingEngine(params: {
           "Bokning"
       );
       const resolvedTelegramDuration = fingerprintResolvedDuration;
-      const durationMinutes = storedAvailability?.durationMinutes ||
+      const durationMinutes =
+        Number(resolvedTelegramDuration || 0) ||
+        storedAvailability?.durationMinutes ||
         Number(priorPendingBooking?.durationMinutes || 0) ||
         Number(recoveredDurationForNewBooking || 0) ||
-        Number(resolvedTelegramDuration || 0) ||
         getDefaultBookingDurationForService(inferredService) ||
         fingerprintDuration;
-      const lockedLanguage =
-        storedAvailability?.language ||
-        priorPendingBooking?.language ||
-        getStoredFlowLanguage(sessionId) ||
-        language;
+      const lockedLanguage = resolveActiveBookingLanguage({
+        latestText: text,
+        pendingLanguage: priorPendingBooking?.language,
+        currentLanguage: language,
+        availabilityLanguage: storedAvailability?.language,
+        storedFallbackLanguage: getStoredFlowLanguage(sessionId),
+      });
       lockConversationFlowLanguage(sessionId, lockedLanguage, "availability");
+      emitBookingLanguageTrace({
+        stage: "availability_resumed",
+        sessionId,
+        currentLanguage: language,
+        flowLanguage: getStoredFlowLanguage(sessionId),
+        pendingLanguage: priorPendingBooking?.language || null,
+        availabilityLanguage: storedAvailability?.language || null,
+        presentationLanguage: lockedLanguage,
+      });
 
       const adapter = getCalendarAdapter(businessConfig);
       const searchIsWithinConfiguredWindow =
@@ -12012,7 +14013,7 @@ async function handleUnifiedBookingEngine(params: {
         availabilityMinTime: constraint.minTime || null,
         availabilityMaxTime: constraint.maxTime || null,
         availabilityConstraint: constraint,
-        normalizedBookingRequest: toPersistedBookingRequest(authoritativeNormalizedRequest),
+        normalizedBookingRequest: toPersistedBookingRequest(availabilityNormalizedRequest),
         lastAvailabilityConstraintKey: null,
         dateTime: null,
         selectedSlotEnd: null,
@@ -12027,12 +14028,36 @@ async function handleUnifiedBookingEngine(params: {
           calendarStarted: false, calendarVerified: false, databaseStarted: false,
           databaseVerified: false, settlementStarted: false,
         },
-        customerPhone: priorPendingBooking?.customerPhone || getWhatsAppConversationPhone(platformName, recipientUserId, sessionId),
+        customerName: priorPendingBooking?.customerName || currentTurnBookingContact.name,
+        customerPhone: priorPendingBooking?.customerPhone || currentTurnBookingContact.phone,
+        contactPhoneSource: priorPendingBooking?.contactPhoneSource || currentTurnBookingContact.phoneSource,
         status: "awaiting_time_selection"
       };
       await savePendingBooking(sessionId, platformName, pending);
+      const availabilityAnalyticsIdentity = availabilityConstraintKey || bookingCorrelationId;
+      if (!priorPendingBooking) {
+        recordBookingFunnelEvent(
+          "booking_started",
+          "started",
+          availabilityAnalyticsIdentity,
+          { serviceName: inferredService },
+        );
+      }
+      recordBookingFunnelEvent(
+        "availability_requested",
+        "requested",
+        availabilityAnalyticsIdentity,
+        {
+          serviceName: inferredService,
+          metadata: {
+            constraint_kind: constraint.kind,
+            requested_start_date: constraint.startDate,
+            requested_end_date: constraint.endDate,
+          },
+        },
+      );
       bookingFailureStage = "availability";
-      const canonicalOffers = searchIsWithinConfiguredWindow
+      let canonicalOffers = searchIsWithinConfiguredWindow
         ? await createCanonicalOfferedSlots({
             adapter,
             owner: currentBookingSlotOwner,
@@ -12043,10 +14068,79 @@ async function handleUnifiedBookingEngine(params: {
             durationMinutes,
             requestedTime: constraint.exactTime,
             options: availabilityConstraintSlotOptions(constraint),
-            normalizedConstraint: authoritativeNormalizedRequest.timeConstraint,
+            normalizedConstraint: availabilityNormalizedRequest.timeConstraint,
+            now: params.now,
           })
         : { displaySlots: [], ownedSlots: [] };
+
+      // If the customer requested one exact time on one specific day and that
+      // exact slot is unavailable, keep the requested day authoritative and
+      // offer the nearest free times on that same day instead of immediately
+      // falling through to generic no-availability handling.
+      if (
+        searchIsWithinConfiguredWindow &&
+        canonicalOffers.displaySlots.length === 0 &&
+        constraint.kind === "exact_time" &&
+        Boolean(constraint.exactTime) &&
+        constraint.startDate === constraint.endDate
+      ) {
+        const sameDayFallbackConstraint: CanonicalAvailabilityConstraint = {
+          ...constraint,
+          kind: "whole_day",
+          exactTime: undefined
+        };
+
+        canonicalOffers = await createCanonicalOfferedSlots({
+          adapter,
+          owner: currentBookingSlotOwner,
+          businessConfig,
+          startDate: constraint.startDate,
+          endDate: constraint.endDate,
+          service: inferredService,
+          durationMinutes,
+          requestedTime: constraint.exactTime,
+          options: availabilityConstraintSlotOptions(sameDayFallbackConstraint),
+          normalizedConstraint: undefined,
+          now: params.now,
+        });
+
+        console.log("[ExactTimeSameDayFallback]", {
+          platform: platformName,
+          businessId: currentBookingSlotOwner.businessId,
+          requestedDate: constraint.startDate,
+          requestedTime: constraint.exactTime,
+          alternativeCount: canonicalOffers.ownedSlots.length,
+          fallbackUsed: canonicalOffers.ownedSlots.length > 0
+        });
+      }
+
       const slots = canonicalOffers.displaySlots;
+
+      console.log("[EarliestAvailabilityTrace]", {
+        platform: platformName,
+        text,
+        constraint: {
+          startDate: constraint.startDate,
+          endDate: constraint.endDate,
+          kind: constraint.kind,
+          selectFirstAvailable: constraint.selectFirstAvailable ?? false,
+          exactTime: constraint.exactTime || null,
+          minTime: constraint.minTime || null,
+          maxTime: constraint.maxTime || null,
+          timeBoundary: constraint.timeBoundary || null,
+          daypart: constraint.daypart || null
+        },
+        normalizedTimeConstraint:
+          availabilityNormalizedRequest.timeConstraint || null,
+        canonicalOwnedSlots:
+          canonicalOffers.ownedSlots.map((slot) => ({
+            start: slot.start,
+            end: slot.end
+          })),
+        canonicalDisplaySlots:
+          canonicalOffers.displaySlots
+      });
+
       bookingFailureStage = null;
       pending.lastFailureStage = null;
       pending.failedStage = null;
@@ -12133,6 +14227,7 @@ async function handleUnifiedBookingEngine(params: {
         lastResultCategory: slots.length > 0 ? "available" : "no_availability"
       };
 
+      let availabilitySelectionIncludesAuthorization = false;
       if (slots.length > 0) {
         const exactIso = constraint.exactTime
           ? findOfferedSlotIso(slots, constraint.exactTime)
@@ -12140,6 +14235,14 @@ async function handleUnifiedBookingEngine(params: {
         const exactOwnedSlot = exactIso
           ? canonicalOffers.ownedSlots.find((slot) => new Date(slot.start).getTime() === new Date(exactIso).getTime())
           : null;
+        const readOnlyExactAvailabilityInquiry = Boolean(
+          exactOwnedSlot && isReadOnlyAvailabilityInquiry(text)
+        );
+        availabilitySelectionIncludesAuthorization = Boolean(
+          exactOwnedSlot &&
+          !readOnlyExactAvailabilityInquiry &&
+          hasExplicitSelectedSlotBookingAuthorization(text)
+        );
         await savePendingBooking(sessionId, platformName, {
           businessConfig,
           platform: platformName,
@@ -12155,20 +14258,37 @@ async function handleUnifiedBookingEngine(params: {
           availabilityMinTime: constraint.minTime || null,
           availabilityMaxTime: constraint.maxTime || null,
           availabilityConstraint: constraint,
-          normalizedBookingRequest: toPersistedBookingRequest(authoritativeNormalizedRequest),
+          normalizedBookingRequest: toPersistedBookingRequest(availabilityNormalizedRequest),
           lastAvailabilityConstraintKey: availabilityConstraintKey,
-          dateTime: exactIso,
-          selectedSlotEnd: exactOwnedSlot?.end || null,
+          dateTime: readOnlyExactAvailabilityInquiry ? null : exactIso,
+          selectedSlotEnd: readOnlyExactAvailabilityInquiry ? null : exactOwnedSlot?.end || null,
+          readOnlyExactAvailabilityInquiry,
           durationMinutes,
           language: lockedLanguage,
           operation: "new_booking",
           expiredAppointmentFallback:
             expiredAppointmentFallbackForNewBooking ||
             Boolean(priorPendingBooking?.expiredAppointmentFallback),
-          customerPhone: getWhatsAppConversationPhone(platformName, recipientUserId, sessionId),
-          status: exactIso ? "awaiting_confirmation" : "awaiting_time_selection"
+          customerName: priorPendingBooking?.customerName || currentTurnBookingContact.name,
+          customerPhone: priorPendingBooking?.customerPhone || currentTurnBookingContact.phone,
+          contactPhoneSource: priorPendingBooking?.contactPhoneSource || currentTurnBookingContact.phoneSource,
+          status: availabilitySelectionIncludesAuthorization
+            ? "awaiting_contact"
+            : exactIso && !readOnlyExactAvailabilityInquiry
+              ? "awaiting_confirmation"
+              : "awaiting_time_selection"
         });
         pending = pendingBookings[sessionId];
+        if (exactIso && pending) {
+          emitBookingLanguageTrace({
+            stage: "slot_selected",
+            sessionId,
+            currentLanguage: language,
+            flowLanguage: getStoredFlowLanguage(sessionId),
+            pendingLanguage: pending.language || null,
+            presentationLanguage: lockedLanguage,
+          });
+        }
       } else {
         await savePendingBooking(sessionId, platformName, {
           businessConfig,
@@ -12185,7 +14305,7 @@ async function handleUnifiedBookingEngine(params: {
           availabilityMinTime: constraint.minTime || null,
           availabilityMaxTime: constraint.maxTime || null,
           availabilityConstraint: constraint,
-          normalizedBookingRequest: toPersistedBookingRequest(authoritativeNormalizedRequest),
+          normalizedBookingRequest: toPersistedBookingRequest(availabilityNormalizedRequest),
           lastAvailabilityConstraintKey: availabilityConstraintKey,
           dateTime: null,
           selectedSlotEnd: null,
@@ -12195,14 +14315,26 @@ async function handleUnifiedBookingEngine(params: {
           expiredAppointmentFallback:
             expiredAppointmentFallbackForNewBooking ||
             Boolean(priorPendingBooking?.expiredAppointmentFallback),
-          customerPhone: getWhatsAppConversationPhone(
-            platformName,
-            recipientUserId,
-            sessionId
-          ),
+          customerName: priorPendingBooking?.customerName || currentTurnBookingContact.name,
+          customerPhone: priorPendingBooking?.customerPhone || currentTurnBookingContact.phone,
+          contactPhoneSource: priorPendingBooking?.contactPhoneSource || currentTurnBookingContact.phoneSource,
           status: "awaiting_time_selection"
         });
         pending = pendingBookings[sessionId];
+      }
+
+      if (slots.length > 0) {
+        recordBookingFunnelEvent(
+          "slot_offered",
+          "available",
+          `${availabilityAnalyticsIdentity}:offer`,
+          {
+            serviceName: inferredService,
+            metadata: { slot_count: canonicalOffers.ownedSlots.length },
+          },
+        );
+      } else {
+        recordDeterministicBookingFailure("no_availability", availabilityAnalyticsIdentity);
       }
 
       console.log("[AvailabilityFlow]", {
@@ -12219,6 +14351,23 @@ async function handleUnifiedBookingEngine(params: {
         resultCategory: slots.length > 0 ? "available" : "no_availability"
       });
 
+      if (availabilitySelectionIncludesAuthorization && pending) {
+        recordBookingFunnelEvent(
+          "slot_selected",
+          "selected",
+          `${availabilityAnalyticsIdentity}:${pending.dateTime || "exact_slot"}`,
+          { serviceName: inferredService },
+        );
+        await replyAndRecord(
+          formatMissingBookingDetailsMessage(
+            getFlowReplyLanguage(pending.language, language, text),
+            getMissingBookingContact(pending),
+            deterministicToneConfig
+          )
+        );
+        return true;
+      }
+
       const rangeReplyRequest: AvailabilityRangeRequest = {
         startDate: constraint.startDate,
         endDate: constraint.endDate,
@@ -12226,28 +14375,151 @@ async function handleUnifiedBookingEngine(params: {
         ...(constraint.maxTime ? { maxTime: constraint.maxTime } : {}),
         flexibleDays: constraint.startDate !== constraint.endDate
       };
+      const requestedWorkingDay =
+        constraint.startDate === constraint.endDate
+          ? resolveBusinessWorkingDay(businessConfig, constraint.startDate)
+          : null;
+
+      if (
+        slots.length === 0 &&
+        requestedWorkingDay?.closed
+      ) {
+        const nearestAvailability = await findNearestFutureCanonicalAvailability({
+          adapter,
+          owner: currentBookingSlotOwner,
+          businessConfig,
+          fromDateExclusive: constraint.startDate,
+          service: inferredService,
+          durationMinutes,
+          maxDays: getConfiguredBookingWindowDays(businessConfig),
+        });
+
+        if (
+          nearestAvailability.date &&
+          nearestAvailability.ownedSlots.length > 0
+        ) {
+          await savePendingBooking(sessionId, platformName, {
+            businessConfig,
+            platform: platformName,
+            service: inferredService,
+            selectedDate: nearestAvailability.date,
+            offeredSlots: nearestAvailability.displaySlots,
+            ownedOfferedSlots: nearestAvailability.ownedSlots,
+            availabilityStartDate: nearestAvailability.date,
+            availabilityEndDate: nearestAvailability.date,
+            availabilityMinTime: null,
+            availabilityMaxTime: null,
+            availabilityConstraint: {
+              startDate: nearestAvailability.date,
+              endDate: nearestAvailability.date,
+              kind: "whole_day",
+              rejectedTimes: [],
+              generatedFromLatestRequestAt: Date.now(),
+            },
+            normalizedBookingRequest: toPersistedBookingRequest(
+              availabilityNormalizedRequest
+            ),
+            lastAvailabilityConstraintKey: availabilityConstraintKey,
+            dateTime: null,
+            selectedSlotEnd: null,
+            durationMinutes,
+            language: lockedLanguage,
+            operation: "new_booking",
+            expiredAppointmentFallback:
+              expiredAppointmentFallbackForNewBooking ||
+              Boolean(priorPendingBooking?.expiredAppointmentFallback),
+            customerName: priorPendingBooking?.customerName || currentTurnBookingContact.name,
+            customerPhone: priorPendingBooking?.customerPhone || currentTurnBookingContact.phone,
+            contactPhoneSource: priorPendingBooking?.contactPhoneSource || currentTurnBookingContact.phoneSource,
+            status: "awaiting_time_selection"
+          });
+
+          pending = pendingBookings[sessionId];
+
+          const nearestSlotsReply = formatSwedishTimeSlots(
+            nearestAvailability.displaySlots,
+            undefined,
+            lockedLanguage,
+            deterministicToneConfig
+          );
+
+          const prefix =
+            lockedLanguage === "sv"
+              ? "Vi har stängt den dagen. "
+              : lockedLanguage === "fa"
+                ? "آن روز تعطیل هستیم. "
+                : lockedLanguage === "de"
+                  ? "An diesem Tag haben wir geschlossen. "
+                  : lockedLanguage === "es"
+                    ? "Ese día estamos cerrados. "
+                    : lockedLanguage === "ar"
+                      ? "نحن مغلقون في ذلك اليوم. "
+                      : "We’re closed that day. ";
+
+          await replyAndRecord(prefix + nearestSlotsReply);
+          return true;
+        }
+
+        const closedDayReply =
+          lockedLanguage === "sv"
+            ? `Vi har stängt den dagen och jag hittade tyvärr ingen ledig tid inom bokningsfönstret.`
+            : lockedLanguage === "fa"
+              ? `آن روز تعطیل هستیم و متأسفانه در بازه رزرو وقت خالی پیدا نکردم.`
+              : lockedLanguage === "de"
+                ? `An diesem Tag haben wir geschlossen und ich habe leider keinen freien Termin innerhalb des Buchungszeitraums gefunden.`
+                : lockedLanguage === "es"
+                  ? `Ese día estamos cerrados y no encontré citas disponibles dentro del período de reserva.`
+                  : lockedLanguage === "ar"
+                    ? `نحن مغلقون في ذلك اليوم، ولم أجد موعدًا متاحًا ضمن فترة الحجز.`
+                    : `We’re closed that day, and I couldn’t find any available times within the booking window.`;
+
+        await replyAndRecord(closedDayReply);
+        return true;
+      }
+
+      emitBookingLanguageTrace({
+        stage: "availability_presentation",
+        sessionId,
+        currentLanguage: language,
+        flowLanguage: getStoredFlowLanguage(sessionId),
+        pendingLanguage: pending?.language || null,
+        availabilityLanguage: storedAvailability?.language || null,
+        presentationLanguage: lockedLanguage,
+      });
       await replyAndRecord(
         outsideOriginalRange
           ? formatRangeAvailabilityReply(
               slots,
               lockedLanguage,
               rangeReplyRequest,
-              true
+              true,
+              deterministicToneConfig
             )
           : formatSwedishTimeSlots(
               slots,
               constraint.exactTime,
-              lockedLanguage
+              lockedLanguage,
+              deterministicToneConfig
             )
       );
       return true;
     }
 
-    if (!pending && isGenericBookingRequestWithoutDate(text)) {
+    const resolvedSuspendedService = pending?.status === "awaiting_service" && isResolvedServiceSelection(text)
+      ? normalizeBookingService(inferServiceFromText(text), "Bokning")
+      : null;
+    if (
+      (!pending && isGenericBookingRequestWithoutDate(text)) ||
+      (pending?.status === "awaiting_service" && resolvedSuspendedService)
+    ) {
       const adapter = getCalendarAdapter(businessConfig);
       const startDate = stockholmDateString(new Date());
       const endDate = addDaysToStockholmDate(startDate, 7);
-      const service = normalizeBookingService(inferServiceFromRecentContext(text, history), "Bokning");
+      const service = resolvedSuspendedService || resolveConfiguredBookingService(
+        `${history.slice(-8).map((m: any) => typeof m.content === "string" ? m.content : "").join(" ")} ${text || ""}`,
+        businessConfig,
+        "Bokning"
+      );
       const finalService = service !== "Bokning"
         ? service
         : (getDefaultBookingServiceForBusiness(businessConfig) || "Bokning");
@@ -12266,7 +14538,10 @@ async function handleUnifiedBookingEngine(params: {
         startDate,
         endDate,
         service: finalService,
-        durationMinutes
+        durationMinutes,
+        options: isEarliestAvailabilityRequest(text)
+          ? { selectFirstAvailable: true }
+          : undefined
       });
       const slots = canonicalOffers.displaySlots;
 
@@ -12289,12 +14564,17 @@ async function handleUnifiedBookingEngine(params: {
         });
       }
 
-      await replyAndRecord(formatSwedishTimeSlots(slots, undefined, language));
+      await replyAndRecord(formatSwedishTimeSlots(slots, undefined, language, deterministicToneConfig));
       return true;
     }
 
     const explicitDate = resolveExplicitBookingDate(text);
-    if (explicitDate && isBookingConversationContext(text, history)) {
+    if (
+      explicitDate &&
+      isBookingConversationContext(text, history) &&
+      !entryOwnedSlotSelection &&
+      !pendingSlotConfirmationAtEntry
+    ) {
       lockConversationFlowLanguage(sessionId, language, "booking");
       const adapter = getCalendarAdapter(businessConfig);
       const directAvailabilityConstraint: CanonicalAvailabilityConstraint =
@@ -12310,7 +14590,11 @@ async function handleUnifiedBookingEngine(params: {
         text,
         ...(history || []).slice(-10).map((item: any) => item?.content || "")
       ].join(" ");
-      const detectedService = normalizeBookingService(contextText, "Bokning");
+      const detectedService = resolveConfiguredBookingService(
+        contextText,
+        businessConfig,
+        "Bokning"
+      );
       const defaultService = getDefaultBookingServiceForBusiness(businessConfig);
       const finalService =
         detectedService !== "Bokning"
@@ -12341,7 +14625,7 @@ async function handleUnifiedBookingEngine(params: {
         normalizedConstraint: authoritativeNormalizedRequest.timeConstraint,
       });
       const slots = canonicalOffers.displaySlots;
-      const reply = formatSwedishTimeSlots(slots, requestedTime, language);
+      const reply = formatSwedishTimeSlots(slots, requestedTime, language, deterministicToneConfig);
 
       availabilitySearchContexts[sessionId] = {
         constraint: directAvailabilityConstraint,
@@ -12360,6 +14644,9 @@ async function handleUnifiedBookingEngine(params: {
         const exactOwnedSlot = exactIso
           ? canonicalOffers.ownedSlots.find((slot) => new Date(slot.start).getTime() === new Date(exactIso).getTime())
           : null;
+        const selectionIncludesAuthorization = Boolean(
+          exactOwnedSlot && hasExplicitSelectedSlotBookingAuthorization(text)
+        );
         await savePendingBooking(sessionId, platformName, {
           businessConfig,
           platform: platformName,
@@ -12382,13 +14669,26 @@ async function handleUnifiedBookingEngine(params: {
           durationMinutes,
           language: detectStrongLatestLanguage(text) || language,
           operation: "new_booking",
-          customerPhone: getWhatsAppConversationPhone(
-            platformName,
-            recipientUserId,
-            sessionId
-          ),
-          status: exactIso ? "awaiting_confirmation" : "awaiting_time_selection"
+          customerName: currentTurnBookingContact.name,
+          customerPhone: currentTurnBookingContact.phone,
+          contactPhoneSource: currentTurnBookingContact.phoneSource,
+          status: selectionIncludesAuthorization
+            ? "awaiting_contact"
+            : exactIso
+              ? "awaiting_confirmation"
+              : "awaiting_time_selection"
         });
+        if (selectionIncludesAuthorization) {
+          const authorizedPending = pendingBookings[sessionId];
+          await replyAndRecord(
+            formatMissingBookingDetailsMessage(
+              getFlowReplyLanguage(authorizedPending.language, language, text),
+              getMissingBookingContact(authorizedPending),
+              deterministicToneConfig
+            )
+          );
+          return true;
+        }
       } else {
         await clearPendingBooking(sessionId);
       }
@@ -12398,33 +14698,65 @@ async function handleUnifiedBookingEngine(params: {
     }
 
     if (pending?.status === "awaiting_time_selection") {
-      const selectedTime = inferRequestedTimeFromText(text);
-      const selectedOwnedSlot = selectOwnedOfferedSlot(text, pending);
+      const selectedTime = inferRequestedTimeFromText(text) || controlledUnderstandingCandidates.time || null;
+
+      console.log("[SlotSelectionTrace]", {
+        text,
+        selectedTime,
+        offeredSlots: Array.isArray(pending?.offeredSlots) ? pending.offeredSlots : [],
+        ownedOfferedSlots: Array.isArray(pending?.ownedOfferedSlots)
+          ? pending.ownedOfferedSlots.map((slot: any) => ({
+              start: slot?.start || null,
+              end: slot?.end || null
+            }))
+          : [],
+        currentOwnedSlotSelectionStart: currentOwnedSlotSelection?.start || null
+      });
+
+      const selectedOwnedSlot = currentOwnedSlotSelection || selectOwnedOfferedSlot(text, pending) || (
+        controlledUnderstandingCandidates.time
+          ? selectUniqueOwnedOfferedSlotByTime(controlledUnderstandingCandidates.time, pending)
+          : null
+      );
       const selectedIso = selectedOwnedSlot?.start || null;
+
+      console.log("[SlotSelectionResult]", {
+        text,
+        selectedTime,
+        selectedIso,
+        selectedOwnedSlotStart: selectedOwnedSlot?.start || null,
+        selectedOwnedSlotEnd: selectedOwnedSlot?.end || null
+      });
 
       if (selectedIso && selectedOwnedSlot) {
         const adapter = getCalendarAdapter(businessConfig);
-        const selectedDate = String(pending.selectedDate || selectedIso.slice(0, 10));
+        const selectedDisplaySlot = (Array.isArray(pending.offeredSlots) ? pending.offeredSlots : []).find(
+          (slot: string) => new Date(ensureStockholmOffset(String(parseSlotIso(slot) || ""))).getTime() ===
+            new Date(ensureStockholmOffset(selectedOwnedSlot.start)).getTime()
+        );
+        // The owned slot is authoritative for the selected booking date.
+        // Never let a stale pending.selectedDate redirect validation/recovery
+        // to a different calendar day.
+        const selectedDate =
+          getZonedSlotParts(
+            selectedIso,
+            String(businessConfig?.timezone || "Europe/Stockholm")
+          )?.date ||
+          selectedIso.slice(0, 10);
         const resolvedSelectedTime = getStockholmTimeFromIso(selectedIso) || selectedTime || undefined;
-        const validation = slotSatisfiesAvailabilityConstraint(
-          selectedIso,
-          pending.availabilityConstraint
-        )
-          ? await validateCanonicalExactSlot({
-              adapter,
-              owner: currentBookingSlotOwner,
-              businessConfig,
-              start: selectedIso,
-              service: String(pending.service || "Bokning"),
-              durationMinutes: Number(pending.durationMinutes || 60),
-              offeredSlot: selectedOwnedSlot
-            })
-          : {
-              free: false,
-              category: "constraint_mismatch" as const,
-              normalizedIso: null,
-              endIso: null
-            };
+        // A slot explicitly selected from this conversation's canonical owned
+        // offers is authoritative over the stale search-time exact constraint.
+        // The owned offer still receives full canonical validation for ownership,
+        // freshness, duration, service, working hours, calendar and pending conflicts.
+        const validation = await validateCanonicalExactSlot({
+          adapter,
+          owner: currentBookingSlotOwner,
+          businessConfig,
+          start: selectedIso,
+          service: String(pending.service || "Bokning"),
+          durationMinutes: Number(pending.durationMinutes || 60),
+          offeredSlot: selectedOwnedSlot
+        });
 
         if (!validation.free || !validation.normalizedIso || !validation.endIso) {
           const alternatives = await createCanonicalOfferedSlots({
@@ -12470,7 +14802,8 @@ async function handleUnifiedBookingEngine(params: {
             formatSlotNoLongerAvailable(
               getFlowReplyLanguage(pending.language, language, text),
               resolvedSelectedTime,
-              alternatives.displaySlots
+              alternatives.displaySlots,
+              deterministicToneConfig
             )
           );
           return true;
@@ -12479,6 +14812,28 @@ async function handleUnifiedBookingEngine(params: {
         pending.dateTime = validation.normalizedIso;
         pending.selectedSlotEnd = validation.endIso;
         pending.selectedDate = stockholmDateString(new Date(validation.normalizedIso));
+
+        // Once the customer chooses one of our canonical owned offers, that
+        // selected slot becomes the authoritative time constraint for the rest
+        // of the booking flow. This prevents the original unavailable exact
+        // request (for example 20:30) from rejecting a valid alternative such
+        // as 18:30 during confirmation or final validation.
+        pending.availabilityConstraint = {
+          ...(pending.availabilityConstraint || {}),
+          startDate: pending.selectedDate,
+          endDate: pending.selectedDate,
+          kind: "exact_time",
+          exactTime: getStockholmTimeFromIso(validation.normalizedIso) || resolvedSelectedTime,
+          minTime: undefined,
+          maxTime: undefined,
+          timeBoundary: undefined,
+          daypart: undefined,
+          rejectedTimes: [],
+          generatedFromLatestRequestAt: Date.now(),
+          timezone: String(businessConfig?.timezone || "Europe/Stockholm"),
+          selectFirstAvailable: undefined
+        };
+
         pending.language = getFlowReplyLanguage(pending.language, language, text);
         pending.offeredSlots = [];
         pending.ownedOfferedSlots = [{
@@ -12486,8 +14841,26 @@ async function handleUnifiedBookingEngine(params: {
           start: validation.normalizedIso,
           end: validation.endIso
         }];
-        pending.status = "awaiting_contact";
+        const selectionIncludesAuthorization = hasExplicitSelectedSlotBookingAuthorization(text) ||
+          controlledUnderstandingCandidates.confirmation === true;
+        pending.status = selectionIncludesAuthorization
+          ? "awaiting_contact"
+          : "awaiting_confirmation";
         await savePendingBooking(sessionId, platformName, pending);
+        emitBookingLanguageTrace({
+          stage: "slot_selected",
+          sessionId,
+          currentLanguage: language,
+          flowLanguage: getStoredFlowLanguage(sessionId),
+          pendingLanguage: pending.language || null,
+          presentationLanguage: pending.language || null,
+        });
+        recordBookingFunnelEvent(
+          "slot_selected",
+          "selected",
+          validation.normalizedIso,
+          { serviceName: pending.service },
+        );
 
         console.log("[BookingFlow]", {
           platform: platformName,
@@ -12502,23 +14875,58 @@ async function handleUnifiedBookingEngine(params: {
           serviceDuration: pending.durationMinutes,
           validatorResultCategory: validation.category,
           ownershipMatch: true,
-          finalHandledPath: "awaiting_contact"
+          finalHandledPath: selectionIncludesAuthorization
+            ? "selection_authorized_awaiting_contact"
+            : "awaiting_confirmation"
         });
-        await replyAndRecord(
-          formatMissingBookingDetailsMessage(
-            getFlowReplyLanguage(pending.language, language, text),
-            getMissingBookingContact(pending)
-          )
-        );
-        return true;
+        if (selectionIncludesAuthorization) {
+          const missingSelectionContact = getMissingBookingContact(pending);
+          if (missingSelectionContact.length > 0) {
+            emitBookingLanguageTrace({
+              stage: "missing_details_presentation",
+              sessionId,
+              currentLanguage: language,
+              flowLanguage: getStoredFlowLanguage(sessionId),
+              pendingLanguage: pending.language || null,
+              presentationLanguage: getFlowReplyLanguage(pending.language, language, text),
+            });
+            await replyAndRecord(
+              formatMissingBookingDetailsMessage(
+                getFlowReplyLanguage(pending.language, language, text),
+                missingSelectionContact,
+                deterministicToneConfig
+              )
+            );
+            return true;
+          }
+          // Current-turn authorization and contact are complete. Continue into
+          // the existing awaiting-contact final validation path below.
+        } else {
+          await replyAndRecord(
+            formatSwedishTimeSlots(
+              selectedDisplaySlot ? [selectedDisplaySlot] : [],
+              resolvedSelectedTime,
+              getFlowReplyLanguage(pending.language, language, text),
+              deterministicToneConfig
+            )
+          );
+          return true;
+        }
       }
     }
 
-    if (pending && isPendingSlotConfirmation(text, pending)) {
+    if (pending && pendingSlotConfirmationAtEntry) {
       const previousPendingState = String(pending.status || "awaiting_confirmation");
       const dateTime = String(pending.dateTime || "");
       const selectedTime = getStockholmTimeFromIso(dateTime);
-      const selectedDate = String(pending.selectedDate || dateTime.slice(0, 10));
+      // Confirmation must stay anchored to the actually selected slot,
+      // not to a stale date persisted by an earlier availability turn.
+      const selectedDate =
+        getZonedSlotParts(
+          dateTime,
+          String(businessConfig?.timezone || "Europe/Stockholm")
+        )?.date ||
+        dateTime.slice(0, 10);
       const selectedOwnedSlot = findOwnedOfferedSlot(pending, dateTime);
       const adapter = getCalendarAdapter(businessConfig);
       const validation = selectedOwnedSlot &&
@@ -12575,7 +14983,8 @@ async function handleUnifiedBookingEngine(params: {
           formatSlotNoLongerAvailable(
             getFlowReplyLanguage(pending.language, language, text),
             selectedTime,
-            alternatives.displaySlots
+            alternatives.displaySlots,
+            deterministicToneConfig
           )
         );
         return true;
@@ -12592,15 +15001,37 @@ async function handleUnifiedBookingEngine(params: {
       }];
       pending.status = "awaiting_contact";
       pending.language = getFlowReplyLanguage(pending.language, language, text);
-      if (!pending.customerPhone) {
-        pending.customerPhone = getWhatsAppConversationPhone(
-          platformName,
-          recipientUserId,
-          sessionId
-        );
-      }
+
+      // A slot-confirmation turn may also contain the customer's contact
+      // details. Consume them before deciding whether contact is still
+      // missing; otherwise this branch returns before the normal
+      // awaiting-contact handler gets a chance to parse the same turn.
+      const confirmationContact = extractNameAndPhone(text);
+      const resolvedConfirmationContact = resolveAuthoritativeContact({
+        channel: platformName,
+        storedName: pending.customerName,
+        storedPhone: pending.customerPhone,
+        storedPhoneSource: pending.contactPhoneSource as ContactPhoneSource | null,
+        currentName:
+          confirmationContact?.name ||
+          extractNameOnly(text) ||
+          controlledUnderstandingCandidates.name,
+        currentPhone:
+          confirmationContact?.phone ||
+          extractPhoneOnly(text) ||
+          controlledUnderstandingCandidates.phone,
+        senderPhone: authoritativeSenderPhone
+      });
+
+      pending.customerName = resolvedConfirmationContact.name;
+      pending.customerPhone = resolvedConfirmationContact.phone;
+      pending.contactPhoneSource = resolvedConfirmationContact.phoneSource;
 
       await savePendingBooking(sessionId, platformName, pending);
+
+      const missingConfirmationContact = getMissingBookingContact(pending);
+      const confirmationContactComplete = missingConfirmationContact.length === 0;
+
       logBookingContinuationState({
         platform: platformName,
         flowType: "new_booking",
@@ -12620,16 +15051,34 @@ async function handleUnifiedBookingEngine(params: {
         ),
         staleOffersCleared: true,
         recoverableStatePreserved: true,
-        finalHandledPath: "confirmed_selection_awaiting_contact",
+        finalHandledPath: confirmationContactComplete
+          ? "confirmed_selection_contact_complete"
+          : "confirmed_selection_awaiting_contact",
         failureCategory: null
       });
-      await replyAndRecord(
-        formatMissingBookingDetailsMessage(
-          getFlowReplyLanguage(pending.language, language, text),
-          getMissingBookingContact(pending)
-        )
-      );
-      return true;
+
+      if (!confirmationContactComplete) {
+        emitBookingLanguageTrace({
+          stage: "missing_details_presentation",
+          sessionId,
+          currentLanguage: language,
+          flowLanguage: getStoredFlowLanguage(sessionId),
+          pendingLanguage: pending.language || null,
+          presentationLanguage: getFlowReplyLanguage(pending.language, language, text),
+        });
+        await replyAndRecord(
+          formatMissingBookingDetailsMessage(
+            getFlowReplyLanguage(pending.language, language, text),
+            missingConfirmationContact,
+            deterministicToneConfig
+          )
+        );
+        return true;
+      }
+
+      // Contact was supplied together with the slot confirmation.
+      // Do not consume an extra customer turn; continue into the normal
+      // awaiting-contact finalization path below in this same request.
     }
 
     if (["awaiting_contact", "failed_recoverable"].includes(String(pending?.status || ""))) {
@@ -12652,12 +15101,14 @@ async function handleUnifiedBookingEngine(params: {
         storedName: pending.customerName,
         storedPhone: pending.customerPhone,
         storedPhoneSource: pending.contactPhoneSource as ContactPhoneSource | null,
-        currentName: confirmationTransition
-          ? null
-          : combinedContact?.name || extractNameOnly(text),
-        currentPhone: confirmationTransition
-          ? null
-          : combinedContact?.phone || extractPhoneOnly(text),
+        currentName:
+          combinedContact?.name ||
+          (confirmationTransition ? null : extractNameOnly(text)) ||
+          controlledUnderstandingCandidates.name,
+        currentPhone:
+          combinedContact?.phone ||
+          (confirmationTransition ? null : extractPhoneOnly(text)) ||
+          controlledUnderstandingCandidates.phone,
         senderPhone: authoritativeSenderPhone
       });
       pending.customerName = resolvedContact.name;
@@ -12714,10 +15165,19 @@ async function handleUnifiedBookingEngine(params: {
           finalHandledPath: "awaiting_missing_contact",
           failureCategory: null
         });
+        emitBookingLanguageTrace({
+          stage: "missing_details_presentation",
+          sessionId,
+          currentLanguage: language,
+          flowLanguage: getStoredFlowLanguage(sessionId),
+          pendingLanguage: pending.language || null,
+          presentationLanguage: getFlowReplyLanguage(pending.language, language, text),
+        });
         await replyAndRecord(
           formatMissingBookingDetailsMessage(
             getFlowReplyLanguage(pending.language, language, text),
-            missing
+            missing,
+            deterministicToneConfig
           )
         );
         return true;
@@ -12783,12 +15243,34 @@ async function handleUnifiedBookingEngine(params: {
 
       const adapter = getCalendarAdapter(businessConfig);
       const selectedTime = getStockholmTimeFromIso(pending.dateTime);
-      const selectedDate = String(
-        pending.selectedDate || String(pending.dateTime).slice(0, 10)
-      );
+      // Final booking validation must derive its date from the locked
+      // slot itself. pending.selectedDate is secondary state and may be stale.
+      const selectedDate =
+        getZonedSlotParts(
+          String(pending.dateTime || ""),
+          String(businessConfig?.timezone || "Europe/Stockholm")
+        )?.date ||
+        String(pending.dateTime || "").slice(0, 10);
 
       const lockedIso = String(pending.dateTime || "").trim();
       let selectedOwnedSlot = findOwnedOfferedSlot(pending, lockedIso);
+
+      console.log("[FinalBookingValidationTrace]", {
+        sessionId,
+        lockedIso,
+        selectedDate,
+        selectedTime,
+        pendingSelectedDate: pending.selectedDate || null,
+        pendingSelectedSlotEnd: pending.selectedSlotEnd || null,
+        pendingStatus: pending.status || null,
+        service: pending.service || null,
+        durationMinutes: Number(pending.durationMinutes || 30),
+        ownedSlotFound: Boolean(selectedOwnedSlot),
+        ownedSlotStart: selectedOwnedSlot?.start || null,
+        ownedSlotEnd: selectedOwnedSlot?.end || null,
+        ownedSlotGeneratedAt: selectedOwnedSlot?.generatedAt || null,
+        availabilityConstraint: pending.availabilityConstraint || null
+      });
       if (!selectedOwnedSlot && !pending.availabilityConstraint) {
         const migrationValidation = await validateCanonicalExactSlot({
           adapter,
@@ -12838,6 +15320,21 @@ async function handleUnifiedBookingEngine(params: {
             endIso: null
           };
       const finalIso = exactCheck.free ? exactCheck.normalizedIso : null;
+
+      console.log("[FinalBookingValidationResult]", {
+        sessionId,
+        lockedIso,
+        selectedDate,
+        selectedTime,
+        free: exactCheck.free,
+        category: exactCheck.category,
+        normalizedIso: exactCheck.normalizedIso,
+        endIso: exactCheck.endIso,
+        ownedSlotFound: Boolean(selectedOwnedSlot),
+        ownedSlotStart: selectedOwnedSlot?.start || null,
+        ownedSlotEnd: selectedOwnedSlot?.end || null
+      });
+
       logBookingContinuationState({
         platform: platformName,
         flowType: "new_booking",
@@ -12915,7 +15412,8 @@ async function handleUnifiedBookingEngine(params: {
           formatSlotNoLongerAvailable(
             getFlowReplyLanguage(pending.language, language, text),
             selectedTime,
-            alternatives.displaySlots
+            alternatives.displaySlots,
+            deterministicToneConfig
           )
         );
         return true;
@@ -13055,6 +15553,9 @@ async function handleUnifiedBookingEngine(params: {
       }
 
       if (!result?.success) {
+        recordDeterministicBookingFailure(
+          String(result?.code || "calendar_create_failed").toLowerCase(),
+        );
         await settleAtomicOperation(bookingOperationClaim, "failed");
         const conflict = ["SLOT_CONFLICT", "SLOT_NO_LONGER_AVAILABLE"].includes(
           String(result?.code || "")
@@ -13085,7 +15586,8 @@ async function handleUnifiedBookingEngine(params: {
             formatSlotNoLongerAvailable(
               getFlowReplyLanguage(pending.language, language, text),
               selectedTime,
-              alternatives.displaySlots
+              alternatives.displaySlots,
+              deterministicToneConfig
             )
           );
           return true;
@@ -13215,6 +15717,15 @@ async function handleUnifiedBookingEngine(params: {
       const rollbackInsertedCalendarEvent = () => rollbackActiveBookingMutation!();
 
       if (!calendarVerified) {
+        recordDeterministicBookingFailure(
+          !calendarIdMatches
+            ? "calendar_id_mismatch"
+            : !calendarStartMatches || !calendarEndMatches
+              ? "calendar_time_mismatch"
+              : !calendarOwnerMatches
+                ? "calendar_owner_mismatch"
+                : "calendar_event_not_verified",
+        );
         const recovery = await recoverBookingTransaction(pending, "calendar_verification", rollbackInsertedCalendarEvent);
         const calendarRollbackResult = recovery.rollbackSucceeded;
         await settleAtomicOperation(bookingOperationClaim, "failed");
@@ -13310,6 +15821,7 @@ async function handleUnifiedBookingEngine(params: {
         const databaseFailurePath = databaseInserted
           ? "database_verification_failed"
           : "database_insert_failed";
+        recordDeterministicBookingFailure(databaseFailurePath);
         if (databaseRow?.id && supabase) {
           await supabase
             .from("appointments")
@@ -13369,6 +15881,7 @@ async function handleUnifiedBookingEngine(params: {
         "completed"
       );
       if (!bookingSettlementRecorded) {
+        recordDeterministicBookingFailure("idempotency_settlement_failed");
         if (databaseRow?.id && supabase) {
           await supabase
             .from("appointments")
@@ -13431,26 +15944,45 @@ async function handleUnifiedBookingEngine(params: {
         throw new Error("Verified booking result rejected");
       }
 
+      const appointmentCreatedAtMs = Date.parse(String(databaseRow.created_at || ""));
+      const inferredTestExecutionContext = await resolveInferredTestExecutionContext({
+        scope: {
+          businessId: currentBookingSlotOwner.businessId,
+          channel: currentBookingSlotOwner.platform,
+          ownerId: currentBookingSlotOwner.userId,
+        },
+        store: getTestBridgeExecutionStore(),
+        appointmentCreatedAtMs,
+        lookupAtMs: getTestBridgeNowMs(),
+        maxAgeMs: getTestExecutionCorrelationMaxAgeMs(),
+      });
+      if (inferredTestExecutionContext) {
+        await attachTestExecutionResourceProvenance({
+          context: inferredTestExecutionContext,
+          store: getTestExecutionResourceProvenanceStore(),
+          resourceType: "appointment",
+          resourceId: databaseRow.id,
+          businessId: databaseRow.business_id,
+          channel: currentBookingSlotOwner.platform,
+        });
+      }
+
       const persistedCreatedAt = String(databaseRow.created_at || "").trim();
       const analyticsOccurredAt = Number.isFinite(Date.parse(persistedCreatedAt))
         ? new Date(persistedCreatedAt).toISOString()
         : new Date().toISOString();
-      void analytics.record({
-        business_id: Number(databaseRow.business_id),
-        event_name: "booking_created",
-        event_category: "booking",
-        occurred_at: analyticsOccurredAt,
-        schema_version: 1,
+      void recordBookingOutcome({
+        businessId: Number(databaseRow.business_id),
+        channel: currentBookingSlotOwner.platform,
         source: "unified_booking_engine",
-        actor: "ai",
-        outcome: "success",
-        idempotency_key: `booking-created:v1:${databaseRow.id}`,
-        booking_id: Number(databaseRow.id),
-        platform: currentBookingSlotOwner.platform,
-        channel: "messaging",
-        service_name_snapshot: String(databaseRow.service),
+        sourceEventId: databaseRow.id,
+        sessionId,
+        occurredAt: analyticsOccurredAt,
+        bookingId: Number(databaseRow.id),
+        serviceName: String(databaseRow.service),
         language: getFlowReplyLanguage(pending.language, language, text),
-      }).catch(() => undefined);
+        succeeded: true,
+      });
 
       if (platformName === "telegram") {
         console.log("[TelegramBookingOwnership]", {
@@ -13470,7 +16002,8 @@ async function handleUnifiedBookingEngine(params: {
         pending.customerName,
         pending.service,
         Number(pending.durationMinutes || 30),
-        finalIso
+        finalIso,
+        bookingOperationResult,
       );
       logBookingContinuationState({
         platform: platformName,
@@ -13496,12 +16029,21 @@ async function handleUnifiedBookingEngine(params: {
 
       verifiedBookingReplyAuthorizations[sessionId] = bookingOperationResult;
       try {
+        emitBookingLanguageTrace({
+          stage: "verified_confirmation_presentation",
+          sessionId,
+          currentLanguage: language,
+          flowLanguage: getStoredFlowLanguage(sessionId),
+          pendingLanguage: pending.language || null,
+          presentationLanguage: getFlowReplyLanguage(pending.language, language, text),
+        });
         await replyAndRecord(
           formatBookingSavedMessage(
             getFlowReplyLanguage(pending.language, language, text),
             bookingOperationResult.customerName || "",
             bookingOperationResult.serviceName,
-            bookingOperationResult.startTime
+            bookingOperationResult.startTime,
+            deterministicToneConfig
           )
         );
       } finally {
@@ -13530,7 +16072,8 @@ async function handleUnifiedBookingEngine(params: {
             formatSwedishTimeSlots(
               Array.isArray(pending.offeredSlots) ? pending.offeredSlots : [],
               undefined,
-              getFlowReplyLanguage(pending.language, language, text)
+              getFlowReplyLanguage(pending.language, language, text),
+              deterministicToneConfig
             )
           );
           return true;
@@ -13547,7 +16090,8 @@ async function handleUnifiedBookingEngine(params: {
         formatSwedishTimeSlots(
           Array.isArray(pending.offeredSlots) ? pending.offeredSlots : [],
           undefined,
-          getFlowReplyLanguage(pending.language, language, text)
+          getFlowReplyLanguage(pending.language, language, text),
+          deterministicToneConfig
         )
       );
       return true;
@@ -13558,6 +16102,7 @@ async function handleUnifiedBookingEngine(params: {
           Array.isArray(pending.offeredSlots) ? pending.offeredSlots : [],
           getStockholmTimeFromIso(String(pending.dateTime || "")) || undefined,
           getFlowReplyLanguage(pending.language, language, text),
+          deterministicToneConfig,
         )
       );
       return true;
@@ -13587,6 +16132,7 @@ async function handleUnifiedBookingEngine(params: {
       bookingFailureStage === "database_verification" ? "database_verification_failed" :
       bookingFailureStage === "idempotency_settlement" ? "idempotency_settlement_failed" :
       "calendar_unavailable";
+    recordDeterministicBookingFailure(recoveryCategory);
     await replyAndRecord(formatDeterministicRecovery(recoveryCategory, languageAfterError));
     return true;
   }
@@ -13774,7 +16320,11 @@ async function sendTelegramPreferredReply(params: {
   return { sent, delivery: sent ? "text" : "none" };
 }
 
-async function processTelegramUpdate(update: any, config: any, platform: string = "telegram-polling") {
+async function processTelegramUpdate(
+  update: any,
+  config: any,
+  platform: string = "telegram-polling",
+) {
   const telegramToken = normalizeTelegramBotToken(config?.telegramToken);
   const updateId = String(update?.update_id ?? "").trim();
   if (!telegramToken || !updateId || !update?.message) return;
@@ -13835,7 +16385,11 @@ async function processTelegramUpdate(update: any, config: any, platform: string 
   });
 }
 
-async function processTelegramUpdateClaimed(update: any, config: any, platform: string = "telegram-polling") {
+async function processTelegramUpdateClaimed(
+  update: any,
+  config: any,
+  platform: string = "telegram-polling",
+) {
   const telegramToken = normalizeTelegramBotToken(config?.telegramToken);
   if (!telegramToken) return;
 
@@ -13885,10 +16439,12 @@ async function processTelegramUpdateClaimed(update: any, config: any, platform: 
     if (text || voice) {
       recordAcceptedCustomerMessage({
         businessId,
+        sessionId: telegramSessionId,
         platform: "telegram",
         source: platform === "telegram-webhook"
           ? "telegram_webhook"
           : "telegram_polling",
+        providerScope: telegramTokenFingerprint(telegramToken),
         messageId: update.update_id,
         occurredAt: normalizeAcceptedMessageTimestamp(
           update.message.date,
@@ -14025,6 +16581,17 @@ async function processTelegramUpdateClaimed(update: any, config: any, platform: 
     );
 
     if (textForFlow) {
+      emitBookingLanguageTrace({
+        stage: "telegram_incoming",
+        sessionId: telegramSessionId,
+        currentLanguage: inboundUsageLanguage,
+        flowLanguage: getStoredFlowLanguage(telegramSessionId),
+        pendingLanguage: pendingBookings[telegramSessionId]?.language || null,
+        availabilityLanguage: availabilitySearchContexts[telegramSessionId]?.language || null,
+        detectedLanguage: detectStrongLatestLanguage(textForFlow),
+        explicitSwitch: isExplicitLanguageSwitch(textForFlow),
+        inputFingerprint: safeLogFingerprint(textForFlow),
+      });
       const unifiedHandled = await handleUnifiedBookingEngine({
         sessionId: telegramSessionId,
         platformName: "telegram",
@@ -14043,7 +16610,8 @@ async function processTelegramUpdateClaimed(update: any, config: any, platform: 
           turnSequence: telegramTurnSequence,
         })).sent,
         postProcessPlatform: platform,
-        inputMode: voice ? "voice" : "text"
+        inputMode: voice ? "voice" : "text",
+        shadowEligibleCustomerTurn: !voice,
       });
       const telegramPending = pendingBookings[telegramSessionId];
       const telegramCompleted = getRecentCompletedBooking(telegramSessionId);
@@ -14111,6 +16679,7 @@ Use the business-specific system prompt from the database as your main source of
 You must act only as the receptionist for: ${businessName}.
 Never mention Laser Luxury unless the current business name is Laser Luxury.
 Never mention services, prices, or treatments that are not included in this business-specific system prompt.
+When answering follow-up questions about services, do not automatically repeat a promotional offer, sales CTA, free offer, or invitation that was already given earlier in the conversation unless the customer explicitly asks for it again.
 If the customer asks about services and the prompt does not include enough information, politely ask what service they are interested in or say you can help with booking and general guidance.
 Before confirming any booking, you must check availability.
 If the requested service is Consultation/Konsultation/مشاوره, its duration is fixed at 30 minutes. Never ask the customer how long it should take.
@@ -14129,7 +16698,10 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
     });
     const currentDateContext = `\nCrucial Context: The client's current local date and time in Sweden (Europe/Stockholm) is dynamically: ${swedenDate}. Any reference by the user to 'idag', 'imorgon', or days of the week must be evaluated strictly using this dynamic date as the anchor. Note that for YYYY-MM-DD tools, June is '06' (index 5 in Javascript Date).`;
     let finalSystemInstruction =
-  (config.systemPrompt || activeConfig.systemPrompt || "") +
+  buildBusinessPromptWithTone(
+    config.systemPrompt || activeConfig.systemPrompt || "",
+    config.toneConfig ?? activeConfig.toneConfig,
+  ) +
   currentDateContext +
   constraint +
   languageEngine +
@@ -14174,15 +16746,47 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
         let adapterRes;
         const args = JSON.parse(call.function.arguments);
         if (call.function.name === "checkSlots" && args) {
-            adapterRes = await adapter.checkSlots(args.startDate, args.endDate, args.durationMinutes, args.requestedTime || inferRequestedTimeFromText(textForFlow));
-            if (adapterRes.available_slots_string) {
-                const slotsArray = adapterRes.available_slots_string
-                    .split('\n')
-                    .filter((s: string) => s.trim().length > 0 && !s.includes('No available slots'));
-                
-                const replyMessage = formatSwedishTimeSlots(slotsArray, args.requestedTime || inferRequestedTimeFromText(textForFlow), getLockedReplyLanguage(telegramSessionId, textForFlow));
-                return { TERMINATE_EARLY: true, replyMessage };
-            }
+          const requestedTime =
+            args.requestedTime || inferRequestedTimeFromText(textForFlow);
+
+          const service = normalizeBookingService(
+            args.service || inferServiceFromRecentContext(textForFlow, history),
+            getDefaultBookingServiceForBusiness(config) || "Bokning"
+          );
+
+          const durationMinutes =
+            getDefaultBookingDurationForService(service) ||
+            Number(args.durationMinutes || inferBookingDurationFromContext(textForFlow, history));
+
+          const owner: BookingSlotOwner = {
+            businessId: String(getBusinessIdFromConfig(config) || ""),
+            platform: "telegram",
+            userId: normalizePlatformUserId("telegram", chatId.toString()),
+            sessionId: telegramSessionId
+          };
+
+          const offers = await createCanonicalOfferedSlots({
+            adapter,
+            owner,
+            businessConfig: config,
+            startDate: args.startDate,
+            endDate: args.endDate || args.startDate,
+            service,
+            durationMinutes,
+            requestedTime
+          });
+
+          if (offers.displaySlots.length > 0) {
+            const replyMessage = formatSwedishTimeSlots(
+              offers.displaySlots,
+              requestedTime,
+              getLockedReplyLanguage(telegramSessionId, textForFlow),
+              config.toneConfig
+            );
+            return { TERMINATE_EARLY: true, replyMessage };
+          }
+
+          adapterRes = { available_slots_string: "" };
         }
         else if (call.function.name === "findCustomerAppointments" && args) {
           adapterRes = await findCustomerAppointments(adapter, { ...args, lookupMode: args.lookupMode || detectAppointmentLookupMode(textForFlow), lookupText: textForFlow, lookupPath: "telegram_gemini_tool" }, chatId.toString(), "telegram", config);
@@ -14228,7 +16832,8 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
             TERMINATE_EARLY: true,
             replyMessage: formatAuthoritativeBookingContinuation(
               telegramSessionId,
-              getLockedReplyLanguage(telegramSessionId, textForFlow)
+              getLockedReplyLanguage(telegramSessionId, textForFlow),
+              config.toneConfig
             )
           };
         }
@@ -14276,6 +16881,12 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       telegramSessionId,
       String(chatResponse.text || "").trim() ||
         getErrorMessageByLanguage(getLockedReplyLanguage(telegramSessionId, textForFlow)),
+      getLockedReplyLanguage(telegramSessionId, textForFlow),
+      config.toneConfig
+    );
+    textResponse = guardGeneralAiReplyRepetition(
+      telegramSessionId,
+      textResponse,
       getLockedReplyLanguage(telegramSessionId, textForFlow)
     );
     textResponse = await settleHumanHandoffReply({
@@ -14499,16 +17110,16 @@ function hasStrongLanguageEvidence(language: string, text?: string): boolean {
   // also contains a time like 16:30. Short replies like "yes", "ok", "tack", "merci"
   // are handled elsewhere and must not switch the conversation language.
   if (language === "en") {
-    return /\b(hi|hello|hey|i\s+want|i\s+would\s+like|i\s+can|can\s+i|could\s+i|how\s+long|duration|appointment|consultation|book|booking|available|next\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday|week)|my\s+name\s+is|my\s+phone\s+is|pedicure|treatment|quick\s+refresh)\b/i.test(lower);
+    return /\b(hi|hello|hey|i\s+want|i\s+would\s+like|i\s+can|can\s+i|could\s+i|do\s+you\s+have|anything\s+(?:after|before)|any\s+(?:available\s+)?time|how\s+long|duration|appointment|consultation|book|booking|available|availability|next\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday|week)|my\s+name\s+is|my\s+phone\s+is|pedicure|treatment|quick\s+refresh)\b/i.test(lower);
   }
   if (language === "sv") {
-    return /\b(hej|hejsan|hallå|kan\s+du|kan\s+jag|har\s+jag|hos\s+er|mår\s+du|vad\s+heter\s+du|vem\s+är\s+du|jag\s+vill|jag\s+ska|jag\s+kan|jag\s+behöver|hur\s+lång|hur\s+långt|hur\s+länge|ändra\s+min\s+tid|flytta\s+min\s+tid|boka|bokning|ledig|behandling|konsultation|nästa\s+(måndag|tisdag|onsdag|torsdag|fredag|lördag|söndag)|mitt\s+namn|mitt\s+nummer|mobilnummer)\b/i.test(lower);
+    return /\b(hej|hejsan|hallå|kan\s+du|kan\s+jag|har\s+jag|har\s+ni|hos\s+er|mår\s+du|vad\s+heter\s+du|vem\s+är\s+du|jag\s+vill|jag\s+ska|jag\s+kan|jag\s+behöver|hur\s+lång|hur\s+långt|hur\s+länge|ändra\s+min\s+tid|flytta\s+min\s+tid|boka|bokning|lediga?|tid(?:er)?|behandling|konsultation|nästa\s+(måndag|tisdag|onsdag|torsdag|fredag|lördag|söndag)|mitt\s+namn|mitt\s+nummer|mobilnummer)\b/i.test(lower);
   }
   if (language === "de") {
     return /\b(hallo|guten|ich\s+möchte|ich\s+moechte|ich\s+will|termin|buchen|buchung|behandlung|ganzkörper|ganzkoerper|mein\s+name|meine\s+nummer|telefonnummer|nächsten|naechsten)\b/i.test(lower);
   }
   if (language === "es") {
-    return /\b(hola|quiero|me\s+gustaría|me\s+gustaria|cita|reservar|reserva|tratamiento|mi\s+nombre|mi\s+teléfono|mi\s+telefono|la\s+próxima|la\s+proxima)\b/i.test(lower);
+    return /\b(hola|quiero|quisiera|me\s+gustaría|me\s+gustaria|tienen|tiene|hay|hora|horas|disponible|disponibles|cita|reservar|reserva|tratamiento|después|despues|antes|agosto|lunes|martes|miércoles|miercoles|jueves|viernes|sábado|sabado|domingo|mi\s+nombre|mi\s+teléfono|mi\s+telefono|la\s+próxima|la\s+proxima)\b/i.test(lower);
   }
   if (language === "fa") {
     return /[پچژگۀک‌ی]/u.test(raw) ||
@@ -14571,16 +17182,16 @@ function detectStrongLatestLanguage(text?: string): string | null {
   if (hasStrongLatinPersianEvidence(raw)) return "fa";
 
   if (
-    /\b(hej+|hejsan|hallå|kan du|kan jag|har jag|hos er|mår du|vad heter du|vem är du|jag vill|jag ska|jag behöver|hur lång|hur långt|hur länge|ändra min tid|flytta min tid|måndag|tisdag|onsdag|torsdag|fredag|lördag|söndag|klockan|vilken tid|konsultation|boka|bokning|ledig|passar|mitt namn|mitt nummer|mobilnummer)\b/i.test(raw)
+    /\b(hej+|hejsan|hallå|kan du|kan jag|har jag|har ni|hos er|mår du|vad heter du|vem är du|jag vill|jag ska|jag behöver|hur lång|hur långt|hur länge|ändra min tid|flytta min tid|måndag|tisdag|onsdag|torsdag|fredag|lördag|söndag|klockan|vilken tid|konsultation|boka|bokning|lediga?|tid(?:er)?|passar|mitt namn|mitt nummer|mobilnummer)\b/i.test(raw)
   ) return "sv";
 
   if (
     /\b(man|mikham|mikhastam|mitonam|mitoonam|baraye|vaght|moshavere|moshavereh|cheghadr tool|esmam|esme man|shomare|shomaram|khobe|bale|lotfan|cancel konam|laghv konam|2shanbe|3shanbe|4shanbe|5shanbe)\b/i.test(raw)
   ) return "fa";
 
-  if (/\b(hello|hi there|what do you do|what services|why did you change (?:the )?language|i want|can i|how long|duration|monday|tuesday|wednesday|appointment|consultation|book|booking|my name)\b/i.test(raw)) return "en";
+  if (/\b(hello|hi there|what do you do|what services|why did you change (?:the )?language|i want|can i|do you have|how long|duration|monday|tuesday|wednesday|thursday|friday|saturday|sunday|appointments?|available|availability|consultation|book|booking|my name)\b/i.test(raw)) return "en";
   if (/\b(ich|möchte|termin|montag|dienstag|beratung)\b/i.test(raw)) return "de";
-  if (/\b(quiero|cita|lunes|martes|consulta)\b/i.test(raw)) return "es";
+  if (/\b(hola|quiero|quisiera|tienen|tiene|hay|hora|horas|disponible|disponibles|cita|reservar|reserva|consulta|tratamiento|después|despues|antes|agosto|lunes|martes|miércoles|miercoles|jueves|viernes|sábado|sabado|domingo)\b/i.test(raw)) return "es";
 
   return null;
 }
@@ -14647,7 +17258,11 @@ function lockConversationFlowLanguage(
   const normalized = ["sv", "fa", "de", "es", "ar", "en"].includes(language) ? language : "en";
   const existing = conversationFlowLanguages[chatId];
   conversationFlowLanguages[chatId] = {
-    language: existing?.language || normalized,
+    // An explicit flow lock is authoritative for the active flow.
+    // Keeping existing.language here can preserve a stale business/default
+    // language (for example sv) after the customer has already switched
+    // into a German or Spanish booking flow.
+    language: normalized,
     flowType,
     createdAt: existing?.createdAt || Date.now(),
     updatedAt: Date.now()
@@ -14660,9 +17275,34 @@ function clearConversationFlowLanguage(chatId: string) {
 }
 
 function getFlowReplyLanguage(storedLanguage: string | undefined | null, currentLanguage: string, latestText?: string): string {
-  const explicitSwitch = isExplicitLanguageSwitch(latestText);
-  if (explicitSwitch) return explicitSwitch;
-  return storedLanguage || currentLanguage || "en";
+  return resolveActiveBookingLanguage({
+    latestText,
+    pendingLanguage: storedLanguage,
+    currentLanguage,
+  });
+}
+
+function normalizeSupportedConversationLanguage(language?: string | null): string | null {
+  const normalized = String(language || "").trim().toLowerCase();
+  return ["sv", "fa", "de", "es", "ar", "en"].includes(normalized)
+    ? normalized
+    : null;
+}
+
+function resolveActiveBookingLanguage(params: {
+  latestText?: string;
+  pendingLanguage?: string | null;
+  currentLanguage?: string | null;
+  availabilityLanguage?: string | null;
+  storedFallbackLanguage?: string | null;
+}): string {
+  const explicitSwitch = isExplicitLanguageSwitch(params.latestText);
+  return normalizeSupportedConversationLanguage(explicitSwitch) ||
+    normalizeSupportedConversationLanguage(params.pendingLanguage) ||
+    normalizeSupportedConversationLanguage(params.currentLanguage) ||
+    normalizeSupportedConversationLanguage(params.availabilityLanguage) ||
+    normalizeSupportedConversationLanguage(params.storedFallbackLanguage) ||
+    "en";
 }
 
 function getConversationLanguage(chatId: string, latestText?: string, businessConfig?: any): string {
@@ -14688,7 +17328,15 @@ function getConversationLanguage(chatId: string, latestText?: string, businessCo
           : /^(?:ar|arabic|العربية)/u.test(businessLanguageRaw) ? "ar"
             : /^(?:en|english)/.test(businessLanguageRaw) ? "en"
               : null;
-  const detected = strongLatest || businessLanguage || (text ? detectUserLanguage(text) : null) || "en";
+  // The customer's actual message must be evaluated before the business default.
+  // Business language is only a fallback when the latest message provides no usable
+  // language evidence. Otherwise a Spanish/Swedish/etc. business default can override
+  // a real Persian, Arabic, German, English, or other supported customer message.
+  const detected =
+    strongLatest ||
+    (text ? detectUserLanguage(text) : null) ||
+    businessLanguage ||
+    "en";
 
   if (
     strongLatest &&
@@ -14753,6 +17401,7 @@ function buildLanguageLockInstruction(language: string): string {
 ACTIVE CONVERSATION LANGUAGE: ${name} (${language}).
 You MUST write the next customer-facing reply only in ${name}.
 Do not answer in Swedish unless ACTIVE CONVERSATION LANGUAGE is Swedish.
+Do not announce, mention, or acknowledge the conversation language unless the customer explicitly asks about language or requests a language change. Answer the customer's actual request directly.
 Do not let the business location, calendar locale, service names, or previous messages override this.
 Short confirmations, names, phone numbers, dates, and times never change this language.
 Only a clear, meaningful full customer request in another supported language may change it.
@@ -14960,6 +17609,921 @@ async function loadBusinessConfigById(businessId: any) {
   return { ...activeConfig };
 }
 
+const TEST_BRIDGE_SCHEMA_VERSION = "odinlink-test-bridge-v1";
+
+function isTestBridgeEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.ODINLINK_TEST_BRIDGE_ENABLED?.trim().toLowerCase() === "true";
+}
+
+function isValidTestBridgeDate(value: unknown): value is string {
+  const text = String(value || "").trim();
+  const match = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return false;
+  const date = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
+  return date.getUTCFullYear() === Number(match[1]) &&
+    date.getUTCMonth() === Number(match[2]) - 1 &&
+    date.getUTCDate() === Number(match[3]);
+}
+
+function testBridgeUnavailable(_req: express.Request, res: express.Response): express.Response {
+  return res.sendStatus(404);
+}
+
+async function verifyTestBridgeAvailability(body: any): Promise<{
+  httpStatus: number;
+  payload: any;
+}> {
+  const operation = String(body?.operation || "").trim();
+  const businessId = String(body?.businessId || "").trim();
+  const date = String(body?.date || "").trim();
+  const time = String(body?.time || "").trim();
+  const durationMinutes = Number(body?.durationMinutes);
+  const service = String(body?.service || "").trim();
+  const requestedChannel = String(body?.channel || "").trim();
+  const channel = normalizePlatformName(requestedChannel);
+  const userId = normalizePlatformUserId(channel, String(body?.userId || ""));
+
+  if (
+    operation !== "availability.verify" ||
+    !businessId || businessId.length > 200 ||
+    !isValidTestBridgeDate(date) ||
+    !/^([01]\d|2[0-3]):[0-5]\d$/.test(time) ||
+    !Number.isInteger(durationMinutes) || durationMinutes <= 0 || durationMinutes > 1440 ||
+    !["telegram", "whatsapp", "instagram", "messenger"].includes(channel) ||
+    !userId || requestedChannel.length > 40 || userId.length > 200 || service.length > 500
+  ) {
+    return {
+      httpStatus: 400,
+      payload: {
+        schemaVersion: TEST_BRIDGE_SCHEMA_VERSION,
+        operation: "availability.verify",
+        status: "invalid_request",
+        category: "invalid_request",
+      },
+    };
+  }
+
+  const loadConfig = priority1hTestDependencies?.loadBusinessConfigById || loadBusinessConfigById;
+  let businessConfig: any;
+  try {
+    businessConfig = await loadConfig(businessId);
+  } catch {
+    businessConfig = null;
+  }
+  if (!businessConfig || String(getBusinessIdFromConfig(businessConfig) || "") !== businessId) {
+    return {
+      httpStatus: 404,
+      payload: {
+        schemaVersion: TEST_BRIDGE_SCHEMA_VERSION,
+        operation: "availability.verify",
+        status: "not_found",
+        category: "business_not_found",
+      },
+    };
+  }
+
+  const timezone = String(businessConfig.timezone || "Europe/Stockholm");
+  try {
+    new Intl.DateTimeFormat("en", { timeZone: timezone }).format();
+  } catch {
+    return {
+      httpStatus: 503,
+      payload: {
+        schemaVersion: TEST_BRIDGE_SCHEMA_VERSION,
+        operation: "availability.verify",
+        status: "inconclusive",
+        category: "availability_configuration_failure",
+      },
+    };
+  }
+
+  const owner: BookingSlotOwner = {
+    businessId,
+    platform: channel,
+    userId,
+    sessionId: `test-bridge:${businessId}:${channel}:${userId}`,
+  };
+
+  try {
+    const adapter = getCalendarAdapter(businessConfig);
+    if (adapter instanceof MockCalendarAdapter) {
+      throw new Error("Canonical calendar provider is not configured");
+    }
+    const snapshot = await loadCanonicalAvailabilitySnapshot({
+      adapter,
+      owner,
+      businessConfig,
+      startDate: date,
+      endDate: date,
+      throwOnCalendarReadFailure: true,
+    });
+    const validation = await validateCanonicalExactSlot({
+      adapter,
+      owner,
+      businessConfig,
+      start: zonedLocalIso(date, `${time}:00`, timezone),
+      service,
+      durationMinutes,
+      calendarEvents: snapshot.calendarEvents,
+      pendingEvents: snapshot.pendingEvents,
+      nowMs: getTestBridgeNowMs(),
+    });
+
+    return {
+      httpStatus: 200,
+      payload: {
+        schemaVersion: TEST_BRIDGE_SCHEMA_VERSION,
+        operation: "availability.verify",
+        status: "verified",
+        businessId,
+        requested: { date, time, durationMinutes, timezone },
+        result: {
+          available: validation.free,
+          category: validation.category,
+          normalizedStart: validation.normalizedIso,
+          normalizedEnd: validation.endIso,
+        },
+        evidence: {
+          calendarReadSucceeded: true,
+          calendarEventCount: snapshot.calendarEventCount,
+          pendingHoldCount: snapshot.pendingHoldCount,
+          source: "canonical-availability",
+        },
+        safety: {
+          readOnly: true,
+          calendarModified: false,
+          bookingModified: false,
+        },
+      },
+    };
+  } catch {
+    return {
+      httpStatus: 503,
+      payload: {
+        schemaVersion: TEST_BRIDGE_SCHEMA_VERSION,
+        operation: "availability.verify",
+        status: "inconclusive",
+        category: "calendar_read_failure",
+        businessId,
+        requested: { date, time, durationMinutes, timezone },
+        evidence: {
+          calendarReadSucceeded: false,
+          source: "canonical-availability",
+        },
+        safety: {
+          readOnly: true,
+          calendarModified: false,
+          bookingModified: false,
+        },
+      },
+    };
+  }
+}
+
+type TestBridgeEarliestConstraints = {
+  minTime?: string;
+  maxTime?: string;
+  afterTime?: string;
+  beforeTime?: string;
+  daypart?: "morning" | "afternoon" | "evening";
+  excludedTimes?: string[];
+};
+
+function parseTestBridgeEarliestConstraints(value: unknown): {
+  valid: boolean;
+  constraints: TestBridgeEarliestConstraints;
+  options: SlotSearchOptions;
+} {
+  if (value === undefined) return { valid: true, constraints: {}, options: { selectFirstAvailable: true } };
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { valid: false, constraints: {}, options: {} };
+  }
+  const input = value as Record<string, unknown>;
+  const allowedKeys = new Set(["minTime", "maxTime", "afterTime", "beforeTime", "daypart", "excludedTimes"]);
+  if (Object.keys(input).some(key => !allowedKeys.has(key))) {
+    return { valid: false, constraints: {}, options: {} };
+  }
+  const isClock = (clock: unknown): clock is string =>
+    typeof clock === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(clock);
+  for (const key of ["minTime", "maxTime", "afterTime", "beforeTime"] as const) {
+    if (input[key] !== undefined && !isClock(input[key])) {
+      return { valid: false, constraints: {}, options: {} };
+    }
+  }
+  if (input.afterTime !== undefined && input.beforeTime !== undefined) {
+    return { valid: false, constraints: {}, options: {} };
+  }
+  if (
+    input.daypart !== undefined &&
+    !["morning", "afternoon", "evening"].includes(String(input.daypart))
+  ) {
+    return { valid: false, constraints: {}, options: {} };
+  }
+  if (
+    input.excludedTimes !== undefined &&
+    (!Array.isArray(input.excludedTimes) || input.excludedTimes.length > 200 || input.excludedTimes.some(time => !isClock(time)))
+  ) {
+    return { valid: false, constraints: {}, options: {} };
+  }
+
+  const constraints: TestBridgeEarliestConstraints = {
+    ...(input.minTime !== undefined ? { minTime: input.minTime as string } : {}),
+    ...(input.maxTime !== undefined ? { maxTime: input.maxTime as string } : {}),
+    ...(input.afterTime !== undefined ? { afterTime: input.afterTime as string } : {}),
+    ...(input.beforeTime !== undefined ? { beforeTime: input.beforeTime as string } : {}),
+    ...(input.daypart !== undefined ? { daypart: input.daypart as TestBridgeEarliestConstraints["daypart"] } : {}),
+    ...(input.excludedTimes !== undefined ? { excludedTimes: [...new Set(input.excludedTimes as string[])] } : {}),
+  };
+  const daypartOptions = getDaypartSlotOptions(constraints.daypart);
+  const lowerBounds = [constraints.minTime, daypartOptions.minTime].filter((time): time is string => Boolean(time));
+  const upperBounds = [constraints.maxTime, daypartOptions.maxTime].filter((time): time is string => Boolean(time));
+  const effectiveMinTime = lowerBounds.sort((a, b) => Number(timeTextToMinutes(b)) - Number(timeTextToMinutes(a)))[0];
+  const effectiveMaxTime = upperBounds.sort((a, b) => Number(timeTextToMinutes(a)) - Number(timeTextToMinutes(b)))[0];
+  if (
+    effectiveMinTime && effectiveMaxTime &&
+    Number(timeTextToMinutes(effectiveMinTime)) > Number(timeTextToMinutes(effectiveMaxTime))
+  ) {
+    return { valid: false, constraints: {}, options: {} };
+  }
+  return {
+    valid: true,
+    constraints,
+    options: {
+      ...(effectiveMinTime ? { minTime: effectiveMinTime } : {}),
+      ...(effectiveMaxTime ? { maxTime: effectiveMaxTime } : {}),
+      ...(constraints.afterTime
+        ? { timeBoundary: { kind: "exclusive_lower" as const, time: constraints.afterTime } }
+        : constraints.beforeTime
+          ? { timeBoundary: { kind: "exclusive_upper" as const, time: constraints.beforeTime } }
+          : {}),
+      ...(constraints.excludedTimes?.length ? { excludedTimes: constraints.excludedTimes } : {}),
+      selectFirstAvailable: true,
+    },
+  };
+}
+
+async function verifyTestBridgeEarliestAvailability(body: any): Promise<{
+  httpStatus: number;
+  payload: any;
+}> {
+  const operation = String(body?.operation || "").trim();
+  const businessId = String(body?.businessId || "").trim();
+  const startDate = String(body?.startDate || "").trim();
+  const endDate = String(body?.endDate || "").trim();
+  const durationMinutes = Number(body?.durationMinutes);
+  const service = body?.service === undefined ? "" : String(body.service).trim();
+  const requestedChannel = String(body?.channel || "").trim();
+  const channel = normalizePlatformName(requestedChannel);
+  const userId = normalizePlatformUserId(channel, String(body?.userId || ""));
+  const parsedConstraints = parseTestBridgeEarliestConstraints(body?.constraints);
+  const rangeStartMs = Date.parse(`${startDate}T00:00:00Z`);
+  const rangeEndMs = Date.parse(`${endDate}T00:00:00Z`);
+  const rangeDays = (rangeEndMs - rangeStartMs) / 86_400_000;
+
+  if (
+    operation !== "availability.earliest.verify" ||
+    !businessId || businessId.length > 200 ||
+    !isValidTestBridgeDate(startDate) || !isValidTestBridgeDate(endDate) ||
+    startDate > endDate || !Number.isFinite(rangeDays) || rangeDays > 366 ||
+    !Number.isInteger(durationMinutes) || durationMinutes <= 0 || durationMinutes > 1440 ||
+    !["telegram", "whatsapp", "instagram", "messenger"].includes(channel) ||
+    !userId || requestedChannel.length > 40 || userId.length > 200 || service.length > 500 ||
+    !parsedConstraints.valid
+  ) {
+    return {
+      httpStatus: 400,
+      payload: {
+        schemaVersion: TEST_BRIDGE_SCHEMA_VERSION,
+        operation: "availability.earliest.verify",
+        status: "invalid_request",
+        category: "invalid_request",
+      },
+    };
+  }
+
+  const loadConfig = priority1hTestDependencies?.loadBusinessConfigById || loadBusinessConfigById;
+  let businessConfig: any;
+  try {
+    businessConfig = await loadConfig(businessId);
+  } catch {
+    businessConfig = null;
+  }
+  if (!businessConfig || String(getBusinessIdFromConfig(businessConfig) || "") !== businessId) {
+    return {
+      httpStatus: 404,
+      payload: {
+        schemaVersion: TEST_BRIDGE_SCHEMA_VERSION,
+        operation: "availability.earliest.verify",
+        status: "not_found",
+        category: "business_not_found",
+      },
+    };
+  }
+
+  const timezone = String(businessConfig.timezone || "Europe/Stockholm");
+  try {
+    new Intl.DateTimeFormat("en", { timeZone: timezone }).format();
+  } catch {
+    return {
+      httpStatus: 503,
+      payload: {
+        schemaVersion: TEST_BRIDGE_SCHEMA_VERSION,
+        operation: "availability.earliest.verify",
+        status: "inconclusive",
+        category: "availability_configuration_failure",
+      },
+    };
+  }
+
+  const owner: BookingSlotOwner = {
+    businessId,
+    platform: channel,
+    userId,
+    sessionId: `test-bridge:${businessId}:${channel}:${userId}`,
+  };
+  const requested = {
+    startDate,
+    endDate,
+    durationMinutes,
+    timezone,
+    ...(service ? { service } : {}),
+    ...(Object.keys(parsedConstraints.constraints).length
+      ? { constraints: parsedConstraints.constraints }
+      : {}),
+  };
+
+  try {
+    const adapter = getCalendarAdapter(businessConfig);
+    if (adapter instanceof MockCalendarAdapter) {
+      throw new Error("Canonical calendar provider is not configured");
+    }
+    const snapshot = await loadCanonicalAvailabilitySnapshot({
+      adapter,
+      owner,
+      businessConfig,
+      startDate,
+      endDate,
+      throwOnCalendarReadFailure: true,
+    });
+    const offers = await createCanonicalOfferedSlots({
+      adapter,
+      owner,
+      businessConfig,
+      startDate,
+      endDate,
+      service,
+      durationMinutes,
+      options: parsedConstraints.options,
+      snapshot,
+      now: new Date(getTestBridgeNowMs()),
+    });
+    const earliest = offers.ownedSlots[0] || null;
+    const zoned = earliest ? getZonedSlotParts(earliest.start, timezone) : null;
+    const earliestSlot = zoned
+      ? {
+          date: zoned.date,
+          time: `${String(Math.floor(zoned.minutes / 60)).padStart(2, "0")}:${String(zoned.minutes % 60).padStart(2, "0")}`,
+        }
+      : null;
+    return {
+      httpStatus: 200,
+      payload: {
+        schemaVersion: TEST_BRIDGE_SCHEMA_VERSION,
+        operation: "availability.earliest.verify",
+        status: "verified",
+        timestamp: new Date().toISOString(),
+        businessId,
+        requested,
+        result: {
+          available: Boolean(earliestSlot),
+          earliestSlot,
+          category: earliestSlot ? "available" : "none_available",
+        },
+        evidence: {
+          calendarReadSucceeded: true,
+          calendarEventCount: snapshot.calendarEventCount,
+          pendingHoldCount: snapshot.pendingHoldCount,
+          source: "canonical-availability",
+        },
+        safety: {
+          readOnly: true,
+          calendarModified: false,
+          bookingModified: false,
+          pendingModified: false,
+        },
+      },
+    };
+  } catch {
+    return {
+      httpStatus: 503,
+      payload: {
+        schemaVersion: TEST_BRIDGE_SCHEMA_VERSION,
+        operation: "availability.earliest.verify",
+        status: "inconclusive",
+        category: "calendar_read_failure",
+        businessId,
+        requested,
+        evidence: {
+          calendarReadSucceeded: false,
+          source: "canonical-availability",
+        },
+        safety: {
+          readOnly: true,
+          calendarModified: false,
+          bookingModified: false,
+          pendingModified: false,
+        },
+      },
+    };
+  }
+}
+
+function sanitizePendingDiagnosticToken(value: unknown): string | null {
+  const token = String(value || "").trim();
+  return /^[a-z0-9_-]{1,80}$/i.test(token) ? token : token ? "unknown" : null;
+}
+
+function sanitizePendingDiagnosticTime(value: unknown): string | null {
+  const normalized = ensureStockholmOffset(String(value || "").trim());
+  return normalized && Number.isFinite(new Date(normalized).getTime()) ? normalized : null;
+}
+
+function getTestBridgeExecutionStore(): TestExecutionStore | null {
+  if (priority1hTestDependencies?.testExecutionStore !== undefined) {
+    return priority1hTestDependencies.testExecutionStore;
+  }
+  return supabase ? createSupabaseTestExecutionStore(supabase) : null;
+}
+
+function getTestExecutionResourceProvenanceStore(): TestExecutionResourceProvenanceStore | null {
+  if (priority1hTestDependencies?.testExecutionProvenanceStore !== undefined) {
+    return priority1hTestDependencies.testExecutionProvenanceStore;
+  }
+  return supabase
+    ? createSupabaseTestExecutionResourceProvenanceStore(supabase)
+    : null;
+}
+
+function getTestBridgeNowMs(): number {
+  return priority1hTestDependencies?.testBridgeNow?.() ?? Date.now();
+}
+
+function testBridgeExecutionError(
+  operation: string,
+  status: string,
+  category: string,
+) {
+  return { schemaVersion: TEST_BRIDGE_SCHEMA_VERSION, operation, status, category };
+}
+
+async function createTestBridgeExecution(body: any): Promise<{
+  httpStatus: number;
+  payload: any;
+}> {
+  const operation = "test-execution.create";
+  const allowedKeys = new Set(["businessId", "channel", "userId"]);
+  const businessId = String(body?.businessId || "").trim();
+  const requestedChannel = String(body?.channel || "").trim();
+  const channel = normalizePlatformName(requestedChannel);
+  const userId = normalizePlatformUserId(channel, String(body?.userId || ""));
+  if (
+    !body || typeof body !== "object" || Array.isArray(body) ||
+    Object.keys(body).some(key => !allowedKeys.has(key)) ||
+    !businessId || businessId.length > 200 ||
+    !["telegram", "whatsapp", "instagram", "messenger"].includes(channel) ||
+    !userId || requestedChannel.length > 40 || userId.length > 200
+  ) {
+    return {
+      httpStatus: 400,
+      payload: testBridgeExecutionError(operation, "invalid_request", "invalid_request"),
+    };
+  }
+
+  const loadConfig = priority1hTestDependencies?.loadBusinessConfigById || loadBusinessConfigById;
+  let businessConfig: any;
+  try {
+    businessConfig = await loadConfig(businessId);
+  } catch {
+    businessConfig = null;
+  }
+  if (!businessConfig || String(getBusinessIdFromConfig(businessConfig) || "") !== businessId) {
+    return {
+      httpStatus: 404,
+      payload: testBridgeExecutionError(operation, "not_found", "business_not_found"),
+    };
+  }
+
+  const store = getTestBridgeExecutionStore();
+  if (!store) {
+    return {
+      httpStatus: 503,
+      payload: testBridgeExecutionError(operation, "unavailable", "durable_storage_unavailable"),
+    };
+  }
+
+  const nowMs = getTestBridgeNowMs();
+  const ttlMs = getTestExecutionTtlMs();
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const created = createTestExecutionRecord({
+      scope: { businessId, channel, ownerId: userId },
+      nowMs,
+      ttlMs,
+    });
+    try {
+      if (!await store.create(created.record)) continue;
+      console.log("[TestBridge]", {
+        event: "test_execution_created",
+        executionFingerprint: testExecutionFingerprintFromHash(created.record.idHash),
+        businessId,
+        channel,
+        expiresAt: created.record.expiresAt,
+      });
+      return {
+        httpStatus: 201,
+        payload: {
+          schemaVersion: TEST_BRIDGE_SCHEMA_VERSION,
+          operation,
+          status: "created",
+          execution: {
+            schemaVersion: TEST_EXECUTION_SCHEMA_VERSION,
+            executionId: created.executionId,
+            businessId,
+            channel,
+            ownerFingerprint: safeLogFingerprint(userId),
+            createdAt: new Date(created.record.createdAt).toISOString(),
+            expiresAt: new Date(created.record.expiresAt).toISOString(),
+            status: created.record.status,
+          },
+          safety: {
+            calendarModified: false,
+            bookingModified: false,
+            pendingModified: false,
+          },
+        },
+      };
+    } catch {
+      return {
+        httpStatus: 503,
+        payload: testBridgeExecutionError(operation, "unavailable", "durable_storage_failure"),
+      };
+    }
+  }
+
+  return {
+    httpStatus: 503,
+    payload: testBridgeExecutionError(operation, "unavailable", "execution_id_generation_failure"),
+  };
+}
+
+async function inspectTestBridgeExecution(
+  executionId: unknown,
+  query: any,
+): Promise<{ httpStatus: number; payload: any }> {
+  const operation = "test-execution.inspect";
+  const requestedChannel = String(query?.channel || "").trim();
+  const channel = normalizePlatformName(requestedChannel);
+  const businessId = String(query?.businessId || "").trim();
+  const userId = normalizePlatformUserId(channel, String(query?.userId || ""));
+  if (
+    !isValidTestExecutionId(executionId) ||
+    !businessId || businessId.length > 200 ||
+    !["telegram", "whatsapp", "instagram", "messenger"].includes(channel) ||
+    !userId || requestedChannel.length > 40 || userId.length > 200
+  ) {
+    return {
+      httpStatus: 404,
+      payload: testBridgeExecutionError(operation, "not_found", "execution_not_found"),
+    };
+  }
+
+  const store = getTestBridgeExecutionStore();
+  if (!store) {
+    return {
+      httpStatus: 503,
+      payload: testBridgeExecutionError(operation, "unavailable", "durable_storage_unavailable"),
+    };
+  }
+  const idHash = hashTestExecutionId(executionId);
+  let record: StoredTestExecution | null;
+  try {
+    record = await store.get(idHash);
+  } catch {
+    return {
+      httpStatus: 503,
+      payload: testBridgeExecutionError(operation, "unavailable", "durable_storage_failure"),
+    };
+  }
+  if (!record) {
+    return {
+      httpStatus: 404,
+      payload: testBridgeExecutionError(operation, "not_found", "execution_not_found"),
+    };
+  }
+
+  const executionFingerprint = testExecutionFingerprintFromHash(idHash);
+  const nowMs = getTestBridgeNowMs();
+  if (record.status === "expired" || record.expiresAt <= nowMs) {
+    if (record.status !== "expired") {
+      record = { ...record, status: "expired" };
+      try {
+        await store.update(record);
+      } catch {
+        // Expiration is derived from expiresAt and remains fail-closed even if persistence is unavailable.
+      }
+      console.log("[TestBridge]", {
+        event: "test_execution_expired",
+        executionFingerprint,
+        businessId: record.businessId,
+        channel: record.channel,
+      });
+    }
+    return {
+      httpStatus: 410,
+      payload: testBridgeExecutionError(operation, "expired", "execution_expired"),
+    };
+  }
+  if (record.status !== "active") {
+    return {
+      httpStatus: 409,
+      payload: testBridgeExecutionError(operation, "inactive", "execution_not_active"),
+    };
+  }
+  if (
+    record.businessId !== businessId ||
+    record.channel !== channel ||
+    record.ownerId !== userId
+  ) {
+    console.warn("[TestBridge]", {
+      event: "test_execution_scope_mismatch",
+      executionFingerprint,
+      requestedBusinessMatch: record.businessId === businessId,
+      requestedChannelMatch: record.channel === channel,
+      requestedOwnerMatch: record.ownerId === userId,
+    });
+    return {
+      httpStatus: 403,
+      payload: testBridgeExecutionError(operation, "forbidden", "execution_scope_mismatch"),
+    };
+  }
+
+  return {
+    httpStatus: 200,
+    payload: {
+      schemaVersion: TEST_BRIDGE_SCHEMA_VERSION,
+      operation,
+      status: "active",
+      execution: {
+        schemaVersion: TEST_EXECUTION_SCHEMA_VERSION,
+        executionFingerprint,
+        businessId: record.businessId,
+        channel: record.channel,
+        ownerFingerprint: safeLogFingerprint(record.ownerId),
+        createdAt: new Date(record.createdAt).toISOString(),
+        expiresAt: new Date(record.expiresAt).toISOString(),
+        status: record.status,
+      },
+      safety: {
+        calendarModified: false,
+        bookingModified: false,
+        pendingModified: false,
+      },
+    },
+  };
+}
+
+async function inspectTestBridgePendingBlockers(body: any): Promise<{
+  httpStatus: number;
+  payload: any;
+}> {
+  const operation = String(body?.operation || "").trim();
+  const businessId = String(body?.businessId || "").trim();
+  const date = String(body?.date || "").trim();
+  const time = String(body?.time || "").trim();
+  const durationMinutes = Number(body?.durationMinutes);
+  const requestedChannel = String(body?.channel || "").trim();
+  const channel = normalizePlatformName(requestedChannel);
+  const userId = normalizePlatformUserId(channel, String(body?.userId || ""));
+
+  if (
+    operation !== "availability.pending-blockers.inspect" ||
+    !businessId || businessId.length > 200 ||
+    !isValidTestBridgeDate(date) ||
+    !/^([01]\d|2[0-3]):[0-5]\d$/.test(time) ||
+    !Number.isInteger(durationMinutes) || durationMinutes <= 0 || durationMinutes > 1440 ||
+    !["telegram", "whatsapp", "instagram", "messenger"].includes(channel) ||
+    !userId || requestedChannel.length > 40 || userId.length > 200
+  ) {
+    return {
+      httpStatus: 400,
+      payload: {
+        schemaVersion: TEST_BRIDGE_SCHEMA_VERSION,
+        operation: "availability.pending-blockers.inspect",
+        status: "invalid_request",
+        category: "invalid_request",
+      },
+    };
+  }
+
+  const loadConfig = priority1hTestDependencies?.loadBusinessConfigById || loadBusinessConfigById;
+  let businessConfig: any;
+  try {
+    businessConfig = await loadConfig(businessId);
+  } catch {
+    businessConfig = null;
+  }
+  if (!businessConfig || String(getBusinessIdFromConfig(businessConfig) || "") !== businessId) {
+    return {
+      httpStatus: 404,
+      payload: {
+        schemaVersion: TEST_BRIDGE_SCHEMA_VERSION,
+        operation: "availability.pending-blockers.inspect",
+        status: "not_found",
+        category: "business_not_found",
+      },
+    };
+  }
+
+  const timezone = String(businessConfig.timezone || "Europe/Stockholm");
+  let requestedStart: string;
+  try {
+    new Intl.DateTimeFormat("en", { timeZone: timezone }).format();
+    requestedStart = zonedLocalIso(date, `${time}:00`, timezone);
+  } catch {
+    return {
+      httpStatus: 503,
+      payload: {
+        schemaVersion: TEST_BRIDGE_SCHEMA_VERSION,
+        operation: "availability.pending-blockers.inspect",
+        status: "inconclusive",
+        category: "availability_configuration_failure",
+      },
+    };
+  }
+
+  const requestedStartMs = new Date(requestedStart).getTime();
+  const requestedEndMs = requestedStartMs + durationMinutes * 60000;
+  const owner: BookingSlotOwner = {
+    businessId,
+    platform: channel,
+    userId,
+    sessionId: `test-bridge:${businessId}:${channel}:${userId}`,
+  };
+  const inspectedAt = Date.now();
+  const evaluated = Object.entries(pendingBookings).map(([sessionId, pending]) =>
+    evaluatePendingAvailabilityRecord(
+      sessionId,
+      pending,
+      owner,
+      requestedStartMs,
+      requestedEndMs
+    )
+  );
+
+  const pendingRecords = evaluated
+    .filter(record => record.sameBusiness)
+    .map(record => {
+      const pending = record.pending || {};
+      const createdAt = Number(pending.createdAt || pending.created_at || 0);
+      const updatedAt = Number(pending.updatedAt || pending.updated_at || 0);
+      return {
+        sessionFingerprint: safeLogFingerprint(record.sessionId),
+        businessId: record.pendingBusinessId,
+        platform: record.pendingPlatform,
+        status: sanitizePendingDiagnosticToken(pending.status),
+        operation: sanitizePendingDiagnosticToken(pending.operation),
+        startTime: sanitizePendingDiagnosticTime(pending.dateTime),
+        selectedEndTime: sanitizePendingDiagnosticTime(pending.selectedSlotEnd),
+        durationMinutes: Number.isFinite(record.pendingDurationMinutes)
+          ? record.pendingDurationMinutes
+          : null,
+        createdAt: Number.isFinite(createdAt) && createdAt > 0 ? createdAt : null,
+        updatedAt: Number.isFinite(updatedAt) && updatedAt > 0 ? updatedAt : null,
+        ageMs: Number.isFinite(createdAt) && createdAt > 0 ? inspectedAt - createdAt : null,
+        inactivityMs: Number.isFinite(updatedAt) && updatedAt > 0 ? inspectedAt - updatedAt : null,
+        configuredTtlMs: PENDING_BOOKING_TTL_MS,
+        expired: record.isExpired,
+        blockingStatus: record.hasBlockingStatus,
+        overlapsRequestedInterval: record.overlapsRequestedInterval,
+        belongsToRequestingOwner: record.belongsToRequestingOwner,
+        activeBlockingPending: record.isActiveBlockingPending,
+        canonicalOverlappingBlocker: record.isCanonicalOverlappingBlocker,
+        source: "in-memory",
+      };
+    });
+
+  return {
+    httpStatus: 200,
+    payload: {
+      schemaVersion: TEST_BRIDGE_SCHEMA_VERSION,
+      operation: "availability.pending-blockers.inspect",
+      status: "inspected",
+      businessId,
+      requested: {
+        date,
+        time,
+        durationMinutes,
+        timezone,
+        normalizedStart: requestedStart,
+        normalizedEnd: new Date(requestedEndMs).toISOString(),
+      },
+      counts: {
+        totalPendingRecordsInspected: evaluated.length,
+        sameBusinessPendingCount: evaluated.filter(record => record.sameBusiness).length,
+        activeBlockingPendingCount: evaluated.filter(record => record.isActiveBlockingPending).length,
+        overlappingBlockerCount: evaluated.filter(record => record.isCanonicalOverlappingBlocker).length,
+      },
+      pendingRecords,
+      overlappingBlockers: pendingRecords.filter(record => record.canonicalOverlappingBlocker),
+      safety: {
+        readOnly: true,
+        calendarModified: false,
+        bookingModified: false,
+        pendingModified: false,
+      },
+    },
+  };
+}
+
+export function createTestBridgeRouter(): express.Router {
+  const router = express.Router();
+  router.use("/api/test-bridge/v1", (req, res, next) => {
+    res.setHeader("Cache-Control", "no-store");
+    if (!isTestBridgeEnabled()) return testBridgeUnavailable(req, res);
+    const authentication = authenticateTestBridgeRequest(req.header("authorization"));
+    if (!authentication.authorized) {
+      if (authentication.category === "authentication_configuration_error") {
+        console.error("[TestBridge]", {
+          event: "test_bridge_auth_configuration_error",
+        });
+        return res.status(503).json({
+          schemaVersion: TEST_BRIDGE_SCHEMA_VERSION,
+          status: "unavailable",
+          category: authentication.category,
+        });
+      }
+      console.warn("[TestBridge]", {
+        event: "test_bridge_auth_rejected",
+      });
+      return res.status(401).json({
+        schemaVersion: TEST_BRIDGE_SCHEMA_VERSION,
+        status: "unauthorized",
+        category: authentication.category,
+      });
+    }
+    next();
+  });
+  router.get("/api/test-bridge/v1/capabilities", (_req, res) => {
+    return res.status(200).json({
+      schemaVersion: TEST_BRIDGE_SCHEMA_VERSION,
+      enabled: true,
+      operations: [
+        "availability.verify",
+        "availability.earliest.verify",
+        "availability.pending-blockers.inspect",
+        "test-execution.create",
+        "test-execution.inspect",
+      ],
+      readOnly: true,
+      authentication: {
+        required: true,
+        scheme: "bearer",
+      },
+      executionProvenance: {
+        schemaVersion: TEST_EXECUTION_SCHEMA_VERSION,
+        durable: true,
+        survivesRestart: true,
+        testMetadataWrites: true,
+        ttlMs: getTestExecutionTtlMs(),
+        operations: ["test-execution.create", "test-execution.inspect"],
+        cleanupSupported: false,
+      },
+      safety: {
+        calendarMutationSupported: false,
+        bookingMutationSupported: false,
+        pendingMutationSupported: false,
+      },
+    });
+  });
+  router.post("/api/test-bridge/v1/executions", async (req, res) => {
+    const result = await createTestBridgeExecution(req.body);
+    return res.status(result.httpStatus).json(result.payload);
+  });
+  router.get("/api/test-bridge/v1/executions/:executionId", async (req, res) => {
+    const result = await inspectTestBridgeExecution(req.params.executionId, req.query);
+    return res.status(result.httpStatus).json(result.payload);
+  });
+  router.post("/api/test-bridge/v1/verify", async (req, res) => {
+    const operation = String(req.body?.operation || "").trim();
+    const result = operation === "availability.pending-blockers.inspect"
+      ? await inspectTestBridgePendingBlockers(req.body)
+      : operation === "availability.earliest.verify"
+        ? await verifyTestBridgeEarliestAvailability(req.body)
+        : await verifyTestBridgeAvailability(req.body);
+    return res.status(result.httpStatus).json(result.payload);
+  });
+  return router;
+}
+
 function formatReminderMessage(appointment: any, businessConfig: any, reminderType: "24h" | "2h") {
   const name = appointment.customer_name || "";
   const service = appointment.service || "din behandling";
@@ -14984,8 +18548,12 @@ function formatReminderMessage(appointment: any, businessConfig: any, reminderTy
   return `Hej ${name || ""}! En vänlig påminnelse från ${businessName}: du har tid för ${service} imorgon, ${dateText} kl ${timeText}. Varmt välkommen! 😊`.trim();
 }
 
-async function sendAppointmentReminder(appointment: any, reminderType: "24h" | "2h") {
-  const businessConfig = await loadBusinessConfigById(appointment.business_id);
+async function sendAppointmentReminder(
+  appointment: any,
+  reminderType: "24h" | "2h",
+  suppliedBusinessConfig?: any
+) {
+  const businessConfig = suppliedBusinessConfig || await loadBusinessConfigById(appointment.business_id);
   const platform = String(appointment.platform || "").toLowerCase();
   const rawUserId = String(appointment.user_id || "");
   const recipient = normalizePlatformUserId(platform, rawUserId);
@@ -15006,7 +18574,138 @@ async function sendAppointmentReminder(appointment: any, reminderType: "24h" | "
   }
 }
 
+type ReminderCalendarVerificationCategory =
+  | "verified"
+  | "business_scope_mismatch"
+  | "calendar_scope_mismatch"
+  | "invalid_appointment_linkage"
+  | "stale_calendar_event_missing"
+  | "stale_calendar_event_ambiguous"
+  | "calendar_read_error";
+
+function calendarEventHasExactReminderService(event: any, service: unknown): boolean {
+  const expectedService = normalizeLookupText(String(service || ""));
+  if (!expectedService) return false;
+  const description = String(event?.description || "");
+  const markedService = description.match(/(?:^|\n)Tjänst:\s*([^\n]+)/i)?.[1] || "";
+  return normalizeLookupText(markedService) === expectedService;
+}
+
+async function verifyAppointmentCalendarForReminder(
+  appointment: any,
+  businessConfig: any
+): Promise<{ verified: boolean; category: ReminderCalendarVerificationCategory }> {
+  const appointmentBusinessId = String(appointment?.business_id || "").trim();
+  const configBusinessId = String(getBusinessIdFromConfig(businessConfig) || "").trim();
+  if (!appointmentBusinessId || appointmentBusinessId !== configBusinessId) {
+    return { verified: false, category: "business_scope_mismatch" };
+  }
+
+  let adapter: CalendarAdapter;
+  try {
+    adapter = getCalendarAdapter(businessConfig);
+  } catch {
+    return { verified: false, category: "calendar_read_error" };
+  }
+  const configuredCalendarId = String(
+    businessConfig?.googleCalendarId || businessConfig?.google_calendar_id || ""
+  ).trim();
+  const adapterCalendarId = String(adapter.getCalendarId?.() || "").trim();
+  if (!configuredCalendarId || !adapterCalendarId || configuredCalendarId !== adapterCalendarId) {
+    return { verified: false, category: "calendar_scope_mismatch" };
+  }
+
+  const startMs = new Date(String(appointment?.start_time || "")).getTime();
+  const endMs = new Date(String(appointment?.end_time || "")).getTime();
+  const platform = normalizePlatformName(String(appointment?.platform || ""));
+  const userId = normalizePlatformUserId(platform, String(appointment?.user_id || ""));
+  const service = String(appointment?.service || "").trim();
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs || !platform || !userId || !service) {
+    return { verified: false, category: "invalid_appointment_linkage" };
+  }
+
+  let events: any[];
+  try {
+    const appointmentDate = stockholmDateString(new Date(startMs));
+    const result = await adapter.getEvents(appointmentDate, appointmentDate, {
+      throwOnReadFailure: true
+    });
+    if (!Array.isArray(result)) throw new Error("invalid_calendar_event_list");
+    events = result;
+  } catch {
+    return { verified: false, category: "calendar_read_error" };
+  }
+
+  const matchingEvents = events.filter((event: any) =>
+    !isLikelyWorkingHoursMarker(event) &&
+    isActiveAppointmentStatus(event?.status || "confirmed") &&
+    new Date(getEventStartIso(event)).getTime() === startMs &&
+    new Date(getEventEndIso(event)).getTime() === endMs &&
+    calendarEventBusinessMarkerMatches(event, appointmentBusinessId) &&
+    calendarEventHasExactChannelOwner(event, platform, userId) &&
+    calendarEventHasExactReminderService(event, service)
+  );
+
+  if (matchingEvents.length === 0) {
+    return { verified: false, category: "stale_calendar_event_missing" };
+  }
+  if (matchingEvents.length !== 1) {
+    return { verified: false, category: "stale_calendar_event_ambiguous" };
+  }
+  return { verified: true, category: "verified" };
+}
+
+async function processAppointmentReminderCandidate(
+  appointment: any,
+  reminderType: "24h" | "2h",
+  sentColumn: "reminder_24_sent" | "reminder_2_sent"
+): Promise<{ sent: boolean; category: ReminderCalendarVerificationCategory | "delivery_failed" | "flag_update_failed" }> {
+  const loadConfig = priority1hTestDependencies?.loadBusinessConfigById || loadBusinessConfigById;
+  let businessConfig: any;
+  try {
+    businessConfig = await loadConfig(String(appointment?.business_id || ""));
+  } catch {
+    console.error("[ReminderCalendarVerification]", {
+      appointmentId: appointment?.id || null,
+      reminderType,
+      category: "business_scope_mismatch"
+    });
+    return { sent: false, category: "business_scope_mismatch" };
+  }
+
+  const verification = await verifyAppointmentCalendarForReminder(appointment, businessConfig);
+  if (!verification.verified) {
+    console.error("[ReminderCalendarVerification]", {
+      appointmentId: appointment?.id || null,
+      businessId: appointment?.business_id || null,
+      reminderType,
+      category: verification.category
+    });
+    return { sent: false, category: verification.category };
+  }
+
+  const sendReminder = priority1hTestDependencies?.sendReminder || sendAppointmentReminder;
+  const sent = await sendReminder(appointment, reminderType, businessConfig);
+  if (!sent) return { sent: false, category: "delivery_failed" };
+
+  const { error: updateError } = await supabase
+    .from("appointments")
+    .update({ [sentColumn]: true })
+    .eq("id", appointment.id);
+  if (updateError) {
+    console.error(`[Reminder] Failed to mark ${reminderType} sent:`, JSON.stringify(updateError));
+    return { sent: true, category: "flag_update_failed" };
+  }
+  console.log(`[Reminder] ${reminderType} sent for appointment ${appointment.id}`);
+  return { sent: true, category: "verified" };
+}
+
 function setupDailyReminders() {
+  if (!odinLinkStartupPolicy.reminderCronEnabled) {
+    console.log("[OdinLinkLocalTestMode] Reminder cron disabled.");
+    return;
+  }
+
   // Runs every 5 minutes and sends reminders from the Supabase appointments table.
   cron.schedule("*/5 * * * *", async () => {
     if (!supabase) {
@@ -15038,16 +18737,11 @@ function setupDailyReminders() {
       }
 
       for (const appointment of data || []) {
-        const sent = await sendAppointmentReminder(appointment, reminderType);
-        if (sent) {
-          const { error: updateError } = await supabase
-            .from("appointments")
-            .update({ [sentColumn]: true })
-            .eq("id", appointment.id);
-
-          if (updateError) console.error(`[Reminder] Failed to mark ${reminderType} sent:`, JSON.stringify(updateError));
-          else console.log(`[Reminder] ${reminderType} sent for appointment ${appointment.id}`);
-        }
+        await processAppointmentReminderCandidate(
+          appointment,
+          reminderType,
+          sentColumn as "reminder_24_sent" | "reminder_2_sent"
+        );
       }
     };
 
@@ -15123,10 +18817,10 @@ function getBusinessInstagramToken(businessConfig: any) {
   );
 }
 
-async function sendInstagramMessage(recipientId: string, text: string, accessToken?: string) {
+async function sendInstagramMessage(recipientId: string, text: string, accessToken?: string, sessionId?: string) {
   const token = cleanInstagramToken(accessToken);
   const safeText = guardCustomerFacingReply(
-    `ig_${normalizePlatformUserId("instagram", recipientId)}`,
+    sessionId || `ig_${normalizePlatformUserId("instagram", recipientId)}`,
     text
   );
 
@@ -15366,7 +19060,7 @@ async function sendWhatsAppMessage(to: string, text: string, businessConfig: any
   const token = getBusinessWhatsAppToken(businessConfig);
   const phoneNumberId = getBusinessWhatsAppPhoneNumberId(businessConfig);
   const safeText = guardCustomerFacingReply(
-    `wa_${normalizePlatformUserId("whatsapp", to)}`,
+    getScopedChannelSessionId("whatsapp", to, businessConfig, getBusinessWhatsAppPhoneNumberId(businessConfig)),
     text
   );
 
@@ -15449,8 +19143,8 @@ async function processWhatsAppMessageClaimed(message: any, metadata: any, config
     messageLength: textMessage.length,
   });
 
-  const chatId = `wa_${from}`;
-  let userLanguage = chatLanguages[chatId] || "en";
+  let chatId = `wa_${from}`;
+  let userLanguage = "en";
 
   let businessConfig: any = { ...activeConfig, ...(config || {}) };
   let whatsappBusinessScopeVerified = !supabase && Boolean(
@@ -15502,10 +19196,12 @@ async function processWhatsAppMessageClaimed(message: any, metadata: any, config
     return;
   }
 
+  chatId = getScopedChannelSessionId("whatsapp", from, businessConfig, phoneNumberId);
   resetSessionIfBusinessConfigChanged(chatId, businessConfig);
   userLanguage = getConversationLanguage(chatId, textMessage || "", businessConfig);
   recordAcceptedCustomerMessage({
     businessId: getBusinessIdFromConfig(businessConfig),
+    sessionId: chatId,
     platform: "whatsapp",
     source: "whatsapp_webhook",
     messageId: message.id,
@@ -15576,7 +19272,8 @@ async function processWhatsAppMessageClaimed(message: any, metadata: any, config
         history,
         businessConfig,
         send: (reply) => sendWhatsAppMessage(from, reply, businessConfig),
-        postProcessPlatform: platform
+        postProcessPlatform: platform,
+        shadowEligibleCustomerTurn: true
       });
       if (unifiedHandled) return;
     } else {
@@ -15599,6 +19296,7 @@ Use the business-specific system prompt from the database as your main source of
 You must act only as the receptionist for: ${businessName}.
 Never mention Laser Luxury unless the current business name is Laser Luxury.
 Never mention services, prices, or treatments that are not included in this business-specific system prompt.
+When answering follow-up questions about services, do not automatically repeat a promotional offer, sales CTA, free offer, or invitation that was already given earlier in the conversation unless the customer explicitly asks for it again.
 If the customer asks about services and the prompt does not include enough information, politely ask what service they are interested in or say you can help with booking and general guidance.
 Before confirming any booking, you must check availability.
 If the requested service is Consultation/Konsultation/مشاوره, its duration is fixed at 30 minutes. Never ask the customer how long it should take.
@@ -15619,7 +19317,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
 
     const currentDateContext = `\nCrucial Context: The client's current local date and time in Sweden (Europe/Stockholm) is dynamically: ${swedenDate}. Any reference by the user to 'idag', 'imorgon', or days of the week must be evaluated strictly using this dynamic date as the anchor. Note that for YYYY-MM-DD tools, June is '06' (index 5 in Javascript Date).`;
 
-    let finalSystemInstruction = (businessConfig.systemPrompt || "") + currentDateContext + constraint + languageEngine + buildLanguageLockInstruction(userLanguage);
+    let finalSystemInstruction = buildBusinessPromptWithTone(businessConfig.systemPrompt || "", businessConfig.toneConfig) + currentDateContext + constraint + languageEngine + buildLanguageLockInstruction(userLanguage);
 
     const aiRequestContext = {
       businessId: getBusinessIdFromConfig(businessConfig),
@@ -15650,15 +19348,47 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
         const args = JSON.parse(call.function.arguments);
 
         if (call.function.name === "checkSlots" && args) {
-          adapterRes = await adapter.checkSlots(args.startDate, args.endDate, args.durationMinutes, args.requestedTime || inferRequestedTimeFromText(textMessage || ""));
-          if (adapterRes.available_slots_string) {
-            const slotsArray = adapterRes.available_slots_string
-              .split("\n")
-              .filter((s: string) => s.trim().length > 0 && !s.includes("No available slots"));
+          const requestedTime =
+            args.requestedTime || inferRequestedTimeFromText(textMessage || "");
 
-            const replyMessage = formatSwedishTimeSlots(slotsArray, args.requestedTime || inferRequestedTimeFromText(textMessage || ""), getConversationLanguage(chatId, textMessage || ""));
+          const service = normalizeBookingService(
+            args.service || inferServiceFromRecentContext(textMessage || "", history),
+            getDefaultBookingServiceForBusiness(businessConfig) || "Bokning"
+          );
+
+          const durationMinutes =
+            getDefaultBookingDurationForService(service) ||
+            Number(args.durationMinutes || inferBookingDurationFromContext(textMessage || "", history));
+
+          const owner: BookingSlotOwner = {
+            businessId: String(getBusinessIdFromConfig(businessConfig) || ""),
+            platform: "whatsapp",
+            userId: normalizePlatformUserId("whatsapp", from),
+            sessionId: chatId
+          };
+
+          const offers = await createCanonicalOfferedSlots({
+            adapter,
+            owner,
+            businessConfig,
+            startDate: args.startDate,
+            endDate: args.endDate || args.startDate,
+            service,
+            durationMinutes,
+            requestedTime
+          });
+
+          if (offers.displaySlots.length > 0) {
+            const replyMessage = formatSwedishTimeSlots(
+              offers.displaySlots,
+              requestedTime,
+              getConversationLanguage(chatId, textMessage || ""),
+              businessConfig.toneConfig
+            );
             return { TERMINATE_EARLY: true, replyMessage };
           }
+
+          adapterRes = { available_slots_string: "" };
         } else if (call.function.name === "findCustomerAppointments" && args) {
           adapterRes = await findCustomerAppointments(adapter, { ...args, lookupMode: args.lookupMode || detectAppointmentLookupMode(textMessage), lookupText: textMessage, lookupPath: "whatsapp_gemini_tool" }, from, "whatsapp", businessConfig);
           const lookupLanguage = getConversationLanguage(chatId, textMessage || "");
@@ -15698,7 +19428,8 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
             TERMINATE_EARLY: true,
             replyMessage: formatAuthoritativeBookingContinuation(
               chatId,
-              getConversationLanguage(chatId, textMessage || "")
+              getConversationLanguage(chatId, textMessage || ""),
+              businessConfig.toneConfig
             )
           };
         } else if (call.function.name === "logSystemAnalysis" && args) {
@@ -15747,6 +19478,12 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       chatId,
       String(chatResponse.text || "").trim() ||
         getErrorMessageByLanguage(getConversationLanguage(chatId, textMessage || "")),
+      getConversationLanguage(chatId, textMessage || ""),
+      businessConfig.toneConfig
+    );
+    textResponse = guardGeneralAiReplyRepetition(
+      chatId,
+      textResponse,
       getConversationLanguage(chatId, textMessage || "")
     );
     textResponse = await settleHumanHandoffReply({
@@ -15814,7 +19551,7 @@ function getBusinessMessengerPageId(businessConfig: any) {
 async function sendMessengerMessage(recipientId: string, text: string, businessConfig: any) {
   const token = getBusinessMessengerToken(businessConfig);
   const safeText = guardCustomerFacingReply(
-    `ms_${normalizePlatformUserId("messenger", recipientId)}`,
+    getScopedChannelSessionId("messenger", recipientId, businessConfig, getBusinessMessengerPageId(businessConfig)),
     text
   );
 
@@ -16183,6 +19920,7 @@ function normalizeMetaCommentBusinessConfig(row: any, fallbackConfig: any = {}) 
     businessName: row.business_name,
     business_name: row.business_name,
     systemPrompt: row.custom_system_prompt,
+    toneConfig: normalizeBusinessToneConfig(row.ai_tone_config),
     googleCalendarId: row.google_calendar_id,
     telegramToken: row.telegram_bot_token,
     instagramAccessToken: row.instagram_access_token,
@@ -16411,7 +20149,7 @@ async function processMetaCommentUpdate(entry: any, change: any, config: any, so
       console.log("[MetaComment] quick positive reply selected", { source });
     } else {
       const commentSystemInstruction = `
-${businessConfig.systemPrompt || ""}
+${buildBusinessPromptWithTone(businessConfig.systemPrompt || "", businessConfig.toneConfig)}
 
 COMMENT REPLY ENGINE:
 You are an expert public social-media assistant for ${businessName}.
@@ -16516,8 +20254,8 @@ async function processMessengerUpdateClaimed(webhookEvent: any, config: any, pla
     `senderPresent=${Boolean(senderId)} businessPagePresent=${Boolean(recipientId)}`
   );
 
-  const chatId = `ms_${senderId}`;
-  let userLanguage = chatLanguages[chatId] || "en";
+  let chatId = `ms_${senderId}`;
+  let userLanguage = "en";
 
   let businessConfig: any = { ...activeConfig, ...(config || {}) };
   let messengerBusinessScopeVerified = !supabase && Boolean(
@@ -16566,10 +20304,12 @@ async function processMessengerUpdateClaimed(webhookEvent: any, config: any, pla
     return;
   }
 
+  chatId = getScopedChannelSessionId("messenger", senderId, businessConfig, recipientId);
   resetSessionIfBusinessConfigChanged(chatId, businessConfig);
   userLanguage = getConversationLanguage(chatId, textMessage || "", businessConfig);
   recordAcceptedCustomerMessage({
     businessId: getBusinessIdFromConfig(businessConfig),
+    sessionId: chatId,
     platform: "messenger",
     source: "messenger_webhook",
     messageId: webhookEvent.message.mid,
@@ -16606,7 +20346,8 @@ async function processMessengerUpdateClaimed(webhookEvent: any, config: any, pla
         history: chatSessions[chatId as any],
         businessConfig,
         send: (reply) => sendMessengerMessage(senderId, reply, businessConfig),
-        postProcessPlatform: platform
+        postProcessPlatform: platform,
+        shadowEligibleCustomerTurn: true
       });
       if (unifiedHandled) return;
     }
@@ -16674,6 +20415,7 @@ Use the business-specific system prompt from the database as your main source of
 You must act only as the receptionist for: ${businessName}.
 Never mention Laser Luxury unless the current business name is Laser Luxury.
 Never mention services, prices, or treatments that are not included in this business-specific system prompt.
+When answering follow-up questions about services, do not automatically repeat a promotional offer, sales CTA, free offer, or invitation that was already given earlier in the conversation unless the customer explicitly asks for it again.
 If the customer asks about services and the prompt does not include enough information, politely ask what service they are interested in or say you can help with booking and general guidance.
 Before confirming any booking, you must check availability.
 If the requested service is Consultation/Konsultation/مشاوره, its duration is fixed at 30 minutes. Never ask the customer how long it should take.
@@ -16694,7 +20436,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
 
     const currentDateContext = `\nCrucial Context: The client's current local date and time in Sweden (Europe/Stockholm) is dynamically: ${swedenDate}. Any reference by the user to 'idag', 'imorgon', or days of the week must be evaluated strictly using this dynamic date as the anchor. Note that for YYYY-MM-DD tools, June is '06' (index 5 in Javascript Date).`;
 
-    let finalSystemInstruction = (businessConfig.systemPrompt || "") + currentDateContext + constraint + languageEngine + buildLanguageLockInstruction(userLanguage);
+    let finalSystemInstruction = buildBusinessPromptWithTone(businessConfig.systemPrompt || "", businessConfig.toneConfig) + currentDateContext + constraint + languageEngine + buildLanguageLockInstruction(userLanguage);
 
     if (isVoiceMessage) {
       finalSystemInstruction +=
@@ -16759,7 +20501,10 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
             endDate: args.endDate || args.startDate,
             service,
             durationMinutes,
-            requestedTime
+            requestedTime,
+            options: isEarliestAvailabilityRequest(textMessage || "")
+              ? { selectFirstAvailable: true }
+              : undefined
           });
           const exactSlot = requestedTime
             ? selectOwnedOfferedSlot(requestedTime, {
@@ -16767,6 +20512,9 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
                 ownedOfferedSlots: offers.ownedSlots
               })
             : null;
+          const readOnlyExactAvailabilityInquiry = Boolean(
+            exactSlot && isReadOnlyAvailabilityInquiry(textMessage || "")
+          );
           if (offers.ownedSlots.length > 0) {
             await savePendingBooking(chatId, "messenger", {
               businessConfig,
@@ -16776,12 +20524,15 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
               selectedDate: args.startDate,
               offeredSlots: offers.displaySlots,
               ownedOfferedSlots: offers.ownedSlots,
-              dateTime: exactSlot?.start || null,
-              selectedSlotEnd: exactSlot?.end || null,
+              dateTime: readOnlyExactAvailabilityInquiry ? null : exactSlot?.start || null,
+              selectedSlotEnd: readOnlyExactAvailabilityInquiry ? null : exactSlot?.end || null,
+              readOnlyExactAvailabilityInquiry,
               durationMinutes,
               language: getConversationLanguage(chatId, textMessage || ""),
               operation: "new_booking",
-              status: exactSlot ? "awaiting_confirmation" : "awaiting_time_selection"
+              status: exactSlot && !readOnlyExactAvailabilityInquiry
+                ? "awaiting_confirmation"
+                : "awaiting_time_selection"
             });
           }
           return {
@@ -16789,7 +20540,8 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
             replyMessage: formatSwedishTimeSlots(
               offers.displaySlots,
               requestedTime,
-              getConversationLanguage(chatId, textMessage || "")
+              getConversationLanguage(chatId, textMessage || ""),
+              businessConfig.toneConfig
             )
           };
         } else if (call.function.name === "findCustomerAppointments" && args) {
@@ -16831,7 +20583,8 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
             TERMINATE_EARLY: true,
             replyMessage: formatAuthoritativeBookingContinuation(
               chatId,
-              getConversationLanguage(chatId, textMessage || "")
+              getConversationLanguage(chatId, textMessage || ""),
+              businessConfig.toneConfig
             )
           };
         } else if (call.function.name === "logSystemAnalysis" && args) {
@@ -16880,6 +20633,12 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       chatId,
       String(chatResponse.text || "").trim() ||
         getErrorMessageByLanguage(getConversationLanguage(chatId, textMessage || "")),
+      getConversationLanguage(chatId, textMessage || ""),
+      businessConfig.toneConfig
+    );
+    textResponse = guardGeneralAiReplyRepetition(
+      chatId,
+      textResponse,
       getConversationLanguage(chatId, textMessage || "")
     );
     textResponse = await settleHumanHandoffReply({
@@ -17013,8 +20772,8 @@ async function processInstagramUpdateClaimed(webhook_event: any, config: any, pl
     messageLength: textMessage.length,
   });
 
-  const chatId = `ig_${senderId}`;
-  let userLanguage = chatLanguages[chatId] || "en";
+  let chatId = `ig_${senderId}`;
+  let userLanguage = "en";
 
   let businessConfig: any = { ...activeConfig, ...(config || {}) };
   let businessRecord: any = null;
@@ -17067,10 +20826,12 @@ async function processInstagramUpdateClaimed(webhook_event: any, config: any, pl
     return;
   }
 
+  chatId = getScopedChannelSessionId("instagram", senderId, businessConfig, recipientId);
   resetSessionIfBusinessConfigChanged(chatId, businessConfig);
   userLanguage = getConversationLanguage(chatId, textMessage || "", businessConfig);
   recordAcceptedCustomerMessage({
     businessId: getBusinessIdFromConfig(businessConfig),
+    sessionId: chatId,
     platform: "instagram",
     source: "instagram_webhook",
     messageId: webhook_event.message.mid,
@@ -17090,7 +20851,7 @@ async function processInstagramUpdateClaimed(webhook_event: any, config: any, pl
   });
   if (!inboundUsage.allowed) {
     const limitText = formatDailyLimitMessage(userLanguage);
-    await sendInstagramMessage(senderId, limitText, getBusinessInstagramToken(businessConfig));
+    await sendInstagramMessage(senderId, limitText, getBusinessInstagramToken(businessConfig), chatId);
     appendLocalHistory(chatId, textMessage || '[voice]', limitText);
     return;
   }
@@ -17115,9 +20876,11 @@ async function processInstagramUpdateClaimed(webhook_event: any, config: any, pl
         send: (reply) => sendInstagramMessage(
           senderId,
           reply,
-          getBusinessInstagramToken(businessConfig)
+          getBusinessInstagramToken(businessConfig),
+          chatId
         ),
-        postProcessPlatform: platform
+        postProcessPlatform: platform,
+        shadowEligibleCustomerTurn: true
       });
       if (unifiedHandled) return;
     }
@@ -17125,7 +20888,7 @@ async function processInstagramUpdateClaimed(webhook_event: any, config: any, pl
     const completedBooking = getRecentCompletedBooking(chatId);
     if (textMessage && completedBooking && isThanksOnlyText(textMessage || "")) {
       const thanksText = formatThanksReply(completedBooking.language || userLanguage, completedBooking.name);
-      await sendInstagramMessage(senderId, thanksText, getBusinessInstagramToken(businessConfig));
+      await sendInstagramMessage(senderId, thanksText, getBusinessInstagramToken(businessConfig), chatId);
       appendLocalHistory(chatId, textMessage || "", thanksText);
       await postProcessMessage(chatId, platform, userMessageForLog, thanksText, businessConfig?.telegramToken, businessConfig?.apiKey, getBusinessIdFromConfig(businessConfig));
       return;
@@ -17179,7 +20942,8 @@ if (contentType === "video/mp4") {
             send: (reply) => sendInstagramMessage(
               senderId,
               reply,
-              getBusinessInstagramToken(businessConfig)
+              getBusinessInstagramToken(businessConfig),
+              chatId
             ),
             postProcessPlatform: platform
           });
@@ -17200,7 +20964,8 @@ if (contentType === "video/mp4") {
                   : userLanguage === "ar"
                     ? "عذرًا، لم أتمكن من سماع الرسالة الصوتية الآن. يرجى كتابة رسالتك."
                     : "Sorry, I couldn’t listen to the voice message just now. Please type your message instead.",
-         getBusinessInstagramToken(businessConfig)
+         getBusinessInstagramToken(businessConfig),
+         chatId
         );
         return;
       }
@@ -17218,6 +20983,7 @@ Use the business-specific system prompt from the database as your main source of
 You must act only as the receptionist for: ${businessName}.
 Never mention Laser Luxury unless the current business name is Laser Luxury.
 Never mention services, prices, or treatments that are not included in this business-specific system prompt.
+When answering follow-up questions about services, do not automatically repeat a promotional offer, sales CTA, free offer, or invitation that was already given earlier in the conversation unless the customer explicitly asks for it again.
 If the customer asks about services and the prompt does not include enough information, politely ask what service they are interested in or say you can help with booking and general guidance.
 Before confirming any booking, you must check availability.
 If the requested service is Consultation/Konsultation/مشاوره, its duration is fixed at 30 minutes. Never ask the customer how long it should take.
@@ -17238,7 +21004,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
 
     const currentDateContext = `\nCrucial Context: The client's current local date and time in Sweden (Europe/Stockholm) is dynamically: ${swedenDate}. Any reference by the user to 'idag', 'imorgon', or days of the week must be evaluated strictly using this dynamic date as the anchor. Note that for YYYY-MM-DD tools, June is '06' (index 5 in Javascript Date).`;
 
-    let finalSystemInstruction = (businessConfig.systemPrompt || '') + currentDateContext + constraint + languageEngine + buildLanguageLockInstruction(userLanguage);
+    let finalSystemInstruction = buildBusinessPromptWithTone(businessConfig.systemPrompt || '', businessConfig.toneConfig) + currentDateContext + constraint + languageEngine + buildLanguageLockInstruction(userLanguage);
 
     if (isVoiceMessage) {
       finalSystemInstruction +=
@@ -17349,6 +21115,9 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
                 ownedOfferedSlots: offers.ownedSlots
               })
             : null;
+          const readOnlyExactAvailabilityInquiry = Boolean(
+            exactSlot && isReadOnlyAvailabilityInquiry(textMessage || "")
+          );
           if (offers.ownedSlots.length > 0) {
             await savePendingBooking(chatId, "instagram", {
               businessConfig,
@@ -17366,12 +21135,15 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
               availabilityMinTime: constraint.minTime || null,
               availabilityMaxTime: constraint.maxTime || null,
               availabilityConstraint: constraint,
-              dateTime: exactSlot?.start || null,
-              selectedSlotEnd: exactSlot?.end || null,
+              dateTime: readOnlyExactAvailabilityInquiry ? null : exactSlot?.start || null,
+              selectedSlotEnd: readOnlyExactAvailabilityInquiry ? null : exactSlot?.end || null,
+              readOnlyExactAvailabilityInquiry,
               durationMinutes,
               language: lockedLanguage,
               operation: "new_booking",
-              status: exactSlot ? "awaiting_confirmation" : "awaiting_time_selection"
+              status: exactSlot && !readOnlyExactAvailabilityInquiry
+                ? "awaiting_confirmation"
+                : "awaiting_time_selection"
             });
           }
           return {
@@ -17379,7 +21151,8 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
             replyMessage: formatSwedishTimeSlots(
               offers.displaySlots,
               requestedTime,
-              lockedLanguage
+              lockedLanguage,
+              businessConfig.toneConfig
             )
           };
         } else if (call.function.name === 'findCustomerAppointments' && args) {
@@ -17403,7 +21176,8 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
             send: (reply) => sendInstagramMessage(
               senderId,
               reply,
-              getBusinessInstagramToken(businessConfig)
+              getBusinessInstagramToken(businessConfig),
+              chatId
             ),
             postProcessPlatform: platform
           });
@@ -17426,7 +21200,8 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
             TERMINATE_EARLY: true,
             replyMessage: formatAuthoritativeBookingContinuation(
               chatId,
-              getConversationLanguage(chatId, textMessage || "")
+              getConversationLanguage(chatId, textMessage || ""),
+              businessConfig.toneConfig
             )
           };
         } else if (call.function.name === 'logSystemAnalysis' && args) {
@@ -17475,6 +21250,12 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       chatId,
       String(chatResponse.text || "").trim() ||
         getErrorMessageByLanguage(getConversationLanguage(chatId, textMessage || "")),
+      getConversationLanguage(chatId, textMessage || ""),
+      businessConfig.toneConfig
+    );
+    textResponse = guardGeneralAiReplyRepetition(
+      chatId,
+      textResponse,
       getConversationLanguage(chatId, textMessage || "")
     );
     textResponse = await settleHumanHandoffReply({
@@ -17526,7 +21307,8 @@ if (isVoiceMessage) {
                   ? "🎧 استمع هنا:"
                   : "🎧 Listen here:"
       } ${voiceReply.url}`,
-      instagramToken
+      instagramToken,
+      chatId
     );
 
     sentVoiceReply = true;
@@ -17540,10 +21322,10 @@ if (isVoiceMessage) {
   }
 
   if (!sentVoiceReply) {
-    await sendInstagramMessage(senderId, textResponse, instagramToken);
+    await sendInstagramMessage(senderId, textResponse, instagramToken, chatId);
   }
 } else {
-  await sendInstagramMessage(senderId, textResponse, instagramToken);
+  await sendInstagramMessage(senderId, textResponse, instagramToken, chatId);
 }
 try {
   await postProcessMessage(chatId, platform, userMessageForLog, textResponse, businessConfig?.telegramToken, businessConfig?.apiKey, getBusinessIdFromConfig(businessConfig));
@@ -17576,7 +21358,8 @@ try {
     await sendInstagramMessage(
       senderId,
       errorMessage,
-     getBusinessInstagramToken(businessConfig)
+     getBusinessInstagramToken(businessConfig),
+     chatId
     );
   }
 }
@@ -17585,7 +21368,9 @@ async function startServer() {
 
   const PORT = Number(process.env.PORT) || 3000;
   const app = express();
+  registerHealthEndpoint(app);
   app.use(express.json({ limit: '50mb' }));
+  app.use(createTestBridgeRouter());
 
   const requireAuth = createRequireAuth();
   const requireBusinessPermission = (permission: BusinessPermission) =>
@@ -17594,6 +21379,20 @@ async function startServer() {
     createRequireBusinessPermission(permission, {
       resolveBusinessId: (request) => request.body?.businessId ?? request.body?.business_id,
     });
+
+  app.use('/api/businesses', createAnalyticsApiRouter({
+    requireAuth,
+    requireAnalyticsPermission: requireBusinessPermission('analytics.read'),
+    onFailure: (category, businessId, request) =>
+      logOperatorApiFailure(category, request, businessId ?? undefined),
+  }));
+  app.use('/api/businesses', createDashboardSummaryRouter({
+    requireAuth,
+    requireAnalyticsPermission: requireBusinessPermission('analytics.read'),
+    loadOperationalSources: loadDashboardOperationalSources,
+    onFailure: (category, businessId, request) =>
+      logOperatorApiFailure(category, request, businessId ?? undefined),
+  }));
 
   await knowledgeService.initialize();
 
@@ -17868,8 +21667,8 @@ async function startServer() {
     const chatId = clientChatId || "web-" + Math.random().toString(36).substring(7);
     
     try {
-      const { message, audioData: incomingAudioData, mimeType: incomingMimeType, apiKey } = req.body;
-      const ai = new GoogleGenAI({ apiKey: apiKey || process.env.GEMINI_API_KEY });
+      const { message, audioData: incomingAudioData, mimeType: incomingMimeType } = req.body;
+      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
       
       if (!chatSessions[chatId as any]) chatSessions[chatId as any] = [];
       const history = chatSessions[chatId as any];
@@ -17919,6 +21718,7 @@ Use the business-specific system prompt from the database as your main source of
 You must act only as the receptionist for: ${businessName}.
 Never mention Laser Luxury unless the current business name is Laser Luxury.
 Never mention services, prices, or treatments that are not included in this business-specific system prompt.
+When answering follow-up questions about services, do not automatically repeat a promotional offer, sales CTA, free offer, or invitation that was already given earlier in the conversation unless the customer explicitly asks for it again.
 If the customer asks about services and the prompt does not include enough information, politely ask what service they are interested in or say you can help with booking and general guidance.
 Before confirming any booking, you must check availability.
 If the requested service is Consultation/Konsultation/مشاوره, its duration is fixed at 30 minutes. Never ask the customer how long it should take.
@@ -17944,7 +21744,7 @@ If the customer explicitly asks to change language, switch immediately.
 Never translate unless requested.
 `;
       let finalSystemInstruction =
-  (activeConfig.systemPrompt || "") +
+  buildBusinessPromptWithTone(activeConfig.systemPrompt || "", activeConfig.toneConfig) +
   currentDateContext +
   constraint +
   languageEngine +
@@ -17971,7 +21771,7 @@ Never translate unless requested.
                     .split('\n')
                     .filter((s: string) => s.trim().length > 0 && !s.includes('No available slots'));
                 
-                const replyMessage = formatSwedishTimeSlots(slotsArray, args.requestedTime || inferRequestedTimeFromText(userText || ""), getLockedReplyLanguage(chatId, userText || ""));
+                const replyMessage = formatSwedishTimeSlots(slotsArray, args.requestedTime || inferRequestedTimeFromText(userText || ""), getLockedReplyLanguage(chatId, userText || ""), activeConfig.toneConfig);
                 return { TERMINATE_EARLY: true, replyMessage };
             }
         }
@@ -17990,7 +21790,8 @@ Never translate unless requested.
             TERMINATE_EARLY: true,
             replyMessage: formatAuthoritativeBookingContinuation(
               chatId.toString(),
-              getLockedReplyLanguage(chatId, userText || "")
+              getLockedReplyLanguage(chatId, userText || ""),
+              activeConfig.toneConfig
             )
           };
         }
@@ -18057,7 +21858,7 @@ Never translate unless requested.
          }
       }
 
-      postProcessMessage(chatId, "web-chat", message || "[Voice]", textPart, undefined, apiKey);
+      postProcessMessage(chatId, "web-chat", message || "[Voice]", textPart, undefined, process.env.GEMINI_API_KEY);
       res.json({ text: textPart, audioData: audioDataOut, mimeType: outMimeType, chatId });
     } catch (error: any) {
       console.error("Web chat processing error:", error);
@@ -18256,21 +22057,68 @@ app.get('/api/businesses/:businessId/conversations', requireAuth, requireBusines
       });
     }
 
-    const rawLimit = Number(req.query.limit || 1000);
+    const rawLimit = Number(req.query.limit || 25);
     const limit = Math.min(
-      2000,
-      Math.max(1, Number.isFinite(rawLimit) ? Math.floor(rawLimit) : 1000),
+      50,
+      Math.max(1, Number.isFinite(rawLimit) ? Math.floor(rawLimit) : 25),
     );
+    const rawCursor = Number(req.query.cursor || 0);
+    const cursor = Math.max(
+      0,
+      Number.isFinite(rawCursor) ? Math.floor(rawCursor) : 0,
+    );
+    const search = String(req.query.search || '').trim().toLowerCase().slice(0, 100);
+    const requestedChannelFilter = normalizeConversationChannel(req.query.channel);
+    const channelFilter = ['whatsapp', 'instagram', 'messenger', 'telegram']
+      .includes(requestedChannelFilter)
+      ? requestedChannelFilter
+      : '';
+    const statusFilter = normalizeConversationStatusFilter(req.query.status);
+    const range: ConversationActivityRange = normalizeConversationActivityRange(req.query.range);
+    const activityCutoff = conversationActivityCutoff(range);
+    const pagedResponseRequested = ['limit', 'cursor', 'search', 'channel', 'status', 'range']
+      .some((key) => req.query[key] !== undefined);
 
-    const { data: messageRows, error: messageError } = await supabase
-      .from('chat_history')
-      .select('id,business_id,user_id,platform,sender,message,created_at,is_read')
-      .eq('business_id', businessId)
-      .order('created_at', { ascending: true })
-      .order('id', { ascending: true })
-      .limit(limit);
+    const messageColumns = 'id,business_id,user_id,platform,sender,message,created_at,is_read';
+    let messageRows: any[];
+    if (activityCutoff) {
+      messageRows = await collectConversationSourcePages(async (from, to) => {
+        const { data, error } = await supabase
+          .from('chat_history')
+          .select(messageColumns)
+          .eq('business_id', businessId)
+          .gte('created_at', activityCutoff)
+          .order('created_at', { ascending: false })
+          .order('id', { ascending: false })
+          .range(from, to);
+        if (error) throw error;
+        return data || [];
+      });
+    } else {
+      const { data, error } = await supabase
+        .from('chat_history')
+        .select(messageColumns)
+        .eq('business_id', businessId)
+        .order('created_at', { ascending: false })
+        .order('id', { ascending: false })
+        .limit(2000);
+      if (error) throw error;
+      messageRows = data || [];
+    }
 
-    if (messageError) throw messageError;
+    const unreadRows = activityCutoff
+      ? await collectConversationSourcePages(async (from, to) => {
+        const { data, error } = await supabase
+          .from('chat_history')
+          .select('id,business_id,user_id,platform,sender,is_read')
+          .eq('business_id', businessId)
+          .eq('is_read', false)
+          .order('id', { ascending: false })
+          .range(from, to);
+        if (error) throw error;
+        return data || [];
+      })
+      : null;
 
     (messageRows || []).sort((a: any, b: any) => {
       const timeDifference =
@@ -18289,6 +22137,7 @@ app.get('/api/businesses/:businessId/conversations', requireAuth, requireBusines
     const { data: leadRows, error: leadError } = await supabase
       .from('appointments_leads')
       .select('id,business_id,user_id,platform,customer_name,created_at')
+      .eq('business_id', businessId)
       .order('created_at', { ascending: false })
       .limit(2000);
 
@@ -18350,7 +22199,6 @@ app.get('/api/businesses/:businessId/conversations', requireAuth, requireBusines
 
     type CustomerLookup = { name: string; status: string };
     const leadByConversation = new Map<string, CustomerLookup>();
-    const legacyLeadByConversation = new Map<string, CustomerLookup>();
     const appointmentByConversation = new Map<string, CustomerLookup>();
 
     for (const row of leadRows || []) {
@@ -18359,21 +22207,12 @@ app.get('/api/businesses/:businessId/conversations', requireAuth, requireBusines
       if (!normalizedUserId || !isUsableCustomerName(row.customer_name)) continue;
 
       const key = `${channel}:${normalizedUserId}`;
-      const rowBusinessId = String(row.business_id || '').trim();
       const customer = {
         name: String(row.customer_name || '').trim(),
         status: 'handled',
       };
 
-      if (rowBusinessId === businessId) {
-        if (!leadByConversation.has(key)) leadByConversation.set(key, customer);
-      } else if (!rowBusinessId) {
-        // Legacy rows created before appointments_leads had business_id.
-        // Use only as a fallback after an exact business match is unavailable.
-        if (!legacyLeadByConversation.has(key)) {
-          legacyLeadByConversation.set(key, customer);
-        }
-      }
+      if (!leadByConversation.has(key)) leadByConversation.set(key, customer);
     }
 
     for (const row of appointmentRows || []) {
@@ -18410,18 +22249,17 @@ app.get('/api/businesses/:businessId/conversations', requireAuth, requireBusines
             : 'ai';
 
       if (!grouped.has(key)) {
-        // Name priority: exact lead from this business, then legacy lead,
-        // then appointment, then a neutral customer-id fallback.
+        // Name priority: tenant-scoped lead, then tenant-scoped appointment,
+        // then a neutral customer-id fallback.
         const lead = leadByConversation.get(key);
-        const legacyLead = legacyLeadByConversation.get(key);
         const appointment = appointmentByConversation.get(key);
-        const customer = lead || legacyLead || appointment;
+        const customer = lead || appointment;
         const appointmentStatus = appointment?.status || '';
         const status = appointmentStatus === 'booked' || appointmentStatus === 'confirmed'
           ? 'booked'
           : appointmentStatus === 'pending'
             ? 'pending'
-            : 'handled';
+            : 'open';
 
         grouped.set(key, {
           id: key,
@@ -18455,24 +22293,131 @@ app.get('/api/businesses/:businessId/conversations', requireAuth, requireBusines
       conversation.updatedAt = createdAt;
     }
 
+    if (activityCutoff) {
+      for (const conversation of grouped.values()) conversation.unreadCount = 0;
+      for (const row of unreadRows || []) {
+        const sender = String(row.sender || '').trim().toLowerCase();
+        if (sender !== 'user' && sender !== 'customer') continue;
+        const channel = normalizeChannel(row.platform);
+        const normalizedUserId = normalizeUserId(row.user_id, channel);
+        const conversation = grouped.get(`${channel}:${normalizedUserId}`);
+        if (conversation) conversation.unreadCount += 1;
+      }
+    }
+
     const conversations = Array.from(grouped.values())
       .map((conversation: any) => ({
         ...conversation,
         preview: conversation.preview || 'No message preview available.',
       }))
+      .filter((conversation: any) =>
+        !channelFilter || conversation.channel === channelFilter,
+      )
+      .filter((conversation: any) =>
+        conversationMatchesStatusFilter(conversation.status, statusFilter),
+      )
+      .filter((conversation: any) =>
+        !search || `${conversation.customerName} ${conversation.preview} ${conversation.status} ${conversation.channel}`
+          .toLowerCase()
+          .includes(search),
+      )
       .sort(
         (a: any, b: any) =>
-          new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
+          new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime() ||
+          String(a.id).localeCompare(String(b.id)),
       );
 
+    const items = conversations.slice(cursor, cursor + limit).map((conversation: any) => ({
+      ...conversation,
+      messages: [],
+    }));
+    const nextCursor = cursor + items.length;
+
     res.setHeader('Cache-Control', 'no-store');
-    return res.status(200).json(conversations);
+    if (!pagedResponseRequested) {
+      // Preserve the original array contract for existing internal/external
+      // callers. The redesigned inbox opts into the paged contract explicitly.
+      return res.status(200).json(conversations);
+    }
+    return res.status(200).json({
+      items,
+      pagination: {
+        nextCursor: nextCursor < conversations.length ? nextCursor : null,
+        hasMore: nextCursor < conversations.length,
+        total: conversations.length,
+      },
+    });
   } catch (err: any) {
     logOperatorApiFailure('conversation_list_failed', req, req.params.businessId);
     return res.status(500).json({
       success: false,
       message: 'Could not fetch conversations.',
     });
+  }
+});
+
+
+// API: load one tenant-scoped conversation thread in bounded pages.
+app.get('/api/businesses/:businessId/conversations/:conversationId', requireAuth, requireBusinessPermission('conversations.read'), async (req, res) => {
+  try {
+    if (!supabase) {
+      return res.status(500).json({ success: false, message: 'Supabase is not configured.' });
+    }
+
+    const businessId = String(req.params.businessId || '').trim();
+    const conversationId = String(req.params.conversationId || '').trim();
+    const identity = parseConversationId(conversationId);
+    if (!businessId || !identity) {
+      return res.status(400).json({
+        success: false,
+        message: 'A valid businessId and conversationId are required.',
+      });
+    }
+
+    const rawLimit = Number(req.query.limit || 75);
+    const limit = Math.min(100, Math.max(1, Number.isFinite(rawLimit) ? Math.floor(rawLimit) : 75));
+    const rawCursor = Number(req.query.cursor || 0);
+    const cursor = Math.max(0, Number.isFinite(rawCursor) ? Math.floor(rawCursor) : 0);
+
+    // Page through tenant-scoped source rows until this canonical conversation's
+    // requested message page is complete. List and thread use the same canonical
+    // provider identity normalization.
+    const threadPage = await collectConversationMatchPage(async (from, to) => {
+      const { data, error } = await supabase
+        .from('chat_history')
+        .select('id,business_id,user_id,platform,sender,message,created_at,is_read')
+        .eq('business_id', businessId)
+        .order('created_at', { ascending: false })
+        .order('id', { ascending: false })
+        .range(from, to);
+      if (error) throw error;
+      return data || [];
+    }, (row: any) => {
+      const channel = normalizePlatformName(row.platform);
+      return channel === identity.channel &&
+        normalizePlatformUserId(channel, row.user_id) === identity.userId;
+    }, cursor, limit);
+
+    if (threadPage.rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Conversation was not found for this business.' });
+    }
+
+    const pageRows = threadPage.rows;
+    const hasMore = threadPage.hasMore;
+    const messages = pageRows.map(toConversationMessage).reverse();
+
+    res.setHeader('Cache-Control', 'no-store');
+    return res.status(200).json({
+      conversationId,
+      messages,
+      pagination: {
+        nextCursor: hasMore ? cursor + pageRows.length : null,
+        hasMore,
+      },
+    });
+  } catch (err: any) {
+    logOperatorApiFailure('conversation_thread_failed', req, req.params.businessId);
+    return res.status(500).json({ success: false, message: 'Could not fetch conversation messages.' });
   }
 });
 
@@ -18632,7 +22577,12 @@ app.post('/api/businesses/:businessId/conversations/:conversationId/messages', r
       sent = await sendMessengerMessage(recipient, text, businessConfig);
     } else if (requestedChannel === 'instagram') {
       const token = getBusinessInstagramToken(businessConfig);
-      sent = await sendInstagramMessage(recipient, text, token);
+      sent = await sendInstagramMessage(
+        recipient,
+        text,
+        token,
+        getScopedChannelSessionId('instagram', recipient, businessConfig)
+      );
     } else if (requestedChannel === 'telegram') {
       const token =
         businessConfig?.telegramToken ||
@@ -18852,6 +22802,136 @@ app.put('/api/businesses/:businessId/conversations/:conversationId/read', requir
   }
 });
 
+// API: compact, tenant-scoped recent operational activity read model.
+app.get('/api/businesses/:businessId/activity', requireAuth, requireBusinessPermission('business.read'), async (req, res) => {
+  try {
+    if (!supabase) {
+      return res.status(500).json({ success: false, message: 'Supabase is not configured.' });
+    }
+
+    const businessId = Number(req.params.businessId);
+    if (!Number.isSafeInteger(businessId) || businessId <= 0) {
+      return res.status(400).json({ success: false, message: 'A valid businessId is required.' });
+    }
+
+    const rawLimit = Number(req.query.limit || 30);
+    const limit = Math.min(50, Math.max(1, Number.isFinite(rawLimit) ? Math.floor(rawLimit) : 30));
+    const rawCursor = Number(req.query.cursor || 0);
+    const cursor = Math.max(0, Number.isFinite(rawCursor) ? Math.floor(rawCursor) : 0);
+    const category = String(req.query.category || 'all').trim().toLowerCase();
+    const bookingEvents = [
+      'booking_completed', 'booking_created', 'booking_cancelled',
+      'booking_rescheduled', 'booking_failed',
+    ];
+    const conversationEvents = ['conversation_started'];
+    const eventNames = category === 'bookings'
+      ? bookingEvents
+      : category === 'conversations'
+        ? conversationEvents
+        : [...bookingEvents, ...conversationEvents];
+
+    const { data: eventRows, error: eventError } = await supabase
+      .from('analytics_events')
+      .select('id,event_name,occurred_at,conversation_id,booking_id,platform,channel,service_name_snapshot,outcome')
+      .eq('business_id', businessId)
+      .in('event_name', eventNames)
+      .order('occurred_at', { ascending: false })
+      .order('id', { ascending: false })
+      .range(cursor, cursor + limit);
+    if (eventError) throw eventError;
+
+    const pageRows = (eventRows || []).slice(0, limit);
+    const bookingIds = [...new Set(pageRows
+      .map((row: any) => Number(row.booking_id))
+      .filter((value: number) => Number.isSafeInteger(value) && value > 0))];
+    const appointmentsById = new Map<number, { customerName: string; serviceName: string }>();
+    if (bookingIds.length > 0) {
+      const { data: appointmentRows, error: appointmentError } = await supabase
+        .from('appointments')
+        .select('id,business_id,customer_name,service')
+        .eq('business_id', businessId)
+        .in('id', bookingIds);
+      if (appointmentError) throw appointmentError;
+      for (const row of appointmentRows || []) {
+        appointmentsById.set(Number(row.id), {
+          customerName: String(row.customer_name || '').trim(),
+          serviceName: String(row.service || '').trim(),
+        });
+      }
+    }
+
+    const mapped = new Map<string, any>();
+    for (const row of pageRows) {
+      const eventName = String(row.event_name || '');
+      const bookingId = Number(row.booking_id);
+      const appointment = appointmentsById.get(bookingId);
+      const serviceName = appointment?.serviceName || String(row.service_name_snapshot || '').trim();
+      const detail = [appointment?.customerName, serviceName].filter(Boolean).join(' · ');
+      const channelCandidate = normalizePlatformName(String(row.platform || row.channel || ''));
+      const normalizedChannel = ['whatsapp', 'instagram', 'messenger', 'telegram', 'google_calendar']
+        .includes(channelCandidate)
+        ? channelCandidate
+        : '';
+      const type = eventName === 'booking_cancelled'
+        ? 'booking_cancelled'
+        : eventName === 'booking_rescheduled'
+          ? 'booking_rescheduled'
+          : eventName === 'booking_failed'
+            ? 'booking_failed'
+            : eventName === 'conversation_started'
+              ? 'conversation_started'
+              : 'booking_confirmed';
+      const canonicalIdentity = type === 'booking_confirmed' && Number.isSafeInteger(bookingId) && bookingId > 0
+        ? `booking:${bookingId}:confirmed`
+        : type === 'conversation_started' && row.conversation_id
+          ? `conversation:${row.conversation_id}:started`
+          : `event:${row.id}`;
+      const key = crypto.createHash('sha256')
+        .update(`activity:v1:${businessId}:${canonicalIdentity}`)
+        .digest('hex')
+        .slice(0, 32);
+      if (mapped.has(key)) continue;
+
+      mapped.set(key, {
+        key,
+        type,
+        category: type === 'conversation_started' ? 'conversations' : 'bookings',
+        title: type === 'booking_cancelled'
+          ? 'Booking cancelled'
+          : type === 'booking_rescheduled'
+            ? 'Booking rescheduled'
+            : type === 'booking_failed'
+              ? 'Booking attempt failed'
+              : type === 'conversation_started'
+                ? 'Conversation started'
+                : 'Booking confirmed',
+        ...(detail ? { detail } : {}),
+        occurredAt: row.occurred_at,
+        ...(normalizedChannel ? { channel: normalizedChannel } : {}),
+        severity: type === 'booking_failed'
+          ? 'error'
+          : type === 'booking_cancelled'
+            ? 'warning'
+            : type === 'booking_confirmed'
+              ? 'success'
+              : 'info',
+      });
+    }
+
+    res.setHeader('Cache-Control', 'no-store');
+    return res.status(200).json({
+      items: [...mapped.values()],
+      pagination: {
+        nextCursor: (eventRows || []).length > limit ? cursor + pageRows.length : null,
+        hasMore: (eventRows || []).length > limit,
+      },
+    });
+  } catch (err: any) {
+    logOperatorApiFailure('activity_list_failed', req, req.params.businessId);
+    return res.status(500).json({ success: false, message: 'Could not fetch recent activity.' });
+  }
+});
+
 app.get('/api/businesses/:businessId/bookings', requireAuth, requireBusinessPermission('bookings.read'), async (req, res) => {
   try {
     if (!supabase) {
@@ -18872,9 +22952,26 @@ app.get('/api/businesses/:businessId/bookings', requireAuth, requireBusinessPerm
 
     const rawLimit = Number(req.query.limit || 250);
     const limit = Math.min(
-      500,
-      Math.max(1, Number.isFinite(rawLimit) ? Math.floor(rawLimit) : 250),
+      req.query.view ? 50 : 500,
+      Math.max(1, Number.isFinite(rawLimit) ? Math.floor(rawLimit) : (req.query.view ? 25 : 250)),
     );
+    const pagedResponseRequested = ['view', 'cursor', 'search', 'timezone']
+      .some((key) => req.query[key] !== undefined);
+    const rawCursor = Number(req.query.cursor || 0);
+    const cursor = Math.max(0, Number.isFinite(rawCursor) ? Math.floor(rawCursor) : 0);
+    const requestedView = String(req.query.view || 'upcoming').trim().toLowerCase();
+    const view = ['upcoming', 'pending', 'past', 'cancelled', 'all'].includes(requestedView)
+      ? requestedView
+      : 'upcoming';
+    const search = String(req.query.search || '').trim().toLowerCase().slice(0, 100);
+    const requestedTimezone = String(req.query.timezone || 'UTC').trim();
+    let timezone = 'UTC';
+    try {
+      new Intl.DateTimeFormat('en-CA', { timeZone: requestedTimezone }).format(new Date());
+      timezone = requestedTimezone;
+    } catch {
+      timezone = 'UTC';
+    }
 
     const { data, error } = await supabase
       .from('appointments')
@@ -18883,7 +22980,8 @@ app.get('/api/businesses/:businessId/bookings', requireAuth, requireBusinessPerm
       )
       .eq('business_id', businessId)
       .order('start_time', { ascending: false })
-      .limit(limit);
+      .order('id', { ascending: false })
+      .limit(pagedResponseRequested ? 2001 : limit);
 
     if (error) throw error;
 
@@ -18934,11 +23032,18 @@ app.get('/api/businesses/:businessId/bookings', requireAuth, requireBusinessPerm
         return 'pending';
       }
 
-      // Existing appointment rows use "booked". The dashboard calls this "confirmed".
-      return 'confirmed';
+      if (
+        status === 'booked' ||
+        status === 'confirmed' ||
+        status === 'active'
+      ) {
+        return 'confirmed';
+      }
+
+      return 'unknown';
     };
 
-    const bookings = (data || []).map((row: any) => ({
+    const bookings = (data || []).slice(0, pagedResponseRequested ? 2000 : limit).map((row: any) => ({
       id: String(row.id),
       customerName: String(row.customer_name || 'Unknown customer'),
       serviceName: row.service ? String(row.service) : undefined,
@@ -18946,10 +23051,62 @@ app.get('/api/businesses/:businessId/bookings', requireAuth, requireBusinessPerm
       status: normalizeStatus(row.status),
       startsAt: row.start_time || row.created_at || new Date().toISOString(),
       endsAt: row.end_time || undefined,
+      createdAt: row.created_at || undefined,
     }));
 
     res.setHeader('Cache-Control', 'no-store');
-    return res.status(200).json(bookings);
+    if (!pagedResponseRequested) {
+      return res.status(200).json(bookings);
+    }
+
+    const now = new Date();
+    const nowTime = now.getTime();
+    const dateKey = (value: string | Date) => new Intl.DateTimeFormat('en-CA', {
+      timeZone: timezone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).format(new Date(value));
+    const todayKey = dateKey(now);
+    const isActive = (booking: any) => booking.status === 'confirmed' || booking.status === 'pending';
+    const isFuture = (booking: any) => new Date(booking.startsAt).getTime() >= nowTime;
+    const summary = {
+      today: bookings.filter((booking: any) => isActive(booking) && dateKey(booking.startsAt) === todayKey).length,
+      upcoming: bookings.filter((booking: any) => isActive(booking) && isFuture(booking)).length,
+      pending: bookings.filter((booking: any) => booking.status === 'pending').length,
+      cancelled: bookings.filter((booking: any) => booking.status === 'cancelled').length,
+      scanTruncated: (data || []).length > 2000,
+    };
+    const filtered = sortBookingsStable(bookings
+      .filter((booking: any) => bookingMatchesView(booking, view as any, now))
+      .filter((booking: any) => !search || [
+        booking.customerName,
+        booking.serviceName,
+        booking.channel,
+        booking.status,
+        booking.startsAt,
+        dateKey(booking.startsAt),
+        new Intl.DateTimeFormat('en', {
+          timeZone: timezone,
+          month: 'short',
+          day: 'numeric',
+          year: 'numeric',
+        }).format(new Date(booking.startsAt)),
+      ].some((value) => String(value || '').toLowerCase().includes(search))),
+      view === 'upcoming' || view === 'pending',
+    );
+    const items = filtered.slice(cursor, cursor + limit);
+    const nextCursor = cursor + items.length;
+
+    return res.status(200).json({
+      items,
+      summary,
+      pagination: {
+        nextCursor: nextCursor < filtered.length ? nextCursor : null,
+        hasMore: nextCursor < filtered.length,
+        total: filtered.length,
+      },
+    });
   } catch (err: any) {
     logOperatorApiFailure('booking_list_failed', req, req.params.businessId);
     return res.status(500).json({
@@ -18959,6 +23116,344 @@ app.get('/api/businesses/:businessId/bookings', requireAuth, requireBusinessPerm
   }
 });
 
+
+function getHealthCheckConfig(businessRow: any): IntegrationHealthConfig {
+  return {
+    // Provider identities and tokens must come from this tenant's row. Global
+    // messaging fallbacks cannot establish health for a selected business.
+    telegramToken: businessRow.telegram_bot_token || businessRow.telegram_token || undefined,
+    instagramAccessToken: businessRow.instagram_access_token || undefined,
+    messengerPageId: businessRow.messenger_page_id || businessRow.facebook_page_id || businessRow.page_id || undefined,
+    messengerAccessToken: businessRow.messenger_page_access_token || businessRow.messenger_access_token || businessRow.facebook_page_access_token || undefined,
+    whatsappPhoneNumberId: businessRow.whatsapp_phone_number_id || undefined,
+    whatsappAccessToken: businessRow.whatsapp_access_token || undefined,
+    calendarId: businessRow.google_calendar_id || businessRow.calendar_id || undefined,
+    // The service account may be shared infrastructure, but the calendar
+    // identity above remains tenant-owned and mandatory.
+    googleClientEmail: businessRow.google_client_email || process.env.GOOGLE_CLIENT_EMAIL || undefined,
+    googlePrivateKey: businessRow.google_private_key || process.env.GOOGLE_PRIVATE_KEY || undefined,
+  };
+}
+
+async function probeHealthCalendar(config: IntegrationHealthConfig) {
+  let privateKey = String(config.googlePrivateKey || '');
+  if (privateKey.trim().startsWith('{')) {
+    try { privateKey = JSON.parse(privateKey).private_key || privateKey; } catch { /* safe normalized failure below */ }
+  }
+  if (privateKey.startsWith('"') && privateKey.endsWith('"')) privateKey = privateKey.slice(1, -1);
+  privateKey = privateKey.replace(/\\n/g, '\n');
+  try {
+    const auth = new google.auth.JWT({
+      email: config.googleClientEmail,
+      key: privateKey,
+      scopes: ['https://www.googleapis.com/auth/calendar'],
+    });
+    const calendar = google.calendar({ version: 'v3', auth });
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error('health_timeout')), HEALTH_CHECK_TIMEOUT_MS);
+    });
+    const result = await Promise.race([
+      calendar.calendars.get({ calendarId: config.calendarId }),
+      timeout,
+    ]).finally(() => { if (timer) clearTimeout(timer); });
+    return result?.status === 200
+      ? { status: 'connected' as const, reasonCode: 'verified' as const }
+      : { status: 'degraded' as const, reasonCode: 'provider_unavailable' as const };
+  } catch (error: any) {
+    if (error?.message === 'health_timeout') return { status: 'degraded' as const, reasonCode: 'timeout' as const };
+    const status = Number(error?.response?.status || error?.code);
+    return status === 401 || status === 403
+      ? { status: 'disconnected' as const, reasonCode: 'authorization_invalid' as const }
+      : { status: 'degraded' as const, reasonCode: 'provider_unavailable' as const };
+  }
+}
+
+async function loadHealthBusiness(businessId: number) {
+  const { data, error } = await supabase!
+    .from('businesses')
+    .select('*')
+    .eq('id', businessId)
+    .maybeSingle();
+  if (error) throw error;
+  return data;
+}
+
+async function syncBusinessNotifications(businessId: number): Promise<void> {
+  const business = await loadHealthBusiness(businessId);
+  if (!business) return;
+
+  const health = getIntegrationHealthSnapshot(businessId, getHealthCheckConfig(business));
+  const historyStart = new Date(Date.now() - 90 * 24 * 60 * 60_000).toISOString();
+  const { data: analyticsRows, error: analyticsError } = await supabase!
+    .from('analytics_events')
+    .select('id,event_name,occurred_at,conversation_id,reason_code')
+    .eq('business_id', businessId)
+    .in('event_name', ['booking_failed', 'booking_completed'])
+    .gte('occurred_at', historyStart)
+    .order('occurred_at', { ascending: false })
+    .limit(500);
+  if (analyticsError) throw analyticsError;
+
+  const projections: NotificationProjection[] = [
+    ...projectHealthNotifications(health),
+    ...projectBookingFailureNotifications(analyticsRows || []),
+  ];
+  const conditionKeys = projections.map((item) => item.conditionKey);
+  const existingByCondition = new Map<string, any>();
+  if (conditionKeys.length > 0) {
+    const { data: existing, error: existingError } = await supabase!
+      .from('business_notifications')
+      .select('condition_key,first_observed_at,read_at,resolved_at')
+      .eq('business_id', businessId)
+      .in('condition_key', conditionKeys);
+    if (existingError) throw existingError;
+    for (const row of existing || []) existingByCondition.set(row.condition_key, row);
+
+    const rows = projections.map((item) => {
+      const existing = existingByCondition.get(item.conditionKey);
+      const recurring = Boolean(existing?.resolved_at && !item.resolvedAt);
+      return {
+        business_id: businessId,
+        condition_key: item.conditionKey,
+        category: item.category,
+        severity: item.severity,
+        title: item.title,
+        description: item.description,
+        first_observed_at: recurring
+          ? item.firstObservedAt
+          : existing?.first_observed_at || item.firstObservedAt,
+        last_observed_at: item.lastObservedAt,
+        read_at: recurring ? null : existing?.read_at || null,
+        resolved_at: item.resolvedAt,
+        action_type: item.actionType,
+        action_target: item.actionTarget,
+        source_type: item.sourceType,
+        reason_code: item.reasonCode,
+        updated_at: new Date().toISOString(),
+      };
+    });
+    const { error: upsertError } = await supabase!
+      .from('business_notifications')
+      .upsert(rows, { onConflict: 'business_id,condition_key' });
+    if (upsertError) throw upsertError;
+  }
+
+  const resolvedKeys = resolvedHealthConditionKeys(health);
+  if (resolvedKeys.length > 0) {
+    const resolvedAt = new Date().toISOString();
+    const { error: resolveError } = await supabase!
+      .from('business_notifications')
+      .update({ resolved_at: resolvedAt, updated_at: resolvedAt })
+      .eq('business_id', businessId)
+      .eq('source_type', 'integration_health')
+      .is('resolved_at', null)
+      .in('condition_key', resolvedKeys);
+    if (resolveError) throw resolveError;
+  }
+}
+
+async function getActiveNotificationUnreadCount(businessId: number): Promise<number> {
+  const { count, error } = await supabase!
+    .from('business_notifications')
+    .select('id', { count: 'exact', head: true })
+    .eq('business_id', businessId)
+    .is('resolved_at', null)
+    .is('read_at', null);
+  if (error) throw error;
+  return Number(count || 0);
+}
+
+async function getActiveNotificationCount(businessId: number): Promise<number> {
+  const { count, error } = await supabase!
+    .from('business_notifications')
+    .select('id', { count: 'exact', head: true })
+    .eq('business_id', businessId)
+    .is('resolved_at', null);
+  if (error) throw error;
+  return Number(count || 0);
+}
+
+async function loadDashboardOperationalSources(
+  businessId: number,
+): Promise<DashboardOperationalSources> {
+  const [healthResult, notificationResult] = await Promise.allSettled([
+    loadHealthBusiness(businessId).then((business) => (
+      business
+        ? getIntegrationHealthSnapshot(businessId, getHealthCheckConfig(business))
+        : null
+    )),
+    syncBusinessNotifications(businessId).then(() => getActiveNotificationCount(businessId)),
+  ]);
+
+  return {
+    health: healthResult.status === 'fulfilled' ? healthResult.value : null,
+    activeNotificationCount: notificationResult.status === 'fulfilled'
+      ? notificationResult.value
+      : null,
+  };
+}
+
+app.get('/api/businesses/:businessId/notifications', requireAuth, requireBusinessPermission('business.read'), async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ success: false, message: 'Notifications are unavailable.' });
+    const businessId = Number(req.params.businessId);
+    if (!Number.isSafeInteger(businessId) || businessId <= 0) {
+      return res.status(400).json({ success: false, message: 'A valid businessId is required.' });
+    }
+    const rawLimit = Number(req.query.limit || 25);
+    const limit = Math.min(50, Math.max(1, Number.isFinite(rawLimit) ? Math.floor(rawLimit) : 25));
+    const rawCursor = Number(req.query.cursor || 0);
+    const cursor = Math.max(0, Number.isFinite(rawCursor) ? Math.floor(rawCursor) : 0);
+    const filter = String(req.query.filter || 'all').trim().toLowerCase();
+
+    // Read-through projection is bounded and informational. Any failure remains
+    // inside this notification request and cannot affect operational paths.
+    await syncBusinessNotifications(businessId);
+
+    let query = supabase
+      .from('business_notifications')
+      .select('id,category,severity,title,description,first_observed_at,last_observed_at,read_at,resolved_at,action_type,action_target')
+      .eq('business_id', businessId)
+      .is('resolved_at', null)
+      .order('last_observed_at', { ascending: false })
+      .order('id', { ascending: false })
+      .range(cursor, cursor + limit);
+    if (filter === 'unread') query = query.is('read_at', null);
+    if (filter === 'attention') query = query.in('severity', ['attention', 'critical']);
+    const { data: rows, error } = await query;
+    if (error) throw error;
+    const pageRows = (rows || []).slice(0, limit);
+    const unreadCount = await getActiveNotificationUnreadCount(businessId);
+
+    res.setHeader('Cache-Control', 'no-store');
+    return res.status(200).json({
+      items: pageRows.map((row: any) => ({
+        id: row.id,
+        category: row.category,
+        severity: row.severity,
+        title: row.title,
+        description: row.description,
+        firstObservedAt: row.first_observed_at,
+        lastObservedAt: row.last_observed_at,
+        read: Boolean(row.read_at),
+        active: !row.resolved_at,
+        ...(row.action_type ? { actionType: row.action_type } : {}),
+        ...(row.action_target ? { actionTarget: row.action_target } : {}),
+      })),
+      unreadCount,
+      pagination: {
+        nextCursor: (rows || []).length > limit ? cursor + pageRows.length : null,
+        hasMore: (rows || []).length > limit,
+      },
+    });
+  } catch (error) {
+    logOperatorApiFailure('notification_list_failed', req, req.params.businessId);
+    return res.status(500).json({ success: false, message: 'Could not load notifications.' });
+  }
+});
+
+app.put('/api/businesses/:businessId/notifications/read-all', requireAuth, requireBusinessPermission('business.read'), async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ success: false, message: 'Notifications are unavailable.' });
+    const businessId = Number(req.params.businessId);
+    if (!Number.isSafeInteger(businessId) || businessId <= 0) return res.status(400).json({ success: false, message: 'A valid businessId is required.' });
+    const readAt = new Date().toISOString();
+    const { error } = await supabase.from('business_notifications')
+      .update({ read_at: readAt, updated_at: readAt })
+      .eq('business_id', businessId)
+      .is('resolved_at', null)
+      .is('read_at', null);
+    if (error) throw error;
+    return res.status(200).json({ success: true, unreadCount: 0 });
+  } catch (error) {
+    logOperatorApiFailure('notification_read_all_failed', req, req.params.businessId);
+    return res.status(500).json({ success: false, message: 'Could not update notifications.' });
+  }
+});
+
+app.put('/api/businesses/:businessId/notifications/:notificationId/read', requireAuth, requireBusinessPermission('business.read'), async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ success: false, message: 'Notifications are unavailable.' });
+    const businessId = Number(req.params.businessId);
+    const notificationId = String(req.params.notificationId || '').trim();
+    if (!Number.isSafeInteger(businessId) || businessId <= 0 || !/^[0-9a-f-]{36}$/i.test(notificationId)) {
+      return res.status(400).json({ success: false, message: 'A valid notification is required.' });
+    }
+    const readAt = new Date().toISOString();
+    const { error } = await supabase.from('business_notifications')
+      .update({ read_at: readAt, updated_at: readAt })
+      .eq('business_id', businessId)
+      .eq('id', notificationId)
+      .is('resolved_at', null);
+    if (error) throw error;
+    return res.status(200).json({ success: true, unreadCount: await getActiveNotificationUnreadCount(businessId) });
+  } catch (error) {
+    logOperatorApiFailure('notification_read_failed', req, req.params.businessId);
+    return res.status(500).json({ success: false, message: 'Could not update the notification.' });
+  }
+});
+
+app.get('/api/businesses/:businessId/integrations/health', requireAuth, requireBusinessPermission('business.read'), async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ success: false, message: 'Supabase is not configured.' });
+    const businessId = Number(req.params.businessId);
+    if (!Number.isSafeInteger(businessId) || businessId <= 0) {
+      return res.status(400).json({ success: false, message: 'A valid businessId is required.' });
+    }
+    const business = await loadHealthBusiness(businessId);
+    if (!business) return res.status(404).json({ success: false, message: 'Business not found.' });
+    res.setHeader('Cache-Control', 'no-store');
+    return res.status(200).json(getIntegrationHealthSnapshot(businessId, getHealthCheckConfig(business)));
+  } catch (err: any) {
+    logOperatorApiFailure('integration_health_read_failed', req, req.params.businessId);
+    return res.status(500).json({ success: false, message: 'Could not load integration health.' });
+  }
+});
+
+app.post('/api/businesses/:businessId/integrations/health/refresh', requireAuth, requireBusinessPermission('business.read'), async (req, res) => {
+  try {
+    if (!supabase) return res.status(500).json({ success: false, message: 'Supabase is not configured.' });
+    const businessId = Number(req.params.businessId);
+    const integration = String(req.body?.integration || '').trim().toLowerCase() as any;
+    const supported = ['instagram', 'messenger', 'telegram', 'whatsapp', 'google_calendar'];
+    if (!Number.isSafeInteger(businessId) || businessId <= 0 || !supported.includes(integration)) {
+      return res.status(400).json({ success: false, message: 'A valid businessId and integration are required.' });
+    }
+    const business = await loadHealthBusiness(businessId);
+    if (!business) return res.status(404).json({ success: false, message: 'Business not found.' });
+    const config = getHealthCheckConfig(business);
+    if (isIntegrationConfigured(integration, config)) {
+      await refreshIntegrationHealth({
+        businessId,
+        integration,
+        config,
+        calendarProbe: probeHealthCalendar,
+        force: Boolean(req.body?.force),
+      });
+    }
+    const item = getIntegrationHealthSnapshot(businessId, config)
+      .find((health) => health.key === integration);
+    res.setHeader('Cache-Control', 'no-store');
+    return res.status(200).json({ success: true, data: item });
+  } catch (err: any) {
+    logOperatorApiFailure('integration_health_refresh_failed', req, req.params.businessId);
+    return res.status(200).json({
+      success: true,
+      data: {
+        key: String(req.body?.integration || ''),
+        label: 'Integration',
+        status: 'unknown',
+        detail: 'Health check could not be completed.',
+        lastCheckedAt: null,
+        stale: true,
+        refreshInProgress: false,
+        reasonCode: 'check_failed',
+        action: 'retry',
+      },
+    });
+  }
+});
 
 // Tests a saved integration for one business and always returns JSON.
 // Frontend endpoint:
@@ -19378,12 +23873,236 @@ app.put('/api/businesses/:id', requireAuth, requireBusinessPermission('settings.
       payload[databaseKey] = value;
     };
 
+    const setServices = (
+      requestKeys: string[],
+      databaseKey: string
+    ) => {
+      const requestKey = requestKeys.find((key) => has(key));
+      if (!requestKey) return;
+
+      const value = body[requestKey];
+
+      if (!Array.isArray(value)) {
+        throw new Error(`${requestKey} must be an array.`);
+      }
+
+      const normalized = value.map((item: any, index: number) => {
+        if (
+          !item ||
+          typeof item !== 'object' ||
+          Array.isArray(item)
+        ) {
+          throw new Error(`Invalid service at index ${index}.`);
+        }
+
+        const name = String(item.name ?? '').trim();
+
+        if (!name) {
+          throw new Error(`Service ${index + 1} must have a name.`);
+        }
+
+        const durationMinutes = Number(
+          item.durationMinutes ?? item.duration_minutes
+        );
+
+        if (
+          !Number.isFinite(durationMinutes) ||
+          !Number.isInteger(durationMinutes) ||
+          durationMinutes <= 0 ||
+          durationMinutes > 24 * 60
+        ) {
+          throw new Error(
+            `Service "${name}" must have a valid durationMinutes between 1 and 1440.`
+          );
+        }
+
+        let price: number | null = null;
+
+        if (
+          item.price !== undefined &&
+          item.price !== null &&
+          String(item.price).trim() !== ''
+        ) {
+          const parsedPrice = Number(item.price);
+
+          if (!Number.isFinite(parsedPrice) || parsedPrice < 0) {
+            throw new Error(
+              `Service "${name}" must have a non-negative price.`
+            );
+          }
+
+          price = parsedPrice;
+        }
+
+        const currency = String(item.currency ?? 'SEK')
+          .trim()
+          .toUpperCase();
+
+        if (!/^[A-Z]{3}$/.test(currency)) {
+          throw new Error(
+            `Service "${name}" must have a valid 3-letter currency code.`
+          );
+        }
+
+        const active =
+          item.active === undefined
+            ? true
+            : Boolean(item.active);
+
+        return {
+          name,
+          durationMinutes,
+          price,
+          currency,
+          active,
+        };
+      });
+
+      const seenNames = new Set<string>();
+
+      for (const service of normalized) {
+        const key = service.name.toLocaleLowerCase();
+
+        if (seenNames.has(key)) {
+          throw new Error(
+            `Duplicate service name: "${service.name}".`
+          );
+        }
+
+        seenNames.add(key);
+      }
+
+      payload[databaseKey] = normalized;
+    };
+
+    const setWorkingHours = (
+      requestKeys: string[],
+      databaseKey: string
+    ) => {
+      const requestKey = requestKeys.find((key) => has(key));
+      if (!requestKey) return;
+
+      const value = body[requestKey];
+
+      if (
+        !value ||
+        typeof value !== 'object' ||
+        Array.isArray(value)
+      ) {
+        throw new Error(`${requestKey} must be an object.`);
+      }
+
+      const allowedDays = new Set([
+        'monday',
+        'tuesday',
+        'wednesday',
+        'thursday',
+        'friday',
+        'saturday',
+        'sunday',
+      ]);
+
+      const suppliedDays = Object.keys(value);
+
+      for (const day of suppliedDays) {
+        if (!allowedDays.has(day)) {
+          throw new Error(`Invalid working-hours day: ${day}.`);
+        }
+      }
+
+      const normalizeClock = (input: unknown): string => {
+        const raw = String(input ?? '').trim();
+        const match = raw.match(/^(\d{1,2}):(\d{2})$/);
+
+        if (!match) {
+          throw new Error(`Invalid working-hours time: ${raw}.`);
+        }
+
+        const hours = Number(match[1]);
+        const minutes = Number(match[2]);
+
+        if (
+          !Number.isInteger(hours) ||
+          !Number.isInteger(minutes) ||
+          hours < 0 ||
+          hours > 23 ||
+          minutes < 0 ||
+          minutes > 59
+        ) {
+          throw new Error(`Invalid working-hours time: ${raw}.`);
+        }
+
+        return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+      };
+
+      const normalized: Record<
+        string,
+        Array<{ start: string; end: string }>
+      > = {};
+
+      for (const day of allowedDays) {
+        const rawIntervals = (value as Record<string, unknown>)[day];
+
+        if (rawIntervals === undefined) continue;
+
+        if (!Array.isArray(rawIntervals)) {
+          throw new Error(`${day} working hours must be an array.`);
+        }
+
+        const intervals = rawIntervals.map((interval: any) => {
+          if (
+            !interval ||
+            typeof interval !== 'object' ||
+            Array.isArray(interval)
+          ) {
+            throw new Error(`Invalid ${day} working-hours interval.`);
+          }
+
+          const start = normalizeClock(interval.start);
+          const end = normalizeClock(interval.end);
+
+          const [startHour, startMinute] = start.split(':').map(Number);
+          const [endHour, endMinute] = end.split(':').map(Number);
+
+          const startMinutes = startHour * 60 + startMinute;
+          const endMinutes = endHour * 60 + endMinute;
+
+          if (startMinutes >= endMinutes) {
+            throw new Error(
+              `${day} working-hours start must be before end.`
+            );
+          }
+
+          return { start, end };
+        });
+
+        const sorted = [...intervals].sort((a, b) =>
+          a.start.localeCompare(b.start)
+        );
+
+        for (let i = 1; i < sorted.length; i++) {
+          if (sorted[i].start < sorted[i - 1].end) {
+            throw new Error(
+              `${day} working-hours intervals must not overlap.`
+            );
+          }
+        }
+
+        normalized[day] = sorted;
+      }
+
+      payload[databaseKey] = normalized;
+    };
+
     // General business settings
     setText(['businessName', 'name'], 'business_name');
     setText(['industry'], 'industry');
     setText(['timezone'], 'timezone');
     setText(['language'], 'language');
+    setWorkingHours(['workingHours', 'working_hours'], 'working_hours');
+    setServices(['services'], 'services');
     setText(['systemPrompt'], 'custom_system_prompt');
+    applyBusinessToneConfigUpdate(body, payload);
 
     // Customer cancellation policy
     setBoolean(['allowCancellation', 'allow_cancellation'], 'allow_cancellation');
@@ -19487,6 +24206,14 @@ app.put('/api/businesses/:id', requireAuth, requireBusinessPermission('settings.
       });
     }
 
+    const changedIntegrations: IntegrationKey[] = [];
+    if ('google_calendar_id' in payload) changedIntegrations.push('google_calendar');
+    if (Object.keys(payload).some((key) => key.startsWith('instagram_'))) changedIntegrations.push('instagram');
+    if (Object.keys(payload).some((key) => key.startsWith('messenger_'))) changedIntegrations.push('messenger');
+    if ('telegram_bot_token' in payload) changedIntegrations.push('telegram');
+    if (Object.keys(payload).some((key) => key.startsWith('whatsapp_'))) changedIntegrations.push('whatsapp');
+    invalidateIntegrationHealthCache(businessId, changedIntegrations);
+
     // Start or refresh Telegram polling when a new token was saved.
     if (payload.telegram_bot_token) {
       logTelegramTokenSource(
@@ -19511,6 +24238,18 @@ app.put('/api/businesses/:id', requireAuth, requireBusinessPermission('settings.
     });
   } catch (err: any) {
     logOperatorApiFailure('business_update_failed', req, req.params.id);
+    if (/^(toneConfig|tonePreset|responseLength|emojiUsage|formality|customToneInstructions)/.test(String(err?.message || ''))) {
+      console.warn('[BusinessToneUpdate]', {
+        category: 'validation_failed',
+        businessId: req.params.id,
+        detail: String(err?.message || 'invalid_tone_config'),
+      });
+      return res.status(400).json({
+        success: false,
+        error: 'invalid_ai_tone_config',
+        message: 'Invalid AI tone settings.',
+      });
+    }
     return res.status(500).json({
       success: false,
       message: 'Could not update business.',
@@ -19812,22 +24551,192 @@ Generate the final production-ready system prompt now.
   app.listen(PORT, () => {
     console.log(`Server running smoothly on port ${PORT}`);
 
-    // Auto-start polling for all business bot tokens saved in Supabase.
-    // This is what makes the backend multi-business / multi-bot.
-    startAllBusinessTelegramPollers().catch((err) => {
-      console.error("Failed to start Telegram pollers:", err);
-    });
+    if (odinLinkStartupPolicy.backgroundJobsEnabled) {
+      // Auto-start polling for all business bot tokens saved in Supabase.
+      // This is what makes the backend multi-business / multi-bot.
+      startAllBusinessTelegramPollers().catch((err) => {
+        console.error("Failed to start Telegram pollers:", err);
+      });
 
-    // Setup cron
-    setupDailyReminders();
+      // Setup cron
+      setupDailyReminders();
+    } else {
+      console.log("[OdinLinkLocalTestMode] All background jobs disabled.");
+    }
   });
 }
 
 export const priority1hUnifiedEngineTestBoundary = {
+  selectOwnedSlot(text: string, pending: any) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    return selectOwnedOfferedSlot(text, pending);
+  },
+  resolveConfiguredService(service: string, businessConfig: any) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    return findConfiguredBookingService(service, businessConfig);
+  },
+  async resolveConfiguredDuration(service: string, businessConfig: any) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    return resolveServiceDurationMinutes(service, null, businessConfig);
+  },
+  seedPending(sessionId: string, pending: any) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    pendingBookings[sessionId] = structuredClone(pending);
+  },
+  seedRecentCompletedBooking(
+    sessionId: string,
+    language: string,
+    result: Extract<BookingOperationResult, { ok: true }>,
+  ) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    rememberCompletedBooking(
+      sessionId,
+      language,
+      result.customerName,
+      result.serviceName,
+      undefined,
+      result.startTime,
+      result,
+    );
+  },
+  seedFlowLanguage(
+    sessionId: string,
+    language: string,
+    flowType: ConversationFlowLanguageContext["flowType"] = "booking",
+  ) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    const normalized = ["sv", "fa", "de", "es", "ar", "en"].includes(language) ? language : "en";
+    conversationFlowLanguages[sessionId] = {
+      language: normalized,
+      flowType,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    chatLanguages[sessionId] = normalized;
+  },
+  conversationState(sessionId: string) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    return {
+      language: getStoredFlowLanguage(sessionId),
+      pending: pendingBookings[sessionId] ? structuredClone(pendingBookings[sessionId]) : null,
+      availability: availabilitySearchContexts[sessionId] ? structuredClone(availabilitySearchContexts[sessionId]) : null,
+    };
+  },
+  pendingStateSnapshot(sessionId: string) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    return pendingBookings[sessionId] ? structuredClone(pendingBookings[sessionId]) : null;
+  },
+  dropPendingMemory(sessionId: string) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    delete pendingBookings[sessionId];
+  },
+  dropBookingSessionMemory(sessionId: string) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    delete pendingBookings[sessionId];
+    delete conversationFlowLanguages[sessionId];
+    delete chatLanguages[sessionId];
+    delete availabilitySearchContexts[sessionId];
+  },
+  geminiToolNames(sessionId: string) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    return getGeminiSupportTools(sessionId).flatMap((group: any) =>
+      (group.functionDeclarations || []).map((declaration: any) => String(declaration.name || ""))
+    );
+  },
+  guardReply(sessionId: string, reply: string, language: string = "sv", toneConfig?: unknown) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    return guardCustomerFacingReply(sessionId, reply, language, toneConfig);
+  },
+  seedVerifiedBookingReply(sessionId: string, result: BookingOperationResult) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    verifiedBookingReplyAuthorizations[sessionId] = structuredClone(result);
+  },
+  clearVerifiedBookingReply(sessionId: string) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    delete verifiedBookingReplyAuthorizations[sessionId];
+  },
+  async canonicalOffers(params: {
+    businessConfig: any;
+    sessionId: string;
+    platform: string;
+    userId: string;
+    startDate: string;
+    endDate: string;
+    service?: string;
+    durationMinutes: number;
+    requestedTime?: string;
+    options?: SlotSearchOptions;
+    normalizedConstraint?: NormalizedTimeConstraint;
+  }) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    return createCanonicalOfferedSlots({
+      adapter: getCalendarAdapter(params.businessConfig),
+      owner: {
+        businessId: String(getBusinessIdFromConfig(params.businessConfig) || ""),
+        platform: params.platform,
+        userId: params.userId,
+        sessionId: params.sessionId,
+      },
+      businessConfig: params.businessConfig,
+      startDate: params.startDate,
+      endDate: params.endDate,
+      service: params.service || "Consultation",
+      durationMinutes: params.durationMinutes,
+      requestedTime: params.requestedTime,
+      options: params.options,
+      normalizedConstraint: params.normalizedConstraint,
+    });
+  },
+  channelSessionId(
+    platform: "whatsapp" | "messenger" | "instagram",
+    userId: string,
+    businessConfig: any,
+    tenantScope?: string
+  ) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    return getScopedChannelSessionId(platform, userId, businessConfig, tenantScope);
+  },
   configure(dependencies: Priority1hTestDependencies) {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
     priority1hTestDependencies = dependencies;
     supabase = dependencies.supabaseClient || null;
+  },
+  async claimAtomic(params: Parameters<typeof claimAtomicOperation>[0]) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    return claimAtomicOperation(params);
+  },
+  async settleAtomic(
+    handle: AtomicClaimHandle,
+    status: "completed" | "failed",
+  ) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    return settleAtomicOperation(handle, status);
+  },
+  async processReminderCandidate(
+    appointment: any,
+    reminderType: "24h" | "2h",
+    sentColumn: "reminder_24_sent" | "reminder_2_sent",
+  ) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    return processAppointmentReminderCandidate(appointment, reminderType, sentColumn);
+  },
+  resolveBookingContactPhrase(params: {
+    text: string;
+    channel?: "whatsapp" | "telegram" | "instagram" | "messenger";
+    storedName?: string | null;
+    storedPhone?: string | null;
+    storedPhoneSource?: ContactPhoneSource | null;
+  }) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    const combined = extractNameAndPhone(params.text);
+    return resolveAuthoritativeContact({
+      channel: params.channel || "telegram",
+      storedName: params.storedName,
+      storedPhone: params.storedPhone,
+      storedPhoneSource: params.storedPhoneSource,
+      currentName: combined?.name || extractNameOnly(params.text),
+      currentPhone: combined?.phone || extractPhoneOnly(params.text),
+    });
   },
   reset() {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
@@ -19842,6 +24751,11 @@ export const priority1hUnifiedEngineTestBoundary = {
     for (const key of Object.keys(availabilitySearchContexts)) delete availabilitySearchContexts[key];
     for (const key of Object.keys(recentlyCompletedBookings)) delete recentlyCompletedBookings[key];
     for (const key of Object.keys(telegramReplyPreferences)) delete telegramReplyPreferences[key];
+    for (const key of Object.keys(chatLanguages)) delete chatLanguages[key];
+    for (const key of Object.keys(conversationFlowLanguages)) delete conversationFlowLanguages[key];
+    for (const key of Object.keys(businessConfigVersions)) delete businessConfigVersions[key];
+    unifiedBookingTurnTails.clear();
+    latestUnifiedBookingTurn.clear();
     atomicClaims.clear();
     supabase = null;
   },

@@ -8674,7 +8674,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
   const bookingStartedAt = Date.now();
   let pending = await loadPendingBooking(sessionId, platformName, businessConfig);
   const entryPendingLanguage = pending?.language || null;
-  const normalizationStrongLanguage = detectStrongLatestLanguage(text);
+  const normalizationStrongLanguage = detectStrongLatestLanguage(text, businessConfig);
   const normalizationActiveLanguage =
     normalizationStrongLanguage &&
     isMeaningfulLanguageMessage(text) &&
@@ -8791,7 +8791,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
     databaseMutationStarted: Boolean(pending?.mutationProgress?.databaseStarted),
     idempotencyMutationStarted: Boolean(pending?.mutationProgress?.settlementStarted || pending?.operationIdentity),
   });
-  const latestStrongLanguage = detectStrongLatestLanguage(text);
+  const latestStrongLanguage = detectStrongLatestLanguage(text, businessConfig);
   const authoritativeSenderPhone = getWhatsAppConversationPhone(
     platformName,
     recipientUserId,
@@ -12579,7 +12579,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
           normalizedBookingRequest: toPersistedBookingRequest(authoritativeNormalizedRequest),
           dateTime: null,
           durationMinutes,
-          language: detectStrongLatestLanguage(text) || language,
+          language: detectStrongLatestLanguage(text, businessConfig) || language,
           operation: "new_booking",
           customerPhone: getWhatsAppConversationPhone(platformName, recipientUserId, sessionId),
           status: "awaiting_time_selection"
@@ -12677,7 +12677,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
           dateTime: exactIso,
           selectedSlotEnd: exactOwnedSlot?.end || null,
           durationMinutes,
-          language: detectStrongLatestLanguage(text) || language,
+          language: detectStrongLatestLanguage(text, businessConfig) || language,
           operation: "new_booking",
           customerPhone: getWhatsAppConversationPhone(
             platformName,
@@ -14900,8 +14900,39 @@ function shouldKeepPreviousConversationLanguage(chatId: string, latestText?: str
 }
 
 
-function detectStrongLatestLanguage(text?: string): string | null {
-  const raw = String(text || "").trim().toLowerCase();
+function removeConfiguredEntitiesFromLanguageEvidence(text: string, businessConfig?: any): string {
+  const configuredEntities = [
+    ...getConfiguredBookingServiceNames(businessConfig),
+    String(
+      businessConfig?.defaultBookingService ||
+      businessConfig?.default_booking_service ||
+      ""
+    ).trim(),
+  ]
+    .filter((entity, index, all) => entity && all.indexOf(entity) === index)
+    .sort((left, right) => right.length - left.length);
+
+  let remainder = String(text || "");
+  for (const entity of configuredEntities) {
+    const escaped = entity.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    remainder = remainder.replace(
+      new RegExp(`(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])`, "giu"),
+      " "
+    );
+  }
+  return remainder.replace(/\s+/g, " ").trim();
+}
+
+function detectStrongLatestLanguage(text?: string, businessConfig?: any): string | null {
+  const source = String(text || "").trim();
+  if (businessConfig) {
+    const entityFreeText = removeConfiguredEntitiesFromLanguageEvidence(source, businessConfig);
+    if (entityFreeText !== source) {
+      return detectStrongLatestLanguage(entityFreeText);
+    }
+  }
+
+  const raw = source.toLowerCase();
   if (!raw) return null;
 
   if (/[\u0600-\u06FF]/.test(raw)) {
@@ -15046,7 +15077,7 @@ function getConversationLanguage(chatId: string, latestText?: string, businessCo
     return explicitSwitch;
   }
 
-  const strongLatest = detectStrongLatestLanguage(text);
+  const strongLatest = detectStrongLatestLanguage(text, businessConfig);
   const businessLanguageRaw = String(
     businessConfig?.language || businessConfig?.defaultLanguage || ""
   ).trim().toLowerCase();
@@ -20241,6 +20272,10 @@ export const priority1hUnifiedEngineTestBoundary = {
   resolveConversationLanguage(sessionId: string, text: string, businessConfig: any) {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
     return getConversationLanguage(sessionId, text, businessConfig);
+  },
+  detectStrongLanguage(text: string, businessConfig: any) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    return detectStrongLatestLanguage(text, businessConfig);
   },
   resolveExplicitBookingDate(text: string) {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");

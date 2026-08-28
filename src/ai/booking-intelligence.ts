@@ -153,6 +153,11 @@ export function detectNormalizedIntent(text: string): NormalizedIntent {
   if (/(?:^|\s)(?:reschedule|move|change|ändra|flytta|taghir|avaz).{0,30}(?:appointment|booking|time|tid|vaght|rezerv)(?=\s|$)/iu.test(raw) || /(?:^|\s)boka\s+om(?=\s|$)/iu.test(raw) || /\b(?:avaz|taghir)\s+(?:bedam|konam)\b/iu.test(raw) || /(?:تغییر|عوض).{0,20}(?:وقت|رزرو|کنم|بدم)/u.test(raw)) return 'reschedule';
   if (/\b(?:do i have|did i book|check|har jag|aya).{0,30}(?:appointment|booking|tid|vaght|rezerv)\b/iu.test(raw) || /(?:آیا|میشه).{0,24}(?:وقت|رزرو).{0,24}(?:دارم|کردم)/u.test(raw)) return 'booking_lookup';
 
+  const germanBookingAction =
+    /\bich\s+(?:möchte|moechte|will)\b.{0,120}\b(?:buchen|reservieren)\b/iu.test(raw) ||
+    /\b(?:einen?\s+)?termin\s+(?:buchen|reservieren)\b/iu.test(raw);
+  if (germanBookingAction) return 'new_booking';
+
   const bookingNoun = /\b(?:appointment|booking|consultation|slot|boka|bokning|tid|konsultation|vaght|rezerv|moshavereh?|laser)\b/iu.test(raw) || /(?:وقت|رزرو|مشاوره|لیزر)/u.test(raw);
   const bookingAction = /\b(?:book|want|need|available|have anything|boka|vill|behöver|finns|har ni|mikham|mikhastam|mitoni|bدي|begiram|dari)\b/iu.test(raw) || /(?:می ?خوام|می ?خواهم|می ?تونی|وقت داری|بگیرم|بگیری)/u.test(raw);
   const dateOrTime = /\b(?:today|tomorrow|friday|monday|tuesday|wednesday|thursday|saturday|sunday|fredag|måndag|tisdag|onsdag|torsdag|lördag|söndag|jomeh?|shanbe|sate?|after|before|efter|före)\b/iu.test(raw) || /(?:امروز|فردا|جمعه|شنبه|ساعت|بعد از|قبل از)/u.test(raw);

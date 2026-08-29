@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 process.env.NODE_ENV = 'test';
 const { priority1hUnifiedEngineTestBoundary: boundary } = await import('../../server');
 
+const now = new Date('2026-08-27T09:00:00+02:00');
 let reads = 0;
 let eventSequence = 0;
 boundary.reset();
@@ -24,6 +25,10 @@ const businessConfig = {
   defaultBookingService: 'Konsultation',
   calendarProvider: 'google',
   googleCalendarId: 'language-isolation@example.com',
+  workingHours: Object.fromEntries(
+    ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday']
+      .map((day) => [day, [{ start: '09:00', end: '17:00' }]])
+  ),
 };
 const platforms = ['telegram', 'instagram', 'whatsapp', 'messenger'] as const;
 
@@ -35,6 +40,7 @@ function turn(platformName: typeof platforms[number], sessionId: string, text: s
     recipientUserId: `user-${sessionId}`,
     text,
     businessConfig: config,
+    now,
   });
 }
 
@@ -131,6 +137,7 @@ for (const platform of platforms) {
   const [completedOlderTurn, completedNewerTurn] = await Promise.all([olderPersianTurn, newerSwedishTurn]);
   assert.deepEqual(completedOlderTurn.replies, [], `${platform}: reply from superseded Persian turn is suppressed`);
   assert.equal(completedNewerTurn.pending?.language, 'sv', `${platform}: newer Swedish turn owns final flow state`);
+  assert.equal(boundary.conversationState(overlappingSession).language, 'sv', `${platform}: newer Swedish turn owns persisted conversation language`);
   assert.match(completedNewerTurn.replies[0], /Jag hittade lediga tider|Vilken/u);
 
   const weakSwedishFollowUp = await turn(platform, overlappingSession, '09:00');
@@ -207,6 +214,7 @@ for (const platform of platforms) {
     incrementUsage: async () => ({ allowed: true, count: 1, limit: 100 }),
   } as any);
   boundary.seedPending(sessionId, persistedEnglishPending);
+  boundary.seedFlowLanguage(sessionId, 'en', 'availability');
   const persian = await turn(platform, sessionId, 'سلام، می‌خواهم برای فردا وقت رزرو کنم.', config);
   assert.equal(persian.pending?.language, 'fa', `${platform}: restored English pending cannot override current Persian turn`);
   assert.equal(persian.pending?.status, 'awaiting_time_selection');

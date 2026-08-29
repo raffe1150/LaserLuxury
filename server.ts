@@ -657,6 +657,15 @@ function inferRequestedTimeFromText(text?: string): string | null {
     }
   }
 
+  const canonicalConstraint = parseTimeConstraint(raw);
+  if (
+    canonicalConstraint?.kind === "exact" &&
+    canonicalConstraint.startMinutes !== undefined
+  ) {
+    const minutes = canonicalConstraint.startMinutes;
+    return `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
+  }
+
   // Accept a bare hour only when the wording clearly indicates slot selection.
   // Examples: "13 det går bra", "14 passar mig", "saat 13 khube".
   const bareHour = raw.match(/(?:^|\s)(\d{1,2})(?:\s|$)/);
@@ -1467,6 +1476,8 @@ async function createCanonicalOfferedSlots(params: {
 }): Promise<{ displaySlots: string[]; ownedSlots: OwnedOfferedSlot[] }> {
   const timezone = String(params.businessConfig?.timezone || "Europe/Stockholm");
   const snapshot = params.snapshot || await loadCanonicalAvailabilitySnapshot(params);
+  const filteredEvents = snapshot.calendarEvents;
+  const pendingEvents = snapshot.pendingEvents;
   const minimumMinutes = timeTextToMinutes(params.options?.minTime);
   const maximumMinutes = timeTextToMinutes(params.options?.maxTime);
   const boundaryMinutes = timeTextToMinutes(params.options?.afterTime) ?? timeTextToMinutes(params.options?.timeBoundary?.time);
@@ -1521,8 +1532,8 @@ async function createCanonicalOfferedSlots(params: {
       const validation = await validateCanonicalExactSlot({
         adapter: params.adapter, owner: params.owner, businessConfig: params.businessConfig,
         start, service: params.service, durationMinutes: params.durationMinutes,
-        calendarEvents: snapshot.calendarEvents,
-        pendingEvents: snapshot.pendingEvents,
+        calendarEvents: filteredEvents,
+        pendingEvents,
         nowMs: (params.now ?? new Date()).getTime(),
       });
       if (!validation.free || !validation.normalizedIso || !validation.endIso) {
@@ -6072,6 +6083,70 @@ function resolveConfiguredBookingService(
   return normalizeBookingService(raw, fallback);
 }
 
+function getConfiguredBookingServiceNames(businessConfig: any): string[] {
+  return [...new Set(
+    (Array.isArray(businessConfig?.services) ? businessConfig.services : [])
+      .map((item: any) => String(item?.name || item?.service || item?.title || "").trim())
+      .filter(Boolean)
+  )];
+}
+
+function extractConcreteRequestedService(text?: string): string | null {
+  const raw = String(text || "").replace(/\s+/g, " ").trim();
+  if (!raw) return null;
+
+  const token = String.raw`[\p{L}\p{M}][\p{L}\p{M}'’\-]*`;
+  const candidate = String.raw`${token}(?:\s+${token}){0,4}?`;
+  const patterns = [
+    new RegExp(String.raw`\b(?:book|schedule|reserve)\s+(?:an?\s+)?(${candidate})(?=\s+(?:at|on)\s+\d{1,2}(?::\d{2})?|[.!?]|$)`, "iu"),
+    new RegExp(String.raw`\b(?:boka|reservera)\s+(?:(?:en|ett)\s+)?(${candidate})(?=\s+(?:kl(?:ockan)?\.?)\s*\d{1,2}(?::\d{2})?|[.!?]|$)`, "iu"),
+    new RegExp(String.raw`\bich\s+(?:möchte|moechte|will)\s+(?:gern(?:e)?\s+)?(?:(?:eine[nmrs]?)\s+)?(${candidate})(?=\s+(?:um|am)\s+\d{1,2}(?::\d{2})?|\s+buchen\b|[.!?]|$)`, "iu"),
+    new RegExp(String.raw`\b(?:quiero|quisiera|me\s+gustar[ií]a)\s+(?:reservar|agendar)\s+(?:(?:un|una|el|la)\s+)?(${candidate})(?=\s+(?:a\s+las|el)\s+\d{1,2}(?::\d{2})?|[.!?]|$)`, "iu"),
+    new RegExp(String.raw`\b(?:mikham|mikhastam)\s+(?:ye\s+)?(${candidate})(?=\s+(?:saat|sate)\s+\d{1,2}(?::\d{2})?|\s+(?:book|rezerv)\b)`, "iu"),
+  ];
+
+  for (const pattern of patterns) {
+    const match = raw.match(pattern);
+    const extracted = String(match?.[1] || "").trim();
+    if (!extracted) continue;
+    if (/^(?:appointment|booking|time|slot|tid|bokning|termin|cita|reserva|service|tjänst)$/iu.test(extracted)) continue;
+    return extracted;
+  }
+
+  return null;
+}
+
+function formatUnsupportedServiceBookingReply(
+  language: string,
+  requestedService: string,
+  configuredServices: string[]
+): string {
+  const options = configuredServices.join(", ");
+  if (language === "sv") return `Jag kan inte matcha “${requestedService}” mot en bokningsbar tjänst. Tillgängliga tjänster är: ${options}. Vilka av dem vill du välja för bokningen?`;
+  if (language === "de") return `Ich kann „${requestedService}“ keiner buchbaren Leistung zuordnen. Verfügbar sind: ${options}. Für welche davon möchten Sie buchen?`;
+  if (language === "es") return `No puedo asociar «${requestedService}» con un servicio reservable. Los servicios disponibles son: ${options}. ¿Qué servicio quieres reservar para tu cita?`;
+  if (language === "fa") return `نمی‌توانم «${requestedService}» را با یکی از خدمات قابل رزرو تطبیق بدهم. خدمات موجود: ${options}. کدام را می‌خواهید رزرو کنید؟`;
+  if (language === "ar") return `لا أستطيع مطابقة «${requestedService}» مع خدمة قابلة للحجز. الخدمات المتاحة: ${options}. أي خدمة تريد حجزها؟`;
+  return `I cannot match “${requestedService}” to a bookable service. Available services are: ${options}. Which one would you like to book?`;
+}
+
+function formatConfiguredServiceDatePrompt(language: string, service: string, requestedTime?: string): string {
+  const retainedTime = requestedTime
+    ? language === "de" ? ` Die gewünschte Uhrzeit ${requestedTime} habe ich vorgemerkt.`
+      : language === "sv" ? ` Jag har sparat önskemålet om kl ${requestedTime}.`
+        : language === "es" ? ` He conservado la hora solicitada, ${requestedTime}.`
+          : language === "fa" ? ` ساعت درخواستی ${requestedTime} را نگه داشتم.`
+            : language === "ar" ? ` احتفظت بالوقت المطلوب ${requestedTime}.`
+              : ` I kept your requested time of ${requestedTime}.`
+    : "";
+  if (language === "sv") return `Jag har valt ${service}. Vilka datum finns i åtanke för bokningen?${retainedTime}`;
+  if (language === "de") return `Ich habe ${service} ausgewählt. Für welches Datum möchten Sie buchen?${retainedTime}`;
+  if (language === "es") return `Quiero confirmar ${service}. ¿Para qué fecha quieres reservar?${retainedTime}`;
+  if (language === "fa") return `${service} قابل رزرو است. برای چه تاریخی می‌خواهید رزرو کنید؟${retainedTime}`;
+  if (language === "ar") return `يمكن حجز ${service}. ما التاريخ الذي تريد الحجز فيه؟${retainedTime}`;
+  return `${service} is bookable. What date would you like to book?${retainedTime}`;
+}
+
 function getWhatsAppConversationPhone(
   platformName: string,
   recipientUserId: string,
@@ -6157,6 +6232,8 @@ async function savePendingBooking(chatId: string, platform: string, pending: any
       bookingStateVersion: CURRENT_BOOKING_STATE_VERSION,
       platform,
       service: pending.service,
+      requestedService: pending.requestedService || null,
+      requestedTime: pending.requestedTime || null,
       dateTime: pending.dateTime || null,
       selectedSlotEnd: pending.selectedSlotEnd || null,
       selectedDate: pending.selectedDate || null,
@@ -6304,6 +6381,8 @@ async function loadPendingBooking(chatId: string, platform: string, businessConf
       bookingStateVersion: Number(parsed.bookingStateVersion || 0),
       platform,
       service: parsed.service || "Bokning",
+      requestedService: parsed.requestedService || null,
+      requestedTime: parsed.requestedTime || null,
       dateTime: parsed.dateTime || null,
       selectedSlotEnd: parsed.selectedSlotEnd || null,
       selectedDate: parsed.selectedDate || null,
@@ -6857,6 +6936,50 @@ function getExactSlotIso(slotsArray: string[], requestedTime?: string): string |
   return null;
 }
 
+const explicitNamedBookingMonths: Record<string, number> = {
+  january: 1, januari: 1, januar: 1, enero: 1, ژانویه: 1, يناير: 1,
+  february: 2, februari: 2, februar: 2, febrero: 2, فوریه: 2, فبراير: 2,
+  march: 3, mars: 3, märz: 3, maerz: 3, marzo: 3, مارس: 3,
+  april: 4, abril: 4, آوریل: 4, أبريل: 4, إبريل: 4, ابريل: 4,
+  may: 5, maj: 5, mai: 5, mayo: 5, مه: 5, مايو: 5,
+  june: 6, juni: 6, junio: 6, ژوئن: 6, يونيو: 6,
+  july: 7, juli: 7, julio: 7, ژوئیه: 7, يوليو: 7,
+  august: 8, augusti: 8, agosto: 8, اوت: 8, أغسطس: 8, اغسطس: 8,
+  september: 9, septiembre: 9, سپتامبر: 9, سبتمبر: 9,
+  october: 10, oktober: 10, octubre: 10, اکتبر: 10, أكتوبر: 10, اكتوبر: 10,
+  november: 11, noviembre: 11, نوامبر: 11, نوفمبر: 11,
+  december: 12, dezember: 12, diciembre: 12, دسامبر: 12, ديسمبر: 12,
+};
+const explicitNamedBookingMonthPattern = Object.keys(explicitNamedBookingMonths)
+  .sort((left, right) => right.length - left.length)
+  .map((value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+  .join("|");
+
+function parseExplicitNamedBookingDateParts(text: string): { day: number; month: number; year?: number } | null {
+  const raw = normalizeConversationText(text).toLowerCase();
+  const dayFirst = raw.match(new RegExp(
+    `(?:^|\\s)(\\d{1,2})(?::[ae]|\\.|st|nd|rd|th)?\\s+(?:de\\s+)?(${explicitNamedBookingMonthPattern})(?:\\s+(?:de\\s+)?(20\\d{2}))?(?=\\s|[.!?,;]|$)`,
+    "iu",
+  ));
+  if (dayFirst) {
+    return {
+      day: Number(dayFirst[1]),
+      month: explicitNamedBookingMonths[dayFirst[2].toLowerCase()],
+      ...(dayFirst[3] ? { year: Number(dayFirst[3]) } : {}),
+    };
+  }
+  const monthFirst = raw.match(new RegExp(
+    `(?:^|\\s)(${explicitNamedBookingMonthPattern})\\s+(\\d{1,2})(?:st|nd|rd|th)?(?:,?\\s+(20\\d{2}))?(?=\\s|[.!?,;]|$)`,
+    "iu",
+  ));
+  if (!monthFirst) return null;
+  return {
+    day: Number(monthFirst[2]),
+    month: explicitNamedBookingMonths[monthFirst[1].toLowerCase()],
+    ...(monthFirst[3] ? { year: Number(monthFirst[3]) } : {}),
+  };
+}
+
 
 
 function resolveExplicitBookingDate(text?: string): string | null {
@@ -6881,12 +7004,13 @@ function resolveExplicitBookingDate(text?: string): string | null {
   const iso = raw.match(/\b(20\d{2})-(\d{2})-(\d{2})\b/);
   if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
 
-  const namedDate = raw.match(/\b(?:den\s+)?(\d{1,2})\s+(januari|februari|mars|april|maj|juni|juli|augusti|september|oktober|november|december)(?:\s+(20\d{2}))?\b/i);
+  // A written calendar date is authoritative even when the same message also
+  // contains a weekday, for example "onsdag 22 juli" or "22 juli, inte nästa onsdag".
+  const namedDate = parseExplicitNamedBookingDateParts(raw);
   if (namedDate) {
-    const monthNames = ["januari", "februari", "mars", "april", "maj", "juni", "juli", "augusti", "september", "oktober", "november", "december"];
-    const year = Number(namedDate[3] || today.slice(0, 4));
-    const month = monthNames.indexOf(namedDate[2].toLowerCase()) + 1;
-    const day = Number(namedDate[1]);
+    const year = namedDate.year || Number(today.slice(0, 4));
+    const month = namedDate.month;
+    const day = namedDate.day;
     const check = new Date(Date.UTC(year, month - 1, day));
     if (check.getUTCFullYear() === year && check.getUTCMonth() === month - 1 && check.getUTCDate() === day) {
       return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
@@ -6902,6 +7026,11 @@ function resolveExplicitBookingDate(text?: string): string | null {
     }).format(new Date()));
     return `${year}-${String(Number(numeric[2])).padStart(2, "0")}-${String(Number(numeric[1])).padStart(2, "0")}`;
   }
+
+  // Reuse canonical forward-looking relative-date and weekday normalization so
+  // multilingual booking continuations cannot diverge from availability parsing.
+  const sharedDate = parseBookingDate(raw, "Europe/Stockholm");
+  if (sharedDate?.value) return sharedDate.value;
 
   // Relative dates must still be resolved before weekday parsing. This is critical for
   // rescheduling messages such as "imorgon kl 18:30" and "farda saate 18:30".
@@ -9685,6 +9814,41 @@ async function handleUnifiedBookingEngine(params: UnifiedBookingEngineParams): P
   }
 }
 
+function getPendingNormalizedBookingRequest(
+  pending: any,
+  current: NormalizedBookingRequest
+): NormalizedBookingRequest | null {
+  if (!pending) return null;
+  const previous = pending.normalizedBookingRequest || {};
+  const pendingDate = String(
+    pending.selectedDate ||
+    (
+      pending.availabilityStartDate &&
+      pending.availabilityStartDate === pending.availabilityEndDate
+        ? pending.availabilityStartDate
+        : ""
+    )
+  ).trim();
+  const pendingTime = parseTimeConstraint(String(pending.requestedTime || ""));
+  const pendingService = String(pending.service || "").trim();
+  const hydrated: NormalizedBookingRequest = {
+    intent: previous.intent || (pending.operation === "new_booking" ? "new_booking" : current.intent),
+    language: previous.language || pending.language || current.language,
+    sourceMode: current.sourceMode,
+    normalizedText: "",
+    requiresClarification: Boolean(previous.requiresClarification),
+    ...previous,
+    ...(previous.service || !pendingService || pendingService === "Bokning"
+      ? {}
+      : { service: { raw: pendingService, normalized: pendingService, confidence: "high" as const } }),
+    ...(previous.date || !/^20\d{2}-\d{2}-\d{2}$/.test(pendingDate)
+      ? {}
+      : { date: { kind: "exact_date" as const, value: pendingDate, confidence: "high" as const } }),
+    ...(previous.timeConstraint || !pendingTime ? {} : { timeConstraint: pendingTime }),
+  };
+  return hydrated;
+}
+
 async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams): Promise<boolean> {
   const {
     sessionId,
@@ -9736,13 +9900,14 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
   const bookingCorrelationId = crypto.randomUUID();
   const bookingStartedAt = Date.now();
   let pending = await loadPendingBooking(sessionId, platformName, businessConfig);
+  const entryPendingLanguage = pending?.language || null;
   emitBookingLanguageTrace({
     stage: "pending_loaded",
     sessionId,
     flowLanguage: getStoredFlowLanguage(sessionId),
     pendingLanguage: pending?.language || null,
     availabilityLanguage: availabilitySearchContexts[sessionId]?.language || null,
-    detectedLanguage: detectStrongLatestLanguage(text),
+    detectedLanguage: detectStrongLatestLanguage(text, businessConfig),
     explicitSwitch: isExplicitLanguageSwitch(text),
     inputFingerprint: safeLogFingerprint(text),
   });
@@ -9783,14 +9948,13 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
       reasonCode,
     });
   };
-  const normalizationStrongLanguage = detectStrongLatestLanguage(text);
+  const normalizationStrongLanguage = detectStrongLatestLanguage(text, businessConfig);
   const normalizationActiveLanguage =
     normalizationStrongLanguage &&
     isMeaningfulLanguageMessage(text) &&
     hasStrongLanguageEvidence(normalizationStrongLanguage, text)
       ? normalizationStrongLanguage
       : getStoredFlowLanguage(sessionId);
-
   let structuredUnderstandingShadowOptions: Parameters<typeof understandBookingTurn>[1] | undefined;
   let structuredProviderInput: UnderstandingProviderInput | null = null;
   let deterministicCurrentName: string | null = null;
@@ -10149,7 +10313,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
     );
     return true;
   }
-  const entryStrongLanguage = detectStrongLatestLanguage(text);
+  const entryStrongLanguage = detectStrongLatestLanguage(text, businessConfig);
   if (
     pending &&
     normalizedRequest.intent === "new_booking" &&
@@ -10290,7 +10454,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
     databaseMutationStarted: Boolean(pending?.mutationProgress?.databaseStarted),
     idempotencyMutationStarted: Boolean(pending?.mutationProgress?.settlementStarted || pending?.operationIdentity),
   });
-  const latestStrongLanguage = detectStrongLatestLanguage(text);
+  const latestStrongLanguage = detectStrongLatestLanguage(text, businessConfig);
   const authoritativeSenderPhone = getWhatsAppConversationPhone(
     platformName,
     recipientUserId,
@@ -10327,12 +10491,15 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
       dateLocked: Boolean(pending.selectedDate || pending.availabilityStartDate)
     });
   }
-  const pendingSlotConfirmationAtEntry = isPendingSlotConfirmation(text, pending) || Boolean(
+  const pendingSlotConfirmationAtEntry = isPendingSlotConfirmation(text, pending);
+  const controlledPendingConfirmationAtEntry = Boolean(
     controlledUnderstandingCandidates.confirmation &&
     pending?.operation === "new_booking" &&
     pending?.dateTime &&
     findOwnedOfferedSlot(pending, pending.dateTime)
   );
+  const pendingSlotConfirmationAcceptedAtEntry =
+    pendingSlotConfirmationAtEntry || controlledPendingConfirmationAtEntry;
 
   console.log("[PendingConfirmationTrace]", {
     text,
@@ -10345,7 +10512,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
     ),
     affirmativeBookingText: isAffirmativeBookingText(text),
     positiveBookingConfirmation: isPositiveBookingConfirmation(text),
-    pendingSlotConfirmationAtEntry
+    pendingSlotConfirmationAtEntry: pendingSlotConfirmationAcceptedAtEntry
   });
   let authoritativeNormalizedRequest = normalizedRequest, normalizedStateReplaced = false, deterministicTransition: ReturnType<typeof applyNormalizedRequestToPending> | null = null;
   const entryOwnedSlotSelection = pending?.status === "awaiting_time_selection"
@@ -10355,26 +10522,15 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
           : null
       )
     : null;
-  const previousNormalizedService = String(
-    pending?.normalizedBookingRequest?.service?.normalized || ""
-  ).trim().toLowerCase();
-  const latestNormalizedService = String(
-    normalizedRequest.service?.normalized || ""
-  ).trim().toLowerCase();
-  const entrySelectionPreservesOwnedOffers = Boolean(
-    entryOwnedSlotSelection &&
-    !normalizedRequest.customerCorrection &&
-    (
-      !latestNormalizedService ||
-      !previousNormalizedService ||
-      latestNormalizedService === previousNormalizedService
-    )
-  );
+  const pendingNormalizedRequest = getPendingNormalizedBookingRequest(pending, normalizedRequest);
   if (
-    pending?.normalizedBookingRequest &&
     !pendingSlotConfirmationAtEntry &&
-    !entrySelectionPreservesOwnedOffers
+    !entryOwnedSlotSelection &&
+    !controlledPendingConfirmationAtEntry &&
+    pendingNormalizedRequest &&
+    pending?.status !== "awaiting_service"
   ) {
+    pending.normalizedBookingRequest = toPersistedBookingRequest(pendingNormalizedRequest);
     const previousPhase = getBookingPhase(pending);
     const merged = applyNormalizedRequestToPending(pending, normalizedRequest);
     deterministicTransition = merged;
@@ -10405,7 +10561,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
     pending?.operation === "new_booking" &&
     entryPendingOwnedSlot &&
     ["awaiting_slot_confirmation", "awaiting_contact", "failed_recoverable"].includes(getBookingPhase(pending)) &&
-    (isPositiveBookingConfirmation(text) || pendingSlotConfirmationAtEntry)
+    (isPositiveBookingConfirmation(text) || pendingSlotConfirmationAcceptedAtEntry)
   );
   const entryExplicitNewBookingRequest =
     deterministicTransition?.reason !== "slot_confirmation_accepted" &&
@@ -10541,6 +10697,80 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
       });
     }
   };
+
+  const configuredServiceNames = getConfiguredBookingServiceNames(businessConfig);
+  if (pending?.status === "awaiting_service") {
+    const serviceResolutionLanguage = entryPendingLanguage || pending.language || language;
+    pending.language = serviceResolutionLanguage;
+    lockConversationFlowLanguage(sessionId, serviceResolutionLanguage, "booking");
+    const selectedConfiguredService = findConfiguredBookingService(text, businessConfig);
+    if (selectedConfiguredService) {
+      pending.service = selectedConfiguredService;
+      pending.durationMinutes = await resolveServiceDurationMinutes(
+        selectedConfiguredService,
+        null,
+        businessConfig
+      );
+      pending.status = "awaiting_date_or_time";
+      pending.expectedInput = "date_or_constraint";
+      await savePendingBooking(sessionId, platformName, pending);
+      await replyAndRecord(formatConfiguredServiceDatePrompt(
+        serviceResolutionLanguage,
+        selectedConfiguredService,
+        pending.requestedTime || undefined
+      ));
+      return true;
+    }
+
+    const nextUnsupportedService = extractConcreteRequestedService(text);
+    if (nextUnsupportedService) pending.requestedService = nextUnsupportedService;
+    const nextRequestedTime = inferRequestedTimeFromText(text);
+    if (nextRequestedTime) pending.requestedTime = nextRequestedTime;
+    pending.expectedInput = "service";
+    await savePendingBooking(sessionId, platformName, pending);
+    await replyAndRecord(formatUnsupportedServiceBookingReply(
+      serviceResolutionLanguage,
+      pending.requestedService || "service",
+      configuredServiceNames
+    ));
+    return true;
+  }
+
+  const concreteRequestedService = extractConcreteRequestedService(text);
+  if (
+    !pending &&
+    concreteRequestedService &&
+    configuredServiceNames.length > 0 &&
+    !findConfiguredBookingService(concreteRequestedService, businessConfig)
+  ) {
+    const requestedTime = inferRequestedTimeFromText(text);
+    pending = {
+      businessConfig,
+      platform: platformName,
+      service: "Bokning",
+      requestedService: concreteRequestedService,
+      requestedTime,
+      selectedDate: null,
+      offeredSlots: [],
+      ownedOfferedSlots: [],
+      dateTime: null,
+      selectedSlotEnd: null,
+      durationMinutes: null,
+      language,
+      operation: "new_booking",
+      expectedInput: "service",
+      customerPhone: getWhatsAppConversationPhone(platformName, recipientUserId, sessionId),
+      status: "awaiting_service"
+    };
+    lockConversationFlowLanguage(sessionId, language, "booking");
+    await savePendingBooking(sessionId, platformName, pending);
+    await replyAndRecord(formatUnsupportedServiceBookingReply(
+      language,
+      concreteRequestedService,
+      configuredServiceNames
+    ));
+    return true;
+  }
 
   if (getBookingPhase(pending) === "finalizing") {
     console.log("[BookingStateTransition]", {
@@ -13759,7 +13989,11 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
           businessConfig,
           previousAvailabilityConstraint,
           authoritativeNormalizedRequest,
-          normalizedRequest.timeConstraint,
+          normalizedRequest.timeConstraint || (
+            pending?.requestedTime
+              ? authoritativeNormalizedRequest.timeConstraint
+              : undefined
+          ),
           params.now ?? new Date()
         );
     const pendingSelectionRejected = isPendingSelectionRejectionRequest(text, pending);
@@ -14247,6 +14481,8 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
           businessConfig,
           platform: platformName,
           service: inferredService,
+          requestedService: priorPendingBooking?.requestedService || null,
+          requestedTime: constraint.exactTime || null,
           selectedDate:
             constraint.startDate === constraint.endDate
               ? constraint.startDate
@@ -14294,6 +14530,8 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
           businessConfig,
           platform: platformName,
           service: inferredService,
+          requestedService: priorPendingBooking?.requestedService || null,
+          requestedTime: constraint.exactTime || null,
           selectedDate:
             constraint.startDate === constraint.endDate
               ? constraint.startDate
@@ -14557,7 +14795,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
           normalizedBookingRequest: toPersistedBookingRequest(authoritativeNormalizedRequest),
           dateTime: null,
           durationMinutes,
-          language: detectStrongLatestLanguage(text) || language,
+          language: detectStrongLatestLanguage(text, businessConfig) || language,
           operation: "new_booking",
           customerPhone: getWhatsAppConversationPhone(platformName, recipientUserId, sessionId),
           status: "awaiting_time_selection"
@@ -14667,7 +14905,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
           dateTime: exactIso,
           selectedSlotEnd: exactOwnedSlot?.end || null,
           durationMinutes,
-          language: detectStrongLatestLanguage(text) || language,
+          language: detectStrongLatestLanguage(text, businessConfig) || language,
           operation: "new_booking",
           customerName: currentTurnBookingContact.name,
           customerPhone: currentTurnBookingContact.phone,
@@ -17026,6 +17264,29 @@ function detectTtsVoiceCode(text: string): string {
 
   return "en-US-AriaNeural";
 }
+function detectGrammaticalLatinLanguage(text?: string): string | null {
+  const lower = String(text || "").trim().toLowerCase();
+  if (!lower) return null;
+
+  const scores: Record<"sv" | "de" | "es" | "en", number> = { sv: 0, de: 0, es: 0, en: 0 };
+  const add = (language: keyof typeof scores, pattern: RegExp, weight: number) => {
+    const matches = lower.match(pattern);
+    if (matches) scores[language] += matches.length * weight;
+  };
+
+  add("sv", /\b(vilka?|finns|jag|mig|du|den|det|för|någon|några)\b/gu, 2);
+  add("sv", /\b(lediga?|tider?)\b/gu, 2);
+  add("de", /\b(welche[rsn]?|ich|mich|gibt\s+es|am|für)\b/gu, 2);
+  add("de", /\b(freie[nrms]?|zeiten?|termine?)\b/gu, 2);
+  add("es", /\b(qué|cuáles?|hay|quiero|para|el|la)\b/gu, 2);
+  add("es", /\b(horas?|disponibles?|citas?)\b/gu, 2);
+  add("en", /\b(what|which|i|me|are\s+there|for|on)\b/gu, 2);
+  add("en", /\b(available|times?|appointments?)\b/gu, 2);
+
+  const ranked = Object.entries(scores).sort((a, b) => b[1] - a[1]);
+  return ranked[0][1] >= 6 && ranked[0][1] > ranked[1][1] ? ranked[0][0] : null;
+}
+
 function detectUserLanguage(text: string): string {
   if (!text) return "en";
 
@@ -17048,6 +17309,9 @@ function detectUserLanguage(text: string): string {
     return "ar";
   }
 
+  const grammaticalLanguage = detectGrammaticalLatinLanguage(raw);
+  if (grammaticalLanguage) return grammaticalLanguage;
+
   const scores: Record<string, number> = { en: 0, sv: 0, de: 0, es: 0, fa: 0, ar: 0 };
   const add = (lang: string, pattern: RegExp, weight = 1) => {
     const matches = lower.match(pattern);
@@ -17064,7 +17328,7 @@ function detectUserLanguage(text: string): string {
   add("fa", /\b(salam|khubi|khub|khubam|khub hastin|mikham|mikhastam|mitonam|mitoonam|baraye|vaght|saat|sate|doshanbe|seshanbe|chaharshanbe|panjshanbe|jome|shanbe|yekshanbe|emrooz|farda|bale|baleh|are|khube|chi|che|migin|migirin|shohar|shoharam|esm|esme|esmam|nam|name|shomare|shomaram|telefon|telefonam|mobail|mobile|mobilesh|ham hast|hastam|hast|sepas|mersi|merci|mamnoon|mamnun|cancel konam|laghv konam)\b/g, 3);
   add("de", /\b(hallo|guten|danke|bitte|termin|uhr|morgen|nachmittag|buchen|buchung|behandlung|ganzkörper|ganzkoerper|körper|koerper|ich möchte|ich moechte|ich will|mein name|meine nummer|telefonnummer|nummer ist|montag|dienstag|mittwoch|donnerstag|freitag|samstag|sonntag)\b/g, 4);
   add("en", /\b(hi|hello|hey|thanks|thank you|yes|no|please|appointment|book|booking|available|next week|today|tomorrow|friday|thursday|wednesday|tuesday|monday|saturday|sunday|treatment|bikini|fullbody|full body|my name is|my phone is|phone|number|i want|i would like|i can|can i|could i)\b/g, 2);
-  add("sv", /\b(hej|hejsan|tack|tusen tack|ja tack|nej|jag|vill|ska|ha|boka|bokning|tid|ledig|behandling|klockan|kl|vad heter du|vem är du|mitt namn|mitt nummer|mobilnummer|telefonnummer|måndag|tisdag|onsdag|torsdag|fredag|lördag|söndag|idag|imorgon)\b/g, 2);
+  add("sv", /\b(hej|hejsan|tack|tusen tack|ja tack|nej|jag|vill|ska|ha|boka|bokning|tider?|lediga?|behandling|klockan|kl|vad heter du|vem är du|mitt namn|mitt nummer|mobilnummer|telefonnummer|måndag|tisdag|onsdag|torsdag|fredag|lördag|söndag|idag|imorgon)\b/g, 2);
   add("es", /\b(hola|gracias|por favor|quiero|cita|reservar|reserva|tratamiento|mañana|manana|hora|semana|lunes|martes|miércoles|miercoles|jueves|viernes|sábado|sabado|domingo|mi nombre|mi teléfono|telefono)\b/g, 3);
   add("ar", /\b(marhaba|salam|shukran|maw3ed|maw'ed|hajz|bukra|alyawm|naam|la)\b/g, 2);
 
@@ -17105,6 +17369,8 @@ function hasStrongLanguageEvidence(language: string, text?: string): boolean {
   const lower = raw.toLowerCase();
   if (!raw) return false;
 
+  if (detectGrammaticalLatinLanguage(raw) === language) return true;
+
   // These patterns are intentionally stronger than the normal detector. They are used
   // to allow a new real message to override an old chat language, even when the message
   // also contains a time like 16:30. Short replies like "yes", "ok", "tack", "merci"
@@ -17139,10 +17405,25 @@ function shouldAllowLatestLanguageOverride(chatId: string, previous: string | un
   if (isThanksOnlyText(text)) return false;
   if (isAffirmativeBookingText(text)) return false;
 
-  // While a booking is waiting for name/phone, keep the already chosen language.
-  // A customer may provide contact info in English even if the conversation started in Swedish.
-  if (pendingBookings[chatId]) return false;
-  if (getRecentCompletedBooking(chatId)) return false;
+  const pending = pendingBookings[chatId];
+  if (pending) {
+    const configuredService = findConfiguredBookingService(text, pending.businessConfig);
+    if (configuredService) {
+      const lowerText = text.toLowerCase();
+      const lowerService = configuredService.toLowerCase();
+      const serviceIndex = lowerText.indexOf(lowerService);
+      const remainingText = serviceIndex >= 0
+        ? `${text.slice(0, serviceIndex)} ${text.slice(serviceIndex + configuredService.length)}`.trim()
+        : text;
+      const remainingLanguage = detectStrongLatestLanguage(remainingText);
+      const hasNaturalLanguageEvidence = Boolean(
+        remainingLanguage === detected &&
+        isMeaningfulLanguageMessage(remainingText) &&
+        hasStrongLanguageEvidence(detected, remainingText)
+      );
+      if (!hasNaturalLanguageEvidence) return false;
+    }
+  }
   if (extractNameAndPhone(text)) return false;
 
   return hasStrongLanguageEvidence(detected, text);
@@ -17170,8 +17451,39 @@ function shouldKeepPreviousConversationLanguage(chatId: string, latestText?: str
 }
 
 
-function detectStrongLatestLanguage(text?: string): string | null {
-  const raw = String(text || "").trim().toLowerCase();
+function removeConfiguredEntitiesFromLanguageEvidence(text: string, businessConfig?: any): string {
+  const configuredEntities = [
+    ...getConfiguredBookingServiceNames(businessConfig),
+    String(
+      businessConfig?.defaultBookingService ||
+      businessConfig?.default_booking_service ||
+      ""
+    ).trim(),
+  ]
+    .filter((entity, index, all) => entity && all.indexOf(entity) === index)
+    .sort((left, right) => right.length - left.length);
+
+  let remainder = String(text || "");
+  for (const entity of configuredEntities) {
+    const escaped = entity.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    remainder = remainder.replace(
+      new RegExp(`(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])`, "giu"),
+      " "
+    );
+  }
+  return remainder.replace(/\s+/g, " ").trim();
+}
+
+function detectStrongLatestLanguage(text?: string, businessConfig?: any): string | null {
+  const source = String(text || "").trim();
+  if (businessConfig) {
+    const entityFreeText = removeConfiguredEntitiesFromLanguageEvidence(source, businessConfig);
+    if (entityFreeText !== source) {
+      return detectStrongLatestLanguage(entityFreeText);
+    }
+  }
+
+  const raw = source.toLowerCase();
   if (!raw) return null;
 
   if (/[\u0600-\u06FF]/.test(raw)) {
@@ -17180,6 +17492,9 @@ function detectStrongLatestLanguage(text?: string): string | null {
   }
 
   if (hasStrongLatinPersianEvidence(raw)) return "fa";
+
+  const grammaticalLanguage = detectGrammaticalLatinLanguage(raw);
+  if (grammaticalLanguage) return grammaticalLanguage;
 
   if (
     /\b(hej+|hejsan|hallå|kan du|kan jag|har jag|har ni|hos er|mår du|vad heter du|vem är du|jag vill|jag ska|jag behöver|hur lång|hur långt|hur länge|ändra min tid|flytta min tid|måndag|tisdag|onsdag|torsdag|fredag|lördag|söndag|klockan|vilken tid|konsultation|boka|bokning|lediga?|tid(?:er)?|passar|mitt namn|mitt nummer|mobilnummer)\b/i.test(raw)
@@ -17317,7 +17632,7 @@ function getConversationLanguage(chatId: string, latestText?: string, businessCo
     return explicitSwitch;
   }
 
-  const strongLatest = detectStrongLatestLanguage(text);
+  const strongLatest = detectStrongLatestLanguage(text, businessConfig);
   const businessLanguageRaw = String(
     businessConfig?.language || businessConfig?.defaultLanguage || ""
   ).trim().toLowerCase();
@@ -17337,21 +17652,22 @@ function getConversationLanguage(chatId: string, latestText?: string, businessCo
     (text ? detectUserLanguage(text) : null) ||
     businessLanguage ||
     "en";
+  const latestLanguageCandidate = strongLatest || "";
 
-  if (
-    strongLatest &&
-    strongLatest !== (storedFlowLanguage || previous) &&
-    isMeaningfulLanguageMessage(text) &&
-    hasStrongLanguageEvidence(strongLatest, text)
-  ) {
-    chatLanguages[chatId] = strongLatest;
-    updateActiveFlowLanguage(chatId, strongLatest);
+  if (shouldAllowLatestLanguageOverride(
+    chatId,
+    storedFlowLanguage || previous,
+    latestLanguageCandidate,
+    text,
+  )) {
+    chatLanguages[chatId] = latestLanguageCandidate;
+    updateActiveFlowLanguage(chatId, latestLanguageCandidate);
     console.log("[LanguageLock] meaningful language switch", {
       previous: storedFlowLanguage || previous || "none",
-      selected: strongLatest,
+      selected: latestLanguageCandidate,
       sessionKey: safeLogFingerprint(chatId),
     });
-    return strongLatest;
+    return latestLanguageCandidate;
   }
 
   if (storedFlowLanguage) {
@@ -19060,7 +19376,7 @@ async function sendWhatsAppMessage(to: string, text: string, businessConfig: any
   const token = getBusinessWhatsAppToken(businessConfig);
   const phoneNumberId = getBusinessWhatsAppPhoneNumberId(businessConfig);
   const safeText = guardCustomerFacingReply(
-    getScopedChannelSessionId("whatsapp", to, businessConfig, getBusinessWhatsAppPhoneNumberId(businessConfig)),
+    getScopedChannelSessionId("whatsapp", to, businessConfig, phoneNumberId),
     text
   );
 
@@ -24579,6 +24895,15 @@ export const priority1hUnifiedEngineTestBoundary = {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
     return resolveServiceDurationMinutes(service, null, businessConfig);
   },
+  channelSessionId(
+    platform: "whatsapp" | "messenger" | "instagram",
+    userId: string,
+    businessConfig: any,
+    tenantScope?: string,
+  ) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    return getScopedChannelSessionId(platform, userId, businessConfig, tenantScope);
+  },
   seedPending(sessionId: string, pending: any) {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
     pendingBookings[sessionId] = structuredClone(pending);
@@ -24687,14 +25012,17 @@ export const priority1hUnifiedEngineTestBoundary = {
       normalizedConstraint: params.normalizedConstraint,
     });
   },
-  channelSessionId(
-    platform: "whatsapp" | "messenger" | "instagram",
-    userId: string,
-    businessConfig: any,
-    tenantScope?: string
-  ) {
+  resolveConversationLanguage(sessionId: string, text: string, businessConfig: any) {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
-    return getScopedChannelSessionId(platform, userId, businessConfig, tenantScope);
+    return getConversationLanguage(sessionId, text, businessConfig);
+  },
+  detectStrongLanguage(text: string, businessConfig: any) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    return detectStrongLatestLanguage(text, businessConfig);
+  },
+  resolveExplicitBookingDate(text: string) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    return resolveExplicitBookingDate(text);
   },
   configure(dependencies: Priority1hTestDependencies) {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");

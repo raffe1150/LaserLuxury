@@ -157,6 +157,7 @@ for (const affirmative of ['Ja', 'Ja tack', 'absolut', 'boka den', 'det blir bra
   assert.equal(getBookingPhase(channelState), 'awaiting_contact');
 }
 assert.equal(isPositiveBookingConfirmation('Nej tack'), false);
+assert.equal(isPositiveBookingConfirmation('Ja, men boka en annan tid på fredag'), false);
 const brokenConfirmation = { ...confirmation, status: 'awaiting_confirmation', selectedSlotEnd: null };
 assert.deepEqual(getBookingInvariantFailures(brokenConfirmation), ['confirmation_requires_one_owned_slot']);
 
@@ -291,6 +292,12 @@ assert.match(
   server,
   /calendarEvents:\s*snapshot\.calendarEvents,\s*pendingEvents:\s*snapshot\.pendingEvents/
 );
+
+assert.match(server, /const pendingSlotConfirmationAtEntry = isPendingSlotConfirmation\(text, pending\)/);
+assert.match(server, /!pendingSlotConfirmationAtEntry &&[\s\S]{0,80}!entryOwnedSlotSelection/);
+assert.match(server, /const continuesOwnedBooking = Boolean\([\s\S]{0,500}entryPendingOwnedSlot/);
+assert.match(server, /!continuesOwnedBooking &&[\s\S]{0,120}isExplicitNewBookingPivotText\(text\)/);
+assert.match(server, /calendarEvents: filteredEvents,[\s\S]{0,80}pendingEvents/);
 assert.match(server, /recoverBookingTransaction\(pending, "calendar_verification", rollbackInsertedCalendarEvent\)/);
 assert.match(server, /recoverBookingTransaction\(pending, databaseFailurePath/);
 assert.ok(server.indexOf('verifiedBookingReplyAuthorizations[sessionId] = bookingOperationResult') < server.indexOf('await notifyAdminAboutBooking('));

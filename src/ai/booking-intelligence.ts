@@ -120,10 +120,35 @@ export function normalizeTranscribedText(text: string): string {
   return normalized.replace(/\s+/g, ' ').trim();
 }
 
+function detectGrammaticalLatinLanguage(text: string): SupportedLanguage | null {
+  const lower = normalizeConversationText(text).toLowerCase();
+  const scores: Record<'sv' | 'de' | 'es' | 'en', number> = { sv: 0, de: 0, es: 0, en: 0 };
+  const add = (language: keyof typeof scores, pattern: RegExp, weight: number) => {
+    const matches = lower.match(pattern);
+    if (matches) scores[language] += matches.length * weight;
+  };
+
+  add('sv', /\b(vilka?|finns|jag|mig|du|den|det|för|någon|några)\b/gu, 2);
+  add('sv', /\b(lediga?|tider?)\b/gu, 2);
+  add('de', /\b(welche[rsn]?|ich|mich|gibt\s+es|am|für)\b/gu, 2);
+  add('de', /\b(freie[nrms]?|zeiten?|termine?)\b/gu, 2);
+  add('es', /\b(qué|cuáles?|hay|quiero|para|el|la)\b/gu, 2);
+  add('es', /\b(horas?|disponibles?|citas?)\b/gu, 2);
+  add('en', /\b(what|which|i|me|are\s+there|for|on)\b/gu, 2);
+  add('en', /\b(available|times?|appointments?)\b/gu, 2);
+
+  const ranked = Object.entries(scores).sort((a, b) => b[1] - a[1]);
+  return ranked[0][1] >= 6 && ranked[0][1] > ranked[1][1]
+    ? ranked[0][0] as SupportedLanguage
+    : null;
+}
+
 function detectLanguage(text: string, active?: SupportedLanguage): SupportedLanguage {
   if (/[أإؤئءةىيك]/u.test(text) || /(?:هل|لديكم|حجز|متاح|الساعة|يوم|الجمعة|سبتمبر)/u.test(text)) return 'ar';
   if (/[\u0600-\u06ff]/u.test(text)) return 'fa';
-  if (/\b(?:jag|vill|boka|fredag|före|efter|klockan|mellan|tid)\b/iu.test(text)) return 'sv';
+  const grammaticalLanguage = detectGrammaticalLatinLanguage(text);
+  if (grammaticalLanguage) return grammaticalLanguage;
+  if (/\b(?:jag|vill|boka|fredag|före|efter|klockan|mellan|tider?|lediga?)\b/iu.test(text)) return 'sv';
   if (/\b(?:haben sie|termin|uhr|montag|dienstag|mittwoch|donnerstag|freitag|samstag|sonntag|später|spaeter)\b/iu.test(text)) return 'de';
   if (/\b(?:tienen|cita|reserva|disponible|viernes|después|despues|septiembre)\b/iu.test(text)) return 'es';
   if (/\b(?:mikham|mitoni|vaght|jomeh?|baraye|ghabl|sate?|moshavereh?|chera|zaban)\b/iu.test(text)) return 'fa';
@@ -195,6 +220,12 @@ export function detectNormalizedIntent(text: string): NormalizedIntent {
   if (/\b(?:cancel|avboka|laghv).{0,25}(?:appointment|booking|tid|vaght|rezerv)?\b/iu.test(raw) || /(?:لغو|کنسل).{0,20}(?:وقت|رزرو)/u.test(raw)) return 'cancellation';
   if (/(?:^|\s)(?:reschedule|move|change|ändra|flytta|taghir|avaz).{0,30}(?:appointment|booking|time|tid|vaght|rezerv)(?=\s|$)/iu.test(raw) || /(?:^|\s)boka\s+om(?=\s|$)/iu.test(raw) || /\b(?:avaz|taghir)\s+(?:bedam|konam)\b/iu.test(raw) || /(?:تغییر|عوض).{0,20}(?:وقت|رزرو|کنم|بدم)/u.test(raw)) return 'reschedule';
   if (/\b(?:do i have|did i book|check|har jag|aya).{0,30}(?:appointment|booking|tid|vaght|rezerv)\b/iu.test(raw) || /(?:آیا|میشه).{0,24}(?:وقت|رزرو).{0,24}(?:دارم|کردم)|(?:هل\s+لدي(?=\s|$).{0,24}(?:موعد|حجز)|هل\s+حجزت|متى\s+موعدي|تحقق\s+من\s+موعدي)/u.test(raw)) return 'booking_lookup';
+
+  const germanBookingAction =
+    /\bich\s+(?:möchte|moechte|will)\b.{0,120}\b(?:buchen|reservieren)\b/iu.test(raw) ||
+    /\b(?:einen?\s+)?termin\s+(?:buchen|reservieren)\b/iu.test(raw);
+
+  if (germanBookingAction) return 'new_booking';
 
   const bookingNoun = /\b(?:appointment|booking|consultation|slot|time|boka|bokning|tid|konsultation|termin|cita|reserva|reservación|reservacion|vaght|rezerv|moshavereh?|laser)\b/iu.test(raw) || /(?:وقت|رزرو|مشاوره|لیزر|موعد|مواعيد|حجز)/u.test(raw);
   const bookingAction = /\b(?:book|want|need|available|have anything|have any time|do you have any time|boka|vill|behöver|finns|har ni|haben sie|möchte|mochte|buchen|tienen|hay|disponible|disponibles|mikham|mikhastam|mitoni|bدي|begiram|dari)\b/iu.test(raw) || /(?:می ?خوام|می ?خواهم|می ?تونی|وقت داری|بگیرم|بگیری|متاح|متوفر|شاغر)/u.test(raw);
@@ -287,42 +318,131 @@ export function parseTimeConstraint(text: string): NormalizedTimeConstraint | un
     .toLowerCase()
     .replace(/\bnoon\b/giu, '12:00')
     .replace(/ظهر/gu, '12:00');
+
   if (!raw || /\[(?:unclear|نامفهوم)\]/iu.test(raw)) return undefined;
-  const token = String.raw`(2[0-3]|[01]?\d)(?:[\.:](\d{2}))?\s*(am|pm)?\s*(morning|afternoon|evening|morgon|eftermiddag|kväll|صبح|بعدازظهر|عصر)?`;
+
+  // A rejected clock value must not be reinterpreted as a new requested time.
+  const rejectedExplicitTime = new RegExp(
+    String.raw`(?:[01]?\d|2[0-3])(?:[\.:]\d{2})?\s*(?:uhr)?[^\p{N}]{0,24}(?:passt\s+nicht|no\s+me\s+va|لا\s+تناسبني)`,
+    'iu',
+  );
+  if (rejectedExplicitTime.test(raw)) return undefined;
+
+  const token = String.raw`(2[0-3]|[01]?\d)(?:[\.:](\d{2}))?\s*(am|pm)?\s*(morning|afternoon|evening|morgon|eftermiddag|kväll|abend|tarde|noche|صبح|بعدازظهر|عصر|المساء)?`;
+  const clockMarker = String.raw`(?:klockan|a\s+las?|saat|sate|ساعت|(?:ال)?ساعة)`;
+
+  // Preserve the local named-date-range guard so calendar date ranges are not
+  // accidentally consumed as clock ranges.
   const between = matchNamedCalendarDateRange(raw)
     ? null
-    : raw.match(new RegExp(String.raw`(?:between|mellan|entre|bin|بین)\s*(?:klockan|a\s+las|saat|sate|ساعت)?\s*${token}\s*(?:and|och|y|ta|تا|و)\s*(?:klockan|a\s+las|saat|sate|ساعت)?\s*${token}`, 'iu'));
+    : raw.match(new RegExp(
+        String.raw`(?:between|mellan|bin|بین|zwischen|entre(?:\s+las?)?|بين)\s*(?:${clockMarker})?\s*${token}\s*(?:uhr)?\s*(?:and|och|ta|تا|و|und|y)\s*(?:las?\s+|${clockMarker}\s*)?${token}\s*(?:uhr)?`,
+        'iu',
+      ));
+
   if (between) {
     const start = clockToMinutes(between[1], between[2], between[3], between[4]);
     const end = clockToMinutes(between[5], between[6], between[7], between[8]);
-    if (start !== null && end !== null && start < end) return { kind: 'between', startMinutes: start, endMinutes: end, startInclusive: true, endInclusive: true, confidence: 'high' };
+
+    if (start !== null && end !== null && start < end) {
+      return {
+        kind: 'between',
+        startMinutes: start,
+        endMinutes: end,
+        startInclusive: true,
+        endInclusive: true,
+        confidence: 'high',
+      };
+    }
   }
+
   const rules: Array<[NormalizedTimeConstraint['kind'], RegExp, boolean, boolean]> = [
-    ['after', new RegExp(String.raw`(?:(?:after|later than)(?:\s+at)?|efter(?:\s+kl(?:ockan)?\.?)?|senare än(?:\s+kl(?:ockan)?\.?)?|nach(?:\s+dem)?|später als|spaeter als|despu[eé]s de(?:\s+las?)?|bad az(?: sa(?:a)?t(?:e)?)?|بعد از(?: ساعت)?|بعد(?:\s+الساعة|\s+ساعة))\s*${token}`, 'iu'), false, false],
-    ['before', new RegExp(String.raw`(?:before|innan(?:\s+kl(?:ockan)?\.?)?|före(?:\s+kl(?:ockan)?\.?)?|vor|antes de(?:\s+las?)?|ghabl az(?: sate?)?|قبل از(?: ساعت)?|قبل(?:\s+الساعة|\s+ساعة))\s*${token}`, 'iu'), false, false],
-    ['from', new RegExp(String.raw`(?:from|från(?: klockan)?|desde(?:\s+las?)?|az(?: sate?)?|از(?: ساعت)?|من(?:\s+الساعة|\s+ساعة))\s*${token}`, 'iu'), true, false],
-    ['exact', new RegExp(String.raw`(?:at|klockan|kl\.?|um|a\s+las?|saat|sate|ساعت)\s*${token}(?:\s*uhr)?`, 'iu'), true, true],
+    [
+      'after',
+      new RegExp(
+        String.raw`(?:(?:after|later than)(?:\s+at)?|efter(?:\s+kl(?:ockan)?\.?)?|senare än(?:\s+kl(?:ockan)?\.?)?|nach(?:\s+(?:dem|um))?|später als|spaeter als|despu[eé]s de(?:\s+las?)?|bad az(?: sa(?:a)?t(?:e)?)?|بعد از(?: ساعت)?|بعد(?:\s+(?:ال)?ساعة|\s+ساعة))\s*${token}\s*(?:uhr)?`,
+        'iu',
+      ),
+      false,
+      false,
+    ],
+    [
+      'before',
+      new RegExp(
+        String.raw`(?:before|innan(?:\s+kl(?:ockan)?\.?)?|före(?:\s+kl(?:ockan)?\.?)?|vor(?:\s+um)?|antes de(?:\s+las?)?|ghabl az(?: sate?)?|قبل از(?: ساعت)?|قبل(?:\s+(?:ال)?ساعة|\s+ساعة))\s*${token}\s*(?:uhr)?`,
+        'iu',
+      ),
+      false,
+      false,
+    ],
+    [
+      'from',
+      new RegExp(
+        String.raw`(?:from|från(?: klockan)?|desde(?:\s+las?)?|az(?: sate?)?|از(?: ساعت)?|من(?:\s+(?:ال)?ساعة|\s+ساعة))\s*${token}`,
+        'iu',
+      ),
+      true,
+      false,
+    ],
+    [
+      'exact',
+      new RegExp(
+        String.raw`(?:at|klockan|kl\.?|um|a\s+las?|saat|sate|ساعت|(?:ال)?ساعة)\s*${token}\s*(?:uhr)?`,
+        'iu',
+      ),
+      true,
+      true,
+    ],
   ];
+
   for (const [kind, pattern, startInclusive, endInclusive] of rules) {
     const match = raw.match(pattern);
     if (!match) continue;
+
     const value = clockToMinutes(match[1], match[2], match[3], match[4]);
     if (value === null) return undefined;
-    if (kind === 'before') return { kind, endMinutes: value, endInclusive, confidence: 'high' };
-    return { kind, startMinutes: value, startInclusive, endInclusive, confidence: 'high' };
+
+    if (kind === 'before') {
+      return { kind, endMinutes: value, endInclusive, confidence: 'high' };
+    }
+
+    return {
+      kind,
+      startMinutes: value,
+      startInclusive,
+      endInclusive,
+      confidence: 'high',
+    };
   }
+
   const bareExact = raw.match(/^([01]?\d|2[0-3])[\.:]([0-5]\d)$/u);
+
   if (bareExact) {
-    return { kind: 'exact', startMinutes: Number(bareExact[1]) * 60 + Number(bareExact[2]), startInclusive: true, endInclusive: true, confidence: 'high' };
+    return {
+      kind: 'exact',
+      startMinutes: Number(bareExact[1]) * 60 + Number(bareExact[2]),
+      startInclusive: true,
+      endInclusive: true,
+      confidence: 'high',
+    };
   }
+
+  // Preserve local German bare-clock support.
   const germanClock = raw.match(/\b([01]?\d|2[0-3])(?:[\.:]([0-5]\d))?\s*uhr\b/u);
+
   if (germanClock) {
-    return { kind: 'exact', startMinutes: Number(germanClock[1]) * 60 + Number(germanClock[2] || 0), startInclusive: true, endInclusive: true, confidence: 'high' };
+    return {
+      kind: 'exact',
+      startMinutes: Number(germanClock[1]) * 60 + Number(germanClock[2] || 0),
+      startInclusive: true,
+      endInclusive: true,
+      confidence: 'high',
+    };
   }
-  // A clock token inside explicit slot-selection wording is authoritative. Requiring
-  // the whole message to be only the clock caused ordinary selections such as
-  // "I'll take the 11:00 slot" to bypass the deterministic owned-slot transition.
+
+  // Preserve local deterministic owned-slot selection.
   const contextualExact = raw.match(/(?:^|[^\d])([01]?\d|2[0-3])[\.:]([0-5]\d)(?!\d)/u);
+
   if (
     contextualExact &&
     (
@@ -330,11 +450,27 @@ export function parseTimeConstraint(text: string): NormalizedTimeConstraint | un
       /(?:وقت|زمان|ساعت|رزرو|موعد)/u.test(raw)
     )
   ) {
-    return { kind: 'exact', startMinutes: Number(contextualExact[1]) * 60 + Number(contextualExact[2]), startInclusive: true, endInclusive: true, confidence: 'high' };
+    return {
+      kind: 'exact',
+      startMinutes: Number(contextualExact[1]) * 60 + Number(contextualExact[2]),
+      startInclusive: true,
+      endInclusive: true,
+      confidence: 'high',
+    };
   }
-  if (/\b(?:morning|morgon(?:en)?)\b/iu.test(raw) || /صبح/u.test(raw)) return { kind: 'morning', startMinutes: 9 * 60, endMinutes: 12 * 60, startInclusive: true, endInclusive: false, confidence: 'high' };
-  if (/\b(?:afternoon|eftermiddag(?:en)?)\b/iu.test(raw) || /بعدازظهر/u.test(raw)) return { kind: 'afternoon', startMinutes: 12 * 60, endMinutes: 17 * 60, startInclusive: true, endInclusive: false, confidence: 'high' };
-  if (/\b(?:evening|kväll(?:en)?)\b/iu.test(raw) || /(?:عصر|مساء)/u.test(raw)) return { kind: 'evening', startMinutes: 17 * 60, endMinutes: 21 * 60, startInclusive: true, endInclusive: false, confidence: 'high' };
+
+  if (/\b(?:morning|morgon(?:en)?)\b/iu.test(raw) || /صبح/u.test(raw)) {
+    return { kind: 'morning', startMinutes: 9 * 60, endMinutes: 12 * 60, startInclusive: true, endInclusive: false, confidence: 'high' };
+  }
+
+  if (/\b(?:afternoon|eftermiddag(?:en)?|tarde)\b/iu.test(raw) || /بعدازظهر/u.test(raw)) {
+    return { kind: 'afternoon', startMinutes: 12 * 60, endMinutes: 17 * 60, startInclusive: true, endInclusive: false, confidence: 'high' };
+  }
+
+  if (/\b(?:evening|kväll(?:en)?|abend|noche)\b/iu.test(raw) || /(?:عصر|مساء|المساء)/u.test(raw)) {
+    return { kind: 'evening', startMinutes: 17 * 60, endMinutes: 21 * 60, startInclusive: true, endInclusive: false, confidence: 'high' };
+  }
+
   return undefined;
 }
 
@@ -411,12 +547,18 @@ export function getBookingWeekdayReference(text: string): {
   const raw = normalizeConversationText(text).toLowerCase();
   const weekday = extractBookingWeekday(raw);
   if (weekday === undefined) return undefined;
-  if (/\b(?:next|nästa|ayande)\b/iu.test(raw) || /آینده/u.test(raw)) {
+
+  if (
+    /\b(?:next|nästa|nächste[rsnm]?|naechste[rsnm]?|próxim[oa]|proxim[oa]|ayande)\b/iu.test(raw) ||
+    /آینده|القادم(?:ة)?|التالي(?:ة)?/u.test(raw)
+  ) {
     return { weekday, qualifier: 'next' };
   }
+
   if (/\bthis\b|\bdenna\b|همین|این/u.test(raw)) {
     return { weekday, qualifier: 'this' };
   }
+
   return { weekday, qualifier: 'bare' };
 }
 
@@ -454,14 +596,14 @@ function parseBookingDateCandidate(text: string, timezone: string, now = new Dat
     return undefined;
   }
   const monthNames: Record<string, number> = {
-    january: 1, januari: 1, januar: 1, enero: 1, ژانویه: 1, february: 2, februari: 2, februar: 2, febrero: 2, فوریه: 2,
-    march: 3, mars: 3, märz: 3, marz: 3, marzo: 3, مارس: 3, april: 4, abril: 4, آوریل: 4, may: 5, maj: 5, mai: 5, mayo: 5, مه: 5,
-    june: 6, juni: 6, junio: 6, ژوئن: 6, july: 7, juli: 7, julio: 7, ژوئیه: 7,
+    january: 1, januari: 1, januar: 1, enero: 1, ژانویه: 1, يناير: 1, february: 2, februari: 2, februar: 2, febrero: 2, فوریه: 2, فبراير: 2,
+    march: 3, mars: 3, märz: 3, marz: 3, marzo: 3, مارس: 3, april: 4, abril: 4, آوریل: 4, أبريل: 4, ابريل: 4, may: 5, maj: 5, mai: 5, mayo: 5, مه: 5, مايو: 5,
+    june: 6, juni: 6, junio: 6, ژوئن: 6, يونيو: 6, july: 7, juli: 7, julio: 7, ژوئیه: 7, يوليو: 7,
     august: 8, augusti: 8, agosto: 8, اوت: 8, آگوست: 8, أغسطس: 8, اغسطس: 8, september: 9, septiembre: 9, سپتامبر: 9, سبتمبر: 9,
     october: 10, oktober: 10, octubre: 10, اکتبر: 10, أكتوبر: 10, اكتوبر: 10, november: 11, noviembre: 11, نوامبر: 11, نوفمبر: 11,
     december: 12, december_sv: 12, dezember: 12, diciembre: 12, دسامبر: 12, ديسمبر: 12,
   };
-  const named = raw.match(/(?:^|\s)(\d{1,2})(?::e|\.)?\s+(?:de\s+)?(january|januari|januar|enero|ژانویه|يناير|february|februari|februar|febrero|فوریه|فبراير|march|mars|märz|marz|marzo|مارس|april|abril|آوریل|أبريل|ابريل|may|maj|mai|mayo|مه|مايو|june|juni|junio|ژوئن|يونيو|july|juli|julio|ژوئیه|يوليو|august|augusti|agosto|اوت|آگوست|أغسطس|اغسطس|september|septiembre|سپتامبر|سبتمبر|october|oktober|octubre|اکتبر|أكتوبر|اكتوبر|november|noviembre|نوامبر|نوفمبر|december|dezember|diciembre|دسامبر|ديسمبر)(?:\s+(?:de\s+)?(20\d{2}))?(?:\s|[,.!?]|$)/iu);
+  const named = raw.match(/(?:^|\s)(\d{1,2})(?::[ae]|\.)?\s+(?:de\s+)?(january|januari|januar|enero|ژانویه|يناير|february|februari|februar|febrero|فوریه|فبراير|march|mars|märz|marz|marzo|مارس|april|abril|آوریل|أبريل|ابريل|may|maj|mai|mayo|مه|مايو|june|juni|junio|ژوئن|يونيو|july|juli|julio|ژوئیه|يوليو|august|augusti|agosto|اوت|آگوست|أغسطس|اغسطس|september|septiembre|سپتامبر|سبتمبر|october|oktober|octubre|اکتبر|أكتوبر|اكتوبر|november|noviembre|نوامبر|نوفمبر|december|dezember|diciembre|دسامبر|ديسمبر)(?:\s+(?:de\s+)?(20\d{2}))?(?:\s|[,.!?]|$)/iu);
 
   const monthFirstNamed = raw.match(/(?:^|\s)(january|february|march|april|may|june|july|august|september|october|november|december)\s+(\d{1,2})(?:st|nd|rd|th)?(?:,\s*|\s+)?(20\d{2})?(?=\s|[,.!?]|$)/iu);
 
@@ -493,10 +635,31 @@ function parseBookingDateCandidate(text: string, timezone: string, now = new Dat
 
     return undefined;
   }
-  if (/\b(?:day after tomorrow|i övermorgon|övermorgon|pas farda|pasfarda)\b/iu.test(raw) || /پس ?فردا/u.test(raw)) return { kind: 'relative_date', value: addIsoDays(today.iso, 2), relative: 'day_after_tomorrow', confidence: 'high' };
+  if (
+    /(?:^|\s)(?:day after tomorrow|i övermorgon|övermorgon|übermorgen|uebermorgen|pasado mañana|pasado manana|pas farda|pasfarda)(?=\s|[.!?,;]|$)/iu.test(raw) ||
+    /پس ?فردا|بعد\s+(?:غد[\u064B-\u065F]*ا?|بكر[ةه])/u.test(raw)
+  ) {
+    return { kind: 'relative_date', value: addIsoDays(today.iso, 2), relative: 'day_after_tomorrow', confidence: 'high' };
+  }
+
+  // "morgen" means tomorrow except in the German daypart phrase "am Morgen".
   const germanTomorrow = /\bmorgen\b/iu.test(raw) && !/\bam\s+morgen\b/iu.test(raw);
-  if (/\b(?:tomorrow|imorgon|farda)\b/iu.test(raw) || germanTomorrow || /فردا/u.test(raw)) return { kind: 'relative_date', value: addIsoDays(today.iso, 1), relative: 'tomorrow', confidence: 'high' };
-  if (/\b(?:today|idag|emrooz|emruz)\b/iu.test(raw) || /امروز/u.test(raw)) return { kind: 'relative_date', value: today.iso, relative: 'today', confidence: 'high' };
+
+  if (
+    /\b(?:tomorrow|imorgon|mañana|manana|farda)\b/iu.test(raw) ||
+    germanTomorrow ||
+    /فردا|غد[\u064B-\u065F]*ا?|بكر[ةه]/u.test(raw)
+  ) {
+    return { kind: 'relative_date', value: addIsoDays(today.iso, 1), relative: 'tomorrow', confidence: 'high' };
+  }
+
+  if (
+    /\b(?:today|idag|heute|hoy|emrooz|emruz)\b/iu.test(raw) ||
+    /امروز|اليوم/u.test(raw)
+  ) {
+    return { kind: 'relative_date', value: today.iso, relative: 'today', confidence: 'high' };
+  }
+
   const weekdayReference = getBookingWeekdayReference(raw);
   if (!weekdayReference) return undefined;
   const requestedWeekday = weekdayReference.weekday;

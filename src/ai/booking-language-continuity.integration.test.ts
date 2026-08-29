@@ -397,6 +397,77 @@ try {
   const independentSpanish = await turn('tenant-spanish', 'telegram', '13:00', spanishConfig);
   assert.equal(independentSpanish.pending?.language, 'es');
   assert.match(independentSpanish.replies[0], localized.es.marker);
+
+  // Remote regression: pending booking language remains authoritative even when
+  // the older flow-language shell is stale and still points to English.
+  const staleFlowCases = [
+    {
+      language: 'sv',
+      text: 'Då bokar jag in mig på 13:00 den 13 oktober.',
+      marker: /(?:boka|bokningen|namn|mobilnummer|bekräfta)/iu,
+    },
+    {
+      language: 'de',
+      text: 'Dann buche ich den Termin am 13. Oktober um 13:00 Uhr.',
+      marker: /(?:buchen|Buchung|Namen|Mobilnummer|bestätigen)/iu,
+    },
+  ] as const;
+
+  for (const platform of platforms) {
+    for (const scenario of staleFlowCases) {
+      configure();
+
+      const config = business(`stale-flow-${platform}-${scenario.language}`);
+      const sessionId = `stale-flow-${platform}-${scenario.language}`;
+
+      seedSelection(sessionId, platform, scenario.language, config);
+
+      boundary.seedFlowLanguage(sessionId, 'en', 'availability');
+
+      const result = await turn(
+        sessionId,
+        platform,
+        scenario.text,
+        config,
+      );
+
+      assert.equal(
+        result.handled,
+        true,
+        `${platform}/${scenario.language}: selection is handled`,
+      );
+
+      assert.equal(
+        result.pending?.language,
+        scenario.language,
+        `${platform}/${scenario.language}: pending language remains authoritative`,
+      );
+
+      assert.notEqual(
+        result.pending?.status,
+        'awaiting_time_selection',
+        `${platform}/${scenario.language}: owned slot selection advances`,
+      );
+
+      assert.equal(
+        boundary.conversationState(sessionId).language,
+        scenario.language,
+        `${platform}/${scenario.language}: stale flow language is repaired`,
+      );
+
+      assert.match(
+        result.replies[0],
+        scenario.marker,
+        `${platform}/${scenario.language}: reply stays localized`,
+      );
+
+      assert.doesNotMatch(
+        result.replies[0],
+        /Which proposed time|Which one suits you|I found these available times/iu,
+      );
+    }
+  }
+
 } finally {
   boundary.reset();
   console.log = originalLog;

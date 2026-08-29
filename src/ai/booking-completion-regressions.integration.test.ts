@@ -199,6 +199,7 @@ try {
     'Alex Testsson, och mitt nummer är 0701234567.',
     'Alex Testsson, och mitt mobilnummer är 0701234567.',
     'Alex Testsson, och mitt telefonnummer är 0701234567.',
+    'Alex Testsson, och telefonnumret är 0701234567.',
   ]) {
     const parsed = boundary.resolveBookingContactPhrase({ text });
     assert.equal(parsed.name, 'Alex Testsson', text);
@@ -212,6 +213,8 @@ try {
     'Alex Testsson Extra, och mitt nummer är 0701234567.',
     'Jag vill boka, och mitt nummer är 0701234567.',
     'Boka en tid imorgon, och mitt telefonnummer är 0701234567.',
+    'Alex Testsson Extra, och telefonnumret är 0701234567.',
+    'Jag vill boka, och telefonnumret är 0701234567.',
   ]) {
     const contact = boundary.resolveBookingContactPhrase({ text: invalid });
     assert.equal(contact.name, null, invalid);
@@ -249,7 +252,7 @@ try {
     const counters = fixture();
     seedAwaitingContact(testCase.sessionId, testCase.channel, testCase.userId);
     const contactText = testCase.channel === 'whatsapp'
-      ? 'Alex Testsson, och mitt nummer är 0701234567.'
+      ? 'Alex Testsson, och telefonnumret är 0701234567.'
       : 'Alex Testsson och 0701234567';
     const result = await boundary.turn({
       sessionId: testCase.sessionId,

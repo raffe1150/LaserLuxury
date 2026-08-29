@@ -76,6 +76,25 @@ try {
   assert.equal(spanish.timeConstraint?.kind, 'exact');
   assert.equal(spanish.timeConstraint?.startMinutes, 16 * 60);
 
+  const swedishNow = new Date('2026-08-30T10:00:00+02:00');
+  const swedishTomorrow = normalizeBookingRequest({
+    businessId: 'date-test', channel: 'whatsapp', conversationKey: 'sv-tomorrow', inputMode: 'text',
+    text: 'Hej, jag vill boka en tid till i morgon.', activeLanguage: 'sv', timezone, now: swedishNow,
+  });
+  assert.equal(swedishTomorrow.date?.kind, 'relative_date');
+  assert.equal(swedishTomorrow.date?.relative, 'tomorrow');
+  assert.equal(swedishTomorrow.date?.value, '2026-08-31');
+  assert.equal(swedishTomorrow.timeConstraint, undefined);
+
+  const swedishTomorrowMorning = normalizeBookingRequest({
+    businessId: 'date-test', channel: 'whatsapp', conversationKey: 'sv-tomorrow-morning', inputMode: 'text',
+    text: 'Jag vill boka i morgon på morgonen.', activeLanguage: 'sv', timezone, now: swedishNow,
+  });
+  assert.equal(swedishTomorrowMorning.date?.kind, 'relative_date');
+  assert.equal(swedishTomorrowMorning.date?.relative, 'tomorrow');
+  assert.equal(swedishTomorrowMorning.date?.value, '2026-08-31');
+  assert.equal(swedishTomorrowMorning.timeConstraint?.kind, 'morning');
+
   assert.equal(parseTimeConstraint('am Morgen')?.kind, undefined);
   assert.equal(parseTimeConstraint('por la mañana')?.kind, undefined);
 

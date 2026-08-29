@@ -5950,7 +5950,7 @@ function extractNameAndPhone(text?: string): { name: string; phone: string } | n
   // Fallback is intentionally limited to a standalone one/two-word contact payload.
   // Long booking/date sentences must not contribute arbitrary leading words as names.
   const standaloneBeforePhone = beforePhone
-    .replace(/(?:,\s*)?\boch\s+mitt\s+(?:nummer|mobilnummer|telefonnummer)\s+är\s*$/i, "")
+    .replace(/(?:,\s*)?\boch\s+(?:mitt\s+(?:nummer|mobilnummer|telefonnummer)|telefonnumret)\s+är\s*$/i, "")
     .replace(/\b(?:and|och|und|y)\s*$/i, "")
     .replace(/\b(?:and|with)\s+(?:the\s+)?(?:phone|mobile)(?:\s+number)?\s*$/i, "")
     .replace(/[,:;.]+$/g, "")

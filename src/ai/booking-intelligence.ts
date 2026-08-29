@@ -459,7 +459,8 @@ export function parseTimeConstraint(text: string): NormalizedTimeConstraint | un
     };
   }
 
-  if (/\b(?:morning|morgon(?:en)?)\b/iu.test(raw) || /صبح/u.test(raw)) {
+  const daypartText = raw.replace(/\bi\s+morgon\b/giu, ' ');
+  if (/\b(?:morning|morgon(?:en)?)\b/iu.test(daypartText) || /صبح/u.test(raw)) {
     return { kind: 'morning', startMinutes: 9 * 60, endMinutes: 12 * 60, startInclusive: true, endInclusive: false, confidence: 'high' };
   }
 
@@ -647,6 +648,7 @@ function parseBookingDateCandidate(text: string, timezone: string, now = new Dat
 
   if (
     /\b(?:tomorrow|imorgon|mañana|manana|farda)\b/iu.test(raw) ||
+    /(?:^|\s)i\s+morgon(?=\s|[.!?,;]|$)/iu.test(raw) ||
     germanTomorrow ||
     /فردا|غد[\u064B-\u065F]*ا?|بكر[ةه]/u.test(raw)
   ) {

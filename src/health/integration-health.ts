@@ -25,6 +25,21 @@ type ProbeResult = Pick<CachedHealth, 'status' | 'reasonCode'>;
 type FetchLike = typeof fetch;
 type CalendarProbe = (config: IntegrationHealthConfig) => Promise<ProbeResult>;
 
+export type InstagramHealthAuthFailureDiagnostic = {
+  event: 'instagram_health_auth_failure';
+  integration: 'instagram';
+  businessId: number;
+  httpStatus: number;
+  metaErrorCode: number | null;
+  metaErrorSubcode: number | null;
+  metaErrorType: 'OAuthException' | 'IGApiException' | 'other' | null;
+  category: 'provider_authorization_failure';
+  reasonCode: 'authorization_invalid';
+  fbtraceId: string | null;
+};
+
+type DiagnosticLogger = (diagnostic: InstagramHealthAuthFailureDiagnostic) => void;
+
 const labels: Record<IntegrationKey, string> = {
   instagram: 'Instagram',
   messenger: 'Facebook Messenger',
@@ -121,8 +136,56 @@ async function fetchJson(url: URL | string, fetchImpl: FetchLike, signal: AbortS
   return { response, data };
 }
 
+function finiteProviderNumber(value: unknown): number | null {
+  if (value === null || value === undefined || (typeof value === 'string' && !value.trim())) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function sanitizedMetaErrorType(value: unknown): InstagramHealthAuthFailureDiagnostic['metaErrorType'] {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (!normalized) return null;
+  if (normalized === 'oauthexception') return 'OAuthException';
+  if (normalized === 'igapiexception') return 'IGApiException';
+  return 'other';
+}
+
+function sanitizedFbtraceId(value: unknown, accessToken?: string): string | null {
+  const normalized = String(value || '').trim();
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(normalized)) return null;
+  if (accessToken && normalized === accessToken) return null;
+  return normalized;
+}
+
+function reportInstagramAuthFailure(
+  response: Response,
+  data: any,
+  businessId: number,
+  accessToken: string,
+  diagnosticLogger?: DiagnosticLogger,
+): void {
+  const diagnostic: InstagramHealthAuthFailureDiagnostic = {
+    event: 'instagram_health_auth_failure',
+    integration: 'instagram',
+    businessId,
+    httpStatus: response.status,
+    metaErrorCode: finiteProviderNumber(data?.error?.code),
+    metaErrorSubcode: finiteProviderNumber(data?.error?.error_subcode),
+    metaErrorType: sanitizedMetaErrorType(data?.error?.type),
+    category: 'provider_authorization_failure',
+    reasonCode: 'authorization_invalid',
+    fbtraceId: sanitizedFbtraceId(data?.error?.fbtrace_id, accessToken),
+  };
+
+  try {
+    (diagnosticLogger || ((event) => console.warn('[InstagramHealthDiagnostic]', event)))(diagnostic);
+  } catch {
+    // Diagnostics must never change health-check behavior.
+  }
+}
+
 function fromHttp(response: Response, data?: any): ProbeResult {
-  const providerCode = Number(data?.error?.code);
+  const providerCode = finiteProviderNumber(data?.error?.code);
   const providerType = String(data?.error?.type || '');
   if (
     response.status === 401 ||
@@ -136,11 +199,13 @@ function fromHttp(response: Response, data?: any): ProbeResult {
 }
 
 async function probe(
+  businessId: number,
   integration: IntegrationKey,
   config: IntegrationHealthConfig,
   fetchImpl: FetchLike,
   calendarProbe: CalendarProbe,
   timeoutMs: number,
+  diagnosticLogger?: DiagnosticLogger,
 ): Promise<ProbeResult> {
   if (integration === 'google_calendar') return calendarProbe(config);
   const controller = new AbortController();
@@ -155,7 +220,18 @@ async function probe(
       url.searchParams.set('fields', 'id');
       url.searchParams.set('access_token', config.instagramAccessToken || '');
       const { response, data } = await fetchJson(url, fetchImpl, controller.signal);
-      return response.ok && !data?.error ? { status: 'connected', reasonCode: 'verified' } : fromHttp(response, data);
+      if (response.ok && !data?.error) return { status: 'connected', reasonCode: 'verified' };
+      const result = fromHttp(response, data);
+      if (result.reasonCode === 'authorization_invalid') {
+        reportInstagramAuthFailure(
+          response,
+          data,
+          businessId,
+          config.instagramAccessToken || '',
+          diagnosticLogger,
+        );
+      }
+      return result;
     }
     const identifier = integration === 'messenger' ? config.messengerPageId : config.whatsappPhoneNumberId;
     const token = integration === 'messenger' ? config.messengerAccessToken : config.whatsappAccessToken;
@@ -181,6 +257,7 @@ export async function refreshIntegrationHealth(options: {
   now?: () => Date;
   force?: boolean;
   timeoutMs?: number;
+  diagnosticLogger?: DiagnosticLogger;
 }): Promise<CachedHealth> {
   const { businessId, integration, config } = options;
   if (!isIntegrationConfigured(integration, config)) {
@@ -195,11 +272,13 @@ export async function refreshIntegrationHealth(options: {
 
   const operation = (async () => {
     const result = await probe(
+      businessId,
       integration,
       config,
       options.fetchImpl || fetch,
       options.calendarProbe,
       options.timeoutMs ?? HEALTH_CHECK_TIMEOUT_MS,
+      options.diagnosticLogger,
     );
     const record: CachedHealth = { ...result, checkedAt: now().toISOString() };
     if (cache.size >= 5_000) cache.delete(cache.keys().next().value as string);

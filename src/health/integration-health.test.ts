@@ -9,6 +9,7 @@ import {
   invalidateIntegrationHealthCache,
   refreshIntegrationHealth,
   resetIntegrationHealthCache,
+  type InstagramHealthAuthFailureDiagnostic,
   type IntegrationHealthConfig,
 } from './integration-health';
 
@@ -90,6 +91,56 @@ await refreshIntegrationHealth({
 assert.equal(getIntegrationHealthSnapshot(7, configured, checkedAt).find((item) => item.key === 'telegram')?.status, 'disconnected');
 
 resetIntegrationHealthCache();
+const instagramToken = 'SECRET-INSTAGRAM-TOKEN-MUST-NOT-BE-LOGGED';
+const rawProviderMessage = `Invalid token: ${instagramToken}`;
+const instagramDiagnostics: InstagramHealthAuthFailureDiagnostic[] = [];
+await refreshIntegrationHealth({
+  businessId: 42,
+  integration: 'instagram',
+  config: { instagramAccessToken: instagramToken },
+  fetchImpl: (async () => new Response(JSON.stringify({
+    error: {
+      code: 190,
+      error_subcode: 463,
+      type: 'OAuthException',
+      message: rawProviderMessage,
+      fbtrace_id: 'AbC_123-safe-trace',
+      raw_secret: instagramToken,
+    },
+  }), { status: 400 })) as typeof fetch,
+  calendarProbe,
+  now: () => checkedAt,
+  diagnosticLogger: (diagnostic) => instagramDiagnostics.push(diagnostic),
+});
+assert.deepEqual(instagramDiagnostics, [{
+  event: 'instagram_health_auth_failure',
+  integration: 'instagram',
+  businessId: 42,
+  httpStatus: 400,
+  metaErrorCode: 190,
+  metaErrorSubcode: 463,
+  metaErrorType: 'OAuthException',
+  category: 'provider_authorization_failure',
+  reasonCode: 'authorization_invalid',
+  fbtraceId: 'AbC_123-safe-trace',
+}]);
+const serializedInstagramDiagnostic = JSON.stringify(instagramDiagnostics);
+assert.doesNotMatch(serializedInstagramDiagnostic, /SECRET-INSTAGRAM-TOKEN|Invalid token|raw_secret|access_token/i);
+
+resetIntegrationHealthCache();
+const successDiagnostics: InstagramHealthAuthFailureDiagnostic[] = [];
+await refreshIntegrationHealth({
+  businessId: 42,
+  integration: 'instagram',
+  config: { instagramAccessToken: instagramToken },
+  fetchImpl: (async () => new Response(JSON.stringify({ id: '17841400000000000' }), { status: 200 })) as typeof fetch,
+  calendarProbe,
+  now: () => checkedAt,
+  diagnosticLogger: (diagnostic) => successDiagnostics.push(diagnostic),
+});
+assert.deepEqual(successDiagnostics, [], 'successful Instagram checks do not emit failure diagnostics');
+
+resetIntegrationHealthCache();
 const hangingFetch = ((_url: unknown, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
   init?.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')));
 })) as typeof fetch;
@@ -127,5 +178,6 @@ assert.match(refreshRoute, /loadHealthBusiness\(businessId\)/);
 assert.doesNotMatch(`${readRoute}\n${refreshRoute}`, /accessToken:|telegramToken:|privateKey:|provider payload/i);
 assert.doesNotMatch(refreshRoute, /\.update\(|\.insert\(|\.delete\(/, 'health refresh is configuration read-only');
 assert.doesNotMatch(configLoader, /activeConfig|TELEGRAM_TOKEN|INSTAGRAM_ACCESS_TOKEN|WHATSAPP_ACCESS_TOKEN|MESSENGER_ACCESS_TOKEN/, 'messaging health cannot borrow another/global tenant identity');
+assert.match(configLoader, /instagramAccessToken: cleanInstagramToken\(businessRow\.instagram_access_token\)/, 'Instagram health reuses runtime token normalization');
 
 console.log('Automatic integration health cache, timeout, isolation, and UX-state tests passed.');

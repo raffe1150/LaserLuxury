@@ -23438,7 +23438,7 @@ function getHealthCheckConfig(businessRow: any): IntegrationHealthConfig {
     // Provider identities and tokens must come from this tenant's row. Global
     // messaging fallbacks cannot establish health for a selected business.
     telegramToken: businessRow.telegram_bot_token || businessRow.telegram_token || undefined,
-    instagramAccessToken: businessRow.instagram_access_token || undefined,
+    instagramAccessToken: cleanInstagramToken(businessRow.instagram_access_token) || undefined,
     messengerPageId: businessRow.messenger_page_id || businessRow.facebook_page_id || businessRow.page_id || undefined,
     messengerAccessToken: businessRow.messenger_page_access_token || businessRow.messenger_access_token || businessRow.facebook_page_access_token || undefined,
     whatsappPhoneNumberId: businessRow.whatsapp_phone_number_id || undefined,

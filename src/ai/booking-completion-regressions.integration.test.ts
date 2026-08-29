@@ -194,20 +194,44 @@ function seedAwaitingContact(
 }
 
 try {
-  const parsed = boundary.resolveBookingContactPhrase({
-    text: 'Alex Testsson och 0701234567',
-  });
-  assert.equal(parsed.name, 'Alex Testsson');
-  assert.equal(parsed.phone, '0701234567');
+  for (const text of [
+    'Alex Testsson och 0701234567',
+    'Alex Testsson, och mitt nummer är 0701234567.',
+    'Alex Testsson, och mitt mobilnummer är 0701234567.',
+    'Alex Testsson, och mitt telefonnummer är 0701234567.',
+  ]) {
+    const parsed = boundary.resolveBookingContactPhrase({ text });
+    assert.equal(parsed.name, 'Alex Testsson', text);
+    assert.equal(parsed.phone, '0701234567', text);
+  }
 
   for (const invalid of [
     'Alex Testsson Extra och 0701234567',
     'Jag vill boka konsultation och 0701234567',
     'Boka en tid imorgon och 0701234567',
+    'Alex Testsson Extra, och mitt nummer är 0701234567.',
+    'Jag vill boka, och mitt nummer är 0701234567.',
+    'Boka en tid imorgon, och mitt telefonnummer är 0701234567.',
   ]) {
     const contact = boundary.resolveBookingContactPhrase({ text: invalid });
     assert.equal(contact.name, null, invalid);
   }
+
+  fixture();
+  const freshWhatsApp = await boundary.turn({
+    sessionId: 'wa_7:46700000099',
+    platformName: 'whatsapp',
+    recipientUserId: '46700000099',
+    text: 'Hej, jag vill boka en tid till i morgon.',
+    businessConfig,
+    now: turnNow,
+  });
+  assert.ok(
+    ['awaiting_service', 'awaiting_time_selection'].includes(String(freshWhatsApp.pending?.status || '')),
+    `fresh WhatsApp booking remains in the booking/time flow: ${freshWhatsApp.pending?.status}`,
+  );
+  assert.notEqual(freshWhatsApp.pending?.status, 'awaiting_contact');
+  assert.doesNotMatch(freshWhatsApp.replies.join(' '), /behöver.*namn|skicka.*namn/iu);
 
   const cases: Array<{
     channel: Channel;
@@ -224,11 +248,14 @@ try {
   for (const testCase of cases) {
     const counters = fixture();
     seedAwaitingContact(testCase.sessionId, testCase.channel, testCase.userId);
+    const contactText = testCase.channel === 'whatsapp'
+      ? 'Alex Testsson, och mitt nummer är 0701234567.'
+      : 'Alex Testsson och 0701234567';
     const result = await boundary.turn({
       sessionId: testCase.sessionId,
       platformName: testCase.channel,
       recipientUserId: testCase.userId,
-      text: 'Alex Testsson och 0701234567',
+      text: contactText,
       businessConfig,
       now: turnNow,
     });

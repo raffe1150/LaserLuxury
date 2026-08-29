@@ -5950,6 +5950,7 @@ function extractNameAndPhone(text?: string): { name: string; phone: string } | n
   // Fallback is intentionally limited to a standalone one/two-word contact payload.
   // Long booking/date sentences must not contribute arbitrary leading words as names.
   const standaloneBeforePhone = beforePhone
+    .replace(/\b(?:and|och|und|y)\s*$/i, "")
     .replace(/\b(?:and|with)\s+(?:the\s+)?(?:phone|mobile)(?:\s+number)?\s*$/i, "")
     .replace(/[,:;.]+$/g, "")
     .trim();
@@ -15766,9 +15767,14 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
         finalHandledPath: "calendar_create_started",
         failureCategory: null
       });
-      const calendarOwnerMarker = platformName === "telegram"
-        ? `tg_${currentBookingSlotOwner.userId}`
-        : sessionId;
+      const calendarOwnerPrefix: Record<UnifiedBookingEngineParams["platformName"], string> = {
+        telegram: "tg_",
+        instagram: "ig_",
+        whatsapp: "wa_",
+        messenger: "ms_",
+      };
+      const calendarOwnerMarker =
+        `${calendarOwnerPrefix[platformName]}${currentBookingSlotOwner.userId}`;
       bookingFailureStage = "calendar_create";
       const result = await adapter.insertAppointment(
         pending.customerName,

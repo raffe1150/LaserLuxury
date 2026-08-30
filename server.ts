@@ -6101,6 +6101,33 @@ function extractConcreteRequestedService(text?: string): string | null {
   const raw = String(text || "").replace(/\s+/g, " ").trim();
   if (!raw) return null;
 
+  const isSpanishDateOnlyContinuation = (value: string): boolean => {
+    const dateContinuation = value.replace(/[.!?]+$/u, "").trim();
+    const spanishDateWords = new Set([
+      "para", "el", "la", "de", "del", "este", "esta", "proximo", "proxima", "próximo", "próxima",
+      "hoy", "mañana", "manana", "pasado",
+      "lunes", "martes", "miércoles", "miercoles", "jueves", "viernes", "sábado", "sabado", "domingo",
+      "enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre",
+    ]);
+    const dateOnlyTokens = normalizeConversationText(dateContinuation)
+      .toLowerCase()
+      .replace(/[,.!?]/gu, " ")
+      .split(/\s+/)
+      .filter(Boolean);
+    return Boolean(
+      dateOnlyTokens.length > 0 &&
+      dateOnlyTokens.every((token) =>
+        spanishDateWords.has(token) || /^\d{1,4}(?:(?:[./-])\d{1,2}){0,2}$/u.test(token)
+      ) &&
+      parseBookingDate(dateContinuation, "Europe/Stockholm")?.value
+    );
+  };
+
+  const genericSpanishRequest = raw.match(
+    /\b(?:quiero|quisiera|me\s+gustar[ií]a)\s+(?:reservar|agendar)\s+(?:(?:un|una|el|la)\s+)?(?:cita|reserva)\s+(.+?)(?:[.!?]|$)/iu,
+  );
+  if (genericSpanishRequest && isSpanishDateOnlyContinuation(genericSpanishRequest[1])) return null;
+
   const token = String.raw`[\p{L}\p{M}][\p{L}\p{M}'’\-]*`;
   const candidate = String.raw`${token}(?:\s+${token}){0,4}?`;
   const patterns = [
@@ -6140,6 +6167,11 @@ function extractConcreteRequestedService(text?: string): string | null {
         parseBookingDate(dateContinuation, "Europe/Stockholm")?.value
       ) continue;
     }
+    const genericSpanishBookingWithContinuation = extracted.match(/^(?:cita|reserva)\s+(.+)$/iu);
+    if (
+      genericSpanishBookingWithContinuation &&
+      isSpanishDateOnlyContinuation(genericSpanishBookingWithContinuation[1])
+    ) continue;
     return extracted;
   }
 
@@ -8057,12 +8089,75 @@ function hasExplicitEntityBearingBookingConfirmation(text?: string): boolean {
   return !/\b(?:no|not|dont|do not|maybe|perhaps|instead|change|different|another|cancel|reschedule)\b/u.test(raw);
 }
 
-function isPendingSlotConfirmation(text: string | undefined, pending: any): boolean {
+function isSpanishSelectedSlotConfirmation(
+  text: string,
+  pending: any,
+  normalizedRequest?: NormalizedBookingRequest,
+): boolean {
+  if (String(pending?.language || normalizedRequest?.language || "") !== "es") return false;
+
+  const raw = normalizeConfirmationReply(text);
+  if (!raw) return false;
+  if (
+    /(?:^|\s)(?:no|quizas|tal vez|quiza|puede que)(?:\s|$)/u.test(raw) ||
+    /\b(?:cancelar|cancela|cancelala|anular|anula|cambiar|cambia|mover|mueve|reprogramar|reprograma)\b/u.test(raw)
+  ) return false;
+
+  const affirmativeOnly = /^si(?: por favor)?$/u.test(raw);
+  const bookingAuthorization = /^(?:si(?: por favor)?\s+)?(?:(?:quiero\s+)?(?:reserva|reservar|reservala|reservarla|confirma|confirmar|confirmala))\b/u.test(raw);
+  if (!affirmativeOnly && !bookingAuthorization) return false;
+
+  const selectedSlots = (Array.isArray(pending?.ownedOfferedSlots) ? pending.ownedOfferedSlots : [])
+    .filter((slot: OwnedOfferedSlot) =>
+      new Date(ensureStockholmOffset(String(slot?.start || ""))).getTime() ===
+        new Date(ensureStockholmOffset(String(pending?.dateTime || ""))).getTime() &&
+      new Date(ensureStockholmOffset(String(slot?.end || ""))).getTime() ===
+        new Date(ensureStockholmOffset(String(pending?.selectedSlotEnd || ""))).getTime()
+    );
+  if (selectedSlots.length !== 1) return false;
+
+  const pendingSlot = getZonedSlotParts(
+    String(pending.dateTime || ""),
+    String(pending?.businessConfig?.timezone || "Europe/Stockholm"),
+  );
+  if (!pendingSlot) return false;
+
+  if (normalizedRequest?.date?.value && normalizedRequest.date.value !== pendingSlot.date) return false;
+  if (normalizedRequest?.dateConflict) return false;
+
+  if (normalizedRequest?.timeConstraint) {
+    if (
+      normalizedRequest.timeConstraint.kind !== "exact" ||
+      normalizedRequest.timeConstraint.startMinutes !== pendingSlot.minutes
+    ) return false;
+  }
+
+  const configuredServiceMention = findConfiguredBookingService(text, pending?.businessConfig);
+  if (
+    configuredServiceMention &&
+    normalizeBookingService(configuredServiceMention, configuredServiceMention) !==
+      normalizeBookingService(pending?.service, pending?.service)
+  ) return false;
+
+  if (
+    normalizedRequest?.service?.normalized &&
+    normalizedRequest.service.normalized !== normalizeBookingService(pending?.service, pending?.service)
+  ) return false;
+
+  return true;
+}
+
+function isPendingSlotConfirmation(
+  text: string | undefined,
+  pending: any,
+  normalizedRequest?: NormalizedBookingRequest,
+): boolean {
   if (!pending || !["awaiting_confirmation", "awaiting_contact"].includes(String(pending.status || ""))) return false;
 
   const raw = String(text || "").trim();
   if (!raw) return false;
 
+  if (isSpanishSelectedSlotConfirmation(raw, pending, normalizedRequest)) return true;
   if (isAffirmativeBookingText(raw)) return true;
   if (hasExplicitEntityBearingBookingConfirmation(raw)) return true;
 
@@ -10521,7 +10616,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
       dateLocked: Boolean(pending.selectedDate || pending.availabilityStartDate)
     });
   }
-  const pendingSlotConfirmationAtEntry = isPendingSlotConfirmation(text, pending);
+  const pendingSlotConfirmationAtEntry = isPendingSlotConfirmation(text, pending, normalizedRequest);
   const controlledPendingConfirmationAtEntry = Boolean(
     controlledUnderstandingCandidates.confirmation &&
     pending?.operation === "new_booking" &&

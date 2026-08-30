@@ -6116,6 +6116,30 @@ function extractConcreteRequestedService(text?: string): string | null {
     const extracted = String(match?.[1] || "").trim();
     if (!extracted) continue;
     if (/^(?:appointment|booking|time|slot|tid|bokning|termin|cita|reserva|service|tjänst)$/iu.test(extracted)) continue;
+    const genericSwedishBookingWithContinuation = extracted.match(/^(?:tid|bokning|tjänst)\s+(.+)$/iu);
+    if (genericSwedishBookingWithContinuation) {
+      const dateContinuation = genericSwedishBookingWithContinuation[1]
+        .replace(/[.!?]+$/u, "")
+        .trim();
+      const swedishDateWords = new Set([
+        "till", "i", "på", "för", "den", "det", "nästa", "nästkommande", "kommande", "denna",
+        "idag", "imorgon", "morgon", "övermorgon",
+        "måndag", "tisdag", "onsdag", "torsdag", "fredag", "lördag", "söndag",
+        "januari", "februari", "mars", "april", "maj", "juni", "juli", "augusti", "september", "oktober", "november", "december",
+      ]);
+      const dateOnlyTokens = normalizeConversationText(dateContinuation)
+        .toLowerCase()
+        .replace(/[,.!?]/gu, " ")
+        .split(/\s+/)
+        .filter(Boolean);
+      const containsOnlySwedishDateTokens = dateOnlyTokens.length > 0 && dateOnlyTokens.every((token) =>
+        swedishDateWords.has(token) || /^\d{1,4}(?:(?:[./-])\d{1,2}){0,2}(?::e|:a)?$/u.test(token)
+      );
+      if (
+        containsOnlySwedishDateTokens &&
+        parseBookingDate(dateContinuation, "Europe/Stockholm")?.value
+      ) continue;
+    }
     return extracted;
   }
 
@@ -10705,6 +10729,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
   };
 
   const configuredServiceNames = getConfiguredBookingServiceNames(businessConfig);
+  let resumedAwaitingServiceDuration: number | null = null;
   if (pending?.status === "awaiting_service") {
     const serviceResolutionLanguage = entryPendingLanguage || pending.language || language;
     pending.language = serviceResolutionLanguage;
@@ -10719,27 +10744,34 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
       );
       pending.status = "awaiting_date_or_time";
       pending.expectedInput = "date_or_constraint";
+      const sameTurnRequestedTime = inferRequestedTimeFromText(text);
+      if (sameTurnRequestedTime) pending.requestedTime = sameTurnRequestedTime;
+      if (authoritativeNormalizedRequest.date?.value) {
+        resumedAwaitingServiceDuration = Number(pending.durationMinutes || 0) || null;
+        pending.normalizedBookingRequest = toPersistedBookingRequest(authoritativeNormalizedRequest);
+      } else {
+        await savePendingBooking(sessionId, platformName, pending);
+        await replyAndRecord(formatConfiguredServiceDatePrompt(
+          serviceResolutionLanguage,
+          selectedConfiguredService,
+          pending.requestedTime || undefined
+        ));
+        return true;
+      }
+    } else {
+      const nextUnsupportedService = extractConcreteRequestedService(text);
+      if (nextUnsupportedService) pending.requestedService = nextUnsupportedService;
+      const nextRequestedTime = inferRequestedTimeFromText(text);
+      if (nextRequestedTime) pending.requestedTime = nextRequestedTime;
+      pending.expectedInput = "service";
       await savePendingBooking(sessionId, platformName, pending);
-      await replyAndRecord(formatConfiguredServiceDatePrompt(
+      await replyAndRecord(formatUnsupportedServiceBookingReply(
         serviceResolutionLanguage,
-        selectedConfiguredService,
-        pending.requestedTime || undefined
+        pending.requestedService || "service",
+        configuredServiceNames
       ));
       return true;
     }
-
-    const nextUnsupportedService = extractConcreteRequestedService(text);
-    if (nextUnsupportedService) pending.requestedService = nextUnsupportedService;
-    const nextRequestedTime = inferRequestedTimeFromText(text);
-    if (nextRequestedTime) pending.requestedTime = nextRequestedTime;
-    pending.expectedInput = "service";
-    await savePendingBooking(sessionId, platformName, pending);
-    await replyAndRecord(formatUnsupportedServiceBookingReply(
-      serviceResolutionLanguage,
-      pending.requestedService || "service",
-      configuredServiceNames
-    ));
-    return true;
   }
 
   const concreteRequestedService = extractConcreteRequestedService(text);
@@ -14213,6 +14245,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
       );
       const resolvedTelegramDuration = fingerprintResolvedDuration;
       const durationMinutes =
+        Number(resumedAwaitingServiceDuration || 0) ||
         Number(resolvedTelegramDuration || 0) ||
         storedAvailability?.durationMinutes ||
         Number(priorPendingBooking?.durationMinutes || 0) ||
@@ -24901,6 +24934,10 @@ export const priority1hUnifiedEngineTestBoundary = {
   resolveConfiguredService(service: string, businessConfig: any) {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
     return findConfiguredBookingService(service, businessConfig);
+  },
+  extractConcreteRequestedService(text: string) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    return extractConcreteRequestedService(text);
   },
   async resolveConfiguredDuration(service: string, businessConfig: any) {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");

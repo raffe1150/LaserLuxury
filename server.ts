@@ -6019,12 +6019,13 @@ function extractNameOnly(text?: string): string | null {
   }
 
   // Accept a short standalone person name while collecting contact details.
+  const standaloneNameCandidate = raw.replace(/[.!?:]+$/u, "").trim();
   if (
-    /^[A-Za-zÅÄÖåäöÉéÜüÖöÄäÁáÍíÓóÚúÑñÇçŞşĞğ'\-]{2,}(?:\s+[A-Za-zÅÄÖåäöÉéÜüÖöÄäÁáÍíÓóÚúÑñÇçŞşĞğ'\-]{2,})?$/.test(raw)
+    /^[A-Za-zÅÄÖåäöÉéÜüÖöÄäÁáÍíÓóÚúÑñÇçŞşĞğ'\-]{2,}(?:\s+[A-Za-zÅÄÖåäöÉéÜüÖöÄäÁáÍíÓóÚúÑñÇçŞşĞğ'\-]{2,})?$/.test(standaloneNameCandidate)
   ) {
     const blocked = /^(konsultation|consultation|konsultasion|konstitution|knstilution|konstlution|moshavere|moshavereh|mashavere|bokning|booking|laser|bikini|ja|nej|yes|no|tack|thanks)$/i;
-    if (!blocked.test(raw)) {
-      return raw
+    if (!blocked.test(standaloneNameCandidate)) {
+      return standaloneNameCandidate
         .split(/\s+/)
         .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
         .join(" ");
@@ -25075,6 +25076,14 @@ export const priority1hUnifiedEngineTestBoundary = {
       currentName: combined?.name || extractNameOnly(params.text),
       currentPhone: combined?.phone || extractPhoneOnly(params.text),
     });
+  },
+  extractBookingContactParts(text: string) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    return {
+      combined: extractNameAndPhone(text),
+      nameOnly: extractNameOnly(text),
+      phoneOnly: extractPhoneOnly(text),
+    };
   },
   reset() {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");

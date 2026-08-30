@@ -21,6 +21,12 @@ const businessConfig = {
   services: [{ name: 'Konsultation', duration: 30 }],
 };
 
+const videoConsultationBusinessConfig = {
+  ...businessConfig,
+  defaultBookingService: 'Video Consultation',
+  services: [{ name: 'Video Consultation', duration: 30 }],
+};
+
 const selectedStart = '2030-09-04T16:30:00+02:00';
 const selectedEnd = '2030-09-04T15:00:00.000Z';
 const turnNow = new Date('2030-09-01T12:00:00+02:00');
@@ -196,6 +202,32 @@ function seedSelectedSlot(
 
 try {
   for (const text of [
+    'Alex Testsson.',
+    'Alex Testsson',
+    'Alex Testsson!',
+    'Alex Testsson?',
+    'Alex Testsson:',
+  ]) {
+    const parts = boundary.extractBookingContactParts(text);
+    assert.equal(parts.nameOnly, 'Alex Testsson', text);
+  }
+
+  const bareNameWithPeriod = boundary.extractBookingContactParts('Alex Testsson.');
+  assert.equal(bareNameWithPeriod.combined, null);
+  assert.equal(bareNameWithPeriod.phoneOnly, null);
+
+  for (const text of [
+    'Alex Testsson Extra.',
+    'Jag vill boka.',
+    'Ja.',
+    'Bokning.',
+    'Det här är vanlig konversation.',
+  ]) {
+    const parts = boundary.extractBookingContactParts(text);
+    assert.equal(parts.nameOnly, null, text);
+  }
+
+  for (const text of [
     'Alex Testsson och 0701234567',
     'Alex Testsson, och mitt nummer är 0701234567.',
     'Alex Testsson, och mitt mobilnummer är 0701234567.',
@@ -318,6 +350,63 @@ try {
     assert.equal(result.pending, null, liveCase.label);
     assert.match(result.replies.join(' '), /bok|bekräft/iu, liveCase.label);
     assert.doesNotMatch(result.replies.join(' '), /behöver.*namn|skicka.*namn/iu, liveCase.label);
+  }
+
+  {
+    const counters = fixture();
+    const sessionId = 'wa_7:46700000000';
+    const userId = '46700000000';
+    boundary.seedPending(sessionId, {
+      businessConfig: videoConsultationBusinessConfig,
+      bookingStateVersion: CURRENT_BOOKING_STATE_VERSION,
+      businessId: '7',
+      platform: 'whatsapp',
+      userId: sessionId.replace(/\D/g, ''),
+      sessionId,
+      operation: 'new_booking',
+      status: 'awaiting_contact',
+      expectedInput: 'contact',
+      service: 'Video Consultation',
+      durationMinutes: 30,
+      selectedDate: '2030-09-04',
+      dateTime: selectedStart,
+      selectedSlotEnd: selectedEnd,
+      language: 'sv',
+      customerName: null,
+      customerPhone: '+46700000000',
+      contactPhoneSource: 'verified_sender_metadata',
+      offeredSlots: [],
+      ownedOfferedSlots: [{
+        start: selectedStart,
+        end: selectedEnd,
+        durationMinutes: 30,
+        service: 'Video Consultation',
+        businessId: '7',
+        platform: 'whatsapp',
+        userId,
+        generatedAt: Date.now(),
+        searchStartDate: '2030-09-04',
+        searchEndDate: '2030-09-04',
+      }],
+    });
+    boundary.seedFlowLanguage(sessionId, 'sv');
+
+    const result = await boundary.turn({
+      sessionId,
+      platformName: 'whatsapp',
+      recipientUserId: userId,
+      text: 'Alex Testsson.',
+      businessConfig: videoConsultationBusinessConfig,
+      now: turnNow,
+    });
+
+    assert.equal(counters.createdName, 'Alex Testsson');
+    assert.equal(counters.createdPhone, '+46700000000');
+    assert.equal(counters.calendarCreate, 1);
+    assert.equal(counters.databaseInsert, 1);
+    assert.equal(result.pending, null);
+    assert.match(result.replies.join(' '), /bok|bekräft/iu);
+    assert.doesNotMatch(result.replies.join(' '), /behöver.*namn|skicka.*namn/iu);
   }
 
   originalLog('booking completion regressions passed');

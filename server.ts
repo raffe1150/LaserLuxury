@@ -5491,6 +5491,77 @@ function isRecentCompletedBookingStatusQuestion(text?: string): boolean {
   );
 }
 
+function isRecentCompletedBookingFollowUp(params: {
+  text?: string;
+  bookingOperation: Extract<BookingOperationResult, { ok: true }>;
+  normalizedRequest: NormalizedBookingRequest;
+  businessConfig: any;
+}): boolean {
+  const raw = String(params.text || "").trim();
+  if (!raw) return false;
+
+  const normalized = normalizeConfirmationReply(raw);
+  const explicitSpanishOperation =
+    /\b(?:cancelar|cancela|cancelala|anular|anula|cambiar|cambia|mover|mueve|reprogramar|reprograma)\b/u.test(normalized);
+  if (
+    isExplicitNewBookingPivotText(raw) ||
+    isRescheduleIntent(raw) ||
+    isCancellationIntent(raw) ||
+    explicitSpanishOperation ||
+    params.normalizedRequest.intent === "reschedule" ||
+    params.normalizedRequest.intent === "cancellation"
+  ) return false;
+
+  const spanishAcknowledgement =
+    /^(?:perfecto(?: muchas)? gracias|(?:muchas )?gracias|perfecto)$/u.test(normalized);
+  const spanishConfirmationFollowUp =
+    /\b(?:esta|quedo)\b.{0,40}\b(?:confirmada|confirmado|confirmacion)\b/u.test(normalized) ||
+    /\bgracias\s+por\s+confirmar\b.{0,24}\b(?:reserva|reservacion|cita)\b/u.test(normalized) ||
+    /\b(?:confirmada|confirmado|confirmacion)\b.{0,40}\b(?:reserva|reservacion|cita)\b/u.test(normalized);
+  if (
+    !isRecentCompletedBookingStatusQuestion(raw) &&
+    !spanishAcknowledgement &&
+    !spanishConfirmationFollowUp
+  ) return false;
+
+  const timezone = String(params.businessConfig?.timezone || "Europe/Stockholm");
+  const completedSlot = getZonedSlotParts(params.bookingOperation.startTime, timezone);
+  if (!completedSlot) return false;
+  if (params.normalizedRequest.dateConflict) return false;
+  if (
+    params.normalizedRequest.date?.value &&
+    params.normalizedRequest.date.value !== completedSlot.date
+  ) return false;
+
+  if (params.normalizedRequest.timeConstraint) {
+    if (
+      params.normalizedRequest.timeConstraint.kind !== "exact" ||
+      params.normalizedRequest.timeConstraint.startMinutes !== completedSlot.minutes
+    ) return false;
+  } else {
+    const explicitTime = inferRequestedTimeFromText(raw);
+    if (explicitTime && normalizeRequestedTime(explicitTime) !== normalizeRequestedTime(
+      `${Math.floor(completedSlot.minutes / 60)}:${completedSlot.minutes % 60}`,
+    )) return false;
+  }
+
+  const completedService = normalizeBookingService(
+    params.bookingOperation.serviceName,
+    params.bookingOperation.serviceName,
+  );
+  const configuredServiceMention = findConfiguredBookingService(raw, params.businessConfig);
+  if (
+    configuredServiceMention &&
+    normalizeBookingService(configuredServiceMention, configuredServiceMention) !== completedService
+  ) return false;
+  if (
+    params.normalizedRequest.service?.normalized &&
+    params.normalizedRequest.service.normalized !== completedService
+  ) return false;
+
+  return true;
+}
+
 function inferServiceFromText(text?: string): string {
   const raw = String(text || "").toLowerCase();
 
@@ -10923,7 +10994,12 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
     : null;
   if (
     completedBookingStatusContext?.bookingOperation?.ok &&
-    isRecentCompletedBookingStatusQuestion(text)
+    isRecentCompletedBookingFollowUp({
+      text,
+      bookingOperation: completedBookingStatusContext.bookingOperation,
+      normalizedRequest,
+      businessConfig,
+    })
   ) {
     const completedLanguage = getFlowReplyLanguage(
       completedBookingStatusContext.language,
@@ -25066,6 +25142,12 @@ export const priority1hUnifiedEngineTestBoundary = {
       result.startTime,
       result,
     );
+  },
+  ageRecentCompletedBooking(sessionId: string, ageMs: number) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    if (recentlyCompletedBookings[sessionId]) {
+      recentlyCompletedBookings[sessionId].completedAt = Date.now() - Math.max(0, ageMs);
+    }
   },
   seedFlowLanguage(
     sessionId: string,

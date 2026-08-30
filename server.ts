@@ -5955,8 +5955,11 @@ function extractNameAndPhone(text?: string): { name: string; phone: string } | n
     .replace(/\b(?:and|with)\s+(?:the\s+)?(?:phone|mobile)(?:\s+number)?\s*$/i, "")
     .replace(/[,:;.]+$/g, "")
     .trim();
-  if (/^[A-Za-zÅÄÖåäöÉéÜüÖöÄäÁáÍíÓóÚúÑñÇçŞşĞğ'\-]{2,}(?:\s+[A-Za-zÅÄÖåäöÉéÜüÖöÄäÁáÍíÓóÚúÑñÇçŞşĞğ'\-]{2,})?$/.test(standaloneBeforePhone)) {
-    const fallback = cleanCustomerNameCandidate(standaloneBeforePhone);
+  const trailingContactSegment = standaloneBeforePhone
+    .match(/(?:^|[.!?:])\s*([^.!?:]+)$/)?.[1]
+    ?.trim() || standaloneBeforePhone;
+  if (/^[A-Za-zÅÄÖåäöÉéÜüÖöÄäÁáÍíÓóÚúÑñÇçŞşĞğ'\-]{2,}(?:\s+[A-Za-zÅÄÖåäöÉéÜüÖöÄäÁáÍíÓóÚúÑñÇçŞşĞğ'\-]{2,})?$/.test(trailingContactSegment)) {
+    const fallback = cleanCustomerNameCandidate(trailingContactSegment);
     if (fallback) return { name: fallback, phone };
   }
 

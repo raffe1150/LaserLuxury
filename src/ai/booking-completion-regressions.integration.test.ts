@@ -143,10 +143,11 @@ function fixture() {
   return counters;
 }
 
-function seedAwaitingContact(
+function seedSelectedSlot(
   sessionId: string,
   platform: Channel,
   userId: string,
+  status: 'awaiting_confirmation' | 'awaiting_contact' = 'awaiting_contact',
 ) {
   const persistedUserId = platform === 'telegram'
     ? userId
@@ -161,8 +162,8 @@ function seedAwaitingContact(
     userId: persistedUserId,
     sessionId,
     operation: 'new_booking',
-    status: 'awaiting_contact',
-    expectedInput: 'contact',
+    status,
+    expectedInput: status === 'awaiting_confirmation' ? 'confirmation' : 'contact',
     service: 'Konsultation',
     durationMinutes: 30,
     selectedDate: '2030-09-04',
@@ -200,6 +201,10 @@ try {
     'Alex Testsson, och mitt mobilnummer är 0701234567.',
     'Alex Testsson, och mitt telefonnummer är 0701234567.',
     'Alex Testsson, och telefonnumret är 0701234567.',
+    'Ja, tack. Alex Testsson, 0701234567.',
+    'Ja, tack. Kan du boka den på mitt namn och nummer? Alex Testsson, 0701234567.',
+    'Ja, tack. Bokningen är klar på mitt namn och nummer: Alex Testsson, 0701234567.',
+    'Alex Testsson, 0701234567.',
   ]) {
     const parsed = boundary.resolveBookingContactPhrase({ text });
     assert.equal(parsed.name, 'Alex Testsson', text);
@@ -215,6 +220,8 @@ try {
     'Boka en tid imorgon, och mitt telefonnummer är 0701234567.',
     'Alex Testsson Extra, och telefonnumret är 0701234567.',
     'Jag vill boka, och telefonnumret är 0701234567.',
+    'Ja, tack. Alex Testsson Extra, 0701234567.',
+    'Ja, tack. Jag vill boka, 0701234567.',
   ]) {
     const contact = boundary.resolveBookingContactPhrase({ text: invalid });
     assert.equal(contact.name, null, invalid);
@@ -250,7 +257,7 @@ try {
 
   for (const testCase of cases) {
     const counters = fixture();
-    seedAwaitingContact(testCase.sessionId, testCase.channel, testCase.userId);
+    seedSelectedSlot(testCase.sessionId, testCase.channel, testCase.userId);
     const contactText = testCase.channel === 'whatsapp'
       ? 'Alex Testsson, och telefonnumret är 0701234567.'
       : 'Alex Testsson och 0701234567';
@@ -272,6 +279,45 @@ try {
     assert.equal(counters.createdOwner?.userId, testCase.userId, testCase.channel);
     assert.match(result.replies.join(' '), /bok|bekräft/iu, testCase.channel);
     assert.doesNotMatch(result.replies.join(' '), /behöver.*namn|skicka.*namn/iu, testCase.channel);
+  }
+
+  const liveWhatsAppCases = [
+    {
+      label: 'awaiting_confirmation live turn 3',
+      status: 'awaiting_confirmation' as const,
+      text: 'Ja, tack. Kan du boka den på mitt namn och nummer? Alex Testsson, 0701234567.',
+    },
+    {
+      label: 'awaiting_contact live turn 4',
+      status: 'awaiting_contact' as const,
+      text: 'Ja, tack. Alex Testsson, 0701234567.',
+    },
+    {
+      label: 'awaiting_contact live turn 5',
+      status: 'awaiting_contact' as const,
+      text: 'Ja, tack. Bokningen är klar på mitt namn och nummer: Alex Testsson, 0701234567.',
+    },
+  ];
+
+  for (const liveCase of liveWhatsAppCases) {
+    const counters = fixture();
+    seedSelectedSlot('wa_7:46700000000', 'whatsapp', '46700000000', liveCase.status);
+    const result = await boundary.turn({
+      sessionId: 'wa_7:46700000000',
+      platformName: 'whatsapp',
+      recipientUserId: '46700000000',
+      text: liveCase.text,
+      businessConfig,
+      now: turnNow,
+    });
+
+    assert.equal(counters.createdName, 'Alex Testsson', liveCase.label);
+    assert.equal(counters.createdPhone, '+46700000000', liveCase.label);
+    assert.equal(counters.calendarCreate, 1, liveCase.label);
+    assert.equal(counters.databaseInsert, 1, liveCase.label);
+    assert.equal(result.pending, null, liveCase.label);
+    assert.match(result.replies.join(' '), /bok|bekräft/iu, liveCase.label);
+    assert.doesNotMatch(result.replies.join(' '), /behöver.*namn|skicka.*namn/iu, liveCase.label);
   }
 
   originalLog('booking completion regressions passed');

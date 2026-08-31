@@ -14526,7 +14526,11 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
           getDefaultBookingServiceForBusiness(businessConfig) ||
           "Bokning"
       );
-      const fingerprintResolvedDuration = platformName === "telegram" ? await resolveServiceDurationMinutes(fingerprintService, null, businessConfig) : null;
+      const fingerprintResolvedDuration = await resolveServiceDurationMinutes(
+        fingerprintService,
+        null,
+        businessConfig
+      );
       const fingerprintDuration =
         Number(fingerprintResolvedDuration || 0) ||
         storedAvailability?.durationMinutes ||
@@ -14598,10 +14602,10 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
           getDefaultBookingServiceForBusiness(businessConfig) ||
           "Bokning"
       );
-      const resolvedTelegramDuration = fingerprintResolvedDuration;
+      const resolvedConfiguredDuration = fingerprintResolvedDuration;
       const durationMinutes =
         Number(resumedAwaitingServiceDuration || 0) ||
-        Number(resolvedTelegramDuration || 0) ||
+        Number(resolvedConfiguredDuration || 0) ||
         storedAvailability?.durationMinutes ||
         Number(priorPendingBooking?.durationMinutes || 0) ||
         Number(recoveredDurationForNewBooking || 0) ||
@@ -15162,11 +15166,13 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
       const finalService = service !== "Bokning"
         ? service
         : (getDefaultBookingServiceForBusiness(businessConfig) || "Bokning");
-      const resolvedTelegramDuration = platformName === "telegram"
-        ? await resolveServiceDurationMinutes(finalService, null, businessConfig)
-        : null;
+      const resolvedConfiguredDuration = await resolveServiceDurationMinutes(
+        finalService,
+        null,
+        businessConfig
+      );
       const durationMinutes =
-        Number(resolvedTelegramDuration || 0) ||
+        Number(resolvedConfiguredDuration || 0) ||
         getDefaultBookingDurationForService(finalService) ||
         inferBookingDurationFromContext(text, history);
       lockConversationFlowLanguage(sessionId, language, "booking");
@@ -15239,11 +15245,13 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
         detectedService !== "Bokning"
           ? detectedService
           : (defaultService || "Bokning");
-      const resolvedTelegramDuration = platformName === "telegram"
-        ? await resolveServiceDurationMinutes(finalService, null, businessConfig)
-        : null;
+      const resolvedConfiguredDuration = await resolveServiceDurationMinutes(
+        finalService,
+        null,
+        businessConfig
+      );
       const durationMinutes =
-        Number(resolvedTelegramDuration || 0) ||
+        Number(resolvedConfiguredDuration || 0) ||
         getDefaultBookingDurationForService(finalService) ||
         inferBookingDurationFromContext(text, history);
 

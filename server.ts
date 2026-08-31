@@ -3727,7 +3727,8 @@ function isInterveningNonMutatingQuestion(text?: string): boolean {
 }
 
 function suppressBookingCtaDuringSupportTurn(sessionId: string, reply: string): string {
-  if (!nonMutatingSupportTurns[sessionId] || !pendingBookings[sessionId]) return reply;
+  if (!nonMutatingSupportTurns[sessionId]) return reply;
+  if (!pendingBookings[sessionId] && !completedBookingSupportTurns[sessionId]) return reply;
   const withoutTrailingCta = String(reply || "").replace(
     /\s*(?:passar|skulle|vill|ska)\b(?=[\s\S]{0,220}\b(?:boka|bokning|tid(?:en)?)\b)[\s\S]{0,220}[?？]\s*$/iu,
     ""
@@ -3738,8 +3739,16 @@ function suppressBookingCtaDuringSupportTurn(sessionId: string, reply: string): 
 function getGeminiSupportTools(sessionId?: string): any {
   const supportOnly = Boolean(
     sessionId &&
-    nonMutatingSupportTurns[sessionId] &&
-    Date.now() - nonMutatingSupportTurns[sessionId] < 2 * 60 * 1000
+    (
+      (
+        nonMutatingSupportTurns[sessionId] &&
+        Date.now() - nonMutatingSupportTurns[sessionId] < 2 * 60 * 1000
+      ) ||
+      (
+        completedBookingSupportTurns[sessionId] &&
+        Date.now() - completedBookingSupportTurns[sessionId].savedAt < 2 * 60 * 1000
+      )
+    )
   );
   const forbiddenMutations = new Set([
     "insertAppointment",
@@ -3791,12 +3800,84 @@ function formatAuthoritativeBookingContinuation(
   ) {
     return formatSwedishTimeSlots(pending.offeredSlots, undefined, language, toneConfig);
   }
+  if (getRecentCompletedBooking(sessionId)?.bookingOperation?.ok) {
+    return formatRecentCompletedIntegrityFallback(language);
+  }
   if (language === "sv") return "Jag fortsätter gärna med bokningen här. Vilken tid vill du välja?";
   if (language === "fa") return "حتماً، رزرو را همین‌جا ادامه می‌دهیم. کدام زمان را انتخاب می‌کنید؟";
   if (language === "de") return "Gern, wir setzen die Buchung hier sicher fort. Welche Zeit möchten Sie wählen?";
   if (language === "es") return "Claro, seguimos con la reserva aquí. ¿Qué hora quieres elegir?";
   if (language === "ar") return "بالتأكيد، سنواصل الحجز هنا. ما الوقت الذي تود اختياره؟";
   return "Of course — we’ll continue the booking here. Which time would you like?";
+}
+
+function formatRecentCompletedIntegrityFallback(language: string): string {
+  if (language === "sv") return "Din verifierade bokning är oförändrad. Jag hjälper gärna med din fråga utan att ändra bokningsuppgifterna.";
+  if (language === "de") return "Ihre bestätigte Buchung bleibt unverändert. Ich beantworte Ihre Frage gern, ohne Buchungsdaten zu ändern.";
+  if (language === "es") return "Tu reserva verificada sigue sin cambios. Puedo responder a tu pregunta sin modificar los datos de la reserva.";
+  if (language === "fa") return "رزرو تأییدشده شما بدون تغییر باقی مانده است. می‌توانم بدون تغییر اطلاعات رزرو به سؤال شما پاسخ بدهم.";
+  if (language === "ar") return "حجزك المؤكد لم يتغير. يمكنني الإجابة عن سؤالك دون تغيير بيانات الحجز.";
+  return "Your verified booking remains unchanged. I can answer your question without changing its booking details.";
+}
+
+function recentCompletedReplyConflictReason(
+  reply: string,
+  completed: RecentCompletedBooking,
+  businessConfig?: any,
+): "status" | "date" | "time" | "service" | "contact" | null {
+  const operation = completed.bookingOperation;
+  if (!operation?.ok) return "status";
+  const raw = String(reply || "").trim();
+  const normalized = normalizeConfirmationReply(raw);
+  const claimsBookingFacts =
+    containsUnverifiedBookingSuccessClaim(raw) ||
+    /\b(?:your|the)\s+(?:appointment|booking)|\b(?:din|ditt)\s+(?:tid|bokning)|\b(?:ihr|ihre)\s+(?:termin|buchung)|\btu\s+(?:cita|reserva)|(?:رزرو|وقت)\s+شما|(?:حجزك|موعدك)/u.test(normalized);
+  if (!claimsBookingFacts) return null;
+
+  const conflictingStatus =
+    /\b(?:appointment|booking)\b.{0,40}\b(?:not\s+confirmed|not\s+booked|cancelled|canceled|failed)\b/u.test(normalized) ||
+    /\b(?:bokning|tid)\b.{0,40}\b(?:inte\s+bekraftad|inte\s+bokad|avbokad)\b/u.test(normalized) ||
+    /\b(?:termin|buchung)\b.{0,40}\b(?:nicht\s+bestatigt|nicht\s+gebucht|storniert)\b/u.test(normalized) ||
+    /\b(?:cita|reserva)\b.{0,40}\b(?:no\s+esta\s+confirmada|no\s+esta\s+reservada|cancelada)\b/u.test(normalized) ||
+    /(?:رزرو|وقت).{0,35}(?:تایید\s+نشده|تأیید\s+نشده|لغو\s+شده)|(?:حجز|موعد).{0,35}(?:غير\s+(?:مؤ[كک]د|مو[كک]د)|ملغي)/u.test(normalized);
+  if (conflictingStatus) return "status";
+
+  const timezone = String(businessConfig?.timezone || "Europe/Stockholm");
+  const completedSlot = getZonedSlotParts(operation.startTime, timezone);
+  const explicitTime = inferRequestedTimeFromText(raw);
+  if (
+    completedSlot &&
+    explicitTime &&
+    normalizeRequestedTime(explicitTime) !== normalizeRequestedTime(
+      `${Math.floor(completedSlot.minutes / 60)}:${completedSlot.minutes % 60}`,
+    )
+  ) return "time";
+
+  const explicitDate = resolveExplicitBookingDate(raw);
+  if (completedSlot && explicitDate && explicitDate !== completedSlot.date) return "date";
+
+  const configuredService = businessConfig
+    ? findConfiguredBookingService(raw, businessConfig)
+    : null;
+  if (
+    configuredService &&
+    normalizeBookingService(configuredService, configuredService) !==
+      normalizeBookingService(operation.serviceName, operation.serviceName)
+  ) return "service";
+
+  const explicitPhone = normalizeAcceptedPhone(extractPhoneOnly(raw) || undefined);
+  const completedPhone = normalizeAcceptedPhone(operation.customerPhone || undefined);
+  if (explicitPhone && completedPhone && explicitPhone !== completedPhone) return "contact";
+
+  const mentionsName = /\b(?:name|namn|nombre)\b|(?:نام|الاسم)/u.test(normalized);
+  if (mentionsName && operation.customerName) {
+    const expectedName = normalizeConfirmationReply(operation.customerName);
+    const extractedName = normalizeConfirmationReply(extractNameOnly(raw) || "");
+    if (extractedName && extractedName !== expectedName && !normalized.includes(expectedName)) {
+      return "contact";
+    }
+  }
+  return null;
 }
 
 function selectAuthoritativeGeminiFunctionCalls(
@@ -3961,8 +4042,7 @@ async function checkAndIncrementDailyUsage(params: { businessId?: string | numbe
 
 const pendingBookings: Record<string, any> = {};
 const verifiedBookingReplyAuthorizations: Record<string, BookingOperationResult> = {};
-const telegramReplyPreferences: Record<string, TelegramReplyPreference & { updatedAt: number }> = {};
-const recentlyCompletedBookings: Record<string, {
+type RecentCompletedBooking = {
   completedAt: number;
   language: string;
   name?: string;
@@ -3970,7 +4050,24 @@ const recentlyCompletedBookings: Record<string, {
   durationMinutes?: number;
   dateTime?: string;
   bookingOperation?: Extract<BookingOperationResult, { ok: true }>;
-}> = {};
+};
+type RecentCompletedBookingCategory =
+  | "acknowledgement"
+  | "current_booking_status"
+  | "completion_requirements"
+  | "business_support"
+  | "new_booking"
+  | "reschedule"
+  | "cancellation"
+  | "another_booking_lookup";
+type CompletedBookingSupportTurn = {
+  savedAt: number;
+  completed: RecentCompletedBooking;
+  businessConfig: any;
+};
+const telegramReplyPreferences: Record<string, TelegramReplyPreference & { updatedAt: number }> = {};
+const recentlyCompletedBookings: Record<string, RecentCompletedBooking> = {};
+const completedBookingSupportTurns: Record<string, CompletedBookingSupportTurn> = {};
 const appointmentContexts: Record<string, { appointment: any; savedAt: number; language: string }> = {};
 const appointmentSelectionContexts: Record<string, { appointments: any[]; savedAt: number; language: string; intent?: "reschedule" | "cancel" | "lookup" }> = {};
 type AppointmentLookupContext = {
@@ -4187,6 +4284,7 @@ function hasAppointmentConversationState(sessionId: string): boolean {
 
 function shouldDispatchWhatsAppUnifiedBooking(chatId: string, text: string, intent = classifyMessagingIntent(text)): boolean {
   if (intent === "language_repair" || intent === "ambiguous") return false;
+  if (getRecentCompletedBooking(chatId)) return true;
   const clearlyNonBooking = intent === "normal" &&
     !pendingBookings[chatId] && !hasAppointmentConversationState(chatId) &&
     !extractNameAndPhone(text) && !extractPhoneOnly(text) && !extractNameOnly(text) &&
@@ -5662,6 +5760,56 @@ function getRecentCompletedBooking(chatId: string) {
   return item;
 }
 
+function hasRecentCompletionQuestionSyntax(text?: string): boolean {
+  const raw = String(text || "").trim();
+  const normalized = normalizeConfirmationReply(raw);
+  return /[?؟]/u.test(raw) ||
+    /^(?:do|does|did|is|are|can|could|should|must|behöver|behover|måste|maste|är|ar|har|muss|soll|ist|brauchen|benötigen|benotigen|necesito|necesitan|tengo|debo|hace)\b/u.test(normalized) ||
+    /^(?:آیا|ایا|هل|لازم|باید)(?:\s|$)/u.test(normalized);
+}
+
+function isPureRecentCompletionAcknowledgement(text?: string): boolean {
+  const raw = String(text || "").trim();
+  if (!raw || hasRecentCompletionQuestionSyntax(raw)) return false;
+  const normalized = normalizeConfirmationReply(raw);
+  return /^(?:(?:perfecto|gracias|muchas\s+gracias|perfecto\s+(?:y\s+)?gracias|vale|entendido)|(?:tack|tusen\s+tack|tack\s+sa\s+mycket|perfekt|toppen|bra)|(?:(?:(?:perfect|great|okay|ok)(?:\s+and)?\s+)?(?:thanks|thank\s+you)|perfect|great|got\s+it|okay|ok)|(?:danke|vielen\s+dank|perfekt|verstanden|alles\s+klar)|(?:مرسی|ممنون|خیلی\s+ممنون|متشکرم|سپاس|باشه)|(?:ش[كک]را|تمام|حسنا|ممتاز))$/u.test(normalized);
+}
+
+function isRecentCompletionRequirementsQuestion(text?: string): boolean {
+  const raw = String(text || "").trim();
+  if (!raw || !hasRecentCompletionQuestionSyntax(raw)) return false;
+  const normalized = normalizeConfirmationReply(raw);
+  return (
+    /\b(?:need|require|provide|send|give|confirm|do\s+i\s+have\s+to)\b.{0,35}\b(?:any\s+more|additional|further|more)\b.{0,30}\b(?:information|details|data|confirmation|anything)\b/u.test(normalized) ||
+    /\b(?:need|require|provide|send|give|confirm|do\s+i\s+have\s+to)\b.{0,55}\b(?:anything|something|information|details|data|confirmation)\b.{0,30}\b(?:else|more|additional|further)\b/u.test(normalized) ||
+    /\b(?:anything|something|information|details|data|confirmation)\b.{0,30}\b(?:else|more|additional|further)\b/u.test(normalized) ||
+    /\b(?:behover|maste|ska\s+jag|lamna|skicka|bekrafta)\b.{0,55}\b(?:nagot\s+mer|fler\s+uppgifter|mer\s+information|ytterligare|bekrafta\s+igen)\b/u.test(normalized) ||
+    /\b(?:brauchen|benotigen|muss\s+ich|soll\s+ich|angeben|bestatigen)\b.{0,55}\b(?:noch\s+etwas|weitere|mehr|zusatzliche|erneut)\b/u.test(normalized) ||
+    /\b(?:necesit|tengo\s+que|debo|hace\s+falta|aportar|enviar|confirmar)\w*\b.{0,60}\b(?:algo\s+mas|algun\s+otro|otro\s+dato|mas\s+datos|informacion|confirmacion|nada\s+mas)\b/u.test(normalized) ||
+    /(?:آیا|ایا|لازم|باید|نیاز).{0,55}(?:چیز|اطلاعات|مشخصات|تایید|تأیید).{0,30}(?:دیگر|بیشتر|اضافی|دوباره)/u.test(normalized) ||
+    /(?:هل|هل\s+[يی]جب|أحتاج|احتاج|لازم).{0,55}(?:ش[يی]ء|ب[يی]انات|معلومات|تأ[كک][يی]د).{0,30}(?:آخر|اخرى|إضاف[يی]|اضاف[يی]|مرة\s+أخرى)/u.test(normalized)
+  );
+}
+
+function hasRecentCompletedBookingStatusSemantics(text?: string): boolean {
+  const normalized = normalizeConfirmationReply(text);
+  if (!normalized) return false;
+  return (
+    /\b(?:appointment|booking)\b.{0,50}\b(?:confirmed|booked|reserved|successful)\b|\b(?:confirmed|booked|reserved)\b.{0,50}\b(?:appointment|booking)\b/u.test(normalized) ||
+    /\b(?:bokning|tid)\b.{0,50}\b(?:bekraftad|bokad|klar)\b|\b(?:bekraftad|bokad)\b.{0,50}\b(?:bokning|tid)\b/u.test(normalized) ||
+    /\b(?:termin|buchung)\b.{0,50}\b(?:bestatigt|gebucht|reserviert)\b|\b(?:bestatigt|gebucht|reserviert)\b.{0,50}\b(?:termin|buchung)\b/u.test(normalized) ||
+    /\b(?:cita|reserva|reservacion)\b.{0,50}\b(?:confirmada|confirmado|reservada|reservado)\b|\b(?:confirmada|confirmado|reservada|reservado)\b.{0,50}\b(?:cita|reserva|reservacion)\b/u.test(normalized) ||
+    /(?:وقت|نوبت|رزرو).{0,45}(?:تایید|تأیید|قطعی|ثبت|رزرو\s+شده)|(?:تایید|تأیید|قطعی|ثبت).{0,45}(?:وقت|نوبت|رزرو)/u.test(normalized) ||
+    /(?:موعد|حجز).{0,45}(?:مؤ[كک]د|مو[كک]د|مؤ[كک]دة|مو[كک]دة|تم|محجوز)|(?:تأ[كک]يد|تا[كک]يد|مؤ[كک]د|مو[كک]د|تم).{0,45}(?:موعد|حجز)/u.test(normalized)
+  );
+}
+
+function explicitlyReferencesAnotherBooking(text?: string): boolean {
+  const normalized = normalizeConfirmationReply(text);
+  return /\b(?:another|other|different|previous|older|earlier|annan|annat|tidigare|forra|andere|anderer|fruhere|vorherige|otra|otro|anterior|distinta|distinto)\b/u.test(normalized) ||
+    /(?:رزرو|وقت).{0,20}(?:دیگر|قبلی|دیگه)|(?:حجز|موعد).{0,20}(?:آخر|اخرى|سابق)/u.test(normalized);
+}
+
 function isRecentCompletedBookingStatusQuestion(text?: string): boolean {
   const raw = String(text || "").trim();
   if (!raw || isExplicitNewBookingPivotText(raw)) return false;
@@ -5708,6 +5856,16 @@ function isRecentCompletedBookingFollowUp(params: {
     !spanishConfirmationFollowUp
   ) return false;
 
+  return recentCompletedBookingFactsMatch(params);
+}
+
+function recentCompletedBookingFactsMatch(params: {
+  text?: string;
+  bookingOperation: Extract<BookingOperationResult, { ok: true }>;
+  normalizedRequest: NormalizedBookingRequest;
+  businessConfig: any;
+}): boolean {
+  const raw = String(params.text || "").trim();
   const timezone = String(params.businessConfig?.timezone || "Europe/Stockholm");
   const completedSlot = getZonedSlotParts(params.bookingOperation.startTime, timezone);
   if (!completedSlot) return false;
@@ -5744,6 +5902,110 @@ function isRecentCompletedBookingFollowUp(params: {
   ) return false;
 
   return true;
+}
+
+function classifyRecentCompletedBookingTurn(params: {
+  text?: string;
+  completed: RecentCompletedBooking;
+  normalizedRequest: NormalizedBookingRequest;
+  businessConfig: any;
+}): RecentCompletedBookingCategory {
+  const raw = String(params.text || "").trim();
+  if (isExplicitNewBookingPivotText(raw)) return "new_booking";
+  if (isRescheduleIntent(raw) || params.normalizedRequest.intent === "reschedule") return "reschedule";
+  if (isCancellationIntent(raw) || params.normalizedRequest.intent === "cancellation") return "cancellation";
+
+  if (isPureRecentCompletionAcknowledgement(raw)) return "acknowledgement";
+  if (isRecentCompletionRequirementsQuestion(raw)) return "completion_requirements";
+
+  const verifiedOperation = params.completed.bookingOperation;
+  const factsMatch = Boolean(
+    verifiedOperation?.ok &&
+    recentCompletedBookingFactsMatch({
+      text: raw,
+      bookingOperation: verifiedOperation,
+      normalizedRequest: params.normalizedRequest,
+      businessConfig: params.businessConfig,
+    })
+  );
+  const matchingStatusReference = Boolean(
+    verifiedOperation?.ok &&
+    isRecentCompletedBookingFollowUp({
+      text: raw,
+      bookingOperation: verifiedOperation,
+      normalizedRequest: params.normalizedRequest,
+      businessConfig: params.businessConfig,
+    })
+  );
+  const hasStatusSemantics = hasRecentCompletedBookingStatusSemantics(raw);
+  if (explicitlyReferencesAnotherBooking(raw)) return "another_booking_lookup";
+  if (matchingStatusReference || (hasStatusSemantics && factsMatch)) return "current_booking_status";
+  if (hasStatusSemantics) return "another_booking_lookup";
+  if (
+    params.normalizedRequest.intent === "booking_lookup" ||
+    isExistingAppointmentLookupIntent(raw)
+  ) return "another_booking_lookup";
+  return "business_support";
+}
+
+function formatRecentCompletionRequirementsReply(language: string, contactComplete: boolean): string {
+  if (!contactComplete) {
+    if (language === "sv") return "Bokningen är verifierad, men jag kan inte bekräfta att alla kontaktuppgifter finns registrerade.";
+    if (language === "de") return "Die Buchung ist bestätigt, aber ich kann nicht bestätigen, dass alle Kontaktdaten vollständig erfasst sind.";
+    if (language === "es") return "La reserva está verificada, pero no puedo confirmar que todos los datos de contacto estén completos.";
+    if (language === "fa") return "رزرو تأیید شده است، اما نمی‌توانم تأیید کنم که همه اطلاعات تماس کامل ثبت شده‌اند.";
+    if (language === "ar") return "الحجز مؤكد، لكن لا يمكنني تأكيد اكتمال جميع بيانات الاتصال.";
+    return "The booking is verified, but I cannot confirm that every contact detail is complete.";
+  }
+  if (language === "sv") return "Nej, inget mer behövs för bokningen. Den är verifierad och dina kontaktuppgifter är registrerade.";
+  if (language === "de") return "Nein, für die Buchung ist nichts Weiteres erforderlich. Sie ist bestätigt und Ihre Kontaktdaten sind erfasst.";
+  if (language === "es") return "No hace falta nada más para la reserva. Está verificada y tus datos de contacto están registrados.";
+  if (language === "fa") return "برای رزرو کار دیگری لازم نیست؛ رزرو تأیید شده و اطلاعات تماس شما ثبت است.";
+  if (language === "ar") return "لا يلزم أي شيء آخر للحجز؛ الحجز مؤكد وبيانات الاتصال مسجلة.";
+  return "Nothing else is needed for the booking. It is verified and your contact details are recorded.";
+}
+
+function hasRecentCompletionContactQuestion(text?: string): boolean {
+  const normalized = normalizeConfirmationReply(text);
+  return /\b(?:name|phone|mobile|contact|namn|telefon|mobilnummer|kontakt|name|telefonnummer|kontakt|nombre|telefono|movil|contacto)\b/u.test(normalized) ||
+    /(?:نام|شماره|تماس|الاسم|الهاتف|الجوال|الاتصال)/u.test(normalized);
+}
+
+function formatRecentCompletedStatusReply(
+  language: string,
+  completed: RecentCompletedBooking,
+  text?: string,
+): string {
+  const operation = completed.bookingOperation;
+  const contactComplete = Boolean(operation?.customerName && operation?.customerPhone);
+  if (hasRecentCompletionQuestionSyntax(text) && hasRecentCompletionContactQuestion(text)) {
+    return formatRecentCompletionRequirementsReply(language, contactComplete);
+  }
+  if (!hasRecentCompletionQuestionSyntax(text)) {
+    if (language === "sv") return "Precis. Bokningen är verifierad och inget mer behöver göras.";
+    if (language === "de") return "Genau. Die Buchung ist bestätigt und es ist nichts Weiteres erforderlich.";
+    if (language === "es") return "Exactamente. La reserva está verificada y no necesitas hacer nada más.";
+    if (language === "fa") return "دقیقاً. رزرو تأیید شده و کار دیگری لازم نیست.";
+    if (language === "ar") return "بالضبط. الحجز مؤكد ولا يلزم إجراء آخر.";
+    return "Exactly. The booking is verified and nothing further is required.";
+  }
+  const startTime = operation?.startTime || completed.dateTime;
+  if (!startTime) return formatRecentCompletionRequirementsReply(language, contactComplete);
+  const { dateText, timeText } = formatLocalizedDateTime(startTime, language);
+  if (language === "sv") return `Ja, bokningen är verifierad till ${dateText} kl. ${timeText}.`;
+  if (language === "de") return `Ja, die Buchung ist für ${dateText} um ${timeText} Uhr bestätigt.`;
+  if (language === "es") return `Sí, la reserva está verificada para el ${dateText} a las ${timeText}.`;
+  if (language === "fa") return `بله، رزرو برای ${dateText} ساعت ${timeText} تأیید شده است.`;
+  if (language === "ar") return `نعم، الحجز مؤكد في ${dateText} الساعة ${timeText}.`;
+  return `Yes, the booking is verified for ${dateText} at ${timeText}.`;
+}
+
+function buildRecentCompletedSupportInstruction(sessionId: string): string {
+  const support = completedBookingSupportTurns[sessionId];
+  if (!support || Date.now() - support.savedAt > 2 * 60 * 1000) return "";
+  const operation = support.completed.bookingOperation;
+  if (!operation?.ok) return "";
+  return `\nREAD-ONLY VERIFIED COMPLETION CONTEXT:\nA booking was already verified by the server. Service: ${JSON.stringify(operation.serviceName)}. Start: ${JSON.stringify(operation.startTime)}. Required contact fields complete: ${Boolean(operation.customerName && operation.customerPhone)}. Answer only the customer's business/support question using the business System Prompt and Knowledge. Do not reopen, create, alter, cancel, reschedule, or re-check availability. Do not invent or change booking status, date, time, service, identity, or contact facts. Do not repeat the full booking confirmation unless the customer explicitly asks for status.`;
 }
 
 function inferServiceFromText(text?: string): string {
@@ -8533,9 +8795,29 @@ function guardCustomerFacingReply(sessionId: string, reply: string, fallbackLang
     "en";
   if (!raw) return getErrorMessageByLanguage(language);
 
+  const recentCompleted = getRecentCompletedBooking(sessionId);
+  const completedSupport = completedBookingSupportTurns[sessionId];
+  const recentConflict = recentCompleted?.bookingOperation?.ok
+    ? recentCompletedReplyConflictReason(
+        raw,
+        recentCompleted,
+        completedSupport?.businessConfig,
+      )
+    : null;
+  if (recentConflict) {
+    console.warn("[BookingIntegrity]", {
+      operation: "recent_completed_support_reply",
+      verifiedSuccessPresent: true,
+      successClaimBlocked: true,
+      conflict: recentConflict,
+    });
+    return formatRecentCompletedIntegrityFallback(language);
+  }
+
   if (containsUnverifiedBookingSuccessClaim(raw)) {
     const verified = verifiedBookingReplyAuthorizations[sessionId];
     if (!verified?.ok) {
+      if (recentCompleted?.bookingOperation?.ok) return raw;
       console.warn("[BookingIntegrity]", {
         operation: "customer_reply",
         verifiedSuccessPresent: false,
@@ -10250,6 +10532,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
 
   if (!text) return false;
   delete nonMutatingSupportTurns[sessionId];
+  delete completedBookingSupportTurns[sessionId];
 
   const currentAppointmentStateOwner: AppointmentStateOwner = {
     sessionId,
@@ -11176,36 +11459,52 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
   const completedBookingStatusContext = !pending
     ? getRecentCompletedBooking(sessionId)
     : null;
-  if (
-    completedBookingStatusContext?.bookingOperation?.ok &&
-    isRecentCompletedBookingFollowUp({
+  if (completedBookingStatusContext?.bookingOperation?.ok) {
+    const completedCategory = classifyRecentCompletedBookingTurn({
       text,
-      bookingOperation: completedBookingStatusContext.bookingOperation,
+      completed: completedBookingStatusContext,
       normalizedRequest,
       businessConfig,
-    })
-  ) {
+    });
     const completedLanguage = getFlowReplyLanguage(
       completedBookingStatusContext.language,
       language,
       text,
     );
-    verifiedBookingReplyAuthorizations[sessionId] =
-      completedBookingStatusContext.bookingOperation;
-    try {
+    if (completedCategory === "acknowledgement") {
       await replyAndRecord(
-        formatBookingSavedMessage(
-          completedLanguage,
-          completedBookingStatusContext.bookingOperation.customerName || "",
-          completedBookingStatusContext.bookingOperation.serviceName,
-          completedBookingStatusContext.bookingOperation.startTime,
-          deterministicToneConfig,
-        ),
+        formatThanksReply(completedLanguage, completedBookingStatusContext.name),
       );
-    } finally {
-      delete verifiedBookingReplyAuthorizations[sessionId];
+      return true;
     }
-    return true;
+    if (completedCategory === "completion_requirements") {
+      await replyAndRecord(formatRecentCompletionRequirementsReply(
+        completedLanguage,
+        Boolean(
+          completedBookingStatusContext.bookingOperation.customerName &&
+          completedBookingStatusContext.bookingOperation.customerPhone
+        ),
+      ));
+      return true;
+    }
+    if (completedCategory === "current_booking_status") {
+      await replyAndRecord(formatRecentCompletedStatusReply(
+        completedLanguage,
+        completedBookingStatusContext,
+        text,
+      ));
+      return true;
+    }
+    if (completedCategory === "business_support") {
+      completedBookingSupportTurns[sessionId] = {
+        savedAt: Date.now(),
+        completed: structuredClone(completedBookingStatusContext),
+        businessConfig,
+      };
+      nonMutatingSupportTurns[sessionId] = Date.now();
+      lockConversationFlowLanguage(sessionId, completedLanguage, "booking_support");
+      return false;
+    }
   }
 
   // Service guidance suspends a new-booking goal while releasing every stale
@@ -17357,7 +17656,8 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
   currentDateContext +
   constraint +
   languageEngine +
-  buildLanguageLockInstruction(getConversationLanguage(telegramSessionId, textForFlow));
+  buildLanguageLockInstruction(getConversationLanguage(telegramSessionId, textForFlow)) +
+  buildRecentCompletedSupportInstruction(telegramSessionId);
   if (voice) {
     finalSystemInstruction +=
     "\nVOICE ENGINE:\n" +
@@ -20047,7 +20347,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
 
     const currentDateContext = `\nCrucial Context: The client's current local date and time in Sweden (Europe/Stockholm) is dynamically: ${swedenDate}. Any reference by the user to 'idag', 'imorgon', or days of the week must be evaluated strictly using this dynamic date as the anchor. Note that for YYYY-MM-DD tools, June is '06' (index 5 in Javascript Date).`;
 
-    let finalSystemInstruction = buildBusinessPromptWithTone(businessConfig.systemPrompt || "", businessConfig.toneConfig) + currentDateContext + constraint + languageEngine + buildLanguageLockInstruction(userLanguage);
+    let finalSystemInstruction = buildBusinessPromptWithTone(businessConfig.systemPrompt || "", businessConfig.toneConfig) + currentDateContext + constraint + languageEngine + buildLanguageLockInstruction(userLanguage) + buildRecentCompletedSupportInstruction(chatId);
 
     const aiRequestContext = {
       businessId: getBusinessIdFromConfig(businessConfig),
@@ -21166,7 +21466,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
 
     const currentDateContext = `\nCrucial Context: The client's current local date and time in Sweden (Europe/Stockholm) is dynamically: ${swedenDate}. Any reference by the user to 'idag', 'imorgon', or days of the week must be evaluated strictly using this dynamic date as the anchor. Note that for YYYY-MM-DD tools, June is '06' (index 5 in Javascript Date).`;
 
-    let finalSystemInstruction = buildBusinessPromptWithTone(businessConfig.systemPrompt || "", businessConfig.toneConfig) + currentDateContext + constraint + languageEngine + buildLanguageLockInstruction(userLanguage);
+    let finalSystemInstruction = buildBusinessPromptWithTone(businessConfig.systemPrompt || "", businessConfig.toneConfig) + currentDateContext + constraint + languageEngine + buildLanguageLockInstruction(userLanguage) + buildRecentCompletedSupportInstruction(chatId);
 
     if (isVoiceMessage) {
       finalSystemInstruction +=
@@ -21734,7 +22034,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
 
     const currentDateContext = `\nCrucial Context: The client's current local date and time in Sweden (Europe/Stockholm) is dynamically: ${swedenDate}. Any reference by the user to 'idag', 'imorgon', or days of the week must be evaluated strictly using this dynamic date as the anchor. Note that for YYYY-MM-DD tools, June is '06' (index 5 in Javascript Date).`;
 
-    let finalSystemInstruction = buildBusinessPromptWithTone(businessConfig.systemPrompt || '', businessConfig.toneConfig) + currentDateContext + constraint + languageEngine + buildLanguageLockInstruction(userLanguage);
+    let finalSystemInstruction = buildBusinessPromptWithTone(businessConfig.systemPrompt || '', businessConfig.toneConfig) + currentDateContext + constraint + languageEngine + buildLanguageLockInstruction(userLanguage) + buildRecentCompletedSupportInstruction(chatId);
 
     if (isVoiceMessage) {
       finalSystemInstruction +=
@@ -22478,7 +22778,8 @@ Never translate unless requested.
   currentDateContext +
   constraint +
   languageEngine +
-  buildLanguageLockInstruction(userLanguage);
+  buildLanguageLockInstruction(userLanguage) +
+  buildRecentCompletedSupportInstruction(chatId);
       let chatResponse = await generateContentWithFallback(null, {
         messages,
         systemInstruction: finalSystemInstruction, 
@@ -25371,6 +25672,17 @@ export const priority1hUnifiedEngineTestBoundary = {
       availability: availabilitySearchContexts[sessionId] ? structuredClone(availabilitySearchContexts[sessionId]) : null,
     };
   },
+  recentCompletionState(sessionId: string) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    return {
+      completed: getRecentCompletedBooking(sessionId)
+        ? structuredClone(getRecentCompletedBooking(sessionId))
+        : null,
+      support: completedBookingSupportTurns[sessionId]
+        ? structuredClone(completedBookingSupportTurns[sessionId])
+        : null,
+    };
+  },
   pendingStateSnapshot(sessionId: string) {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
     return pendingBookings[sessionId] ? structuredClone(pendingBookings[sessionId]) : null;
@@ -25385,12 +25697,18 @@ export const priority1hUnifiedEngineTestBoundary = {
     delete conversationFlowLanguages[sessionId];
     delete chatLanguages[sessionId];
     delete availabilitySearchContexts[sessionId];
+    delete recentlyCompletedBookings[sessionId];
+    delete completedBookingSupportTurns[sessionId];
   },
   geminiToolNames(sessionId: string) {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
     return getGeminiSupportTools(sessionId).flatMap((group: any) =>
       (group.functionDeclarations || []).map((declaration: any) => String(declaration.name || ""))
     );
+  },
+  completedSupportInstruction(sessionId: string) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    return buildRecentCompletedSupportInstruction(sessionId);
   },
   guardReply(sessionId: string, reply: string, language: string = "sv", toneConfig?: unknown) {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
@@ -25516,6 +25834,8 @@ export const priority1hUnifiedEngineTestBoundary = {
     for (const key of Object.keys(appointmentStateOwners)) delete appointmentStateOwners[key];
     for (const key of Object.keys(availabilitySearchContexts)) delete availabilitySearchContexts[key];
     for (const key of Object.keys(recentlyCompletedBookings)) delete recentlyCompletedBookings[key];
+    for (const key of Object.keys(completedBookingSupportTurns)) delete completedBookingSupportTurns[key];
+    for (const key of Object.keys(nonMutatingSupportTurns)) delete nonMutatingSupportTurns[key];
     for (const key of Object.keys(telegramReplyPreferences)) delete telegramReplyPreferences[key];
     for (const key of Object.keys(chatLanguages)) delete chatLanguages[key];
     for (const key of Object.keys(conversationFlowLanguages)) delete conversationFlowLanguages[key];

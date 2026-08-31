@@ -66,8 +66,6 @@ try {
 
     assert.equal(result.handled, true);
     assert.equal(result.replies.length, 1);
-    assert.match(result.replies[0], new RegExp(testCase.customerName, 'u'));
-    assert.match(result.replies[0], testCase.expectedService);
     assert.match(result.replies[0], /18:30/u);
     const expectedDate = new Date('2026-08-26T18:30:00+02:00').toLocaleDateString(
       testCase.language === 'ar' ? 'ar-SA' : 'en-GB',

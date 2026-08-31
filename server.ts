@@ -532,6 +532,7 @@ type Priority1hTestDependencies = {
     explicitSwitch?: string | null;
     inputFingerprint?: string | null;
   }) => void;
+  availabilityDiagnostic?: (event: Record<string, unknown>) => void;
 };
 
 let priority1hTestDependencies: Priority1hTestDependencies | null = null;
@@ -1152,13 +1153,32 @@ type ExactSlotValidationResult = {
     | "stale_offer";
   normalizedIso: string | null;
   endIso: string | null;
+  blockingPendingDiagnostics?: SafePendingAvailabilityDiagnostic[];
+};
+
+type SafePendingAvailabilityDiagnostic = {
+  ownerSessionFingerprint: string;
+  sameBusiness: boolean;
+  status: string;
+  selectedStart: string | null;
+  selectedEnd: string | null;
+  createdAt: string | null;
+  ageMs: number | null;
+  ttlMs: number;
+  expiresAt: string | null;
+  expired: boolean;
+  legitimatelyOwned: boolean;
+  eligibleToBlockRequest: boolean;
 };
 
 type CanonicalAvailabilitySnapshot = {
   calendarEvents: any[];
   pendingEvents: any[];
+  pendingHoldDiagnostics: SafePendingAvailabilityDiagnostic[];
   calendarEventCount: number;
   pendingHoldCount: number;
+  calendarReadCount: 1;
+  pendingSnapshotCount: 1;
 };
 
 function bookingSlotOwnerMatches(slot: OwnedOfferedSlot, owner: BookingSlotOwner): boolean {
@@ -1176,20 +1196,7 @@ function getPendingBookingBlockingEvents(
   startMs: number,
   endMs: number
 ): any[] {
-  return Object.entries(pendingBookings)
-    .map(([sessionId, pending]) => evaluatePendingAvailabilityRecord(
-      sessionId,
-      pending,
-      owner,
-      startMs,
-      endMs
-    ))
-    .filter(record => record.isCanonicalOverlappingBlocker)
-    .map(record => ({
-      startTime: record.normalizedStart,
-      endTime: new Date(record.pendingEndMs).toISOString(),
-      summary: "Pending appointment hold"
-    }));
+  return snapshotPendingBookingAvailability(owner, startMs, endMs).pendingEvents;
 }
 
 async function validateCanonicalExactSlot(params: {
@@ -1372,7 +1379,22 @@ async function validateCanonicalExactSlot(params: {
       : pendingEvents;
 
   if (!isSlotFree(startMs, duration, bufferedPendingEvents, params.nowMs ?? Date.now())) {
-    return { free: false, category: "pending_conflict", normalizedIso, endIso: new Date(endMs).toISOString() };
+    const blockingPendingDiagnostics = bufferedPendingEvents
+      .filter((event: any) => !isSlotFree(
+        startMs,
+        duration,
+        [event],
+        params.nowMs ?? Date.now()
+      ))
+      .map((event: any) => event?.availabilityDiagnostic)
+      .filter((diagnostic): diagnostic is SafePendingAvailabilityDiagnostic => Boolean(diagnostic));
+    return {
+      free: false,
+      category: "pending_conflict",
+      normalizedIso,
+      endIso: new Date(endMs).toISOString(),
+      blockingPendingDiagnostics,
+    };
   }
 
   return {
@@ -1399,16 +1421,19 @@ async function loadCanonicalAvailabilitySnapshot(params: {
   const calendarEvents = (Array.isArray(events) ? events : []).filter(
     (event: any) => !params.excludeEventId || String(event?.id || "") !== String(params.excludeEventId)
   );
-  const pendingEvents = getPendingBookingBlockingEvents(
+  const pendingSnapshot = snapshotPendingBookingAvailability(
     params.owner,
     new Date(zonedLocalIso(params.startDate, "00:00:00", timezone)).getTime(),
     new Date(zonedLocalIso(params.endDate, "23:59:59", timezone)).getTime()
   );
   return {
     calendarEvents,
-    pendingEvents,
+    pendingEvents: pendingSnapshot.pendingEvents,
+    pendingHoldDiagnostics: pendingSnapshot.pendingHoldDiagnostics,
     calendarEventCount: calendarEvents.length,
-    pendingHoldCount: pendingEvents.length,
+    pendingHoldCount: pendingSnapshot.pendingEvents.length,
+    calendarReadCount: 1,
+    pendingSnapshotCount: 1,
   };
 }
 
@@ -1473,6 +1498,11 @@ async function createCanonicalOfferedSlots(params: {
   normalizedConstraint?: NormalizedTimeConstraint;
   snapshot?: CanonicalAvailabilitySnapshot;
   now?: Date;
+  diagnosticContext?: {
+    language?: string | null;
+    selectedDate?: string | null;
+    canonicalConstraintKind?: string | null;
+  };
 }): Promise<{ displaySlots: string[]; ownedSlots: OwnedOfferedSlot[] }> {
   const timezone = String(params.businessConfig?.timezone || "Europe/Stockholm");
   const snapshot = params.snapshot || await loadCanonicalAvailabilitySnapshot(params);
@@ -1487,6 +1517,17 @@ async function createCanonicalOfferedSlots(params: {
   const formatter = new Intl.DateTimeFormat("en-US", { timeZone: timezone, hour: "2-digit", minute: "2-digit", hour12: false });
   const dayFormatter = new Intl.DateTimeFormat("sv-SE", { timeZone: timezone, weekday: "long" });
   const freeCandidates: Array<{ label: string; slot: OwnedOfferedSlot; minutes: number; dayIndex: number }> = [];
+  const pendingBlockedCandidates: Array<{
+    candidateStart: string;
+    candidateEnd: string;
+    blockingPendingFingerprint: string;
+    blockingStatus: string;
+    blockingStart: string | null;
+    blockingEnd: string | null;
+    blockingAgeMs: number | null;
+    blockingExpiresAt: string | null;
+    blockingExpired: boolean;
+  }> = [];
   const generatedAt = Date.now();
   let totalGeneratedCandidates = 0, constraintRejectedCount = 0, calendarBlockedCount = 0, pendingHoldBlockedCount = 0;
   const startDay = new Date(`${params.startDate}T00:00:00Z`);
@@ -1538,7 +1579,24 @@ async function createCanonicalOfferedSlots(params: {
       });
       if (!validation.free || !validation.normalizedIso || !validation.endIso) {
         if (validation.category === "calendar_conflict") calendarBlockedCount++;
-        if (validation.category === "pending_conflict") pendingHoldBlockedCount++;
+        if (validation.category === "pending_conflict") {
+          pendingHoldBlockedCount++;
+          for (const blocker of validation.blockingPendingDiagnostics || []) {
+            pendingBlockedCandidates.push({
+              candidateStart: validation.normalizedIso || start,
+              candidateEnd: validation.endIso || new Date(
+                new Date(start).getTime() + params.durationMinutes * 60_000
+              ).toISOString(),
+              blockingPendingFingerprint: blocker.ownerSessionFingerprint,
+              blockingStatus: blocker.status,
+              blockingStart: blocker.selectedStart,
+              blockingEnd: blocker.selectedEnd,
+              blockingAgeMs: blocker.ageMs,
+              blockingExpiresAt: blocker.expiresAt,
+              blockingExpired: blocker.expired,
+            });
+          }
+        }
         continue;
       }
       let weekday = dayFormatter.format(new Date(validation.normalizedIso));
@@ -1569,7 +1627,17 @@ async function createCanonicalOfferedSlots(params: {
   const displaySlots = ranked.map((candidate) => candidate.label);
   const ownedSlots = ranked.map((candidate) => candidate.slot);
 
-  console.log("[BookingFlow]", {
+  const configuredService = (Array.isArray(params.businessConfig?.services)
+    ? params.businessConfig.services
+    : []
+  ).find((candidate: any) =>
+    normalizeBookingService(
+      String(candidate?.name || candidate?.service || candidate?.title || ""),
+      "Bokning"
+    ) === normalizeBookingService(params.service, "Bokning")
+  );
+  const availabilityDiagnostic = {
+    diagnosticMarker: "canonical_availability_snapshot_v1",
     platform: normalizePlatformName(params.owner.platform),
     businessScopePresent: Boolean(params.owner.businessId),
     operation: "availability",
@@ -1588,8 +1656,59 @@ async function createCanonicalOfferedSlots(params: {
     upperMinuteBoundary: boundaryKind?.includes("upper") ? boundaryMinutes : null,
     timezone,
     serviceDuration: params.durationMinutes,
-    validatorResultCategory: ownedSlots.length > 0 ? "available" : "no_validated_slots"
-  });
+    validatorResultCategory: ownedSlots.length > 0 ? "available" : "no_validated_slots",
+    request: {
+      sessionFingerprint: safeLogFingerprint(params.owner.sessionId),
+      businessId: params.owner.businessId,
+      language: params.diagnosticContext?.language || null,
+      selectedDate: params.diagnosticContext?.selectedDate || (
+        params.startDate === params.endDate ? params.startDate : null
+      ),
+      serviceId: String(
+        configuredService?.id ||
+        configuredService?.serviceId ||
+        configuredService?.service_id ||
+        ""
+      ) || null,
+      serviceName: String(
+        configuredService?.name ||
+        configuredService?.service ||
+        configuredService?.title ||
+        params.service ||
+        ""
+      ) || null,
+      runtimeDurationMinutes: params.durationMinutes,
+      timezone,
+      canonicalConstraintKind: params.diagnosticContext?.canonicalConstraintKind || (
+        params.requestedTime
+          ? "exact_time"
+          : params.startDate === params.endDate
+            ? "whole_day"
+            : "date_range"
+      ),
+    },
+    snapshot: {
+      calendarReadCount: snapshot.calendarReadCount,
+      calendarEventCount: snapshot.calendarEventCount,
+      pendingSnapshotCount: snapshot.pendingSnapshotCount,
+      pendingHoldCount: snapshot.pendingHoldCount,
+    },
+    pendingHolds: snapshot.pendingHoldDiagnostics,
+    candidates: {
+      candidateSlotCount: totalGeneratedCandidates,
+      constraintBlockedCount: constraintRejectedCount,
+      calendarBlockedCount,
+      pendingHoldBlockedCount,
+      freeCandidateCount: freeCandidates.length,
+      pendingBlockedCandidates,
+    },
+    finalRankedOfferedSlots: ranked.map(candidate => ({
+      start: candidate.slot.start,
+      end: candidate.slot.end,
+    })),
+  };
+  priority1hTestDependencies?.availabilityDiagnostic?.(availabilityDiagnostic);
+  console.log("[BookingFlow]", JSON.stringify(availabilityDiagnostic));
   return { displaySlots, ownedSlots };
 }
 
@@ -5379,6 +5498,71 @@ function evaluatePendingAvailabilityRecord(
     overlapsRequestedInterval,
     isActiveBlockingPending,
     isCanonicalOverlappingBlocker: isActiveBlockingPending && overlapsRequestedInterval,
+  };
+}
+
+function safeAvailabilityDiagnosticIso(value: unknown): string | null {
+  const timestamp = new Date(String(value || "")).getTime();
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : null;
+}
+
+function snapshotPendingBookingAvailability(
+  owner: BookingSlotOwner,
+  requestedStartMs: number,
+  requestedEndMs: number
+): {
+  pendingEvents: any[];
+  pendingHoldDiagnostics: SafePendingAvailabilityDiagnostic[];
+} {
+  const inspectedAt = Date.now();
+  const evaluated = Object.entries(pendingBookings).map(([sessionId, pending]) =>
+    evaluatePendingAvailabilityRecord(
+      sessionId,
+      pending,
+      owner,
+      requestedStartMs,
+      requestedEndMs
+    )
+  );
+  const diagnosticsBySession = new Map<string, SafePendingAvailabilityDiagnostic>();
+
+  for (const record of evaluated) {
+    if (!record.hasBlockingStatus) continue;
+    const createdAtMs = Number(record.pending?.createdAt || record.pending?.created_at || 0);
+    const hasCreatedAt = Number.isFinite(createdAtMs) && createdAtMs > 0;
+    const diagnostic: SafePendingAvailabilityDiagnostic = {
+      ownerSessionFingerprint: safeLogFingerprint(record.sessionId),
+      sameBusiness: record.sameBusiness,
+      status: PENDING_AVAILABILITY_BLOCKING_STATUSES.has(String(record.pending?.status || ""))
+        ? String(record.pending.status)
+        : "unknown",
+      selectedStart: safeAvailabilityDiagnosticIso(record.pending?.dateTime),
+      selectedEnd: safeAvailabilityDiagnosticIso(record.pending?.selectedSlotEnd),
+      createdAt: hasCreatedAt ? new Date(createdAtMs).toISOString() : null,
+      ageMs: hasCreatedAt ? Math.max(0, inspectedAt - createdAtMs) : null,
+      ttlMs: PENDING_BOOKING_TTL_MS,
+      expiresAt: hasCreatedAt
+        ? new Date(createdAtMs + PENDING_BOOKING_TTL_MS).toISOString()
+        : null,
+      expired: record.isExpired,
+      legitimatelyOwned: record.hasLegitimateOwnedSlotClaim,
+      eligibleToBlockRequest: record.isCanonicalOverlappingBlocker,
+    };
+    diagnosticsBySession.set(record.sessionId, diagnostic);
+  }
+
+  const pendingEvents = evaluated
+    .filter(record => record.isCanonicalOverlappingBlocker)
+    .map(record => ({
+      startTime: record.normalizedStart,
+      endTime: new Date(record.pendingEndMs).toISOString(),
+      summary: "Pending appointment hold",
+      availabilityDiagnostic: diagnosticsBySession.get(record.sessionId),
+    }));
+
+  return {
+    pendingEvents,
+    pendingHoldDiagnostics: [...diagnosticsBySession.values()],
   };
 }
 
@@ -14514,6 +14698,13 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
             options: availabilityConstraintSlotOptions(constraint),
             normalizedConstraint: availabilityNormalizedRequest.timeConstraint,
             now: params.now,
+            diagnosticContext: {
+              language: lockedLanguage,
+              selectedDate: constraint.startDate === constraint.endDate
+                ? constraint.startDate
+                : null,
+              canonicalConstraintKind: constraint.kind,
+            },
           })
         : { displaySlots: [], ownedSlots: [] };
 
@@ -25217,6 +25408,11 @@ export const priority1hUnifiedEngineTestBoundary = {
     requestedTime?: string;
     options?: SlotSearchOptions;
     normalizedConstraint?: NormalizedTimeConstraint;
+    diagnosticContext?: {
+      language?: string | null;
+      selectedDate?: string | null;
+      canonicalConstraintKind?: string | null;
+    };
   }) {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
     return createCanonicalOfferedSlots({
@@ -25235,6 +25431,7 @@ export const priority1hUnifiedEngineTestBoundary = {
       requestedTime: params.requestedTime,
       options: params.options,
       normalizedConstraint: params.normalizedConstraint,
+      diagnosticContext: params.diagnosticContext,
     });
   },
   resolveConversationLanguage(sessionId: string, text: string, businessConfig: any) {

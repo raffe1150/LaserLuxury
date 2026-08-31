@@ -68,7 +68,7 @@ import {
   selectTelegramDeliveryMode,
   type TelegramReplyPreference,
 } from "./src/ai/channel-reliability";
-import { applyNormalizedRequestToPending, availabilityFieldsFromConstraint, buildSlotFingerprintSource, formatPersianSpokenPhone, getBookingDateConflict, getBookingWeekdayReference, getDateInTimeZone, getZonedSlotParts, isCurrentConversationTurn, isReadOnlyAvailabilityInquiry, isServiceGuidanceRequest, normalizeConversationText, parseBookingDate, parseNamedBookingDateRange, parseTimeConstraint, preparePersianTextForTts, registerConversationTurn, resolveRelativeBookingDateSemantic, slotMinutesSatisfyConstraint, toPersistedBookingRequest, zonedLocalIso, type NormalizedBookingRequest, type NormalizedTimeConstraint } from "./src/ai/booking-intelligence";
+import { applyNormalizedRequestToPending, availabilityFieldsFromConstraint, buildSlotFingerprintSource, classifySpanishManana, formatPersianSpokenPhone, getBookingDateConflict, getBookingWeekdayReference, getDateInTimeZone, getZonedSlotParts, isCurrentConversationTurn, isReadOnlyAvailabilityInquiry, isServiceGuidanceRequest, normalizeConversationText, parseBookingDate, parseNamedBookingDateRange, parseTimeConstraint, preparePersianTextForTts, registerConversationTurn, resolveRelativeBookingDateSemantic, slotMinutesSatisfyConstraint, toPersistedBookingRequest, zonedLocalIso, type NormalizedBookingRequest, type NormalizedTimeConstraint } from "./src/ai/booking-intelligence";
 import { beginBookingFinalization, getBookingInvariantFailures, getBookingPhase, getMissingBookingContact, isPositiveBookingConfirmation, recoverBookingFinalization, recoverBookingTransaction, type BookingFailureStage } from "./src/ai/booking-state-machine";
 import { enumerateCandidateMinutes, isBlockingCalendarEvent, isCanonicalSlotFree } from "./src/ai/canonical-availability";
 import { resolveAuthoritativeContact, type ContactPhoneSource } from "./src/ai/channel-contact";
@@ -5321,7 +5321,7 @@ function isLaterRescheduleRequest(text?: string): boolean {
 
 function inferRequestedDaypart(text?: string): "morning" | "afternoon" | "evening" | null {
   const raw = String(text || "").trim().toLowerCase();
-  if (/\b(morning|förmiddag|formiddag|vormittag|morgen|ma[nñ]ana|sobh)\b/i.test(raw) || /(?:صبح|الصباح)/u.test(raw)) return "morning";
+  if (/\b(morning|förmiddag|formiddag|vormittag|morgen|sobh)\b/i.test(raw) || classifySpanishManana(raw).morningDaypart || /(?:صبح|الصباح)/u.test(raw)) return "morning";
   if (/\b(afternoon|eftermiddag|nachmittag|tarde|bad az zohr|badezohr)\b/i.test(raw) || /(?:بعد\s*از\s*ظهر|بعد\s*الظهر)/u.test(raw)) return "afternoon";
   if (/\b(evening|kväll|kvall|abend|noche|asr|shab)\b/i.test(raw) || /(?:عصر|شب|المساء)/u.test(raw)) return "evening";
   return null;

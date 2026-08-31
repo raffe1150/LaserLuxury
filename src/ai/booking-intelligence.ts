@@ -88,6 +88,22 @@ export function normalizeConversationText(text: string): string {
     .trim();
 }
 
+export function classifySpanishManana(text: string): {
+  relativeTomorrow: boolean;
+  morningDaypart: boolean;
+} {
+  const normalized = normalizeConversationText(text).toLowerCase();
+  const morningDaypart = /\b(?:por|en)\s+la\s+ma[nñ]ana\b/iu.test(normalized);
+  const unconsumed = normalized
+    .replace(/\b(?:por|en)\s+la\s+ma[nñ]ana\b/giu, " ")
+    .replace(/\bpasado\s+ma[nñ]ana\b/giu, " ");
+
+  return {
+    relativeTomorrow: /\bma[nñ]ana\b/iu.test(unconsumed),
+    morningDaypart,
+  };
+}
+
 const PERSIAN_NUMBER_WORDS: Array<[RegExp, string]> = [
   [/(?<![\u0600-\u06ff])(?:هجده|هژده)(?![\u0600-\u06ff])/gu, '18'],
   [/(?<![\u0600-\u06ff])هفده(?![\u0600-\u06ff])/gu, '17'],
@@ -589,6 +605,7 @@ function detectWeekdayExplicitDateConflict(
 
 function parseBookingDateCandidate(text: string, timezone: string, now = new Date()): NormalizedBookingRequest['date'] | undefined {
   const raw = normalizeConversationText(text).toLowerCase();
+  const spanishManana = classifySpanishManana(raw);
   const today = zonedDateParts(now, timezone);
   const isoMatch = raw.match(/\b(20\d{2}-\d{2}-\d{2})\b/);
   if (isoMatch) {
@@ -647,7 +664,8 @@ function parseBookingDateCandidate(text: string, timezone: string, now = new Dat
   const germanTomorrow = /\bmorgen\b/iu.test(raw) && !/\bam\s+morgen\b/iu.test(raw);
 
   if (
-    /\b(?:tomorrow|imorgon|mañana|manana|farda)\b/iu.test(raw) ||
+    /\b(?:tomorrow|imorgon|farda)\b/iu.test(raw) ||
+    spanishManana.relativeTomorrow ||
     /(?:^|\s)i\s+morgon(?=\s|[.!?,;]|$)/iu.test(raw) ||
     germanTomorrow ||
     /فردا|غد[\u064B-\u065F]*ا?|بكر[ةه]/u.test(raw)

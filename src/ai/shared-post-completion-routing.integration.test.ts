@@ -58,7 +58,7 @@ const seedCompleted = (sessionId: string, language: string, sourceChannel = 'ins
     customerName: 'Alex Testsson',
     customerPhone: '0701234567',
     sourceChannel,
-  });
+  }, 60);
 };
 
 const turn = (sessionId: string, platformName: 'instagram' | 'whatsapp' | 'messenger' | 'telegram', text: string) =>
@@ -77,42 +77,90 @@ const languages = [
     language: 'es', platform: 'instagram' as const,
     acknowledgement: 'Perfecto, gracias.',
     status: '¿Está confirmada mi reserva?',
+    statusContact: 'La cita ya está confirmada con mi nombre y teléfono, ¿verdad?',
+    timeDetail: '¿A qué hora reservé la cita?',
+    dateDetail: '¿Qué fecha tiene mi cita?',
+    dateToken: /septiembre/u,
+    nameDetail: '¿A qué nombre está la reserva?',
+    summaryDetail: '¿Puedes confirmar los detalles de mi reserva?',
+    serviceDetail: '¿Qué servicio reservé para la cita?',
     requirements: '¿Necesitan algún otro dato o confirmación por mi parte?',
+    requirementsConfirmation: '¿Tengo que confirmar algo más?',
     support: '¿Necesito traer algo?',
   },
   {
     language: 'sv', platform: 'whatsapp' as const,
     acknowledgement: 'Tack så mycket.',
     status: 'Är min bokning bekräftad?',
+    statusContact: 'Är min bokning bekräftad med mitt namn och telefonnummer?',
+    timeDetail: 'Vilken tid bokade jag?',
+    dateDetail: 'Vilket datum är min bokning?',
+    dateToken: /september/u,
+    nameDetail: 'Vilket namn står bokningen under?',
+    summaryDetail: 'Kan du bekräfta mina bokningsdetaljer?',
+    serviceDetail: 'Vilken tjänst bokade jag?',
     requirements: 'Behöver ni något mer information från mig?',
+    requirementsConfirmation: 'Behöver jag bekräfta något mer?',
     support: 'Behöver jag ta med något?',
   },
   {
     language: 'en', platform: 'messenger' as const,
     acknowledgement: 'Perfect, thank you.',
     status: 'Is my booking confirmed?',
+    statusContact: 'Is my appointment confirmed with my name and phone?',
+    timeDetail: 'What time did I book?',
+    dateDetail: 'What date is my appointment?',
+    dateToken: /September/u,
+    nameDetail: 'What name is the booking under?',
+    summaryDetail: 'Can you confirm my booking details?',
+    serviceDetail: 'What service did I book?',
     requirements: 'Do you need any more information from me?',
+    requirementsConfirmation: 'Do I need to confirm anything else?',
     support: 'What should I bring?',
   },
   {
     language: 'de', platform: 'telegram' as const,
     acknowledgement: 'Vielen Dank.',
     status: 'Ist meine Buchung bestätigt?',
+    statusContact: 'Ist meine Buchung mit meinem Namen und meiner Telefonnummer bestätigt?',
+    timeDetail: 'Um wie viel Uhr habe ich gebucht?',
+    dateDetail: 'An welchem Datum ist mein Termin?',
+    dateToken: /September/u,
+    nameDetail: 'Auf welchen Namen läuft die Buchung?',
+    summaryDetail: 'Können Sie meine Buchungsdetails bestätigen?',
+    serviceDetail: 'Welche Dienstleistung habe ich gebucht?',
     requirements: 'Benötigen Sie noch weitere Daten von mir?',
+    requirementsConfirmation: 'Muss ich noch etwas bestätigen?',
     support: 'Was soll ich mitbringen?',
   },
   {
     language: 'fa', platform: 'instagram' as const,
     acknowledgement: 'ممنون.',
     status: 'آیا رزرو من تأیید شده است؟',
+    statusContact: 'آیا رزرو من با نام و شماره تلفنم تأیید شده است؟',
+    timeDetail: 'چه ساعتی رزرو کردم؟',
+    dateDetail: 'رزرو من چه تاریخی است؟',
+    dateToken: /سپتامبر/u,
+    nameDetail: 'رزرو به نام چه کسی است؟',
+    summaryDetail: 'می‌توانید جزئیات رزرو من را تأیید کنید؟',
+    serviceDetail: 'چه خدمتی رزرو کردم؟',
     requirements: 'آیا اطلاعات بیشتری از من لازم است؟',
+    requirementsConfirmation: 'آیا باید چیز دیگری را تأیید کنم؟',
     support: 'آیا باید چیزی همراه بیاورم؟',
   },
   {
     language: 'ar', platform: 'whatsapp' as const,
     acknowledgement: 'شكرا.',
     status: 'هل حجزي مؤكد؟',
+    statusContact: 'هل حجزي مؤكد باسمي ورقم هاتفي؟',
+    timeDetail: 'في أي وقت حجزت؟',
+    dateDetail: 'ما تاريخ موعدي؟',
+    dateToken: /سبتمبر/u,
+    nameDetail: 'باسم من الحجز؟',
+    summaryDetail: 'هل يمكنك تأكيد تفاصيل حجزي؟',
+    serviceDetail: 'ما الخدمة التي حجزتها؟',
     requirements: 'هل تحتاجون معلومات إضافية مني؟',
+    requirementsConfirmation: 'هل يجب أن أؤكد أي شيء آخر؟',
     support: 'هل أحتاج أن أحضر شيئًا؟',
   },
 ] as const;
@@ -137,6 +185,27 @@ try {
     assert.doesNotMatch(status.replies[0], /choose|välja|wählen|elegir|انتخاب|اختيار/u);
     assert.equal(status.pending, null);
 
+    const detailCases = [
+      { suffix: 'contact', text: testCase.statusContact, expected: /Alex Testsson/u, alsoExpected: /0701234567/u },
+      { suffix: 'time', text: testCase.timeDetail, expected: /14:30/u, absent: /Alex Testsson|0701234567/u },
+      { suffix: 'date', text: testCase.dateDetail, expected: testCase.dateToken, absent: /Alex Testsson|0701234567/u },
+      { suffix: 'name', text: testCase.nameDetail, expected: /Alex Testsson/u, absent: /0701234567|14:30/u },
+      { suffix: 'summary', text: testCase.summaryDetail, expected: /Video Consultation/u, alsoExpected: /Alex Testsson/u },
+      { suffix: 'service', text: testCase.serviceDetail, expected: /Video Consultation/u, absent: /Alex Testsson|0701234567|14:30/u },
+    ] as const;
+    for (const detailCase of detailCases) {
+      const detailSession = `detail-${detailCase.suffix}-${testCase.language}`;
+      seedCompleted(detailSession, testCase.language, testCase.platform);
+      const detail = await turn(detailSession, testCase.platform, detailCase.text);
+      assert.equal(detail.handled, true, `${testCase.language} ${detailCase.suffix}`);
+      assert.equal(detail.replies.length, 1);
+      assert.match(detail.replies[0], detailCase.expected);
+      if ('alsoExpected' in detailCase) assert.match(detail.replies[0], detailCase.alsoExpected);
+      if ('absent' in detailCase) assert.doesNotMatch(detail.replies[0], detailCase.absent);
+      assert.doesNotMatch(detail.replies[0], /nothing else|inget mer|nichts Weiteres|nada más|کار دیگری|شيء آخر/u);
+      assert.equal(detail.pending, null);
+    }
+
     const requirementsSession = `requirements-${testCase.language}`;
     seedCompleted(requirementsSession, testCase.language, testCase.platform);
     const requirements = await turn(requirementsSession, testCase.platform, testCase.requirements);
@@ -145,6 +214,18 @@ try {
     assert.doesNotMatch(requirements.replies[0], /14:30|Alex Testsson/u);
     assert.doesNotMatch(requirements.replies[0], /choose|välja|wählen|elegir|انتخاب|اختيار/u);
     assert.equal(requirements.pending, null);
+
+    const requirementsConfirmationSession = `requirements-confirmation-${testCase.language}`;
+    seedCompleted(requirementsConfirmationSession, testCase.language, testCase.platform);
+    const requirementsConfirmation = await turn(
+      requirementsConfirmationSession,
+      testCase.platform,
+      testCase.requirementsConfirmation,
+    );
+    assert.equal(requirementsConfirmation.handled, true, `${testCase.language} confirmation requirements`);
+    assert.equal(requirementsConfirmation.replies.length, 1);
+    assert.doesNotMatch(requirementsConfirmation.replies[0], /Alex Testsson|0701234567|14:30/u);
+    assert.equal(requirementsConfirmation.pending, null);
 
     const supportSession = `support-${testCase.language}`;
     seedCompleted(supportSession, testCase.language, testCase.platform);
@@ -205,6 +286,12 @@ try {
     assert.doesNotMatch(result.replies.join(' '), /¿Qué hora quieres elegir\?/u);
   }
   assert.notEqual(liveTurn5.replies[0], liveTurn6.replies[0]);
+  assert.match(liveTurn5.replies[0], /Alex Testsson/u);
+  assert.match(liveTurn5.replies[0], /0701234567/u);
+  assert.notEqual(
+    liveTurn5.replies[0],
+    'No hace falta nada más para la reserva. Está verificada y tus datos de contacto están registrados.',
+  );
   assert.deepEqual(calls, {
     availability: 0,
     calendarReads: 0,
@@ -213,6 +300,26 @@ try {
     claims: 0,
     settlements: 0,
   });
+
+  configure();
+  const missingFactsSession = 'recent-completion-missing-contact-facts';
+  boundary.seedRecentCompletedBooking(missingFactsSession, 'en', {
+    ok: true,
+    bookingId: 'booking-missing-contact',
+    businessId: businessConfig.id,
+    serviceName: 'Video Consultation',
+    startTime: '2026-09-01T14:30:00+02:00',
+    sourceChannel: 'instagram',
+  }, 60);
+  const missingFacts = await turn(
+    missingFactsSession,
+    'instagram',
+    'Is my appointment confirmed with my name and phone?',
+  );
+  assert.equal(missingFacts.handled, true);
+  assert.doesNotMatch(missingFacts.replies[0], /Alex Testsson|0701234567/u);
+  assert.match(missingFacts.replies[0], /does not contain name, phone/u);
+  assert.equal(missingFacts.pending, null);
 
   configure();
   const integritySession = 'recent-completion-integrity';

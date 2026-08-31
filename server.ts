@@ -4060,6 +4060,16 @@ type RecentCompletedBookingCategory =
   | "reschedule"
   | "cancellation"
   | "another_booking_lookup";
+type RecentCompletedBookingRequestedDetails = {
+  status: boolean;
+  date: boolean;
+  time: boolean;
+  name: boolean;
+  phone: boolean;
+  email: boolean;
+  service: boolean;
+  summary: boolean;
+};
 type CompletedBookingSupportTurn = {
   savedAt: number;
   completed: RecentCompletedBooking;
@@ -5787,7 +5797,7 @@ function isRecentCompletionRequirementsQuestion(text?: string): boolean {
     /\b(?:brauchen|benotigen|muss\s+ich|soll\s+ich|angeben|bestatigen)\b.{0,55}\b(?:noch\s+etwas|weitere|mehr|zusatzliche|erneut)\b/u.test(normalized) ||
     /\b(?:necesit|tengo\s+que|debo|hace\s+falta|aportar|enviar|confirmar)\w*\b.{0,60}\b(?:algo\s+mas|algun\s+otro|otro\s+dato|mas\s+datos|informacion|confirmacion|nada\s+mas)\b/u.test(normalized) ||
     /(?:آیا|ایا|لازم|باید|نیاز).{0,55}(?:چیز|اطلاعات|مشخصات|تایید|تأیید).{0,30}(?:دیگر|بیشتر|اضافی|دوباره)/u.test(normalized) ||
-    /(?:هل|هل\s+[يی]جب|أحتاج|احتاج|لازم).{0,55}(?:ش[يی]ء|ب[يی]انات|معلومات|تأ[كک][يی]د).{0,30}(?:آخر|اخرى|إضاف[يی]|اضاف[يی]|مرة\s+أخرى)/u.test(normalized)
+    /(?:هل|هل\s+[يی]جب|أحتاج|احتاج|لازم).{0,55}(?:ش[يی]ء|ب[يی]انات|معلومات|تأ[كک][يی]د).{0,30}(?:آخر|اخر|اخر[يی]|اخرى|إضاف[يی]|اضاف[يی]|مرة\s+أخرى)/u.test(normalized)
   );
 }
 
@@ -5802,6 +5812,52 @@ function hasRecentCompletedBookingStatusSemantics(text?: string): boolean {
     /(?:وقت|نوبت|رزرو).{0,45}(?:تایید|تأیید|قطعی|ثبت|رزرو\s+شده)|(?:تایید|تأیید|قطعی|ثبت).{0,45}(?:وقت|نوبت|رزرو)/u.test(normalized) ||
     /(?:موعد|حجز).{0,45}(?:مؤ[كک]د|مو[كک]د|مؤ[كک]دة|مو[كک]دة|تم|محجوز)|(?:تأ[كک]يد|تا[كک]يد|مؤ[كک]د|مو[كک]د|تم).{0,45}(?:موعد|حجز)/u.test(normalized)
   );
+}
+
+function inferRecentCompletedBookingRequestedDetails(text?: string): RecentCompletedBookingRequestedDetails {
+  const raw = String(text || "").trim();
+  const normalized = normalizeConfirmationReply(raw);
+  const bookingReference =
+    /\b(?:appointment|booking|book(?:ed)?|bokning(?:en|ar)?|bokade|bokningsdetaljer|bokningsuppgifter|buchung(?:en)?|buchungsdetails|buchungsdaten|termin(?:e|en|s)?|gebucht|cita(?:s)?|reserva(?:s)?|reserve)\b/u.test(normalized) ||
+    /(?:رزرو|نوبت|وقت|حجز|موعد)/u.test(normalized);
+  if (!bookingReference) {
+    return {
+      status: false, date: false, time: false, name: false,
+      phone: false, email: false, service: false, summary: false,
+    };
+  }
+
+  const summary =
+    /\b(?:booking|appointment)\s+(?:details|summary|information)\b|\b(?:confirm|show|give|tell)\b.{0,35}\b(?:booking|appointment)\b.{0,20}\b(?:details|summary|information)\b/u.test(normalized) ||
+    /\b(?:bokningsdetaljer|bokningsuppgifter|detaljer\s+om\s+(?:min\s+)?bokning)\b/u.test(normalized) ||
+    /\b(?:detalles|datos)\b.{0,24}\b(?:reserva|cita)\b|\b(?:reserva|cita)\b.{0,24}\b(?:detalles|datos)\b/u.test(normalized) ||
+    /\b(?:buchungsdetails|buchungsdaten|details\s+(?:meiner|zur)\s+buchung)\b/u.test(normalized) ||
+    /(?:جزئیات|جزییات|مشخصات).{0,24}(?:رزرو|نوبت)|(?:تفاص[یي]ل|ب[یي]انات).{0,24}(?:حجز|موعد)/u.test(normalized);
+
+  return {
+    status: hasRecentCompletedBookingStatusSemantics(raw) || summary,
+    date:
+      /\b(?:what|which)\s+(?:date|day)\b|\b(?:vilket\s+datum|vilken\s+dag|que\s+fecha|que\s+dia|an\s+welchem\s+datum|welches\s+datum|welcher\s+tag)\b/u.test(normalized) ||
+      /(?:چه\s+تاریخ|چه\s+روزی|ما\s+تار[يی]خ|ا[يی]\s+تار[يی]خ)/u.test(normalized),
+    time:
+      /\b(?:what|which)\s+time\b|\b(?:when\s+(?:is|was)|vilken\s+tid|nar\s+(?:ar|var)|a\s+que\s+hora|que\s+hora|cuando\s+(?:es|fue)|um\s+wie\s+viel\s+uhr|wann\s+(?:ist|war))\b/u.test(normalized) ||
+      /(?:چه\s+ساعتی|ساعت\s+چند|ف[یي]\s+ا[یي]\s+وقت|الساعة\s+كم|متى)/u.test(normalized),
+    name:
+      /\b(?:name|namn|nombre|namen)\b/u.test(normalized) || /(?:نام|اسم)/u.test(normalized),
+    phone:
+      /\b(?:phone|mobile|contact|telefon|telefonnummer|mobilnummer|telefono|movil|contacto)\b/u.test(normalized) ||
+      /(?:شماره|تلفن|تماس|هاتف|جوال|رقم|اتصال)/u.test(normalized),
+    email: /\b(?:email|e-mail|correo|e-post)\b/u.test(normalized) || /(?:ایمیل|بريد)/u.test(normalized),
+    service:
+      /\b(?:what|which|vilken|welche|que)\s+(?:service|treatment|tjanst|behandling|servicio|tratamiento|dienstleistung)\b/u.test(normalized) ||
+      /(?:چه\s+(?:خدمت|سرویسی)|ما\s+الخدمة|أي\s+خدمة|اي\s+خدمة)/u.test(normalized),
+    summary,
+  };
+}
+
+function hasRecentCompletedBookingDetailSemantics(text?: string): boolean {
+  const details = inferRecentCompletedBookingRequestedDetails(text);
+  return Object.values(details).some(Boolean);
 }
 
 function explicitlyReferencesAnotherBooking(text?: string): boolean {
@@ -5938,9 +5994,10 @@ function classifyRecentCompletedBookingTurn(params: {
     })
   );
   const hasStatusSemantics = hasRecentCompletedBookingStatusSemantics(raw);
+  const hasDetailSemantics = hasRecentCompletedBookingDetailSemantics(raw);
   if (explicitlyReferencesAnotherBooking(raw)) return "another_booking_lookup";
-  if (matchingStatusReference || (hasStatusSemantics && factsMatch)) return "current_booking_status";
-  if (hasStatusSemantics) return "another_booking_lookup";
+  if (matchingStatusReference || ((hasStatusSemantics || hasDetailSemantics) && factsMatch)) return "current_booking_status";
+  if (hasStatusSemantics || hasDetailSemantics) return "another_booking_lookup";
   if (
     params.normalizedRequest.intent === "booking_lookup" ||
     isExistingAppointmentLookupIntent(raw)
@@ -5965,10 +6022,119 @@ function formatRecentCompletionRequirementsReply(language: string, contactComple
   return "Nothing else is needed for the booking. It is verified and your contact details are recorded.";
 }
 
-function hasRecentCompletionContactQuestion(text?: string): boolean {
-  const normalized = normalizeConfirmationReply(text);
-  return /\b(?:name|phone|mobile|contact|namn|telefon|mobilnummer|kontakt|name|telefonnummer|kontakt|nombre|telefono|movil|contacto)\b/u.test(normalized) ||
-    /(?:نام|شماره|تماس|الاسم|الهاتف|الجوال|الاتصال)/u.test(normalized);
+function hasRecentCompletedBookingDetailRequestSyntax(text?: string): boolean {
+  const raw = String(text || "").trim();
+  const normalized = normalizeConfirmationReply(raw);
+  return hasRecentCompletionQuestionSyntax(raw) ||
+    /^(?:confirm|show|tell|give|bekrafta|visa|confirma|confirmar|muestra|bestatigen|zeigen)\b/u.test(normalized) ||
+    /^(?:تایید|تأیید|نشان|أكد|اكد|اعرض)/u.test(normalized);
+}
+
+function formatRecentCompletedRequestedDetails(
+  language: string,
+  completed: RecentCompletedBooking,
+  requested: RecentCompletedBookingRequestedDetails,
+): string {
+  const operation = completed.bookingOperation;
+  const startTime = operation?.startTime || completed.dateTime;
+  const localizedStart = startTime ? formatLocalizedDateTime(startTime, language) : null;
+  const summary = requested.summary;
+  const include = {
+    // Keep enough localized booking context around short values and configured
+    // service names so the final language guard does not mistake those immutable
+    // facts for a language switch.
+    status: true,
+    date: requested.date || summary,
+    time: requested.time || summary,
+    name: requested.name || summary,
+    phone: requested.phone || summary,
+    email: requested.email,
+    service: requested.service || summary,
+    duration: summary,
+  };
+  const values = {
+    date: localizedStart?.dateText || "",
+    time: localizedStart?.timeText || "",
+    name: String(operation?.customerName || completed.name || "").trim(),
+    phone: String(operation?.customerPhone || "").trim(),
+    service: String(operation?.serviceName || completed.service || "").trim(),
+    duration: Number(completed.durationMinutes || 0),
+  };
+
+  const copy: Record<string, {
+    confirmed: string;
+    labels: Record<"date" | "time" | "name" | "phone" | "email" | "service" | "duration", string>;
+    unavailable: (labels: string) => string;
+    serviceValue: (value: string) => string;
+    minutes: string;
+  }> = {
+    en: {
+      confirmed: "Yes, the booking is verified.",
+      labels: { date: "Date", time: "Time", name: "Name", phone: "Phone", email: "Email", service: "Service", duration: "Duration" },
+      unavailable: (labels) => `The verified completion record does not contain ${labels}.`,
+      serviceValue: (value) => `The booked service is ${value}.`,
+      minutes: "minutes",
+    },
+    sv: {
+      confirmed: "Ja, bokningen är verifierad.",
+      labels: { date: "Datum", time: "Tid", name: "Namn", phone: "Telefon", email: "E-post", service: "Tjänst", duration: "Längd" },
+      unavailable: (labels) => `Den verifierade bokningen innehåller inte ${labels}.`,
+      serviceValue: (value) => `Den bokade tjänsten är ${value}.`,
+      minutes: "minuter",
+    },
+    de: {
+      confirmed: "Ja, die Buchung ist bestätigt.",
+      labels: { date: "Datum", time: "Uhrzeit", name: "Name", phone: "Telefon", email: "E-Mail", service: "Leistung", duration: "Dauer" },
+      unavailable: (labels) => `Der bestätigte Buchungsdatensatz enthält keine Angabe zu ${labels}.`,
+      serviceValue: (value) => `Die gebuchte Leistung ist ${value}.`,
+      minutes: "Minuten",
+    },
+    es: {
+      confirmed: "Sí, la reserva está verificada.",
+      labels: { date: "Fecha", time: "Hora", name: "Nombre", phone: "Teléfono", email: "Correo", service: "Servicio", duration: "Duración" },
+      unavailable: (labels) => `El registro verificado de la reserva no contiene ${labels}.`,
+      serviceValue: (value) => `El servicio reservado es ${value}.`,
+      minutes: "minutos",
+    },
+    fa: {
+      confirmed: "بله، رزرو تأیید شده است.",
+      labels: { date: "تاریخ", time: "زمان", name: "نام", phone: "تلفن", email: "ایمیل", service: "خدمت", duration: "مدت" },
+      unavailable: (labels) => `اطلاعات تأییدشده رزرو شامل ${labels} نیست.`,
+      serviceValue: (value) => `خدمت رزروشده ${value} است.`,
+      minutes: "دقیقه",
+    },
+    ar: {
+      confirmed: "نعم، الحجز مؤكد.",
+      labels: { date: "التاريخ", time: "الوقت", name: "الاسم", phone: "الهاتف", email: "البريد الإلكتروني", service: "الخدمة", duration: "المدة" },
+      unavailable: (labels) => `سجل الحجز المؤكد لا يتضمن ${labels}.`,
+      serviceValue: (value) => `الخدمة المحجوزة هي ${value}.`,
+      minutes: "دقيقة",
+    },
+  };
+  const localized = copy[language] || copy.en;
+  const parts: string[] = [];
+  const missing: string[] = [];
+  if (include.status) parts.push(localized.confirmed);
+  const add = (key: "date" | "time" | "name" | "phone" | "email" | "service", value: string) => {
+    if (!include[key]) return;
+    if (value) parts.push(`${localized.labels[key]}: ${value}.`);
+    else missing.push(localized.labels[key].toLowerCase());
+  };
+  add("date", values.date);
+  add("time", values.time);
+  add("name", values.name);
+  add("phone", values.phone);
+  add("email", "");
+  if (include.service) {
+    if (values.service) parts.push(localized.serviceValue(values.service));
+    else missing.push(localized.labels.service.toLowerCase());
+  }
+  if (include.duration) {
+    if (values.duration > 0) parts.push(`${localized.labels.duration}: ${values.duration} ${localized.minutes}.`);
+    else missing.push(localized.labels.duration.toLowerCase());
+  }
+  if (missing.length > 0) parts.push(localized.unavailable(missing.join(", ")));
+  return parts.join(" ").trim() || localized.confirmed;
 }
 
 function formatRecentCompletedStatusReply(
@@ -5978,16 +6144,20 @@ function formatRecentCompletedStatusReply(
 ): string {
   const operation = completed.bookingOperation;
   const contactComplete = Boolean(operation?.customerName && operation?.customerPhone);
-  if (hasRecentCompletionQuestionSyntax(text) && hasRecentCompletionContactQuestion(text)) {
-    return formatRecentCompletionRequirementsReply(language, contactComplete);
-  }
-  if (!hasRecentCompletionQuestionSyntax(text)) {
+  if (!hasRecentCompletedBookingDetailRequestSyntax(text)) {
     if (language === "sv") return "Precis. Bokningen är verifierad och inget mer behöver göras.";
     if (language === "de") return "Genau. Die Buchung ist bestätigt und es ist nichts Weiteres erforderlich.";
     if (language === "es") return "Exactamente. La reserva está verificada y no necesitas hacer nada más.";
     if (language === "fa") return "دقیقاً. رزرو تأیید شده و کار دیگری لازم نیست.";
     if (language === "ar") return "بالضبط. الحجز مؤكد ولا يلزم إجراء آخر.";
     return "Exactly. The booking is verified and nothing further is required.";
+  }
+  const requested = inferRecentCompletedBookingRequestedDetails(text);
+  if (Object.values(requested).some(Boolean) && (
+    requested.summary || requested.date || requested.time || requested.name ||
+    requested.phone || requested.email || requested.service
+  )) {
+    return formatRecentCompletedRequestedDetails(language, completed, requested);
   }
   const startTime = operation?.startTime || completed.dateTime;
   if (!startTime) return formatRecentCompletionRequirementsReply(language, contactComplete);
@@ -8834,19 +9004,46 @@ function guardCustomerFacingReply(sessionId: string, reply: string, fallbackLang
     );
   }
 
-  const hasEnglishStructure = /\b(to confirm|can i ask|please send|please choose|i need|i can'?t find|what mobile|what day|what time|which time|of course|your appointment|your booking|would you like|sorry|couldn'?t|is available|is booked|try again)\b/i.test(raw);
-  const hasSwedishStructure = /\b(för att|kan jag|ditt namn|din bokning|mobilnummer|vill du|tyvärr|är ledig|är bokad)\b/i.test(raw);
-  const hasPersianStructure = /[\u0600-\u06FF]/u.test(raw) &&
-    /(برای|لطفاً|می.?خواهید|وقت|رزرو|نام|شماره|متأسفانه)/u.test(raw);
-  const strongReplyLanguage = isMeaningfulLanguageMessage(raw)
-    ? detectStrongLatestLanguage(raw) || detectUserLanguage(raw)
+  // Configured service names and customer-supplied identity values can legitimately
+  // be in another language. Integrity checks above still validate the raw reply;
+  // only omit exact verified facts when deciding whether presentation drifted.
+  const replyForLanguageDetection = recentCompleted?.bookingOperation?.ok
+    ? [
+        recentCompleted.bookingOperation.serviceName,
+        recentCompleted.bookingOperation.customerName,
+        recentCompleted.bookingOperation.customerPhone,
+      ].reduce(
+        (value, verifiedFact) => verifiedFact
+          ? value.split(String(verifiedFact)).join(" ")
+          : value,
+        raw,
+      )
+    : raw;
+  const hasEnglishStructure = /\b(to confirm|can i ask|please send|please choose|i need|i can'?t find|what mobile|what day|what time|which time|of course|your appointment|your booking|would you like|sorry|couldn'?t|is available|is booked|try again)\b/i.test(replyForLanguageDetection);
+  const hasSwedishStructure = /\b(för att|kan jag|ditt namn|din bokning|mobilnummer|vill du|tyvärr|är ledig|är bokad)\b/i.test(replyForLanguageDetection);
+  const hasPersianStructure = /[\u0600-\u06FF]/u.test(replyForLanguageDetection) &&
+    /(برای|لطفاً|می.?خواهید|وقت|رزرو|نام|شماره|متأسفانه)/u.test(replyForLanguageDetection);
+  const strongReplyLanguage = isMeaningfulLanguageMessage(replyForLanguageDetection)
+    ? detectStrongLatestLanguage(replyForLanguageDetection) || detectUserLanguage(replyForLanguageDetection)
     : null;
+  const verifiedCompletionPresentationMatchesLanguage = Boolean(
+    recentCompleted?.bookingOperation?.ok && (
+      (language === "en" && /^Yes, the booking is verified\./u.test(raw)) ||
+      (language === "sv" && /^Ja, bokningen är verifierad\./u.test(raw)) ||
+      (language === "de" && /^Ja, die Buchung ist bestätigt\./u.test(raw)) ||
+      (language === "es" && /^Sí, la reserva está verificada\./u.test(raw)) ||
+      (language === "fa" && /^بله، رزرو تأیید شده است\./u.test(raw)) ||
+      (language === "ar" && /^نعم، الحجز مؤكد\./u.test(raw))
+    )
+  );
   const incompatible =
-    Boolean(strongReplyLanguage && strongReplyLanguage !== language) ||
-    (language === "sv" && hasEnglishStructure) ||
-    (language === "fa" && (hasEnglishStructure || hasSwedishStructure)) ||
-    (language === "en" && (hasSwedishStructure || hasPersianStructure)) ||
-    (["de", "es", "ar"].includes(language) && hasEnglishStructure);
+    !verifiedCompletionPresentationMatchesLanguage && (
+      Boolean(strongReplyLanguage && strongReplyLanguage !== language) ||
+      (language === "sv" && hasEnglishStructure) ||
+      (language === "fa" && (hasEnglishStructure || hasSwedishStructure)) ||
+      (language === "en" && (hasSwedishStructure || hasPersianStructure)) ||
+      (["de", "es", "ar"].includes(language) && hasEnglishStructure)
+    );
 
   if (!incompatible) return raw;
   console.warn("[CustomerReplyGuard]", {
@@ -25631,6 +25828,7 @@ export const priority1hUnifiedEngineTestBoundary = {
     sessionId: string,
     language: string,
     result: Extract<BookingOperationResult, { ok: true }>,
+    durationMinutes?: number,
   ) {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
     rememberCompletedBooking(
@@ -25638,7 +25836,7 @@ export const priority1hUnifiedEngineTestBoundary = {
       language,
       result.customerName,
       result.serviceName,
-      undefined,
+      durationMinutes,
       result.startTime,
       result,
     );

@@ -166,6 +166,134 @@ const languages = [
 ] as const;
 
 try {
+  {
+    configure();
+    const sessionId = 'requirements-live-en-messenger';
+    const staleAvailability = {
+      constraint: {
+        startDate: '2026-09-02',
+        endDate: '2026-09-02',
+        kind: 'whole_day',
+        rejectedTimes: [],
+      },
+      service: 'Video Consultation',
+      durationMinutes: 60,
+      language: 'en',
+      businessId: businessConfig.id,
+      platform: 'messenger',
+      userId: sessionId,
+      savedAt: Date.now(),
+      lastResultCategory: 'available',
+    };
+    seedCompleted(sessionId, 'en', 'messenger');
+    boundary.seedAvailabilitySearchContext(sessionId, staleAvailability);
+
+    const exact = await turn(
+      sessionId,
+      'messenger',
+      'Perfect, thanks. Do you need any other information or confirmation from me?',
+    );
+    assert.equal(
+      boundary.recentCompletionClassification(
+        sessionId,
+        'Perfect, thanks. Do you need any other information or confirmation from me?',
+        businessConfig,
+        now,
+      )?.category,
+      'completion_requirements',
+    );
+    assert.equal(exact.handled, true);
+    assert.equal(exact.pending, null);
+    assert.match(exact.replies.join(' '), /Nothing else is needed/iu);
+    assert.doesNotMatch(exact.replies.join(' '), /Outside the original requested range/iu);
+    assert.deepEqual(calls, {
+      availability: 0,
+      calendarReads: 0,
+      bookingMutations: 0,
+      databaseMutations: 0,
+      claims: 0,
+      settlements: 0,
+    });
+
+    const otherInformationSession = 'requirements-other-information-en';
+    seedCompleted(otherInformationSession, 'en', 'messenger');
+    boundary.seedAvailabilitySearchContext(otherInformationSession, {
+      ...staleAvailability,
+      userId: otherInformationSession,
+    });
+    const otherInformation = await turn(
+      otherInformationSession,
+      'messenger',
+      'Do you need any other information?',
+    );
+    assert.equal(otherInformation.handled, true);
+    assert.equal(otherInformation.pending, null);
+    assert.doesNotMatch(otherInformation.replies.join(' '), /available times|Outside the original/iu);
+    assert.equal(
+      boundary.recentCompletionClassification(
+        otherInformationSession,
+        'Do you need any other information?',
+        businessConfig,
+        now,
+      )?.category,
+      'completion_requirements',
+    );
+    for (const text of [
+      'Do you need any other details?',
+      'Do you require any other confirmation?',
+      'Do you need anything else?',
+      'Do you need any more information?',
+    ]) {
+      const requirementsSession = `requirements-variant-${text.length}`;
+      seedCompleted(requirementsSession, 'en', 'messenger');
+      assert.equal(
+        boundary.recentCompletionClassification(
+          requirementsSession,
+          text,
+          businessConfig,
+          now,
+        )?.category,
+        'completion_requirements',
+        text,
+      );
+    }
+    assert.deepEqual(calls, {
+      availability: 0,
+      calendarReads: 0,
+      bookingMutations: 0,
+      databaseMutations: 0,
+      claims: 0,
+      settlements: 0,
+    });
+
+    const anotherAppointmentSession = 'another-appointment-en';
+    seedCompleted(anotherAppointmentSession, 'en', 'messenger');
+    assert.equal(
+      boundary.recentCompletionClassification(
+        anotherAppointmentSession,
+        'Do you have another appointment available?',
+        businessConfig,
+        now,
+      )?.category,
+      'another_booking_lookup',
+    );
+  }
+
+  {
+    configure();
+    const sessionId = 'completion-clears-availability';
+    boundary.seedAvailabilitySearchContext(sessionId, {
+      constraint: {
+        startDate: '2026-09-02', endDate: '2026-09-02', kind: 'whole_day', rejectedTimes: [],
+      },
+      service: 'Video Consultation', durationMinutes: 60, language: 'en',
+      businessId: businessConfig.id, platform: 'messenger', userId: sessionId,
+      savedAt: Date.now(), lastResultCategory: 'available',
+    });
+    seedCompleted(sessionId, 'en', 'messenger');
+    assert.equal(boundary.conversationState(sessionId).availability, null);
+  }
+
   for (const testCase of languages) {
     configure();
     const acknowledgementSession = `ack-${testCase.language}`;

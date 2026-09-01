@@ -11701,16 +11701,17 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
     lockConversationFlowLanguage(sessionId, getStoredFlowLanguage(sessionId) || language, "appointment");
   }
 
-  const replyAndRecord = async (reply: string) => {
+  const replyAndRecord = async (reply: string, resolvedPresentationLanguage?: string) => {
     // Presentation and the final safety guard must resolve language from the same
     // active-flow source. A short continuation (for example "13:00 Uhr" or "2")
     // must not let a stale/default turn language make the guard replace an already
     // localized deterministic booking reply in another language.
-    const replyLanguage = getFlowReplyLanguage(
-      pending?.language || getStoredFlowLanguage(sessionId),
-      language,
-      text,
-    );
+    const replyLanguage = normalizeSupportedConversationLanguage(resolvedPresentationLanguage) ||
+      getFlowReplyLanguage(
+        pending?.language || getStoredFlowLanguage(sessionId),
+        language,
+        text,
+      );
     const guardedReply = guardCustomerFacingReply(
       sessionId,
       reply,
@@ -11854,33 +11855,41 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
       normalizedRequest,
       businessConfig,
     });
-    const completedLanguage = getFlowReplyLanguage(
+    const completedLanguage = resolveRecentCompletionPresentationLanguage(
       completedBookingStatusContext.language,
       language,
       text,
+      businessConfig,
     );
     if (completedCategory === "acknowledgement") {
       await replyAndRecord(
         formatThanksReply(completedLanguage, completedBookingStatusContext.name),
+        completedLanguage,
       );
       return true;
     }
     if (completedCategory === "completion_requirements") {
-      await replyAndRecord(formatRecentCompletionRequirementsReply(
-        completedLanguage,
-        Boolean(
-          completedBookingStatusContext.bookingOperation.customerName &&
-          completedBookingStatusContext.bookingOperation.customerPhone
+      await replyAndRecord(
+        formatRecentCompletionRequirementsReply(
+          completedLanguage,
+          Boolean(
+            completedBookingStatusContext.bookingOperation.customerName &&
+            completedBookingStatusContext.bookingOperation.customerPhone
+          ),
         ),
-      ));
+        completedLanguage,
+      );
       return true;
     }
     if (completedCategory === "current_booking_status") {
-      await replyAndRecord(formatRecentCompletedStatusReply(
+      await replyAndRecord(
+        formatRecentCompletedStatusReply(
+          completedLanguage,
+          completedBookingStatusContext,
+          text,
+        ),
         completedLanguage,
-        completedBookingStatusContext,
-        text,
-      ));
+      );
       return true;
     }
     if (completedCategory === "business_support") {
@@ -18698,6 +18707,34 @@ function getFlowReplyLanguage(storedLanguage: string | undefined | null, current
     pendingLanguage: storedLanguage,
     currentLanguage,
   });
+}
+
+function resolveRecentCompletionPresentationLanguage(
+  storedCompletionLanguage: string | undefined | null,
+  currentLanguage: string | undefined | null,
+  latestText?: string,
+  businessConfig?: any,
+): string {
+  const raw = String(latestText || "").trim();
+  if (raw && !isAmbiguousShortReply(raw) && !isThanksOnlyText(raw) && !isAffirmativeBookingText(raw)) {
+    const explicitSwitch = isExplicitLanguageSwitch(raw);
+    if (explicitSwitch) return explicitSwitch;
+
+    const strongLatest = detectStrongLatestLanguage(raw, businessConfig);
+    if (strongLatest) return strongLatest;
+
+    // Some natural post-completion questions are unmistakably English but do not
+    // contain the booking/date vocabulary used by the global strong detector.
+    // Keep this evidence rule local so active booking language locks are unchanged.
+    const englishSignals = normalizeConversationText(raw).toLowerCase().match(
+      /\b(?:perfect|thanks|thank|do|does|did|you|your|need|any|other|information|confirmation|anything|else|from|me|my|name|phone|bring|prepare|specific|appointment|booking|registered|under)\b/gu,
+    ) || [];
+    if (englishSignals.length >= 4 && detectUserLanguage(raw) === "en") return "en";
+  }
+
+  return normalizeSupportedConversationLanguage(storedCompletionLanguage) ||
+    normalizeSupportedConversationLanguage(currentLanguage) ||
+    "en";
 }
 
 function normalizeSupportedConversationLanguage(language?: string | null): string | null {

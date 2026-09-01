@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import express from "express";
 import {
+  getOdinLinkRuntimeRevision,
   getOdinLinkStartupPolicy,
   registerHealthEndpoint,
 } from "./local-test-mode";
@@ -20,12 +21,34 @@ async function verifyHealthEndpoint(): Promise<void> {
     const response = await fetch(`http://127.0.0.1:${address.port}/health`);
 
     assert.equal(response.status, 200);
-    assert.deepEqual(await response.json(), { status: "ok" });
+    const health = await response.json() as { status: string; revision: string };
+    assert.equal(health.status, "ok");
+    assert.equal(typeof health.revision, "string");
+    assert.ok(health.revision.length > 0);
   } finally {
     await new Promise<void>((resolve, reject) => {
       server.close((error) => (error ? reject(error) : resolve()));
     });
   }
+}
+
+function verifyRuntimeRevision(): void {
+  assert.equal(
+    getOdinLinkRuntimeRevision({ RENDER_GIT_COMMIT: "abc123def456" }),
+    "abc123def456",
+  );
+  assert.equal(
+    getOdinLinkRuntimeRevision({
+      ODINLINK_REVISION: "release-2026.09.01",
+      RENDER_GIT_COMMIT: "ignored",
+    }),
+    "release-2026.09.01",
+  );
+  assert.equal(getOdinLinkRuntimeRevision({}), "unknown");
+  assert.equal(
+    getOdinLinkRuntimeRevision({ ODINLINK_REVISION: "secret value with spaces" }),
+    "unknown",
+  );
 }
 
 function verifyLocalTestModePolicy(): void {
@@ -106,6 +129,7 @@ function verifyServerIntegration(): void {
 }
 
 await verifyHealthEndpoint();
+verifyRuntimeRevision();
 verifyLocalTestModePolicy();
 verifyNormalModePolicy();
 verifyServerIntegration();

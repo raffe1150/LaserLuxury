@@ -38,6 +38,22 @@ const configure = () => {
     recordAppointment: async () => { calls.databaseMutations += 1; return null; },
     postProcess: async () => undefined,
     incrementUsage: async () => ({ allowed: true, count: 1, limit: 100 }),
+    assessBusinessSupportGrounding: ({ candidateReply, evidenceCorpus }: any) => {
+      const quote = "Customers should bring identification.";
+      const supported = candidateReply.includes("bring identification") && evidenceCorpus.includes(quote);
+      return {
+        hasBusinessFactualClaims: true,
+        claims: [{
+          claim: candidateReply,
+          requiresBusinessEvidence: true,
+          supported,
+          evidence: supported
+            ? [{ source: "business_system_prompt", quote }]
+            : [],
+        }],
+        allBusinessClaimsSupported: supported,
+      };
+    },
   });
 };
 
@@ -95,7 +111,7 @@ try {
   );
   assert.equal(identity.handled, false);
   assert.equal(boundary.conversationState(identitySession).language, "en");
-  const identityReply = boundary.finalizeGeneralAiReply(
+  const identityReply = await boundary.finalizeGeneralAiReply(
     identitySession,
     "No, I don't think so. My name is Alex Testsson and my phone number is 0701234567.",
     "Hello, what would you like to know?",
@@ -114,7 +130,7 @@ try {
   );
   assert.equal(support.handled, false);
   assert.equal(boundary.conversationState(supportSession).language, "en");
-  const supportReply = boundary.finalizeGeneralAiReply(
+  const supportReply = await boundary.finalizeGeneralAiReply(
     supportSession,
     "Do I need to bring or prepare anything specific for the consultation?",
     "Customers should bring identification.",

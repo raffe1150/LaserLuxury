@@ -5765,6 +5765,7 @@ function rememberCompletedBooking(
     dateTime,
     bookingOperation: bookingOperation?.ok ? structuredClone(bookingOperation) : undefined,
   };
+  delete availabilitySearchContexts[chatId];
   clearConversationFlowLanguage(chatId);
 }
 
@@ -5799,6 +5800,7 @@ function isRecentCompletionRequirementsQuestion(text?: string): boolean {
   if (!raw || !hasRecentCompletionQuestionSyntax(raw)) return false;
   const normalized = normalizeConfirmationReply(raw);
   return (
+    /\b(?:need|require|provide|send|give|confirm|do\s+i\s+have\s+to)\b.{0,35}\bany\s+other\s+(?:information|details|data|confirmation)\b/u.test(normalized) ||
     /\b(?:need|require|provide|send|give|confirm|do\s+i\s+have\s+to)\b.{0,35}\b(?:any\s+more|additional|further|more)\b.{0,30}\b(?:information|details|data|confirmation|anything)\b/u.test(normalized) ||
     /\b(?:need|require|provide|send|give|confirm|do\s+i\s+have\s+to)\b.{0,55}\b(?:anything|something|information|details|data|confirmation)\b.{0,30}\b(?:else|more|additional|further)\b/u.test(normalized) ||
     /\b(?:anything|something|information|details|data|confirmation)\b.{0,30}\b(?:else|more|additional|further)\b/u.test(normalized) ||
@@ -5871,7 +5873,8 @@ function hasRecentCompletedBookingDetailSemantics(text?: string): boolean {
 
 function explicitlyReferencesAnotherBooking(text?: string): boolean {
   const normalized = normalizeConfirmationReply(text);
-  return /\b(?:another|other|different|previous|older|earlier|annan|annat|tidigare|forra|andere|anderer|fruhere|vorherige|otra|otro|anterior|distinta|distinto)\b/u.test(normalized) ||
+  return /\b(?:another|other|different|previous|older|earlier)\s+(?:appointment|booking|reservation)\b|\b(?:appointment|booking|reservation)\s+(?:another|other|different|previous|older|earlier)\b/u.test(normalized) ||
+    /\b(?:annan|annat|tidigare|forra|andere|anderer|fruhere|vorherige|otra|otro|anterior|distinta|distinto)\b/u.test(normalized) ||
     /(?:رزرو|وقت).{0,20}(?:دیگر|قبلی|دیگه)|(?:حجز|موعد).{0,20}(?:آخر|اخرى|سابق)/u.test(normalized);
 }
 
@@ -6950,6 +6953,30 @@ function extractConcreteRequestedService(text?: string): string | null {
     );
   };
 
+  const isEnglishDateOnlyContinuation = (value: string): boolean => {
+    const dateContinuation = value.replace(/[.!?]+$/u, "").trim();
+    const englishDateWords = new Set([
+      "for", "on", "at", "the", "of", "next", "this", "coming",
+      "today", "tomorrow", "morning", "afternoon", "evening",
+      "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+      "january", "february", "march", "april", "may", "june", "july", "august",
+      "september", "october", "november", "december",
+    ]);
+    const dateOnlyTokens = normalizeConversationText(dateContinuation)
+      .toLowerCase()
+      .replace(/[,.!?]/gu, " ")
+      .split(/\s+/)
+      .filter(Boolean);
+    return Boolean(
+      dateOnlyTokens.length > 0 &&
+      dateOnlyTokens.every((token) =>
+        englishDateWords.has(token) ||
+        /^\d{1,4}(?:(?:[./-])\d{1,2}){0,2}(?:st|nd|rd|th)?$/u.test(token)
+      ) &&
+      parseBookingDate(dateContinuation.replace(/^(?:for|on)\s+/iu, ""), "Europe/Stockholm")?.value
+    );
+  };
+
   const genericSpanishRequest = raw.match(
     /\b(?:quiero|quisiera|me\s+gustar[ií]a)\s+(?:reservar|agendar)\s+(?:(?:un|una|el|la)\s+)?(?:cita|reserva)\s+(.+?)(?:[.!?]|$)/iu,
   );
@@ -6970,6 +6997,13 @@ function extractConcreteRequestedService(text?: string): string | null {
     const extracted = String(match?.[1] || "").trim();
     if (!extracted) continue;
     if (/^(?:appointment|booking|time|slot|tid|bokning|termin|cita|reserva|service|tjänst)$/iu.test(extracted)) continue;
+    const genericEnglishBookingWithContinuation = extracted.match(
+      /^(?:appointment|booking|reservation|time|slot)\s+(.+)$/iu
+    );
+    if (
+      genericEnglishBookingWithContinuation &&
+      isEnglishDateOnlyContinuation(genericEnglishBookingWithContinuation[1])
+    ) continue;
     const genericSwedishBookingWithContinuation = extracted.match(/^(?:tid|bokning|tjänst)\s+(.+)$/iu);
     if (genericSwedishBookingWithContinuation) {
       const dateContinuation = genericSwedishBookingWithContinuation[1]
@@ -7452,7 +7486,13 @@ async function clearPendingBooking(chatId: string) {
   }
 }
 
-async function sendCustomerMessage(platform: string, recipientId: string, message: string, businessConfig: any): Promise<boolean> {
+async function sendCustomerMessage(
+  platform: string,
+  recipientId: string,
+  message: string,
+  businessConfig: any,
+  outboundContext: MetaOutboundContext,
+): Promise<boolean> {
   const channel = normalizePlatformName(platform);
   const recipient = normalizePlatformUserId(channel, String(recipientId || ""));
   if (!recipient) {
@@ -7460,14 +7500,14 @@ async function sendCustomerMessage(platform: string, recipientId: string, messag
     return false;
   }
 
-  if (channel === "whatsapp") return await sendWhatsAppMessage(recipient, message, businessConfig);
-  if (channel === "messenger") return await sendMessengerMessage(recipient, message, businessConfig);
+  if (channel === "whatsapp") return await sendWhatsAppMessage(recipient, message, businessConfig, outboundContext);
+  if (channel === "messenger") return await sendMessengerMessage(recipient, message, businessConfig, outboundContext);
   if (channel === "instagram") return await sendInstagramMessage(
     recipient,
     message,
     getBusinessInstagramToken(businessConfig),
     getScopedChannelSessionId("instagram", recipient, businessConfig),
-    "proactive",
+    outboundContext,
   );
 
   if (channel === "telegram") {
@@ -7624,7 +7664,7 @@ async function notifyAdminAboutBooking(
   });
   const route = resolveAdminNotificationRoute(businessConfig, "BookingNotify");
   if (!route) return false;
-  const sent = await sendCustomerMessage(route.channel, route.recipient, notifyText, businessConfig);
+  const sent = await sendCustomerMessage(route.channel, route.recipient, notifyText, businessConfig, "proactive");
   if (!sent) console.error(`[BookingNotify] ${route.channel} admin notification failed`);
   return sent;
 }
@@ -7732,7 +7772,8 @@ async function settleHumanHandoffReply(params: {
     route.channel,
     route.recipient,
     notifyText,
-    params.businessConfig
+    params.businessConfig,
+    "proactive",
   );
   if (!sent) {
     console.error(`[HandoffNotify] ${route.channel} admin notification failed`);
@@ -7771,7 +7812,7 @@ async function notifyAdminAboutReschedule(
 🔔 ${service || "Bokning"}`;
   const route = resolveAdminNotificationRoute(businessConfig, "RescheduleNotify");
   if (!route) return false;
-  const sent = await sendCustomerMessage(route.channel, route.recipient, notifyText, businessConfig);
+  const sent = await sendCustomerMessage(route.channel, route.recipient, notifyText, businessConfig, "proactive");
   if (!sent) console.error(`[RescheduleNotify] ${route.channel} admin notification failed`);
   return sent;
 }
@@ -7794,7 +7835,7 @@ async function notifyAdminAboutCancellation(
   const notifyText = `❌ Avbokning\n\n📱 Via: ${channelName}\n👤 ${customerName}\n📞 ${phone}\n📅 ${dateText} kl ${timeText}\n🔔 ${service}\n📝 ${shortReason}`;
   const route = resolveAdminNotificationRoute(businessConfig, "CancellationNotify");
   if (!route) return false;
-  const sent = await sendCustomerMessage(route.channel, route.recipient, notifyText, businessConfig);
+  const sent = await sendCustomerMessage(route.channel, route.recipient, notifyText, businessConfig, "proactive");
   if (!sent) console.error(`[CancellationNotify] ${route.channel} admin notification failed`);
   return sent;
 }
@@ -8595,7 +8636,8 @@ function slotSatisfiesAvailabilityConstraint(
 
 function isAlternativeAvailabilityRequest(text?: string): boolean {
   const raw = String(text || "").trim().toLowerCase();
-  return /\b(other|alternative|another|andra|alternativa|någon annan dag|andra dagar|outside|utanför|dagar efter|roo?z(?:e|hay)? dige|روز(?:های)? دیگر)\b/i.test(raw);
+  return /\b(?:other|another|alternative|different)\s+(?:available\s+)?(?:time|times|slot|slots|day|days|date|dates|availability|appointment|appointments|booking|bookings)\b/iu.test(raw) ||
+    /\b(?:andra|alternativa|någon annan dag|andra dagar|outside|utanför|dagar efter|roo?z(?:e|hay)? dige|روز(?:های)? دیگر)\b/iu.test(raw);
 }
 
 function isPendingSelectionRejectionRequest(text: string, pending: any): boolean {
@@ -17550,7 +17592,7 @@ async function sendTelegramPreferredReply(params: {
     updateTelegramReplyPreference(sessionId, inputMode, "");
   const delivery = selectTelegramDeliveryMode(preference, inputMode);
   if (delivery === "text") {
-    const sent = await sendCustomerMessage("telegram", chatId, reply, config);
+    const sent = await sendCustomerMessage("telegram", chatId, reply, config, "conversation");
     return { sent, delivery: sent ? "text" : "none" };
   }
 
@@ -17605,7 +17647,7 @@ async function sendTelegramPreferredReply(params: {
     }
   }
 
-  const sent = await sendCustomerMessage("telegram", chatId, reply, config);
+  const sent = await sendCustomerMessage("telegram", chatId, reply, config, "conversation");
   return { sent, delivery: sent ? "text" : "none" };
 }
 
@@ -19934,7 +19976,7 @@ async function sendAppointmentReminder(
   }
 
   try {
-    const sent = await sendCustomerMessage(platform, recipient, message, businessConfig);
+    const sent = await sendCustomerMessage(platform, recipient, message, businessConfig, "proactive");
     if (!sent) console.error(`[Reminder] Send failed for appointment ${appointment.id} through ${platform}`);
     return sent;
   } catch (err) {
@@ -20186,27 +20228,36 @@ function getBusinessInstagramToken(businessConfig: any) {
   );
 }
 
-type InstagramOutboundContext = "conversation" | "proactive";
+type MetaOutboundContext = "conversation" | "proactive";
+
+function prepareMetaOutboundText(
+  sessionId: string,
+  text: string,
+  outboundContext: MetaOutboundContext,
+): string {
+  if (outboundContext === "proactive") return String(text || "").trim();
+  return guardCustomerFacingReply(sessionId, text);
+}
 
 function prepareInstagramOutboundText(
   recipientId: string,
   text: string,
-  sessionId?: string,
-  outboundContext: InstagramOutboundContext = "conversation",
+  sessionId: string | undefined,
+  outboundContext: MetaOutboundContext,
 ): string {
-  if (outboundContext === "proactive") return String(text || "").trim();
-  return guardCustomerFacingReply(
+  return prepareMetaOutboundText(
     sessionId || `ig_${normalizePlatformUserId("instagram", recipientId)}`,
-    text
+    text,
+    outboundContext,
   );
 }
 
 async function sendInstagramMessage(
   recipientId: string,
   text: string,
-  accessToken?: string,
-  sessionId?: string,
-  outboundContext: InstagramOutboundContext = "conversation",
+  accessToken: string | undefined,
+  sessionId: string | undefined,
+  outboundContext: MetaOutboundContext,
 ) {
   const token = cleanInstagramToken(accessToken);
   const safeText = prepareInstagramOutboundText(recipientId, text, sessionId, outboundContext);
@@ -20443,13 +20494,29 @@ function getBusinessWhatsAppPhoneNumberId(businessConfig: any) {
   ).trim();
 }
 
-async function sendWhatsAppMessage(to: string, text: string, businessConfig: any) {
+function prepareWhatsAppOutboundText(
+  to: string,
+  text: string,
+  businessConfig: any,
+  phoneNumberId: string,
+  outboundContext: MetaOutboundContext,
+): string {
+  return prepareMetaOutboundText(
+    getScopedChannelSessionId("whatsapp", to, businessConfig, phoneNumberId),
+    text,
+    outboundContext,
+  );
+}
+
+async function sendWhatsAppMessage(
+  to: string,
+  text: string,
+  businessConfig: any,
+  outboundContext: MetaOutboundContext,
+) {
   const token = getBusinessWhatsAppToken(businessConfig);
   const phoneNumberId = getBusinessWhatsAppPhoneNumberId(businessConfig);
-  const safeText = guardCustomerFacingReply(
-    getScopedChannelSessionId("whatsapp", to, businessConfig, phoneNumberId),
-    text
-  );
+  const safeText = prepareWhatsAppOutboundText(to, text, businessConfig, phoneNumberId, outboundContext);
 
   if (!token || !phoneNumberId) {
     console.error("WhatsApp reply skipped: missing whatsapp_access_token or whatsapp_phone_number_id");
@@ -20609,7 +20676,7 @@ async function processWhatsAppMessageClaimed(message: any, metadata: any, config
     });
     if (!usage.allowed) {
       const limitText = formatDailyLimitMessage(userLanguage);
-      await sendWhatsAppMessage(from, limitText, businessConfig);
+      await sendWhatsAppMessage(from, limitText, businessConfig, "conversation");
       appendLocalHistory(chatId, textMessage, limitText);
       await postProcessMessage(chatId, platform, textMessage, limitText, businessConfig?.telegramToken, businessConfig?.apiKey, getBusinessIdFromConfig(businessConfig));
       return;
@@ -20617,7 +20684,7 @@ async function processWhatsAppMessageClaimed(message: any, metadata: any, config
 
     const whatsappIntent = classifyMessagingIntent(textMessage);
     const replyWhatsAppOnce = async (reply: string) => {
-      await sendWhatsAppMessage(from, reply, businessConfig);
+      await sendWhatsAppMessage(from, reply, businessConfig, "conversation");
       appendLocalHistory(chatId, textMessage, reply);
       try {
         await postProcessMessage(
@@ -20658,7 +20725,7 @@ async function processWhatsAppMessageClaimed(message: any, metadata: any, config
         text: textMessage,
         history,
         businessConfig,
-        send: (reply) => sendWhatsAppMessage(from, reply, businessConfig),
+        send: (reply) => sendWhatsAppMessage(from, reply, businessConfig, "conversation"),
         postProcessPlatform: platform,
         shadowEligibleCustomerTurn: true
       });
@@ -20794,7 +20861,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
             recipientUserId: from,
             history,
             businessConfig,
-            send: (reply) => sendWhatsAppMessage(from, reply, businessConfig),
+            send: (reply) => sendWhatsAppMessage(from, reply, businessConfig, "conversation"),
             postProcessPlatform: platform
           });
           return {
@@ -20894,7 +20961,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
     history.push({ role: "user", content: textMessage });
     history.push({ role: "assistant", content: textResponse });
 
-    await sendWhatsAppMessage(from, textResponse, businessConfig);
+    await sendWhatsAppMessage(from, textResponse, businessConfig, "conversation");
 
     try {
       await postProcessMessage(chatId, platform, textMessage, textResponse, businessConfig?.telegramToken, businessConfig?.apiKey, getBusinessIdFromConfig(businessConfig));
@@ -20910,7 +20977,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       errorCategory: classifyAiFailure(err),
     });
     const errorMessage = getErrorMessageByLanguage(userLanguage || "en");
-    await sendWhatsAppMessage(from, errorMessage, businessConfig);
+    await sendWhatsAppMessage(from, errorMessage, businessConfig, "conversation");
   }
 }
 
@@ -20936,12 +21003,27 @@ function getBusinessMessengerPageId(businessConfig: any) {
   ).trim();
 }
 
-async function sendMessengerMessage(recipientId: string, text: string, businessConfig: any) {
-  const token = getBusinessMessengerToken(businessConfig);
-  const safeText = guardCustomerFacingReply(
+function prepareMessengerOutboundText(
+  recipientId: string,
+  text: string,
+  businessConfig: any,
+  outboundContext: MetaOutboundContext,
+): string {
+  return prepareMetaOutboundText(
     getScopedChannelSessionId("messenger", recipientId, businessConfig, getBusinessMessengerPageId(businessConfig)),
-    text
+    text,
+    outboundContext,
   );
+}
+
+async function sendMessengerMessage(
+  recipientId: string,
+  text: string,
+  businessConfig: any,
+  outboundContext: MetaOutboundContext,
+) {
+  const token = getBusinessMessengerToken(businessConfig);
+  const safeText = prepareMessengerOutboundText(recipientId, text, businessConfig, outboundContext);
 
   if (!token) {
     console.error("Messenger reply skipped: missing messenger_page_access_token / page access token");
@@ -21717,7 +21799,7 @@ async function processMessengerUpdateClaimed(webhookEvent: any, config: any, pla
   });
   if (!inboundUsage.allowed) {
     const limitText = formatDailyLimitMessage(userLanguage);
-    await sendMessengerMessage(senderId, limitText, businessConfig);
+    await sendMessengerMessage(senderId, limitText, businessConfig, "conversation");
     appendLocalHistory(chatId, textMessage || '[voice]', limitText);
     return;
   }
@@ -21733,7 +21815,7 @@ async function processMessengerUpdateClaimed(webhookEvent: any, config: any, pla
         text: textMessage,
         history: chatSessions[chatId as any],
         businessConfig,
-        send: (reply) => sendMessengerMessage(senderId, reply, businessConfig),
+        send: (reply) => sendMessengerMessage(senderId, reply, businessConfig, "conversation"),
         postProcessPlatform: platform,
         shadowEligibleCustomerTurn: true
       });
@@ -21782,7 +21864,7 @@ async function processMessengerUpdateClaimed(webhookEvent: any, config: any, pla
           text: voiceTranscript,
           history,
           businessConfig,
-          send: (reply) => sendMessengerMessage(senderId, reply, businessConfig),
+          send: (reply) => sendMessengerMessage(senderId, reply, businessConfig, "conversation"),
           postProcessPlatform: platform
         });
         if (unifiedHandled) return;
@@ -21950,7 +22032,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
             recipientUserId: senderId,
             history,
             businessConfig,
-            send: (reply) => sendMessengerMessage(senderId, reply, businessConfig),
+            send: (reply) => sendMessengerMessage(senderId, reply, businessConfig, "conversation"),
             postProcessPlatform: platform
           });
           return {
@@ -22070,10 +22152,10 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       }
 
       if (!sentVoiceReply) {
-        await sendMessengerMessage(senderId, textResponse, businessConfig);
+        await sendMessengerMessage(senderId, textResponse, businessConfig, "conversation");
       }
     } else {
-      await sendMessengerMessage(senderId, textResponse, businessConfig);
+      await sendMessengerMessage(senderId, textResponse, businessConfig, "conversation");
     }
 
     try {
@@ -22090,7 +22172,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       errorCategory: classifyAiFailure(err),
     });
     const errorMessage = getErrorMessageByLanguage(userLanguage || "en");
-    await sendMessengerMessage(senderId, errorMessage, businessConfig);
+    await sendMessengerMessage(senderId, errorMessage, businessConfig, "conversation");
   }
 }
 
@@ -22255,7 +22337,7 @@ async function processInstagramUpdateClaimed(webhook_event: any, config: any, pl
   });
   if (!inboundUsage.allowed) {
     const limitText = formatDailyLimitMessage(userLanguage);
-    await sendInstagramMessage(senderId, limitText, getBusinessInstagramToken(businessConfig), chatId);
+    await sendInstagramMessage(senderId, limitText, getBusinessInstagramToken(businessConfig), chatId, "conversation");
     appendLocalHistory(chatId, textMessage || '[voice]', limitText);
     return;
   }
@@ -22281,7 +22363,8 @@ async function processInstagramUpdateClaimed(webhook_event: any, config: any, pl
           senderId,
           reply,
           getBusinessInstagramToken(businessConfig),
-          chatId
+          chatId,
+          "conversation",
         ),
         postProcessPlatform: platform,
         shadowEligibleCustomerTurn: true
@@ -22292,7 +22375,7 @@ async function processInstagramUpdateClaimed(webhook_event: any, config: any, pl
     const completedBooking = getRecentCompletedBooking(chatId);
     if (textMessage && completedBooking && isThanksOnlyText(textMessage || "")) {
       const thanksText = formatThanksReply(completedBooking.language || userLanguage, completedBooking.name);
-      await sendInstagramMessage(senderId, thanksText, getBusinessInstagramToken(businessConfig), chatId);
+      await sendInstagramMessage(senderId, thanksText, getBusinessInstagramToken(businessConfig), chatId, "conversation");
       appendLocalHistory(chatId, textMessage || "", thanksText);
       await postProcessMessage(chatId, platform, userMessageForLog, thanksText, businessConfig?.telegramToken, businessConfig?.apiKey, getBusinessIdFromConfig(businessConfig));
       return;
@@ -22347,7 +22430,8 @@ if (contentType === "video/mp4") {
               senderId,
               reply,
               getBusinessInstagramToken(businessConfig),
-              chatId
+              chatId,
+              "conversation",
             ),
             postProcessPlatform: platform
           });
@@ -22369,7 +22453,8 @@ if (contentType === "video/mp4") {
                     ? "عذرًا، لم أتمكن من سماع الرسالة الصوتية الآن. يرجى كتابة رسالتك."
                     : "Sorry, I couldn’t listen to the voice message just now. Please type your message instead.",
          getBusinessInstagramToken(businessConfig),
-         chatId
+         chatId,
+         "conversation",
         );
         return;
       }
@@ -22581,7 +22666,8 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
               senderId,
               reply,
               getBusinessInstagramToken(businessConfig),
-              chatId
+              chatId,
+              "conversation",
             ),
             postProcessPlatform: platform
           });
@@ -22713,7 +22799,8 @@ if (isVoiceMessage) {
                   : "🎧 Listen here:"
       } ${voiceReply.url}`,
       instagramToken,
-      chatId
+      chatId,
+      "conversation",
     );
 
     sentVoiceReply = true;
@@ -22727,10 +22814,10 @@ if (isVoiceMessage) {
   }
 
   if (!sentVoiceReply) {
-    await sendInstagramMessage(senderId, textResponse, instagramToken, chatId);
+    await sendInstagramMessage(senderId, textResponse, instagramToken, chatId, "conversation");
   }
 } else {
-  await sendInstagramMessage(senderId, textResponse, instagramToken, chatId);
+  await sendInstagramMessage(senderId, textResponse, instagramToken, chatId, "conversation");
 }
 try {
   await postProcessMessage(chatId, platform, userMessageForLog, textResponse, businessConfig?.telegramToken, businessConfig?.apiKey, getBusinessIdFromConfig(businessConfig));
@@ -22764,7 +22851,8 @@ try {
       senderId,
       errorMessage,
      getBusinessInstagramToken(businessConfig),
-     chatId
+     chatId,
+     "conversation",
     );
   }
 }
@@ -23978,9 +24066,9 @@ app.post('/api/businesses/:businessId/conversations/:conversationId/messages', r
     let sent = false;
 
     if (requestedChannel === 'whatsapp') {
-      sent = await sendWhatsAppMessage(recipient, text, businessConfig);
+      sent = await sendWhatsAppMessage(recipient, text, businessConfig, "proactive");
     } else if (requestedChannel === 'messenger') {
-      sent = await sendMessengerMessage(recipient, text, businessConfig);
+      sent = await sendMessengerMessage(recipient, text, businessConfig, "proactive");
     } else if (requestedChannel === 'instagram') {
       const token = getBusinessInstagramToken(businessConfig);
       sent = await sendInstagramMessage(
@@ -26003,6 +26091,10 @@ export const priority1hUnifiedEngineTestBoundary = {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
     pendingBookings[sessionId] = structuredClone(pending);
   },
+  seedAvailabilitySearchContext(sessionId: string, context: Record<string, any>) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    availabilitySearchContexts[sessionId] = structuredClone(context) as AvailabilitySearchContext;
+  },
   seedRecentCompletedBooking(
     sessionId: string,
     language: string,
@@ -26350,11 +26442,45 @@ export const priority1hUnifiedEngineTestBoundary = {
   instagramOutboundText(
     recipientId: string,
     text: string,
-    outboundContext: InstagramOutboundContext,
+    outboundContext: MetaOutboundContext,
     sessionId?: string,
   ) {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
     return prepareInstagramOutboundText(recipientId, text, sessionId, outboundContext);
+  },
+  whatsappOutboundText(
+    recipientId: string,
+    text: string,
+    businessConfig: any,
+    outboundContext: MetaOutboundContext,
+  ) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    return prepareWhatsAppOutboundText(
+      recipientId,
+      text,
+      businessConfig,
+      getBusinessWhatsAppPhoneNumberId(businessConfig),
+      outboundContext,
+    );
+  },
+  messengerOutboundText(
+    recipientId: string,
+    text: string,
+    businessConfig: any,
+    outboundContext: MetaOutboundContext,
+  ) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    return prepareMessengerOutboundText(recipientId, text, businessConfig, outboundContext);
+  },
+  async sendCustomerMessage(
+    platform: string,
+    recipientId: string,
+    text: string,
+    businessConfig: any,
+    outboundContext: MetaOutboundContext,
+  ) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    return sendCustomerMessage(platform, recipientId, text, businessConfig, outboundContext);
   },
   instagramEventCanEnterConversation(webhookEvent: any) {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");

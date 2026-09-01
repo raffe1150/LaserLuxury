@@ -60,9 +60,12 @@ try {
   );
 
   const dispatchedBodies: any[] = [];
-  globalThis.fetch = async (_input: string | URL | Request, init?: RequestInit) => {
+  globalThis.fetch = async (input: string | URL | Request, init?: RequestInit) => {
     dispatchedBodies.push(JSON.parse(String(init?.body || "{}")));
-    return new Response("{}", {
+    const responseBody = String(input).includes("graph.facebook.com/v25.0/whatsapp-phone-number-id/messages")
+      ? JSON.stringify({ messages: [{ id: "wamid.meta-outbound-test" }] })
+      : "{}";
+    return new Response(responseBody, {
       status: 200,
       headers: { "Content-Type": "application/json" },
     });

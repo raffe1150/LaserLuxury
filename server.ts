@@ -18898,6 +18898,26 @@ function normalizePlatformUserId(platform: string, userId: string) {
   return raw.trim();
 }
 
+function hasOpenWhatsAppCustomerServiceWindow(
+  rows: any[],
+  customerId: string,
+  nowMs: number = Date.now(),
+): boolean {
+  const normalizedCustomerId = normalizePlatformUserId("whatsapp", customerId);
+  const latestInboundAt = (rows || []).reduce((latest: number, row: any) => {
+    const sender = String(row?.sender || "").trim().toLowerCase();
+    if (sender !== "user" && sender !== "customer") return latest;
+    if (normalizePlatformName(String(row?.platform || "")) !== "whatsapp") return latest;
+    if (normalizePlatformUserId("whatsapp", String(row?.user_id || "")) !== normalizedCustomerId) return latest;
+    const occurredAt = new Date(String(row?.created_at || "")).getTime();
+    return Number.isFinite(occurredAt) ? Math.max(latest, occurredAt) : latest;
+  }, Number.NEGATIVE_INFINITY);
+  const inboundAgeMs = nowMs - latestInboundAt;
+  return Number.isFinite(latestInboundAt) &&
+    inboundAgeMs >= 0 &&
+    inboundAgeMs < 24 * 60 * 60 * 1000;
+}
+
 function getAppointmentTimes(dateTime: string, durationMinutes: number = 60) {
   const safeDateTime = ensureStockholmOffset(String(dateTime || ""));
   const start = new Date(safeDateTime);
@@ -20546,7 +20566,9 @@ async function sendWhatsAppMessage(
 
     const result = await response.json().catch(() => ({}));
 
-    if (response.ok) {
+    const providerMessageId = String(result?.messages?.[0]?.id || "").trim();
+    const providerMessageIdValid = /^wamid\./u.test(providerMessageId);
+    if (response.ok && (outboundContext !== "proactive" || providerMessageIdValid)) {
       console.log("[ChannelSend]", { channel: "whatsapp", success: true, httpStatus: response.status });
       return true;
     }
@@ -20556,6 +20578,8 @@ async function sendWhatsAppMessage(
       success: false,
       httpStatus: response.status,
       providerErrorCode: result?.error?.code || null,
+      providerMessageIdPresent: Boolean(providerMessageId),
+      providerMessageIdValid,
     });
     return false;
   } catch (err) {
@@ -24037,7 +24061,7 @@ app.post('/api/businesses/:businessId/conversations/:conversationId/messages', r
     // This prevents sending to a similarly formatted ID from another channel.
     const { data: recentRows, error: recentRowsError } = await supabase
       .from('chat_history')
-      .select('id,user_id,platform,created_at')
+      .select('id,user_id,platform,sender,created_at')
       .eq('business_id', businessId)
       .order('created_at', { ascending: false })
       .limit(1000);
@@ -24061,12 +24085,33 @@ app.post('/api/businesses/:businessId/conversations/:conversationId/messages', r
       });
     }
 
+    if (requestedChannel === 'whatsapp') {
+      const canonicalWhatsAppUserId = normalizePlatformUserId('whatsapp', requestedUserId);
+      const { data: customerInboundRows, error: customerInboundError } = await supabase
+        .from('chat_history')
+        .select('id,user_id,platform,sender,created_at')
+        .eq('business_id', businessId)
+        .eq('platform', 'whatsapp')
+        .eq('user_id', canonicalWhatsAppUserId)
+        .in('sender', ['user', 'customer'])
+        .order('created_at', { ascending: false })
+        .limit(1);
+      if (customerInboundError) throw customerInboundError;
+      if (!hasOpenWhatsAppCustomerServiceWindow(customerInboundRows || [], canonicalWhatsAppUserId)) {
+        return res.status(409).json({
+          success: false,
+          code: 'whatsapp_template_required',
+          message: 'A WhatsApp template is required to message this customer outside the active conversation window.',
+        });
+      }
+    }
+
     const recipient = normalizeUserId(matchingRow.user_id, requestedChannel);
     const businessConfig = await loadBusinessConfigById(businessId);
     let sent = false;
 
     if (requestedChannel === 'whatsapp') {
-      sent = await sendWhatsAppMessage(recipient, text, businessConfig, "proactive");
+      sent = await sendCustomerMessage('whatsapp', recipient, text, businessConfig, "proactive");
     } else if (requestedChannel === 'messenger') {
       sent = await sendMessengerMessage(recipient, text, businessConfig, "proactive");
     } else if (requestedChannel === 'instagram') {
@@ -24113,6 +24158,7 @@ app.post('/api/businesses/:businessId/conversations/:conversationId/messages', r
     if (!sent) {
       return res.status(502).json({
         success: false,
+        code: 'provider_send_failed',
         message: `The message could not be sent through ${requestedChannel}. Check the channel credentials and platform response logs.`,
       });
     }
@@ -26481,6 +26527,10 @@ export const priority1hUnifiedEngineTestBoundary = {
   ) {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
     return sendCustomerMessage(platform, recipientId, text, businessConfig, outboundContext);
+  },
+  whatsappServiceWindowOpen(rows: any[], customerId: string, nowMs: number) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    return hasOpenWhatsAppCustomerServiceWindow(rows, customerId, nowMs);
   },
   instagramEventCanEnterConversation(webhookEvent: any) {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");

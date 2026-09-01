@@ -219,20 +219,35 @@ export const api = {
         method: 'PUT',
       },
     ),
-  sendConversationMessage: (
+  sendConversationMessage: async (
     businessId: string,
     conversationId: string,
     text: string,
-  ) =>
-    request<{ success: boolean; messageId?: string; createdAt?: string }>(
-      `/api/businesses/${businessId}/conversations/${encodeURIComponent(
-        conversationId,
-      )}/messages`,
-      {
-        method: 'POST',
-        body: JSON.stringify({ text }),
-      },
-    ),
+  ) => {
+    try {
+      return await request<{ success: boolean; messageId?: string; createdAt?: string }>(
+        `/api/businesses/${businessId}/conversations/${encodeURIComponent(
+          conversationId,
+        )}/messages`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ text }),
+        },
+      );
+    } catch (error) {
+      if (error instanceof ApiRequestError && error.code === 'request_failed') {
+        try {
+          const payload = JSON.parse(error.message);
+          if (typeof payload?.message === 'string' && payload.message.trim()) {
+            throw new ApiRequestError(error.status, error.code, payload.message.trim());
+          }
+        } catch (parsedError) {
+          if (parsedError instanceof ApiRequestError) throw parsedError;
+        }
+      }
+      throw error;
+    }
+  },
   getBookings: (businessId: string) =>
     request<Booking[]>(`/api/businesses/${businessId}/bookings`),
   getBookingPage: (

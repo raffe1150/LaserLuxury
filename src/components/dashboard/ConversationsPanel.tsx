@@ -200,6 +200,8 @@ export default function ConversationsPanel({ businessId }: ConversationsPanelPro
     if (!selected || !text || sending) return;
     const conversationId = selected.id;
     const context = replyContext.current;
+    const previousPreview = selected.preview;
+    const previousUpdatedAt = selected.updatedAt;
     const optimisticId = `optimistic-${Date.now()}`;
     const optimistic: ConversationMessage = { id: optimisticId, author: 'human', text, createdAt: new Date().toISOString() };
     setSending(true);
@@ -215,6 +217,9 @@ export default function ConversationsPanel({ businessId }: ConversationsPanelPro
         ? { ...message, id: result.messageId || optimisticId, createdAt: result.createdAt || message.createdAt }
         : message));
     } catch (error) {
+      setConversations((current) => current.map((item) => item.id === conversationId
+        ? { ...item, preview: previousPreview, updatedAt: previousUpdatedAt }
+        : item));
       if (context !== replyContext.current) return;
       setMessages((current) => current.filter((message) => message.id !== optimisticId));
       setReplyText(text);

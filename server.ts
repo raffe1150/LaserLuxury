@@ -71,7 +71,11 @@ import {
 import { applyNormalizedRequestToPending, availabilityFieldsFromConstraint, buildSlotFingerprintSource, classifySpanishManana, formatPersianSpokenPhone, getBookingDateConflict, getBookingWeekdayReference, getDateInTimeZone, getZonedSlotParts, isCurrentConversationTurn, isReadOnlyAvailabilityInquiry, isServiceGuidanceRequest, normalizeConversationText, parseBookingDate, parseNamedBookingDateRange, parseTimeConstraint, preparePersianTextForTts, registerConversationTurn, resolveRelativeBookingDateSemantic, slotMinutesSatisfyConstraint, toPersistedBookingRequest, zonedLocalIso, type NormalizedBookingRequest, type NormalizedTimeConstraint } from "./src/ai/booking-intelligence";
 import { beginBookingFinalization, getBookingInvariantFailures, getBookingPhase, getMissingBookingContact, isPositiveBookingConfirmation, recoverBookingFinalization, recoverBookingTransaction, type BookingFailureStage } from "./src/ai/booking-state-machine";
 import { enumerateCandidateMinutes, isBlockingCalendarEvent, isCanonicalSlotFree } from "./src/ai/canonical-availability";
-import { resolveAuthoritativeContact, type ContactPhoneSource } from "./src/ai/channel-contact";
+import {
+  isInvalidCustomerNameToken,
+  resolveAuthoritativeContact,
+  type ContactPhoneSource,
+} from "./src/ai/channel-contact";
 import { understandBookingTurn } from "./src/ai/understanding/understand-booking-turn";
 import type { UnderstandingProviderInput } from "./src/ai/understanding/provider";
 import { createConfiguredUnderstandingShadowRuntime } from "./src/ai/understanding/shadow";
@@ -6800,6 +6804,64 @@ function extractNameOnly(text?: string): string | null {
   return null;
 }
 
+function extractNaturalPendingCustomerName(text?: string): string | null {
+  const raw = String(text || "").normalize("NFKC").trim();
+  if (!raw) return null;
+
+  // One bounded acknowledgement may precede the self-identification. Keeping the
+  // lead and candidate anchored prevents ordinary sentences from donating words.
+  const acknowledgement = String.raw`(?:(?:ja|yes|sí|si)(?:\s*,?\s*(?:tack|thanks?|thank\s+you|gracias))?|tack|thanks?|thank\s+you|gracias)\s*[,;:!.-]+\s*`;
+  const patterns = [
+    {
+      // These copulas are ambiguous in ordinary conversation, so require a full
+      // two-token, properly capitalized person name as stronger evidence.
+      expression: new RegExp(
+        String.raw`^(?:${acknowledgement})?(?:det\s+är|it\s+is|it['’]s|das\s+ist)\s+(.+?)[.!?]*$`,
+        "iu"
+      ),
+      requireTwoTokens: true,
+    },
+    {
+      expression: new RegExp(
+        String.raw`^(?:${acknowledgement})?(?:soy|i\s+am|i['’]m)\s+(.+?)[.!?]*$`,
+        "iu"
+      ),
+      requireTwoTokens: false,
+    },
+  ];
+
+  for (const { expression, requireTwoTokens } of patterns) {
+    const candidate = raw.match(expression)?.[1]?.trim() || "";
+    const words = candidate.split(/\s+/u).filter(Boolean);
+    if (
+      words.length < 1 ||
+      words.length > 2 ||
+      (requireTwoTokens && words.length !== 2) ||
+      words.some((word) => !/^\p{Lu}[\p{L}\p{M}'’-]{1,}$/u.test(word))
+    ) continue;
+
+    const cleaned = cleanCustomerNameCandidate(candidate);
+    if (cleaned && !isInvalidCustomerNameToken(cleaned)) return cleaned;
+  }
+
+  return null;
+}
+
+function extractPendingBookingCustomerName(text: string | undefined, pending: any): string | null {
+  const existing = extractNameOnly(text);
+  if (existing) return existing;
+
+  const operation = resolveAuthoritativeOperation({ pending });
+  if (
+    pending?.operation !== "new_booking" ||
+    operation.phase !== "awaiting_contact" ||
+    operation.expectedInput !== "contact" ||
+    String(pending?.customerName || "").trim()
+  ) return null;
+
+  return extractNaturalPendingCustomerName(text);
+}
+
 function normalizeBookingService(text?: string, fallback?: string): string {
   const inferred = inferServiceFromText(text);
   if (inferred !== "Bokning") return inferred;
@@ -11409,7 +11471,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
       storedPhone: pending.customerPhone,
       storedPhoneSource: pending.contactPhoneSource as ContactPhoneSource | null,
       currentName: pending.operation === "new_booking"
-        ? currentCombinedContact?.name || extractNameOnly(text) || controlledUnderstandingCandidates.name
+        ? currentCombinedContact?.name || extractPendingBookingCustomerName(text, pending) || controlledUnderstandingCandidates.name
         : null,
       currentPhone: pending.operation === "new_booking"
         ? currentCombinedContact?.phone || extractPhoneOnly(text) || controlledUnderstandingCandidates.phone
@@ -16325,7 +16387,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
         storedPhoneSource: pending.contactPhoneSource as ContactPhoneSource | null,
         currentName:
           combinedContact?.name ||
-          (confirmationTransition ? null : extractNameOnly(text)) ||
+          (confirmationTransition ? null : extractPendingBookingCustomerName(text, pending)) ||
           controlledUnderstandingCandidates.name,
         currentPhone:
           combinedContact?.phone ||
@@ -26136,6 +26198,10 @@ export const priority1hUnifiedEngineTestBoundary = {
       nameOnly: extractNameOnly(text),
       phoneOnly: extractPhoneOnly(text),
     };
+  },
+  extractPendingBookingCustomerName(text: string, pending: Record<string, any>) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    return extractPendingBookingCustomerName(text, pending);
   },
   reset() {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");

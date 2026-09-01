@@ -216,6 +216,59 @@ try {
   assert.equal(bareNameWithPeriod.combined, null);
   assert.equal(bareNameWithPeriod.phoneOnly, null);
 
+  const pendingNameContext = {
+    operation: 'new_booking',
+    status: 'awaiting_contact',
+    expectedInput: 'contact',
+    customerName: null,
+  };
+  for (const text of [
+    'Alex Testsson.',
+    'Det är Alex Testsson.',
+    'Ja, tack, det är Alex Testsson.',
+    'Mitt namn är Alex Testsson.',
+    'Jag heter Alex Testsson.',
+    'Yes, thanks, it’s Alex Testsson.',
+    'Sí, gracias, soy Alex Testsson.',
+  ]) {
+    assert.equal(
+      boundary.extractPendingBookingCustomerName(text, pendingNameContext),
+      'Alex Testsson',
+      text,
+    );
+  }
+
+  for (const text of [
+    'Det är en fin dag.',
+    'Ja tack, det är bra.',
+    'Det här är vanlig konversation.',
+    'It’s available tomorrow.',
+    'Yes, that is correct.',
+    'Jag vill boka en konsultation imorgon.',
+  ]) {
+    assert.equal(
+      boundary.extractPendingBookingCustomerName(text, pendingNameContext),
+      null,
+      text,
+    );
+  }
+
+  assert.equal(
+    boundary.extractPendingBookingCustomerName('Det är Alex Testsson.', {
+      ...pendingNameContext,
+      customerName: 'Existing Customer',
+    }),
+    null,
+  );
+  assert.equal(
+    boundary.extractPendingBookingCustomerName('Det är Alex Testsson.', {
+      ...pendingNameContext,
+      status: 'awaiting_confirmation',
+      expectedInput: 'confirmation',
+    }),
+    null,
+  );
+
   for (const text of [
     'Alex Testsson Extra.',
     'Jag vill boka.',
@@ -352,7 +405,10 @@ try {
     assert.doesNotMatch(result.replies.join(' '), /behöver.*namn|skicka.*namn/iu, liveCase.label);
   }
 
-  {
+  for (const contactText of [
+    'Alex Testsson.',
+    'Ja, tack, det är Alex Testsson.',
+  ]) {
     const counters = fixture();
     const sessionId = 'wa_7:46700000000';
     const userId = '46700000000';
@@ -395,18 +451,41 @@ try {
       sessionId,
       platformName: 'whatsapp',
       recipientUserId: userId,
-      text: 'Alex Testsson.',
+      text: contactText,
       businessConfig: videoConsultationBusinessConfig,
       now: turnNow,
     });
 
-    assert.equal(counters.createdName, 'Alex Testsson');
-    assert.equal(counters.createdPhone, '+46700000000');
-    assert.equal(counters.calendarCreate, 1);
-    assert.equal(counters.databaseInsert, 1);
-    assert.equal(result.pending, null);
-    assert.match(result.replies.join(' '), /bok|bekräft/iu);
-    assert.doesNotMatch(result.replies.join(' '), /behöver.*namn|skicka.*namn/iu);
+    assert.equal(counters.createdName, 'Alex Testsson', contactText);
+    assert.equal(counters.createdPhone, '+46700000000', contactText);
+    assert.equal(counters.calendarCreate, 1, contactText);
+    assert.equal(counters.databaseInsert, 1, contactText);
+    assert.equal(result.pending, null, contactText);
+    assert.match(result.replies.join(' '), /bok|bekräft/iu, contactText);
+    assert.doesNotMatch(result.replies.join(' '), /behöver.*namn|skicka.*namn/iu, contactText);
+  }
+
+  for (const text of [
+    'Det är en fin dag.',
+    'Ja tack, det är bra.',
+    'Det här är vanlig konversation.',
+    'Jag vill boka en konsultation imorgon.',
+  ]) {
+    const counters = fixture();
+    seedSelectedSlot('wa_7:46700000000', 'whatsapp', '46700000000');
+    const result = await boundary.turn({
+      sessionId: 'wa_7:46700000000',
+      platformName: 'whatsapp',
+      recipientUserId: '46700000000',
+      text,
+      businessConfig,
+      now: turnNow,
+    });
+
+    assert.equal(counters.calendarCreate, 0, text);
+    assert.equal(counters.databaseInsert, 0, text);
+    assert.equal(counters.createdName, '', text);
+    assert.notEqual(result.pending?.customerName, 'Alex Testsson', text);
   }
 
   originalLog('booking completion regressions passed');

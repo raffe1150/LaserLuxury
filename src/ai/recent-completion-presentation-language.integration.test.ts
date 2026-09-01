@@ -45,6 +45,8 @@ const configure = () => {
         hasBusinessFactualClaims: true,
         claims: [{
           claim: candidateReply,
+          candidateQuote: candidateReply,
+          claimKind: "OTHER",
           requiresBusinessEvidence: true,
           supported,
           evidence: supported
@@ -54,6 +56,11 @@ const configure = () => {
         allBusinessClaimsSupported: supported,
       };
     },
+    assessBusinessClaimEntailment: ({ claimKind }: any) => ({
+      relation: "ENTAILED",
+      claimKind,
+      explicitAbsenceEvidence: claimKind === "NEGATIVE_ABSENCE",
+    }),
   });
 };
 

@@ -453,7 +453,13 @@ async function postProcessMessage(chatId: string, platform: string, userMessage:
   if (!supabase) return;
   try {
     const canonicalPlatform = normalizePlatformName(platform);
-    const canonicalUserId = normalizePlatformUserId(canonicalPlatform, chatId.toString());
+    const canonicalUserId = canonicalPlatform === "whatsapp"
+      ? canonicalWhatsAppProviderCustomerId(chatId)
+      : normalizePlatformUserId(canonicalPlatform, chatId.toString());
+    if (!canonicalUserId) {
+      console.error(`[MessagePersistence] skipped: invalid customer identity for platform=${canonicalPlatform}`);
+      return;
+    }
 
     const payload = [
   {
@@ -7494,7 +7500,9 @@ async function sendCustomerMessage(
   outboundContext: MetaOutboundContext,
 ): Promise<boolean> {
   const channel = normalizePlatformName(platform);
-  const recipient = normalizePlatformUserId(channel, String(recipientId || ""));
+  const recipient = channel === "whatsapp"
+    ? canonicalWhatsAppProviderCustomerId(recipientId)
+    : normalizePlatformUserId(channel, String(recipientId || ""));
   if (!recipient) {
     console.error(`[ChannelSend] skipped: missing recipient for platform=${channel}`);
     return false;
@@ -18898,6 +18906,34 @@ function normalizePlatformUserId(platform: string, userId: string) {
   return raw.trim();
 }
 
+function canonicalWhatsAppProviderCustomerId(userId: unknown): string {
+  const raw = String(userId || "").trim();
+  if (!raw || /^(?:wa_|whatsapp[_:-])[^:]+:/i.test(raw)) return "";
+  return normalizePlatformUserId("whatsapp", raw);
+}
+
+function getKnownWhatsAppScopedIdentityRemainder(
+  selectedUserId: unknown,
+  businessId: unknown,
+  rows: any[],
+): string | null {
+  const selected = canonicalWhatsAppProviderCustomerId(selectedUserId);
+  const businessPrefix = String(businessId || "").trim();
+  if (!selected || !/^\d+$/.test(businessPrefix) || !selected.startsWith(businessPrefix)) return null;
+
+  const canonicalRemainder = selected.slice(businessPrefix.length);
+  if (!canonicalRemainder) return null;
+
+  const hasCanonicalInbound = (rows || []).some((row: any) => {
+    const sender = String(row?.sender || "").trim().toLowerCase();
+    return (sender === "user" || sender === "customer") &&
+      normalizePlatformName(String(row?.platform || "")) === "whatsapp" &&
+      canonicalWhatsAppProviderCustomerId(row?.user_id) === canonicalRemainder;
+  });
+
+  return hasCanonicalInbound ? canonicalRemainder : null;
+}
+
 function hasOpenWhatsAppCustomerServiceWindow(
   rows: any[],
   customerId: string,
@@ -20534,9 +20570,14 @@ async function sendWhatsAppMessage(
   businessConfig: any,
   outboundContext: MetaOutboundContext,
 ) {
+  const recipient = canonicalWhatsAppProviderCustomerId(to);
+  if (!recipient) {
+    console.error("WhatsApp send skipped: invalid or scoped customer identity");
+    return false;
+  }
   const token = getBusinessWhatsAppToken(businessConfig);
   const phoneNumberId = getBusinessWhatsAppPhoneNumberId(businessConfig);
-  const safeText = prepareWhatsAppOutboundText(to, text, businessConfig, phoneNumberId, outboundContext);
+  const safeText = prepareWhatsAppOutboundText(recipient, text, businessConfig, phoneNumberId, outboundContext);
 
   if (!token || !phoneNumberId) {
     console.error("WhatsApp reply skipped: missing whatsapp_access_token or whatsapp_phone_number_id");
@@ -20546,7 +20587,7 @@ async function sendWhatsAppMessage(
   const payload = {
     messaging_product: "whatsapp",
     recipient_type: "individual",
-    to,
+    to: recipient,
     type: "text",
     text: {
       preview_url: false,
@@ -20605,7 +20646,7 @@ async function processWhatsAppMessage(message: any, metadata: any, config: any, 
 }
 
 async function processWhatsAppMessageClaimed(message: any, metadata: any, config: any, platform: string = "whatsapp-webhook") {
-  const from = message?.from;
+  const from = canonicalWhatsAppProviderCustomerId(message?.from);
   const textMessage = message?.text?.body || "";
   const phoneNumberId = metadata?.phone_number_id || "";
 
@@ -20702,7 +20743,7 @@ async function processWhatsAppMessageClaimed(message: any, metadata: any, config
       const limitText = formatDailyLimitMessage(userLanguage);
       await sendWhatsAppMessage(from, limitText, businessConfig, "conversation");
       appendLocalHistory(chatId, textMessage, limitText);
-      await postProcessMessage(chatId, platform, textMessage, limitText, businessConfig?.telegramToken, businessConfig?.apiKey, getBusinessIdFromConfig(businessConfig));
+      await postProcessMessage(from, platform, textMessage, limitText, businessConfig?.telegramToken, businessConfig?.apiKey, getBusinessIdFromConfig(businessConfig));
       return;
     }
 
@@ -20712,7 +20753,7 @@ async function processWhatsAppMessageClaimed(message: any, metadata: any, config
       appendLocalHistory(chatId, textMessage, reply);
       try {
         await postProcessMessage(
-          chatId,
+          from,
           platform,
           textMessage,
           reply,
@@ -20988,7 +21029,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
     await sendWhatsAppMessage(from, textResponse, businessConfig, "conversation");
 
     try {
-      await postProcessMessage(chatId, platform, textMessage, textResponse, businessConfig?.telegramToken, businessConfig?.apiKey, getBusinessIdFromConfig(businessConfig));
+      await postProcessMessage(from, platform, textMessage, textResponse, businessConfig?.telegramToken, businessConfig?.apiKey, getBusinessIdFromConfig(businessConfig));
     } catch (e) {
       console.error("WhatsApp postProcessMessage failed:", e);
     }
@@ -24087,6 +24128,39 @@ app.post('/api/businesses/:businessId/conversations/:conversationId/messages', r
 
     if (requestedChannel === 'whatsapp') {
       const canonicalWhatsAppUserId = normalizePlatformUserId('whatsapp', requestedUserId);
+      const businessPrefix = String(businessId || '').trim();
+      const possibleCanonicalRemainder = /^\d+$/.test(businessPrefix) &&
+        canonicalWhatsAppUserId.startsWith(businessPrefix)
+        ? canonicalWhatsAppUserId.slice(businessPrefix.length)
+        : '';
+      let canonicalRemainderInboundRows: any[] = [];
+
+      if (possibleCanonicalRemainder) {
+        const { data, error } = await supabase
+          .from('chat_history')
+          .select('id,user_id,platform,sender,created_at')
+          .eq('business_id', businessId)
+          .eq('platform', 'whatsapp')
+          .eq('user_id', possibleCanonicalRemainder)
+          .in('sender', ['user', 'customer'])
+          .order('created_at', { ascending: false })
+          .limit(1);
+        if (error) throw error;
+        canonicalRemainderInboundRows = data || [];
+      }
+
+      if (getKnownWhatsAppScopedIdentityRemainder(
+        canonicalWhatsAppUserId,
+        businessId,
+        canonicalRemainderInboundRows,
+      )) {
+        return res.status(409).json({
+          success: false,
+          code: 'whatsapp_invalid_conversation_identity',
+          message: 'This WhatsApp conversation has an invalid historical customer identity and cannot be messaged safely.',
+        });
+      }
+
       const { data: customerInboundRows, error: customerInboundError } = await supabase
         .from('chat_history')
         .select('id,user_id,platform,sender,created_at')
@@ -26531,6 +26605,18 @@ export const priority1hUnifiedEngineTestBoundary = {
   whatsappServiceWindowOpen(rows: any[], customerId: string, nowMs: number) {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
     return hasOpenWhatsAppCustomerServiceWindow(rows, customerId, nowMs);
+  },
+  canonicalWhatsAppCustomerId(userId: unknown) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    return canonicalWhatsAppProviderCustomerId(userId);
+  },
+  knownWhatsAppScopedIdentityRemainder(selectedUserId: unknown, businessId: unknown, rows: any[]) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    return getKnownWhatsAppScopedIdentityRemainder(selectedUserId, businessId, rows);
+  },
+  async persistCustomerExchange(userId: string, platform: string, customerText: string, replyText: string, businessId?: string) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    return postProcessMessage(userId, platform, customerText, replyText, undefined, undefined, businessId);
   },
   instagramEventCanEnterConversation(webhookEvent: any) {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");

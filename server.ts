@@ -6533,11 +6533,76 @@ function hasRecentAssistantReplyRepetition(
   });
 }
 
+function getActiveRecentCompletedBusinessSupport(sessionId: string): CompletedBookingSupportTurn | null {
+  const support = completedBookingSupportTurns[sessionId];
+  if (!support || Date.now() - support.savedAt > 2 * 60 * 1000) return null;
+  return support.completed.bookingOperation?.ok ? support : null;
+}
+
+function isGreetingOnlyBusinessSupportReply(reply?: string): boolean {
+  const normalized = normalizeAssistantReplyForRepetition(reply);
+  if (!normalized) return false;
+  return (
+    /^(?:hej|hejsan|hallå)\s+(?:hur|vad)\s+kan\s+jag\s+hjälpa\s+dig$/u.test(normalized) ||
+    /^jag\s+hjälper\s+dig\s+gärna\s+på\s+svenska\s+vad\s+vill\s+du\s+veta$/u.test(normalized) ||
+    /^(?:hi|hello|hey)\s+(?:how\s+can\s+i\s+help|what\s+can\s+i\s+help\s+you\s+with|what\s+would\s+you\s+like\s+to\s+know)$/u.test(normalized) ||
+    /^i\s+m\s+happy\s+to\s+help\s+in\s+english\s+what\s+would\s+you\s+like\s+to\s+know$/u.test(normalized) ||
+    /^hola\s+(?:cómo\s+puedo\s+ayudarte|en\s+qué\s+puedo\s+ayudarte)$/u.test(normalized) ||
+    /^con\s+gusto\s+te\s+ayudo\s+en\s+español\s+qué\s+quieres\s+saber$/u.test(normalized) ||
+    /^hallo\s+wie\s+kann\s+ich\s+(?:ihnen\s+)?helfen$/u.test(normalized) ||
+    /^ich\s+helfe\s+ihnen\s+gern\s+auf\s+deutsch\s+was\s+möchten\s+sie\s+wissen$/u.test(normalized) ||
+    /^(?:سلام|درود).{0,24}(?:کمک|کمکت)/u.test(normalized) ||
+    /^حتماً\s+به\s+فارسی.{0,24}(?:کمک|بدانید)/u.test(normalized) ||
+    /^(?:مرحبا|مرحبًا|أهلا|اهلا).{0,24}(?:مساعدتك|أساعدك|اساعدك)/u.test(normalized) ||
+    /^يسعدني\s+مساعدتك\s+بالعربية.{0,24}(?:تعرف|معرفة)/u.test(normalized)
+  );
+}
+
+function formatBusinessSupportKnowledgeGap(language: string, service?: string): string {
+  const subject = String(service || "").trim();
+  if (language === "sv") return subject
+    ? `Jag hittar ingen specifik uppgift om just din fråga för ${subject} i verksamhetens tillgängliga information. Verksamheten kan bekräfta vad som gäller.`
+    : "Jag hittar ingen specifik uppgift som besvarar just din fråga i verksamhetens tillgängliga information. Verksamheten kan bekräfta vad som gäller.";
+  if (language === "de") return subject
+    ? `In den verfügbaren Unternehmensinformationen finde ich keine konkrete Angabe zu Ihrer Frage über ${subject}. Das Unternehmen kann bestätigen, was gilt.`
+    : "In den verfügbaren Unternehmensinformationen finde ich keine konkrete Angabe zu Ihrer Frage. Das Unternehmen kann bestätigen, was gilt.";
+  if (language === "es") return subject
+    ? `No encuentro información específica que responda a tu pregunta sobre ${subject} en la información disponible del negocio. El negocio puede confirmar qué corresponde.`
+    : "No encuentro información específica que responda a tu pregunta en la información disponible del negocio. El negocio puede confirmar qué corresponde.";
+  if (language === "fa") return subject
+    ? `در اطلاعات موجود کسب‌وکار، پاسخ مشخصی برای سؤال شما درباره ${subject} پیدا نمی‌کنم. خود مجموعه می‌تواند مورد دقیق را تأیید کند.`
+    : "در اطلاعات موجود کسب‌وکار، پاسخ مشخصی برای سؤال شما پیدا نمی‌کنم. خود مجموعه می‌تواند مورد دقیق را تأیید کند.";
+  if (language === "ar") return subject
+    ? `لا أجد في معلومات المنشأة المتاحة إجابة محددة عن سؤالك بشأن ${subject}. يمكن للمنشأة تأكيد ما ينطبق.`
+    : "لا أجد في معلومات المنشأة المتاحة إجابة محددة عن سؤالك. يمكن للمنشأة تأكيد ما ينطبق.";
+  return subject
+    ? `I can't find a specific answer to your question about ${subject} in the available business information. The business can confirm what applies.`
+    : "I can't find a specific answer to your question in the available business information. The business can confirm what applies.";
+}
+
 function guardGeneralAiReplyRepetition(
   sessionId: string,
   candidateReply: string,
-  language: string
+  language: string,
+  latestCustomerMessage?: string,
 ): string {
+  const completedSupport = getActiveRecentCompletedBusinessSupport(sessionId);
+  if (completedSupport && latestCustomerMessage && !isGreetingOnlyText(latestCustomerMessage)) {
+    if (isGreetingOnlyBusinessSupportReply(candidateReply)) {
+      console.warn("[BusinessSupportReplyGuard]", {
+        sessionId,
+        action: "replaced_greeting_only_reply",
+      });
+      return formatBusinessSupportKnowledgeGap(
+        language,
+        completedSupport.completed.bookingOperation?.serviceName,
+      );
+    }
+    // A repeated question may correctly receive a repeated answer. Do not turn that
+    // relevant answer into an unrelated greeting in verified completion support.
+    return candidateReply;
+  }
+
   if (!hasRecentAssistantReplyRepetition(sessionId, candidateReply)) {
     return candidateReply;
   }
@@ -18050,7 +18115,8 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
     textResponse = guardGeneralAiReplyRepetition(
       telegramSessionId,
       textResponse,
-      getLockedReplyLanguage(telegramSessionId, textForFlow)
+      getLockedReplyLanguage(telegramSessionId, textForFlow),
+      textForFlow,
     );
     textResponse = await settleHumanHandoffReply({
       sessionId: telegramSessionId,
@@ -20743,7 +20809,8 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
     textResponse = guardGeneralAiReplyRepetition(
       chatId,
       textResponse,
-      getConversationLanguage(chatId, textMessage || "")
+      getConversationLanguage(chatId, textMessage || ""),
+      textMessage,
     );
     textResponse = await settleHumanHandoffReply({
       sessionId: chatId,
@@ -21898,7 +21965,8 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
     textResponse = guardGeneralAiReplyRepetition(
       chatId,
       textResponse,
-      getConversationLanguage(chatId, textMessage || "")
+      getConversationLanguage(chatId, textMessage || ""),
+      userMessageForLog,
     );
     textResponse = await settleHumanHandoffReply({
       sessionId: chatId,
@@ -22530,7 +22598,8 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
     textResponse = guardGeneralAiReplyRepetition(
       chatId,
       textResponse,
-      getConversationLanguage(chatId, textMessage || "")
+      getConversationLanguage(chatId, textMessage || ""),
+      userMessageForLog,
     );
     textResponse = await settleHumanHandoffReply({
       sessionId: chatId,
@@ -26251,6 +26320,23 @@ export const priority1hUnifiedEngineTestBoundary = {
       category: classifyRecentCompletedBookingTurn({ text, completed, normalizedRequest, businessConfig }),
       statusReply: formatRecentCompletedStatusReply(completed.language, completed, text),
     };
+  },
+  finalizeGeneralAiReply(
+    sessionId: string,
+    latestCustomerMessage: string,
+    providerReply: string,
+    language: string,
+  ) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    const guarded = guardCustomerFacingReply(sessionId, providerReply, language);
+    const finalReply = guardGeneralAiReplyRepetition(
+      sessionId,
+      guarded,
+      language,
+      latestCustomerMessage,
+    );
+    appendLocalHistory(sessionId, latestCustomerMessage, finalReply);
+    return finalReply;
   },
 };
 

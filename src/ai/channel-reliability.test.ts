@@ -57,7 +57,7 @@ const server = readFileSync(new URL('../../server.ts', import.meta.url), 'utf8')
 assert.match(server, /const whatsappIntent = classifyMessagingIntent\(textMessage\)/);
 assert.match(server, /if \(!clearlyNonBookingTurn\)[\s\S]{0,500}handleUnifiedBookingEngine\(/);
 assert.match(server, /whatsappIntent === "language_repair"[\s\S]{0,200}formatLanguageRepairAcknowledgement/);
-assert.match(server, /whatsappIntent === "ambiguous"[\s\S]{0,200}formatAmbiguousBookingIntentClarification/);
+assert.match(server, /shouldReturnWhatsAppAmbiguousClarification\(chatId, whatsappIntent\)[\s\S]{0,200}formatAmbiguousBookingIntentClarification/);
 assert.match(server, /const telegramReplyPreferences:/);
 assert.match(server, /updateTelegramReplyPreference\([\s\S]{0,300}resolveTelegramReplyPreference/);
 assert.match(server, /send:\s*async \(reply\) => \(await sendTelegramPreferredReply/);

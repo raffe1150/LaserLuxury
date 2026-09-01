@@ -4293,8 +4293,9 @@ function hasAppointmentConversationState(sessionId: string): boolean {
 }
 
 function shouldDispatchWhatsAppUnifiedBooking(chatId: string, text: string, intent = classifyMessagingIntent(text)): boolean {
-  if (intent === "language_repair" || intent === "ambiguous") return false;
-  if (getRecentCompletedBooking(chatId)) return true;
+  if (intent === "language_repair") return false;
+  if (getRecentCompletedBooking(chatId)?.bookingOperation?.ok) return true;
+  if (intent === "ambiguous") return false;
   const clearlyNonBooking = intent === "normal" &&
     !pendingBookings[chatId] && !hasAppointmentConversationState(chatId) &&
     !extractNameAndPhone(text) && !extractPhoneOnly(text) && !extractNameOnly(text) &&
@@ -4303,6 +4304,10 @@ function shouldDispatchWhatsAppUnifiedBooking(chatId: string, text: string, inte
     !isCancellationIntent(text) && !resolveExplicitBookingDate(text) &&
     !inferRequestedTimeFromText(text);
   return !clearlyNonBooking;
+}
+
+function shouldReturnWhatsAppAmbiguousClarification(chatId: string, intent: ReturnType<typeof classifyMessagingIntent>): boolean {
+  return intent === "ambiguous" && !getRecentCompletedBooking(chatId)?.bookingOperation?.ok;
 }
 
 function clearAppointmentConversationState(sessionId: string) {
@@ -5967,7 +5972,6 @@ function classifyRecentCompletedBookingTurn(params: {
   businessConfig: any;
 }): RecentCompletedBookingCategory {
   const raw = String(params.text || "").trim();
-  if (isExplicitNewBookingPivotText(raw)) return "new_booking";
   if (isRescheduleIntent(raw) || params.normalizedRequest.intent === "reschedule") return "reschedule";
   if (isCancellationIntent(raw) || params.normalizedRequest.intent === "cancellation") return "cancellation";
 
@@ -5995,8 +5999,17 @@ function classifyRecentCompletedBookingTurn(params: {
   );
   const hasStatusSemantics = hasRecentCompletedBookingStatusSemantics(raw);
   const hasDetailSemantics = hasRecentCompletedBookingDetailSemantics(raw);
-  if (explicitlyReferencesAnotherBooking(raw)) return "another_booking_lookup";
+  const explicitlyRequestsDistinctNewBooking =
+    /\b(?:want|would\s+like|like|need)\b.{0,30}\bbook\b.{0,24}\b(?:another|new)\b|\bbook\b.{0,16}\b(?:another|new)\b.{0,16}\b(?:appointment|booking)\b/iu.test(raw) ||
+    /\b(?:vill|skulle\s+vilja|behöver)\b.{0,30}\bboka\b.{0,24}\b(?:en\s+)?(?:annan|ny)\b|\bboka\b.{0,16}\b(?:en\s+)?(?:annan|ny)\b.{0,16}\b(?:tid|bokning)\b/iu.test(raw) ||
+    /\b(?:quiero|me\s+gustar[ií]a|necesito)\b.{0,30}\b(?:reservar|agendar)\b.{0,24}\b(?:otra|nueva)\b/iu.test(raw) ||
+    /\b(?:ich\s+möchte|ich\s+will|ich\s+brauche)\b.{0,30}\b(?:buchen|vereinbaren)\b.{0,24}\b(?:anderen|neuen)\b/iu.test(raw) ||
+    /(?:می[\u200c\s]?خوام|می[\u200c\s]?خواهم).{0,30}(?:وقت|رزرو).{0,20}(?:دیگر|جدید)/u.test(raw) ||
+    /(?:أريد|أرغب).{0,30}(?:حجز|موعد).{0,20}(?:آخر|جديد)/u.test(raw);
+  if (isExplicitNewBookingPivotText(raw) && explicitlyRequestsDistinctNewBooking) return "new_booking";
   if (matchingStatusReference || ((hasStatusSemantics || hasDetailSemantics) && factsMatch)) return "current_booking_status";
+  if (isExplicitNewBookingPivotText(raw)) return "new_booking";
+  if (explicitlyReferencesAnotherBooking(raw)) return "another_booking_lookup";
   if (hasStatusSemantics || hasDetailSemantics) return "another_booking_lookup";
   if (
     params.normalizedRequest.intent === "booking_lookup" ||
@@ -7326,7 +7339,8 @@ async function sendCustomerMessage(platform: string, recipientId: string, messag
     recipient,
     message,
     getBusinessInstagramToken(businessConfig),
-    getScopedChannelSessionId("instagram", recipient, businessConfig)
+    getScopedChannelSessionId("instagram", recipient, businessConfig),
+    "proactive",
   );
 
   if (channel === "telegram") {
@@ -9028,12 +9042,12 @@ function guardCustomerFacingReply(sessionId: string, reply: string, fallbackLang
     : null;
   const verifiedCompletionPresentationMatchesLanguage = Boolean(
     recentCompleted?.bookingOperation?.ok && (
-      (language === "en" && /^Yes, the booking is verified\./u.test(raw)) ||
-      (language === "sv" && /^Ja, bokningen är verifierad\./u.test(raw)) ||
-      (language === "de" && /^Ja, die Buchung ist bestätigt\./u.test(raw)) ||
-      (language === "es" && /^Sí, la reserva está verificada\./u.test(raw)) ||
-      (language === "fa" && /^بله، رزرو تأیید شده است\./u.test(raw)) ||
-      (language === "ar" && /^نعم، الحجز مؤكد\./u.test(raw))
+      (language === "en" && /^(?:Yes, the booking is verified\.|Exactly\. The booking is verified)/u.test(raw)) ||
+      (language === "sv" && /^(?:Ja, bokningen är verifierad\.|Precis\. Bokningen är verifierad)/u.test(raw)) ||
+      (language === "de" && /^(?:Ja, die Buchung ist bestätigt\.|Genau\. Die Buchung ist bestätigt)/u.test(raw)) ||
+      (language === "es" && /^(?:Sí, la reserva está verificada\.|Exactamente\. La reserva está verificada)/u.test(raw)) ||
+      (language === "fa" && /^(?:بله، رزرو تأیید شده است\.|دقیقاً\. رزرو تأیید شده)/u.test(raw)) ||
+      (language === "ar" && /^(?:نعم، الحجز مؤكد\.|بالضبط\. الحجز مؤكد)/u.test(raw))
     )
   );
   const incompatible =
@@ -20044,12 +20058,30 @@ function getBusinessInstagramToken(businessConfig: any) {
   );
 }
 
-async function sendInstagramMessage(recipientId: string, text: string, accessToken?: string, sessionId?: string) {
-  const token = cleanInstagramToken(accessToken);
-  const safeText = guardCustomerFacingReply(
+type InstagramOutboundContext = "conversation" | "proactive";
+
+function prepareInstagramOutboundText(
+  recipientId: string,
+  text: string,
+  sessionId?: string,
+  outboundContext: InstagramOutboundContext = "conversation",
+): string {
+  if (outboundContext === "proactive") return String(text || "").trim();
+  return guardCustomerFacingReply(
     sessionId || `ig_${normalizePlatformUserId("instagram", recipientId)}`,
     text
   );
+}
+
+async function sendInstagramMessage(
+  recipientId: string,
+  text: string,
+  accessToken?: string,
+  sessionId?: string,
+  outboundContext: InstagramOutboundContext = "conversation",
+) {
+  const token = cleanInstagramToken(accessToken);
+  const safeText = prepareInstagramOutboundText(recipientId, text, sessionId, outboundContext);
 
   if (!token) {
     console.error('Instagram reply skipped: missing business instagram_access_token');
@@ -20482,7 +20514,7 @@ async function processWhatsAppMessageClaimed(message: any, metadata: any, config
       await replyWhatsAppOnce(formatLanguageRepairAcknowledgement(userLanguage));
       return;
     }
-    if (whatsappIntent === "ambiguous") {
+    if (shouldReturnWhatsAppAmbiguousClarification(chatId, whatsappIntent)) {
       await replyWhatsAppOnce(formatAmbiguousBookingIntentClarification(userLanguage));
       return;
     }
@@ -21962,7 +21994,7 @@ Keep the same warm,friendly,human tone, professional receptionist tone in every 
 `;
 
 async function processInstagramUpdate(webhook_event: any, config: any, platform: string = "instagram-webhook") {
-  if (webhook_event?.message?.is_echo) return;
+  if (!isSupportedInstagramConversationalEvent(webhook_event)) return;
   const messageId = String(webhook_event?.message?.mid || "").trim();
   const tenantScope = String(webhook_event?.recipient?.id || "").trim();
   if (!messageId || !tenantScope) {
@@ -21976,6 +22008,21 @@ async function processInstagramUpdate(webhook_event: any, config: any, platform:
     messageId,
     handler: () => processInstagramUpdateClaimed(webhook_event, config, platform)
   });
+}
+
+function isSupportedInstagramConversationalEvent(webhookEvent: any): boolean {
+  if (webhookEvent?.message?.is_echo) return false;
+  const messageId = String(webhookEvent?.message?.mid || "").trim();
+  const senderId = String(webhookEvent?.sender?.id || "").trim();
+  const recipientId = String(webhookEvent?.recipient?.id || "").trim();
+  if (!messageId || !senderId || !recipientId) return false;
+  const text = String(webhookEvent?.message?.text || "").trim();
+  const hasAudio = Boolean(
+    webhookEvent?.message?.attachments?.some(
+      (attachment: any) => attachment?.type === "audio" && attachment?.payload?.url,
+    ),
+  );
+  return Boolean(text || hasAudio);
 }
 
 async function processInstagramUpdateClaimed(webhook_event: any, config: any, platform: string = "instagram-webhook") {
@@ -23809,7 +23856,8 @@ app.post('/api/businesses/:businessId/conversations/:conversationId/messages', r
         recipient,
         text,
         token,
-        getScopedChannelSessionId('instagram', recipient, businessConfig)
+        getScopedChannelSessionId('instagram', recipient, businessConfig),
+        'proactive',
       );
     } else if (requestedChannel === 'telegram') {
       const token =
@@ -26154,6 +26202,55 @@ export const priority1hUnifiedEngineTestBoundary = {
   },
   whatsappWouldDispatch(sessionId: string, text: string) {
     return shouldDispatchWhatsAppUnifiedBooking(sessionId, text);
+  },
+  whatsappPreDispatchDecision(sessionId: string, text: string) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    const intent = classifyMessagingIntent(text);
+    return {
+      intent,
+      returnsAmbiguousClarification: shouldReturnWhatsAppAmbiguousClarification(sessionId, intent),
+      dispatchesUnifiedBooking: shouldDispatchWhatsAppUnifiedBooking(sessionId, text, intent),
+    };
+  },
+  instagramOutboundText(
+    recipientId: string,
+    text: string,
+    outboundContext: InstagramOutboundContext,
+    sessionId?: string,
+  ) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    return prepareInstagramOutboundText(recipientId, text, sessionId, outboundContext);
+  },
+  instagramEventCanEnterConversation(webhookEvent: any) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    return isSupportedInstagramConversationalEvent(webhookEvent);
+  },
+  recentCompletionClassification(sessionId: string, text: string, businessConfig: any, now?: Date) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    const completed = getRecentCompletedBooking(sessionId);
+    if (!completed) return null;
+    const normalizedRequest = understandBookingTurn({
+      businessId: getBusinessIdFromConfig(businessConfig) || "unscoped",
+      channel: "whatsapp",
+      conversationKey: sessionId,
+      inputMode: "text",
+      text,
+      timezone: String(businessConfig?.timezone || "Europe/Stockholm"),
+      ...(now ? { now } : {}),
+    });
+    return {
+      normalizedRequest,
+      factsMatch: completed.bookingOperation?.ok ? recentCompletedBookingFactsMatch({
+        text,
+        bookingOperation: completed.bookingOperation,
+        normalizedRequest,
+        businessConfig,
+      }) : false,
+      statusSemantics: hasRecentCompletedBookingStatusSemantics(text),
+      requestedDetails: inferRecentCompletedBookingRequestedDetails(text),
+      category: classifyRecentCompletedBookingTurn({ text, completed, normalizedRequest, businessConfig }),
+      statusReply: formatRecentCompletedStatusReply(completed.language, completed, text),
+    };
   },
 };
 

@@ -7399,6 +7399,148 @@ function findConfiguredBookingService(
   return canonicalMatches.length === 1 ? canonicalMatches[0] : null;
 }
 
+type ConfiguredBookingService = {
+  id: string | null;
+  name: string;
+  aliases: string[];
+  raw: any;
+};
+
+type BookingServiceResolution =
+  | { status: "resolved"; service: ConfiguredBookingService; source: "evidence" | "single_service" | "explicit_default" }
+  | { status: "missing"; candidates: ConfiguredBookingService[] }
+  | { status: "ambiguous"; requestedService: string; candidates: ConfiguredBookingService[] }
+  | { status: "unsupported"; requestedService: string; candidates: ConfiguredBookingService[] };
+
+function getEligibleConfiguredBookingServices(businessConfig: any): ConfiguredBookingService[] {
+  const seen = new Set<string>();
+  const services: ConfiguredBookingService[] = [];
+  for (const item of Array.isArray(businessConfig?.services) ? businessConfig.services : []) {
+    if (!item || item.active === false || item.bookable === false) continue;
+    const name = String(item?.name || item?.service || item?.title || "").trim();
+    const key = name.toLocaleLowerCase();
+    if (!name || seen.has(key)) continue;
+    seen.add(key);
+    const aliases = [
+      ...(Array.isArray(item?.aliases) ? item.aliases : []),
+      ...(Array.isArray(item?.serviceAliases) ? item.serviceAliases : []),
+      ...(Array.isArray(item?.service_aliases) ? item.service_aliases : []),
+    ].map((alias: unknown) => String(alias || "").trim()).filter(Boolean);
+    services.push({
+      id: String(item?.id || item?.serviceId || item?.service_id || "").trim() || null,
+      name,
+      aliases,
+      raw: item,
+    });
+  }
+  return services;
+}
+
+function normalizeServiceMatchText(value: string): string {
+  return normalizeConversationText(String(value || ""))
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/gu, "")
+    .toLocaleLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim();
+}
+
+function getRelevantConfiguredServiceCandidates(
+  requestedService: string,
+  businessConfig: any,
+): ConfiguredBookingService[] {
+  const requested = normalizeServiceMatchText(requestedService);
+  if (!requested) return [];
+  const genericServiceTokens = new Set([
+    "service", "treatment", "consultation", "session", "appointment", "booking",
+    "tjanst", "behandling", "konsultation", "termin", "beratung", "servicio",
+    "tratamiento", "consulta", "سرویس", "خدمات", "خدمة", "علاج", "مشاوره", "استشارة",
+  ]);
+  const requestedTokens = new Set(requested.split(/\s+/u).filter((token) =>
+    token.length >= 3 && !genericServiceTokens.has(token)
+  ));
+  const candidates = getEligibleConfiguredBookingServices(businessConfig).filter((service) => {
+    const labels = [service.name, ...service.aliases].map(normalizeServiceMatchText).filter(Boolean);
+    if (labels.some((label) => label === requested || requested.includes(label) || label.includes(requested))) return true;
+    if (labels.some((label) => label.split(/\s+/u).some((token) => requestedTokens.has(token)))) return true;
+    const requestedCanonical = normalizeBookingService(requestedService, "Bokning");
+    return requestedCanonical !== "Bokning" && labels.some((label) =>
+      normalizeBookingService(label, "Bokning") === requestedCanonical
+    );
+  });
+  return candidates.slice(0, 5);
+}
+
+function isDateOnlyServiceExtraction(value: string): boolean {
+  const normalized = normalizeServiceMatchText(value);
+  if (!normalized || !resolveExplicitBookingDate(value)) return false;
+  const dateWords = new Set([
+    "for", "on", "at", "the", "of", "next", "this", "today", "tomorrow",
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+    "i", "pa", "på", "for", "för", "den", "nasta", "nästa", "idag", "imorgon",
+    "mandag", "måndag", "tisdag", "onsdag", "torsdag", "fredag", "lordag", "lördag", "sondag", "söndag",
+    "am", "um", "nachsten", "nächsten", "heute", "morgen", "montag", "dienstag", "mittwoch", "donnerstag", "freitag", "samstag", "sonntag",
+    "para", "el", "la", "hoy", "manana", "mañana", "lunes", "martes", "miercoles", "miércoles", "jueves", "viernes", "sabado", "sábado", "domingo",
+    "برای", "در", "امروز", "فردا", "شنبه", "یکشنبه", "دوشنبه", "سه", "چهارشنبه", "پنجشنبه", "جمعه",
+    "في", "غدا", "غدًا", "اليوم", "الاحد", "الاثنين", "الثلاثاء", "الاربعاء", "الخميس", "الجمعة", "السبت",
+    "january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december",
+    "januari", "februari", "mars", "maj", "juni", "juli", "augusti", "oktober", "november", "december",
+    "enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre",
+  ]);
+  return normalized.split(/\s+/u).every((token) => dateWords.has(token) || /^\d{1,4}$/u.test(token));
+}
+
+function resolveAuthoritativeBookingService(
+  text: string,
+  businessConfig: any,
+): BookingServiceResolution {
+  const eligible = getEligibleConfiguredBookingServices(businessConfig);
+  const explicitDefault = String(
+    businessConfig?.defaultBookingService || businessConfig?.default_booking_service || ""
+  ).trim();
+  const directName = findConfiguredBookingService(text, {
+    ...businessConfig,
+    services: eligible.map((service) => service.raw),
+  });
+  if (directName) {
+    return {
+      status: "resolved",
+      service: eligible.find((service) => service.name === directName)!,
+      source: "evidence",
+    };
+  }
+
+  // With no configured catalog to match against, an explicit business default is
+  // the only authoritative service policy available. Preserve the established
+  // default-service behavior instead of treating ordinary booking wording as an
+  // unsupported service request.
+  if (eligible.length === 0 && explicitDefault) {
+    return {
+      status: "resolved",
+      service: { id: null, name: normalizeBookingService(explicitDefault, explicitDefault), aliases: [], raw: null },
+      source: "explicit_default",
+    };
+  }
+
+  const extractedConcrete = extractConcreteRequestedService(text);
+  const concrete = extractedConcrete && !isDateOnlyServiceExtraction(extractedConcrete)
+    ? extractedConcrete
+    : null;
+  const evidence = concrete || (inferServiceFromText(text) !== "Bokning" ? text : null);
+  if (evidence) {
+    const candidates = getRelevantConfiguredServiceCandidates(evidence, businessConfig);
+    if (candidates.length === 1) return { status: "resolved", service: candidates[0], source: "evidence" };
+    if (candidates.length > 1) {
+      return { status: "ambiguous", requestedService: concrete || evidence, candidates };
+    }
+    return { status: "unsupported", requestedService: concrete || evidence, candidates: [] };
+  }
+
+  if (eligible.length === 1) return { status: "resolved", service: eligible[0], source: "single_service" };
+
+  return { status: "missing", candidates: eligible.slice(0, 5) };
+}
+
 function resolveConfiguredBookingService(
   text: string,
   businessConfig: any,
@@ -7412,11 +7554,7 @@ function resolveConfiguredBookingService(
 }
 
 function getConfiguredBookingServiceNames(businessConfig: any): string[] {
-  return [...new Set(
-    (Array.isArray(businessConfig?.services) ? businessConfig.services : [])
-      .map((item: any) => String(item?.name || item?.service || item?.title || "").trim())
-      .filter(Boolean)
-  )];
+  return getEligibleConfiguredBookingServices(businessConfig).map((service) => service.name);
 }
 
 function extractConcreteRequestedService(text?: string): string | null {
@@ -7492,7 +7630,7 @@ function extractConcreteRequestedService(text?: string): string | null {
       .toLowerCase()
       .replace(/[.!?,;:]+$/gu, "")
       .trim();
-    if (/^(?:one|it|that|this)$/u.test(normalizedCandidate)) continue;
+    if (/^(?:one|it|that|this)(?:\s+for\s+me)?$/u.test(normalizedCandidate)) continue;
     if (/^(?:appointment|booking|time|slot|tid|bokning|termin|cita|reserva|service|tjänst)$/iu.test(extracted)) continue;
     const genericEnglishBookingWithContinuation = extracted.match(
       /^(?:appointment|booking|reservation|time|slot)\s+(.+)$/iu
@@ -7541,13 +7679,40 @@ function formatUnsupportedServiceBookingReply(
   requestedService: string,
   configuredServices: string[]
 ): string {
-  const options = configuredServices.join(", ");
-  if (language === "sv") return `Jag kan inte matcha “${requestedService}” mot en bokningsbar tjänst. Tillgängliga tjänster är: ${options}. Vilka av dem vill du välja för bokningen?`;
-  if (language === "de") return `Ich kann „${requestedService}“ keiner buchbaren Leistung zuordnen. Verfügbar sind: ${options}. Für welche davon möchten Sie buchen?`;
-  if (language === "es") return `No puedo asociar «${requestedService}» con un servicio reservable. Los servicios disponibles son: ${options}. ¿Qué servicio quieres reservar para tu cita?`;
-  if (language === "fa") return `نمی‌توانم «${requestedService}» را با یکی از خدمات قابل رزرو تطبیق بدهم. خدمات موجود: ${options}. کدام را می‌خواهید رزرو کنید؟`;
-  if (language === "ar") return `لا أستطيع مطابقة «${requestedService}» مع خدمة قابلة للحجز. الخدمات المتاحة: ${options}. أي خدمة تريد حجزها؟`;
-  return `I cannot match “${requestedService}” to a bookable service. Available services are: ${options}. Which one would you like to book?`;
+  const visibleServices = configuredServices.slice(0, 5);
+  const options = visibleServices.join(", ");
+  const catalog = options
+    ? configuredServices.length > visibleServices.length ? `${options}, …` : options
+    : "";
+  if (language === "sv") return catalog ? `Jag kan inte matcha “${requestedService}” mot en bokningsbar tjänst. Tillgängliga tjänster är: ${catalog}. Vilka av dem vill du välja för bokningen?` : `Jag kan inte matcha “${requestedService}” mot en bokningsbar tjänst. Vilken annan tjänst vill du boka?`;
+  if (language === "de") return catalog ? `Ich kann „${requestedService}“ keiner buchbaren Leistung zuordnen. Verfügbar sind: ${catalog}. Für welche davon möchten Sie buchen?` : `Ich kann „${requestedService}“ keiner buchbaren Leistung zuordnen. Welche andere Leistung möchten Sie buchen?`;
+  if (language === "es") return catalog ? `No puedo asociar «${requestedService}» con un servicio reservable. Los servicios disponibles son: ${catalog}. ¿Qué servicio quieres reservar para tu cita?` : `No puedo asociar «${requestedService}» con un servicio reservable. ¿Qué otro servicio quieres reservar?`;
+  if (language === "fa") return catalog ? `نمی‌توانم «${requestedService}» را با یکی از خدمات قابل رزرو تطبیق بدهم. خدمات موجود: ${catalog}. کدام را می‌خواهید رزرو کنید؟` : `نمی‌توانم «${requestedService}» را با یکی از خدمات قابل رزرو تطبیق بدهم. کدام سرویس دیگری را می‌خواهید رزرو کنید؟`;
+  if (language === "ar") return catalog ? `لا أستطيع مطابقة «${requestedService}» مع خدمة قابلة للحجز. الخدمات المتاحة: ${catalog}. أي خدمة تريد حجزها؟` : `لا أستطيع مطابقة «${requestedService}» مع خدمة قابلة للحجز. ما الخدمة الأخرى التي تريد حجزها؟`;
+  return catalog ? `I cannot match “${requestedService}” to a bookable service. Available services are: ${catalog}. Which one would you like to book?` : `I cannot match “${requestedService}” to a bookable service. Which other service would you like to book?`;
+}
+
+function formatMissingServiceBookingReply(language: string): string {
+  if (language === "sv") return "Absolut. Vilken tjänst vill du boka?";
+  if (language === "de") return "Gerne. Welche Leistung möchten Sie buchen?";
+  if (language === "es") return "Claro. ¿Qué servicio quieres reservar?";
+  if (language === "fa") return "حتماً. برای کدام سرویس می‌خواهید وقت رزرو کنید؟";
+  if (language === "ar") return "بالتأكيد. لأي خدمة تريد حجز موعد؟";
+  return "Of course. Which service would you like to book?";
+}
+
+function formatAmbiguousServiceBookingReply(
+  language: string,
+  requestedService: string,
+  candidates: string[],
+): string {
+  const options = candidates.slice(0, 5).join(", ");
+  if (language === "sv") return `“${requestedService}” kan avse flera tjänster: ${options}. Vilken menar du?`;
+  if (language === "de") return `„${requestedService}“ kann mehrere Leistungen meinen: ${options}. Welche davon möchten Sie?`;
+  if (language === "es") return `«${requestedService}» puede referirse a varios servicios: ${options}. ¿Cuál quieres?`;
+  if (language === "fa") return `«${requestedService}» می‌تواند به چند سرویس اشاره کند: ${options}. کدام را می‌خواهید؟`;
+  if (language === "ar") return `قد تشير «${requestedService}» إلى عدة خدمات: ${options}. أيّها تريد؟`;
+  return `“${requestedService}” could mean several services: ${options}. Which one would you like?`;
 }
 
 function formatConfiguredServiceDatePrompt(language: string, service: string, requestedTime?: string): string {
@@ -7633,6 +7798,20 @@ async function savePendingBooking(chatId: string, platform: string, pending: any
   if (pending.status === "awaiting_slot_selection") {
     pending.status = "awaiting_time_selection";
   }
+  const configuredPendingService = getEligibleConfiguredBookingServices(
+    pending.businessConfig,
+  ).find((service) => service.name === String(pending.service || "").trim());
+  if (configuredPendingService) {
+    pending.serviceId = configuredPendingService.id;
+    pending.serviceResolution = "authoritative";
+  } else if (
+    pending.service &&
+    pending.service !== "Bokning" &&
+    getDefaultBookingServiceForBusiness(pending.businessConfig) === pending.service
+  ) {
+    pending.serviceId = pending.serviceId || null;
+    pending.serviceResolution = "authoritative";
+  }
   pending.createdAt = pending.createdAt || Date.now();
   pending.updatedAt = Date.now();
   pending.businessId = String(
@@ -7652,6 +7831,8 @@ async function savePendingBooking(chatId: string, platform: string, pending: any
       bookingStateVersion: CURRENT_BOOKING_STATE_VERSION,
       platform,
       service: pending.service,
+      serviceId: pending.serviceId || null,
+      serviceResolution: pending.serviceResolution || null,
       requestedService: pending.requestedService || null,
       requestedTime: pending.requestedTime || null,
       dateTime: pending.dateTime || null,
@@ -7801,6 +7982,8 @@ async function loadPendingBooking(chatId: string, platform: string, businessConf
       bookingStateVersion: Number(parsed.bookingStateVersion || 0),
       platform,
       service: parsed.service || "Bokning",
+      serviceId: parsed.serviceId || null,
+      serviceResolution: parsed.serviceResolution || null,
       requestedService: parsed.requestedService || null,
       requestedTime: parsed.requestedTime || null,
       dateTime: parsed.dateTime || null,
@@ -12281,9 +12464,12 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
     const serviceResolutionLanguage = entryPendingLanguage || pending.language || language;
     pending.language = serviceResolutionLanguage;
     lockConversationFlowLanguage(sessionId, serviceResolutionLanguage, "booking");
-    const selectedConfiguredService = findConfiguredBookingService(text, businessConfig);
-    if (selectedConfiguredService) {
+    const serviceResolution = resolveAuthoritativeBookingService(text, businessConfig);
+    if (serviceResolution.status === "resolved" && serviceResolution.source === "evidence") {
+      const selectedConfiguredService = serviceResolution.service.name;
       pending.service = selectedConfiguredService;
+      pending.serviceId = serviceResolution.service.id;
+      pending.serviceResolution = "authoritative";
       pending.durationMinutes = await resolveServiceDurationMinutes(
         selectedConfiguredService,
         null,
@@ -12293,9 +12479,27 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
       pending.expectedInput = "date_or_constraint";
       const sameTurnRequestedTime = inferRequestedTimeFromText(text);
       if (sameTurnRequestedTime) pending.requestedTime = sameTurnRequestedTime;
-      if (authoritativeNormalizedRequest.date?.value) {
+      const hydratedPendingRequest = getPendingNormalizedBookingRequest(
+        pending,
+        authoritativeNormalizedRequest,
+      );
+      const retainedNormalizedRequest: NormalizedBookingRequest = {
+        ...(hydratedPendingRequest || authoritativeNormalizedRequest),
+        ...authoritativeNormalizedRequest,
+        date: authoritativeNormalizedRequest.date || hydratedPendingRequest?.date,
+        timeConstraint: authoritativeNormalizedRequest.timeConstraint?.kind !== "none"
+          ? authoritativeNormalizedRequest.timeConstraint
+          : hydratedPendingRequest?.timeConstraint || authoritativeNormalizedRequest.timeConstraint,
+        service: {
+          raw: selectedConfiguredService,
+          normalized: selectedConfiguredService,
+          confidence: "high",
+        },
+      };
+      if (retainedNormalizedRequest.date?.value || pending.availabilityStartDate || pending.selectedDate) {
         resumedAwaitingServiceDuration = Number(pending.durationMinutes || 0) || null;
-        pending.normalizedBookingRequest = toPersistedBookingRequest(authoritativeNormalizedRequest);
+        pending.normalizedBookingRequest = toPersistedBookingRequest(retainedNormalizedRequest);
+        authoritativeNormalizedRequest = retainedNormalizedRequest;
       } else {
         await savePendingBooking(sessionId, platformName, pending);
         await replyAndRecord(formatConfiguredServiceDatePrompt(
@@ -12306,27 +12510,42 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
         return true;
       }
     } else {
-      const nextUnsupportedService = extractConcreteRequestedService(text);
-      if (nextUnsupportedService) pending.requestedService = nextUnsupportedService;
+      const nextRequestedService = serviceResolution.status === "ambiguous" || serviceResolution.status === "unsupported"
+        ? serviceResolution.requestedService
+        : extractConcreteRequestedService(text);
+      if (nextRequestedService) pending.requestedService = nextRequestedService;
       const nextRequestedTime = inferRequestedTimeFromText(text);
       if (nextRequestedTime) pending.requestedTime = nextRequestedTime;
       pending.expectedInput = "service";
       await savePendingBooking(sessionId, platformName, pending);
-      await replyAndRecord(formatUnsupportedServiceBookingReply(
-        serviceResolutionLanguage,
-        pending.requestedService || "service",
-        configuredServiceNames
-      ));
+      await replyAndRecord(
+        serviceResolution.status === "ambiguous"
+          ? formatAmbiguousServiceBookingReply(
+              serviceResolutionLanguage,
+              serviceResolution.requestedService,
+              serviceResolution.candidates.map((candidate) => candidate.name),
+            )
+          : serviceResolution.status === "missing"
+            ? formatMissingServiceBookingReply(serviceResolutionLanguage)
+            : formatUnsupportedServiceBookingReply(
+                serviceResolutionLanguage,
+                pending.requestedService || "service",
+                configuredServiceNames,
+              )
+      );
       return true;
     }
   }
 
   const concreteRequestedService = extractConcreteRequestedService(text);
+  const initialServiceResolution = !pending && concreteRequestedService
+    ? resolveAuthoritativeBookingService(text, businessConfig)
+    : null;
   if (
     !pending &&
     concreteRequestedService &&
     configuredServiceNames.length > 0 &&
-    !findConfiguredBookingService(concreteRequestedService, businessConfig)
+    initialServiceResolution?.status === "unsupported"
   ) {
     const requestedTime = inferRequestedTimeFromText(text);
     pending = {
@@ -14182,7 +14401,9 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
     if (
       pending?.operation === "new_booking" &&
       isInterveningNonMutatingQuestion(text) &&
-      !isPendingSelectionRejectionRequest(text, pending)
+      !isPendingSelectionRejectionRequest(text, pending) &&
+      !resumedAwaitingServiceDuration &&
+      !findConfiguredBookingService(text, businessConfig)
     ) {
       nonMutatingSupportTurns[sessionId] = Date.now();
       lockConversationFlowLanguage(
@@ -15678,7 +15899,9 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
     }
 
     let latestAvailabilityConstraint = rejectedSelectionConstraint || derivedLatestAvailabilityConstraint || (
-      explicitNewBookingRequested
+      resumedAwaitingServiceDuration && previousAvailabilityConstraint
+        ? previousAvailabilityConstraint
+        : explicitNewBookingRequested
         ? recoveredConstraintForNewBooking || null
         : pending?.lastFailureStage === "availability" && isGenericBookingRetry(text)
           ? previousAvailabilityConstraint || null
@@ -15707,6 +15930,170 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
       };
       outsideOriginalRange = true;
     }
+
+    const serviceGateApplies = Boolean(
+      !getRescheduleContext(sessionId) &&
+      (
+        latestAvailabilityConstraint ||
+        normalizedRequest.intent === "new_booking" ||
+        entryExplicitNewBookingRequest ||
+        pending?.operation === "new_booking" ||
+        Boolean(findConfiguredBookingService(text, businessConfig))
+      )
+    );
+    if (serviceGateApplies) {
+      const eligibleServices = getEligibleConfiguredBookingServices(businessConfig);
+      const existingService = eligibleServices.find((service) =>
+        service.name === String(pending?.service || "").trim()
+      ) || (
+        pending?.service &&
+        pending.service !== "Bokning" &&
+        (
+          pending.serviceResolution === "authoritative" ||
+          (Array.isArray(pending.ownedOfferedSlots) && pending.ownedOfferedSlots.length > 0)
+        )
+        ? {
+            id: pending.serviceId || null,
+            name: String(pending.service),
+            aliases: [],
+            raw: null,
+          }
+        : null
+      );
+      const turnServiceResolution = resolveAuthoritativeBookingService(text, businessConfig);
+      const turnHasServiceEvidence =
+        turnServiceResolution.status === "ambiguous" ||
+        (turnServiceResolution.status === "unsupported" && !pending?.dateTime) ||
+        (turnServiceResolution.status === "resolved" && turnServiceResolution.source === "evidence");
+      const serviceResolution: BookingServiceResolution = existingService && !turnHasServiceEvidence
+        ? { status: "resolved", service: existingService, source: "evidence" }
+        : turnServiceResolution;
+
+      if (serviceResolution.status !== "resolved") {
+        delete availabilitySearchContexts[sessionId];
+        const requestedService = serviceResolution.status === "ambiguous" || serviceResolution.status === "unsupported"
+          ? serviceResolution.requestedService
+          : null;
+        pending = {
+          ...(pending || {}),
+          businessConfig,
+          platform: platformName,
+          service: "Bokning",
+          serviceId: null,
+          serviceResolution: "unresolved",
+          requestedService,
+          selectedDate: latestAvailabilityConstraint?.startDate === latestAvailabilityConstraint?.endDate
+            ? latestAvailabilityConstraint.startDate
+            : pending?.selectedDate || null,
+          availabilityStartDate: latestAvailabilityConstraint?.startDate || pending?.availabilityStartDate || null,
+          availabilityEndDate: latestAvailabilityConstraint?.endDate || pending?.availabilityEndDate || null,
+          availabilityMinTime: latestAvailabilityConstraint?.minTime || pending?.availabilityMinTime || null,
+          availabilityMaxTime: latestAvailabilityConstraint?.maxTime || pending?.availabilityMaxTime || null,
+          availabilityConstraint: latestAvailabilityConstraint || previousAvailabilityConstraint || null,
+          normalizedBookingRequest: toPersistedBookingRequest(availabilityNormalizedRequest),
+          offeredSlots: [],
+          ownedOfferedSlots: [],
+          dateTime: null,
+          selectedSlotEnd: null,
+          durationMinutes: null,
+          language: pending?.language || language,
+          operation: "new_booking",
+          expectedInput: "service",
+          customerName: pending?.customerName || currentTurnBookingContact.name,
+          customerPhone: pending?.customerPhone || currentTurnBookingContact.phone,
+          contactPhoneSource: pending?.contactPhoneSource || currentTurnBookingContact.phoneSource,
+          status: "awaiting_service",
+        };
+        await savePendingBooking(sessionId, platformName, pending);
+        await replyAndRecord(
+          serviceResolution.status === "ambiguous"
+            ? formatAmbiguousServiceBookingReply(
+                getFlowReplyLanguage(pending.language, language, text),
+                serviceResolution.requestedService,
+                serviceResolution.candidates.map((candidate) => candidate.name),
+              )
+            : serviceResolution.status === "unsupported"
+              ? formatUnsupportedServiceBookingReply(
+                  getFlowReplyLanguage(pending.language, language, text),
+                  serviceResolution.requestedService,
+                  configuredServiceNames,
+                )
+              : formatMissingServiceBookingReply(
+                  getFlowReplyLanguage(pending.language, language, text),
+                )
+        );
+        return true;
+      }
+
+      const serviceChanged = Boolean(
+        pending?.service &&
+        pending.service !== "Bokning" &&
+        pending.service !== serviceResolution.service.name
+      );
+      const preserveLegacyResolvedPath = Boolean(
+        !pending && (
+          serviceResolution.source === "explicit_default" ||
+          isGenericBookingRequestWithoutDate(text)
+        )
+      );
+      if (
+        !preserveLegacyResolvedPath &&
+        (!pending || pending.service !== serviceResolution.service.name || pending.serviceResolution !== "authoritative")
+      ) {
+        if (serviceChanged) {
+          delete availabilitySearchContexts[sessionId];
+          latestAvailabilityConstraint = latestAvailabilityConstraint || previousAvailabilityConstraint;
+        }
+        const durationMinutes = await resolveServiceDurationMinutes(
+          serviceResolution.service.name,
+          null,
+          businessConfig,
+        );
+        pending = {
+          ...(pending || {}),
+          businessConfig,
+          platform: platformName,
+          service: serviceResolution.service.name,
+          serviceId: serviceResolution.service.id,
+          serviceResolution: "authoritative",
+          requestedService: null,
+          offeredSlots: serviceChanged ? [] : pending?.offeredSlots || [],
+          ownedOfferedSlots: serviceChanged ? [] : pending?.ownedOfferedSlots || [],
+          dateTime: serviceChanged ? null : pending?.dateTime || null,
+          selectedSlotEnd: serviceChanged ? null : pending?.selectedSlotEnd || null,
+          lastAvailabilityConstraintKey: serviceChanged ? null : pending?.lastAvailabilityConstraintKey || null,
+          durationMinutes,
+          language: pending?.language || language,
+          operation: "new_booking",
+          expectedInput: pending?.service === serviceResolution.service.name
+            ? pending?.expectedInput || (latestAvailabilityConstraint ? "slot_selection" : "date_or_constraint")
+            : latestAvailabilityConstraint ? "slot_selection" : "date_or_constraint",
+          customerName: pending?.customerName || currentTurnBookingContact.name,
+          customerPhone: pending?.customerPhone || currentTurnBookingContact.phone,
+          contactPhoneSource: pending?.contactPhoneSource || currentTurnBookingContact.phoneSource,
+          status: pending?.service === serviceResolution.service.name
+            ? pending?.status || (latestAvailabilityConstraint ? "awaiting_time_selection" : "awaiting_date_or_time")
+            : latestAvailabilityConstraint ? "awaiting_time_selection" : "awaiting_date_or_time",
+        };
+        await savePendingBooking(sessionId, platformName, pending);
+      }
+
+      if (
+        !preserveLegacyResolvedPath &&
+        !latestAvailabilityConstraint &&
+        !authoritativeNormalizedRequest.date?.value &&
+        !resolveExplicitBookingDate(text) &&
+        !pending.dateTime &&
+        ["awaiting_date_or_time", "awaiting_date_or_constraint"].includes(String(pending.status || ""))
+      ) {
+        await replyAndRecord(formatConfiguredServiceDatePrompt(
+          getFlowReplyLanguage(pending.language, language, text),
+          serviceResolution.service.name,
+          pending.requestedTime || undefined,
+        ));
+        return true;
+      }
+    }
     const hasActiveAvailabilityFlow = Boolean(
       availabilityOwnerMatches ||
       (
@@ -15721,6 +16108,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
     );
     const pendingCanAcceptAvailabilityRefinement = Boolean(
       !pending ||
+      resumedAwaitingServiceDuration ||
       (!currentOwnedSlotSelection && ["awaiting_time_selection"].includes(
         String(pending?.status || "")
       )) ||
@@ -15739,14 +16127,16 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
     ) {
       const priorConstraintType = previousAvailabilityConstraint?.kind || "none";
       const constraint = latestAvailabilityConstraint;
-      const fingerprintService = resolveConfiguredBookingService(
-        `${history.slice(-8).map((m: any) => typeof m.content === "string" ? m.content : "").join(" ")} ${text || ""}`,
-        businessConfig,
-        storedAvailability?.service ||
-          pending?.service ||
-          getDefaultBookingServiceForBusiness(businessConfig) ||
-          "Bokning"
-      );
+      const fingerprintService = pending?.serviceResolution === "authoritative" && pending?.service
+        ? String(pending.service)
+        : resolveConfiguredBookingService(
+            `${history.slice(-8).map((m: any) => typeof m.content === "string" ? m.content : "").join(" ")} ${text || ""}`,
+            businessConfig,
+            storedAvailability?.service ||
+              pending?.service ||
+              getDefaultBookingServiceForBusiness(businessConfig) ||
+              "Bokning"
+          );
       const fingerprintResolvedDuration = await resolveServiceDurationMinutes(
         fingerprintService,
         null,

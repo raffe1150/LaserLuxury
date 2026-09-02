@@ -5905,6 +5905,7 @@ function isRecentCompletionRequirementsQuestion(text?: string): boolean {
     /\b(?:brauchen|benotigen|muss\s+ich|soll\s+ich|angeben|bestatigen)\b.{0,55}\b(?:noch\s+etwas|weitere|mehr|zusatzliche|erneut)\b/u.test(normalized) ||
     /\b(?:necesit|tengo\s+que|debo|hace\s+falta|aportar|enviar|confirmar)\w*\b.{0,60}\b(?:algo\s+mas|algun\s+otro|otro\s+dato|mas\s+datos|informacion|confirmacion|nada\s+mas)\b/u.test(normalized) ||
     /(?:آیا|ایا|لازم|باید|نیاز).{0,55}(?:چیز|اطلاعات|مشخصات|تایید|تأیید).{0,30}(?:دیگر|بیشتر|اضافی|دوباره)/u.test(normalized) ||
+    /(?:چیز|اطلاعات|مشخصات|تایید|تأیید)(?:\s+یا\s+(?:چیز|اطلاعات|مشخصات|تایید|تأیید))?.{0,18}(?:دیگر|بیشتر|اضافی).{0,40}(?:لازم\s+(?:دارید|دارین|است|هست)|نیاز\s+(?:دارید|دارین|است|هست))/u.test(normalized) ||
     /(?:هل|هل\s+[يی]جب|أحتاج|احتاج|لازم).{0,55}(?:ش[يی]ء|ب[يی]انات|معلومات|تأ[كک][يی]د).{0,30}(?:آخر|اخر|اخر[يی]|اخرى|إضاف[يی]|اضاف[يی]|مرة\s+أخرى)/u.test(normalized)
   );
 }

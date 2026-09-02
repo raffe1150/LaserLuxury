@@ -145,6 +145,8 @@ const turn1Text = 'سلام، می‌خواهم برای سه‌شنبه ۱۵ س
 const turn2Text = 'سلام، پس لطفاً برای سه‌شنبه ۱۵ سپتامبر ۲۰۲۶ وقت رزرو کنید. نام من اسکار ساندبرگ و شماره تماسم ۰۷۰۰۰۰۷۶۲۸ است.';
 const turn3Text = 'سلام، لطفاً وقت ۱۴:۰۰ برای سه‌شنبه ۱۵ سپتامبر ۲۰۲۶ را رزرو کنید.';
 const turn4Text = 'بله، لطفاً رزرو کنید. ممنونم که وقت ۱۴:۰۰ برای سه‌شنبه ۱۵ سپتامبر ۲۰۲۶ را برایم ثبت می‌کنید. نام من اسکار ساندبرگ و شماره تماس ۰۷۰۰۰۰۷۶۲۸ است.';
+const requirementsText = 'عالیه، ممنون. اطلاعات یا تأیید دیگری از طرف من لازم دارید؟';
+const preparationText = 'برای جلسه لازم است چیز خاصی همراه داشته باشم یا از قبل آماده کنم؟';
 const statusText = 'نه، ممنونم. آیا قرار من تأیید شده و با چه نام و شماره تلفنی ثبت شده است؟';
 
 try {
@@ -213,6 +215,34 @@ try {
   assert.match(fourth.replies.join(' '), /اسکار ساندبرگ|رزرو شد|تأیید/u);
   assert.doesNotMatch(fourth.replies.join(' '), /می‌خواهید برایتان رزرو کنم/u);
 
+  assert.equal(
+    boundary.recentCompletionClassification(sessionId, requirementsText, businessConfig, now)?.category,
+    'completion_requirements',
+  );
+  const requirements = await turn(sessionId, requirementsText);
+  assert.equal(requirements.handled, true);
+  assert.equal(requirements.pending, null);
+  assert.match(requirements.replies.join(' '), /کار دیگری لازم نیست|اطلاعات تماس شما ثبت/u);
+  assert.equal(calls.groundingVerifier, 0);
+  assert.equal(calls.entailment, 0);
+
+  assert.equal(
+    boundary.recentCompletionClassification(sessionId, preparationText, businessConfig, now)?.category,
+    'business_support',
+  );
+  const preparation = await turn(sessionId, preparationText);
+  assert.equal(preparation.handled, false);
+  assert.ok(boundary.recentCompletionState(sessionId).support);
+  const preparationGap = await boundary.finalizeGeneralAiReply(
+    sessionId,
+    preparationText,
+    'برای این جلسه نیاز به آمادگی خاصی ندارید.',
+    'fa',
+  );
+  assert.match(preparationGap, /پاسخ مشخصی|اطلاعات موجود کسب/u);
+  assert.equal(calls.groundingVerifier, 1);
+  assert.equal(calls.entailment, 0);
+
   const readsBeforeStatus = calls.calendarReads;
   assert.equal(
     boundary.recentCompletionClassification(sessionId, statusText, businessConfig, now)?.category,
@@ -225,6 +255,57 @@ try {
   assert.match(status.replies.join(' '), /اسکار ساندبرگ/u);
   assert.match(status.replies.join(' '), /0700007628/u);
   assert.doesNotMatch(status.replies.join(' '), /خالی|14:15|14:30|14:45/u);
+
+  for (const [index, question] of [
+    'اطلاعات دیگری لازم دارید؟',
+    'تأیید دیگری لازم است؟',
+    'چیز دیگری از من لازم دارید؟',
+    'اطلاعات بیشتری لازم دارید؟',
+  ].entries()) {
+    configure();
+    const requirementsSession = `persian-requirements-${index}`;
+    boundary.seedRecentCompletedBooking(requirementsSession, 'fa', {
+      ok: true,
+      bookingId: `persian-requirements-${index}`,
+      businessId: businessConfig.id,
+      serviceName: 'Video Consultation',
+      startTime: '2026-09-15T14:00:00+02:00',
+      customerName: 'اسکار ساندبرگ',
+      customerPhone: '0700007628',
+      sourceChannel: 'instagram',
+    }, 30);
+    assert.equal(
+      boundary.recentCompletionClassification(requirementsSession, question, businessConfig, now)?.category,
+      'completion_requirements',
+      question,
+    );
+    const result = await turn(requirementsSession, question);
+    assert.equal(result.handled, true, question);
+    assert.doesNotMatch(result.replies.join(' '), /پاسخ مشخصی|اطلاعات موجود کسب/u, question);
+    assert.equal(calls.groundingVerifier, 0, question);
+    assert.equal(calls.entailment, 0, question);
+  }
+
+  configure();
+  const informationSession = 'persian-business-information-preserved';
+  boundary.seedRecentCompletedBooking(informationSession, 'fa', {
+    ok: true,
+    bookingId: 'persian-business-information',
+    businessId: businessConfig.id,
+    serviceName: 'Video Consultation',
+    startTime: '2026-09-15T14:00:00+02:00',
+    customerName: 'اسکار ساندبرگ',
+    customerPhone: '0700007628',
+    sourceChannel: 'instagram',
+  }, 30);
+  const informationText = 'هزینه جلسه چقدر است؟';
+  assert.equal(
+    boundary.recentCompletionClassification(informationSession, informationText, businessConfig, now)?.category,
+    'business_support',
+  );
+  const information = await turn(informationSession, informationText);
+  assert.equal(information.handled, false);
+  assert.ok(boundary.recentCompletionState(informationSession).support);
 
   for (const [index, confirmation] of [
     'بله، لطفاً رزرو کنید.',

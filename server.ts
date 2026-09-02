@@ -5800,7 +5800,7 @@ function isExplicitNewBookingPivotText(text?: string): boolean {
   if (isExplicitNewBookingRequest(raw)) return true;
   return (
     /\b(?:jag\s+vill|jag\s+skulle\s+vilja)\s+(?:gärna\s+)?boka\s+(?:en\s+)?(?:ny\s+)?(?:tid|bokning)\b/iu.test(lower) ||
-    /\b(?:i\s+want|i(?:'d|\s+would)\s+like)\s+to\s+book\s+(?:a\s+)?(?:new\s+)?(?:appointment|booking)\b/iu.test(lower) ||
+    /\b(?:i\s+want|i(?:['’]d|\s+would)\s+like)\s+to\s+(?:book|make)\s+(?:new\s+)?(?:(?:an?\s+)?appointment|(?:a\s+)?booking)\b/iu.test(lower) ||
     /\bich\s+(?:möchte|will)\s+(?:gern(?:e)?\s+)?(?:einen\s+)?(?:neuen\s+)?termin\s+buchen\b/iu.test(lower) ||
     /\b(?:quiero|me\s+gustar[ií]a)\s+reservar\s+(?:una\s+)?(?:nueva\s+)?cita\b/iu.test(lower) ||
     /\b(?:mikham|mikhastam)\s+(?:ye\s+)?(?:vaghte?\s+jadid|vaght)\s+(?:book|rezerv)\s+konam\b/iu.test(lower) ||
@@ -6076,6 +6076,12 @@ function classifyRecentCompletedBookingTurn(params: {
   );
   const hasStatusSemantics = hasRecentCompletedBookingStatusSemantics(raw);
   const hasDetailSemantics = hasRecentCompletedBookingDetailSemantics(raw);
+  // Normalized intent can be noisy for support questions. Require independent,
+  // deterministic booking evidence before it may escape recent-completion routing.
+  const corroboratedNewBookingPivot = Boolean(
+    params.normalizedRequest.intent === "new_booking" &&
+    isNewBookingRequestText(raw)
+  );
   const explicitlyRequestsDistinctNewBooking =
     /\b(?:want|would\s+like|like|need)\b.{0,30}\bbook\b.{0,24}\b(?:another|new)\b|\bbook\b.{0,16}\b(?:another|new)\b.{0,16}\b(?:appointment|booking)\b/iu.test(raw) ||
     /\b(?:vill|skulle\s+vilja|behöver)\b.{0,30}\bboka\b.{0,24}\b(?:en\s+)?(?:annan|ny)\b|\bboka\b.{0,16}\b(?:en\s+)?(?:annan|ny)\b.{0,16}\b(?:tid|bokning)\b/iu.test(raw) ||
@@ -6083,15 +6089,15 @@ function classifyRecentCompletedBookingTurn(params: {
     /\b(?:ich\s+möchte|ich\s+will|ich\s+brauche)\b.{0,30}\b(?:buchen|vereinbaren)\b.{0,24}\b(?:anderen|neuen)\b/iu.test(raw) ||
     /(?:می[\u200c\s]?خوام|می[\u200c\s]?خواهم).{0,30}(?:وقت|رزرو).{0,20}(?:دیگر|جدید)/u.test(raw) ||
     /(?:أريد|أرغب).{0,30}(?:حجز|موعد).{0,20}(?:آخر|جديد)/u.test(raw);
-  if (isExplicitNewBookingPivotText(raw) && explicitlyRequestsDistinctNewBooking) return "new_booking";
   if (matchingStatusReference || ((hasStatusSemantics || hasDetailSemantics) && factsMatch)) return "current_booking_status";
-  if (isExplicitNewBookingPivotText(raw)) return "new_booking";
+  if (corroboratedNewBookingPivot && explicitlyRequestsDistinctNewBooking) return "new_booking";
   if (explicitlyReferencesAnotherBooking(raw)) return "another_booking_lookup";
   if (hasStatusSemantics || hasDetailSemantics) return "another_booking_lookup";
   if (
     params.normalizedRequest.intent === "booking_lookup" ||
     isExistingAppointmentLookupIntent(raw)
   ) return "another_booking_lookup";
+  if (corroboratedNewBookingPivot) return "new_booking";
   return "business_support";
 }
 
@@ -7449,6 +7455,11 @@ function extractConcreteRequestedService(text?: string): string | null {
     const match = raw.match(pattern);
     const extracted = String(match?.[1] || "").trim();
     if (!extracted) continue;
+    const normalizedCandidate = normalizeConversationText(extracted)
+      .toLowerCase()
+      .replace(/[.!?,;:]+$/gu, "")
+      .trim();
+    if (/^(?:one|it|that|this)$/u.test(normalizedCandidate)) continue;
     if (/^(?:appointment|booking|time|slot|tid|bokning|termin|cita|reserva|service|tjänst)$/iu.test(extracted)) continue;
     const genericEnglishBookingWithContinuation = extracted.match(
       /^(?:appointment|booking|reservation|time|slot)\s+(.+)$/iu
@@ -26701,6 +26712,10 @@ export const priority1hUnifiedEngineTestBoundary = {
   extractConcreteRequestedService(text: string) {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
     return extractConcreteRequestedService(text);
+  },
+  isExplicitNewBookingPivot(text: string) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    return isExplicitNewBookingPivotText(text);
   },
   async resolveConfiguredDuration(service: string, businessConfig: any) {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");

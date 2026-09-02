@@ -5767,12 +5767,38 @@ function isPendingBookingActiveForGreeting(pending: any): boolean {
   );
 }
 
-function isNewBookingRequestText(text?: string): boolean {
+function isExplicitDatedBookingCreationText(
+  text: string | undefined,
+  normalizedRequest?: NormalizedBookingRequest,
+): boolean {
+  const raw = String(text || "").trim().toLowerCase();
+  if (!raw || normalizedRequest?.date?.kind !== "exact_date" || !normalizedRequest.date.value) {
+    return false;
+  }
+  if (
+    isExistingBookingOperationRecoveryIntent(raw) ||
+    isRescheduleIntent(raw) ||
+    isCancellationIntent(raw)
+  ) {
+    return false;
+  }
+
+  const hasBookingNoun = /\b(?:appointment|booking|termin(?:e|en|s)?|buchung(?:en)?|tid|bokning|cita|reserva|موعد|حجز|وقت|رزرو)\b/iu.test(raw);
+  const hasBookingCreationVerb = /\b(?:book|schedule|reserve|boka|reservera|buchen|buche|buchst|bucht|vereinbaren|vereinbare|vereinbarst|vereinbart|reservar|agendar)\b/iu.test(raw) ||
+    /(?:احجز|أحجز|رزرو\s+(?:کن|کنید))/u.test(raw);
+  return hasBookingNoun && hasBookingCreationVerb;
+}
+
+function isNewBookingRequestText(
+  text?: string,
+  normalizedRequest?: NormalizedBookingRequest,
+): boolean {
   const raw = String(text || "").trim();
   const lower = raw.toLowerCase();
   if (!raw) return false;
   if (extractNameAndPhone(raw)) return false;
   if (isExplicitNewBookingPivotText(raw)) return true;
+  if (isExplicitDatedBookingCreationText(raw, normalizedRequest)) return true;
   if (isThanksOnlyText(raw) || isAffirmativeBookingText(raw) || isAmbiguousShortReply(raw)) return false;
 
   const hasBookingWord = /\b(boka|bokning|tid|appointment|book|booking|termin|cita|reservar|موعد|حجز|vaght|وقت)\b/i.test(lower);
@@ -6079,8 +6105,11 @@ function classifyRecentCompletedBookingTurn(params: {
   // Normalized intent can be noisy for support questions. Require independent,
   // deterministic booking evidence before it may escape recent-completion routing.
   const corroboratedNewBookingPivot = Boolean(
-    params.normalizedRequest.intent === "new_booking" &&
-    isNewBookingRequestText(raw)
+    isExplicitDatedBookingCreationText(raw, params.normalizedRequest) ||
+    (
+      params.normalizedRequest.intent === "new_booking" &&
+      isNewBookingRequestText(raw, params.normalizedRequest)
+    )
   );
   const explicitlyRequestsDistinctNewBooking =
     /\b(?:want|would\s+like|like|need)\b.{0,30}\bbook\b.{0,24}\b(?:another|new)\b|\bbook\b.{0,16}\b(?:another|new)\b.{0,16}\b(?:appointment|booking)\b/iu.test(raw) ||
@@ -12075,7 +12104,11 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
   const entryExplicitNewBookingRequest =
     deterministicTransition?.reason !== "slot_confirmation_accepted" &&
     !continuesOwnedBooking &&
-    (normalizedRequest.intent === "new_booking" || isExplicitNewBookingPivotText(text));
+    (
+      normalizedRequest.intent === "new_booking" ||
+      isExplicitNewBookingPivotText(text) ||
+      isExplicitDatedBookingCreationText(text, normalizedRequest)
+    );
   const authoritativeTelegramNewBooking = Boolean(
     platformName === "telegram" &&
     pending?.operation === "new_booking" &&
@@ -26716,6 +26749,19 @@ export const priority1hUnifiedEngineTestBoundary = {
   isExplicitNewBookingPivot(text: string) {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
     return isExplicitNewBookingPivotText(text);
+  },
+  isExplicitDatedBookingCreation(text: string, businessConfig: any, now?: Date) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    const normalizedRequest = understandBookingTurn({
+      businessId: getBusinessIdFromConfig(businessConfig) || "unscoped",
+      channel: "instagram",
+      conversationKey: "explicit-dated-booking-creation-test",
+      inputMode: "text",
+      text,
+      timezone: String(businessConfig?.timezone || "Europe/Stockholm"),
+      ...(now ? { now } : {}),
+    });
+    return isExplicitDatedBookingCreationText(text, normalizedRequest);
   },
   async resolveConfiguredDuration(service: string, businessConfig: any) {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");

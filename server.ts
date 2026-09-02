@@ -5783,9 +5783,10 @@ function isExplicitDatedBookingCreationText(
     return false;
   }
 
-  const hasBookingNoun = /\b(?:appointment|booking|termin(?:e|en|s)?|buchung(?:en)?|tid|bokning|cita|reserva|موعد|حجز|وقت|رزرو)\b/iu.test(raw);
+  const hasBookingNoun = /\b(?:appointment|booking|termin(?:e|en|s)?|buchung(?:en)?|tid|bokning|cita|reserva)\b/iu.test(raw) ||
+    /(?:موعد|حجز|وقت|نوبت|رزرو)/u.test(raw);
   const hasBookingCreationVerb = /\b(?:book|schedule|reserve|boka|reservera|buchen|buche|buchst|bucht|vereinbaren|vereinbare|vereinbarst|vereinbart|reservar|agendar)\b/iu.test(raw) ||
-    /(?:احجز|أحجز|رزرو\s+(?:کن|کنید))/u.test(raw);
+    /(?:احجز|أحجز|رزرو\s+(?:کنم|کنیم|کنید|کن))/u.test(raw);
   return hasBookingNoun && hasBookingCreationVerb;
 }
 
@@ -5916,7 +5917,7 @@ function hasRecentCompletedBookingStatusSemantics(text?: string): boolean {
     /\b(?:bokning|tid)\b.{0,50}\b(?:bekraftad|bokad|klar)\b|\b(?:bekraftad|bokad)\b.{0,50}\b(?:bokning|tid)\b/u.test(normalized) ||
     /\b(?:termin|buchung)\b.{0,50}\b(?:bestatigt|gebucht|reserviert)\b|\b(?:bestatigt|gebucht|reserviert)\b.{0,50}\b(?:termin|buchung)\b/u.test(normalized) ||
     /\b(?:cita|reserva|reservacion)\b.{0,50}\b(?:confirmada|confirmado|reservada|reservado)\b|\b(?:confirmada|confirmado|reservada|reservado)\b.{0,50}\b(?:cita|reserva|reservacion)\b/u.test(normalized) ||
-    /(?:وقت|نوبت|رزرو).{0,45}(?:تایید|تأیید|قطعی|ثبت|رزرو\s+شده)|(?:تایید|تأیید|قطعی|ثبت).{0,45}(?:وقت|نوبت|رزرو)/u.test(normalized) ||
+    /(?:وقت|نوبت|رزرو|قرار).{0,45}(?:تایید|تأیید|قطعی|ثبت|رزرو\s+شده)|(?:تایید|تأیید|قطعی|ثبت).{0,45}(?:وقت|نوبت|رزرو|قرار)/u.test(normalized) ||
     /(?:موعد|حجز).{0,45}(?:مؤ[كک]د|مو[كک]د|مؤ[كک]دة|مو[كک]دة|تم|محجوز)|(?:تأ[كک]يد|تا[كک]يد|مؤ[كک]د|مو[كک]د|تم).{0,45}(?:موعد|حجز)/u.test(normalized)
   );
 }
@@ -5926,7 +5927,7 @@ function inferRecentCompletedBookingRequestedDetails(text?: string): RecentCompl
   const normalized = normalizeConfirmationReply(raw);
   const bookingReference =
     /\b(?:appointment|booking|book(?:ed)?|bokning(?:en|ar)?|bokade|bokningsdetaljer|bokningsuppgifter|buchung(?:en)?|buchungsdetails|buchungsdaten|termin(?:e|en|s)?|gebucht|cita(?:s)?|reserva(?:s)?|reserve)\b/u.test(normalized) ||
-    /(?:رزرو|نوبت|وقت|حجز|موعد)/u.test(normalized);
+    /(?:رزرو|نوبت|وقت|قرار|حجز|موعد)/u.test(normalized);
   if (!bookingReference) {
     return {
       status: false, date: false, time: false, name: false,
@@ -7194,6 +7195,7 @@ function extractNameAndPhone(text?: string): { name: string; phone: string } | n
     /(?:mein\s+name\s+ist|ich\s+hei(?:ß|ss)e)\s+([A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,}(?:\s+[A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,})?)/i,
     /(?:mi\s+nombre\s+es|me\s+llamo)\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ'-]{2,}(?:\s+[A-Za-zÁÉÍÓÚÜÑáéíóúüñ'-]{2,})?)/i,
     /(?:esme?\s+man|esmam|namam|name\s+man)\s+(?:hast|e|ast)?\s*([A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,}(?:\s+[A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,})?)/i,
+    /(?:نام|اسم)\s+من\s+([\u0600-\u06FF]{2,}(?:\s+[\u0600-\u06FF]{2,})?)/u,
     /(?:نام(?:م)?|اسم(?:م)?)\s+([\u0600-\u06FF]{2,}(?:\s+[\u0600-\u06FF]{2,})?)/u,
     /(?:اسمي|إسمي|انا اسمي|أنا اسمي|الاسم)\s+([\u0600-\u06FF]{2,})(?=\s+(?:و|ورقم|وهاتفي|رقمي|هاتفي|هو)|\s*$)/u
   ];
@@ -7266,6 +7268,7 @@ function extractNameOnly(text?: string): string | null {
     /(?:mein\s+name\s+ist|ich\s+hei(?:ß|ss)e)\s+([A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,}(?:\s+[A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,})?)/i,
     /(?:mi\s+nombre\s+es|me\s+llamo)\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ'-]{2,}(?:\s+[A-Za-zÁÉÍÓÚÜÑáéíóúüñ'-]{2,})?)/i,
     /(?:esme?\s+man|esmam|namam|name\s+man)\s+(?:hast|ast|e)?\s*([A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,}(?:\s+[A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,})?)/i,
+    /(?:نام|اسم)\s+من\s+([\u0600-\u06FF]{2,}(?:\s+[\u0600-\u06FF]{2,})?)/u,
     /(?:نام(?:م)?|اسم(?:م)?)\s+([\u0600-\u06FF]{2,}(?:\s+[\u0600-\u06FF]{2,})?)/u,
     /(?:اسمي|إسمي|انا اسمي|أنا اسمي|الاسم)\s+([\u0600-\u06FF]{2,})(?=\s+(?:و|ورقم|وهاتفي|رقمي|هاتفي|هو)|\s*$)/u
   ];
@@ -9523,6 +9526,28 @@ function isPendingSlotConfirmation(
   if (!raw) return false;
 
   if (isSpanishSelectedSlotConfirmation(raw, pending, normalizedRequest)) return true;
+  const normalizedConfirmation = normalizeConfirmationReply(raw);
+  const persianSelectedSlotAuthorization =
+    /^(?:بله|اره|باشه)(?: لطفا)? رزرو (?:کنید|کن)(?:\s|$)/u.test(normalizedConfirmation) ||
+    /^(?:لطفا )?رزرو (?:کنید|کن)$/u.test(normalizedConfirmation) ||
+    /^(?:لطفا )?برایم ثبت (?:کنید|کن)$/u.test(normalizedConfirmation) ||
+    /^(?:لطفا )?وقت (?:را|رو) رزرو (?:کنید|کن)$/u.test(normalizedConfirmation);
+  if (persianSelectedSlotAuthorization) {
+    const pendingSlot = getZonedSlotParts(
+      String(pending.dateTime || ""),
+      String(pending?.businessConfig?.timezone || "Europe/Stockholm"),
+    );
+    if (!pendingSlot || normalizedRequest?.dateConflict) return false;
+    if (normalizedRequest?.date?.value && normalizedRequest.date.value !== pendingSlot.date) return false;
+    if (
+      normalizedRequest?.timeConstraint &&
+      (
+        normalizedRequest.timeConstraint.kind !== "exact" ||
+        normalizedRequest.timeConstraint.startMinutes !== pendingSlot.minutes
+      )
+    ) return false;
+    return true;
+  }
   if (isAffirmativeBookingText(raw)) return true;
   if (hasExplicitEntityBearingBookingConfirmation(raw)) return true;
 
@@ -9542,7 +9567,8 @@ function isPendingSlotConfirmation(
 
   // A customer repeating the offered time with normal confirmation wording
   // must count as confirmation, even without words such as "yes" or "ok".
-  return /\b(khube|khob|good|works|fine|passar|bra|går bra|okej|ok|mitonam|می.?تونم|خوبه|مناسبه|باشه|بله|آره|yes|ja|vale|bien|gut)\b/i.test(raw)
+  return /\b(khube|khob|good|works|fine|passar|bra|går bra|okej|ok|mitonam|yes|ja|vale|bien|gut)\b/i.test(raw) ||
+    /(?:می.?تونم|خوبه|مناسبه|باشه|بله|آره)/u.test(raw)
     || raw.replace(/\s+/g, "") === selectedTime.replace(":", "");
 }
 
@@ -11931,6 +11957,13 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
     }
     if (explicitCurrentOperation === "new_booking") {
       clearAppointmentConversationState(sessionId);
+      if (
+        entryStrongLanguage &&
+        hasStrongLanguageEvidence(entryStrongLanguage, text)
+      ) {
+        chatLanguages[sessionId] = entryStrongLanguage;
+        lockConversationFlowLanguage(sessionId, entryStrongLanguage, "booking");
+      }
     }
     entryCancellationContext = getCancellationContext(sessionId);
     entryRescheduleContext = getRescheduleContext(sessionId);
@@ -26762,6 +26795,22 @@ export const priority1hUnifiedEngineTestBoundary = {
       ...(now ? { now } : {}),
     });
     return isExplicitDatedBookingCreationText(text, normalizedRequest);
+  },
+  isPendingSlotConfirmation(sessionId: string, text: string, businessConfig: any, now?: Date) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    const pending = pendingBookings[sessionId];
+    if (!pending) return false;
+    const normalizedRequest = understandBookingTurn({
+      businessId: getBusinessIdFromConfig(businessConfig) || "unscoped",
+      channel: "instagram",
+      conversationKey: sessionId,
+      inputMode: "text",
+      text,
+      activeLanguage: pending.language,
+      timezone: String(businessConfig?.timezone || "Europe/Stockholm"),
+      ...(now ? { now } : {}),
+    });
+    return isPendingSlotConfirmation(text, pending, normalizedRequest);
   },
   async resolveConfiguredDuration(service: string, businessConfig: any) {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");

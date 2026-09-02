@@ -7620,6 +7620,14 @@ function extractConcreteRequestedService(text?: string): string | null {
     new RegExp(String.raw`\bich\s+(?:möchte|moechte|will)\s+(?:gern(?:e)?\s+)?(?:(?:eine[nmrs]?)\s+)?(${candidate})(?=\s+(?:um|am)\s+\d{1,2}(?::\d{2})?|\s+buchen\b|[.!?]|$)`, "iu"),
     new RegExp(String.raw`\b(?:quiero|quisiera|me\s+gustar[ií]a)\s+(?:reservar|agendar)\s+(?:(?:un|una|el|la)\s+)?(${candidate})(?=\s+(?:a\s+las|el)\s+\d{1,2}(?::\d{2})?|[.!?]|$)`, "iu"),
     new RegExp(String.raw`\b(?:mikham|mikhastam)\s+(?:ye\s+)?(${candidate})(?=\s+(?:saat|sate)\s+\d{1,2}(?::\d{2})?|\s+(?:book|rezerv)\b)`, "iu"),
+    new RegExp(
+      String.raw`(?:می[\s‌]*خواهم|می[\s‌]*خوام|می[\s‌]*خواستم|میخوام|میخواهم|میخواستم)\s+(?:برای\s+(?:امروز|فردا|پس[\s‌]*فردا)\s+)?(${candidate})(?=\s+(?:را\s+)?(?:رزرو|بوک)\s*(?:کنم|کنیم|کنید|کن)(?=\s|[.!?،؛]|$))`,
+      "iu",
+    ),
+    new RegExp(
+      String.raw`(?:أريد|اريد|أود|اود)\s+(?:أن\s+)?(?:أحجز|احجز)\s+(${candidate})(?=\s+(?:اليوم|غدًا|غداً|غدا|بعد\s+غد)(?=\s|[.!?،؛]|$)|[.!?،؛]|$)`,
+      "iu",
+    ),
   ];
 
   for (const pattern of patterns) {
@@ -7631,7 +7639,7 @@ function extractConcreteRequestedService(text?: string): string | null {
       .replace(/[.!?,;:]+$/gu, "")
       .trim();
     if (/^(?:one|it|that|this)(?:\s+for\s+me)?$/u.test(normalizedCandidate)) continue;
-    if (/^(?:appointment|booking|time|slot|tid|bokning|termin|cita|reserva|service|tjänst)$/iu.test(extracted)) continue;
+    if (/^(?:appointment|booking|time|slot|tid|bokning|termin|cita|reserva|service|tjänst|وقت|نوبت|رزرو|قرار|سرویس|خدمت|موعد|حجز|خدمة)$/iu.test(extracted)) continue;
     const genericEnglishBookingWithContinuation = extracted.match(
       /^(?:appointment|booking|reservation|time|slot)\s+(.+)$/iu
     );

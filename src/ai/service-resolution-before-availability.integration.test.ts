@@ -165,6 +165,50 @@ try {
   assert.match(unsupported.replies[0], /cannot match/iu);
 
   configure();
+  const unsupportedPersian = await turn(
+    'unsupported-service-persian-native',
+    'می‌خوام برای فردا عکاسی عروسی رزرو کنم.',
+    businessConfig('unsupported-service-persian-native'),
+  );
+  assert.equal(unsupportedPersian.pending?.status, 'awaiting_service');
+  assert.equal(unsupportedPersian.pending?.service, 'Bokning');
+  assert.equal(unsupportedPersian.pending?.requestedService, 'عکاسی عروسی');
+  assert.equal(calendarReads, 0);
+  assert.match(unsupportedPersian.replies[0], /عکاسی عروسی/u);
+
+  assert.equal(
+    boundary.extractConcreteRequestedService('می‌خوام برای فردا وقت رزرو کنم.'),
+    null,
+  );
+
+  assert.equal(
+    boundary.extractConcreteRequestedService('می‌خوام برای فردا نوبت رزرو کنم.'),
+    null,
+  );
+
+  configure();
+  const unsupportedArabic = await turn(
+    'unsupported-service-arabic-native',
+    'أريد أن أحجز تصوير زفاف غدًا.',
+    businessConfig('unsupported-service-arabic-native'),
+  );
+  assert.equal(unsupportedArabic.pending?.status, 'awaiting_service');
+  assert.equal(unsupportedArabic.pending?.service, 'Bokning');
+  assert.equal(unsupportedArabic.pending?.requestedService, 'تصوير زفاف');
+  assert.equal(calendarReads, 0);
+  assert.match(unsupportedArabic.replies[0], /تصوير زفاف/u);
+
+  assert.equal(
+    boundary.extractConcreteRequestedService('أريد أن أحجز موعد غدًا.'),
+    null,
+  );
+
+  assert.equal(
+    boundary.extractConcreteRequestedService('أريد أن أحجز خدمة غدًا.'),
+    null,
+  );
+
+  configure();
   const dateFirstConfig = businessConfig('date-first');
   const dateFirst = await turn('date-first', missingServiceMessages.en, dateFirstConfig);
   assert.equal(dateFirst.pending?.selectedDate, '2026-09-03');

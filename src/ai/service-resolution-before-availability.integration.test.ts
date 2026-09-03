@@ -208,6 +208,134 @@ try {
     null,
   );
 
+  // Large catalogs must never be dumped into clarification replies,
+  // regardless of supported conversation language.
+  const largeCatalogServices = Array.from({ length: 500 }, (_, index) => ({
+    id: `service-${index + 1}`,
+    name: `Catalog Service ${String(index + 1).padStart(4, '0')} END`,
+    durationMinutes: 30,
+    active: true,
+  }));
+
+  const largeCatalogCases = [
+    {
+      language: 'en',
+      text: 'I want to book Wedding Photography.',
+      requestedService: 'Wedding Photography',
+    },
+    {
+      language: 'sv',
+      text: 'Jag vill boka Bröllopsfotografering.',
+      requestedService: 'Bröllopsfotografering',
+    },
+    {
+      language: 'es',
+      text: 'Quiero reservar Fotografía de boda.',
+      requestedService: 'Fotografía de boda',
+    },
+    {
+      language: 'de',
+      text: 'Ich möchte Hochzeitsfotografie buchen.',
+      requestedService: 'Hochzeitsfotografie',
+    },
+    {
+      language: 'fa',
+      text: 'می‌خوام عکاسی عروسی رزرو کنم.',
+      requestedService: 'عکاسی عروسی',
+    },
+    {
+      language: 'ar',
+      text: 'أريد أن أحجز تصوير زفاف.',
+      requestedService: 'تصوير زفاف',
+    },
+  ] as const;
+
+  for (const testCase of largeCatalogCases) {
+    configure();
+
+    const result = await turn(
+      `unsupported-large-service-catalog-${testCase.language}`,
+      testCase.text,
+      {
+        ...businessConfig(
+          `unsupported-large-service-catalog-${testCase.language}`,
+        ),
+        services: largeCatalogServices,
+      },
+    );
+
+    assert.equal(
+      result.pending?.status,
+      'awaiting_service',
+      `${testCase.language}: unsupported service must await service clarification`,
+    );
+
+    assert.equal(
+      result.pending?.requestedService,
+      testCase.requestedService,
+      `${testCase.language}: requested service must be preserved`,
+    );
+
+    assert.equal(
+      calendarReads,
+      0,
+      `${testCase.language}: unresolved service must not read calendar`,
+    );
+
+    const reply = result.replies[0] || '';
+
+    const displayedServices = largeCatalogServices.filter((service) =>
+      reply.includes(service.name),
+    );
+
+    assert.ok(
+      displayedServices.length <= 5,
+      `${testCase.language}: large-catalog clarification exposed ${displayedServices.length} services; expected at most 5`,
+    );
+
+    assert.ok(
+      !reply.includes('Catalog Service 0500 END'),
+      `${testCase.language}: large-catalog clarification must not dump the full catalog`,
+    );
+  }
+
+
+  configure();
+  const largeCatalogUnsupportedPersian = await turn(
+    'unsupported-large-service-catalog-persian',
+    'می‌خوام عکاسی عروسی رزرو کنم.',
+    {
+      ...businessConfig('unsupported-large-service-catalog-persian'),
+      services: largeCatalogServices,
+    },
+  );
+
+  assert.equal(
+    largeCatalogUnsupportedPersian.pending?.status,
+    'awaiting_service',
+  );
+  assert.equal(
+    largeCatalogUnsupportedPersian.pending?.requestedService,
+    'عکاسی عروسی',
+  );
+  assert.equal(calendarReads, 0);
+
+  const largeCatalogPersianReply =
+    largeCatalogUnsupportedPersian.replies[0] || '';
+
+  const displayedPersianCatalogServices = largeCatalogServices.filter(
+    (service) => largeCatalogPersianReply.includes(service.name),
+  );
+
+  assert.ok(
+    displayedPersianCatalogServices.length <= 5,
+    `Persian large-catalog clarification exposed ${displayedPersianCatalogServices.length} services; expected at most 5`,
+  );
+  assert.ok(
+    !largeCatalogPersianReply.includes('Catalog Service 0500 END'),
+    'Persian large-catalog clarification must not dump the full service catalog',
+  );
+
   configure();
   const dateFirstConfig = businessConfig('date-first');
   const dateFirst = await turn('date-first', missingServiceMessages.en, dateFirstConfig);

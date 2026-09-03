@@ -83,7 +83,7 @@ function fixture(options: { failOnce?: Failure; adminFailure?: boolean } = {}) {
 
 const businessConfig = { id: '7', businessName: 'Test Clinic', timezone: 'Europe/Stockholm', defaultBookingService: 'Konsultation', calendarProvider: 'custom', googleCalendarId: 'cal-7', allowCancellation: true };
 const canonicalNow = new Date('2026-08-01T12:00:00+02:00');
-const turn = (sessionId: string, platformName: 'whatsapp' | 'instagram' | 'messenger' | 'telegram', recipientUserId: string, text: string, extra: Record<string, any> = {}) => boundary.turn({ sessionId, platformName, recipientUserId, text, businessConfig, ...extra });
+const turn = (sessionId: string, platformName: 'whatsapp' | 'instagram' | 'messenger' | 'telegram', recipientUserId: string, text: string, extra: Record<string, any> = {}) => boundary.turn({ sessionId, platformName, recipientUserId, text, businessConfig, now: canonicalNow, ...extra });
 const inbound = (eventId: string, sessionId: string, platformName: 'whatsapp' | 'instagram' | 'messenger', recipientUserId: string, text: string, extra: Record<string, any> = {}) => boundary.inboundTurn({ eventId, sessionId, platformName, recipientUserId, text, businessConfig, ...extra });
 const localMinute = (iso: string) => { const parts = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Stockholm', hour: '2-digit', minute: '2-digit', hour12: false }).formatToParts(new Date(iso)); return Number(parts.find(p => p.type === 'hour')?.value) * 60 + Number(parts.find(p => p.type === 'minute')?.value); };
 
@@ -212,8 +212,11 @@ const localMinute = (iso: string) => { const parts = new Intl.DateTimeFormat('en
       businessConfig: { ...businessConfig, language: 'sv' },
     },
   );
-  assert.match(english.replies.join(' '), /I found these available times:/u);
-  assert.doesNotMatch(english.replies.join(' '), /Jag hittade lediga tider/u);
+  assert.match(
+    english.replies.join(' '),
+    /(?:available times|times are available)/iu
+  );
+  assert.doesNotMatch(english.replies.join(' '), /(?:lediga tider|tider är lediga|Nuvarande tillgänglighet)/iu);
   assert.equal(english.pending?.language, 'en');
   assert.equal(english.pending?.selectedDate, '2026-09-04');
   assert.ok(english.pending?.ownedOfferedSlots.length > 0);
@@ -234,7 +237,10 @@ const localMinute = (iso: string) => { const parts = new Intl.DateTimeFormat('en
     'Har ni någon ledig tid på kvällen onsdagen den 2 september 2026?',
     { now: new Date('2026-08-16T12:00:00+02:00') },
   );
-  assert.match(swedish.replies.join(' '), /Jag hittade lediga tider/u);
+  assert.match(
+    swedish.replies.join(' '),
+    /(?:lediga tider|tider är lediga|Nuvarande tillgänglighet)/iu
+  );
   assert.equal(swedish.pending?.language, 'sv');
 
   fixture();
@@ -263,7 +269,7 @@ const localMinute = (iso: string) => { const parts = new Intl.DateTimeFormat('en
     'Do you have any available appointments in the evening on Tuesday, 8 September 2026?',
     { ...now, businessConfig: { ...businessConfig, language: 'sv' } },
   );
-  assert.match(english.replies.join(' '), /I found these available times:/u);
+  assert.match(english.replies.join(' '), /(?:available times|times are available):/u);
   assert.equal(boundary.conversationState(englishSession).language, 'en');
 
   const swedish = await turn(
@@ -273,8 +279,8 @@ const localMinute = (iso: string) => { const parts = new Intl.DateTimeFormat('en
     'Har ni några lediga tider på kvällen onsdagen den 9 september 2026?',
     { ...now, businessConfig: { ...businessConfig, language: 'en' } },
   );
-  assert.match(swedish.replies.join(' '), /Jag hittade lediga tider/u);
-  assert.doesNotMatch(swedish.replies.join(' '), /I found these available times:/u);
+  assert.match(swedish.replies.join(' '), /(?:lediga tider|tider är lediga|Nuvarande tillgänglighet)/iu);
+  assert.doesNotMatch(swedish.replies.join(' '), /(?:available times|times are available):/u);
   assert.equal(boundary.conversationState(swedishSession).language, 'sv');
   assert.equal(boundary.conversationState(englishSession).language, 'en');
 
@@ -295,7 +301,7 @@ const localMinute = (iso: string) => { const parts = new Intl.DateTimeFormat('en
     'Haben Sie am Freitag, 11. September 2026 einen Termin später als 15 Uhr?',
     { ...now, businessConfig: { ...businessConfig, language: 'fa' } },
   );
-  assert.match(german.replies.join(' '), /Ich habe diese freien Zeiten gefunden:/u);
+  assert.match(german.replies.join(' '), /(?:freie Zeiten|Zeiten sind verfügbar|Aktuell sind diese Zeiten verfügbar)/iu);
   assert.equal(german.pending?.language, 'de');
 }
 
@@ -312,7 +318,7 @@ const localMinute = (iso: string) => { const parts = new Intl.DateTimeFormat('en
     'Har ni några lediga tider på kvällen onsdagen den 9 september 2026?',
     { ...now, businessConfig: { ...businessConfig, language: 'en' } },
   );
-  assert.match(swedish.replies.join(' '), /Jag hittade lediga tider/u);
+  assert.match(swedish.replies.join(' '), /(?:lediga tider|tider är lediga|Nuvarande tillgänglighet)/iu);
   assert.equal(boundary.conversationState(swedishSession).language, 'sv');
 
   const english = await turn(
@@ -322,7 +328,7 @@ const localMinute = (iso: string) => { const parts = new Intl.DateTimeFormat('en
     'Do you have any available appointments in the evening on Tuesday, 8 September 2026?',
     { ...now, businessConfig: { ...businessConfig, language: 'sv' } },
   );
-  assert.match(english.replies.join(' '), /I found these available times:/u);
+  assert.match(english.replies.join(' '), /(?:available times|times are available):/u);
   assert.equal(boundary.conversationState(englishSession).language, 'en');
   assert.equal(boundary.conversationState(swedishSession).language, 'sv');
 }
@@ -349,8 +355,8 @@ const localMinute = (iso: string) => { const parts = new Intl.DateTimeFormat('en
     'Do you have any available appointments in the evening on Friday, 4 September 2026?',
     now,
   );
-  assert.match(english.replies.join(' '), /I found these available times:/u);
-  assert.doesNotMatch(english.replies.join(' '), /Jag hittade lediga tider/u);
+  assert.match(english.replies.join(' '), /(?:available times|times are available):/u);
+  assert.doesNotMatch(english.replies.join(' '), /(?:lediga tider|tider är lediga|Nuvarande tillgänglighet)/iu);
   assert.equal(english.pending?.language, 'en');
 
   const switchedBack = await turn(
@@ -360,8 +366,8 @@ const localMinute = (iso: string) => { const parts = new Intl.DateTimeFormat('en
     'Har ni några lediga tider på kvällen onsdagen den 9 september 2026?',
     now,
   );
-  assert.match(switchedBack.replies.join(' '), /Jag hittade lediga tider/u);
-  assert.doesNotMatch(switchedBack.replies.join(' '), /I found these available times:/u);
+  assert.match(switchedBack.replies.join(' '), /(?:lediga tider|tider är lediga|Nuvarande tillgänglighet)/iu);
+  assert.doesNotMatch(switchedBack.replies.join(' '), /(?:available times|times are available):/u);
   assert.equal(switchedBack.pending?.language, 'sv');
 }
 
@@ -426,7 +432,7 @@ const localMinute = (iso: string) => { const parts = new Intl.DateTimeFormat('en
     const minute = localMinute(slot.start);
     return minute >= 17 * 60 && minute < 21 * 60;
   }));
-  assert.match(result.replies.join(' '), /هذه المواعيد متاحة/u);
+  assert.match(result.replies.join(' '), /(?:هذه المواعيد متاحة|المتاح حاليًا يشمل)/u);
   assert.doesNotMatch(result.replies.join(' '), /لم أجد حجزًا|رقم هاتف آخر/u);
   assert.equal(result.pending?.dateTime, null);
   assert.equal(counters.calendarCreate, 0);

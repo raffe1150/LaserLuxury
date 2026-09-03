@@ -7258,6 +7258,14 @@ function extractNameOnly(text?: string): string | null {
   const raw = String(text || "").trim();
   if (!raw) return null;
 
+  if (
+    isThanksOnlyText(raw) ||
+    isAffirmativeBookingText(raw) ||
+    isPositiveBookingConfirmation(raw)
+  ) {
+    return null;
+  }
+
   const explicitEnglishBookingName = extractExplicitEnglishBookingName(raw);
   if (explicitEnglishBookingName) return explicitEnglishBookingName;
 
@@ -7343,6 +7351,16 @@ function extractNaturalPendingCustomerName(text?: string): string | null {
 }
 
 function extractPendingBookingCustomerName(text: string | undefined, pending: any): string | null {
+  const raw = String(text || "").trim();
+
+  if (
+    isThanksOnlyText(raw) ||
+    isAffirmativeBookingText(raw) ||
+    isPositiveBookingConfirmation(raw)
+  ) {
+    return null;
+  }
+
   const existing = extractNameOnly(text);
   if (existing) return existing;
 
@@ -7574,12 +7592,20 @@ function extractConcreteRequestedService(text?: string): string | null {
       .replace(/[,.!?]/gu, " ")
       .split(/\s+/)
       .filter(Boolean);
+    const spanishDateSignals = new Set([
+      "hoy", "mañana", "manana", "pasado",
+      "lunes", "martes", "miércoles", "miercoles", "jueves", "viernes", "sábado", "sabado", "domingo",
+      "enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre",
+    ]);
+
     return Boolean(
       dateOnlyTokens.length > 0 &&
       dateOnlyTokens.every((token) =>
         spanishDateWords.has(token) || /^\d{1,4}(?:(?:[./-])\d{1,2}){0,2}$/u.test(token)
       ) &&
-      parseBookingDate(dateContinuation, "Europe/Stockholm")?.value
+      dateOnlyTokens.some((token) =>
+        spanishDateSignals.has(token) || /^\d{1,4}(?:(?:[./-])\d{1,2}){0,2}$/u.test(token)
+      )
     );
   };
 
@@ -7721,6 +7747,314 @@ function formatAmbiguousServiceBookingReply(
   if (language === "fa") return `«${requestedService}» می‌تواند به چند سرویس اشاره کند: ${options}. کدام را می‌خواهید؟`;
   if (language === "ar") return `قد تشير «${requestedService}» إلى عدة خدمات: ${options}. أيّها تريد؟`;
   return `“${requestedService}” could mean several services: ${options}. Which one would you like?`;
+}
+
+
+type ServiceClarificationPresentationInput = {
+  status: "missing" | "ambiguous" | "unsupported";
+  language: string;
+  requestedService: string | null;
+  candidates: string[];
+  catalogServices: string[];
+};
+
+type ServiceClarificationPresentationResult = {
+  text: string;
+  source: "gemini" | "deterministic";
+};
+
+function getDeterministicServiceClarificationFallback(
+  input: ServiceClarificationPresentationInput,
+): string {
+  if (input.status === "ambiguous") {
+    return formatAmbiguousServiceBookingReply(
+      input.language,
+      input.requestedService || "service",
+      input.candidates,
+    );
+  }
+
+  if (input.status === "unsupported") {
+    return formatUnsupportedServiceBookingReply(
+      input.language,
+      input.requestedService || "service",
+      input.candidates.length > 0
+        ? input.candidates
+        : input.catalogServices.slice(0, 5),
+    );
+  }
+
+  return formatMissingServiceBookingReply(input.language);
+}
+
+function normalizeServicePresentationText(value: string): string {
+  return normalizeConversationText(String(value || ""))
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/gu, "")
+    .toLocaleLowerCase();
+}
+
+function validateServiceClarificationPresentation(
+  reply: string,
+  input: ServiceClarificationPresentationInput,
+): boolean {
+  const raw = String(reply || "").trim();
+  if (!raw) return false;
+
+  const normalized = normalizeServicePresentationText(raw);
+
+  // Presentation must never claim transactional availability, slot times,
+  // booking completion, or confirmation while service identity is unresolved.
+  const forbiddenTransactionalClaims = [
+    /\b(?:available|availability|slot|slots|booked|confirmed|scheduled)\b/iu,
+    /\b(?:tomorrow|today|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b.{0,24}\b\d{1,2}:\d{2}\b/iu,
+    /\b\d{1,2}:\d{2}\b/iu,
+    /\b(?:ledig|lediga|bokad|bekräftad|bekraftad)\b/iu,
+    /\b(?:verfügbar|verfugbar|gebucht|bestätigt|bestatigt)\b/iu,
+    /\b(?:disponible|reservado|confirmado)\b/iu,
+    /(?:وقت\s+داریم|وقت\s+خالی|موجود\s+است|رزرو\s+شد|تأیید\s+شد|تاييد\s+شد)/u,
+    /(?:متاح|موعد\s+متاح|تم\s+الحجز|مؤكد|موكد)/u,
+  ];
+
+  if (forbiddenTransactionalClaims.some((pattern) => pattern.test(raw))) {
+    return false;
+  }
+
+  // When a requested service is unsupported, the reply must not positively
+  // present it as bookable/supported.
+  if (input.status === "unsupported" && input.requestedService) {
+    const requested = normalizeServicePresentationText(input.requestedService);
+    if (requested && normalized.includes(requested)) {
+      const positiveUnsupportedPatterns = [
+        /\b(?:is|it's|it is)\s+(?:bookable|supported|available)\b/iu,
+        /\b(?:can\s+book|we\s+offer|we\s+provide)\b/iu,
+        /\b(?:är|ar)\s+(?:bokningsbar|tillgänglig|tillganglig)\b/iu,
+        /\b(?:ist)\s+(?:buchbar|verfügbar|verfugbar)\b/iu,
+        /\b(?:es|está|esta)\s+(?:reservable|disponible)\b/iu,
+        /(?:قابل\s+رزرو\s+است|موجود\s+است|ارائه\s+می(?:‌|\s)?دهیم)/u,
+        /(?:يمكن\s+حجز|نقدم|نوفر)/u,
+      ];
+
+      if (positiveUnsupportedPatterns.some((pattern) => pattern.test(raw))) {
+        return false;
+      }
+    }
+  }
+
+  const normalizedCandidates = new Set(
+    input.candidates
+      .map((service) => normalizeServicePresentationText(service))
+      .filter(Boolean),
+  );
+
+  // Gemini may only mention configured service names that were explicitly
+  // supplied in the safe candidate subset. This prevents catalog drift.
+  for (const catalogService of input.catalogServices) {
+    const normalizedService = normalizeServicePresentationText(catalogService);
+    if (!normalizedService) continue;
+    if (
+      normalized.includes(normalizedService) &&
+      !normalizedCandidates.has(normalizedService)
+    ) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function serviceClarificationPresentationMatchesLanguage(
+  reply: string,
+  input: ServiceClarificationPresentationInput,
+): boolean {
+  let languageProbe = String(reply || "");
+
+  const removableFacts = [
+    input.requestedService,
+    ...input.candidates,
+    ...input.catalogServices,
+  ]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean)
+    .sort((a, b) => b.length - a.length);
+
+  for (const fact of removableFacts) {
+    languageProbe = languageProbe.split(fact).join(" ");
+  }
+
+  if (!isMeaningfulLanguageMessage(languageProbe)) {
+    return true;
+  }
+
+  const detected =
+    detectStrongLatestLanguage(languageProbe) ||
+    detectUserLanguage(languageProbe);
+
+  if (!detected) return true;
+
+  return detected === input.language;
+}
+
+function buildServiceClarificationPresentationInstruction(
+  input: ServiceClarificationPresentationInput,
+): string {
+  const safeCandidates = input.candidates.slice(0, 5);
+
+  const truth = {
+    status: input.status,
+    requestedService: input.requestedService,
+    allowedCandidateServices: safeCandidates,
+    language: input.language,
+  };
+
+  return [
+    "You are only rewriting a deterministic service-clarification result into natural customer-facing language.",
+    "The structured facts below are authoritative and immutable.",
+    "Do not decide whether a service exists. Do not infer additional services.",
+    "Do not mention any service name except the requested service and allowedCandidateServices supplied below.",
+    "Do not claim that any appointment, date, time, slot, availability, booking, reservation, or confirmation exists.",
+    "Do not invent prices, durations, business policies, dates, times, or availability.",
+    "Do not use tools and do not describe internal system logic.",
+    "Write exactly one short, natural reply in the requested language.",
+    "",
+    "Meaning of status:",
+    "- missing: the customer has not identified a service yet; ask which service they want.",
+    "- ambiguous: the requested wording could match multiple allowed candidates; ask the customer to choose between only those candidates.",
+    "- unsupported: the requested service could not be matched to a bookable service; state that clearly and, if candidates are supplied, offer only those candidates.",
+    "",
+    `AUTHORITATIVE_TRUTH=${JSON.stringify(truth)}`,
+    "",
+    "Return only the customer-facing reply.",
+  ].join("\n");
+}
+
+async function renderServiceClarificationPresentation(
+  input: ServiceClarificationPresentationInput,
+  candidateReply?: string | null,
+): Promise<ServiceClarificationPresentationResult> {
+  const fallback = getDeterministicServiceClarificationFallback(input);
+
+  try {
+    let proposed = String(candidateReply || "").trim();
+
+    // candidateReply is a test-only/injected presentation candidate.
+    // Normal runtime generation uses the shared Gemini reliability path.
+    if (!proposed) {
+      const response = await generateContentWithFallback(null, {
+        messages: [
+          {
+            role: "user",
+            content:
+              "Produce the service clarification reply using only the authoritative truth in the system instruction.",
+          },
+        ],
+        systemInstruction:
+          buildServiceClarificationPresentationInstruction(input),
+        model: "gemini-2.5-flash",
+        context: {
+          stage: "service_clarification_presentation",
+          language: input.language,
+        },
+      });
+
+      proposed = String(response?.text || "").trim();
+    }
+
+    if (
+      proposed &&
+      serviceClarificationPresentationMatchesLanguage(proposed, input) &&
+      validateServiceClarificationPresentation(proposed, input)
+    ) {
+      return {
+        text: proposed,
+        source: "gemini",
+      };
+    }
+  } catch (error) {
+    console.warn("[ServiceClarificationPresentation]", {
+      status: input.status,
+      language: input.language,
+      source: "deterministic_fallback",
+      errorCategory: classifyAiFailure(error),
+    });
+  }
+
+  return {
+    text: fallback,
+    source: "deterministic",
+  };
+}
+
+async function renderUnsupportedServiceBookingReply(
+  language: string,
+  requestedService: string,
+  configuredServices: string[],
+): Promise<string> {
+  const safeCandidates = configuredServices.slice(0, 5);
+
+  const input: ServiceClarificationPresentationInput = {
+    status: "unsupported",
+    language,
+    requestedService,
+    candidates: safeCandidates,
+    catalogServices: configuredServices,
+  };
+
+  // Integration tests must remain deterministic and must never require
+  // external AI/network access. The presentation helper itself is tested
+  // independently through the test boundary.
+  if (process.env.NODE_ENV === "test") {
+    return getDeterministicServiceClarificationFallback(input);
+  }
+
+  const presentation = await renderServiceClarificationPresentation(input);
+  return presentation.text;
+}
+
+
+async function renderAmbiguousServiceBookingReply(
+  language: string,
+  requestedService: string,
+  candidates: string[],
+  configuredServices: string[],
+): Promise<string> {
+  const safeCandidates = candidates.slice(0, 5);
+
+  const input: ServiceClarificationPresentationInput = {
+    status: "ambiguous",
+    language,
+    requestedService,
+    candidates: safeCandidates,
+    catalogServices: configuredServices,
+  };
+
+  if (process.env.NODE_ENV === "test") {
+    return getDeterministicServiceClarificationFallback(input);
+  }
+
+  const presentation = await renderServiceClarificationPresentation(input);
+  return presentation.text;
+}
+
+
+async function renderMissingServiceBookingReply(
+  language: string,
+  configuredServices: string[],
+): Promise<string> {
+  const input: ServiceClarificationPresentationInput = {
+    status: "missing",
+    language,
+    requestedService: null,
+    candidates: [],
+    catalogServices: configuredServices,
+  };
+
+  if (process.env.NODE_ENV === "test") {
+    return getDeterministicServiceClarificationFallback(input);
+  }
+
+  const presentation = await renderServiceClarificationPresentation(input);
+  return presentation.text;
 }
 
 function formatConfiguredServiceDatePrompt(language: string, service: string, requestedTime?: string): string {
@@ -9267,7 +9601,91 @@ function canonicalAvailabilityConstraintKey(
   constraint: CanonicalAvailabilityConstraint,
   context: { businessId: string; service: string; timezone: string; durationMinutes: number; time?: NormalizedTimeConstraint }
 ): string | null {
-  return safeLogFingerprint(buildSlotFingerprintSource({ businessId: context.businessId, service: context.service, date: `${constraint.startDate}/${constraint.endDate}/${constraint.selectFirstAvailable ? "earliest" : "preferred"}`, timezone: context.timezone, constraint: context.time, durationMinutes: context.durationMinutes }));
+  const canonicalTimeConstraint: NormalizedTimeConstraint | undefined = (() => {
+    if (context.time && context.time.kind !== "none") return context.time;
+
+    const startMinutes = timeTextToMinutes(
+      constraint.exactTime ||
+      constraint.minTime ||
+      constraint.timeBoundary?.time
+    );
+    const endMinutes = timeTextToMinutes(constraint.maxTime);
+
+    if (constraint.kind === "exact_time" && startMinutes !== null) {
+      return {
+        kind: "exact",
+        startMinutes,
+        endMinutes: startMinutes,
+        startInclusive: true,
+        endInclusive: true,
+        confidence: "high",
+      };
+    }
+
+    if (constraint.kind === "time_window") {
+      return {
+        kind: "between",
+        ...(startMinutes !== null ? { startMinutes } : {}),
+        ...(endMinutes !== null ? { endMinutes } : {}),
+        startInclusive: true,
+        endInclusive: true,
+        confidence: "high",
+      };
+    }
+
+    if (constraint.kind === "time_boundary" && constraint.timeBoundary) {
+      const boundaryMinutes = timeTextToMinutes(constraint.timeBoundary.time);
+      if (boundaryMinutes !== null) {
+        if (
+          constraint.timeBoundary.kind === "exclusive_upper" ||
+          constraint.timeBoundary.kind === "inclusive_upper"
+        ) {
+          return {
+            kind: "before",
+            endMinutes: boundaryMinutes,
+            endInclusive: constraint.timeBoundary.kind === "inclusive_upper",
+            confidence: "high",
+          };
+        }
+
+        return {
+          kind: constraint.timeBoundary.kind === "inclusive_lower" ? "from" : "after",
+          startMinutes: boundaryMinutes,
+          startInclusive: constraint.timeBoundary.kind === "inclusive_lower",
+          confidence: "high",
+        };
+      }
+    }
+
+    if (
+      constraint.kind === "daypart" &&
+      constraint.daypart &&
+      startMinutes !== null &&
+      endMinutes !== null
+    ) {
+      return {
+        kind: constraint.daypart,
+        startMinutes,
+        endMinutes,
+        startInclusive: true,
+        endInclusive: true,
+        confidence: "high",
+      };
+    }
+
+    return undefined;
+  })();
+
+  return safeLogFingerprint(
+    buildSlotFingerprintSource({
+      businessId: context.businessId,
+      service: context.service,
+      date: `${constraint.startDate}/${constraint.endDate}/${constraint.selectFirstAvailable ? "earliest" : "preferred"}`,
+      timezone: context.timezone,
+      constraint: canonicalTimeConstraint,
+      durationMinutes: context.durationMinutes,
+    })
+  );
 }
 
 function slotSatisfiesAvailabilityConstraint(
@@ -12528,14 +12946,18 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
       await savePendingBooking(sessionId, platformName, pending);
       await replyAndRecord(
         serviceResolution.status === "ambiguous"
-          ? formatAmbiguousServiceBookingReply(
+          ? await renderAmbiguousServiceBookingReply(
               serviceResolutionLanguage,
               serviceResolution.requestedService,
               serviceResolution.candidates.map((candidate) => candidate.name),
+              configuredServiceNames,
             )
           : serviceResolution.status === "missing"
-            ? formatMissingServiceBookingReply(serviceResolutionLanguage)
-            : formatUnsupportedServiceBookingReply(
+            ? await renderMissingServiceBookingReply(
+                serviceResolutionLanguage,
+                configuredServiceNames,
+              )
+            : await renderUnsupportedServiceBookingReply(
                 serviceResolutionLanguage,
                 pending.requestedService || "service",
                 configuredServiceNames,
@@ -12576,7 +12998,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
     };
     lockConversationFlowLanguage(sessionId, language, "booking");
     await savePendingBooking(sessionId, platformName, pending);
-    await replyAndRecord(formatUnsupportedServiceBookingReply(
+    await replyAndRecord(await renderUnsupportedServiceBookingReply(
       language,
       concreteRequestedService,
       configuredServiceNames
@@ -16015,19 +16437,21 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
         await savePendingBooking(sessionId, platformName, pending);
         await replyAndRecord(
           serviceResolution.status === "ambiguous"
-            ? formatAmbiguousServiceBookingReply(
+            ? await renderAmbiguousServiceBookingReply(
                 getFlowReplyLanguage(pending.language, language, text),
                 serviceResolution.requestedService,
                 serviceResolution.candidates.map((candidate) => candidate.name),
+                configuredServiceNames,
               )
             : serviceResolution.status === "unsupported"
-              ? formatUnsupportedServiceBookingReply(
+              ? await renderUnsupportedServiceBookingReply(
                   getFlowReplyLanguage(pending.language, language, text),
                   serviceResolution.requestedService,
                   configuredServiceNames,
                 )
-              : formatMissingServiceBookingReply(
+              : await renderMissingServiceBookingReply(
                   getFlowReplyLanguage(pending.language, language, text),
+                  configuredServiceNames,
                 )
         );
         return true;
@@ -16117,12 +16541,17 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
     const pendingCanAcceptAvailabilityRefinement = Boolean(
       !pending ||
       resumedAwaitingServiceDuration ||
-      (!currentOwnedSlotSelection && ["awaiting_time_selection"].includes(
-        String(pending?.status || "")
-      )) ||
+      (
+        ["awaiting_time_selection"].includes(String(pending?.status || "")) &&
+        (
+          !currentOwnedSlotSelection ||
+          isReadOnlyAvailabilityInquiry(text)
+        )
+      ) ||
       Boolean(deterministicTransition?.runAvailability) ||
       pendingSelectionRejected
     );
+
     if (
       pendingCanAcceptAvailabilityRefinement &&
       !getRescheduleContext(sessionId) &&
@@ -17021,7 +17450,8 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
           start: selectedIso,
           service: String(pending.service || "Bokning"),
           durationMinutes: Number(pending.durationMinutes || 60),
-          offeredSlot: selectedOwnedSlot
+          offeredSlot: selectedOwnedSlot,
+          nowMs: params.now?.getTime()
         });
 
         if (!validation.free || !validation.normalizedIso || !validation.endIso) {
@@ -17207,7 +17637,8 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
             start: dateTime,
             service: String(pending.service || "Bokning"),
             durationMinutes: Number(pending.durationMinutes || 60),
-            offeredSlot: selectedOwnedSlot
+            offeredSlot: selectedOwnedSlot,
+            nowMs: params.now?.getTime()
           })
         : {
             free: false,
@@ -17544,7 +17975,8 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
           businessConfig,
           start: lockedIso,
           service: String(pending.service || "Bokning"),
-          durationMinutes: Number(pending.durationMinutes || 30)
+          durationMinutes: Number(pending.durationMinutes || 30),
+          nowMs: params.now?.getTime()
         });
         if (
           migrationValidation.free &&
@@ -17577,7 +18009,8 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
             start: lockedIso,
             service: String(pending.service || "Bokning"),
             durationMinutes: Number(pending.durationMinutes || 30),
-            offeredSlot: selectedOwnedSlot
+            offeredSlot: selectedOwnedSlot,
+            nowMs: params.now?.getTime()
           })
         : {
             free: false,
@@ -27306,6 +27739,22 @@ export const priority1hUnifiedEngineTestBoundary = {
     delete recentlyCompletedBookings[sessionId];
     delete completedBookingSupportTurns[sessionId];
   },
+  validateServiceClarificationPresentation(
+    reply: string,
+    input: ServiceClarificationPresentationInput,
+  ) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    return validateServiceClarificationPresentation(reply, input);
+  },
+
+  async renderServiceClarificationPresentation(
+    input: ServiceClarificationPresentationInput,
+    candidateReply?: string | null,
+  ) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    return renderServiceClarificationPresentation(input, candidateReply);
+  },
+
   geminiToolNames(sessionId: string) {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
     return getGeminiSupportTools(sessionId).flatMap((group: any) =>
@@ -27345,6 +27794,7 @@ export const priority1hUnifiedEngineTestBoundary = {
     requestedTime?: string;
     options?: SlotSearchOptions;
     normalizedConstraint?: NormalizedTimeConstraint;
+    now?: Date;
     diagnosticContext?: {
       language?: string | null;
       selectedDate?: string | null;
@@ -27368,6 +27818,7 @@ export const priority1hUnifiedEngineTestBoundary = {
       requestedTime: params.requestedTime,
       options: params.options,
       normalizedConstraint: params.normalizedConstraint,
+      now: params.now,
       diagnosticContext: params.diagnosticContext,
     });
   },

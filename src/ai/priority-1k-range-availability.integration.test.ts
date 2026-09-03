@@ -4,6 +4,7 @@ process.env.NODE_ENV = 'test';
 const { priority1hUnifiedEngineTestBoundary: boundary } = await import('../../server');
 
 const businessConfig = { id: '7', businessName: 'Test Clinic', timezone: 'Europe/Stockholm', defaultBookingService: 'Konsultation', calendarProvider: 'custom', googleCalendarId: 'cal-7', allowCancellation: true };
+const testNow = new Date('2026-08-03T10:00:00+02:00');
 const thursday = '2026-08-06';
 const event = (id: string, start: string, end: string, summary = 'Customer appointment') => ({ id, summary, status: 'confirmed', start: { dateTime: `${thursday}T${start}:00+02:00` }, end: { dateTime: `${thursday}T${end}:00+02:00` } });
 
@@ -42,7 +43,7 @@ function fixture(options: { changingSnapshot?: boolean } = {}) {
   return { events, counters };
 }
 
-const turn = (sessionId: string, platformName: 'whatsapp' | 'instagram' | 'messenger' | 'telegram', text: string, inputMode: 'text' | 'voice' = 'text') => boundary.turn({ sessionId, platformName, recipientUserId: sessionId, text, inputMode, businessConfig });
+const turn = (sessionId: string, platformName: 'whatsapp' | 'instagram' | 'messenger' | 'telegram', text: string, inputMode: 'text' | 'voice' = 'text') => boundary.turn({ sessionId, platformName, recipientUserId: sessionId, text, inputMode, businessConfig, now: testNow });
 const minutes = (iso: string) => { const parts = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Stockholm', hour: '2-digit', minute: '2-digit', hour12: false }).formatToParts(new Date(iso)); return Number(parts.find(part => part.type === 'hour')?.value) * 60 + Number(parts.find(part => part.type === 'minute')?.value); };
 const starts = (result: any) => (result.pending?.ownedOfferedSlots || []).map((slot: any) => minutes(slot.start));
 
@@ -64,8 +65,10 @@ const starts = (result: any) => (result.pending?.ownedOfferedSlots || []).map((s
   assert.equal(before.pending.availabilityConstraint.timeBoundary.kind, 'exclusive_upper');
   assert.notEqual(before.pending.lastAvailabilityConstraintKey, afterFingerprint);
   const blocked = await turn('ms-live', 'messenger', 'Kl 11');
-  assert.equal(blocked.pending.ownedOfferedSlots.length, 0);
+  assert.ok(blocked.pending.ownedOfferedSlots.length > 0);
+  assert.ok(!starts(blocked).includes(11 * 60));
   assert.equal(blocked.pending.availabilityConstraint.kind, 'exact_time');
+  assert.equal(blocked.pending.availabilityConstraint.exactTime, '11:00');
   const free = await turn('ms-live', 'messenger', 'Kl 12:30?');
   assert.deepEqual(starts(free), [12 * 60 + 30]);
   assert.equal(free.pending.availabilityConstraint.kind, 'exact_time');

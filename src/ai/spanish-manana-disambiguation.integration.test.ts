@@ -194,6 +194,7 @@ try {
     endDate: "2026-09-01",
     service: "Video Consultation",
     durationMinutes: 60,
+    now: liveNow,
     diagnosticContext: {
       language: "es",
       selectedDate: "2026-09-01",

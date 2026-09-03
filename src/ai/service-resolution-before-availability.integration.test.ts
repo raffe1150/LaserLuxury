@@ -22,7 +22,7 @@ const missingServiceMessages = {
   en: 'I want to book tomorrow.',
   sv: 'Jag vill boka en tid i morgon.',
   es: 'Quiero reservar una cita mañana.',
-  de: 'Ich möchte morgen einen Termin buchen.',
+  de: 'Hallo, ich möchte für morgen einen Termin buchen',
   fa: 'می‌خواهم برای فردا وقت رزرو کنم.',
   ar: 'أريد حجز موعد غدًا.',
 } as const;
@@ -165,6 +165,32 @@ try {
   assert.match(unsupported.replies[0], /cannot match/iu);
 
   configure();
+  const unsupportedSpanish = await turn(
+    'unsupported-service-spanish-live',
+    'Quiero reservar fotografía de bodas para mañana',
+    {
+      ...businessConfig('unsupported-service-spanish-live'),
+      language: 'es',
+    },
+    'messenger',
+  );
+
+  assert.equal(unsupportedSpanish.pending?.status, 'awaiting_service');
+  assert.equal(unsupportedSpanish.pending?.service, 'Bokning');
+  assert.equal(
+    unsupportedSpanish.pending?.requestedService,
+    'fotografía de bodas',
+  );
+  assert.equal(unsupportedSpanish.pending?.selectedDate, '2026-09-03');
+  assert.equal(
+    calendarReads,
+    0,
+    'Spanish unsupported service must block availability while preserving date',
+  );
+  assert.match(unsupportedSpanish.replies[0], /fotografía de bodas/iu);
+
+  configure();
+
   const unsupportedPersian = await turn(
     'unsupported-service-persian-native',
     'می‌خوام برای فردا عکاسی عروسی رزرو کنم.',
@@ -356,6 +382,41 @@ try {
   assert.equal(serviceThenDate.pending?.service, 'Laser Treatment');
   assert.equal(serviceThenDate.pending?.selectedDate, '2026-09-03');
   assert.ok(calendarReads > 0);
+
+  configure();
+  const staleServiceConfig = businessConfig('unsupported-overrides-stale-service');
+  const staleServiceInitial = await turn(
+    'unsupported-overrides-stale-service',
+    'I want to book Video Consultation tomorrow.',
+    staleServiceConfig,
+    'whatsapp',
+  );
+  assert.equal(staleServiceInitial.pending?.service, 'Video Consultation');
+  assert.ok(staleServiceInitial.pending?.ownedOfferedSlots?.length > 0);
+  const readsBeforeUnsupportedChange = calendarReads;
+
+  const unsupportedAfterResolvedService = await turn(
+    'unsupported-overrides-stale-service',
+    "I'd like to book wedding photography for tomorrow.",
+    staleServiceConfig,
+    'whatsapp',
+  );
+  assert.equal(unsupportedAfterResolvedService.pending?.status, 'awaiting_service');
+  assert.equal(unsupportedAfterResolvedService.pending?.service, 'Bokning');
+  assert.equal(
+    unsupportedAfterResolvedService.pending?.requestedService,
+    'wedding photography',
+  );
+  assert.equal(
+    calendarReads,
+    readsBeforeUnsupportedChange,
+    'unsupported current-turn service must block availability instead of reusing stale service',
+  );
+  assert.equal(
+    unsupportedAfterResolvedService.pending?.selectedDate,
+    '2026-09-03',
+    'known date must survive unsupported service clarification',
+  );
 
   configure();
   const changeConfig = businessConfig('service-change');

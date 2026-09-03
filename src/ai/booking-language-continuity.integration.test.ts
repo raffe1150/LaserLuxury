@@ -125,12 +125,12 @@ const configure = (extra: Record<string, unknown> = {}) => {
 
 const seedSelection = (sessionId: string, platform: typeof platforms[number], language: keyof typeof localized, config: any) => {
   const start = '2026-10-13T13:00:00+02:00';
-  const end = '2026-10-13T14:00:00+02:00';
+  const end = '2026-10-13T13:30:00+02:00';
   boundary.seedPending(sessionId, {
     bookingStateVersion: CURRENT_BOOKING_STATE_VERSION,
     businessConfig: config, businessId: config.id, platform, userId: sessionId, sessionId,
     operation: 'new_booking', status: 'awaiting_time_selection', expectedInput: 'slot_selection',
-    service: 'Consultation', language, selectedDate: '2026-10-13', durationMinutes: 60,
+    service: 'Consultation', language, selectedDate: '2026-10-13', durationMinutes: 30,
     normalizedBookingRequest: {
       intent: 'new_booking', language, sourceMode: 'text', requiresClarification: false,
       date: { kind: 'exact_date', value: '2026-10-13', confidence: 'high' },
@@ -138,7 +138,7 @@ const seedSelection = (sessionId: string, platform: typeof platforms[number], la
     availabilityConstraint: { startDate: '2026-10-13', endDate: '2026-10-13', kind: 'day', rejectedTimes: [] },
     offeredSlots: [`Tuesday at 13:00 (ISO: ${start})`],
     ownedOfferedSlots: [{
-      start, end, durationMinutes: 60, service: 'Consultation', businessId: config.id,
+      start, end, durationMinutes: 30, service: 'Consultation', businessId: config.id,
       platform, userId: sessionId, generatedAt: Date.now(),
       searchStartDate: '2026-10-13', searchEndDate: '2026-10-13',
     }],

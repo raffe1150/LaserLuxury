@@ -157,10 +157,11 @@ try {
 
   configure();
   const unsupportedText = 'Quiero reservar una manicura para mañana.';
-  assert.equal(boundary.extractConcreteRequestedService(unsupportedText), 'manicura para mañana');
+  assert.equal(boundary.extractConcreteRequestedService(unsupportedText), 'manicura');
   const unsupported = await turn('unsupported-spanish-service', unsupportedText);
   assert.equal(unsupported.pending?.status, 'awaiting_service');
-  assert.equal(unsupported.pending?.requestedService, 'manicura para mañana');
+  assert.equal(unsupported.pending?.requestedService, 'manicura');
+  assert.equal(unsupported.pending?.selectedDate, selectedDate);
   assert.equal(calendarReads, 0);
 
   const confirmations = [

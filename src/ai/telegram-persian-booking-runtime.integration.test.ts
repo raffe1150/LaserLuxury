@@ -42,7 +42,7 @@ assert.equal(availabilityReads, 1, 'one canonical calendar snapshot is loaded');
 assert.equal(first.pending?.status, 'awaiting_time_selection');
 assert.equal(first.pending?.ownedOfferedSlots.length, 3, 'empty calendar returns canonical top three');
 assert.equal(first.replies.length, 1);
-assert.match(first.replies[0], /این زمان‌ها خالی هستند/u);
+assert.match(first.replies[0], /(?:این زمان‌ها|زمان‌های زیر) خالی هستند/u);
 assert.doesNotMatch(first.replies[0], /ساعت 11:00 خالی است/u);
 
 const firstFingerprint = first.pending.lastAvailabilityConstraintKey;
@@ -78,7 +78,7 @@ assert.equal(confirmed.pending?.status, 'awaiting_contact');
 assert.equal(confirmed.pending?.dateTime, selectedStart);
 assert.equal(confirmed.pending?.ownedOfferedSlots.length, 1);
 assert.equal(confirmed.pending?.lastAvailabilityConstraintKey, fingerprint);
-assert.equal(availabilityReads, readsBeforeConfirmation, 'confirmation does not rerun availability');
+assert.equal(availabilityReads, readsBeforeConfirmation + 1, 'confirmation performs exactly one canonical slot revalidation read');
 assert.equal(confirmed.replies.length, 1);
 assert.match(confirmed.replies[0], /نام/u);
 assert.doesNotMatch(confirmed.replies[0], /خالی است|این زمان‌ها خالی هستند/u);

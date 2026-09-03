@@ -99,6 +99,33 @@ try {
     true,
   );
 
+  const tomorrowGeneric = 'Hallo, ich möchte für morgen einen Termin buchen';
+  assert.equal(
+    boundary.isExplicitDatedBookingCreation(tomorrowGeneric, businessConfig, now),
+    true,
+    'German morgen must be recognized as an explicit dated booking creation',
+  );
+  assert.equal(
+    boundary.extractConcreteRequestedService(tomorrowGeneric),
+    null,
+    'German generic appointment + relative date must not become a service',
+  );
+
+  assert.equal(
+    boundary.isExplicitDatedBookingCreation(
+      'Ich möchte morgen einen Termin buchen.',
+      businessConfig,
+      now,
+    ),
+    true,
+  );
+  assert.equal(
+    boundary.extractConcreteRequestedService(
+      'Ich möchte morgen einen Termin buchen.',
+    ),
+    null,
+  );
+
   configure();
   const fresh = await turn('german-instagram-live-fresh', liveTurn1);
   assert.equal(fresh.handled, true);

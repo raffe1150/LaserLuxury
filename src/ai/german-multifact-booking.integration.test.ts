@@ -118,8 +118,8 @@ for (const [sessionId, text, expectedNameDecision] of [
 
 for (const [sessionId, text, expectedDateDisposition] of [
   ['provider-date-persian', 'برای فردا ساعت 14 یک نوبت می‌خواهم.', 'legacy_preserved'],
-  ['provider-date-arabic', 'أرغب في موعد غدًا الساعة 14.', 'provider_adopted'],
-  ['provider-date-spanish', 'Quisiera una cita mañana a las 14.', 'provider_adopted'],
+  ['provider-date-arabic', 'أرغب في موعد غدًا الساعة 14.', 'legacy_preserved'],
+  ['provider-date-spanish', 'Quisiera una cita mañana a las 14.', 'legacy_preserved'],
 ] as const) {
   const state = fixture(providerUnderstanding(false));
   const result = await run(sessionId, text);

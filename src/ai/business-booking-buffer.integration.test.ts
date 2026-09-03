@@ -73,7 +73,8 @@ const common = {
   startDate: "2026-08-24",
   endDate: "2026-08-24",
   service: "Konsultation",
-  durationMinutes: 30
+  durationMinutes: 30,
+  now: new Date("2026-08-23T12:00:00+02:00")
 };
 
 function localTime(iso: string): string {

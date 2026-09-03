@@ -17,7 +17,7 @@ const config = (id: string) => ({
   businessName: "Earliest Test Business",
   timezone: "Europe/Stockholm",
   calendarProvider: "google",
-  services: ["Consultation"],
+  services: [{ name: "Consultation", active: true, bookable: true }],
   serviceDurations: { Consultation: 60 },
 });
 const event = (date: string, start: string, end: string) => ({
@@ -36,6 +36,7 @@ const offers = (overrides: Record<string, any> = {}) => priority1hUnifiedEngineT
   endDate: "2026-08-17",
   durationMinutes: 60,
   options: { selectFirstAvailable: true, ...(overrides.options || {}) },
+  now: new Date("2026-08-16T12:00:00+02:00"),
   ...overrides,
 });
 
@@ -127,6 +128,7 @@ try {
     recipientUserId: "semantic-user",
     text: "I want the earliest available Consultation on 2026-08-17",
     businessConfig: semanticConfig,
+    now: new Date("2026-08-16T12:00:00+02:00"),
   });
   assert.equal(semanticTurn.handled, true);
   const semanticPending = priority1hUnifiedEngineTestBoundary.pendingStateSnapshot("semantic-earliest-session");

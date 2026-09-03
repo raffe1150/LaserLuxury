@@ -45,6 +45,7 @@ async function runContinuation(params: {
     userId: params.sessionId,
     sessionId: params.sessionId,
     service: 'Video Consultation',
+    serviceResolution: 'authoritative',
     selectedDate: params.selectedDate || null,
     requestedTime: params.requestedTime || null,
     durationMinutes: 30,
@@ -61,6 +62,7 @@ async function runContinuation(params: {
     recipientUserId: 'partial-customer',
     text: params.text,
     businessConfig,
+    now: new Date('2026-08-30T12:00:00+02:00'),
   });
   return { result, calendarReads };
 }
@@ -71,6 +73,7 @@ try {
     text: '2026-08-31',
     requestedTime: '16:00',
   });
+
   assert.equal(dateOnly.result.handled, true);
   assert.equal(dateOnly.result.pending?.selectedDate, '2026-08-31');
   assert.equal(dateOnly.result.pending?.requestedTime, '16:00');

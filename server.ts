@@ -5772,7 +5772,19 @@ function isExplicitDatedBookingCreationText(
   normalizedRequest?: NormalizedBookingRequest,
 ): boolean {
   const raw = String(text || "").trim().toLowerCase();
-  if (!raw || normalizedRequest?.date?.kind !== "exact_date" || !normalizedRequest.date.value) {
+  const normalizedDate = normalizedRequest?.date;
+  const hasSupportedDatedCreationDate = Boolean(
+    normalizedDate?.value &&
+    (
+      normalizedDate.kind === "exact_date" ||
+      (
+        normalizedDate.kind === "relative_date" &&
+        /\b(?:heute|morgen|übermorgen|uebermorgen)\b/iu.test(raw)
+      )
+    )
+  );
+
+  if (!raw || !hasSupportedDatedCreationDate) {
     return false;
   }
   if (
@@ -7173,6 +7185,7 @@ function extractExplicitEnglishBookingName(text?: string): string | null {
 function extractNameAndPhone(text?: string): { name: string; phone: string } | null {
   const raw = normalizeLocalizedDigits(String(text || "")).trim();
   if (!raw) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return null;
 
   const phoneMatch = raw.match(/(?:\+?\d[\d\s\-()]{6,}\d)/);
   if (!phoneMatch) return null;
@@ -7233,6 +7246,7 @@ function extractNameAndPhone(text?: string): { name: string; phone: string } | n
 function extractPhoneOnly(text?: string): string | null {
   const raw = normalizeLocalizedDigits(String(text || "")).trim();
   if (!raw) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return null;
 
   const match = raw.match(/(?:\+?\d[\d\s\-()]{6,}\d)/);
   if (!match) return null;
@@ -7673,6 +7687,28 @@ function extractConcreteRequestedService(text?: string): string | null {
       genericEnglishBookingWithContinuation &&
       isEnglishDateOnlyContinuation(genericEnglishBookingWithContinuation[1])
     ) continue;
+    const englishServiceWithDateTail = extracted.match(
+      /^(.+?)\s+((?:for|on)\s+.+)$/iu
+    );
+    if (
+      englishServiceWithDateTail &&
+      isEnglishDateOnlyContinuation(englishServiceWithDateTail[2])
+    ) {
+      const serviceOnly = englishServiceWithDateTail[1].trim();
+      if (
+        serviceOnly &&
+        !/^(?:appointment|booking|reservation|time|slot|service)$/iu.test(serviceOnly)
+      ) {
+        return serviceOnly;
+      }
+    }
+
+    const genericGermanBookingWithContinuation =
+      /^(?:(?:für|fuer)\s+)?(?:heute|morgen|übermorgen|uebermorgen|am\s+(?:montag|dienstag|mittwoch|donnerstag|freitag|samstag|sonntag))\s+(?:einen\s+)?(?:termin|buchung)$/iu.test(extracted);
+    if (genericGermanBookingWithContinuation) {
+      return null;
+    }
+
     const genericSwedishBookingWithContinuation = extracted.match(/^(?:tid|bokning|tjänst)\s+(.+)$/iu);
     if (genericSwedishBookingWithContinuation) {
       const dateContinuation = genericSwedishBookingWithContinuation[1]
@@ -7697,6 +7733,22 @@ function extractConcreteRequestedService(text?: string): string | null {
         parseBookingDate(dateContinuation, "Europe/Stockholm")?.value
       ) continue;
     }
+    const spanishServiceWithDateTail = extracted.match(
+      /^(.+?)\s+(para\s+.+)$/iu
+    );
+    if (
+      spanishServiceWithDateTail &&
+      isSpanishDateOnlyContinuation(spanishServiceWithDateTail[2])
+    ) {
+      const serviceOnly = spanishServiceWithDateTail[1].trim();
+      if (
+        serviceOnly &&
+        !/^(?:cita|reserva|reservación|reservacion|servicio)$/iu.test(serviceOnly)
+      ) {
+        return serviceOnly;
+      }
+    }
+
     const genericSpanishBookingWithContinuation = extracted.match(/^(?:cita|reserva)\s+(.+)$/iu);
     if (
       genericSpanishBookingWithContinuation &&
@@ -12984,7 +13036,8 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
       service: "Bokning",
       requestedService: concreteRequestedService,
       requestedTime,
-      selectedDate: null,
+      selectedDate: authoritativeNormalizedRequest.date?.value || null,
+      normalizedBookingRequest: toPersistedBookingRequest(authoritativeNormalizedRequest),
       offeredSlots: [],
       ownedOfferedSlots: [],
       dateTime: null,
@@ -16392,9 +16445,12 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
       );
       const turnServiceResolution = resolveAuthoritativeBookingService(text, businessConfig);
       const turnHasServiceEvidence =
-        turnServiceResolution.status === "ambiguous" ||
-        (turnServiceResolution.status === "unsupported" && !pending?.dateTime) ||
-        (turnServiceResolution.status === "resolved" && turnServiceResolution.source === "evidence");
+        !continuesOwnedBooking &&
+        (
+          turnServiceResolution.status === "ambiguous" ||
+          turnServiceResolution.status === "unsupported" ||
+          (turnServiceResolution.status === "resolved" && turnServiceResolution.source === "evidence")
+        );
       const serviceResolution: BookingServiceResolution = existingService && !turnHasServiceEvidence
         ? { status: "resolved", service: existingService, source: "evidence" }
         : turnServiceResolution;
@@ -16546,6 +16602,13 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
         (
           !currentOwnedSlotSelection ||
           isReadOnlyAvailabilityInquiry(text)
+        )
+      ) ||
+      (
+        pending?.operation === "new_booking" &&
+        pending?.serviceResolution === "authoritative" &&
+        ["awaiting_date_or_time", "awaiting_date_or_constraint"].includes(
+          String(pending?.status || "")
         )
       ) ||
       Boolean(deterministicTransition?.runAvailability) ||

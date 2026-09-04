@@ -24,7 +24,7 @@ const missingServiceMessages = {
   es: 'Quiero reservar una cita mañana.',
   de: 'Hallo, ich möchte für morgen einen Termin buchen',
   fa: 'می‌خواهم برای فردا وقت رزرو کنم.',
-  ar: 'أريد حجز موعد غدًا.',
+  ar: 'أريد حجز موعد للغد.',
 } as const;
 
 let calendarReads = 0;
@@ -215,7 +215,7 @@ try {
   configure();
   const unsupportedArabic = await turn(
     'unsupported-service-arabic-native',
-    'أريد أن أحجز تصوير زفاف غدًا.',
+    'أريد حجز تصوير زفاف للغد.',
     businessConfig('unsupported-service-arabic-native'),
   );
   assert.equal(unsupportedArabic.pending?.status, 'awaiting_service');

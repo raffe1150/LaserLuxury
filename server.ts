@@ -7876,20 +7876,40 @@ function validateServiceClarificationPresentation(
   // present it as bookable/supported.
   if (input.status === "unsupported" && input.requestedService) {
     const requested = normalizeServicePresentationText(input.requestedService);
-    if (requested && normalized.includes(requested)) {
-      const positiveUnsupportedPatterns = [
-        /\b(?:is|it's|it is)\s+(?:bookable|supported|available)\b/iu,
-        /\b(?:can\s+book|we\s+offer|we\s+provide)\b/iu,
-        /\b(?:är|ar)\s+(?:bokningsbar|tillgänglig|tillganglig)\b/iu,
-        /\b(?:ist)\s+(?:buchbar|verfügbar|verfugbar)\b/iu,
-        /\b(?:es|está|esta)\s+(?:reservable|disponible)\b/iu,
-        /(?:قابل\s+رزرو\s+است|موجود\s+است|ارائه\s+می(?:‌|\s)?دهیم)/u,
-        /(?:يمكن\s+حجز|نقدم|نوفر)/u,
-      ];
 
-      if (positiveUnsupportedPatterns.some((pattern) => pattern.test(raw))) {
-        return false;
-      }
+    if (!requested || !normalized.includes(requested)) {
+      return false;
+    }
+
+    const unsupportedMeaningPatterns = [
+      /\b(?:cannot|can't|could not|couldn't|unable to|not)\b.{0,80}\b(?:match|bookable|supported|available|offer|provide)\b/iu,
+      /\b(?:hittar|finner)\b.{0,80}\binte\b.{0,80}\b(?:bokningsbar(?:a)?|tillgänglig(?:a)?|tillganglig(?:a)?|matcha)\b/iu,
+      /\b(?:inte|kan inte)\b.{0,80}\b(?:matcha|bokningsbar(?:a)?|tillgänglig(?:a)?|tillganglig(?:a)?)\b/iu,
+      /\b(?:finde|finden)\b.{0,80}\bnicht\b.{0,80}\b(?:buchbar(?:e|en|er|es)?|verfügbar(?:e|en|er|es)?|verfugbar(?:e|en|er|es)?|zuordnen)\b/iu,
+      /\b(?:nicht|kann nicht)\b.{0,80}\b(?:zuordnen|buchbar(?:e|en|er|es)?|verfügbar(?:e|en|er|es)?|verfugbar(?:e|en|er|es)?)\b/iu,
+      /\bno\b.{0,80}\b(?:encuentro|puedo encontrar|puedo asociar)\b.{0,80}\b(?:reservable(?:s)?|disponible(?:s)?|servicio(?:s)?)\b/iu,
+      /\b(?:no puedo|no)\b.{0,80}\b(?:asociar|reservable(?:s)?|disponible(?:s)?)\b/iu,
+      /(?:پیدا\s*نمی(?:‌|\s)?کنم|نمی(?:‌|\s)?توانم|قابل\s+رزرو\s+نیست|پشتیبانی\s+نمی(?:‌|\s)?شود)/u,
+      /(?:لا\s+أجد).{0,80}(?:قابل(?:ة)?\s+للحجز|الخدمات\s+القابلة\s+للحجز)/u,
+      /(?:لا\s+أستطيع|غير\s+مدعوم|غير\s+قابل\s+للحجز|ليست\s+خدمة\s+قابلة\s+للحجز)/u,
+    ];
+
+    if (!unsupportedMeaningPatterns.some((pattern) => pattern.test(raw))) {
+      return false;
+    }
+
+    const positiveUnsupportedPatterns = [
+      /\b(?:is|it's|it is)\s+(?:bookable|supported|available)\b/iu,
+      /\b(?:can\s+book|we\s+offer|we\s+provide)\b/iu,
+      /\b(?:är|ar)\s+(?:bokningsbar|tillgänglig|tillganglig)\b/iu,
+      /\b(?:ist)\s+(?:buchbar|verfügbar|verfugbar)\b/iu,
+      /\b(?:es|está|esta)\s+(?:reservable|disponible)\b/iu,
+      /(?:قابل\s+رزرو\s+است|موجود\s+است|ارائه\s+می(?:‌|\s)?دهیم)/u,
+      /(?:يمكن\s+حجز|نقدم|نوفر)/u,
+    ];
+
+    if (positiveUnsupportedPatterns.some((pattern) => pattern.test(raw))) {
+      return false;
     }
   }
 

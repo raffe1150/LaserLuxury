@@ -92,6 +92,40 @@ try {
 
     assert.equal(accepted.text, testCase.safeReply);
 
+    const genericUnsupportedReply =
+      testCase.language === 'sv'
+        ? 'Självklart, hur kan jag hjälpa dig?'
+        : testCase.language === 'es'
+          ? 'Claro, ¿cómo puedo ayudarte?'
+          : testCase.language === 'de'
+            ? 'Natürlich, wie kann ich Ihnen helfen?'
+            : testCase.language === 'fa'
+              ? 'حتماً، چطور می‌توانم کمکتان کنم؟'
+              : testCase.language === 'ar'
+                ? 'بالتأكيد، كيف يمكنني مساعدتك؟'
+                : 'Of course, how can I help you?';
+
+    assert.equal(
+      boundary.validateServiceClarificationPresentation(
+        genericUnsupportedReply,
+        input,
+      ),
+      false,
+      `${testCase.language}: unsupported presentation must explicitly communicate that the requested service is not bookable`,
+    );
+
+    const fallbackFromGeneric =
+      await boundary.renderServiceClarificationPresentation(
+        input,
+        genericUnsupportedReply,
+      );
+
+    assert.equal(
+      fallbackFromGeneric.source,
+      'deterministic',
+      `${testCase.language}: generic unsupported presentation must fall back`,
+    );
+
     const unsafeAvailability =
       testCase.language === 'fa'
         ? 'بله، عکاسی عروسی موجود است و فردا ساعت 09:00 وقت داریم.'

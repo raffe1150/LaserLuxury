@@ -244,7 +244,7 @@ export function detectNormalizedIntent(text: string): NormalizedIntent {
   if (germanBookingAction) return 'new_booking';
 
   const bookingNoun = /\b(?:appointment|booking|consultation|slot|time|boka|bokning|tid|konsultation|termin|cita|reserva|reservación|reservacion|vaght|rezerv|moshavereh?|laser)\b/iu.test(raw) || /(?:وقت|رزرو|مشاوره|لیزر|موعد|مواعيد|حجز)/u.test(raw);
-  const bookingAction = /\b(?:book|want|need|available|have anything|have any time|do you have any time|boka|vill|behöver|finns|har ni|haben sie|möchte|mochte|buchen|tienen|hay|disponible|disponibles|mikham|mikhastam|mitoni|bدي|begiram|dari)\b/iu.test(raw) || /(?:می ?خوام|می ?خواهم|می ?تونی|وقت داری|بگیرم|بگیری|متاح|متوفر|شاغر)/u.test(raw);
+  const bookingAction = /\b(?:book|want|need|available|have anything|have any time|do you have any time|boka|vill|behöver|finns|har ni|haben sie|möchte|mochte|buchen|tienen|hay|disponible|disponibles|quiero|mikham|mikhastam|mitoni|bدي|begiram|dari)\b/iu.test(raw) || /(?:می ?خوام|می ?خواهم|می ?تونی|وقت داری|بگیرم|بگیری|متاح|متوفر|شاغر)/u.test(raw);
   const directBookingAction = /\b(?:book|boka|buchen|reservieren|reservar)\b/iu.test(raw);
   const dateOrTime = /\b(?:today|tomorrow|friday|monday|tuesday|wednesday|thursday|saturday|sunday|fredag|måndag|tisdag|onsdag|torsdag|lördag|söndag|morgen|uhr|montag|dienstag|mittwoch|donnerstag|freitag|samstag|sonntag|lunes|martes|miércoles|miercoles|jueves|viernes|sábado|sabado|domingo|después|despues|antes|später|spaeter|jomeh?|shanbe|sate?|after|before|efter|före)\b/iu.test(raw) || /(?:امروز|فردا|جمعه|شنبه|ساعت|بعد از|قبل از)/u.test(raw);
   if ((bookingNoun && bookingAction) || (bookingNoun && dateOrTime)) return 'new_booking';

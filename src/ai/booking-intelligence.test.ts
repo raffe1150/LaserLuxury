@@ -40,6 +40,10 @@ assert.equal(finglish.date?.weekday, 5);
 assert.deepEqual(finglish.timeConstraint, { kind: 'before', endMinutes: 720, endInclusive: false, confidence: 'high' });
 
 assert.equal(detectNormalizedIntent('baraye jomeh bad az sate 18 vaght mikham'), 'new_booking');
+assert.equal(
+  detectNormalizedIntent('Hola, quiero reservar una cita para mañana.'),
+  'new_booking',
+);
 assert.equal(detectNormalizedIntent('kare shoma chie'), 'general_question');
 assert.equal(detectNormalizedIntent('chera zabaneto avaz mikoni'), 'general_question');
 

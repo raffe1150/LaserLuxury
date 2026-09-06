@@ -10453,6 +10453,20 @@ function guardCustomerFacingReply(sessionId: string, reply: string, fallbackLang
     mixedLanguageBlocked: true,
     stateType: conversationFlowLanguages[sessionId]?.flowType || "none"
   });
+  // Temporary diagnostic: only booking replies already rejected by this guard.
+  if (conversationFlowLanguages[sessionId]?.flowType === "booking") {
+    console.warn("[CustomerReplyGuardDiagnostic]", {
+      replyBeforeGuard: raw,
+      expectedLanguage: language,
+      strongReplyLanguage,
+      hasEnglishStructure,
+      hasSwedishStructure,
+      hasPersianStructure,
+      verifiedCompletionPresentationMatchesLanguage,
+      ...(replyForLanguageDetection !== raw ? { replyForLanguageDetection } : {}),
+      pendingStatus: pendingBookings[sessionId]?.status || null,
+    });
+  }
   const reschedule = rescheduleContexts[sessionId];
   if (reschedule?.selectedNewStartTime) {
     return formatRescheduleConfirmation(language, reschedule.selectedNewStartTime);

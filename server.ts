@@ -7647,6 +7647,28 @@ function extractConcreteRequestedService(text?: string): string | null {
     );
   };
 
+  const isSwedishDateOnlyContinuation = (value: string): boolean => {
+    const dateContinuation = value
+      .replace(/[.!?]+$/u, "")
+      .trim();
+    const swedishDateWords = new Set([
+      "till", "i", "på", "för", "den", "det", "nästa", "nästkommande", "kommande", "denna",
+      "idag", "imorgon", "morgon", "övermorgon",
+      "måndag", "tisdag", "onsdag", "torsdag", "fredag", "lördag", "söndag",
+      "januari", "februari", "mars", "april", "maj", "juni", "juli", "augusti", "september", "oktober", "november", "december",
+    ]);
+    const dateOnlyTokens = normalizeConversationText(dateContinuation)
+      .toLowerCase()
+      .replace(/[,.!?]/gu, " ")
+      .split(/\s+/)
+      .filter(Boolean);
+    const containsOnlySwedishDateTokens = dateOnlyTokens.length > 0 && dateOnlyTokens.every((token) =>
+      swedishDateWords.has(token) || /^\d{1,4}(?:(?:[./-])\d{1,2}){0,2}(?::e|:a)?$/u.test(token)
+    );
+
+    return Boolean(containsOnlySwedishDateTokens && parseBookingDate(dateContinuation, "Europe/Stockholm")?.value);
+  };
+
   const genericSpanishRequest = raw.match(
     /\b(?:quiero|quisiera|me\s+gustar[ií]a)\s+(?:reservar|agendar)\s+(?:(?:un|una|el|la)\s+)?(?:cita|reserva)\s+(.+?)(?:[.!?]|$)/iu,
   );
@@ -7710,29 +7732,23 @@ function extractConcreteRequestedService(text?: string): string | null {
     }
 
     const genericSwedishBookingWithContinuation = extracted.match(/^(?:tid|bokning|tjänst)\s+(.+)$/iu);
-    if (genericSwedishBookingWithContinuation) {
-      const dateContinuation = genericSwedishBookingWithContinuation[1]
-        .replace(/[.!?]+$/u, "")
-        .trim();
-      const swedishDateWords = new Set([
-        "till", "i", "på", "för", "den", "det", "nästa", "nästkommande", "kommande", "denna",
-        "idag", "imorgon", "morgon", "övermorgon",
-        "måndag", "tisdag", "onsdag", "torsdag", "fredag", "lördag", "söndag",
-        "januari", "februari", "mars", "april", "maj", "juni", "juli", "augusti", "september", "oktober", "november", "december",
-      ]);
-      const dateOnlyTokens = normalizeConversationText(dateContinuation)
-        .toLowerCase()
-        .replace(/[,.!?]/gu, " ")
-        .split(/\s+/)
-        .filter(Boolean);
-      const containsOnlySwedishDateTokens = dateOnlyTokens.length > 0 && dateOnlyTokens.every((token) =>
-        swedishDateWords.has(token) || /^\d{1,4}(?:(?:[./-])\d{1,2}){0,2}(?::e|:a)?$/u.test(token)
-      );
-      if (
-        containsOnlySwedishDateTokens &&
-        parseBookingDate(dateContinuation, "Europe/Stockholm")?.value
-      ) continue;
+    if (
+      genericSwedishBookingWithContinuation &&
+      isSwedishDateOnlyContinuation(genericSwedishBookingWithContinuation[1])
+    ) continue;
+
+    // Strip only a date-only tail, preserving service qualifiers such as "för företag".
+    const swedishServiceWithDateTail = extracted.match(/^(.+?)\s+((?:till|på|för)\s+.+)$/iu);
+    if (swedishServiceWithDateTail && isSwedishDateOnlyContinuation(swedishServiceWithDateTail[2])) {
+      return swedishServiceWithDateTail[1].trim();
     }
+
+    // Require an explicit date preposition so names such as "Morgen Porträts" stay intact.
+    const germanServiceWithDatePrefix = extracted.match(
+      /^(?:(?:für|fuer)\s+(?:heute|morgen|übermorgen|uebermorgen)|am\s+(?:montag|dienstag|mittwoch|donnerstag|freitag|samstag|sonntag))\s+(.+)$/iu
+    );
+    if (germanServiceWithDatePrefix) return germanServiceWithDatePrefix[1].trim();
+
     const spanishServiceWithDateTail = extracted.match(
       /^(.+?)\s+(para\s+.+)$/iu
     );

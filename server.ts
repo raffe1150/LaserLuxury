@@ -10453,20 +10453,6 @@ function guardCustomerFacingReply(sessionId: string, reply: string, fallbackLang
     mixedLanguageBlocked: true,
     stateType: conversationFlowLanguages[sessionId]?.flowType || "none"
   });
-  // Temporary diagnostic: only booking replies already rejected by this guard.
-  if (conversationFlowLanguages[sessionId]?.flowType === "booking") {
-    console.warn("[CustomerReplyGuardDiagnostic]", {
-      replyBeforeGuard: raw,
-      expectedLanguage: language,
-      strongReplyLanguage,
-      hasEnglishStructure,
-      hasSwedishStructure,
-      hasPersianStructure,
-      verifiedCompletionPresentationMatchesLanguage,
-      ...(replyForLanguageDetection !== raw ? { replyForLanguageDetection } : {}),
-      pendingStatus: pendingBookings[sessionId]?.status || null,
-    });
-  }
   const reschedule = rescheduleContexts[sessionId];
   if (reschedule?.selectedNewStartTime) {
     return formatRescheduleConfirmation(language, reschedule.selectedNewStartTime);
@@ -20074,7 +20060,7 @@ function detectStrongLatestLanguage(text?: string, businessConfig?: any): string
   if (!raw) return null;
 
   if (/[\u0600-\u06FF]/.test(raw)) {
-    if (/[پچژگ]|(?:می|نمی|برای|وقت|مشاوره|شماره|اسم)/.test(raw)) return "fa";
+    if (/[پچژگ]/u.test(raw) || /(?:^|[^\p{L}\p{N}])(?:برای|مشاوره|شماره)(?=$|[^\p{L}\p{N}])/u.test(raw) || /(?:^|[^\p{L}\p{N}])(?:می|نمی)(?:‌|\s)*(?=[\p{L}])/u.test(raw)) return "fa";
     return "ar";
   }
 

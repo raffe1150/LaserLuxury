@@ -7676,7 +7676,15 @@ function extractConcreteRequestedService(text?: string): string | null {
 
   const token = String.raw`[\p{L}\p{M}][\p{L}\p{M}'’\-]*`;
   const candidate = String.raw`${token}(?:\s+${token}){0,4}?`;
+  // A dated request still carries explicit service evidence. Keep the date in
+  // the original turn; only delimit the service capture here.
+  const dateStart = String.raw`(?:[0-9۰-۹٠-٩]|monday|tuesday|wednesday|thursday|friday|saturday|sunday|måndag|tisdag|onsdag|torsdag|fredag|lördag|söndag|montag|dienstag|mittwoch|donnerstag|freitag|samstag|sonntag|lunes|martes|miércoles|jueves|viernes|sábado|domingo|شنبه|یکشنبه|دوشنبه|سه\s+شنبه|چهارشنبه|پنجشنبه|جمعه|الأحد|الاحد|الاثنين|الثلاثاء|الأربعاء|الخميس|الجمعة|السبت)`;
+  const dateTail = String.raw`(?=\s+(?:(?:for|on|den|på|till|för|am|für|fuer|para|el|برای|در|في)\s+)+(?:el\s+)?${dateStart})`;
   const patterns = [
+    new RegExp(String.raw`\b(?:book|schedule|reserve|boka|reservera|reservar|agendar)\s+(?:(?:an?|en|ett|un|una|el|la)\s+)?(${candidate})${dateTail}`, "iu"),
+    new RegExp(String.raw`\bich\s+(?:möchte|moechte|will)\s+(?:gern(?:e)?\s+)?(?:eine[nmrs]?\s+)?(${candidate})${dateTail}`, "iu"),
+    new RegExp(String.raw`(?:می[\s‌]*خواهم|می[\s‌]*خوام|می[\s‌]*خواستم)\s+(${candidate})${dateTail}`, "iu"),
+    new RegExp(String.raw`(?:أريد|اريد|أود|اود)\s+(?:(?:أن\s+)?(?:أحجز|احجز)|حجز)\s+(${candidate})${dateTail}`, "iu"),
     new RegExp(String.raw`\b(?:book|schedule|reserve)\s+(?:an?\s+)?(${candidate})(?=\s+(?:at|on)\s+\d{1,2}(?::\d{2})?|[.!?]|$)`, "iu"),
     new RegExp(String.raw`\b(?:boka|reservera)\s+(?:(?:en|ett)\s+)?(${candidate})(?=\s+(?:kl(?:ockan)?\.?)\s*\d{1,2}(?::\d{2})?|[.!?]|$)`, "iu"),
     new RegExp(String.raw`\bich\s+(?:möchte|moechte|will)\s+(?:gern(?:e)?\s+)?(?:(?:eine[nmrs]?)\s+)?(${candidate})(?=\s+(?:um|am)\s+\d{1,2}(?::\d{2})?|\s+buchen\b|[.!?]|$)`, "iu"),
@@ -7786,12 +7794,12 @@ function formatUnsupportedServiceBookingReply(
   const catalog = options
     ? configuredServices.length > visibleServices.length ? `${options}, …` : options
     : "";
-  if (language === "sv") return catalog ? `Jag kan inte matcha “${requestedService}” mot en bokningsbar tjänst. Tillgängliga tjänster är: ${catalog}. Vilka av dem vill du välja för bokningen?` : `Jag kan inte matcha “${requestedService}” mot en bokningsbar tjänst. Vilken annan tjänst vill du boka?`;
-  if (language === "de") return catalog ? `Ich kann „${requestedService}“ keiner buchbaren Leistung zuordnen. Verfügbar sind: ${catalog}. Für welche davon möchten Sie buchen?` : `Ich kann „${requestedService}“ keiner buchbaren Leistung zuordnen. Welche andere Leistung möchten Sie buchen?`;
-  if (language === "es") return catalog ? `No puedo asociar «${requestedService}» con un servicio reservable. Los servicios disponibles son: ${catalog}. ¿Qué servicio quieres reservar para tu cita?` : `No puedo asociar «${requestedService}» con un servicio reservable. ¿Qué otro servicio quieres reservar?`;
-  if (language === "fa") return catalog ? `نمی‌توانم «${requestedService}» را با یکی از خدمات قابل رزرو تطبیق بدهم. خدمات موجود: ${catalog}. کدام را می‌خواهید رزرو کنید؟` : `نمی‌توانم «${requestedService}» را با یکی از خدمات قابل رزرو تطبیق بدهم. کدام سرویس دیگری را می‌خواهید رزرو کنید؟`;
-  if (language === "ar") return catalog ? `لا أستطيع مطابقة «${requestedService}» مع خدمة قابلة للحجز. الخدمات المتاحة: ${catalog}. أي خدمة تريد حجزها؟` : `لا أستطيع مطابقة «${requestedService}» مع خدمة قابلة للحجز. ما الخدمة الأخرى التي تريد حجزها؟`;
-  return catalog ? `I cannot match “${requestedService}” to a bookable service. Available services are: ${catalog}. Which one would you like to book?` : `I cannot match “${requestedService}” to a bookable service. Which other service would you like to book?`;
+  if (language === "sv") return catalog ? `Jag kan inte matcha “${requestedService}” mot en bokningsbar tjänst. Den tjänsten erbjuds inte. Tillgängliga tjänster är: ${catalog}. Vilka av dem vill du välja för bokningen?` : `Jag kan inte matcha “${requestedService}” mot en bokningsbar tjänst. Den tjänsten erbjuds inte. Vilken annan tjänst vill du boka?`;
+  if (language === "de") return catalog ? `Ich kann „${requestedService}“ keiner buchbaren Leistung zuordnen. Diese Leistung wird nicht angeboten. Verfügbar sind: ${catalog}. Für welche davon möchten Sie buchen?` : `Ich kann „${requestedService}“ keiner buchbaren Leistung zuordnen. Diese Leistung wird nicht angeboten. Welche andere Leistung möchten Sie buchen?`;
+  if (language === "es") return catalog ? `No puedo asociar «${requestedService}» con un servicio reservable. No ofrecemos ese servicio. Los servicios disponibles son: ${catalog}. ¿Qué servicio quieres reservar para tu cita?` : `No puedo asociar «${requestedService}» con un servicio reservable. No ofrecemos ese servicio. ¿Qué otro servicio quieres reservar?`;
+  if (language === "fa") return catalog ? `نمی‌توانم «${requestedService}» را با یکی از خدمات قابل رزرو تطبیق بدهم. این خدمت ارائه نمی‌شود. خدمات موجود: ${catalog}. کدام را می‌خواهید رزرو کنید؟` : `نمی‌توانم «${requestedService}» را با یکی از خدمات قابل رزرو تطبیق بدهم. این خدمت ارائه نمی‌شود. کدام سرویس دیگری را می‌خواهید رزرو کنید؟`;
+  if (language === "ar") return catalog ? `لا أستطيع مطابقة «${requestedService}» مع خدمة قابلة للحجز. هذه الخدمة غير متاحة. الخدمات المتاحة: ${catalog}. أي خدمة تريد حجزها؟` : `لا أستطيع مطابقة «${requestedService}» مع خدمة قابلة للحجز. هذه الخدمة غير متاحة. ما الخدمة الأخرى التي تريد حجزها؟`;
+  return catalog ? `I cannot match “${requestedService}” to a bookable service. That service is not offered. Available services are: ${catalog}. Which one would you like to book?` : `I cannot match “${requestedService}” to a bookable service. That service is not offered. Which other service would you like to book?`;
 }
 
 function formatMissingServiceBookingReply(language: string): string {
@@ -8008,7 +8016,7 @@ function buildServiceClarificationPresentationInstruction(
     "Meaning of status:",
     "- missing: the customer has not identified a service yet; ask which service they want.",
     "- ambiguous: the requested wording could match multiple allowed candidates; ask the customer to choose between only those candidates.",
-    "- unsupported: the requested service could not be matched to a bookable service; state that clearly and, if candidates are supplied, offer only those candidates.",
+    "- unsupported: the requested service is not offered in the bookable catalog; explicitly tell the customer it is not offered and present the supplied candidates or catalog services so they can choose. Never substitute a service.",
     "",
     `AUTHORITATIVE_TRUTH=${JSON.stringify(truth)}`,
     "",
@@ -12978,6 +12986,39 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
     const serviceResolutionLanguage = entryPendingLanguage || pending.language || language;
     pending.language = serviceResolutionLanguage;
     lockConversationFlowLanguage(sessionId, serviceResolutionLanguage, "booking");
+    // Service clarification must retain the latest date just like the normal
+    // booking transition. A service-only reply must not revive older offers.
+    if (normalizedRequest.date?.value) {
+      const retained = getPendingNormalizedBookingRequest(pending, normalizedRequest);
+      const updatedRequest: NormalizedBookingRequest = {
+        ...(retained || normalizedRequest),
+        ...normalizedRequest,
+        date: normalizedRequest.date,
+        timeConstraint: normalizedRequest.timeConstraint && normalizedRequest.timeConstraint.kind !== "none"
+          ? normalizedRequest.timeConstraint
+          : entryExplicitNewBookingRequest
+            ? normalizedRequest.timeConstraint
+            : retained?.timeConstraint || normalizedRequest.timeConstraint,
+      };
+      authoritativeNormalizedRequest = updatedRequest;
+      const constraint = deriveCanonicalAvailabilityConstraint(
+        text, businessConfig, null, updatedRequest, updatedRequest.timeConstraint,
+        params.now ?? new Date(),
+      );
+      Object.assign(pending, {
+        normalizedBookingRequest: toPersistedBookingRequest(updatedRequest),
+        selectedDate: updatedRequest.date.value,
+        availabilityStartDate: constraint?.startDate || updatedRequest.date.value,
+        availabilityEndDate: constraint?.endDate || updatedRequest.date.value,
+        availabilityConstraint: constraint,
+        availabilityMinTime: constraint?.minTime || null,
+        availabilityMaxTime: constraint?.maxTime || null,
+        requestedTime: inferRequestedTimeFromText(text) || (entryExplicitNewBookingRequest ? null : pending.requestedTime),
+        offeredSlots: [], ownedOfferedSlots: [], dateTime: null, selectedSlotEnd: null,
+        durationMinutes: null, lastAvailabilityConstraintKey: null, operationIdentity: null,
+      });
+      delete availabilitySearchContexts[sessionId];
+    }
     const serviceResolution = resolveAuthoritativeBookingService(text, businessConfig);
     if (serviceResolution.status === "resolved" && serviceResolution.source === "evidence") {
       const selectedConfiguredService = serviceResolution.service.name;
@@ -13001,7 +13042,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
         ...(hydratedPendingRequest || authoritativeNormalizedRequest),
         ...authoritativeNormalizedRequest,
         date: authoritativeNormalizedRequest.date || hydratedPendingRequest?.date,
-        timeConstraint: authoritativeNormalizedRequest.timeConstraint?.kind !== "none"
+        timeConstraint: authoritativeNormalizedRequest.timeConstraint && authoritativeNormalizedRequest.timeConstraint.kind !== "none"
           ? authoritativeNormalizedRequest.timeConstraint
           : hydratedPendingRequest?.timeConstraint || authoritativeNormalizedRequest.timeConstraint,
         service: {
@@ -13066,6 +13107,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
     initialServiceResolution?.status === "unsupported"
   ) {
     const requestedTime = inferRequestedTimeFromText(text);
+    delete availabilitySearchContexts[sessionId];
     pending = {
       businessConfig,
       platform: platformName,
@@ -16343,11 +16385,13 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
           businessConfig,
           previousAvailabilityConstraint,
           authoritativeNormalizedRequest,
-          normalizedRequest.timeConstraint || (
-            pending?.requestedTime
-              ? authoritativeNormalizedRequest.timeConstraint
-              : undefined
-          ),
+          resumedAwaitingServiceDuration && (!normalizedRequest.timeConstraint || normalizedRequest.timeConstraint.kind === "none")
+            ? authoritativeNormalizedRequest.timeConstraint
+            : normalizedRequest.timeConstraint || (
+                pending?.requestedTime
+                  ? authoritativeNormalizedRequest.timeConstraint
+                  : undefined
+              ),
           params.now ?? new Date()
         );
     const pendingSelectionRejected = isPendingSelectionRejectionRequest(text, pending);

@@ -1,5 +1,5 @@
-
 import "dotenv/config";
+import { extractExplicitArabicCustomerName } from './src/ai/arabic-customer-name';
 import express from "express";
 import cron from "node-cron";
 import path from "path";
@@ -7193,6 +7193,10 @@ function extractNameAndPhone(text?: string, allowStandaloneName = true): { name:
   const phone = phoneMatch[0].replace(/[^\d+]/g, "");
   if (phone.replace(/\D/g, "").length < 7) return null;
 
+  if (/(?:اسمي|إسمي|اسمی|إسمی|الاسم)(?=\s)/u.test(raw)) {
+    const name = extractExplicitArabicCustomerName(raw);
+    return name ? { name, phone } : null;
+  }
   const beforePhone = raw.slice(0, phoneMatch.index).trim();
   const explicitEnglishBookingName = extractExplicitEnglishBookingName(raw);
   if (explicitEnglishBookingName) {
@@ -7211,7 +7215,6 @@ function extractNameAndPhone(text?: string, allowStandaloneName = true): { name:
     /(?:esme?\s+man|esmam|namam|name\s+man)\s+(?:hast|e|ast)?\s*([A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,}(?:\s+[A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,})?)/i,
     /(?:نام|اسم)\s+من\s+([\u0600-\u06FF]{2,}(?:\s+[\u0600-\u06FF]{2,})?)/u,
     /(?:نام(?:م)?|اسم(?:م)?)\s+([\u0600-\u06FF]{2,}(?:\s+[\u0600-\u06FF]{2,})?)/u,
-    /(?:اسمي|إسمي|انا اسمي|أنا اسمي|الاسم)\s+([\u0600-\u06FF]{2,})(?=\s+(?:و|ورقم|وهاتفي|رقمي|هاتفي|هو)|\s*$)/u
   ];
 
   for (const pattern of patterns) {
@@ -7282,6 +7285,9 @@ function extractNameOnly(text?: string, allowStandaloneName = true): string | nu
     return null;
   }
 
+  if (/(?:اسمي|إسمي|اسمی|إسمی|الاسم)(?=\s)/u.test(raw)) {
+    return extractExplicitArabicCustomerName(raw);
+  }
   const explicitEnglishBookingName = extractExplicitEnglishBookingName(raw);
   if (explicitEnglishBookingName) return explicitEnglishBookingName;
 
@@ -7295,7 +7301,6 @@ function extractNameOnly(text?: string, allowStandaloneName = true): string | nu
     /(?:esme?\s+man|esmam|namam|name\s+man)\s+(?:hast|ast|e)?\s*([A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,}(?:\s+[A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,})?)/i,
     /(?:نام|اسم)\s+من\s+([\u0600-\u06FF]{2,}(?:\s+[\u0600-\u06FF]{2,})?)/u,
     /(?:نام(?:م)?|اسم(?:م)?)\s+([\u0600-\u06FF]{2,}(?:\s+[\u0600-\u06FF]{2,})?)/u,
-    /(?:اسمي|إسمي|انا اسمي|أنا اسمي|الاسم)\s+([\u0600-\u06FF]{2,})(?=\s+(?:و|ورقم|وهاتفي|رقمي|هاتفي|هو)|\s*$)/u
   ];
 
   for (const pattern of patterns) {
@@ -7687,7 +7692,7 @@ function extractConcreteRequestedService(text?: string): string | null {
   // A dated request still carries explicit service evidence. Keep the date in
   // the original turn; only delimit the service capture here.
   const dateStart = String.raw`(?:[0-9۰-۹٠-٩]|monday|tuesday|wednesday|thursday|friday|saturday|sunday|måndag|tisdag|onsdag|torsdag|fredag|lördag|söndag|montag|dienstag|mittwoch|donnerstag|freitag|samstag|sonntag|lunes|martes|miércoles|jueves|viernes|sábado|domingo|شنبه|یکشنبه|دوشنبه|سه\s+شنبه|چهارشنبه|پنجشنبه|جمعه|الأحد|الاحد|الاثنين|الثلاثاء|الأربعاء|الخميس|الجمعة|السبت)`;
-  const dateTail = String.raw`(?=\s+(?:(?:for|on|den|på|till|för|am|für|fuer|para|el|برای|در|في)\s+)+(?:el\s+)?${dateStart})`;
+  const dateTail = String.raw`(?=\s+(?:(?:for|on|den|på|till|för|am|für|fuer|para|el|برای|در|في|بتاريخ)\s+)+(?:el\s+)?${dateStart})`;
   const patterns = [
     new RegExp(String.raw`\b(?:book|schedule|reserve|boka|reservera|reservar|agendar)\s+(?:(?:an?|en|ett|un|una|el|la)\s+)?(${candidate})${dateTail}`, "iu"),
     new RegExp(String.raw`\bich\s+(?:möchte|moechte|will)\s+(?:gern(?:e)?\s+)?(?:eine[nmrs]?\s+)?(${candidate})${dateTail}`, "iu"),

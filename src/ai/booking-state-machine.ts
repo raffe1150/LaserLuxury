@@ -105,9 +105,11 @@ export function isPositiveBookingConfirmation(text: string): boolean {
   // guard above has already rejected changed dates, times, services and operations,
   // so these are safe continuations of one authoritative selected slot.
   const affirmativeLead = /^(?:yes|yeah|yep|sure|ja|japp|absolut|si|claro|نعم|اجل|موافق|بله|اره|باشه|bale|baleh|are|bashe)(?: please| tack| garna| لطفا)?(?=\s|$)/u;
+  // Match normalized Arabic letters (hamza removed, kaf/yeh folded) and
+  // imperative completion verbs as well as infinitives.
   const confirmationContinuation =
-    /\b(?:book|confirm|finalize|finish|information|details|great|perfect|wonderful|boka|bekrafta|slutfora|uppgifter|information|jattebra|perfekt|utmärkt|utmarkt|reserva|confirma|finalizar|reservar|buchen|bestatigen|abschliessen)\b/u.test(raw) ||
-    /(?:رزرو|تایید|تکمیل|اطلاعات|عالی|خیلی خوب|احجز|تأكيد|إكمال|معلومات)/u.test(raw);
+    /\b(?:book|confirm|finalize|finish|information|details|great|perfect|wonderful|boka|bekrafta|slutfor|slutfora|uppgifter|information|jattebra|perfekt|utmärkt|utmarkt|reserva|confirma|finalizar|reservar|buchen|bestatigen|abschliessen|schließen|schliessen)\b/u.test(raw) ||
+    /(?:رزرو|تایید|تکمیل|اطلاعات|عالی|خیلی خوب|احجز|تاکید|اکمال|اتمام|معلومات)/u.test(raw);
 
   // A customer may confirm the authoritative selected slot and provide
   // contact details in the same turn, for example:

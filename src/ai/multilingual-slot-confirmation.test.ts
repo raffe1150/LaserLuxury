@@ -39,6 +39,7 @@ function pendingConfirmation() {
 const positiveByLanguage: Record<string, string[]> = {
   Persian: [
     'بله',
+    'بله، لطفاً رزرو را نهایی کنید.',
     'بله، لطفاً آن را برای من رزرو کنید.',
     'بله، لطفاً برای همان ساعت رزرو کنید.',
     'بله برای همان ساعت رزرو کنید',
@@ -70,6 +71,7 @@ const positiveByLanguage: Record<string, string[]> = {
     'Ja tack, boka den åt mig.',
     'Ja, tack! Det vore jättebra.',
     'Ja tack, boka den tiden.',
+    'Ja, slutför bokningen tack.',
     'Ja, boka samma tid.',
     'Ja gärna, boka den.',
     'Den tiden passar, boka den gärna.',
@@ -77,6 +79,7 @@ const positiveByLanguage: Record<string, string[]> = {
   German: [
     'Ja',
     'Ja, bitte buchen Sie diese Zeit.',
+    'Ja, bitte schließen Sie die Buchung ab.',
     'Ja, buchen Sie diesen Termin.',
     'Ja, der Termin passt. Bitte buchen.',
   ],
@@ -90,6 +93,9 @@ const positiveByLanguage: Record<string, string[]> = {
     'نعم',
     'نعم، احجز ذلك الموعد من فضلك.',
     'نعم، احجز نفس الموعد.',
+    'نعم، يرجى إتمام الحجز.',
+    'نعم يرجى إكمال الحجز',
+    'نعم يرجى تأكيد الحجز',
     'نعم، هذا الموعد مناسب، احجزه.',
   ],
 };
@@ -211,3 +217,10 @@ assert.notEqual(
 );
 
 console.log('multilingual slot confirmation regressions passed');
+
+for (const text of ['نه، وقت دیگری می خواهم', 'نه، ساعت 15', 'منظورم فردا بود']) {
+  assert.ok(request(text).customerCorrection, text);
+}
+assert.equal(request('بله، لطفاً رزرو را نهایی کنید.').customerCorrection, undefined);
+assert.equal(isPositiveBookingConfirmation('نعم، لا تتمم الحجز'), false);
+assert.equal(isPositiveBookingConfirmation('Ja, slutför inte bokningen.'), false);

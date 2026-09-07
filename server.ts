@@ -9887,7 +9887,7 @@ function isPendingSelectionRejectionRequest(text: string, pending: any): boolean
     /\b(?:nej|inte den|annan|annat)\s+(?:tid|tiden|klockslag)\b/iu.test(raw) ||
     /\b(?:nein|nicht diese|andere)\s+(?:zeit|uhrzeit|termin)\b/iu.test(raw) ||
     /\b(?:no esa|otra|diferente)\s+(?:hora|cita)\b/iu.test(raw) ||
-    /(?:نه|اون\s*وقت\s*نه|آن\s*وقت\s*نه|وقت\s*(?:دیگه|دیگر)|زمان\s*(?:دیگه|دیگر))/u.test(raw) ||
+    /(?<![\p{L}\p{M}])(?:نه|اون\s*وقت\s*نه|آن\s*وقت\s*نه|وقت\s*(?:دیگه|دیگر)|زمان\s*(?:دیگه|دیگر))(?![\p{L}\p{M}])/u.test(raw) ||
     /(?:لا|ليس هذا الموعد|موعد آخر|وقت آخر)/u.test(raw)
   );
 }

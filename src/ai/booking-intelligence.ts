@@ -760,7 +760,8 @@ export function normalizeBookingRequest(input: ConversationInput): NormalizedBoo
       }
     : undefined);
   const service = inferService(normalizedText);
-  const correction = /\b(?:no|not|meant|instead|nej|menade|istället|na|manzuram)\b/iu.test(normalizedText) || /(?:نه|منظورم|به جاش)/u.test(normalizedText);
+  // Persian "نه" must be a word: "نهایی" means finalize, not a correction.
+  const correction = /\b(?:no|not|meant|instead|nej|menade|istället|na|manzuram)\b/iu.test(normalizedText) || /(?<![\p{L}\p{M}])(?:نه|منظورم|به جاش)(?![\p{L}\p{M}])/u.test(normalizedText);
   const unclearCritical = /\[(?:unclear|نامفهوم)\]/iu.test(normalizedText) && /(?:time|date|day|at|klockan|saat|sate|ساعت|روز|تاریخ)/iu.test(normalizedText);
   const ambiguousTime = (/\b(?:at|klockan|saat|sate)\s+(?:[1-9]|1[0-2])\b/iu.test(normalizedText) && !timeConstraint) || unclearCritical;
   const requiresClarification = ambiguousTime || Boolean(dateConflict);

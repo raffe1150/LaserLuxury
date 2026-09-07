@@ -79,6 +79,9 @@ export function isPositiveBookingConfirmation(text: string): boolean {
   ];
   if (conflictingIntent.some(pattern => pattern.test(raw))) return false;
 
+  // Completing the selected booking is authorization, not an availability query.
+  if (/^(?:yes(?: please)? )?(?:please )?complete (?:the|my|this) booking(?: please)?$/u.test(raw)) return true;
+
   const simpleAffirmative = /^(?:yes|yes please|yeah|yep|sure|correct|confirm|confirm it|book it|book that one|that works|that time|ok|okay|ja|ja tack|ja garna|ja bitte|ja gerne|japp|absolut|gerne|boka den|det blir bra|si|si por favor|si claro|claro|نعم|نعم من فضلك|اجل|موافق|بله|بله لطفا|اره|باشه|حتما|bale|baleh|bale lotfan|baleh lotfan|are|khobe|bashe|hamoon vaght|hamon vaght|همون وقت|همان وقت)$/u;
   if (simpleAffirmative.test(raw)) return true;
 

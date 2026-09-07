@@ -10343,6 +10343,15 @@ function formatAmbiguousBookingIntentClarification(language: string): string {
   return "Do you mean a new booking, rescheduling, cancellation, or checking an existing booking?";
 }
 
+function formatSelectedSlotConfirmationPrompt(language: string): string {
+  if (language === "sv") return "Vill du att jag bokar den valda tiden?";
+  if (language === "de") return "Soll ich die ausgewählte Zeit für Sie buchen?";
+  if (language === "es") return "¿Quieres que reserve la hora seleccionada?";
+  if (language === "fa") return "می‌خواهید زمان انتخاب‌شده را برایتان رزرو کنم؟";
+  if (language === "ar") return "هل تريد أن أحجز لك الوقت المحدد؟";
+  return "Would you like me to book the selected time?";
+}
+
 function formatChooseStoredSlotClarification(language: string): string {
   if (language === "fa") return "کدام‌یک از زمان‌های پیشنهادی را انتخاب می‌کنید؟ اگر می‌خواهید فهرست را دوباره بفرستم، بگویید «زمان‌ها را دوباره بفرست».";
   if (language === "sv") return "Vilken av de föreslagna tiderna väljer du? Säg till om du vill att jag visar tiderna igen.";
@@ -18944,13 +18953,14 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
       return true;
     }
     if (pending?.status === "awaiting_confirmation") {
+      // Selection clears display offers; an empty list is not a calendar conflict.
+      // Unrecognized replies need clarification, never an unvalidated availability claim.
       await replyAndRecord(
-        formatSwedishTimeSlots(
-          Array.isArray(pending.offeredSlots) ? pending.offeredSlots : [],
-          getStockholmTimeFromIso(String(pending.dateTime || "")) || undefined,
-          getFlowReplyLanguage(pending.language, language, text),
-          deterministicToneConfig,
-        )
+        (findOwnedOfferedSlot(pending, String(pending.dateTime || ""))
+          ? formatSelectedSlotConfirmationPrompt
+          : formatChooseStoredSlotClarification)(
+            getFlowReplyLanguage(pending.language, language, text),
+          )
       );
       return true;
     }

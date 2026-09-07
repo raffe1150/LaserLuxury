@@ -39,4 +39,16 @@ for (const channel of ['instagram', 'messenger'] as const) {
   assert.equal(contact.phoneSource, 'explicit_customer_message');
 }
 
+
+for (const channel of ['instagram', 'messenger', 'telegram', 'whatsapp'] as const) {
+  for (const name of ['Test', ' test. ', 'SKIN CARE']) {
+    const contact = resolveAuthoritativeContact({ channel, storedName: name, currentName: name,
+      serviceNames: ['test', 'Skin Care'], storedPhone: '0700001101', storedPhoneSource: 'explicit_customer_message' });
+    assert.deepEqual(contact.missing, ['name']);
+  }
+  const trusted = resolveAuthoritativeContact({ channel, storedName: 'Ada Lovelace', serviceNames: ['test'],
+    storedPhone: '0700001101', storedPhoneSource: 'explicit_customer_message' });
+  assert.deepEqual(trusted.missing, []);
+}
+
 console.log('channel contact policy tests passed');

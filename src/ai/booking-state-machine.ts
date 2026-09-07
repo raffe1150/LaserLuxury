@@ -1,3 +1,4 @@
+import { isInvalidCustomerNameToken, isServiceNameAsCustomerName } from './channel-contact';
 import type { NormalizedBookingRequest, PersistedNormalizedBookingRequest } from './booking-intelligence';
 
 export type BookingTransitionResult = {
@@ -159,6 +160,7 @@ export function isPositiveBookingConfirmation(text: string): boolean {
 
 export function beginBookingFinalization(pending: Record<string, any>): boolean {
   if (!['awaiting_contact', 'failed_recoverable'].includes(getBookingPhase(pending)) || !pending.dateTime || !pending.selectedSlotEnd) return false;
+  if (getMissingBookingContact(pending).length) return false;
   pending.status = 'inserting';
   return true;
 }
@@ -192,7 +194,8 @@ export async function recoverBookingTransaction(
 export function getMissingBookingContact(pending: Record<string, any>): Array<'name' | 'phone' | 'service'> {
   const missing: Array<'name' | 'phone' | 'service'> = [];
   const phoneDigits = String(pending.customerPhone || '').replace(/\D/g, '');
-  if (!String(pending.customerName || '').trim()) missing.push('name');
+  if (isInvalidCustomerNameToken(pending.customerName) ||
+      isServiceNameAsCustomerName(pending.customerName, [String(pending.service || '')])) missing.push('name');
   if (phoneDigits.length < 7 || phoneDigits.length > 15) missing.push('phone');
   if (!pending.service || pending.service === 'Bokning') missing.push('service');
   return missing;

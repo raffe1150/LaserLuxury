@@ -58,6 +58,24 @@ const cases = [
 ] as const;
 
 try {
+  const input = { status: 'missing' as const, language: 'en', requestedService: null,
+    candidates: [], catalogServices: ['test'],
+    toneConfig: { tonePreset: 'custom', customToneInstructions: 'Use a calm, welcoming voice.', responseLength: 'short' } };
+  let instruction = '';
+  const styled = await boundary.renderServiceClarificationPresentation(input, null, async (_ai, options) => {
+    instruction = options.systemInstruction || '';
+    assert.equal(options.tools, undefined, 'Presentation must have no booking tools');
+    return { text: 'Which service would you like to book?' };
+  });
+  assert.equal(styled.source, 'gemini');
+  assert.match(instruction, /COMMUNICATION STYLE/);
+  assert.match(instruction, /calm, welcoming voice/);
+  assert.match(instruction, /authoritative and immutable/);
+  const unavailable = await boundary.renderServiceClarificationPresentation(input, null, async () => { throw Error('fixture Gemini unavailable'); });
+  assert.equal(unavailable.source, 'deterministic');
+  assert.match(unavailable.text, /Which service/);
+  const altered = await boundary.renderServiceClarificationPresentation(input, null, async () => ({ text: 'Your test appointment is booked at 15:00.' }));
+  assert.equal(altered.source, 'deterministic', 'Tone generation cannot invent a booking or time');
   for (const testCase of cases) {
     const input = {
       status: 'unsupported' as const,

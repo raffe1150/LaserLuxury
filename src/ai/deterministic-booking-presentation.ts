@@ -115,7 +115,7 @@ const presentations: Record<BookingPresentationLanguage, LocalizedPresentation> 
     details: {
       balanced: ({ missing }) => missing.includes('name') && missing.includes('phone') ? 'To finish the booking, I only need your name and mobile number.' : missing.includes('name') ? 'I only need your name to finish the booking.' : missing.includes('phone') ? 'I only need your mobile number to finish the booking.' : missing.includes('service') ? 'Which service would you like to book?' : 'I have everything needed to finish the booking.',
       short: ({ missing }) => missing.includes('name') && missing.includes('phone') ? 'Please send your name and mobile number.' : missing.includes('name') ? 'Please send your name.' : missing.includes('phone') ? 'Please send your mobile number.' : missing.includes('service') ? 'Which service would you like?' : 'Everything needed is ready.',
-      detailedTail: ' Once received, I can safely continue the booking.',
+      detailedTail: ' You can send the details in one message.',
     },
     confirmation: { balanced: (f) => `${f.name}, your appointment for ${f.service} is booked on ${f.date} at ${f.time}.`, short: (f) => `${f.name}, ${f.service} is booked for ${f.date} at ${f.time}.`, detailedTail: ' Your booking is confirmed.' },
   },
@@ -124,7 +124,7 @@ const presentations: Record<BookingPresentationLanguage, LocalizedPresentation> 
     details: {
       balanced: ({ missing }) => missing.includes('name') && missing.includes('phone') ? 'För att slutföra bokningen behöver jag bara ditt namn och mobilnummer.' : missing.includes('name') ? 'Jag behöver bara ditt namn för att slutföra bokningen.' : missing.includes('phone') ? 'Jag behöver bara ditt mobilnummer för att slutföra bokningen.' : missing.includes('service') ? 'Vilken tjänst vill du boka?' : 'Jag har allt jag behöver för att slutföra bokningen.',
       short: ({ missing }) => missing.includes('name') && missing.includes('phone') ? 'Skicka namn och mobilnummer.' : missing.includes('name') ? 'Skicka ditt namn.' : missing.includes('phone') ? 'Skicka ditt mobilnummer.' : missing.includes('service') ? 'Vilken tjänst vill du ha?' : 'Allt som behövs är klart.',
-      detailedTail: ' När jag har uppgifterna kan jag fortsätta bokningen på ett säkert sätt.',
+      detailedTail: ' Du kan skicka uppgifterna i ett meddelande.',
     },
     confirmation: { balanced: (f) => `${f.name}, din tid för ${f.service} är bokad ${f.date} kl ${f.time}.`, short: (f) => `${f.name}, ${f.service} är bokad ${f.date} kl ${f.time}.`, detailedTail: ' Din bokning är bekräftad.' },
   },
@@ -133,7 +133,7 @@ const presentations: Record<BookingPresentationLanguage, LocalizedPresentation> 
     details: {
       balanced: ({ missing }) => missing.includes('name') && missing.includes('phone') ? 'برای نهایی‌کردن رزرو فقط نام و شماره موبایل‌تان را بفرستید.' : missing.includes('name') ? 'فقط نام‌تان را بفرستید تا رزرو را نهایی کنم.' : missing.includes('phone') ? 'فقط شماره موبایل‌تان را بفرستید تا رزرو را نهایی کنم.' : missing.includes('service') ? 'لطفاً بفرمایید کدام خدمت را می‌خواهید رزرو کنید.' : 'همه اطلاعات لازم برای تکمیل رزرو آماده است.',
       short: ({ missing }) => missing.includes('name') && missing.includes('phone') ? 'نام و شماره موبایل‌تان را بفرستید.' : missing.includes('name') ? 'نام‌تان را بفرستید.' : missing.includes('phone') ? 'شماره موبایل‌تان را بفرستید.' : missing.includes('service') ? 'کدام خدمت را می‌خواهید؟' : 'همه اطلاعات آماده است.',
-      detailedTail: ' پس از دریافت اطلاعات، رزرو را با اطمینان ادامه می‌دهم.',
+      detailedTail: ' می‌توانید اطلاعات را در یک پیام بفرستید.',
     },
     confirmation: { balanced: (f) => `${f.name}، وقت شما برای ${f.service} در ${f.date} ساعت ${f.time} رزرو شد.`, short: (f) => `${f.name}، ${f.service} برای ${f.date} ساعت ${f.time} رزرو شد.`, detailedTail: ' رزرو شما تأیید شده است.' },
   },
@@ -142,7 +142,7 @@ const presentations: Record<BookingPresentationLanguage, LocalizedPresentation> 
     details: {
       balanced: ({ missing }) => missing.includes('name') && missing.includes('phone') ? 'Zum Abschluss brauche ich nur Ihren Namen und Ihre Mobilnummer.' : missing.includes('name') ? 'Ich brauche nur noch Ihren Namen.' : missing.includes('phone') ? 'Ich brauche nur noch Ihre Mobilnummer.' : missing.includes('service') ? 'Welche Behandlung möchten Sie buchen?' : 'Alle erforderlichen Angaben sind vollständig.',
       short: ({ missing }) => missing.includes('name') && missing.includes('phone') ? 'Bitte senden Sie Name und Mobilnummer.' : missing.includes('name') ? 'Bitte senden Sie Ihren Namen.' : missing.includes('phone') ? 'Bitte senden Sie Ihre Mobilnummer.' : missing.includes('service') ? 'Welche Behandlung möchten Sie?' : 'Alle Angaben sind vollständig.',
-      detailedTail: ' Danach kann ich die Buchung sicher fortsetzen.',
+      detailedTail: ' Eine Nachricht mit den Angaben genügt.',
     },
     confirmation: { balanced: (f) => `${f.name}, Ihr Termin für ${f.service} ist am ${f.date} um ${f.time} gebucht.`, short: (f) => `${f.name}, ${f.service} ist am ${f.date} um ${f.time} gebucht.`, detailedTail: ' Ihre Buchung ist bestätigt.' },
   },
@@ -151,7 +151,7 @@ const presentations: Record<BookingPresentationLanguage, LocalizedPresentation> 
     details: {
       balanced: ({ missing }) => missing.includes('name') && missing.includes('phone') ? 'Para finalizar, solo necesito tu nombre y número de móvil.' : missing.includes('name') ? 'Solo necesito tu nombre para finalizar la reserva.' : missing.includes('phone') ? 'Solo necesito tu número de móvil para finalizar la reserva.' : missing.includes('service') ? '¿Qué servicio quieres reservar?' : 'Ya tengo todo lo necesario para finalizar la reserva.',
       short: ({ missing }) => missing.includes('name') && missing.includes('phone') ? 'Envía tu nombre y número de móvil.' : missing.includes('name') ? 'Envía tu nombre.' : missing.includes('phone') ? 'Envía tu número de móvil.' : missing.includes('service') ? '¿Qué servicio quieres?' : 'Todo está listo.',
-      detailedTail: ' Cuando los reciba, podré continuar la reserva de forma segura.',
+      detailedTail: ' Basta con enviar los datos en un solo mensaje.',
     },
     confirmation: { balanced: (f) => `${f.name}, tu cita para ${f.service} está reservada el ${f.date} a las ${f.time}.`, short: (f) => `${f.name}, ${f.service} está reservado el ${f.date} a las ${f.time}.`, detailedTail: ' Tu reserva está confirmada.' },
   },
@@ -160,7 +160,7 @@ const presentations: Record<BookingPresentationLanguage, LocalizedPresentation> 
     details: {
       balanced: ({ missing }) => missing.includes('name') && missing.includes('phone') ? 'لإتمام الحجز، أحتاج فقط اسمك ورقم هاتفك.' : missing.includes('name') ? 'أحتاج فقط اسمك لإتمام الحجز.' : missing.includes('phone') ? 'أحتاج فقط رقم هاتفك لإتمام الحجز.' : missing.includes('service') ? 'ما الخدمة التي تريد حجزها؟' : 'لدي كل المعلومات اللازمة لإتمام الحجز.',
       short: ({ missing }) => missing.includes('name') && missing.includes('phone') ? 'أرسل اسمك ورقم هاتفك.' : missing.includes('name') ? 'أرسل اسمك.' : missing.includes('phone') ? 'أرسل رقم هاتفك.' : missing.includes('service') ? 'ما الخدمة التي تريدها؟' : 'كل المعلومات جاهزة.',
-      detailedTail: ' بعد استلامها، يمكنني متابعة الحجز بأمان.',
+      detailedTail: ' يمكنك إرسال المعلومات في رسالة واحدة.',
     },
     confirmation: { balanced: (f) => `${f.name}، تم حجز موعدك لـ ${f.service} يوم ${f.date} الساعة ${f.time}.`, short: (f) => `${f.name}، تم حجز ${f.service} يوم ${f.date} الساعة ${f.time}.`, detailedTail: ' تم تأكيد حجزك.' },
   },

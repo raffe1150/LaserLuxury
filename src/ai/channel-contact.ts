@@ -23,6 +23,13 @@ export function isInvalidCustomerNameToken(name?: string | null): boolean {
     /^(?:kl(?:ockan)?|at|saat|sate|ساعت)?\s*\d{1,2}(?::\d{2})?$/iu.test(value);
 }
 
+export function isServiceNameAsCustomerName(name: unknown, serviceNames: readonly string[] = []): boolean {
+  const normalize = (value: unknown) => String(value || '').normalize('NFKC').toLocaleLowerCase()
+    .replace(/[\p{P}]+/gu, ' ').replace(/\s+/gu, ' ').trim();
+  const candidate = normalize(name);
+  return Boolean(candidate && serviceNames.some(service => normalize(service) === candidate));
+}
+
 function validName(name?: string | null): string | null {
   const value = String(name || '').trim();
   return value && !isInvalidCustomerNameToken(value) ? value : null;
@@ -30,6 +37,7 @@ function validName(name?: string | null): string | null {
 
 export function resolveAuthoritativeContact(input: {
   channel: BookingContactChannel;
+  serviceNames?: readonly string[];
   storedName?: string | null;
   storedPhone?: string | null;
   storedPhoneSource?: ContactPhoneSource | null;
@@ -37,7 +45,9 @@ export function resolveAuthoritativeContact(input: {
   currentPhone?: string | null;
   senderPhone?: string | null;
 }): ResolvedBookingContact {
-  const name = validName(input.currentName) || validName(input.storedName);
+  const customerName = (value?: string | null) =>
+    isServiceNameAsCustomerName(value, input.serviceNames) ? null : validName(value);
+  const name = customerName(input.currentName) || customerName(input.storedName);
   const senderPhone = normalizeContactPhone(input.senderPhone);
   const currentPhone = normalizeContactPhone(input.currentPhone);
   const storedPhone = normalizeContactPhone(input.storedPhone);

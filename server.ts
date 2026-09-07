@@ -7182,7 +7182,7 @@ function extractExplicitEnglishBookingName(text?: string): string | null {
   return null;
 }
 
-function extractNameAndPhone(text?: string): { name: string; phone: string } | null {
+function extractNameAndPhone(text?: string, allowStandaloneName = true): { name: string; phone: string } | null {
   const raw = normalizeLocalizedDigits(String(text || "")).trim();
   if (!raw) return null;
   if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return null;
@@ -7222,6 +7222,8 @@ function extractNameAndPhone(text?: string): { name: string; phone: string } | n
       if (/[\u0600-\u06FF]/.test(match[1])) return { name: match[1].trim(), phone };
     }
   }
+
+  if (!allowStandaloneName) return null;
 
   // Fallback is intentionally limited to a standalone one/two-word contact payload.
   // Long booking/date sentences must not contribute arbitrary leading words as names.
@@ -7268,7 +7270,7 @@ function maskPhoneForDiagnostic(phone?: string): string {
   return `***${digits.slice(-4)}`;
 }
 
-function extractNameOnly(text?: string): string | null {
+function extractNameOnly(text?: string, allowStandaloneName = true): string | null {
   const raw = String(text || "").trim();
   if (!raw) return null;
 
@@ -7303,6 +7305,8 @@ function extractNameOnly(text?: string): string | null {
     if (cleaned) return cleaned;
     if (/[\u0600-\u06FF]/.test(match[1])) return match[1].trim();
   }
+
+  if (!allowStandaloneName) return null;
 
   // Accept a short standalone person name while collecting contact details.
   const standaloneNameCandidate = raw.replace(/[.!?:]+$/u, "").trim();
@@ -7375,7 +7379,11 @@ function extractPendingBookingCustomerName(text: string | undefined, pending: an
     return null;
   }
 
-  const existing = extractNameOnly(text);
+  // Bare words are a name only in response to contact collection. Service/date
+  // selection and unrelated earlier turns must never donate a customer name.
+  const collectingName = ["awaiting_contact", "failed_recoverable"].includes(String(pending?.status || "")) &&
+    !String(pending?.customerName || "").trim();
+  const existing = extractNameOnly(text, collectingName);
   if (existing) return existing;
 
   const operation = resolveAuthoritativeOperation({ pending });
@@ -7827,6 +7835,7 @@ function formatAmbiguousServiceBookingReply(
 
 
 type ServiceClarificationPresentationInput = {
+  toneConfig?: unknown;
   status: "missing" | "ambiguous" | "unsupported";
   language: string;
   requestedService: string | null;
@@ -8027,6 +8036,7 @@ function buildServiceClarificationPresentationInstruction(
 async function renderServiceClarificationPresentation(
   input: ServiceClarificationPresentationInput,
   candidateReply?: string | null,
+  generate = generateContentWithFallback,
 ): Promise<ServiceClarificationPresentationResult> {
   const fallback = getDeterministicServiceClarificationFallback(input);
 
@@ -8036,7 +8046,7 @@ async function renderServiceClarificationPresentation(
     // candidateReply is a test-only/injected presentation candidate.
     // Normal runtime generation uses the shared Gemini reliability path.
     if (!proposed) {
-      const response = await generateContentWithFallback(null, {
+      const response = await generate(null, {
         messages: [
           {
             role: "user",
@@ -8045,7 +8055,7 @@ async function renderServiceClarificationPresentation(
           },
         ],
         systemInstruction:
-          buildServiceClarificationPresentationInstruction(input),
+          buildBusinessPromptWithTone(buildServiceClarificationPresentationInstruction(input), input.toneConfig),
         model: "gemini-2.5-flash",
         context: {
           stage: "service_clarification_presentation",
@@ -8085,6 +8095,7 @@ async function renderUnsupportedServiceBookingReply(
   language: string,
   requestedService: string,
   configuredServices: string[],
+  toneConfig?: unknown,
 ): Promise<string> {
   const safeCandidates = configuredServices.slice(0, 5);
 
@@ -8094,6 +8105,7 @@ async function renderUnsupportedServiceBookingReply(
     requestedService,
     candidates: safeCandidates,
     catalogServices: configuredServices,
+    toneConfig,
   };
 
   // Integration tests must remain deterministic and must never require
@@ -8113,6 +8125,7 @@ async function renderAmbiguousServiceBookingReply(
   requestedService: string,
   candidates: string[],
   configuredServices: string[],
+  toneConfig?: unknown,
 ): Promise<string> {
   const safeCandidates = candidates.slice(0, 5);
 
@@ -8122,6 +8135,7 @@ async function renderAmbiguousServiceBookingReply(
     requestedService,
     candidates: safeCandidates,
     catalogServices: configuredServices,
+    toneConfig,
   };
 
   if (process.env.NODE_ENV === "test") {
@@ -8136,6 +8150,7 @@ async function renderAmbiguousServiceBookingReply(
 async function renderMissingServiceBookingReply(
   language: string,
   configuredServices: string[],
+  toneConfig?: unknown,
 ): Promise<string> {
   const input: ServiceClarificationPresentationInput = {
     status: "missing",
@@ -8143,6 +8158,7 @@ async function renderMissingServiceBookingReply(
     requestedService: null,
     candidates: [],
     catalogServices: configuredServices,
+    toneConfig,
   };
 
   if (process.env.NODE_ENV === "test") {
@@ -12253,8 +12269,8 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
     inputMode === "text"
   ) {
     try {
-      const shadowCombinedContact = extractNameAndPhone(text);
-      deterministicCurrentName = shadowCombinedContact?.name || extractNameOnly(text);
+      const shadowCombinedContact = extractNameAndPhone(text, ["awaiting_contact", "failed_recoverable"].includes(String(pending?.status || "")));
+      deterministicCurrentName = shadowCombinedContact?.name || extractPendingBookingCustomerName(text, pending);
       deterministicCurrentPhone = shadowCombinedContact?.phone || extractPhoneOnly(text);
       const configuredServiceNames = (Array.isArray(businessConfig?.services) ? businessConfig.services : [])
         .map((item: any) => String(item?.name || item?.service || item?.title || "").trim())
@@ -12350,10 +12366,14 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
           const owned = pending ? selectUniqueOwnedOfferedSlotByTime(candidate, pending) : null;
           return owned ? getStockholmTimeFromIso(owned.start) : null;
         },
-        validateName: (candidate) => resolveAuthoritativeContact({
-          channel: platformName,
-          currentName: candidate,
-        }).name,
+        validateName: (candidate) => (deterministicCurrentName ||
+          ["awaiting_contact", "failed_recoverable"].includes(String(pending?.status || "")) ||
+          (deterministicCurrentPhone && text.toLocaleLowerCase().includes(candidate.toLocaleLowerCase())))
+          ? resolveAuthoritativeContact({
+              serviceNames: [...getConfiguredBookingServiceNames(businessConfig), String(pending?.service || "")],
+              channel: platformName,
+              currentName: candidate,
+            }).name : null,
         validatePhone: (candidate) => resolveAuthoritativeContact({
           channel: platformName,
           currentPhone: candidate,
@@ -12748,9 +12768,10 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
   );
   if (pending) {
     const currentCombinedContact = pending.operation === "new_booking"
-      ? extractNameAndPhone(text)
+      ? extractNameAndPhone(text, ["awaiting_contact", "failed_recoverable"].includes(String(pending?.status || "")))
       : null;
     const entryContact = resolveAuthoritativeContact({
+      serviceNames: [...getConfiguredBookingServiceNames(businessConfig), String(pending?.service || "")],
       channel: platformName,
       storedName: pending.customerName,
       storedPhone: pending.customerPhone,
@@ -13089,16 +13110,19 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
               serviceResolution.requestedService,
               serviceResolution.candidates.map((candidate) => candidate.name),
               configuredServiceNames,
+              deterministicToneConfig,
             )
           : serviceResolution.status === "missing"
             ? await renderMissingServiceBookingReply(
                 serviceResolutionLanguage,
                 configuredServiceNames,
+                deterministicToneConfig,
               )
             : await renderUnsupportedServiceBookingReply(
                 serviceResolutionLanguage,
                 pending.requestedService || "service",
                 configuredServiceNames,
+                deterministicToneConfig,
               )
       );
       return true;
@@ -13141,7 +13165,8 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
     await replyAndRecord(await renderUnsupportedServiceBookingReply(
       language,
       concreteRequestedService,
-      configuredServiceNames
+      configuredServiceNames,
+      deterministicToneConfig,
     ));
     return true;
   }
@@ -16307,12 +16332,13 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
       return true;
     }
 
-    const currentTurnCombinedContact = extractNameAndPhone(text);
+    const currentTurnCombinedContact = extractNameAndPhone(text, ["awaiting_contact", "failed_recoverable"].includes(String(pending?.status || "")));
     const currentTurnBookingContact = resolveAuthoritativeContact({
+      serviceNames: [...getConfiguredBookingServiceNames(businessConfig), String(pending?.service || "")],
       channel: platformName,
       currentName:
         currentTurnCombinedContact?.name ||
-        extractNameOnly(text) ||
+        extractPendingBookingCustomerName(text, pending) ||
         controlledUnderstandingCandidates.name,
       currentPhone:
         currentTurnCombinedContact?.phone ||
@@ -16384,7 +16410,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
       pendingOwnedOffer &&
       new Date(pendingOwnedOffer.start).getTime() ===
         new Date(ensureStockholmOffset(String(pending.dateTime))).getTime() &&
-      (extractNameAndPhone(text) || extractPhoneOnly(text) || extractNameOnly(text) ||
+      (extractNameAndPhone(text, ["awaiting_contact", "failed_recoverable"].includes(String(pending?.status || ""))) || extractPhoneOnly(text) || extractPendingBookingCustomerName(text, pending) ||
         controlledUnderstandingCandidates.name || controlledUnderstandingCandidates.phone)
     );
     const derivedLatestAvailabilityConstraint = ownedAwaitingContactInput
@@ -16587,16 +16613,19 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
                 serviceResolution.requestedService,
                 serviceResolution.candidates.map((candidate) => candidate.name),
                 configuredServiceNames,
+                deterministicToneConfig,
               )
             : serviceResolution.status === "unsupported"
               ? await renderUnsupportedServiceBookingReply(
                   getFlowReplyLanguage(pending.language, language, text),
                   serviceResolution.requestedService,
                   configuredServiceNames,
+                  deterministicToneConfig,
                 )
               : await renderMissingServiceBookingReply(
                   getFlowReplyLanguage(pending.language, language, text),
                   configuredServiceNames,
+                  deterministicToneConfig,
                 )
         );
         return true;
@@ -17855,15 +17884,16 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
       // details. Consume them before deciding whether contact is still
       // missing; otherwise this branch returns before the normal
       // awaiting-contact handler gets a chance to parse the same turn.
-      const confirmationContact = extractNameAndPhone(text);
+      const confirmationContact = extractNameAndPhone(text, ["awaiting_contact", "failed_recoverable"].includes(String(pending?.status || "")));
       const resolvedConfirmationContact = resolveAuthoritativeContact({
+        serviceNames: [...getConfiguredBookingServiceNames(businessConfig), String(pending?.service || "")],
         channel: platformName,
         storedName: pending.customerName,
         storedPhone: pending.customerPhone,
         storedPhoneSource: pending.contactPhoneSource as ContactPhoneSource | null,
         currentName:
           confirmationContact?.name ||
-          extractNameOnly(text) ||
+          extractPendingBookingCustomerName(text, pending) ||
           controlledUnderstandingCandidates.name,
         currentPhone:
           confirmationContact?.phone ||
@@ -17943,9 +17973,10 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
         await replyAndRecord(formatDeterministicRecovery(blockedRetryCategory, getFlowReplyLanguage(pending.language, language, text)));
         return true;
       }
-      const combinedContact = extractNameAndPhone(text);
+      const combinedContact = extractNameAndPhone(text, ["awaiting_contact", "failed_recoverable"].includes(String(pending?.status || "")));
       const confirmationTransition = deterministicTransition?.reason === "slot_confirmation_accepted";
       const resolvedContact = resolveAuthoritativeContact({
+        serviceNames: [...getConfiguredBookingServiceNames(businessConfig), String(pending?.service || "")],
         channel: platformName,
         storedName: pending.customerName,
         storedPhone: pending.customerPhone,
@@ -27903,9 +27934,10 @@ export const priority1hUnifiedEngineTestBoundary = {
   async renderServiceClarificationPresentation(
     input: ServiceClarificationPresentationInput,
     candidateReply?: string | null,
+    generate?: typeof generateContentWithFallback,
   ) {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
-    return renderServiceClarificationPresentation(input, candidateReply);
+    return renderServiceClarificationPresentation(input, candidateReply, generate);
   },
 
   geminiToolNames(sessionId: string) {

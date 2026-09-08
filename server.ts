@@ -7428,9 +7428,16 @@ function findConfiguredBookingService(
 
   const directMatches = configuredNames.filter((name: string) => {
     const configuredLower = name.toLowerCase();
+    // Match complete words in either direction: a catalog service such as
+    // "test" must not turn the contact surname "Testsson" into a service change.
+    // Unicode boundaries also cover Persian/Arabic names and accented letters.
+    const containsServicePhrase = (value: string, phrase: string): boolean => {
+      const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      return new RegExp(`(?<![\\p{L}\\p{M}\\p{N}_])${escaped}(?![\\p{L}\\p{M}\\p{N}_])`, "u").test(value);
+    };
     return configuredLower === requestedLower ||
-      configuredLower.includes(requestedLower) ||
-      requestedLower.includes(configuredLower);
+      containsServicePhrase(configuredLower, requestedLower) ||
+      containsServicePhrase(requestedLower, configuredLower);
   });
   if (directMatches.length === 1) return directMatches[0];
   if (directMatches.length > 1) return null;
@@ -7693,6 +7700,14 @@ function extractConcreteRequestedService(text?: string): string | null {
   // the original turn; only delimit the service capture here.
   const dateStart = String.raw`(?:[0-9۰-۹٠-٩]|monday|tuesday|wednesday|thursday|friday|saturday|sunday|måndag|tisdag|onsdag|torsdag|fredag|lördag|söndag|montag|dienstag|mittwoch|donnerstag|freitag|samstag|sonntag|lunes|martes|miércoles|jueves|viernes|sábado|domingo|شنبه|یکشنبه|دوشنبه|سه\s+شنبه|چهارشنبه|پنجشنبه|جمعه|الأحد|الاحد|الاثنين|الثلاثاء|الأربعاء|الخميس|الجمعة|السبت)`;
   const dateTail = String.raw`(?=\s+(?:(?:for|on|den|på|till|för|am|für|fuer|para|el|برای|در|في|بتاريخ)\s+)+(?:el\s+)?${dateStart})`;
+  // Persian also places a complete explicit date before the requested service.
+  // Bound the date grammar rather than swallowing arbitrary text before a name.
+  const persianDatedService = raw.match(new RegExp(
+    String.raw`^(?:می[\s‌]*خواهم|می[\s‌]*خوام|می[\s‌]*خواستم)\s+برای\s+(?:(?:شنبه|یکشنبه|دوشنبه|سه[\s‌]*شنبه|چهارشنبه|پنجشنبه|جمعه)[،,]?\s+)?[0-9۰-۹٠-٩]{1,2}\s+(?:ژانویه|فوریه|مارس|آوریل|مه[ٔ]?|ژوئن|ژوئیه|اوت|سپتامبر|اکتبر|نوامبر|دسامبر)\s+[0-9۰-۹٠-٩]{4}\s+(${candidate})\s+(?:را\s+)?رزرو\s+کنم[.!؟?]?$`, "u"));
+  if (persianDatedService) {
+    const service = persianDatedService[1].trim();
+    return /^(?:وقت|نوبت|رزرو|سرویس|خدمت)$/u.test(service) ? null : service;
+  }
   const patterns = [
     new RegExp(String.raw`\b(?:book|schedule|reserve|boka|reservera|reservar|agendar)\s+(?:(?:an?|en|ett|un|una|el|la)\s+)?(${candidate})${dateTail}`, "iu"),
     new RegExp(String.raw`\bich\s+(?:möchte|moechte|will)\s+(?:gern(?:e)?\s+)?(?:eine[nmrs]?\s+)?(${candidate})${dateTail}`, "iu"),
@@ -9056,6 +9071,7 @@ function parseExplicitNamedBookingDateParts(text: string): { day: number; month:
 
 function resolveExplicitBookingDate(text?: string): string | null {
   const raw = normalizeLocalizedDigits(String(text || ""))
+    .replace(/[\u064b-\u065f]/gu, "")
     .trim()
     .toLowerCase()
     .replace(/\u200c/g, " ")
@@ -10548,17 +10564,18 @@ function localizeServiceName(service: string, language: string): string {
   return service || "appointment";
 }
 
-function formatLocalizedDateTime(dateTime: string, language: string, timeZone: string = "Europe/Stockholm") {
+function formatLocalizedDateTime(dateTime: string, language: string, timeZone: string = "Europe/Stockholm", dateOptions: Intl.DateTimeFormatOptions = {}) {
   const start = new Date(ensureStockholmOffset(dateTime));
   const localeMap: Record<string, string> = { fa: "fa-IR-u-ca-gregory", sv: "sv-SE", en: "en-GB", de: "de-DE", es: "es-ES", ar: "ar-SA" };
   const locale = localeMap[language] || "en-GB";
-  const dateText = start.toLocaleDateString(locale, { timeZone, weekday: "long", day: "numeric", month: "long" });
+  const dateText = start.toLocaleDateString(locale, { timeZone, weekday: "long", day: "numeric", month: "long", ...dateOptions });
   const timeText = start.toLocaleTimeString("sv-SE", { timeZone, hour: "2-digit", minute: "2-digit" });
   return { dateText, timeText };
 }
 
 function formatBookingSavedMessage(language: string, name: string, service: string, dateTime: string, toneConfig?: unknown): string {
-  const { dateText, timeText } = formatLocalizedDateTime(dateTime, language);
+  // Preserve the authoritative Gregorian year in the final booking facts.
+  const { dateText, timeText } = formatLocalizedDateTime(dateTime, language, "Europe/Stockholm", { calendar: "gregory", year: "numeric" });
   const localizedService = localizeServiceName(service, language);
   return renderDeterministicBookingConfirmation(language, {
     name,

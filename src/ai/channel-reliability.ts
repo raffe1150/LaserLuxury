@@ -84,12 +84,22 @@ export function hasStrongLatinPersianEvidence(text: string): boolean {
 export function detectExplicitLanguageSwitch(text: string): string | null {
   const raw = String(text || '').normalize('NFKC').trim().toLowerCase();
   if (!raw) return null;
+  // A language name in business/customer prose is not a request to change language.
+  // Keep short language selections and explicit communication requests supported.
+  const selection = raw.replace(/[.!?؟]+$/u, '').trim()
+    .replace(/^(?:please|bitte|por favor|snälla|لطفاً?|من فضلك)\s+/u, '')
+    .replace(/\s+(?:please|bitte|tack)$/u, '');
+  const languageOnly = /^(?:(?:in|auf|på|en|به)\s+)?(?:english|svenska|deutsch|español|espanol|farsi|persian|فارسی|arabic|عربي|العربية|بالعربية)$/u.test(selection);
+  const request = /^(?:(?:please|bitte|por favor|snälla)[,\s]+)?(?:(?:can|could|would)\s+(?:you|we)\s+)?(?:reply|respond|answer|speak|continue|switch|use|antworten|antworte|sprechen|sprich|wechsle|wechseln|svara|prata|fortsätt|byt|responde|responder|habla|hablar|contesta|cambia)\b/u.test(raw)
+    || /^(?:لطفاً?\s+)?(?:(?:به\s+)?فارسی(?:\s+با\s+من)?\s+)?(?:صحبت|پاسخ|جواب)(?=$|[^\p{L}\p{N}])/u.test(raw)
+    || /^(?:(?:من فضلك|رجاءً?)\s+)?(?:تحدث|تكلم|أجب|اجب)(?=$|[^\p{L}\p{N}])/u.test(raw);
+  if (!languageOnly && !request) return null;
   if (/\b(?:english|in english|speak english|reply in english|can we continue in english)\b/.test(raw)) return 'en';
   if (/\b(?:svenska|på svenska|prata svenska|svara på svenska)\b/.test(raw)) return 'sv';
   if (/\b(?:deutsch|auf deutsch|sprechen sie deutsch|bitte deutsch)\b/.test(raw)) return 'de';
   if (/\b(?:español|espanol|en español|habla español|responde en español)\b/.test(raw)) return 'es';
-  if (/\b(?:farsi|persian|فارسی|به فارسی|فارسی صحبت کنیم)\b/u.test(raw)) return 'fa';
-  if (/\b(?:arabic|عربي|العربية|بالعربية|تكلم عربي|تحدث العربية)\b/u.test(raw)) return 'ar';
+  if (/(?:^|[^\p{L}\p{N}])(?:farsi|persian|فارسی|به فارسی|فارسی صحبت کنیم)(?=$|[^\p{L}\p{N}])/u.test(raw)) return 'fa';
+  if (/(?:^|[^\p{L}\p{N}])(?:arabic|عربي|العربية|بالعربية|تكلم عربي|تحدث العربية)(?=$|[^\p{L}\p{N}])/u.test(raw)) return 'ar';
   return null;
 }
 

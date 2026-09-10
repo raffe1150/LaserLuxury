@@ -5,6 +5,8 @@ console.log = () => undefined;
 const { priority1hUnifiedEngineTestBoundary: boundary } = await import('../../server');
 const now = new Date('2026-09-07T09:00:00+02:00');
 const cases = [
+  ['fa', 'می‌خواهم برای پنجشنبه ۲۷ مهٔ ۲۰۲۷ عکاسی عروسی رزرو کنم.', 'عکاسی عروسی', '2027-05-27'],
+  ['fa', 'می‌خواهم برای سه‌شنبه ۲۲ سپتامبر ۲۰۲۶ عکاسی عروسی رزرو کنم.', 'عکاسی عروسی', '2026-09-22'],
   ['ar', 'أريد حجز تصوير زفاف بتاريخ الاثنين، 14 سبتمبر 2026.', 'تصوير زفاف', '2026-09-14'],
   ['en', "I'd like to book wedding photography for Monday, 14 September 2026.", 'wedding photography', '2026-09-14'],
   ['en', "I'd like to book wedding photography for Tuesday, 22 September 2026.", 'wedding photography', '2026-09-22'],

@@ -13,7 +13,7 @@ const businessConfig = {
   googleCalendarId: 'cal-7',
 };
 
-function fixture(structuredUnderstandingAdoptionRuntime?: any) {
+function fixture(activeChannel = 'telegram', structuredUnderstandingAdoptionRuntime?: any) {
   const events = new Map<string, any>();
   const claims = new Map<string, any>();
   const counters = {
@@ -48,10 +48,10 @@ function fixture(structuredUnderstandingAdoptionRuntime?: any) {
           id,
           status: 'confirmed',
           summary: `Booked: ${name} - ${phone}`,
-          description: `BusinessId: 7\nPlatform: telegram\nUserId: ${marker}`,
+          description: `BusinessId: 7\nPlatform: ${activeChannel}\nUserId: ${marker}`,
           start: { dateTime: start },
           end: { dateTime: new Date(new Date(start).getTime() + duration * 60_000).toISOString() },
-          extendedProperties: { private: { businessId: '7', platform: 'telegram', userId: marker } },
+          extendedProperties: { private: { businessId: '7', platform: activeChannel, userId: marker } },
         };
         events.set(id, event);
         return { success: true, event };
@@ -140,7 +140,7 @@ const matrixConfirmations = {
 };
 for (const platformName of ['instagram', 'whatsapp', 'messenger', 'telegram']) {
   for (const [language, text] of Object.entries(matrixConfirmations)) {
-    const counts = fixture();
+    const counts = fixture(platformName);
     const sessionId = `matrix-confirm-${platformName}-${language}`;
     const pending = seedCanonicalAlternatives(sessionId);
     pending.platform = platformName;
@@ -157,6 +157,21 @@ for (const platformName of ['instagram', 'whatsapp', 'messenger', 'telegram']) {
     assert.equal(result.pending?.selectedSlotEnd, selectedEnd);
     assert.equal(counts.calendarCreate, 0, 'missing contact cannot create a booking');
     assert.equal(counts.databaseInsert, 0);
+    const contacts = {
+      en: 'My name is Maya Testwell and my phone number is 0700001101.',
+      sv: 'Jag heter Elin Testlund och mitt telefonnummer är 0700001102.',
+      es: 'Mi nombre es Lucía Prueba y mi número de teléfono es 0700001103.',
+      de: 'Mein Name ist Mira Testmann und meine Telefonnummer ist 0700001104.',
+      fa: 'نام من مینا آزمون و شماره تلفنم 0700001105 است.',
+      ar: 'اسمي لينا اختبار ورقم هاتفي 0700001106.',
+    };
+    const completed = await boundary.turn({ sessionId, platformName, recipientUserId: sessionId,
+      text: contacts[language], businessConfig, now });
+    assert.equal(completed.pending, null, `${platformName}/${language}: contact completes`);
+    assert.equal(counts.calendarCreate, 1);
+    assert.equal(counts.databaseInsert, 1);
+    assert.match(completed.replies.join(' '), /2027|۲۰۲۷|٢٠٢٧/u);
+    assert.doesNotMatch(completed.replies.join(' '), /unchanged|oförändrad|sin cambios|unverändert|بدون تغییر|لم يتغير/iu);
   }
 }
 console.log('24 channel/language confirmation regressions passed');

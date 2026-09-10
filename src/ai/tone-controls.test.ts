@@ -67,7 +67,7 @@ assert.match(composed, /Tool results are authoritative/);
 
 const serverSource = readFileSync(new URL('../../server.ts', import.meta.url), 'utf8');
 const runtimeCalls = serverSource.match(/buildBusinessPromptWithTone\(/g) || [];
-assert.equal(runtimeCalls.length, 7, 'Telegram, WhatsApp, Messenger, Instagram, Meta comments, web chat, and service clarification use the shared builder');
+assert.equal(runtimeCalls.length, 8, 'Telegram, WhatsApp, Messenger, Instagram, Meta comments, web chat, service clarification, and business-information context use the shared builder');
 for (const channel of ['telegram', 'whatsapp', 'messenger', 'instagram']) {
   assert.match(serverSource, new RegExp(`channel:\\s*["']${channel}["'][\\s\\S]{0,16000}buildBusinessPromptWithTone|buildBusinessPromptWithTone[\\s\\S]{0,16000}channel:\\s*["']${channel}["']`, 'i'));
 }

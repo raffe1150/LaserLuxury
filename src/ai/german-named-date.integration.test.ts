@@ -74,6 +74,7 @@ try {
       recipientUserId: 'german-date-customer',
       text,
       businessConfig,
+      now,
     });
   };
 

@@ -333,7 +333,9 @@ async function generateContentWithFallback(ai: GoogleGenAI | null, options: {
   const response = await runAiProviderRequest({
     timeoutMs,
     retryDelayMs: 500,
-    invoke: () => runWithAiQueue(() => activeAi.models.generateContent(params)),
+    invoke: () => runWithAiQueue(() => process.env.NODE_ENV === "test" && priority1hTestDependencies?.geminiGenerate
+      ? priority1hTestDependencies.geminiGenerate(params)
+      : activeAi.models.generateContent(params)),
     beforeRetry: () => {
       if (allKeys.length > 1) {
         rotateKey(allKeys);
@@ -414,29 +416,32 @@ async function transcribeVoiceMessageForFlow(
 }
 
 
-async function handleSystemAnalysisLog(chatId: string, analysis: any) {
+async function handleSystemAnalysisLog(chatId: string, analysis: any, businessConfig?: any) {
     if (!supabase) return { success: false, message: "No database configured" };
+    const businessId = getBusinessIdFromConfig(businessConfig);
+    if (!businessId) return { success: false, message: "Business scope is required" };
     try {
         if (analysis.name || analysis.phone || analysis.booked_appointment || analysis.feedback_left) {
            const updateData: any = {
-              user_id: chatId.toString()
+              user_id: chatId.toString(),
+              business_id: businessId
            };
            if (analysis.name) updateData.customer_name = analysis.name;
            if (analysis.phone) updateData.phone_number = analysis.phone;
            
-           const { data: existing } = await supabase.from('appointments_leads').select('user_id').eq('user_id', chatId.toString()).single();
+           const { data: existing } = await supabase.from('appointments_leads').select('user_id').eq('user_id', chatId.toString()).eq('business_id', businessId).single();
            if (existing && existing.user_id) {
-               await supabase.from('appointments_leads').update(updateData).eq('user_id', existing.user_id);
+               await supabase.from('appointments_leads').update(updateData).eq('user_id', existing.user_id).eq('business_id', businessId);
            } else {
                await supabase.from('appointments_leads').insert([updateData]);
            }
            
-           if (analysis.feedback_left && analysis.feedback_summary && activeConfig?.telegramToken && activeConfig?.adminTelegramChatId) {
-               await fetch(`https://api.telegram.org/bot${activeConfig.telegramToken}/sendMessage`, {
+           if (analysis.feedback_left && analysis.feedback_summary && businessConfig?.telegramToken && businessConfig?.adminTelegramChatId) {
+               await fetch(`https://api.telegram.org/bot${businessConfig.telegramToken}/sendMessage`, {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
                   body: JSON.stringify({
-                     chat_id: activeConfig.adminTelegramChatId,
+                     chat_id: businessConfig.adminTelegramChatId,
                      text: `New Feedback from ${analysis.name || chatId.toString()}:\n${analysis.feedback_summary}`
                   })
                });
@@ -570,6 +575,7 @@ type BusinessGroundingVerificationRequest = {
 };
 
 type Priority1hTestDependencies = {
+  geminiGenerate?: (params: any) => Promise<any>;
   calendarAdapter?: CalendarAdapter;
   supabaseClient?: any;
   recordAppointment?: (params: any) => Promise<any | null>;
@@ -8609,7 +8615,9 @@ async function loadPendingBooking(chatId: string, platform: string, businessConf
       !pending.dateTime &&
       !pending.selectedDate &&
       !pending.availabilityStartDate &&
-      !isDateConflictClarificationState(pending.dateConflictClarification)
+      !isDateConflictClarificationState(pending.dateConflictClarification) &&
+      pending.status !== "awaiting_service" &&
+      pending.status !== "awaiting_date_or_time"
     ) return null;
     if (isPendingBookingExpired(pending)) {
       console.log("[DeterministicBooking]", { event: "expired_database_state_cleared", sessionKey: safeLogFingerprint(chatId) });
@@ -11238,7 +11246,13 @@ function normalizeBusinessConfig(row: any) {
     id: row.id,
     businessName: row.business_name,
     business_name: row.business_name,
-    language: row.language || activeConfig.language || "en",
+    language: row.language || "en",
+    description: row.description,
+    address: row.address,
+    website: row.website,
+    phone: row.phone,
+    email: row.email,
+    timezone: row.timezone || "Europe/Stockholm",
     telegramToken: normalizeTelegramBotToken(
       row.telegram_bot_token ?? row.telegramToken
     ),
@@ -11249,7 +11263,7 @@ function normalizeBusinessConfig(row: any) {
     adminWhatsAppNumber,
     admin_whatsapp_number: adminWhatsAppNumber,
     googleCalendarId: row.google_calendar_id,
-    systemPrompt: row.custom_system_prompt,
+    systemPrompt: row.custom_system_prompt || "",
     toneConfig: normalizeBusinessToneConfig(row.ai_tone_config),
     instagramAccessToken: row.instagram_access_token,
     instagramToken: row.instagram_access_token,
@@ -11270,24 +11284,18 @@ function normalizeBusinessConfig(row: any) {
     bookingWindowDays: Number(
       row.booking_window_days ??
       row.advance_booking_days ??
-      activeConfig.bookingWindowDays ??
-      activeConfig.booking_window_days ??
       30
     ),
     workingHours:
       row.working_hours ??
       row.workingHours ??
-      activeConfig.workingHours ??
-      activeConfig.working_hours ??
       null,
     working_hours:
       row.working_hours ??
       row.workingHours ??
-      activeConfig.working_hours ??
-      activeConfig.workingHours ??
       null,
-    services: Array.isArray(row.services) ? row.services : activeConfig.services,
-    serviceDurations: row.service_durations || activeConfig.serviceDurations || activeConfig.service_durations,
+    services: Array.isArray(row.services) ? row.services : [],
+    serviceDurations: row.service_durations || {},
     calendarProvider: "google",
   };
 }
@@ -11298,7 +11306,6 @@ function makeBusinessConfigVersion(config: any): string {
   const businessId = getBusinessIdFromConfig(config) || "no-business";
   const businessName = config?.businessName || config?.business_name || "";
   const prompt = config?.systemPrompt || "";
-  const toneConfigVersion = JSON.stringify(normalizeBusinessToneConfig(config?.toneConfig ?? config?.ai_tone_config));
   const calendarId = config?.googleCalendarId || "";
 
   const cancellationPolicy = [
@@ -11340,7 +11347,6 @@ function makeBusinessConfigVersion(config: any): string {
         businessName,
         calendarId,
         prompt,
-        toneConfigVersion,
         cancellationPolicy,
         servicesVersion,
         serviceDurationsVersion,
@@ -11352,6 +11358,7 @@ function makeBusinessConfigVersion(config: any): string {
 }
 
 function resetSessionIfBusinessConfigChanged(sessionId: string, config: any) {
+  // Presentation-only tone edits must not invalidate collected booking facts.
   const nextVersion = makeBusinessConfigVersion(config);
   const previousVersion = businessConfigVersions[sessionId];
   if (previousVersion && previousVersion !== nextVersion) {
@@ -12777,6 +12784,10 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
     });
   }
 
+  // Distinguish stopping this uncommitted request from cancelling an appointment.
+  const stopUnfinishedBookingRequest = pending?.operation === "new_booking" &&
+    ["awaiting_service", "awaiting_date_or_time", "awaiting_time_selection", "awaiting_confirmation", "awaiting_contact"].includes(pending.status) &&
+    /^cancel (?:this|my|the) booking request[.!]?$/iu.test(text.trim());
   const explicitCurrentOperation = operationFromCurrentIntent(normalizedRequest.intent);
   if (explicitCurrentOperation !== "none" && explicitCurrentOperation !== entryOperation.operation) {
     const selectedAppointment = entryCancellationContext?.appointment || entryRescheduleContext?.appointment || appointmentContexts[sessionId]?.appointment;
@@ -13113,6 +13124,22 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
       });
     }
   };
+
+  if (stopUnfinishedBookingRequest) {
+    await clearPendingBooking(sessionId);
+    pending = null;
+    clearConversationFlowLanguage(sessionId);
+    const replies: Record<string, string> = {
+      en: "I’ve stopped this booking request.",
+      sv: "Jag har avslutat den här bokningsförfrågan.",
+      de: "Ich habe diese Buchungsanfrage beendet.",
+      es: "He detenido esta solicitud de reserva.",
+      fa: "این درخواست رزرو را متوقف کردم.",
+      ar: "أوقفت طلب الحجز هذا.",
+    };
+    await replyAndRecord(replies[language] || replies.en);
+    return true;
+  }
 
   const configuredServiceNames = getConfiguredBookingServiceNames(businessConfig);
   let resumedAwaitingServiceDuration: number | null = null;
@@ -19658,8 +19685,6 @@ async function processTelegramUpdateClaimed(
 const businessName =
   config.businessName ||
   config.business_name ||
-  activeConfig.businessName ||
-  activeConfig.business_name ||
   'this business';
 
 console.log(`Telegram AI config: business=${businessName}, hasSystemPrompt=${Boolean(config.systemPrompt)}`);
@@ -19691,13 +19716,13 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
     const currentDateContext = `\nCrucial Context: The client's current local date and time in Sweden (Europe/Stockholm) is dynamically: ${swedenDate}. Any reference by the user to 'idag', 'imorgon', or days of the week must be evaluated strictly using this dynamic date as the anchor. Note that for YYYY-MM-DD tools, June is '06' (index 5 in Javascript Date).`;
     let finalSystemInstruction =
   buildBusinessPromptWithTone(
-    config.systemPrompt || activeConfig.systemPrompt || "",
-    config.toneConfig ?? activeConfig.toneConfig,
+    config.systemPrompt || "",
+    config.toneConfig,
   ) +
   currentDateContext +
   constraint +
   languageEngine +
-  buildLanguageLockInstruction(getConversationLanguage(telegramSessionId, textForFlow)) +
+  buildLanguageLockInstruction(getConversationLanguage(telegramSessionId, textForFlow, config)) +
   buildRecentCompletedSupportInstruction(telegramSessionId);
   if (voice) {
     finalSystemInstruction +=
@@ -19830,7 +19855,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
             )
           };
         }
-        else if (call.function.name === "logSystemAnalysis" && args) adapterRes = await handleSystemAnalysisLog(chatId, args);
+        else if (call.function.name === "logSystemAnalysis" && args) adapterRes = await handleSystemAnalysisLog(chatId, args, config);
         else adapterRes = { error: "Unknown tool" };
         
         return {
@@ -20268,7 +20293,7 @@ function detectStrongLatestLanguage(text?: string, businessConfig?: any): string
   ) return "fa";
 
   if (/\b(hello|hi there|what do you do|what services|why did you change (?:the )?language|i want|can i|do you have|how long|duration|monday|tuesday|wednesday|thursday|friday|saturday|sunday|appointments?|available|availability|consultation|book|booking|my name)\b/i.test(raw)) return "en";
-  if (/\b(ich|möchte|termin|montag|dienstag|beratung|unternehmen|dienstleistungen|können sie|könnten sie)\b/i.test(raw)) return "de";
+  if (/\b(ich|möchte|termin|montag|dienstag|beratung|unternehmen|dienstleistungen|leistungen|können sie|könnten sie)\b/i.test(raw)) return "de";
   if (/\b(hola|quiero|quisiera|tienen|tiene|hay|hora|horas|disponible|disponibles|cita|reservar|reserva|consulta|tratamiento|después|despues|antes|agosto|lunes|martes|miércoles|miercoles|jueves|viernes|sábado|sabado|domingo)\b/i.test(raw)) return "es";
 
   return null;
@@ -20440,7 +20465,7 @@ function getConversationLanguage(chatId: string, latestText?: string, businessCo
   // a real Persian, Arabic, German, English, or other supported customer message.
   const detected =
     strongLatest ||
-    (text ? detectUserLanguage(text) : null) ||
+    (text && /[\p{L}]/u.test(text) ? detectUserLanguage(text) : null) ||
     businessLanguage ||
     "en";
   const latestLanguageCandidate = strongLatest || "";
@@ -22640,7 +22665,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
             )
           };
         } else if (call.function.name === "logSystemAnalysis" && args) {
-          adapterRes = await handleSystemAnalysisLog(chatId, args);
+          adapterRes = await handleSystemAnalysisLog(chatId, args, businessConfig);
         } else {
           adapterRes = { error: "Unknown tool" };
         }
@@ -23817,7 +23842,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
             )
           };
         } else if (call.function.name === "logSystemAnalysis" && args) {
-          adapterRes = await handleSystemAnalysisLog(chatId, args);
+          adapterRes = await handleSystemAnalysisLog(chatId, args, businessConfig);
         } else {
           adapterRes = { error: "Unknown tool" };
         }
@@ -23967,7 +23992,7 @@ the server injects a new active language after a clear meaningful request or exp
 
 Never say "I can only speak Swedish" or "I only communicate in Swedish".
 Never refuse a supported language.
-Keep the same warm,friendly,human tone, professional receptionist tone in every language.
+Preserve the selected COMMUNICATION STYLE in every language; language rules do not select or override tone.
 `;
 
 async function processInstagramUpdate(webhook_event: any, config: any, platform: string = "instagram-webhook") {
@@ -24460,7 +24485,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
             )
           };
         } else if (call.function.name === 'logSystemAnalysis' && args) {
-          adapterRes = await handleSystemAnalysisLog(chatId, args);
+          adapterRes = await handleSystemAnalysisLog(chatId, args, businessConfig);
         } else {
           adapterRes = { error: 'Unknown tool' };
         }
@@ -24627,6 +24652,226 @@ try {
     );
   }
 }
+
+function getScopedWebSessionId(conversationId: string, businessConfig: any): string {
+  return `web:${encodeURIComponent(getAppointmentBusinessScope(businessConfig) || "default")}:${encodeURIComponent(conversationId)}`;
+}
+
+async function processWebChat(req: any, res: any) {
+    const businessConfig = { ...activeConfig };
+    const { chatId: clientChatId } = req.body;
+    const conversationId = String(clientChatId || crypto.randomUUID());
+    const chatId = getScopedWebSessionId(conversationId, businessConfig);
+    resetSessionIfBusinessConfigChanged(chatId, businessConfig);
+    let userLanguage = getConversationLanguage(chatId, String(req.body.message || ""), businessConfig);
+
+    try {
+      const { message, audioData: incomingAudioData, mimeType: incomingMimeType } = req.body;
+      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+
+      if (!chatSessions[chatId as any]) chatSessions[chatId as any] = [];
+      const history = chatSessions[chatId as any];
+
+      let userMessageContent = message;
+
+      if (incomingAudioData) {
+          try {
+             const base64Audio = incomingAudioData.startsWith('data:')
+                ? incomingAudioData.split(',')[1]
+                : Buffer.from(incomingAudioData, "base64").toString("base64");
+
+              userMessageContent = [
+                  { text: "Voice message input:" },
+                  { inlineData: { data: base64Audio, mimeType: incomingMimeType || "audio/ogg" } }
+              ];
+          } catch(e: any) {
+             console.error("Transcription failed", e);
+             const eStr = String(e.message || e);
+             if (eStr.includes("429") || eStr.includes("503") || eStr.includes("quota") || eStr.includes("high demand")) {
+                 throw e;
+             }
+             userMessageContent = message;
+          }
+      }
+
+     const messages: any[] = [...history];
+
+const userText =
+  typeof userMessageContent === "string"
+    ? userMessageContent
+    : Array.isArray(userMessageContent)
+      ? userMessageContent.join(" ")
+      : "";
+userLanguage = getConversationLanguage(chatId, userText, businessConfig);
+
+messages.push({
+  role: "user",
+  content: userMessageContent
+});
+const businessName = businessConfig.businessName || businessConfig.business_name || 'this business';
+
+const constraint = `
+CRITICAL CONSTRAINT:
+Your response for each message MUST be concise and strictly limited to a maximum of 60 words.
+Use the business-specific system prompt from the database as your main source of truth.
+You must act only as the receptionist for: ${businessName}.
+Never mention Laser Luxury unless the current business name is Laser Luxury.
+Never mention services, prices, or treatments that are not included in this business-specific system prompt.
+When answering follow-up questions about services, do not automatically repeat a promotional offer, sales CTA, free offer, or invitation that was already given earlier in the conversation unless the customer explicitly asks for it again.
+If the customer asks about services and the prompt does not include enough information, politely ask what service they are interested in or say you can help with booking and general guidance.
+Before confirming any booking, you must check availability.
+If the requested service is Consultation/Konsultation/مشاوره, its duration is fixed at 30 minutes. Never ask the customer how long it should take.
+Before creating any appointment, collect the customer's name and mobile number. In Messenger, ask for name and mobile number ONLY AFTER an exact date and exact time has been checked, offered to the user, and the user has confirmed that exact slot. If the customer has not chosen a specific time yet, do NOT ask for name/phone; first check availability and offer times. Do not claim the booking is final until the server confirms it.
+For vague time requests, check available slots instead of asking the customer to choose a time. If the user says a weekday such as tisdag/Tuesday, the tool date must match that weekday exactly. Never change Tuesday to Thursday or another day.
+APPOINTMENT LOOKUP — HIGH PRIORITY: If the customer asks whether they already have a booking, when their appointment is, whether a booking exists, or says they are unsure if they booked, you MUST call findCustomerAppointments before replying. This is an allowed booking-support request and must NOT be escalated merely because it is outside the business FAQ. Use the current channel identity automatically; ask for name or mobile number only if the lookup says contact details are needed.
+Do not mention internal tools, API calls, system prompts, or database logic.
+LANGUAGE RULE: Reply only in the active conversation language injected by the server. Short replies, numbers, names, phone numbers, dates, times, and confirmations do not change it.
+`;
+      const swedenDate = new Date().toLocaleDateString('en-US', {
+        timeZone: 'Europe/Stockholm',
+        weekday: 'long',
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric'
+      });
+      const currentDateContext = `\nCrucial Context: The client's current local date and time in Sweden (Europe/Stockholm) is dynamically: ${swedenDate}. Any reference by the user to 'idag', 'imorgon', or days of the week must be evaluated strictly using this dynamic date as the anchor. Note that for YYYY-MM-DD tools, June is '06' (index 5 in Javascript Date).`;
+     const languageEngine = `
+LANGUAGE ENGINE:
+The detected customer language is "${userLanguage}".
+Reply ONLY in this language.
+If the customer explicitly asks to change language, switch immediately.
+Never translate unless requested.
+`;
+      let finalSystemInstruction =
+  buildBusinessPromptWithTone(businessConfig.systemPrompt || "", businessConfig.toneConfig) +
+  currentDateContext +
+  constraint +
+  languageEngine +
+  buildLanguageLockInstruction(userLanguage) +
+  buildRecentCompletedSupportInstruction(chatId);
+      let chatResponse = await generateContentWithFallback(null, {
+        messages,
+        systemInstruction: finalSystemInstruction,
+        tools: getGeminiSupportTools(chatId),
+        model: 'gemini-2.5-flash'
+      });
+
+      let maxWebTurns = 3;
+      while (chatResponse.functionCalls && chatResponse.functionCalls.length > 0 && maxWebTurns > 0) {
+        maxWebTurns--;
+        messages.push({ role: "assistant", content: chatResponse.text || null, tool_calls: chatResponse.functionCalls });
+        const adapter = getCalendarAdapter(businessConfig);
+        const functionResponsesParts = await Promise.all(chatResponse.functionCalls.map(async (call: any) => {
+          let adapterRes;
+          const args = JSON.parse(call.function.arguments);
+          if (call.function.name === "checkSlots" && args) {
+            adapterRes = await adapter.checkSlots(args.startDate, args.endDate, args.durationMinutes, args.requestedTime || inferRequestedTimeFromText(userText || ""));
+            if (adapterRes.available_slots_string) {
+                const slotsArray = adapterRes.available_slots_string
+                    .split('\n')
+                    .filter((s: string) => s.trim().length > 0 && !s.includes('No available slots'));
+
+                const replyMessage = formatSwedishTimeSlots(slotsArray, args.requestedTime || inferRequestedTimeFromText(userText || ""), getLockedReplyLanguage(chatId, userText || ""), businessConfig.toneConfig);
+                return { TERMINATE_EARLY: true, replyMessage };
+            }
+        }
+          else if (call.function.name === "findCustomerAppointments" && args) {
+            adapterRes = await findCustomerAppointments(adapter, { ...args, lookupMode: args.lookupMode || detectAppointmentLookupMode(userText), lookupText: userText, lookupPath: "web_gemini_tool" }, chatId.toString(), "web", businessConfig);
+            const lookupLanguage = getLockedReplyLanguage(chatId, userText || "");
+            rememberLookupResultForConversation(chatId, adapterRes, lookupLanguage, "web", chatId.toString(), businessConfig);
+            const replyMessage = formatAppointmentLookupReply(
+              adapterRes,
+              lookupLanguage
+            );
+            return { TERMINATE_EARLY: true, replyMessage };
+          }
+          else if (call.function.name === "insertAppointment" && args) {
+          return {
+            TERMINATE_EARLY: true,
+            replyMessage: formatAuthoritativeBookingContinuation(
+              chatId.toString(),
+              getLockedReplyLanguage(chatId, userText || ""),
+              businessConfig.toneConfig
+            )
+          };
+        }
+        else if (call.function.name === "logSystemAnalysis" && args) adapterRes = await handleSystemAnalysisLog(chatId, args, businessConfig);
+          else adapterRes = { error: "Unknown tool" };
+
+          return {
+            role: "tool",
+            name: call.function.name,
+            id: call.id,
+            content: JSON.stringify(adapterRes)
+          };
+        }));
+
+        const earlyTerm = functionResponsesParts.find((p: any) => p && p.TERMINATE_EARLY);
+      if (earlyTerm) {
+          chatResponse.text = earlyTerm.replyMessage;
+          chatResponse.functionCalls = null;
+          break;
+      }
+
+      messages.push(...functionResponsesParts);
+
+      chatResponse = await generateContentWithFallback(null, {
+          messages,
+          systemInstruction: finalSystemInstruction,
+          tools: getGeminiSupportTools(chatId),
+          model: 'gemini-2.5-flash'
+        });
+      }
+
+
+      if (chatResponse.functionCalls && chatResponse.functionCalls.length > 0) {
+        chatResponse = await generateContentWithFallback(null, {
+           messages,
+           systemInstruction: finalSystemInstruction + "\nCRITICAL: Maximum tool calls reached. You MUST reply in natural language only. Summarize what you know. DO NOT USE TOOLS.",
+           model: 'gemini-2.5-flash'
+        });
+      }
+
+      history.push({ role: "user", content: Array.isArray(userMessageContent) ? "(User Voice Message)" : userMessageContent });
+      let textPart = chatResponse.text || getErrorMessageByLanguage(userLanguage);
+      history.push({ role: "assistant", content: textPart });
+
+      let audioDataOut = null;
+      let outMimeType = null;
+
+     if (incomingAudioData) {
+    try {
+          const EdgeTTS = (await import('node-edge-tts')).EdgeTTS;
+          const voiceCode = detectTtsVoiceCode(textPart);
+           const outName = `/tmp/web_tts_${Date.now()}.mp3`;
+           const cleanWebText = sanitizeTTS(textPart);
+           const finalWebTts = new EdgeTTS({ voice: voiceCode, rate: '-10%', timeout: 60000 });
+           await finalWebTts.ttsPromise(cleanWebText || "Förlåt, jag förstod inte.", outName);
+
+           const mp3Buf = fs.readFileSync(outName);
+           audioDataOut = mp3Buf.toString("base64");
+           outMimeType = "audio/mpeg";
+
+           fs.unlinkSync(outName);
+         } catch (ttsErr) {
+           console.error("Web TTS failed:", ttsErr);
+         }
+      }
+
+      postProcessMessage(chatId, "web-chat", message || "[Voice]", textPart, undefined, process.env.GEMINI_API_KEY, getBusinessIdFromConfig(businessConfig));
+      res.json({ text: textPart, audioData: audioDataOut, mimeType: outMimeType, chatId: conversationId });
+    } catch (error: any) {
+      console.error("Web chat processing error:", error);
+      if (!res.headersSent) {
+          const eStr = String(error.message || error);
+          if (["RATE_LIMIT", "PROVIDER_UNAVAILABLE"].includes(classifyAiFailure(error))) {
+              res.status(200).json({ text: getErrorMessageByLanguage(userLanguage), chatId: conversationId });
+          } else {
+              res.status(500).json({ error: getErrorMessageByLanguage(userLanguage), text: getErrorMessageByLanguage(userLanguage), chatId: conversationId });
+          }
+      }
+    }
+  }
 
 async function startServer() {
 
@@ -24926,217 +25171,7 @@ async function startServer() {
     await processTelegramUpdate(req.body, activeConfig, "telegram-webhook");
   });
 
-  app.post("/api/chat", async (req, res) => {
-    const { chatId: clientChatId } = req.body;
-    const chatId = clientChatId || "web-" + Math.random().toString(36).substring(7);
-    
-    try {
-      const { message, audioData: incomingAudioData, mimeType: incomingMimeType } = req.body;
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-      
-      if (!chatSessions[chatId as any]) chatSessions[chatId as any] = [];
-      const history = chatSessions[chatId as any];
-      
-      let userMessageContent = message;
-      
-      if (incomingAudioData) {
-          try {
-             const base64Audio = incomingAudioData.startsWith('data:') 
-                ? incomingAudioData.split(',')[1] 
-                : Buffer.from(incomingAudioData, "base64").toString("base64");
-                
-              userMessageContent = [
-                  { text: "Voice message input:" },
-                  { inlineData: { data: base64Audio, mimeType: incomingMimeType || "audio/ogg" } }
-              ];
-          } catch(e: any) {
-             console.error("Transcription failed", e);
-             const eStr = String(e.message || e);
-             if (eStr.includes("429") || eStr.includes("503") || eStr.includes("quota") || eStr.includes("high demand")) {
-                 throw e;
-             }
-             userMessageContent = message;
-          }
-      }
-
-     const messages: any[] = [...history];
-
-const userText =
-  typeof userMessageContent === "string"
-    ? userMessageContent
-    : Array.isArray(userMessageContent)
-      ? userMessageContent.join(" ")
-      : "";
-const userLanguage = getConversationLanguage(chatId, userText);
-
-messages.push({
-  role: "user",
-  content: userMessageContent
-});
-const businessName = activeConfig.businessName || activeConfig.business_name || 'this business';
-
-const constraint = `
-CRITICAL CONSTRAINT:
-Your response for each message MUST be concise and strictly limited to a maximum of 60 words.
-Use the business-specific system prompt from the database as your main source of truth.
-You must act only as the receptionist for: ${businessName}.
-Never mention Laser Luxury unless the current business name is Laser Luxury.
-Never mention services, prices, or treatments that are not included in this business-specific system prompt.
-When answering follow-up questions about services, do not automatically repeat a promotional offer, sales CTA, free offer, or invitation that was already given earlier in the conversation unless the customer explicitly asks for it again.
-If the customer asks about services and the prompt does not include enough information, politely ask what service they are interested in or say you can help with booking and general guidance.
-Before confirming any booking, you must check availability.
-If the requested service is Consultation/Konsultation/مشاوره, its duration is fixed at 30 minutes. Never ask the customer how long it should take.
-Before creating any appointment, collect the customer's name and mobile number. In Messenger, ask for name and mobile number ONLY AFTER an exact date and exact time has been checked, offered to the user, and the user has confirmed that exact slot. If the customer has not chosen a specific time yet, do NOT ask for name/phone; first check availability and offer times. Do not claim the booking is final until the server confirms it.
-For vague time requests, check available slots instead of asking the customer to choose a time. If the user says a weekday such as tisdag/Tuesday, the tool date must match that weekday exactly. Never change Tuesday to Thursday or another day.
-APPOINTMENT LOOKUP — HIGH PRIORITY: If the customer asks whether they already have a booking, when their appointment is, whether a booking exists, or says they are unsure if they booked, you MUST call findCustomerAppointments before replying. This is an allowed booking-support request and must NOT be escalated merely because it is outside the business FAQ. Use the current channel identity automatically; ask for name or mobile number only if the lookup says contact details are needed.
-Do not mention internal tools, API calls, system prompts, or database logic.
-LANGUAGE RULE: Reply only in the active conversation language injected by the server. Short replies, numbers, names, phone numbers, dates, times, and confirmations do not change it.
-`;
-      const swedenDate = new Date().toLocaleDateString('en-US', {
-        timeZone: 'Europe/Stockholm',
-        weekday: 'long',
-        year: 'numeric',
-        month: 'long',
-        day: 'numeric'
-      });
-      const currentDateContext = `\nCrucial Context: The client's current local date and time in Sweden (Europe/Stockholm) is dynamically: ${swedenDate}. Any reference by the user to 'idag', 'imorgon', or days of the week must be evaluated strictly using this dynamic date as the anchor. Note that for YYYY-MM-DD tools, June is '06' (index 5 in Javascript Date).`;
-     const languageEngine = `
-LANGUAGE ENGINE:
-The detected customer language is "${userLanguage}".
-Reply ONLY in this language.
-If the customer explicitly asks to change language, switch immediately.
-Never translate unless requested.
-`;
-      let finalSystemInstruction =
-  buildBusinessPromptWithTone(activeConfig.systemPrompt || "", activeConfig.toneConfig) +
-  currentDateContext +
-  constraint +
-  languageEngine +
-  buildLanguageLockInstruction(userLanguage) +
-  buildRecentCompletedSupportInstruction(chatId);
-      let chatResponse = await generateContentWithFallback(null, {
-        messages,
-        systemInstruction: finalSystemInstruction, 
-        tools: getGeminiSupportTools(chatId),
-        model: 'gemini-2.5-flash'
-      });
-      
-      let maxWebTurns = 3;
-      while (chatResponse.functionCalls && chatResponse.functionCalls.length > 0 && maxWebTurns > 0) {
-        maxWebTurns--;
-        messages.push({ role: "assistant", content: chatResponse.text || null, tool_calls: chatResponse.functionCalls });
-        const adapter = getCalendarAdapter(activeConfig);
-        const functionResponsesParts = await Promise.all(chatResponse.functionCalls.map(async (call: any) => {
-          let adapterRes;
-          const args = JSON.parse(call.function.arguments);
-          if (call.function.name === "checkSlots" && args) {
-            adapterRes = await adapter.checkSlots(args.startDate, args.endDate, args.durationMinutes, args.requestedTime || inferRequestedTimeFromText(userText || ""));
-            if (adapterRes.available_slots_string) {
-                const slotsArray = adapterRes.available_slots_string
-                    .split('\n')
-                    .filter((s: string) => s.trim().length > 0 && !s.includes('No available slots'));
-                
-                const replyMessage = formatSwedishTimeSlots(slotsArray, args.requestedTime || inferRequestedTimeFromText(userText || ""), getLockedReplyLanguage(chatId, userText || ""), activeConfig.toneConfig);
-                return { TERMINATE_EARLY: true, replyMessage };
-            }
-        }
-          else if (call.function.name === "findCustomerAppointments" && args) {
-            adapterRes = await findCustomerAppointments(adapter, { ...args, lookupMode: args.lookupMode || detectAppointmentLookupMode(userText), lookupText: userText, lookupPath: "web_gemini_tool" }, chatId.toString(), "web", activeConfig);
-            const lookupLanguage = getLockedReplyLanguage(chatId, userText || "");
-            rememberLookupResultForConversation(chatId, adapterRes, lookupLanguage, "web", chatId.toString(), activeConfig);
-            const replyMessage = formatAppointmentLookupReply(
-              adapterRes,
-              lookupLanguage
-            );
-            return { TERMINATE_EARLY: true, replyMessage };
-          }
-          else if (call.function.name === "insertAppointment" && args) {
-          return {
-            TERMINATE_EARLY: true,
-            replyMessage: formatAuthoritativeBookingContinuation(
-              chatId.toString(),
-              getLockedReplyLanguage(chatId, userText || ""),
-              activeConfig.toneConfig
-            )
-          };
-        }
-        else if (call.function.name === "logSystemAnalysis" && args) adapterRes = await handleSystemAnalysisLog(chatId, args);
-          else adapterRes = { error: "Unknown tool" };
-          
-          return {
-            role: "tool",
-            name: call.function.name,
-            id: call.id,
-            content: JSON.stringify(adapterRes)
-          };
-        }));
-        
-        const earlyTerm = functionResponsesParts.find((p: any) => p && p.TERMINATE_EARLY);
-      if (earlyTerm) {
-          chatResponse.text = earlyTerm.replyMessage;
-          chatResponse.functionCalls = null;
-          break;
-      }
-      
-      messages.push(...functionResponsesParts);
-      
-      chatResponse = await generateContentWithFallback(null, {
-          messages,
-          systemInstruction: finalSystemInstruction, 
-          tools: getGeminiSupportTools(chatId),
-          model: 'gemini-2.5-flash'
-        });
-      }
-      
-      
-      if (chatResponse.functionCalls && chatResponse.functionCalls.length > 0) {
-        chatResponse = await generateContentWithFallback(null, {
-           messages,
-           systemInstruction: finalSystemInstruction + "\nCRITICAL: Maximum tool calls reached. You MUST reply in natural language only. Summarize what you know. DO NOT USE TOOLS.",
-           model: 'gemini-2.5-flash'
-        });
-      }
-      
-      history.push({ role: "user", content: Array.isArray(userMessageContent) ? "(User Voice Message)" : userMessageContent });
-      let textPart = chatResponse.text || "I couldn't process your request.";
-      history.push({ role: "assistant", content: textPart });
-
-      let audioDataOut = null;
-      let outMimeType = null;
-      
-     if (incomingAudioData) {
-    try {
-          const EdgeTTS = (await import('node-edge-tts')).EdgeTTS;
-          const voiceCode = detectTtsVoiceCode(textPart);
-           const outName = `/tmp/web_tts_${Date.now()}.mp3`;
-           const cleanWebText = sanitizeTTS(textPart);
-           const finalWebTts = new EdgeTTS({ voice: voiceCode, rate: '-10%', timeout: 60000 });
-           await finalWebTts.ttsPromise(cleanWebText || "Förlåt, jag förstod inte.", outName);
-           
-           const mp3Buf = fs.readFileSync(outName);
-           audioDataOut = mp3Buf.toString("base64");
-           outMimeType = "audio/mpeg";
-           
-           fs.unlinkSync(outName);
-         } catch (ttsErr) {
-           console.error("Web TTS failed:", ttsErr);
-         }
-      }
-
-      postProcessMessage(chatId, "web-chat", message || "[Voice]", textPart, undefined, process.env.GEMINI_API_KEY);
-      res.json({ text: textPart, audioData: audioDataOut, mimeType: outMimeType, chatId });
-    } catch (error: any) {
-      console.error("Web chat processing error:", error);
-      if (!res.headersSent) {
-          const eStr = String(error.message || error);
-          if (eStr.includes("429") || eStr.includes("503") || eStr.includes("quota") || eStr.includes("RESOURCE_EXHAUSTED") || eStr.includes("high demand")) {
-              res.status(200).json({ text: "Just nu är det hög belastning på linjen. Vänligen vänta några sekunder och pröva att skicka ditt meddelande igen! 😊", chatId });
-          } else {
-              res.status(500).json({ error: eStr });
-          }
-      }
-    }
-  });
+  app.post("/api/chat", processWebChat);
 
   app.post("/api/transcribe", async (req, res) => {
     try {
@@ -27888,6 +27923,43 @@ Generate the final production-ready system prompt now.
 }
 
 export const priority1hUnifiedEngineTestBoundary = {
+  promptAuditWebSession(conversationId: string, config: any) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Test-only");
+    return getScopedWebSessionId(conversationId, config);
+  },
+  promptAuditAnalysis(userId: string, analysis: any, config: any) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Test-only");
+    return handleSystemAnalysisLog(userId, analysis, config);
+  },
+  promptAuditConfig(config: any) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Test-only");
+    activeConfig = structuredClone(config);
+  },
+  promptAuditNormalize(row: any) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Test-only");
+    return normalizeBusinessConfig(row);
+  },
+  promptAuditHistory(sessionId: string, history?: any[]) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Test-only");
+    if (history) chatSessions[sessionId] = structuredClone(history);
+    return structuredClone(chatSessions[sessionId] || []);
+  },
+  async promptAuditWeb(body: any) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Test-only");
+    let result: any;
+    let status = 200;
+    await processWebChat({ body }, { headersSent: false, status(code: number) { status = code; return this; }, json(value: any) { result = value; } });
+    return { status, body: result };
+  },
+  async promptAuditTelegram(update: any, config: any) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Test-only");
+    await processTelegramUpdateClaimed(update, config);
+  },
+  promptAuditGenerate(ai: any, options: any) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Test-only");
+    return generateContentWithFallback(ai, options);
+  },
+
   selectOwnedSlot(text: string, pending: any) {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
     return selectOwnedOfferedSlot(text, pending);
@@ -27945,6 +28017,18 @@ export const priority1hUnifiedEngineTestBoundary = {
   ) {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
     return getScopedChannelSessionId(platform, userId, businessConfig, tenantScope);
+  },
+  async stateAuditPersist(sessionId: string, platform: string, pending: any) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Test-only");
+    await savePendingBooking(sessionId, platform, structuredClone(pending));
+  },
+  async stateAuditRestore(sessionId: string, platform: string, config: any) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Test-only");
+    return structuredClone(await loadPendingBooking(sessionId, platform, config));
+  },
+  stateAuditConfig(sessionId: string, config: any) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Test-only");
+    resetSessionIfBusinessConfigChanged(sessionId, config);
   },
   seedPending(sessionId: string, pending: any) {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");

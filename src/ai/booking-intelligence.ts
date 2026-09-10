@@ -625,7 +625,7 @@ function parseBookingDateCandidate(text: string, timezone: string, now = new Dat
     october: 10, oktober: 10, octubre: 10, اکتبر: 10, أكتوبر: 10, اكتوبر: 10, november: 11, noviembre: 11, نوامبر: 11, نوفمبر: 11,
     december: 12, december_sv: 12, dezember: 12, diciembre: 12, دسامبر: 12, ديسمبر: 12,
   };
-  const named = raw.match(/(?:^|\s)(\d{1,2})(?::[ae]|\.)?\s+(?:de\s+)?(january|januari|januar|enero|ژانویه|يناير|february|februari|februar|febrero|فوریه|فبراير|march|mars|märz|marz|marzo|مارس|april|abril|آوریل|أبريل|ابريل|may|maj|mai|mayo|مه|مايو|june|juni|junio|ژوئن|يونيو|july|juli|julio|ژوئیه|يوليو|august|augusti|agosto|اوت|آگوست|أغسطس|اغسطس|september|septiembre|سپتامبر|سبتمبر|october|oktober|octubre|اکتبر|أكتوبر|اكتوبر|november|noviembre|نوامبر|نوفمبر|december|dezember|diciembre|دسامبر|ديسمبر)(?:\s+(?:de\s+)?(20\d{2}))?(?:\s|[,.!?]|$)/iu);
+  const named = raw.match(/(?:^|\s)(\d{1,2})(?::[ae]|\.)?\s+(?:de\s+)?(january|januari|januar|enero|ژانویه|يناير|february|februari|februar|febrero|فوریه|فبراير|march|mars|märz|marz|marzo|مارس|april|abril|آوریل|أبريل|ابريل|may|maj|mai|mayo|مه|مايو|june|juni|junio|ژوئن|يونيو|july|juli|julio|ژوئیه|يوليو|august|augusti|agosto|اوت|آگوست|أغسطس|اغسطس|september|septiembre|سپتامبر|سبتمبر|october|oktober|octubre|اکتبر|أكتوبر|اكتوبر|november|noviembre|نوامبر|نوفمبر|december|dezember|diciembre|دسامبر|ديسمبر)[\u064B-\u065F\u0670]*(?:\s+(?:de\s+)?(20\d{2}))?(?:\s|[,.!?]|$)/iu);
 
   const monthFirstNamed = raw.match(/(?:^|\s)(january|february|march|april|may|june|july|august|september|october|november|december)\s+(\d{1,2})(?:st|nd|rd|th)?(?:,\s*|\s+)?(20\d{2})?(?=\s|[,.!?]|$)/iu);
 

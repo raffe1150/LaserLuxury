@@ -231,6 +231,12 @@ assert.equal(parseBookingDate('Friday at 20:30', 'Europe/Stockholm', now)?.value
 assert.equal(parseBookingDate('2026-07-01', 'Europe/Stockholm', now), undefined);
 assert.equal(parseBookingDate('7:e augusti', 'Europe/Stockholm', now)?.value, '2026-08-07');
 assert.equal(parseBookingDate('۷ اوت', 'Europe/Stockholm', now)?.value, '2026-08-07');
+
+assert.equal(
+  parseBookingDate('پنجشنبه ۲۷ مهٔ ۲۰۲۷', 'Europe/Stockholm', now)?.value,
+  '2027-05-27',
+  'Persian May with combining hamza above must preserve the explicit date',
+);
 assert.equal(parseBookingDate('August 17', 'Europe/Stockholm', now)?.value, '2026-08-17');
 assert.equal(parseBookingDate('August 17, 2026', 'Europe/Stockholm', now)?.value, '2026-08-17');
 

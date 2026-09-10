@@ -246,7 +246,7 @@ const naturalToneLexicons: Record<BookingPresentationLanguage, NaturalToneLexico
       casual: [' ¿Cuál te sirve?', ' ¿Con cuál nos quedamos?'],
     },
     details: {
-      professional: ['Para completar la reserva, envíe {fields}.', 'Envíe {fields} para completar la reserva.'],
+      professional: ['Para completar la reserva, necesito {fields}.', 'Necesito {fields} para completar la reserva.'],
       friendly: ['Genial — solo necesito {fields} para terminar la reserva.', 'Ya casi está. Envíame {fields} y termino la reserva.'],
       warm: ['Por supuesto. Solo necesito {fields} para completar la reserva.', 'Cuando quieras, envíame {fields} y completaré la reserva.'],
       casual: ['Ya casi — solo envía {fields}.', 'Mándame {fields} y seguimos.'],
@@ -453,9 +453,22 @@ function finishPresentation(
   detailedTail: string,
   tone: BusinessToneConfig,
   language: BookingPresentationLanguage,
+  protectedFacts: readonly string[] = [],
 ): string {
   const tail = tone.responseLength === 'detailed' && tone.tonePreset !== 'concise' ? detailedTail : '';
-  return applyEmojiPolicy(applyFormality(`${body}${tail}`, language, tone.formality), tone);
+  // Presentation edits must never rewrite supplied names, services or slot facts.
+  let value = `${body}${tail}`;
+  let marker = '\uE000';
+  while (value.includes(marker)) marker += '\uE000';
+  const facts = [...new Set(protectedFacts.filter(Boolean))].sort((a, b) => b.length - a.length);
+  const tokens = facts.map((fact, index) => {
+    const token = `${marker}${index}\uE001`;
+    value = value.split(fact).join(token);
+    return { token, fact };
+  });
+  value = applyFormality(value, language, tone.formality);
+  for (const { token, fact } of tokens) value = value.split(token).join(fact);
+  return applyEmojiPolicy(value, tone);
 }
 
 export function renderDeterministicAvailabilityReply(
@@ -466,16 +479,17 @@ export function renderDeterministicAvailabilityReply(
   const tone = normalizeBusinessToneConfig(toneConfig);
   const lang = normalizedLanguage(language);
   const localized = presentations[lang].availability;
+  const protectedFacts = Object.entries(facts).filter(([key]) => key !== 'kind').map(([, value]) => String(value));
   const shortest = tone.responseLength === 'short' || tone.tonePreset === 'concise';
-  if (shortest) return finishPresentation(localized.short(facts), '', tone, lang);
+  if (shortest) return finishPresentation(localized.short(facts), '', tone, lang, protectedFacts);
   if (facts.kind !== 'found') {
-    return finishPresentation(localized.balanced(facts), '', tone, lang);
+    return finishPresentation(localized.balanced(facts), '', tone, lang, protectedFacts);
   }
   const lexicon = naturalToneLexicons[lang];
   const stableFacts = JSON.stringify(facts);
   const opening = selectVariant(lexicon.availabilityFound[tone.tonePreset], 'availability', lang, tone, stableFacts);
   const question = selectVariant(lexicon.availabilityQuestion[tone.formality], 'availability', lang, tone, `${stableFacts}:question`);
-  return finishPresentation(`${opening}${facts.slots}.${question}`, localized.detailedTail, tone, lang);
+  return finishPresentation(`${opening}${facts.slots}.${question}`, localized.detailedTail, tone, lang, protectedFacts);
 }
 
 export function renderDeterministicMissingDetailsReply(
@@ -506,9 +520,9 @@ export function renderDeterministicBookingConfirmation(
   const lang = normalizedLanguage(language);
   const localized = presentations[lang].confirmation;
   const shortest = tone.responseLength === 'short' || tone.tonePreset === 'concise';
-  if (shortest) return finishPresentation(localized.short(facts), '', tone, lang);
+  if (shortest) return finishPresentation(localized.short(facts), '', tone, lang, Object.values(facts));
   const stableFacts = JSON.stringify(facts);
   const template = selectVariant(naturalToneLexicons[lang].confirmation[tone.tonePreset], 'confirmation', lang, tone, stableFacts);
-  const body = template.replace('{facts}', localized.balanced(facts));
-  return finishPresentation(body, localized.detailedTail, tone, lang);
+  const body = template.replace('{facts}', () => localized.balanced(facts));
+  return finishPresentation(body, localized.detailedTail, tone, lang, Object.values(facts));
 }

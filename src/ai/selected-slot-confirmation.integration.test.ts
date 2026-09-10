@@ -286,7 +286,8 @@ const phoneOnly = await liveTurn(
 );
 assert.equal(phoneOnly.pending?.customerName ?? null, null);
 assert.equal(phoneOnly.pending?.customerPhone, '0701234567');
-assert.match(phoneOnly.replies.join(' '), /only need your name/iu);
+assert.match(phoneOnly.replies.join(' '), /your name/iu);
+assert.doesNotMatch(phoneOnly.replies.join(' '), /phone|mobile number/iu);
 
 // D: selection without authorization/contact retains the confirmation requirement.
 fixture();

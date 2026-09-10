@@ -84,23 +84,46 @@ export function hasStrongLatinPersianEvidence(text: string): boolean {
 export function detectExplicitLanguageSwitch(text: string): string | null {
   const raw = String(text || '').normalize('NFKC').trim().toLowerCase();
   if (!raw) return null;
-  // A language name in business/customer prose is not a request to change language.
-  // Keep short language selections and explicit communication requests supported.
-  const selection = raw.replace(/[.!?؟]+$/u, '').trim()
+
+  // A language name mentioned in ordinary prose must not change the active
+  // conversation language. Accept only a short language selection or a clear
+  // communication request addressed to the assistant.
+  const selection = raw
+    .replace(/[.!?؟]+$/u, '')
+    .trim()
     .replace(/^(?:please|bitte|por favor|snälla|لطفاً?|من فضلك)\s+/u, '')
     .replace(/\s+(?:please|bitte|tack)$/u, '');
-  const languageOnly = /^(?:(?:in|auf|på|en|به)\s+)?(?:english|svenska|deutsch|español|espanol|farsi|persian|فارسی|arabic|عربي|العربية|بالعربية)$/u.test(selection);
-  const request = /^(?:(?:please|bitte|por favor|snälla)[,\s]+)?(?:(?:can|could|would)\s+(?:you|we)\s+)?(?:reply|respond|answer|speak|continue|switch|use|antworten|antworte|sprechen|sprich|wechsle|wechseln|svara|prata|fortsätt|byt|responde|responder|habla|hablar|contesta|cambia)\b/u.test(raw)
-    || /^(?:لطفاً?\s+)?(?:(?:به\s+)?فارسی(?:\s+با\s+من)?\s+)?(?:صحبت|پاسخ|جواب)(?=$|[^\p{L}\p{N}])/u.test(raw)
-    || /^(?:(?:من فضلك|رجاءً?)\s+)?(?:تحدث|تكلم|أجب|اجب)(?=$|[^\p{L}\p{N}])/u.test(raw);
-  if (!languageOnly && !request) return null;
-  if (/\b(?:english|in english|speak english|reply in english|can we continue in english)\b/.test(raw)) return 'en';
-  if (/\b(?:svenska|på svenska|prata svenska|svara på svenska)\b/.test(raw)) return 'sv';
-  if (/\b(?:deutsch|auf deutsch|sprechen sie deutsch|bitte deutsch)\b/.test(raw)) return 'de';
-  if (/\b(?:español|espanol|en español|habla español|responde en español)\b/.test(raw)) return 'es';
-  if (/(?:^|[^\p{L}\p{N}])(?:farsi|persian|فارسی|به فارسی|فارسی صحبت کنیم)(?=$|[^\p{L}\p{N}])/u.test(raw)) return 'fa';
-  if (/(?:^|[^\p{L}\p{N}])(?:arabic|عربي|العربية|بالعربية|تكلم عربي|تحدث العربية)(?=$|[^\p{L}\p{N}])/u.test(raw)) return 'ar';
-  return null;
+
+  const languageAliases: Array<[string, RegExp]> = [
+    ['en', /(?:^|[^\p{L}\p{N}])(?:english|englisch|engelska|inglés|ingles|انگلیسی|الإنجليزية)(?=$|[^\p{L}\p{N}])/u],
+    ['sv', /(?:^|[^\p{L}\p{N}])(?:svenska|swedish|schwedisch|sueco|سوئدی|السويدية)(?=$|[^\p{L}\p{N}])/u],
+    ['de', /(?:^|[^\p{L}\p{N}])(?:deutsch|german|tyska|alemán|aleman|آلمانی|الألمانية)(?=$|[^\p{L}\p{N}])/u],
+    ['es', /(?:^|[^\p{L}\p{N}])(?:español|espanol|spanish|spanska|spanisch|اسپانیایی|الإسبانية)(?=$|[^\p{L}\p{N}])/u],
+    ['fa', /(?:^|[^\p{L}\p{N}])(?:farsi|persian|فارسی|persiska|persisch|persa|الفارسية)(?=$|[^\p{L}\p{N}])/u],
+    ['ar', /(?:^|[^\p{L}\p{N}])(?:arabic|عربي|العربية|بالعربية|عربی|arabiska|arabisch|árabe|arabe)(?=$|[^\p{L}\p{N}])/u],
+  ];
+
+  const selectedLanguage = languageAliases.find(([, pattern]) => pattern.test(selection))?.[0] || null;
+
+  const languageOnly = Boolean(
+    selectedLanguage &&
+    /^(?:(?:in|auf|på|en|به|به زبان|باللغة)\s+)?[\p{L}\p{M}]+$/u.test(selection)
+  );
+
+  const request =
+    /^(?:(?:please|bitte|por favor|snälla)[,\s]+)?(?:(?:can|could|would)\s+(?:you|we)\s+)?(?:reply|respond|answer|speak|continue|switch|use|antworten|antworte|sprechen|sprich|wechsle|wechseln|svara|prata|fortsätt|byt|responde|responder|habla|hablar|contesta|cambia)\b/u.test(raw) ||
+    /^(?:kan\s+du|kan\s+ni)\s+(?:svara|prata|fortsätta|byta)\b/u.test(raw) ||
+    /^(?:bitte\s+)?(?:antworten|sprechen)\s+sie\b/u.test(raw) ||
+    /^(?:por favor[,\s]+)?(?:responde|respóndeme|contesta|habla|continúa|continua|cambia)\b/u.test(raw) ||
+    /^(?:لطفاً?\s+)?(?:از\s+این\s+به\s+بعد\s+)?(?:به\s+[\p{L}\p{M}]+\s+)?(?:پاسخ|جواب|صحبت)(?=$|[^\p{L}\p{N}])/u.test(raw) ||
+    /^(?:لطفاً?\s+)?(?:از\s+این\s+به\s+بعد\s+)?به\s+[\p{L}\p{M}]+(?:\s+با\s+من)?\s+(?:پاسخ\s+(?:بده|دهید)|جواب\s+(?:بده|دهید)|صحبت\s+(?:کن|کنید))/u.test(raw) ||
+    /^(?:لطفاً?\s+)?فارسی(?:\s+با\s+من)?\s+صحبت(?:\s+کنیم|\s+کن|\s+کنید)?/u.test(raw) ||
+    /^(?:(?:من فضلك|رجاءً?)\s+)?(?:أجب|اجب|تحدث|تكلم)(?=$|[^\p{L}\p{N}])/u.test(raw) ||
+    /^(?:(?:من فضلك|رجاءً?)\s+)?(?:أجب|اجب|تحدث|تكلم)\s+(?:ب)?العربية/u.test(raw);
+
+  if (!selectedLanguage || (!languageOnly && !request)) return null;
+
+  return selectedLanguage;
 }
 
 export function resolveStableConversationLanguage(

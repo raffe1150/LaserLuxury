@@ -20072,7 +20072,7 @@ function detectGrammaticalLatinLanguage(text?: string): string | null {
   add("en", /\b(available|times?|appointments?)\b/gu, 2);
 
   const ranked = Object.entries(scores).sort((a, b) => b[1] - a[1]);
-  return ranked[0][1] >= 6 && ranked[0][1] > ranked[1][1] ? ranked[0][0] : null;
+  return ranked[0][1] >= 4 && ranked[0][1] > ranked[1][1] ? ranked[0][0] : null;
 }
 
 function detectUserLanguage(text: string): string {
@@ -20214,7 +20214,20 @@ function shouldAllowLatestLanguageOverride(chatId: string, previous: string | un
   }
   if (extractNameAndPhone(text)) return false;
 
-  return hasStrongLanguageEvidence(detected, text);
+  // A few foreign words such as "hej", "hello", or "hola" inside an otherwise
+  // established conversation must not overwrite the existing language lock.
+  // For an implicit Latin-language change, require clear grammatical evidence
+  // that the whole message is actually written in the new language.
+  const independentlyDetected = detectUserLanguage(text);
+  if (independentlyDetected !== detected) return false;
+
+  if (["sv", "de", "es", "en"].includes(detected)) {
+    const grammaticalLanguage = detectGrammaticalLatinLanguage(text);
+    if (grammaticalLanguage !== detected) return false;
+  }
+
+  return isMeaningfulLanguageMessage(text) &&
+    hasStrongLanguageEvidence(detected, text);
 }
 
 function shouldKeepPreviousConversationLanguage(chatId: string, latestText?: string): boolean {

@@ -10670,8 +10670,15 @@ function formatNoAvailabilityRecovery(language: string): string {
 }
 
 function enforceFinalConversationConcision(reply: string, maxWords: number = 45): string {
-  const raw = String(reply || "").trim();
-  if (!raw) return raw;
+  const original = String(reply || "").trim();
+  if (!original) return original;
+
+  const cleanedOrphanMarker = original.replace(
+    /([.!?؟。！？:])\s+(?:[2-9]|[1-9][0-9])[.)]\s*$/u,
+    "$1",
+  ).trim();
+
+  const raw = cleanedOrphanMarker || original;
 
   const words = raw.split(/\s+/u).filter(Boolean);
   if (words.length <= maxWords) return raw;
@@ -28306,6 +28313,11 @@ export const priority1hUnifiedEngineTestBoundary = {
   enforceAssistantIdentityLifecycle(reply: string, latestMessage: string, isFirstReply: boolean) {
     if (process.env.NODE_ENV !== "test") throw new Error("Test-only");
     return enforceAssistantIdentityLifecycle(reply, latestMessage, isFirstReply);
+  },
+
+  enforceFinalConversationConcision(reply: string, maxWords?: number) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Test-only");
+    return enforceFinalConversationConcision(reply, maxWords);
   },
 
   async promptAuditWeb(body: any) {

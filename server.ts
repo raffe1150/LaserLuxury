@@ -7795,8 +7795,20 @@ function extractConcreteRequestedService(text?: string): string | null {
 
   for (const pattern of patterns) {
     const match = raw.match(pattern);
-    const extracted = String(match?.[1] || "").trim();
+    let extracted = String(match?.[1] || "").trim();
     if (!extracted) continue;
+
+    // German tentative booking wording can be captured as part of the service
+    // candidate, e.g. "vielleicht einen Termin" or
+    // "vielleicht eine Video Consultation". Strip only the uncertainty marker
+    // and optional German article; the remaining phrase is still validated by
+    // the existing generic-service guards below.
+    const germanTentativeCandidate = extracted.match(
+      /^(?:vielleicht|eventuell|möglicherweise)\s+(?:(?:ein|eine|einen|einem|einer|eines)\s+)?(.+)$/iu
+    );
+    if (germanTentativeCandidate?.[1]) {
+      extracted = germanTentativeCandidate[1].trim();
+    }
     const normalizedCandidate = normalizeConversationText(extracted)
       .toLowerCase()
       .replace(/[.!?,;:]+$/gu, "")

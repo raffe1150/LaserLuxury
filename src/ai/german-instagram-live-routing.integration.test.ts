@@ -265,3 +265,21 @@ try {
   console.warn = originalWarn;
   console.error = originalError;
 }
+
+{
+  const tentativeGeneric =
+    'Ich möchte vielleicht einen Termin buchen, bin mir aber noch nicht sicher.';
+  assert.equal(
+    boundary.extractConcreteRequestedService(tentativeGeneric),
+    null,
+    'tentative generic German booking must not treat uncertainty wording as a service'
+  );
+
+  const tentativeConcrete =
+    'Ich möchte vielleicht eine Video Consultation buchen.';
+  assert.equal(
+    boundary.extractConcreteRequestedService(tentativeConcrete),
+    'Video Consultation',
+    'tentative German booking must preserve a real configured-style service phrase'
+  );
+}

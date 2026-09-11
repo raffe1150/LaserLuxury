@@ -19703,7 +19703,7 @@ console.log(`Telegram AI config: business=${businessName}, hasSystemPrompt=${Boo
 
 const constraint = `
 CRITICAL CONSTRAINT:
-Your response for each message MUST be concise and strictly limited to a maximum of 60 words.
+Aim for 20–35 words and 1–2 sentences. Never exceed 45 words unless more words are strictly necessary to communicate required booking, safety, policy, or error information. Ask at most one question. Do not repeat introductions, business descriptions, previous information, or promotional CTAs unless needed.
 Use the business-specific system prompt from the database as your main source of truth.
 You must act only as the receptionist for: ${businessName}.
 Never mention Laser Luxury unless the current business name is Laser Luxury.
@@ -22548,7 +22548,7 @@ async function processWhatsAppMessageClaimed(message: any, metadata: any, config
 
     const constraint = `
 CRITICAL CONSTRAINT:
-Your response for each message MUST be concise and strictly limited to a maximum of 60 words.
+Aim for 20–35 words and 1–2 sentences. Never exceed 45 words unless more words are strictly necessary to communicate required booking, safety, policy, or error information. Ask at most one question. Do not repeat introductions, business descriptions, previous information, or promotional CTAs unless needed.
 Use the business-specific system prompt from the database as your main source of truth.
 You must act only as the receptionist for: ${businessName}.
 Never mention Laser Luxury unless the current business name is Laser Luxury.
@@ -23689,7 +23689,7 @@ async function processMessengerUpdateClaimed(webhookEvent: any, config: any, pla
 
     const constraint = `
 CRITICAL CONSTRAINT:
-Your response for each message MUST be concise and strictly limited to a maximum of 60 words.
+Aim for 20–35 words and 1–2 sentences. Never exceed 45 words unless more words are strictly necessary to communicate required booking, safety, policy, or error information. Ask at most one question. Do not repeat introductions, business descriptions, previous information, or promotional CTAs unless needed.
 Use the business-specific system prompt from the database as your main source of truth.
 You must act only as the receptionist for: ${businessName}.
 Never mention Laser Luxury unless the current business name is Laser Luxury.
@@ -24282,7 +24282,7 @@ if (contentType === "video/mp4") {
 
     const constraint = `
 CRITICAL CONSTRAINT:
-Your response for each message MUST be concise and strictly limited to a maximum of 60 words.
+Aim for 20–35 words and 1–2 sentences. Never exceed 45 words unless more words are strictly necessary to communicate required booking, safety, policy, or error information. Ask at most one question. Do not repeat introductions, business descriptions, previous information, or promotional CTAs unless needed.
 Use the business-specific system prompt from the database as your main source of truth.
 You must act only as the receptionist for: ${businessName}.
 Never mention Laser Luxury unless the current business name is Laser Luxury.
@@ -24737,7 +24737,7 @@ const businessName = businessConfig.businessName || businessConfig.business_name
 
 const constraint = `
 CRITICAL CONSTRAINT:
-Your response for each message MUST be concise and strictly limited to a maximum of 60 words.
+Aim for 20–35 words and 1–2 sentences. Never exceed 45 words unless more words are strictly necessary to communicate required booking, safety, policy, or error information. Ask at most one question. Do not repeat introductions, business descriptions, previous information, or promotional CTAs unless needed.
 Use the business-specific system prompt from the database as your main source of truth.
 You must act only as the receptionist for: ${businessName}.
 Never mention Laser Luxury unless the current business name is Laser Luxury.

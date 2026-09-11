@@ -6816,9 +6816,12 @@ function hasPromotionalOfferLanguage(text?: string): boolean {
   if (!raw) return false;
 
   return (
-    /\b(?:free\s+(?:sample|demo|trial)|sample\s+(?:video|ad)|complimentary\s+(?:sample|demo)|kostenlos\w*\s+(?:probe|demo|muster)|gratis\s+(?:prov|demo|test)|provvideo|muestra(?:\s+de\s+\w+){0,3}\s+(?:gratuita|gratis)|demo\s+gratuita)\b/iu.test(raw) ||
-    /(?:نمونه|دمو).{0,40}رایگان|رایگان.{0,40}(?:نمونه|دمو)/u.test(raw) ||
-    /(?:عينة|تجربة|عرض).{0,40}مجاني|مجاني.{0,40}(?:عينة|تجربة|عرض)/u.test(raw)
+    /\b(?:free|complimentary)\b.{0,50}\b(?:sample|demo|trial|draft|video|ad)\b|\b(?:sample|demo|trial|draft)\b.{0,50}\bfree\b/iu.test(raw) ||
+    /\b(?:kostenlos\w*|gratis)\b.{0,50}\b(?:probe|demo|muster|entwurf|video)\b|\b(?:probe|demo|muster|entwurf)\b.{0,50}\b(?:kostenlos\w*|gratis)\b/iu.test(raw) ||
+    /\b(?:gratis|kostnadsfri\w*)\b.{0,60}\b(?:provannons|videoannonsutkast|utkast|provvideo|demo|prov|videoannons)\b|\b(?:provannons|videoannonsutkast|utkast|provvideo|demo|prov)\b.{0,60}\b(?:gratis|kostnadsfri\w*)\b/iu.test(raw) ||
+    /\b(?:gratis|gratuit[ao]s?)\b.{0,60}\b(?:muestra|demo|prueba|borrador|video|anuncio)\b|\b(?:muestra|demo|prueba|borrador)\b.{0,60}\b(?:gratis|gratuit[ao]s?)\b/iu.test(raw) ||
+    /(?:نمونه|دمو|پیش‌نمایش).{0,50}رایگان|رایگان.{0,50}(?:نمونه|دمو|پیش‌نمایش)/u.test(raw) ||
+    /(?:عينة|تجربة|نموذج|عرض).{0,50}مجاني(?:ة)?|مجاني(?:ة)?.{0,50}(?:عينة|تجربة|نموذج|عرض)/u.test(raw)
   );
 }
 
@@ -6839,19 +6842,23 @@ function suppressRepeatedPromotionalCta(
     .map((entry: any) => typeof entry?.content === "string" ? entry.content : "")
     .filter(Boolean);
 
-  if (!recentAssistantReplies.some((previous: string) => hasPromotionalOfferLanguage(previous))) {
+  const alreadyOffered = recentAssistantReplies.some(
+    (previous: string) => hasPromotionalOfferLanguage(previous)
+  );
+
+  if (!alreadyOffered || !hasPromotionalOfferLanguage(raw)) {
     return raw;
   }
 
-  const trailingQuestion = raw.match(
-    /(?:^|(?<=[.!?؟。])\s+)([¿]?(?=[^.!?؟。]*[?؟]\s*$)[^.!?؟。]+[?؟])\s*$/u
-  )?.[1]?.trim();
+  const sentences = raw.match(/[^.!?؟。]+[.!?؟。]?/gu) || [raw];
 
-  if (!trailingQuestion || !hasPromotionalOfferLanguage(trailingQuestion)) {
-    return raw;
-  }
+  const kept = sentences
+    .map((sentence) => sentence.trim())
+    .filter(Boolean)
+    .filter((sentence) => !hasPromotionalOfferLanguage(sentence));
 
-  const cleaned = raw.slice(0, raw.length - trailingQuestion.length).trim();
+  const cleaned = kept.join(" ").replace(/\s+/gu, " ").trim();
+
   return cleaned || raw;
 }
 

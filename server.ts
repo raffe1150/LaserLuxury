@@ -1,4 +1,4 @@
-import { isBusinessInformationQuestion, businessInformationTopics, businessInformationSubject, formatConfiguredServiceOverview } from './src/ai/business-information';
+import { isBusinessInformationQuestion, businessInformationTopics, businessInformationSubject, formatConfiguredServiceOverview, isServiceCatalogQuestion } from './src/ai/business-information';
 import "dotenv/config";
 import { extractExplicitArabicCustomerName } from './src/ai/arabic-customer-name';
 import express from "express";
@@ -454,6 +454,126 @@ async function handleSystemAnalysisLog(chatId: string, analysis: any, businessCo
         return { success: false, error: e.message };
     }
 }
+const CONVERSATION_INTRO_RESET_MS = 24 * 60 * 60 * 1000;
+
+function isConversationIntroWindowOpen(
+  latestCreatedAt: string | null | undefined,
+  nowMs = Date.now(),
+): boolean {
+  if (!latestCreatedAt) return true;
+
+  const latestTime = new Date(latestCreatedAt).getTime();
+  if (!Number.isFinite(latestTime)) return false;
+
+  return nowMs - latestTime >= CONVERSATION_INTRO_RESET_MS;
+}
+
+function isExplicitAssistantIdentityQuestion(text: string): boolean {
+  const raw = String(text || "").trim();
+  if (!raw) return false;
+
+  return [
+    /\b(?:what(?:'s| is) your name|who are you|what should i call you)\b/i,
+    /\b(?:vad heter du|vem är du|vad ska jag kalla dig)\b/i,
+    /\b(?:wie heißt du|wie heisst du|wer bist du|wie soll ich dich nennen)\b/i,
+    /\b(?:cómo te llamas|como te llamas|quién eres|quien eres|cómo debería llamarte|como deberia llamarte)\b/i,
+    /(?:اسمت چیه|اسم شما چیه|تو کی هستی|شما کی هستید|چی صدات کنم)/u,
+    /(?:ما اسمك|ما اسمكي|من أنت|من انتي|ماذا أدعوك|ماذا اسميك)/u,
+  ].some((pattern) => pattern.test(raw));
+}
+
+function buildAssistantIdentityLifecycleInstruction(
+  isFirstReply: boolean,
+  latestMessage: string,
+): string {
+  if (isExplicitAssistantIdentityQuestion(latestMessage)) {
+    return (
+      "\n\nIDENTITY LIFECYCLE: The customer is explicitly asking who you are or what your name is. " +
+      "Answer using the receptionist identity/name defined in the business system prompt. " +
+      "Do not invent a different identity."
+    );
+  }
+
+  if (isFirstReply) {
+    return (
+      "\n\nIDENTITY LIFECYCLE: This is the first assistant reply in a new conversation. " +
+      "Briefly introduce yourself using the receptionist identity/name defined in the business system prompt, " +
+      "then answer the customer's request. Do not invent a name or identity that is not defined there."
+    );
+  }
+
+  return (
+    "\n\nIDENTITY LIFECYCLE: This is not the first assistant reply in this conversation. " +
+    "Do not introduce yourself again and do not restate your receptionist name or identity unless the customer explicitly asks."
+  );
+}
+
+
+function enforceAssistantIdentityLifecycle(
+  reply: string,
+  latestMessage: string,
+  isFirstReply: boolean,
+): string {
+  const raw = String(reply || "").trim();
+  if (!raw || isFirstReply || isExplicitAssistantIdentityQuestion(latestMessage)) {
+    return raw;
+  }
+
+  const patterns = [
+    /^(?:hi|hello|hey)[,!.\s-]*(?:i['’]?m|i am|my name is)\s+[^.!?؟。]+[.!?]\s*/i,
+    /^(?:hej)[,!.\s-]*(?:jag heter|jag är)\s+[^.!?؟。]+[.!?]\s*/i,
+    /^(?:hallo|guten tag)[,!.\s-]*(?:ich bin|mein name ist)\s+[^.!?؟。]+[.!?]\s*/i,
+    /^(?:hola)[,!.\s-]*(?:soy|me llamo)\s+[^.!?¿¡؟。]+[.!?]\s*/i,
+    /^(?:سلام[،,!.\s-]*)?(?:من\s+[^.!?؟。]+(?:هستم|ام)|اسم من\s+[^.!?؟。]+)[.!?؟]\s*/u,
+    /^(?:مرحب[ًاا]?[،,!.\s-]*)?(?:أنا\s+[^.!?؟。]+|اسمي\s+[^.!?؟。]+)[.!?؟]\s*/u,
+  ];
+
+  for (const pattern of patterns) {
+    const cleaned = raw.replace(pattern, "").trim();
+    if (cleaned !== raw && cleaned) {
+      return cleaned;
+    }
+  }
+
+  return raw;
+}
+
+async function isFirstAssistantReplyInConversationWindow(
+  chatId: string,
+  platform: string,
+  businessId?: string | null,
+): Promise<boolean> {
+  if (!supabase || !businessId) return false;
+
+  const canonicalPlatform = normalizePlatformName(platform);
+  const canonicalUserId = canonicalPlatform === "whatsapp"
+    ? canonicalWhatsAppProviderCustomerId(chatId)
+    : normalizePlatformUserId(canonicalPlatform, String(chatId || ""));
+
+  if (!canonicalUserId || !canonicalPlatform) return false;
+
+  try {
+    const { data, error } = await supabase
+      .from("chat_history")
+      .select("created_at")
+      .eq("business_id", businessId)
+      .eq("platform", canonicalPlatform)
+      .eq("user_id", canonicalUserId)
+      .order("created_at", { ascending: false })
+      .limit(1);
+
+    if (error) {
+      console.error("[ConversationIntro] history lookup failed:", error);
+      return false;
+    }
+
+    return isConversationIntroWindowOpen(data?.[0]?.created_at);
+  } catch (error) {
+    console.error("[ConversationIntro] history lookup failed:", error);
+    return false;
+  }
+}
+
 async function postProcessMessage(chatId: string, platform: string, userMessage: string, agentResponse: string, tgToken?: string, aiConfigKey?: string, businessId?: string | null) {
   if (priority1hTestDependencies?.postProcess) return priority1hTestDependencies.postProcess();
   if (!supabase) return;
@@ -6691,6 +6811,50 @@ function hasRecentAssistantReplyRepetition(
   });
 }
 
+function hasPromotionalOfferLanguage(text?: string): boolean {
+  const raw = String(text || "").trim();
+  if (!raw) return false;
+
+  return (
+    /\b(?:free\s+(?:sample|demo|trial)|sample\s+(?:video|ad)|complimentary\s+(?:sample|demo)|kostenlos\w*\s+(?:probe|demo|muster)|gratis\s+(?:prov|demo|test)|provvideo|muestra(?:\s+de\s+\w+){0,3}\s+(?:gratuita|gratis)|demo\s+gratuita)\b/iu.test(raw) ||
+    /(?:نمونه|دمو).{0,40}رایگان|رایگان.{0,40}(?:نمونه|دمو)/u.test(raw) ||
+    /(?:عينة|تجربة|عرض).{0,40}مجاني|مجاني.{0,40}(?:عينة|تجربة|عرض)/u.test(raw)
+  );
+}
+
+function suppressRepeatedPromotionalCta(
+  sessionId: string,
+  reply: string,
+): string {
+  const raw = String(reply || "").trim();
+  if (!raw || !getActiveBusinessInformation(sessionId)) return raw;
+
+  const history = Array.isArray(chatSessions[sessionId])
+    ? chatSessions[sessionId]
+    : [];
+
+  const recentAssistantReplies = history
+    .filter((entry: any) => entry?.role === "assistant")
+    .slice(-6)
+    .map((entry: any) => typeof entry?.content === "string" ? entry.content : "")
+    .filter(Boolean);
+
+  if (!recentAssistantReplies.some((previous: string) => hasPromotionalOfferLanguage(previous))) {
+    return raw;
+  }
+
+  const trailingQuestion = raw.match(
+    /(?:^|(?<=[.!?؟。])\s+)([¿]?(?=[^.!?؟。]*[?؟]\s*$)[^.!?؟。]+[?؟])\s*$/u
+  )?.[1]?.trim();
+
+  if (!trailingQuestion || !hasPromotionalOfferLanguage(trailingQuestion)) {
+    return raw;
+  }
+
+  const cleaned = raw.slice(0, raw.length - trailingQuestion.length).trim();
+  return cleaned || raw;
+}
+
 function getActiveRecentCompletedBusinessSupport(sessionId: string): CompletedBookingSupportTurn | null {
   const support = completedBookingSupportTurns[sessionId];
   if (!support || Date.now() - support.savedAt > 2 * 60 * 1000) return null;
@@ -6762,7 +6926,7 @@ function currentBusinessSupportGap(sessionId: string, text: string, language: st
   ].filter(Boolean).join(" / ");
   const gap = formatBusinessSupportKnowledgeGap(language, subject);
   const names = getConfiguredBookingServiceNames(info?.businessConfig || support?.businessConfig);
-  const overview = topics.includes("services") || (topics.length === 1 && topics[0] === "company")
+  const overview = isServiceCatalogQuestion(text) || (topics.length === 1 && topics[0] === "company")
     ? formatConfiguredServiceOverview(names, language) : "";
   return [overview, gap].filter(Boolean).join(" ");
 }
@@ -12235,7 +12399,38 @@ async function handleUnifiedBookingEngine(params: UnifiedBookingEngineParams): P
           });
           return false;
         }
-        return params.send(reply);
+
+        let finalReply = String(reply || "").trim();
+        const isFirstIdentityReply = await isFirstAssistantReplyInConversationWindow(
+          params.recipientUserId,
+          params.postProcessPlatform,
+          getBusinessIdFromConfig(params.businessConfig),
+        );
+
+        if (isFirstIdentityReply) {
+          const businessName =
+            params.businessConfig?.businessName ||
+            params.businessConfig?.business_name ||
+            "this business";
+
+          const language = getConversationLanguage(params.sessionId, params.text || "");
+
+          const introByLanguage: Record<string, string> = {
+            en: `Hi! I'm the digital receptionist for ${businessName}.`,
+            sv: `Hej! Jag är den digitala receptionisten för ${businessName}.`,
+            de: `Hallo! Ich bin die digitale Rezeption für ${businessName}.`,
+            es: `¡Hola! Soy la recepcionista digital de ${businessName}.`,
+            fa: `سلام! من منشی دیجیتال ${businessName} هستم.`,
+            ar: `مرحباً! أنا موظف الاستقبال الرقمي لدى ${businessName}.`,
+          };
+
+          const intro = introByLanguage[language] || introByLanguage.en;
+          if (!finalReply.startsWith(intro)) {
+            finalReply = `${intro} ${finalReply}`.trim();
+          }
+        }
+
+        return params.send(finalReply);
       },
     }));
   } finally {
@@ -19761,6 +19956,12 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       day: 'numeric'
     });
     const currentDateContext = `\nCrucial Context: The client's current local date and time in Sweden (Europe/Stockholm) is dynamically: ${swedenDate}. Any reference by the user to 'idag', 'imorgon', or days of the week must be evaluated strictly using this dynamic date as the anchor. Note that for YYYY-MM-DD tools, June is '06' (index 5 in Javascript Date).`;
+    const isFirstIdentityReply = await isFirstAssistantReplyInConversationWindow(
+      chatId.toString(),
+      platform,
+      getBusinessIdFromConfig(config),
+    );
+
     let finalSystemInstruction =
   buildBusinessPromptWithTone(
     config.systemPrompt || "",
@@ -19770,7 +19971,8 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
   constraint +
   languageEngine +
   buildLanguageLockInstruction(getConversationLanguage(telegramSessionId, textForFlow, config)) +
-  buildRecentCompletedSupportInstruction(telegramSessionId);
+  buildRecentCompletedSupportInstruction(telegramSessionId) +
+  buildAssistantIdentityLifecycleInstruction(isFirstIdentityReply, textForFlow);
   if (voice) {
     finalSystemInstruction +=
     "\nVOICE ENGINE:\n" +
@@ -19960,6 +20162,15 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       textResponse,
       getLockedReplyLanguage(telegramSessionId, textForFlow),
       textForFlow,
+    );
+    textResponse = suppressRepeatedPromotionalCta(
+      telegramSessionId,
+      textResponse,
+    );
+    textResponse = enforceAssistantIdentityLifecycle(
+      textResponse,
+      textForFlow,
+      isFirstIdentityReply,
     );
     textResponse = enforceFinalConversationConcision(textResponse);
     textResponse = await settleHumanHandoffReply({
@@ -22611,7 +22822,13 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
 
     const currentDateContext = `\nCrucial Context: The client's current local date and time in Sweden (Europe/Stockholm) is dynamically: ${swedenDate}. Any reference by the user to 'idag', 'imorgon', or days of the week must be evaluated strictly using this dynamic date as the anchor. Note that for YYYY-MM-DD tools, June is '06' (index 5 in Javascript Date).`;
 
-    let finalSystemInstruction = buildBusinessPromptWithTone(businessConfig.systemPrompt || "", businessConfig.toneConfig) + currentDateContext + constraint + languageEngine + buildLanguageLockInstruction(userLanguage) + buildRecentCompletedSupportInstruction(chatId);
+    const isFirstIdentityReply = await isFirstAssistantReplyInConversationWindow(
+      from,
+      platform,
+      getBusinessIdFromConfig(businessConfig),
+    );
+
+    let finalSystemInstruction = buildBusinessPromptWithTone(businessConfig.systemPrompt || "", businessConfig.toneConfig) + currentDateContext + constraint + languageEngine + buildLanguageLockInstruction(userLanguage) + buildRecentCompletedSupportInstruction(chatId) + buildAssistantIdentityLifecycleInstruction(isFirstIdentityReply, textMessage);
 
     const aiRequestContext = {
       businessId: getBusinessIdFromConfig(businessConfig),
@@ -22786,6 +23003,15 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       textResponse,
       getConversationLanguage(chatId, textMessage || ""),
       textMessage,
+    );
+    textResponse = suppressRepeatedPromotionalCta(
+      chatId,
+      textResponse,
+    );
+    textResponse = enforceAssistantIdentityLifecycle(
+      textResponse,
+      textMessage,
+      isFirstIdentityReply,
     );
     textResponse = enforceFinalConversationConcision(textResponse);
     textResponse = await settleHumanHandoffReply({
@@ -23753,7 +23979,13 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
 
     const currentDateContext = `\nCrucial Context: The client's current local date and time in Sweden (Europe/Stockholm) is dynamically: ${swedenDate}. Any reference by the user to 'idag', 'imorgon', or days of the week must be evaluated strictly using this dynamic date as the anchor. Note that for YYYY-MM-DD tools, June is '06' (index 5 in Javascript Date).`;
 
-    let finalSystemInstruction = buildBusinessPromptWithTone(businessConfig.systemPrompt || "", businessConfig.toneConfig) + currentDateContext + constraint + languageEngine + buildLanguageLockInstruction(userLanguage) + buildRecentCompletedSupportInstruction(chatId);
+    const isFirstIdentityReply = await isFirstAssistantReplyInConversationWindow(
+      chatId,
+      platform,
+      getBusinessIdFromConfig(businessConfig),
+    );
+
+    let finalSystemInstruction = buildBusinessPromptWithTone(businessConfig.systemPrompt || "", businessConfig.toneConfig) + currentDateContext + constraint + languageEngine + buildLanguageLockInstruction(userLanguage) + buildRecentCompletedSupportInstruction(chatId) + buildAssistantIdentityLifecycleInstruction(isFirstIdentityReply, userMessageForLog);
 
     if (isVoiceMessage) {
       finalSystemInstruction +=
@@ -23964,6 +24196,15 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       textResponse,
       getConversationLanguage(chatId, textMessage || ""),
       userMessageForLog,
+    );
+    textResponse = suppressRepeatedPromotionalCta(
+      chatId,
+      textResponse,
+    );
+    textResponse = enforceAssistantIdentityLifecycle(
+      textResponse,
+      userMessageForLog,
+      isFirstIdentityReply,
     );
     textResponse = enforceFinalConversationConcision(textResponse);
     textResponse = await settleHumanHandoffReply({
@@ -24347,7 +24588,13 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
 
     const currentDateContext = `\nCrucial Context: The client's current local date and time in Sweden (Europe/Stockholm) is dynamically: ${swedenDate}. Any reference by the user to 'idag', 'imorgon', or days of the week must be evaluated strictly using this dynamic date as the anchor. Note that for YYYY-MM-DD tools, June is '06' (index 5 in Javascript Date).`;
 
-    let finalSystemInstruction = buildBusinessPromptWithTone(businessConfig.systemPrompt || '', businessConfig.toneConfig) + currentDateContext + constraint + languageEngine + buildLanguageLockInstruction(userLanguage) + buildRecentCompletedSupportInstruction(chatId);
+    const isFirstIdentityReply = await isFirstAssistantReplyInConversationWindow(
+      chatId,
+      platform,
+      getBusinessIdFromConfig(businessConfig),
+    );
+
+    let finalSystemInstruction = buildBusinessPromptWithTone(businessConfig.systemPrompt || '', businessConfig.toneConfig) + currentDateContext + constraint + languageEngine + buildLanguageLockInstruction(userLanguage) + buildRecentCompletedSupportInstruction(chatId) + buildAssistantIdentityLifecycleInstruction(isFirstIdentityReply, userMessageForLog);
 
     if (isVoiceMessage) {
       finalSystemInstruction +=
@@ -24608,6 +24855,15 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       textResponse,
       getConversationLanguage(chatId, textMessage || ""),
       userMessageForLog,
+    );
+    textResponse = suppressRepeatedPromotionalCta(
+      chatId,
+      textResponse,
+    );
+    textResponse = enforceAssistantIdentityLifecycle(
+      textResponse,
+      userMessageForLog,
+      isFirstIdentityReply,
     );
     textResponse = enforceFinalConversationConcision(textResponse);
     textResponse = await settleHumanHandoffReply({
@@ -28009,6 +28265,26 @@ export const priority1hUnifiedEngineTestBoundary = {
     if (history) chatSessions[sessionId] = structuredClone(history);
     return structuredClone(chatSessions[sessionId] || []);
   },
+  conversationIntroWindow(latestCreatedAt?: string | null, nowMs?: number) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Test-only");
+    return isConversationIntroWindowOpen(latestCreatedAt, nowMs);
+  },
+
+  explicitAssistantIdentityQuestion(text: string) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Test-only");
+    return isExplicitAssistantIdentityQuestion(text);
+  },
+
+  assistantIdentityLifecycleInstruction(isFirstReply: boolean, latestMessage: string) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Test-only");
+    return buildAssistantIdentityLifecycleInstruction(isFirstReply, latestMessage);
+  },
+
+  enforceAssistantIdentityLifecycle(reply: string, latestMessage: string, isFirstReply: boolean) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Test-only");
+    return enforceAssistantIdentityLifecycle(reply, latestMessage, isFirstReply);
+  },
+
   async promptAuditWeb(body: any) {
     if (process.env.NODE_ENV !== "test") throw new Error("Test-only");
     let result: any;
@@ -28164,6 +28440,38 @@ export const priority1hUnifiedEngineTestBoundary = {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
     return pendingBookings[sessionId] ? structuredClone(pendingBookings[sessionId]) : null;
   },
+  businessInformationState(
+    sessionId: string,
+    businessConfig?: any,
+    question?: string,
+    language = "en",
+  ) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+
+    if (businessConfig) {
+      businessInformationTurns[sessionId] = {
+        savedAt: Date.now(),
+        businessConfig: structuredClone(businessConfig),
+        question: String(question || ""),
+        language,
+      };
+    }
+
+    return businessInformationTurns[sessionId]
+      ? structuredClone(businessInformationTurns[sessionId])
+      : null;
+  },
+
+  businessSupportGap(sessionId: string, text: string, language: string) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    return currentBusinessSupportGap(sessionId, text, language);
+  },
+
+  suppressRepeatedPromotionalCta(sessionId: string, reply: string) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    return suppressRepeatedPromotionalCta(sessionId, reply);
+  },
+
   dropPendingMemory(sessionId: string) {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
     delete pendingBookings[sessionId];

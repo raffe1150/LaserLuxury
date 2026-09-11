@@ -35,6 +35,20 @@ export function businessInformationSubject(text: string, language: string): stri
   return businessInformationTopics(text).map(topic => labels[topic]).join(' / ');
 }
 
+export function isServiceCatalogQuestion(text: string): boolean {
+  const raw = String(text || "").trim();
+  if (!raw || !businessInformationTopics(raw).includes("services")) return false;
+
+  return (
+    /\b(?:what\s+(?:services?|offerings?)\s+do\s+you\s+(?:offer|have)|which\s+services?\s+do\s+you\s+(?:offer|have)|what\s+do\s+you\s+offer|services?\s+available)\b/iu.test(raw) ||
+    /\b(?:welche\s+(?:dienstleistungen?|leistungen?)\s+(?:bieten|haben)\s+sie|was\s+bieten\s+sie\s+an)\b/iu.test(raw) ||
+    /\b(?:vilka\s+tjänster\s+(?:erbjuder|har)\s+ni|vad\s+erbjuder\s+ni)\b/iu.test(raw) ||
+    /\b(?:qué\s+servicios?\s+(?:ofrecen|tienen)|cuáles\s+son\s+sus\s+servicios)\b/iu.test(raw) ||
+    /(?:چه|کدام)\s+(?:سرویس|خدمت|خدمات)(?:‌|\s)*(?:ها|هایی)?\s+(?:ارائه|دارید)/u.test(raw) ||
+    /(?:ما|ما هي|ما هيَ|ما هيّ)\s+الخدمات\s+التي\s+(?:تقدمون|تقدمها|لديكم)/u.test(raw)
+  );
+}
+
 export function formatConfiguredServiceOverview(names: string[], language: string): string {
   const prefix: Record<string, string> = {
     en: 'The configured bookable services are', de: 'Die buchbaren Dienstleistungen sind',

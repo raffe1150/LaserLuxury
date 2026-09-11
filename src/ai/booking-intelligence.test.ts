@@ -450,3 +450,42 @@ for (const [language, text] of multilingualAfterCases) {
 }
 
 console.log('booking intelligence tests passed');
+
+const preBookingInformationalQuestions = [
+  ['sv', 'Vad bör jag veta innan jag bestämmer mig för att boka?'],
+  ['de', 'Was sollte ich wissen, bevor ich mich für eine Buchung entscheide?'],
+  ['en', 'What should I know before I decide to book?'],
+  ['es', '¿Qué debería saber antes de decidir reservar?'],
+  ['fa', 'قبل از اینکه تصمیم بگیرم رزرو کنم چه چیزهایی باید بدانم؟'],
+  ['ar', 'ماذا يجب أن أعرف قبل أن أقرر الحجز؟'],
+] as const;
+
+for (const [language, text] of preBookingInformationalQuestions) {
+  assert.equal(
+    detectNormalizedIntent(text),
+    'general_question',
+    `pre-booking informational question must stay informational (${language}): ${text}`,
+  );
+}
+
+console.log('pre-booking informational intent regression passed');
+
+
+const explicitBookingRequests = [
+  ['sv', 'Jag vill boka en tid.'],
+  ['de', 'Ich möchte einen Termin buchen.'],
+  ['en', 'I want to book an appointment.'],
+  ['es', 'Quiero reservar una cita.'],
+  ['fa', 'می‌خوام یک وقت رزرو کنم.'],
+  ['ar', 'أريد حجز موعد.'],
+] as const;
+
+for (const [language, text] of explicitBookingRequests) {
+  assert.equal(
+    detectNormalizedIntent(text),
+    'new_booking',
+    `explicit booking request must remain booking (${language}): ${text}`,
+  );
+}
+
+console.log('explicit booking intent regression passed');

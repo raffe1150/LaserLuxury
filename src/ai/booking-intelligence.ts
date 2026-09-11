@@ -224,9 +224,36 @@ export function isReadOnlyAvailabilityInquiry(text: string): boolean {
   return availabilityLanguage && questionForm && !explicitBookingAction;
 }
 
+function isPreBookingInformationalQuestion(text: string): boolean {
+  const raw = normalizeConversationText(text).toLowerCase().trim();
+  if (!raw) return false;
+
+  return (
+    // Swedish
+    /\b(?:vad|något|nagot).{0,60}\binnan\b.{0,60}\b(?:bestämmer|bestammer|bestämt|bestamt)\b.{0,60}\bboka\b/iu.test(raw) ||
+
+    // English
+    /\b(?:what|anything|things?).{0,60}\bbefore\b.{0,60}\b(?:decide|deciding|choose)\b.{0,60}\b(?:book|booking)\b/iu.test(raw) ||
+
+    // German
+    /\b(?:was|etwas).{0,60}\bbevor\b.{0,60}\b(?:entscheide|entscheiden)\b.{0,60}\b(?:buchen|buchung|termin)\b/iu.test(raw) ||
+
+    // Spanish
+    /\b(?:qué|que|algo).{0,60}\bantes\b.{0,60}\b(?:decidir|decida|decidirme)\b.{0,60}\b(?:reservar|reserva|cita)\b/iu.test(raw) ||
+
+    // Persian
+    /(?:قبل از).{0,80}(?:تصمیم).{0,60}(?:رزرو|وقت).{0,80}(?:چه|چی).{0,40}(?:بدانم|بدونم|باید)/u.test(raw) ||
+
+    // Arabic
+    /(?:ماذا|ما).{0,40}(?:يجب|ينبغي).{0,40}(?:أعرف|اعرف).{0,60}(?:قبل).{0,60}(?:أقرر|اقرر).{0,60}(?:الحجز|حجز|موعد)/u.test(raw)
+  );
+}
+
 export function detectNormalizedIntent(text: string): NormalizedIntent {
   const raw = normalizeConversationText(text).toLowerCase();
   if (!raw) return 'unknown';
+
+  if (isPreBookingInformationalQuestion(raw)) return 'general_question';
 
   // Service-selection guidance is informational, not permission to start
   // availability discovery. Once the customer actually chooses a service

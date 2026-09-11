@@ -6828,9 +6828,21 @@ function hasPromotionalOfferLanguage(text?: string): boolean {
 function suppressRepeatedPromotionalCta(
   sessionId: string,
   reply: string,
+  latestMessage?: string,
 ): string {
   const raw = String(reply || "").trim();
-  if (!raw || !getActiveBusinessInformation(sessionId)) return raw;
+  if (!raw) return raw;
+
+  const activeBusinessInfo = Boolean(getActiveBusinessInformation(sessionId));
+  const activeNonMutatingTurn = Boolean(
+    nonMutatingSupportTurns[sessionId] &&
+    Date.now() - nonMutatingSupportTurns[sessionId] < 2 * 60 * 1000
+  );
+
+  if (!activeBusinessInfo && !activeNonMutatingTurn) return raw;
+
+  const explicitPromoRequest = hasPromotionalOfferLanguage(latestMessage);
+  if (explicitPromoRequest) return raw;
 
   const history = Array.isArray(chatSessions[sessionId])
     ? chatSessions[sessionId]
@@ -20173,6 +20185,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
     textResponse = suppressRepeatedPromotionalCta(
       telegramSessionId,
       textResponse,
+      textForFlow,
     );
     textResponse = enforceAssistantIdentityLifecycle(
       textResponse,
@@ -23014,6 +23027,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
     textResponse = suppressRepeatedPromotionalCta(
       chatId,
       textResponse,
+      textMessage,
     );
     textResponse = enforceAssistantIdentityLifecycle(
       textResponse,
@@ -24207,6 +24221,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
     textResponse = suppressRepeatedPromotionalCta(
       chatId,
       textResponse,
+      userMessageForLog,
     );
     textResponse = enforceAssistantIdentityLifecycle(
       textResponse,
@@ -24866,6 +24881,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
     textResponse = suppressRepeatedPromotionalCta(
       chatId,
       textResponse,
+      userMessageForLog,
     );
     textResponse = enforceAssistantIdentityLifecycle(
       textResponse,

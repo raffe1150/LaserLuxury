@@ -10486,6 +10486,41 @@ function formatNoAvailabilityRecovery(language: string): string {
   return "There is no availability for that same day and time constraint. Would you like to try another day or time?";
 }
 
+function enforceFinalConversationConcision(reply: string, maxWords: number = 45): string {
+  const raw = String(reply || "").trim();
+  if (!raw) return raw;
+
+  const words = raw.split(/\s+/u).filter(Boolean);
+  if (words.length <= maxWords) return raw;
+
+  // Preserve complete sentences only. Never hard-cut a customer-facing reply
+  // mid-sentence because that can remove required booking or support facts.
+  const sentenceMatches = raw.match(/[^.!?؟。！？]+[.!?؟。！？]+(?:["'”’»)]*)/gu) || [];
+  if (!sentenceMatches.length) return raw;
+
+  const kept: string[] = [];
+  let keptWords = 0;
+
+  for (const sentence of sentenceMatches) {
+    const cleaned = sentence.trim();
+    const sentenceWords = cleaned.split(/\s+/u).filter(Boolean).length;
+    if (!sentenceWords) continue;
+    if (keptWords + sentenceWords > maxWords) break;
+    kept.push(cleaned);
+    keptWords += sentenceWords;
+  }
+
+  // If no complete sentence fits safely, preserve the original reply.
+  if (!kept.length) return raw;
+
+  const candidate = kept.join(" ").trim();
+
+  // Do not replace the original with an extremely small fragment.
+  if (candidate.split(/\s+/u).filter(Boolean).length < 8) return raw;
+
+  return candidate;
+}
+
 function guardCustomerFacingReply(sessionId: string, reply: string, fallbackLanguage?: string, toneConfig?: unknown): string {
   const raw = suppressBookingCtaDuringSupportTurn(
     sessionId,
@@ -19926,6 +19961,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       getLockedReplyLanguage(telegramSessionId, textForFlow),
       textForFlow,
     );
+    textResponse = enforceFinalConversationConcision(textResponse);
     textResponse = await settleHumanHandoffReply({
       sessionId: telegramSessionId,
       inboundMessageId: String(update?.update_id || ""),
@@ -22750,6 +22786,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       getConversationLanguage(chatId, textMessage || ""),
       textMessage,
     );
+    textResponse = enforceFinalConversationConcision(textResponse);
     textResponse = await settleHumanHandoffReply({
       sessionId: chatId,
       inboundMessageId: String(message?.id || ""),
@@ -23927,6 +23964,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       getConversationLanguage(chatId, textMessage || ""),
       userMessageForLog,
     );
+    textResponse = enforceFinalConversationConcision(textResponse);
     textResponse = await settleHumanHandoffReply({
       sessionId: chatId,
       inboundMessageId: String(
@@ -24570,6 +24608,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       getConversationLanguage(chatId, textMessage || ""),
       userMessageForLog,
     );
+    textResponse = enforceFinalConversationConcision(textResponse);
     textResponse = await settleHumanHandoffReply({
       sessionId: chatId,
       inboundMessageId: String(webhook_event?.message?.mid || ""),
@@ -28173,6 +28212,10 @@ export const priority1hUnifiedEngineTestBoundary = {
   guardReply(sessionId: string, reply: string, language: string = "sv", toneConfig?: unknown) {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
     return guardCustomerFacingReply(sessionId, reply, language, toneConfig);
+  },
+  enforceConversationConcision(reply: string, maxWords: number = 45) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    return enforceFinalConversationConcision(reply, maxWords);
   },
   seedVerifiedBookingReply(sessionId: string, result: BookingOperationResult) {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");

@@ -122,3 +122,44 @@ test("incidental foreign-language mentions do not overwrite six-language locks",
     assert.equal(resolve(session, message), base, message);
   });
 });
+
+test("established language survives ambiguous or falsely detected natural messages", () => {
+  const cases = [
+    [
+      "es",
+      "Hola, quiero continuar en español.",
+      "No estoy muy seguro de qué me conviene. ¿Qué me recomendarías?",
+    ],
+    [
+      "es",
+      "Hola, quiero continuar en español.",
+      "No sé cuál me conviene más.",
+    ],
+    [
+      "es",
+      "Hola, quiero continuar en español.",
+      "¿Qué me recomiendas?",
+    ],
+    [
+      "sv",
+      "Hej, jag vill fortsätta på svenska.",
+      "Jag är inte säker på vad som passar mig. Vad rekommenderar du?",
+    ],
+    [
+      "de",
+      "Hallo, ich möchte auf Deutsch weitersprechen.",
+      "Ich bin mir nicht sicher, was zu mir passt. Was würden Sie empfehlen?",
+    ],
+    [
+      "en",
+      "Hello, I want to continue in English.",
+      "I'm not sure what would suit me. What would you recommend?",
+    ],
+  ] as const;
+
+  cases.forEach(([base, start, message], index) => {
+    const session = `ambiguous-natural-${index}`;
+    resolve(session, start);
+    assert.equal(resolve(session, message), base, message);
+  });
+});

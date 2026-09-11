@@ -20205,8 +20205,9 @@ function hasStrongLanguageEvidence(language: string, text?: string): boolean {
   const lower = raw.toLowerCase();
   if (!raw) return false;
 
-  if (detectGrammaticalLatinLanguage(raw) === language) return true;
-
+  // Do not let the grammatical detector confirm its own language candidate here.
+  // This function is the independent strong-evidence gate for changing an
+  // established conversation language.
   // These patterns are intentionally stronger than the normal detector. They are used
   // to allow a new real message to override an old chat language, even when the message
   // also contains a time like 16:30. Short replies like "yes", "ok", "tack", "merci"

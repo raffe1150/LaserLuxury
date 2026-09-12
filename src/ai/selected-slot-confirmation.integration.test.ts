@@ -218,6 +218,34 @@ assert.match(selectionOnly.replies.join(' '), /Would you like me to book it/iu);
 assert.equal(selectionOnlyCounters.calendarCreate, 0);
 assert.equal(selectionOnlyCounters.databaseInsert, 0);
 
+// E: a customer may supply complete contact details instead of sending a
+// separate "yes" confirmation. The already selected owned slot must remain
+// authoritative and the same booking must continue to finalization.
+const contactInsteadOfConfirmationCounters = fixture();
+const contactInsteadOfConfirmationSession = 'contact-instead-of-confirmation';
+seedCanonicalAlternatives(contactInsteadOfConfirmationSession);
+
+const contactInsteadOfConfirmationSelected = await turn(
+  contactInsteadOfConfirmationSession,
+  'Friday the 21st at 15:30 for the Video Consultation.',
+);
+
+assert.equal(contactInsteadOfConfirmationSelected.pending?.status, 'awaiting_confirmation');
+
+const contactInsteadOfConfirmation = await turn(
+  contactInsteadOfConfirmationSession,
+  'Mitt namn är OdinLink Test och mitt mobilnummer är 0700000000.',
+);
+
+assert.equal(contactInsteadOfConfirmationCounters.calendarCreate, 1);
+assert.equal(contactInsteadOfConfirmationCounters.databaseInsert, 1);
+assert.equal(contactInsteadOfConfirmationCounters.createdName, 'OdinLink Test');
+assert.equal(contactInsteadOfConfirmationCounters.createdPhone, '0700000000');
+assert.doesNotMatch(
+  contactInsteadOfConfirmation.replies.join(' '),
+  /Would you like me to book it/iu
+);
+
 const liveStart = '2026-08-24T10:15:00+02:00';
 const liveEnd = '2026-08-24T08:45:00.000Z';
 const liveNow = new Date('2026-08-21T12:00:00+02:00');

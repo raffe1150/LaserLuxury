@@ -22686,14 +22686,33 @@ async function processWhatsAppMessageClaimed(message: any, metadata: any, config
 
   try {
     if (supabase) {
-      const { data, error } = await supabase
-        .from("businesses")
-        .select("*")
-        .eq("whatsapp_phone_number_id", phoneNumberId)
-        .maybeSingle();
+      let data: any = null;
+      let lookupError: any = null;
 
-      if (error) {
-        console.error("WhatsApp business lookup error:", JSON.stringify(error));
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        const result = await supabase
+          .from("businesses")
+          .select("*")
+          .eq("whatsapp_phone_number_id", phoneNumberId)
+          .maybeSingle();
+
+        data = result.data;
+        lookupError = result.error;
+
+        if (!lookupError) break;
+
+        const errorText = JSON.stringify(lookupError);
+        const transientLookupError =
+          /gateway timeout|timed?\s*out|\b502\b|\b503\b|\b504\b|connection|fetch failed/i.test(errorText);
+
+        console.error(
+          `WhatsApp business lookup error (attempt ${attempt}/2):`,
+          errorText
+        );
+
+        if (!transientLookupError || attempt === 2) break;
+
+        await new Promise(resolve => setTimeout(resolve, 300));
       }
 
       if (data) {
@@ -22714,7 +22733,7 @@ async function processWhatsAppMessageClaimed(message: any, metadata: any, config
           `allowCancellation=${businessConfig.allowCancellation}, ` +
           `deadlineMinutes=${businessConfig.cancellationDeadlineMinutes}`
         );
-      } else {
+      } else if (!lookupError) {
         console.error("No business found for WhatsApp phone_number_id:", phoneNumberId);
       }
     }

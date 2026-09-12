@@ -283,6 +283,7 @@ describe('deterministic booking-tone presentation', () => {
   it('renders verified booking confirmations as readable multiline summaries in every supported language', () => {
     const facts = {
       name: 'CUSTOMER-X',
+      phone: '0700000000',
       service: 'SERVICE-X',
       date: 'DATE-X',
       time: '13:15',
@@ -299,6 +300,29 @@ describe('deterministic booking-tone presentation', () => {
         assert.equal(rendered.includes(fact), true, `${language} must preserve ${fact}`);
       }
     }
+  });
+
+  it('renders the Swedish casual confirmation as a clean booking card', () => {
+    const rendered = renderDeterministicBookingConfirmation('sv', {
+      name: 'OdinLink Test',
+      phone: '0700000000',
+      service: 'Video Consultation',
+      date: 'tisdag 15 september 2026',
+      time: '09:30',
+    }, {
+      ...professionalFormal,
+      tonePreset: 'casual',
+      responseLength: 'balanced',
+      formality: 'casual',
+      emojiUsage: 'none',
+    });
+
+    assert.match(rendered, /^(?:Klart|Fixat)! Din bokning är sparad\./u);
+    assert.match(rendered, /\n\nTjänst: Video Consultation/u);
+    assert.match(rendered, /\nDatum: tisdag 15 september 2026/u);
+    assert.match(rendered, /\nTid: 09:30/u);
+    assert.match(rendered, /\nNamn: OdinLink Test/u);
+    assert.match(rendered, /\nMobil: 0700000000/u);
   });
 
   it('is synchronous presentation-only code and performs no network or LLM work', () => {

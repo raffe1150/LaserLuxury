@@ -6452,12 +6452,12 @@ function formatRecentCompletedStatusReply(
   const startTime = operation?.startTime || completed.dateTime;
   if (!startTime) return formatRecentCompletionRequirementsReply(language, contactComplete);
   const { dateText, timeText } = formatLocalizedDateTime(startTime, language);
-  if (language === "sv") return `Ja, bokningen är verifierad till ${dateText} kl. ${timeText}.`;
-  if (language === "de") return `Ja, die Buchung ist für ${dateText} um ${timeText} Uhr bestätigt.`;
-  if (language === "es") return `Sí, la reserva está verificada para el ${dateText} a las ${timeText}.`;
-  if (language === "fa") return `بله، رزرو برای ${dateText} ساعت ${timeText} تأیید شده است.`;
-  if (language === "ar") return `نعم، الحجز مؤكد في ${dateText} الساعة ${timeText}.`;
-  return `Yes, the booking is verified for ${dateText} at ${timeText}.`;
+  if (language === "sv") return `Ja, bokningen är verifierad.\n\nDatum: ${dateText}\nTid: ${timeText}`;
+  if (language === "de") return `Ja, die Buchung ist bestätigt.\n\nDatum: ${dateText}\nUhrzeit: ${timeText}`;
+  if (language === "es") return `Sí, la reserva está verificada.\n\nFecha: ${dateText}\nHora: ${timeText}`;
+  if (language === "fa") return `بله، رزرو تأیید شده است.\n\nتاریخ: ${dateText}\nزمان: ${timeText}`;
+  if (language === "ar") return `نعم، الحجز مؤكد.\n\nالتاريخ: ${dateText}\nالوقت: ${timeText}`;
+  return `Yes, the booking is verified.\n\nDate: ${dateText}\nTime: ${timeText}`;
 }
 
 function buildRecentCompletedSupportInstruction(sessionId: string): string {
@@ -7319,6 +7319,14 @@ async function guardBusinessSupportGrounding(
     return candidateReply;
   }
   if (isGreetingOnlyBusinessSupportReply(candidateReply)) return candidateReply;
+
+  if (isServiceCatalogQuestion(latestCustomerMessage)) {
+    const names = getConfiguredBookingServiceNames(support.businessConfig);
+    if (names.length > 0) {
+      return currentBusinessSupportGap(sessionId, latestCustomerMessage, language);
+    }
+  }
+
   const previousService = "completed" in support ? support.completed.bookingOperation?.serviceName : getRecentCompletedBooking(sessionId)?.service;
   if (candidateReply === formatBusinessSupportKnowledgeGap(language, previousService)) {
     return currentBusinessSupportGap(sessionId, latestCustomerMessage, language);
@@ -10773,6 +10781,7 @@ function guardCustomerFacingReply(sessionId: string, reply: string, fallbackLang
       verified.customerName || "",
       verified.serviceName,
       verified.startTime,
+      verified.customerPhone || undefined,
       toneConfig,
     );
   }
@@ -10890,12 +10899,13 @@ function formatLocalizedDateTime(dateTime: string, language: string, timeZone: s
   return { dateText, timeText };
 }
 
-function formatBookingSavedMessage(language: string, name: string, service: string, dateTime: string, toneConfig?: unknown): string {
+function formatBookingSavedMessage(language: string, name: string, service: string, dateTime: string, phone?: string, toneConfig?: unknown): string {
   // Preserve the authoritative Gregorian year in the final booking facts.
   const { dateText, timeText } = formatLocalizedDateTime(dateTime, language, "Europe/Stockholm", { calendar: "gregory", year: "numeric" });
   const localizedService = localizeServiceName(service, language);
   return renderDeterministicBookingConfirmation(language, {
     name,
+    phone,
     service: localizedService,
     date: dateText,
     time: timeText,
@@ -19356,6 +19366,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
             bookingOperationResult.customerName || "",
             bookingOperationResult.serviceName,
             bookingOperationResult.startTime,
+            bookingOperationResult.customerPhone || undefined,
             deterministicToneConfig
           )
         );
@@ -28546,6 +28557,16 @@ export const priority1hUnifiedEngineTestBoundary = {
   businessSupportGap(sessionId: string, text: string, language: string) {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
     return currentBusinessSupportGap(sessionId, text, language);
+  },
+
+  async businessSupportGrounding(
+    sessionId: string,
+    text: string,
+    candidateReply: string,
+    language: string,
+  ) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    return guardBusinessSupportGrounding(sessionId, text, candidateReply, language);
   },
 
   suppressRepeatedPromotionalCta(sessionId: string, reply: string) {

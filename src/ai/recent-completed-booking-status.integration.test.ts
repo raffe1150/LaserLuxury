@@ -70,6 +70,15 @@ const cases = [
   },
 ] as const;
 
+const expectedStatusCards = {
+  en: { header: 'Yes, the booking is verified.', date: 'Date', time: 'Time' },
+  sv: { header: 'Ja, bokningen är verifierad.', date: 'Datum', time: 'Tid' },
+  de: { header: 'Ja, die Buchung ist bestätigt.', date: 'Datum', time: 'Uhrzeit' },
+  es: { header: 'Sí, la reserva está verificada.', date: 'Fecha', time: 'Hora' },
+  fa: { header: 'بله، رزرو تأیید شده است.', date: 'تاریخ', time: 'زمان' },
+  ar: { header: 'نعم، الحجز مؤكد.', date: 'التاريخ', time: 'الوقت' },
+} as const;
+
 try {
   for (const testCase of cases) {
     boundary.seedRecentCompletedBooking(testCase.sessionId, testCase.language, {
@@ -94,7 +103,21 @@ try {
 
     assert.equal(result.handled, true);
     assert.equal(result.replies.length, 1);
-    assert.match(result.replies[0], /18:30/u);
+
+    const expectedCard = expectedStatusCards[testCase.language];
+    assert.equal(
+      result.replies[0].startsWith(`${expectedCard.header}\n\n`),
+      true,
+      `${testCase.language} status reply should use a mini-card header`,
+    );
+    assert.match(
+      result.replies[0],
+      new RegExp(`\\n\\n${expectedCard.date}:`, 'u'),
+    );
+    assert.match(
+      result.replies[0],
+      new RegExp(`\\n${expectedCard.time}: 18:30`, 'u'),
+    );
     const expectedDate = new Date('2026-08-26T18:30:00+02:00').toLocaleDateString(
       testCase.language === 'ar' ? 'ar-SA' :
       testCase.language === 'sv' ? 'sv-SE' :

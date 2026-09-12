@@ -19,6 +19,7 @@ type MissingDetailsFacts = {
 
 type ConfirmationFacts = {
   name: string;
+  phone?: string;
   service: string;
   date: string;
   time: string;
@@ -117,7 +118,7 @@ const presentations: Record<BookingPresentationLanguage, LocalizedPresentation> 
       short: ({ missing }) => missing.includes('name') && missing.includes('phone') ? 'Please send your name and mobile number.' : missing.includes('name') ? 'Please send your name.' : missing.includes('phone') ? 'Please send your mobile number.' : missing.includes('service') ? 'Which service would you like?' : 'Everything needed is ready.',
       detailedTail: ' You can send the details in one message.',
     },
-    confirmation: { balanced: (f) => `Service: ${f.service}\nDate: ${f.date}\nTime: ${f.time}\nName: ${f.name}`, short: (f) => `${f.name}, ${f.service} is booked for ${f.date} at ${f.time}.`, detailedTail: 'Your booking is confirmed.' },
+    confirmation: { balanced: (f) => `Service: ${f.service}\nDate: ${f.date}\nTime: ${f.time}\nName: ${f.name}${f.phone ? `\nMobile: ${f.phone}` : ''}`, short: (f) => `${f.name}, ${f.service} is booked for ${f.date} at ${f.time}.`, detailedTail: 'Your booking is confirmed.' },
   },
   sv: {
     availability: { balanced: (f) => availabilitySwedish(f), short: (f) => availabilitySwedish(f, true), detailedTail: ' Svara med tiden du föredrar, så hjälper jag dig vidare.' },
@@ -126,7 +127,7 @@ const presentations: Record<BookingPresentationLanguage, LocalizedPresentation> 
       short: ({ missing }) => missing.includes('name') && missing.includes('phone') ? 'Skicka namn och mobilnummer.' : missing.includes('name') ? 'Skicka ditt namn.' : missing.includes('phone') ? 'Skicka ditt mobilnummer.' : missing.includes('service') ? 'Vilken tjänst vill du ha?' : 'Allt som behövs är klart.',
       detailedTail: ' Du kan skicka uppgifterna i ett meddelande.',
     },
-    confirmation: { balanced: (f) => `Tjänst: ${f.service}\nDatum: ${f.date}\nTid: ${f.time}\nNamn: ${f.name}`, short: (f) => `${f.name}, ${f.service} är bokad ${f.date} kl ${f.time}.`, detailedTail: 'Din bokning är bekräftad.' },
+    confirmation: { balanced: (f) => `Tjänst: ${f.service}\nDatum: ${f.date}\nTid: ${f.time}\nNamn: ${f.name}${f.phone ? `\nMobil: ${f.phone}` : ''}`, short: (f) => `${f.name}, ${f.service} är bokad ${f.date} kl ${f.time}.`, detailedTail: 'Din bokning är bekräftad.' },
   },
   fa: {
     availability: { balanced: (f) => availabilityPersian(f), short: (f) => availabilityPersian(f, true), detailedTail: ' زمان دلخواهتان را بفرستید تا مرحله بعد را انجام دهم.' },
@@ -135,7 +136,7 @@ const presentations: Record<BookingPresentationLanguage, LocalizedPresentation> 
       short: ({ missing }) => missing.includes('name') && missing.includes('phone') ? 'نام و شماره موبایل‌تان را بفرستید.' : missing.includes('name') ? 'نام‌تان را بفرستید.' : missing.includes('phone') ? 'شماره موبایل‌تان را بفرستید.' : missing.includes('service') ? 'کدام خدمت را می‌خواهید؟' : 'همه اطلاعات آماده است.',
       detailedTail: ' می‌توانید اطلاعات را در یک پیام بفرستید.',
     },
-    confirmation: { balanced: (f) => `خدمت: ${f.service}\nتاریخ: ${f.date}\nزمان: ${f.time}\nنام: ${f.name}`, short: (f) => `${f.name}، ${f.service} برای ${f.date} ساعت ${f.time} رزرو شد.`, detailedTail: 'رزرو شما تأیید شده است.' },
+    confirmation: { balanced: (f) => `خدمت: ${f.service}\nتاریخ: ${f.date}\nزمان: ${f.time}\nنام: ${f.name}${f.phone ? `\nموبایل: ${f.phone}` : ''}`, short: (f) => `${f.name}، ${f.service} برای ${f.date} ساعت ${f.time} رزرو شد.`, detailedTail: 'رزرو شما تأیید شده است.' },
   },
   de: {
     availability: { balanced: (f) => availabilityGerman(f), short: (f) => availabilityGerman(f, true), detailedTail: ' Antworten Sie mit Ihrer bevorzugten Zeit, dann helfe ich beim nächsten Schritt.' },
@@ -144,7 +145,7 @@ const presentations: Record<BookingPresentationLanguage, LocalizedPresentation> 
       short: ({ missing }) => missing.includes('name') && missing.includes('phone') ? 'Bitte senden Sie Name und Mobilnummer.' : missing.includes('name') ? 'Bitte senden Sie Ihren Namen.' : missing.includes('phone') ? 'Bitte senden Sie Ihre Mobilnummer.' : missing.includes('service') ? 'Welche Behandlung möchten Sie?' : 'Alle Angaben sind vollständig.',
       detailedTail: ' Eine Nachricht mit den Angaben genügt.',
     },
-    confirmation: { balanced: (f) => `Leistung: ${f.service}\nDatum: ${f.date}\nUhrzeit: ${f.time}\nName: ${f.name}`, short: (f) => `${f.name}, ${f.service} ist am ${f.date} um ${f.time} gebucht.`, detailedTail: 'Ihre Buchung ist bestätigt.' },
+    confirmation: { balanced: (f) => `Leistung: ${f.service}\nDatum: ${f.date}\nUhrzeit: ${f.time}\nName: ${f.name}${f.phone ? `\nMobil: ${f.phone}` : ''}`, short: (f) => `${f.name}, ${f.service} ist am ${f.date} um ${f.time} gebucht.`, detailedTail: 'Ihre Buchung ist bestätigt.' },
   },
   es: {
     availability: { balanced: (f) => availabilitySpanish(f), short: (f) => availabilitySpanish(f, true), detailedTail: ' Responde con la hora que prefieras y te ayudaré con el siguiente paso.' },
@@ -153,7 +154,7 @@ const presentations: Record<BookingPresentationLanguage, LocalizedPresentation> 
       short: ({ missing }) => missing.includes('name') && missing.includes('phone') ? 'Envía tu nombre y número de móvil.' : missing.includes('name') ? 'Envía tu nombre.' : missing.includes('phone') ? 'Envía tu número de móvil.' : missing.includes('service') ? '¿Qué servicio quieres?' : 'Todo está listo.',
       detailedTail: ' Basta con enviar los datos en un solo mensaje.',
     },
-    confirmation: { balanced: (f) => `Servicio: ${f.service}\nFecha: ${f.date}\nHora: ${f.time}\nNombre: ${f.name}`, short: (f) => `${f.name}, ${f.service} está reservado el ${f.date} a las ${f.time}.`, detailedTail: 'Tu reserva está confirmada.' },
+    confirmation: { balanced: (f) => `Servicio: ${f.service}\nFecha: ${f.date}\nHora: ${f.time}\nNombre: ${f.name}${f.phone ? `\nMóvil: ${f.phone}` : ''}`, short: (f) => `${f.name}, ${f.service} está reservado el ${f.date} a las ${f.time}.`, detailedTail: 'Tu reserva está confirmada.' },
   },
   ar: {
     availability: { balanced: (f) => availabilityArabic(f), short: (f) => availabilityArabic(f, true), detailedTail: ' أرسل الوقت الذي تفضله وسأساعدك في الخطوة التالية.' },
@@ -162,7 +163,7 @@ const presentations: Record<BookingPresentationLanguage, LocalizedPresentation> 
       short: ({ missing }) => missing.includes('name') && missing.includes('phone') ? 'أرسل اسمك ورقم هاتفك.' : missing.includes('name') ? 'أرسل اسمك.' : missing.includes('phone') ? 'أرسل رقم هاتفك.' : missing.includes('service') ? 'ما الخدمة التي تريدها؟' : 'كل المعلومات جاهزة.',
       detailedTail: ' يمكنك إرسال المعلومات في رسالة واحدة.',
     },
-    confirmation: { balanced: (f) => `الخدمة: ${f.service}\nالتاريخ: ${f.date}\nالوقت: ${f.time}\nالاسم: ${f.name}`, short: (f) => `${f.name}، تم حجز ${f.service} يوم ${f.date} الساعة ${f.time}.`, detailedTail: 'تم تأكيد حجزك.' },
+    confirmation: { balanced: (f) => `الخدمة: ${f.service}\nالتاريخ: ${f.date}\nالوقت: ${f.time}\nالاسم: ${f.name}${f.phone ? `\nالهاتف: ${f.phone}` : ''}`, short: (f) => `${f.name}، تم حجز ${f.service} يوم ${f.date} الساعة ${f.time}.`, detailedTail: 'تم تأكيد حجزك.' },
   },
 };
 
@@ -226,7 +227,7 @@ const naturalToneLexicons: Record<BookingPresentationLanguage, NaturalToneLexico
       professional: ['{facts}', 'Bokningen är bekräftad: {facts}'],
       friendly: ['Allt är klart — {facts}', 'Toppen, bokningen är klar. {facts}'],
       warm: ['Allt är ordnat. {facts}', 'Din bokning är omhändertagen. {facts}'],
-      casual: ['Klart — {facts}', 'Fixat — {facts}'],
+      casual: ['Klart! Din bokning är sparad.\n\n{facts}', 'Fixat! Din bokning är sparad.\n\n{facts}'],
       concise: ['{facts}', 'Bekräftat: {facts}'],
       custom: ['{facts}', 'Bokningen är klar: {facts}'],
     },
@@ -370,7 +371,7 @@ export function containsEmoji(value: string): boolean {
 
 function applyEmojiPolicy(value: string, config: BusinessToneConfig): string {
   emojiPattern.lastIndex = 0;
-  const withoutEmoji = value.replace(emojiPattern, '').replace(/[\uFE0E\uFE0F\u200D]/g, '').replace(/\s{2,}/g, ' ').trim();
+  const withoutEmoji = value.replace(emojiPattern, '').replace(/[\uFE0E\uFE0F\u200D]/g, '').replace(/[^\S\r\n]{2,}/g, ' ').trim();
   if (config.emojiUsage === 'none') return withoutEmoji;
   if (config.emojiUsage === 'light') return `${withoutEmoji} 😊`;
   return `${withoutEmoji} 😊✨`;

@@ -40,6 +40,34 @@ const cases = [
     customerName: 'Alex',
     expectedService: /consultation/i,
   },
+  {
+    sessionId: 'recent-completed-status-sv',
+    language: 'sv',
+    question: 'Ja, bekräfta bokningen.',
+    customerName: 'OdinLink Test',
+    expectedService: /consultation/i,
+  },
+  {
+    sessionId: 'recent-completed-status-de',
+    language: 'de',
+    question: 'Ja, bitte bestätigen Sie meine Buchung.',
+    customerName: 'Max',
+    expectedService: /beratung|konsultation|consultation/i,
+  },
+  {
+    sessionId: 'recent-completed-status-es',
+    language: 'es',
+    question: 'Sí, confirma mi reserva.',
+    customerName: 'Lucía',
+    expectedService: /consulta|consultation/i,
+  },
+  {
+    sessionId: 'recent-completed-status-fa',
+    language: 'fa',
+    question: 'بله، رزرو من را تأیید کن.',
+    customerName: 'رضا',
+    expectedService: /مشاوره|consultation/u,
+  },
 ] as const;
 
 try {
@@ -68,7 +96,12 @@ try {
     assert.equal(result.replies.length, 1);
     assert.match(result.replies[0], /18:30/u);
     const expectedDate = new Date('2026-08-26T18:30:00+02:00').toLocaleDateString(
-      testCase.language === 'ar' ? 'ar-SA' : 'en-GB',
+      testCase.language === 'ar' ? 'ar-SA' :
+      testCase.language === 'sv' ? 'sv-SE' :
+      testCase.language === 'de' ? 'de-DE' :
+      testCase.language === 'es' ? 'es-ES' :
+      testCase.language === 'fa' ? 'fa-IR-u-ca-gregory' :
+      'en-GB',
       { timeZone: 'Europe/Stockholm', weekday: 'long', day: 'numeric', month: 'long' },
     );
     assert.match(result.replies[0], new RegExp(expectedDate.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'u'));

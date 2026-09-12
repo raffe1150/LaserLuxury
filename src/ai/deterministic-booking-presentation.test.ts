@@ -280,6 +280,27 @@ describe('deterministic booking-tone presentation', () => {
     assert.match(spanishFormal, /\b(?:su|le|prefiere|envíe)\b/iu);
   });
 
+  it('renders verified booking confirmations as readable multiline summaries in every supported language', () => {
+    const facts = {
+      name: 'CUSTOMER-X',
+      service: 'SERVICE-X',
+      date: 'DATE-X',
+      time: '13:15',
+    };
+
+    for (const language of BOOKING_PRESENTATION_LANGUAGES) {
+      const rendered = renderDeterministicBookingConfirmation(language, facts, {
+        ...professionalFormal,
+        responseLength: 'balanced',
+      });
+
+      assert.equal(rendered.includes('\n'), true, `${language} confirmation should be multiline`);
+      for (const fact of Object.values(facts)) {
+        assert.equal(rendered.includes(fact), true, `${language} must preserve ${fact}`);
+      }
+    }
+  });
+
   it('is synchronous presentation-only code and performs no network or LLM work', () => {
     const originalFetch = globalThis.fetch;
     let networkCalled = false;

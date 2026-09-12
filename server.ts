@@ -6137,6 +6137,15 @@ function isRecentCompletedBookingStatusQuestion(text?: string): boolean {
   return (
     /\b(?:can|could|would)\s+you\s+(?:please\s+)?(?:confirm|check|verify)\s+(?:my|the)?\s*(?:booking|appointment)\b/iu.test(normalized) ||
     /\b(?:is|was)\s+(?:my|the)\s+(?:booking|appointment)\s+(?:confirmed|successful|booked)\b/iu.test(normalized) ||
+    /\b(?:kan|skulle)\s+du\s+(?:snalla\s+|snälla\s+|gärna\s+)?(?:bekrafta|bekräfta|kontrollera)\s+(?:min|bokningen|tiden)?\s*(?:bokning|tid)?\b/iu.test(normalized) ||
+    /\b(?:bekrafta|bekräfta)\s+(?:min\s+)?(?:bokning|tid|bokningen|tiden)\b/iu.test(normalized) ||
+    /\b(?:ar|är)\s+(?:min|bokningen|tiden)\s*(?:bokning|tid)?\s*(?:bekraftad|bekräftad|bokad|klar)\b/iu.test(normalized) ||
+    /\b(?:kannst|können|konnen|würdest|würden|wurden)\s+(?:du|sie)\s+(?:bitte\s+)?(?:meine|die)?\s*(?:buchung|termin)?\s*(?:bestätigen|bestatigen|prüfen|prufen)\b/iu.test(normalized) ||
+    /\b(?:bestätigen|bestatigen|prüfen|prufen)\s+(?:sie\s+|du\s+)?(?:bitte\s+)?(?:meine|die)?\s*(?:buchung|termin)\b/iu.test(normalized) ||
+    /\b(?:puedes|podrías|podrias)\s+(?:por\s+favor\s+)?(?:confirmar|comprobar|verificar)\s+(?:mi|la)?\s*(?:reserva|cita)\b/iu.test(normalized) ||
+    /\b(?:confirma|confirmar|verifica|verificar)\s+(?:mi|la)?\s*(?:reserva|cita)\b/iu.test(normalized) ||
+    /(?:میشه|می\s*شه|لطفا|لطفاً).{0,24}(?:تایید|تأیید|بررسی).{0,24}(?:رزرو|وقت|نوبت)/u.test(normalized) ||
+    /(?:تایید|تأیید)\s+(?:کن|کنید).{0,16}(?:رزرو|وقت|نوبت)|(?:رزرو|وقت|نوبت).{0,16}(?:تایید|تأیید)\s+(?:کن|کنید)/u.test(normalized) ||
     /(?:هل\s+يمكنك|هل\s+تستطيع|ممكن).{0,24}(?:تأكيد|تؤكد|التحقق).{0,24}(?:الحجز|الموعد)/u.test(normalized) ||
     /هل\s+(?:الحجز|الموعد).{0,16}(?:مؤكد|تم)/u.test(normalized)
   );
@@ -6307,8 +6316,8 @@ function hasRecentCompletedBookingDetailRequestSyntax(text?: string): boolean {
   const raw = String(text || "").trim();
   const normalized = normalizeConfirmationReply(raw);
   return hasRecentCompletionQuestionSyntax(raw) ||
-    /^(?:confirm|show|tell|give|bekrafta|visa|confirma|confirmar|muestra|bestatigen|zeigen)\b/u.test(normalized) ||
-    /^(?:تایید|تأیید|نشان|أكد|اكد|اعرض)/u.test(normalized);
+    /^(?:(?:yes|yeah|yep|ja|japp|si|sí|vale|okay|ok)\s+)?(?:(?:please|bitte|por\s+favor)\s+)?(?:confirm|show|tell|give|bekrafta|visa|confirma|confirmar|muestra|bestatigen|bestätigen|zeigen)\b/u.test(normalized) ||
+    /^(?:(?:بله|آره|اره|نعم)\s+)?(?:لطفا\s+|لطفاً\s+)?(?:(?:رزرو|وقت|نوبت).{0,20})?(?:تایید|تأیید|نشان|أكد|اكد|اعرض)/u.test(normalized);
 }
 
 function formatRecentCompletedRequestedDetails(

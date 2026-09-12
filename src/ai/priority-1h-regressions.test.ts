@@ -36,7 +36,7 @@ function whatsapp_combined_contact_finalizes_without_technical_fallback() {
     currentPhone: '03585353563', senderPhone: '+46701234567',
   });
   assert.deepEqual(contact.missing, []);
-  assert.equal(contact.phone, '+46701234567', 'sender metadata remains authoritative');
+  assert.equal(contact.phone, '03585353563', 'explicit customer phone overrides sender metadata');
   state.customerName = contact.name; state.customerPhone = contact.phone;
   assert.equal(beginBookingFinalization(state), true);
   assert.equal(beginBookingFinalization(state), false);

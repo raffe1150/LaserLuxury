@@ -54,15 +54,21 @@ export function resolveAuthoritativeContact(input: {
   let phone: string | null = null;
   let phoneSource: ContactPhoneSource = 'missing';
 
-  if (input.channel === 'whatsapp' && senderPhone) {
-    phone = senderPhone;
-    phoneSource = 'verified_sender_metadata';
-  } else if (currentPhone) {
+  if (currentPhone) {
     phone = currentPhone;
     phoneSource = 'explicit_customer_message';
   } else if (
     storedPhone &&
-    (input.channel !== 'whatsapp' || input.storedPhoneSource === 'verified_sender_metadata' || input.storedPhoneSource === 'explicit_customer_message')
+    input.storedPhoneSource === 'explicit_customer_message'
+  ) {
+    phone = storedPhone;
+    phoneSource = 'explicit_customer_message';
+  } else if (input.channel === 'whatsapp' && senderPhone) {
+    phone = senderPhone;
+    phoneSource = 'verified_sender_metadata';
+  } else if (
+    storedPhone &&
+    (input.channel !== 'whatsapp' || input.storedPhoneSource === 'verified_sender_metadata')
   ) {
     phone = storedPhone;
     phoneSource = input.storedPhoneSource || 'stored_validated';

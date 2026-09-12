@@ -16772,6 +16772,9 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
     const currentTurnBookingContact = resolveAuthoritativeContact({
       serviceNames: [...getConfiguredBookingServiceNames(businessConfig), String(pending?.service || "")],
       channel: platformName,
+      storedName: pending?.customerName,
+      storedPhone: pending?.customerPhone,
+      storedPhoneSource: pending?.contactPhoneSource as ContactPhoneSource | null,
       currentName:
         currentTurnCombinedContact?.name ||
         extractPendingBookingCustomerName(text, pending) ||
@@ -17037,8 +17040,8 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
           operation: "new_booking",
           expectedInput: "service",
           customerName: pending?.customerName || currentTurnBookingContact.name,
-          customerPhone: pending?.customerPhone || currentTurnBookingContact.phone,
-          contactPhoneSource: pending?.contactPhoneSource || currentTurnBookingContact.phoneSource,
+          customerPhone: currentTurnBookingContact.phone,
+          contactPhoneSource: currentTurnBookingContact.phoneSource,
           status: "awaiting_service",
         };
         await savePendingBooking(sessionId, platformName, pending);
@@ -17111,8 +17114,8 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
             ? pending?.expectedInput || (latestAvailabilityConstraint ? "slot_selection" : "date_or_constraint")
             : latestAvailabilityConstraint ? "slot_selection" : "date_or_constraint",
           customerName: pending?.customerName || currentTurnBookingContact.name,
-          customerPhone: pending?.customerPhone || currentTurnBookingContact.phone,
-          contactPhoneSource: pending?.contactPhoneSource || currentTurnBookingContact.phoneSource,
+          customerPhone: currentTurnBookingContact.phone,
+          contactPhoneSource: currentTurnBookingContact.phoneSource,
           status: pending?.service === serviceResolution.service.name
             ? pending?.status || (latestAvailabilityConstraint ? "awaiting_time_selection" : "awaiting_date_or_time")
             : latestAvailabilityConstraint ? "awaiting_time_selection" : "awaiting_date_or_time",

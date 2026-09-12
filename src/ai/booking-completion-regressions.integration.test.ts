@@ -337,7 +337,7 @@ try {
     { channel: 'telegram', sessionId: 'tg:7:token:1001', userId: '1001', expectedPhone: '0701234567' },
     { channel: 'instagram', sessionId: 'ig_7:2001', userId: '2001', expectedPhone: '0701234567' },
     { channel: 'messenger', sessionId: 'ms_7:3001', userId: '3001', expectedPhone: '0701234567' },
-    { channel: 'whatsapp', sessionId: 'wa_7:46700000000', userId: '46700000000', expectedPhone: '+46700000000' },
+    { channel: 'whatsapp', sessionId: 'wa_7:46700000000', userId: '46700000000', expectedPhone: '0701234567' },
   ];
 
   for (const testCase of cases) {
@@ -362,7 +362,7 @@ try {
     assert.equal(result.pending, null, testCase.channel);
     assert.equal(counters.createdOwner?.platform, testCase.channel, testCase.channel);
     assert.equal(counters.createdOwner?.userId, testCase.userId, testCase.channel);
-    assert.match(result.replies.join(' '), /bok|bekräft/iu, testCase.channel);
+    assert.match(result.replies.join(' '), /Tjänst:.*Datum:.*Tid:.*Namn:.*Mobil:/isu, testCase.channel);
     assert.doesNotMatch(result.replies.join(' '), /behöver.*namn|skicka.*namn/iu, testCase.channel);
   }
 
@@ -397,11 +397,11 @@ try {
     });
 
     assert.equal(counters.createdName, 'Alex Testsson', liveCase.label);
-    assert.equal(counters.createdPhone, '+46700000000', liveCase.label);
+    assert.equal(counters.createdPhone, '0701234567', liveCase.label);
     assert.equal(counters.calendarCreate, 1, liveCase.label);
     assert.equal(counters.databaseInsert, 1, liveCase.label);
     assert.equal(result.pending, null, liveCase.label);
-    assert.match(result.replies.join(' '), /bok|bekräft/iu, liveCase.label);
+    assert.match(result.replies.join(' '), /Tjänst:.*Datum:.*Tid:.*Namn:.*Mobil:/isu, liveCase.label);
     assert.doesNotMatch(result.replies.join(' '), /behöver.*namn|skicka.*namn/iu, liveCase.label);
   }
 
@@ -461,7 +461,7 @@ try {
     assert.equal(counters.calendarCreate, 1, contactText);
     assert.equal(counters.databaseInsert, 1, contactText);
     assert.equal(result.pending, null, contactText);
-    assert.match(result.replies.join(' '), /bok|bekräft/iu, contactText);
+    assert.match(result.replies.join(' '), /Tjänst:.*Datum:.*Tid:.*Namn:.*Mobil:/isu, contactText);
     assert.doesNotMatch(result.replies.join(' '), /behöver.*namn|skicka.*namn/iu, contactText);
   }
 

@@ -166,7 +166,12 @@ try {
       assert.equal(counters.createdName, 'لينا اختبار');
       assert.equal(new Date(counters.createdStart).getTime(), new Date(selected.pending.dateTime).getTime());
       assert.equal(new Date(counters.createdStart).getTime() + counters.createdDuration * 60000, new Date(selected.pending.selectedSlotEnd).getTime());
-      assert.equal(counters.createdPhone, channel === 'whatsapp' ? '+46700001106' : '0700001106');
+      assert.equal(
+        counters.createdPhone,
+        channel === 'whatsapp' && mode === 'name-first'
+          ? '+46700001106'
+          : '0700001106'
+      );
     }
   }
   log('Arabic extraction and 16 shared contact journeys passed');

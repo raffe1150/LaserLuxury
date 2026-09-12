@@ -29,7 +29,14 @@ const whatsappComplete = resolveAuthoritativeContact({
   channel: 'whatsapp', senderPhone: '+46701234567', currentName: 'Sara', currentPhone: '999999999',
 });
 assert.deepEqual(whatsappComplete.missing, []);
-assert.equal(whatsappComplete.phone, '+46701234567', 'message numbers cannot overwrite WhatsApp sender metadata');
+assert.equal(whatsappComplete.phone, '999999999', 'explicit customer phone must override WhatsApp sender metadata');
+assert.equal(whatsappComplete.phoneSource, 'explicit_customer_message');
+
+const whatsappSenderFallback = resolveAuthoritativeContact({
+  channel: 'whatsapp', senderPhone: '+46701234567', currentName: 'Sara',
+});
+assert.equal(whatsappSenderFallback.phone, '+46701234567');
+assert.equal(whatsappSenderFallback.phoneSource, 'verified_sender_metadata');
 const whatsappNoMetadata = resolveAuthoritativeContact({ channel: 'whatsapp', currentName: 'Sara' });
 assert.deepEqual(whatsappNoMetadata.missing, ['phone']);
 

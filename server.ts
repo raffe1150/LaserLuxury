@@ -6954,8 +6954,12 @@ function currentBusinessSupportGap(sessionId: string, text: string, language: st
   ].filter(Boolean).join(" / ");
   const gap = formatBusinessSupportKnowledgeGap(language, subject);
   const names = getConfiguredBookingServiceNames(info?.businessConfig || support?.businessConfig);
-  const overview = isServiceCatalogQuestion(text) || (topics.length === 1 && topics[0] === "company")
+  const serviceCatalogQuestion = isServiceCatalogQuestion(text);
+  const overview = serviceCatalogQuestion || (topics.length === 1 && topics[0] === "company")
     ? formatConfiguredServiceOverview(names, language) : "";
+
+  if (serviceCatalogQuestion && overview) return overview;
+
   return [overview, gap].filter(Boolean).join(" ");
 }
 

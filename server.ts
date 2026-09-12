@@ -13149,9 +13149,11 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
     recipientUserId,
     sessionId
   );
+  let contactSubmissionWhileAwaitingConfirmation = false;
+
   if (pending) {
     const currentCombinedContact = pending.operation === "new_booking"
-      ? extractNameAndPhone(text, ["awaiting_contact", "failed_recoverable"].includes(String(pending?.status || "")))
+      ? extractNameAndPhone(text, ["awaiting_contact", "failed_recoverable", "awaiting_confirmation"].includes(String(pending?.status || "")))
       : null;
     const entryContact = resolveAuthoritativeContact({
       serviceNames: [...getConfiguredBookingServiceNames(businessConfig), String(pending?.service || "")],
@@ -13170,6 +13172,16 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
     pending.customerName = entryContact.name;
     pending.customerPhone = entryContact.phone;
     pending.contactPhoneSource = entryContact.phoneSource;
+
+    contactSubmissionWhileAwaitingConfirmation = Boolean(
+      pending.operation === "new_booking" &&
+      getBookingPhase(pending) === "awaiting_slot_confirmation" &&
+      pending.dateTime &&
+      findOwnedOfferedSlot(pending, pending.dateTime) &&
+      currentCombinedContact?.name &&
+      currentCombinedContact?.phone
+    );
+
     console.log("[BookingContactPolicy]", {
       correlationId: bookingCorrelationId,
       channel: platformName,
@@ -13181,7 +13193,9 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
       dateLocked: Boolean(pending.selectedDate || pending.availabilityStartDate)
     });
   }
-  const pendingSlotConfirmationAtEntry = isPendingSlotConfirmation(text, pending, normalizedRequest);
+  const pendingSlotConfirmationAtEntry =
+    isPendingSlotConfirmation(text, pending, normalizedRequest) ||
+    contactSubmissionWhileAwaitingConfirmation;
   const controlledPendingConfirmationAtEntry = Boolean(
     controlledUnderstandingCandidates.confirmation &&
     pending?.operation === "new_booking" &&

@@ -4498,6 +4498,7 @@ function shouldDispatchWhatsAppUnifiedBooking(chatId: string, text: string, inte
   if (intent === "language_repair") return false;
   if (getRecentCompletedBooking(chatId)?.bookingOperation?.ok) return true;
   if (intent === "ambiguous") return false;
+  if (isBusinessInformationQuestion(text)) return true;
   const clearlyNonBooking = intent === "normal" &&
     !pendingBookings[chatId] && !hasAppointmentConversationState(chatId) &&
     !extractNameAndPhone(text) && !extractPhoneOnly(text) && !extractNameOnly(text) &&

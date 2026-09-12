@@ -94,3 +94,63 @@ test('direct service catalog question overrides a grounded generic business desc
   assert.match(reply, /Golden video/);
   assert.doesNotMatch(reply, /AdMotion Studio skapar effektiva korta videoannonser/iu);
 });
+
+test('WhatsApp service catalog question dispatches through unified read-only business-information path', () => {
+  const sessionId = 'wa-service-catalog-dispatch';
+
+  b.reset();
+
+  const decision = b.whatsappPreDispatchDecision(
+    sessionId,
+    'Vilka tjänster erbjuder ni?',
+  );
+
+  assert.equal(decision.intent, 'normal');
+  assert.equal(decision.returnsAmbiguousClarification, false);
+  assert.equal(
+    decision.dispatchesUnifiedBooking,
+    true,
+    'service catalog questions must enter unified engine so read-only business context is seeded',
+  );
+});
+
+test('WhatsApp service catalog turn seeds read-only business context without creating booking state', async () => {
+  const sessionId = 'wa-service-catalog-read-only';
+  const businessConfig = {
+    id: 'test-business',
+    businessName: 'AdMotion Studio',
+    language: 'sv',
+    timezone: 'Europe/Stockholm',
+    services: [
+      { name: 'Video Consultation', durationMinutes: 30 },
+      { name: 'test', durationMinutes: 30 },
+      { name: 'video for tiktok', durationMinutes: 30 },
+      { name: 'Golden video', durationMinutes: 30 },
+      { name: 'Reklam', durationMinutes: 30 },
+    ],
+  };
+
+  b.reset();
+  b.seedFlowLanguage(sessionId, 'sv');
+
+  const result = await b.turn({
+    sessionId,
+    platformName: 'whatsapp',
+    recipientUserId: '46700000000',
+    text: 'Vilka tjänster erbjuder ni?',
+    businessConfig,
+  });
+
+  assert.equal(result.handled, false);
+  assert.equal(result.replies.length, 0);
+  assert.equal(result.pending, null);
+
+  const information = b.businessInformationState(sessionId);
+  assert.ok(information, 'business-information context must be seeded');
+  assert.equal(information.question, 'Vilka tjänster erbjuder ni?');
+  assert.equal(information.language, 'sv');
+  assert.deepEqual(
+    information.businessConfig.services.map((service: any) => service.name),
+    ['Video Consultation', 'test', 'video for tiktok', 'Golden video', 'Reklam'],
+  );
+});

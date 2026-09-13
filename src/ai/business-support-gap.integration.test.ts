@@ -154,3 +154,142 @@ test('WhatsApp service catalog turn seeds read-only business context without cre
     ['Video Consultation', 'test', 'video for tiktok', 'Golden video', 'Reklam'],
   );
 });
+
+
+test('service catalog names do not trigger false Swedish language mismatch', () => {
+  const sessionId = 'sv-service-catalog-language-guard';
+
+  const businessConfig = {
+    id: 'test-business',
+    language: 'sv',
+    services: [
+      { name: 'Video Consultation', durationMinutes: 30 },
+      { name: 'test', durationMinutes: 30 },
+      { name: 'video for tiktok', durationMinutes: 30 },
+      { name: 'Golden video', durationMinutes: 30 },
+      { name: 'Reklam', durationMinutes: 30 },
+    ],
+  };
+
+  b.reset();
+
+  b.businessInformationState(
+    sessionId,
+    businessConfig,
+    'Vilka tjänster erbjuder ni?',
+    'sv',
+  );
+
+  const serviceReply = b.businessSupportGap(
+    sessionId,
+    'Vilka tjänster erbjuder ni?',
+    'sv',
+  );
+
+  const guarded = b.guardReply(
+    sessionId,
+    serviceReply,
+    'sv',
+  );
+
+  assert.equal(
+    guarded,
+    serviceReply,
+    'configured service names must not make a valid Swedish service reply look English',
+  );
+});
+
+
+test('configured service names remain language-neutral across supported languages', () => {
+  const cases = [
+    {
+      language: 'de',
+      question: 'Welche Dienstleistungen bieten Sie an?',
+    },
+    {
+      language: 'es',
+      question: '¿Qué servicios ofrecen?',
+    },
+    {
+      language: 'fa',
+      question: 'چه خدماتی ارائه می‌دهید؟',
+    },
+    {
+      language: 'ar',
+      question: 'ما الخدمات التي تقدمونها؟',
+    },
+  ];
+
+  for (const { language, question } of cases) {
+    const sessionId = `service-catalog-language-${language}`;
+
+    const businessConfig = {
+      id: 'test-business',
+      language,
+      services: [
+        { name: 'Video Consultation', durationMinutes: 30 },
+        { name: 'test', durationMinutes: 30 },
+        { name: 'video for tiktok', durationMinutes: 30 },
+        { name: 'Golden video', durationMinutes: 30 },
+        { name: 'Reklam', durationMinutes: 30 },
+      ],
+    };
+
+    b.reset();
+
+    b.businessInformationState(
+      sessionId,
+      businessConfig,
+      question,
+      language,
+    );
+
+    const serviceReply = b.businessSupportGap(
+      sessionId,
+      question,
+      language,
+    );
+
+    const guarded = b.guardReply(
+      sessionId,
+      serviceReply,
+      language,
+    );
+
+    assert.equal(
+      guarded,
+      serviceReply,
+      `configured service names must not trigger false ${language} language mismatch`,
+    );
+  }
+});
+
+test('genuine English reply is still blocked inside a Swedish conversation', () => {
+  const sessionId = 'sv-genuine-english-mismatch';
+
+  b.reset();
+  b.businessInformationState(
+    sessionId,
+    {
+      id: 'test-business',
+      language: 'sv',
+      services: [
+        { name: 'Video Consultation', durationMinutes: 30 },
+      ],
+    },
+    'Vilka tjänster erbjuder ni?',
+    'sv',
+  );
+
+  const guarded = b.guardReply(
+    sessionId,
+    'Please choose which appointment you would like to book.',
+    'sv',
+  );
+
+  assert.notEqual(
+    guarded,
+    'Please choose which appointment you would like to book.',
+    'genuine English presentation drift must still be blocked',
+  );
+});

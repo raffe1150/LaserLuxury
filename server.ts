@@ -10806,8 +10806,30 @@ function guardCustomerFacingReply(sessionId: string, reply: string, fallbackLang
   const hasSwedishStructure = /\b(för att|kan jag|ditt namn|din bokning|mobilnummer|vill du|tyvärr|är ledig|är bokad)\b/i.test(replyForLanguageDetection);
   const hasPersianStructure = /[\u0600-\u06FF]/u.test(replyForLanguageDetection) &&
     /(برای|لطفاً|می.?خواهید|وقت|رزرو|نام|شماره|متأسفانه)/u.test(replyForLanguageDetection);
-  const strongReplyLanguage = isMeaningfulLanguageMessage(replyForLanguageDetection)
-    ? detectStrongLatestLanguage(replyForLanguageDetection) || detectUserLanguage(replyForLanguageDetection)
+  const activeBusinessInformation = getActiveBusinessInformation(sessionId);
+  const activeBusinessSupport = getActiveRecentCompletedBusinessSupport(sessionId);
+  const replyLanguageBusinessConfig =
+    activeBusinessInformation?.businessConfig ||
+    activeBusinessSupport?.businessConfig;
+  const replyForLanguageClassification = replyLanguageBusinessConfig
+    ? removeConfiguredEntitiesFromLanguageEvidence(
+        replyForLanguageDetection,
+        replyLanguageBusinessConfig,
+      )
+    : replyForLanguageDetection;
+
+  const fallbackReplyLanguage = isMeaningfulLanguageMessage(replyForLanguageClassification)
+    ? detectUserLanguage(replyForLanguageClassification)
+    : null;
+
+  const strongReplyLanguage = isMeaningfulLanguageMessage(replyForLanguageClassification)
+    ? detectStrongLatestLanguage(replyForLanguageClassification) ||
+      (
+        fallbackReplyLanguage &&
+        hasStrongLanguageEvidence(fallbackReplyLanguage, replyForLanguageClassification)
+          ? fallbackReplyLanguage
+          : null
+      )
     : null;
   const verifiedCompletionPresentationMatchesLanguage = Boolean(
     recentCompleted?.bookingOperation?.ok && (

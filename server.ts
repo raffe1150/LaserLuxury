@@ -13044,8 +13044,12 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
     entryStrongLanguage &&
     pending.language &&
     pending.language !== entryStrongLanguage &&
-    isMeaningfulLanguageMessage(text) &&
-    hasStrongLanguageEvidence(entryStrongLanguage, text)
+    shouldAllowLatestLanguageOverride(
+      sessionId,
+      pending.language,
+      entryStrongLanguage,
+      text,
+    )
   ) {
     console.log("[BookingFlow]", {
       platform: platformName,
@@ -13386,8 +13390,12 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
     pending &&
     latestStrongLanguage &&
     pending.language !== latestStrongLanguage &&
-    isMeaningfulLanguageMessage(text) &&
-    hasStrongLanguageEvidence(latestStrongLanguage, text)
+    shouldAllowLatestLanguageOverride(
+      sessionId,
+      pending.language,
+      latestStrongLanguage,
+      text,
+    )
   ) {
     console.log(
       `[LanguageLock] updating pending flow language previous=${pending.language || "none"} with=${latestStrongLanguage} session=${sessionId}`
@@ -19135,6 +19143,10 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
         });
       }
 
+      const confirmedBookingLanguage = resolveActiveBookingLanguage({
+        pendingLanguage: pending.language,
+        currentLanguage: language,
+      });
       bookingFailureStage = "database_insert";
       const databaseRow = await recordAppointmentFromBooking({
         businessConfig,
@@ -19144,7 +19156,8 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
         phone: pending.customerPhone,
         service: pending.service,
         dateTime: finalIso,
-        durationMinutes: Number(pending.durationMinutes || 30)
+        durationMinutes: Number(pending.durationMinutes || 30),
+        language: confirmedBookingLanguage,
       });
       const databaseInserted = Boolean(databaseRow?.id);
       const expectedBusinessId = String(
@@ -19329,7 +19342,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
         occurredAt: analyticsOccurredAt,
         bookingId: Number(databaseRow.id),
         serviceName: String(databaseRow.service),
-        language: getFlowReplyLanguage(pending.language, language, text),
+        language: confirmedBookingLanguage,
         succeeded: true,
       });
 
@@ -19347,7 +19360,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
       await clearPendingBooking(sessionId);
       rememberCompletedBooking(
         sessionId,
-        getFlowReplyLanguage(pending.language, language, text),
+        confirmedBookingLanguage,
         pending.customerName,
         pending.service,
         Number(pending.durationMinutes || 30),
@@ -19384,11 +19397,11 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
           currentLanguage: language,
           flowLanguage: getStoredFlowLanguage(sessionId),
           pendingLanguage: pending.language || null,
-          presentationLanguage: getFlowReplyLanguage(pending.language, language, text),
+          presentationLanguage: confirmedBookingLanguage,
         });
         await replyAndRecord(
           formatBookingSavedMessage(
-            getFlowReplyLanguage(pending.language, language, text),
+            confirmedBookingLanguage,
             bookingOperationResult.customerName || "",
             bookingOperationResult.serviceName,
             bookingOperationResult.startTime,
@@ -20412,13 +20425,17 @@ function detectGrammaticalLatinLanguage(text?: string): string | null {
   };
 
   add("sv", /\b(vilka?|finns|jag|mig|du|den|det|för|någon|några)\b/gu, 2);
+  add("sv", /\bjag\s+(?:vill|behöver|ska)\b/gu, 2);
   add("sv", /\b(lediga?|tider?)\b/gu, 2);
   add("de", /\b(welche[rsn]?|ich|mich|gibt\s+es|am|für)\b/gu, 2);
+  add("de", /\bich\s+(?:möchte|moechte)\b/gu, 2);
   add("de", /\b(freie[nrms]?|zeiten?|termine?)\b/gu, 2);
   add("de", /\b(können sie|könnten sie|unternehmen|dienstleistungen|informationen|erklären|erzählen|erstellt|kurze|videoanzeigen|bestätigung)\b/gu, 2);
   add("es", /\b(qué|cuáles?|hay|quiero|para|el|la)\b/gu, 2);
+  add("es", /\b(?:quiero|quisiera|me\s+gustar[ií]a)\b/gu, 2);
   add("es", /\b(horas?|disponibles?|citas?)\b/gu, 2);
   add("en", /\b(what|which|i|me|are\s+there|for|on)\b/gu, 2);
+  add("en", /\bi\s+(?:want|would\s+like)\b/gu, 2);
   add("en", /\b(available|times?|appointments?)\b/gu, 2);
 
   const ranked = Object.entries(scores).sort((a, b) => b[1] - a[1]);
@@ -21048,6 +21065,7 @@ async function recordAppointmentFromBooking(params: {
   service: string;
   dateTime: string;
   durationMinutes?: number;
+  language: string;
 }): Promise<any | null> {
   if (priority1hTestDependencies?.recordAppointment) return priority1hTestDependencies.recordAppointment(params);
   if (!supabase) {
@@ -21073,6 +21091,7 @@ async function recordAppointmentFromBooking(params: {
       start_time: start.toISOString(),
       end_time: end.toISOString(),
       status: "booked",
+      language: normalizeSupportedConversationLanguage(params.language) || "sv",
       reminder_24_sent: false,
       reminder_2_sent: false
     };
@@ -21091,7 +21110,7 @@ async function recordAppointmentFromBooking(params: {
     const { data, error } = await supabase
       .from("appointments")
       .insert([payload])
-      .select("id,business_id,platform,user_id,service,start_time,end_time,status,created_at")
+      .select("id,business_id,platform,user_id,service,start_time,end_time,status,language,created_at")
       .single();
 
     if (error) {
@@ -21103,7 +21122,7 @@ async function recordAppointmentFromBooking(params: {
       if (!data?.id) return null;
       const { data: verifiedRow, error: verificationError } = await supabase
         .from("appointments")
-        .select("id,business_id,platform,user_id,service,start_time,end_time,status,created_at")
+        .select("id,business_id,platform,user_id,service,start_time,end_time,status,language,created_at")
         .eq("id", data.id)
         .eq("business_id", businessId)
         .eq("platform", params.platform)
@@ -22069,21 +22088,56 @@ export function createTestBridgeRouter(): express.Router {
 }
 
 function formatReminderMessage(appointment: any, businessConfig: any, reminderType: "24h" | "2h") {
+  const language = normalizeSupportedConversationLanguage(appointment?.language) || "sv";
   const name = appointment.customer_name || "";
-  const service = appointment.service || "din behandling";
+  const service = localizeServiceName(appointment.service || "", language);
   const businessName = businessConfig.businessName || businessConfig.business_name || "oss";
   const start = new Date(appointment.start_time);
-  const dateText = start.toLocaleDateString("sv-SE", {
-    timeZone: "Europe/Stockholm",
+  const timezone = String(businessConfig?.timezone || "Europe/Stockholm");
+  const localeMap: Record<string, string> = {
+    sv: "sv-SE", en: "en-GB", de: "de-DE", es: "es-ES",
+    fa: "fa-IR-u-ca-gregory", ar: "ar-SA-u-ca-gregory",
+  };
+  const locale = localeMap[language] || "sv-SE";
+  const dateText = start.toLocaleDateString(locale, {
+    timeZone: timezone,
+    calendar: "gregory",
     weekday: "long",
     day: "numeric",
     month: "long"
   });
-  const timeText = start.toLocaleTimeString("sv-SE", {
-    timeZone: "Europe/Stockholm",
+  const timeText = start.toLocaleTimeString(locale, {
+    timeZone: timezone,
     hour: "2-digit",
-    minute: "2-digit"
+    minute: "2-digit",
+    hourCycle: "h23",
   });
+
+  if (language === "en") {
+    return reminderType === "2h"
+      ? `Hi ${name}! A friendly reminder from ${businessName}: you have an appointment for ${service} today at ${timeText}. See you soon! 😊`.trim()
+      : `Hi ${name}! A friendly reminder from ${businessName}: you have an appointment for ${service} tomorrow, ${dateText} at ${timeText}. We look forward to seeing you! 😊`.trim();
+  }
+  if (language === "de") {
+    return reminderType === "2h"
+      ? `Hallo ${name}! Eine freundliche Erinnerung von ${businessName}: Sie haben heute um ${timeText} einen Termin für ${service}. Bis bald! 😊`.trim()
+      : `Hallo ${name}! Eine freundliche Erinnerung von ${businessName}: Sie haben morgen, ${dateText}, um ${timeText} einen Termin für ${service}. Herzlich willkommen! 😊`.trim();
+  }
+  if (language === "es") {
+    return reminderType === "2h"
+      ? `¡Hola ${name}! Un recordatorio de ${businessName}: hoy tienes una cita para ${service} a las ${timeText}. ¡Hasta pronto! 😊`.trim()
+      : `¡Hola ${name}! Un recordatorio de ${businessName}: mañana, ${dateText}, tienes una cita para ${service} a las ${timeText}. ¡Te esperamos! 😊`.trim();
+  }
+  if (language === "fa") {
+    return reminderType === "2h"
+      ? `${name ? `${name} عزیز، ` : ""}یادآوری دوستانه از طرف ${businessName}: امروز ساعت ${timeText} برای ${service} وقت دارید. به‌زودی می‌بینیمتان! 😊`.trim()
+      : `${name ? `${name} عزیز، ` : ""}یادآوری دوستانه از طرف ${businessName}: فردا، ${dateText} ساعت ${timeText} برای ${service} وقت دارید. خوشحال می‌شویم ببینیمتان! 😊`.trim();
+  }
+  if (language === "ar") {
+    return reminderType === "2h"
+      ? `${name ? `مرحبًا ${name}! ` : ""}تذكير ودي من ${businessName}: لديك اليوم موعد ${service} الساعة ${timeText}. نراك قريبًا! 😊`.trim()
+      : `${name ? `مرحبًا ${name}! ` : ""}تذكير ودي من ${businessName}: لديك غدًا، ${dateText}، موعد ${service} الساعة ${timeText}. أهلًا وسهلًا! 😊`.trim();
+  }
 
   if (reminderType === "2h") {
     return `Hej ${name || ""}! En vänlig påminnelse från ${businessName}: du har tid för ${service} idag kl ${timeText}. Vi ses snart! 😊`.trim();
@@ -28737,6 +28791,10 @@ export const priority1hUnifiedEngineTestBoundary = {
   ) {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
     return processAppointmentReminderCandidate(appointment, reminderType, sentColumn);
+  },
+  formatReminder(appointment: any, businessConfig: any, reminderType: "24h" | "2h") {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    return formatReminderMessage(appointment, businessConfig, reminderType);
   },
   resolveBookingContactPhrase(params: {
     text: string;

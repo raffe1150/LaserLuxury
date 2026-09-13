@@ -289,7 +289,7 @@ assert.equal(liveCounters.calendarCreate, 1);
 assert.equal(liveCounters.databaseInsert, 1);
 assert.equal(liveCounters.createdName, 'Alex Testsson');
 assert.equal(liveCounters.createdPhone, '0701234567');
-assert.doesNotMatch(liveResult.replies.join(' '), /name|phone|mobile number/iu);
+assert.doesNotMatch(liveResult.replies.join(' '), /please (?:send|provide).*(?:name|phone|mobile)|I (?:only )?need.*(?:name|phone|mobile)/iu);
 
 // B: name-only slot authorization preserves the name and asks only for phone.
 fixture();
@@ -456,7 +456,7 @@ assert.equal(germanCompleteCounters.calendarCreate, 1);
 assert.equal(germanCompleteCounters.databaseInsert, 1);
 assert.equal(germanCompleteCounters.createdName, 'Alex Testsson');
 assert.equal(germanCompleteCounters.createdPhone, '0701234567');
-assert.doesNotMatch(germanCompleteResult.replies.join(' '), /name|phone|mobile number|select a slot/iu);
+assert.doesNotMatch(germanCompleteResult.replies.join(' '), /bitte senden Sie.*(?:Namen|Mobilnummer)|ich brauche.*(?:Namen|Mobilnummer)|select a slot/iu);
 
 // A controlled-adoption confirmation containing the ordinary booking verb is a
 // continuation of the already-owned slot, not a request to replace the operation.

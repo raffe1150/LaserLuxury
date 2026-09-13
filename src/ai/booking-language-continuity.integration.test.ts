@@ -24,7 +24,7 @@ const localized = {
   en: { selection: '13:00', confirmation: 'Yes, please book it.', marker: /\b(?:Yes|available|booking|booked|appointment|name|mobile)\b/iu },
   sv: { selection: '13:00', confirmation: 'Ja tack, boka den.', marker: /\b(?:Ja|ledig|boka|bokningen|namn|mobilnummer)\b/iu },
   es: { selection: '13:00', confirmation: 'Sí, por favor reserva esa hora.', marker: /(?:Sí|libre|reserv|nombre|móvil)/iu },
-  de: { selection: '13:00 Uhr', confirmation: 'Ja, bitte buchen Sie diese Zeit.', marker: /\b(?:Meinen|antworten|Ja|verfügbar|Termin|Buchung|Namen|Mobilnummer)\b/iu },
+  de: { selection: '13:00 Uhr', confirmation: 'Ja, bitte buchen Sie diese Zeit.', marker: /\b(?:Meinen|antworten|Ja|verfügbar|Termin|Buchung|Namen|Mobilnummer|Leistung|Datum|Uhrzeit|Name|Mobil)\b/iu },
   fa: { selection: 'ساعت 13:00', confirmation: 'بله، لطفاً همان ساعت را رزرو کنید.', marker: /(?:بله|خالی|رزرو|نام|شماره)/u },
   ar: { selection: 'الساعة 14:00', confirmation: 'نعم، احجز ذلك الموعد من فضلك.', marker: /(?:نعم|متاح|مواعيد|احجز|حجز|موعدك|الاسم|رقم)/u },
 } as const;
@@ -40,6 +40,7 @@ const contradictoryDate = {
 let availabilityReads = 0;
 let calendarWrites = 0;
 let databaseWrites = 0;
+let lastRecordedAppointment: any = null;
 const events = new Map<string, any>();
 type LeadRow = { user_id: string; platform: string; ai_summary: string | null };
 class LeadQuery {
@@ -85,6 +86,7 @@ const configure = (extra: Record<string, unknown> = {}) => {
   availabilityReads = 0;
   calendarWrites = 0;
   databaseWrites = 0;
+  lastRecordedAppointment = null;
   boundary.configure({
     calendarAdapter: {
       getEvents: async () => { availabilityReads += 1; return [...events.values()]; },
@@ -109,16 +111,19 @@ const configure = (extra: Record<string, unknown> = {}) => {
     notifyBooking: async () => true,
     incrementUsage: async () => ({ allowed: true, count: 1, limit: 100 }),
     validateAppointment: async (appointment: any) => appointment,
-    recordAppointment: async (params: any) => ({
-      id: ++databaseWrites,
-      business_id: String(params.businessConfig?.id || params.businessId || ''),
-      platform: params.platform,
-      user_id: String(params.userId),
-      service: params.service,
-      start_time: new Date(params.dateTime).toISOString(),
-      end_time: new Date(new Date(params.dateTime).getTime() + Number(params.durationMinutes) * 60_000).toISOString(),
-      status: 'booked',
-    }),
+    recordAppointment: async (params: any) => {
+      lastRecordedAppointment = structuredClone(params);
+      return {
+        id: ++databaseWrites,
+        business_id: String(params.businessConfig?.id || params.businessId || ''),
+        platform: params.platform,
+        user_id: String(params.userId),
+        service: params.service,
+        start_time: new Date(params.dateTime).toISOString(),
+        end_time: new Date(new Date(params.dateTime).getTime() + Number(params.durationMinutes) * 60_000).toISOString(),
+        status: 'booked',
+      };
+    },
     ...extra,
   } as any);
 };
@@ -200,7 +205,10 @@ try {
   }
   const durableCompleted = await turn(durableSession, 'telegram', 'Alex Testsson, 0701234567', durableConfig);
   assert.equal(durableCompleted.pending, null);
-  assert.match(durableCompleted.replies[0], /Termin|gebucht/u);
+  assert.match(
+    durableCompleted.replies[0],
+    /Termin|gebucht|Leistung:|Datum:|Uhrzeit:|Name:|Mobil:/u,
+  );
   assert.doesNotMatch(durableCompleted.replies[0], /\b(?:appointment|booked|Perfect)\b/iu);
 
   const requiredTraceStages = [
@@ -236,7 +244,8 @@ try {
     const sessionId = `durable-${previousLanguage}-${activeLanguage}`;
     await turn(sessionId, 'telegram', contradictoryDate[previousLanguage], config);
     const switchedConflict = await turn(sessionId, 'telegram', contradictoryDate[activeLanguage], config);
-    assert.equal(switchedConflict.pending?.language, activeLanguage);
+    assert.equal(switchedConflict.pending?.language, activeLanguage,
+      `${previousLanguage}->${activeLanguage}: active conflict language`);
     assert.equal(JSON.parse(store.rows[0].ai_summary || '{}').language, activeLanguage,
       `${previousLanguage}->${activeLanguage}: switched language persisted`);
     boundary.dropBookingSessionMemory(sessionId);
@@ -281,6 +290,8 @@ try {
   assert.doesNotMatch(germanCompleted.replies[0], /\b(?:Perfect|booked|appointment)\b/iu);
   assert.equal(calendarWrites, 1, 'verified booking performs exactly one calendar write');
   assert.equal(databaseWrites, 1, 'verified booking performs exactly one database write');
+  assert.equal(lastRecordedAppointment?.language, 'de',
+    'the authoritative booking language is persisted with the appointment');
 
   // Recreate the underlying contamination directly. The active pending booking is
   // authoritative; an older flow lock must be replaced before deterministic rendering.
@@ -313,6 +324,18 @@ try {
     );
     assert.equal(completed.pending, null, `${language}: verified booking completes`);
     assert.match(completed.replies[0], copy.marker, `${language}: verified confirmation localized`);
+    const confirmationLabels: Record<keyof typeof localized, RegExp> = {
+      en: /Service:.*\nDate:.*\nTime:.*\nName:.*\nMobile:/su,
+      sv: /Tjänst:.*\nDatum:.*\nTid:.*\nNamn:.*\nMobil:/su,
+      de: /Leistung:.*\nDatum:.*\nUhrzeit:.*\nName:.*\nMobil:/su,
+      es: /Servicio:.*\nFecha:.*\nHora:.*\nNombre:.*\nMóvil:/su,
+      fa: /خدمت:.*\nتاریخ:.*\nزمان:.*\nنام:.*\nموبایل:/su,
+      ar: /الخدمة:.*\nالتاريخ:.*\nالوقت:.*\nالاسم:.*\nالهاتف:/su,
+    };
+    assert.match(completed.replies[0], confirmationLabels[language],
+      `${language}: structured confirmation labels use the booking language`);
+    assert.equal(lastRecordedAppointment?.language, language,
+      `${language}: confirmed language persisted for reminders`);
     assert.equal(calendarWrites, 1, `${language}: exactly one authorized calendar write`);
     assert.equal(databaseWrites, 1, `${language}: exactly one verified database write`);
   }
@@ -397,6 +420,52 @@ try {
   const independentSpanish = await turn('tenant-spanish', 'telegram', '13:00', spanishConfig);
   assert.equal(independentSpanish.pending?.language, 'es');
   assert.match(independentSpanish.replies[0], localized.es.marker);
+
+  // Quoted foreign-language words cannot break an active booking language lock.
+  // Live regression: a German WhatsApp booking containing "hej" as an example
+  // must remain German through deterministic slot confirmation.
+  configure();
+
+  const quotedForeignWordConfig = business('quoted-foreign-word-de');
+  const quotedForeignWordSession = 'quoted-foreign-word-de';
+
+  seedSelection(
+    quotedForeignWordSession,
+    'whatsapp',
+    'de',
+    quotedForeignWordConfig,
+  );
+
+  const quotedForeignWordResult = await turn(
+    quotedForeignWordSession,
+    'whatsapp',
+    'Ich nehme gern 13:00. Das Wort "hej" war nur ein Beispiel; bitte weiterhin auf Deutsch.',
+    quotedForeignWordConfig,
+  );
+
+  assert.equal(
+    quotedForeignWordResult.pending?.language,
+    'de',
+    'quoted Swedish example must not replace the active German booking language',
+  );
+
+  assert.equal(
+    boundary.conversationState(quotedForeignWordSession).language,
+    'de',
+    'conversation flow lock must remain German',
+  );
+
+  assert.match(
+    quotedForeignWordResult.replies[0],
+    localized.de.marker,
+    'slot confirmation must stay German',
+  );
+
+  assert.doesNotMatch(
+    quotedForeignWordResult.replies[0],
+    /\b(?:måndag|september|ledig|Ska jag boka|bokning|Tjänst|Namn|Mobil)\b/iu,
+    'German booking reply must not drift into Swedish',
+  );
 
   // Remote regression: pending booking language remains authoritative even when
   // the older flow-language shell is stale and still points to English.

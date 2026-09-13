@@ -10883,7 +10883,7 @@ function localizeServiceName(service: string, language: string): string {
     if (isBikini) return "بیکینی";
     if (isFullBody) return "لیزر فول بادی";
     if (raw.includes("laser")) return "لیزر";
-    return "وقت";
+    return service || "وقت";
   }
   if (language === "en") {
     if (isConsultation) return "consultation";
@@ -10908,7 +10908,7 @@ function localizeServiceName(service: string, language: string): string {
     if (isConsultation) return "الاستشارة";
     if (isBikini) return "علاج البكيني";
     if (isFullBody) return "ليزر الجسم الكامل";
-    return "موعد";
+    return service || "موعد";
   }
   return service || "appointment";
 }

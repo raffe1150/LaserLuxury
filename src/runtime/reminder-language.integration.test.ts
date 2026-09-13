@@ -49,6 +49,21 @@ try {
   );
   assert.match(arabic, /تذكير|غدًا|الاستشارة/u);
 
+  const customService = "Premium Glow Ritual";
+  const persianCustomService = boundary.formatReminder(
+    { ...baseAppointment, service: customService, language: "fa" },
+    businessConfig,
+    "24h",
+  );
+  assert.match(persianCustomService, /Premium Glow Ritual/u);
+
+  const arabicCustomService = boundary.formatReminder(
+    { ...baseAppointment, service: customService, language: "ar" },
+    businessConfig,
+    "2h",
+  );
+  assert.match(arabicCustomService, /Premium Glow Ritual/u);
+
   const legacy = boundary.formatReminder(baseAppointment, businessConfig, "24h");
   assert.match(legacy, /Hej Alex Test|vänlig påminnelse|imorgon/u);
 } finally {

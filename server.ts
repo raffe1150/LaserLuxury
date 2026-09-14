@@ -5952,6 +5952,7 @@ function isNewBookingRequestText(
 function isExplicitNewBookingPivotText(text?: string): boolean {
   const raw = String(text || "").trim();
   const lower = raw.toLowerCase();
+  const foldedArabic = raw.normalize("NFKD").replace(/[\u064B-\u065F\u0670]/gu, "");
   if (!raw) return false;
 
   // Existing-booking operations own their date/service wording. In particular,
@@ -5970,10 +5971,13 @@ function isExplicitNewBookingPivotText(text?: string): boolean {
     /\b(?:jag\s+vill|jag\s+skulle\s+vilja)\s+(?:gärna\s+)?boka\s+(?:en\s+)?(?:ny\s+)?(?:tid|bokning)\b/iu.test(lower) ||
     /\b(?:i\s+want|i(?:['’]d|\s+would)\s+like)\s+to\s+(?:book|make)\s+(?:new\s+)?(?:(?:an?\s+)?appointment|(?:a\s+)?booking)\b/iu.test(lower) ||
     /\bich\s+(?:möchte|will)\s+(?:gern(?:e)?\s+)?(?:einen\s+)?(?:neuen\s+)?termin\s+buchen\b/iu.test(lower) ||
+    /\b(?:neue\s+buchung|neuen\s+termin)\b/iu.test(lower) ||
+    /\bich\s+(?:möchte|moechte|will)\b.{0,120}\b(?:buchen|reservieren)\b/iu.test(lower) ||
     /\b(?:quiero|me\s+gustar[ií]a)\s+reservar\s+(?:una\s+)?(?:nueva\s+)?cita\b/iu.test(lower) ||
     /\b(?:mikham|mikhastam)\s+(?:ye\s+)?(?:vaghte?\s+jadid|vaght)\s+(?:book|rezerv)\s+konam\b/iu.test(lower) ||
     /(?:می[\u200c\s]?خوام|می[\u200c\s]?خواهم).{0,24}(?:وقت|رزرو).{0,16}(?:جدید|بگیرم|کنم)/u.test(raw) ||
-    /(?:أريد|أرغب).{0,24}(?:حجز|موعد).{0,16}(?:جديد|أحجز|احجز)/u.test(raw)
+    /(?:لنبدا|نبدا|ابدا|ابدووا).{0,24}(?:حجز(?:ا)?|موعد).{0,16}جديد(?:ا)?/u.test(foldedArabic) ||
+    /(?:أريد|اريد|أرغب|ارغب).{0,24}(?:حجز|موعد).{0,16}(?:جديد|أحجز|احجز)/u.test(foldedArabic)
   );
 }
 
@@ -6242,6 +6246,10 @@ function classifyRecentCompletedBookingTurn(params: {
   const raw = String(params.text || "").trim();
   if (isRescheduleIntent(raw) || params.normalizedRequest.intent === "reschedule") return "reschedule";
   if (isCancellationIntent(raw) || params.normalizedRequest.intent === "cancellation") return "cancellation";
+  // A deterministic new-booking pivot replaces historical completion context.
+  // This must win before status heuristics, which can read Arabic availability
+  // wording such as "المواعيد" as a reference to the completed appointment.
+  if (isExplicitNewBookingPivotText(raw)) return "new_booking";
 
   if (isPureRecentCompletionAcknowledgement(raw)) return "acknowledgement";
   if (isRecentCompletionRequirementsQuestion(raw)) return "completion_requirements";
@@ -7483,8 +7491,11 @@ function extractNameAndPhone(text?: string, allowStandaloneName = true): { name:
     /(?:mein\s+name\s+ist|ich\s+hei(?:ß|ss)e)\s+([A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,}(?:\s+[A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,})?)/i,
     /(?:mi\s+nombre\s+es|me\s+llamo)\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ'-]{2,}(?:\s+[A-Za-zÁÉÍÓÚÜÑáéíóúüñ'-]{2,})?)/i,
     /(?:esme?\s+man|esmam|namam|name\s+man)\s+(?:hast|e|ast)?\s*([A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,}(?:\s+[A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,})?)/i,
-    /(?:نام|اسم)\s+من\s+([\u0600-\u06FF]{2,}(?:\s+[\u0600-\u06FF]{2,})?)/u,
-    /(?:نام(?:م)?|اسم(?:م)?)\s+([\u0600-\u06FF]{2,}(?:\s+[\u0600-\u06FF]{2,})?)/u,
+    /(?:نام|اسم)\s+من\s+([A-Za-zÅÄÖåäöÉéÜüÁáÍíÓóÚúÑñÇçŞşĞğ'-]{2,}(?:\s+[A-Za-zÅÄÖåäöÉéÜüÁáÍíÓóÚúÑñÇçŞşĞğ'-]{2,})?)(?=\s+(?:است|هست)(?:\s|[.!؟]|$)|\s+(?:و|،)|[.!؟]|$)/u,
+    /(?:^|[.!؟]\s*)من\s+([A-Za-zÅÄÖåäöÉéÜüÁáÍíÓóÚúÑñÇçŞşĞğ'-]{2,}(?:\s+[A-Za-zÅÄÖåäöÉéÜüÁáÍíÓóÚúÑñÇçŞşĞğ'-]{2,})?)\s+هستم/u,
+    /(?:نام|اسم)\s+من\s+([\u0600-\u06FF]{2,}(?:\s+(?!(?:است|هست)(?:\s|$))[\u0600-\u06FF]{2,})?)(?=\s+(?:است|هست)(?:\s|[.!؟]|$)|\s+(?:و|،)|[.!؟]|$)/u,
+    /(?:^|[.!؟]\s*)من\s+([\u0600-\u06FF]{2,}(?:\s+[\u0600-\u06FF]{2,})?)\s+هستم/u,
+    /(?:نام(?:م)?|اسم(?:م)?)\s+(?!من(?:\s|$))([\u0600-\u06FF]{2,}(?:\s+[\u0600-\u06FF]{2,})?)/u,
   ];
 
   for (const pattern of patterns) {
@@ -7569,8 +7580,11 @@ function extractNameOnly(text?: string, allowStandaloneName = true): string | nu
     /(?:mein\s+name\s+ist|ich\s+hei(?:ß|ss)e)\s+([A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,}(?:\s+[A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,})?)/i,
     /(?:mi\s+nombre\s+es|me\s+llamo)\s+([A-Za-zÁÉÍÓÚÜÑáéíóúüñ'-]{2,}(?:\s+[A-Za-zÁÉÍÓÚÜÑáéíóúüñ'-]{2,})?)/i,
     /(?:esme?\s+man|esmam|namam|name\s+man)\s+(?:hast|ast|e)?\s*([A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,}(?:\s+[A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,})?)/i,
-    /(?:نام|اسم)\s+من\s+([\u0600-\u06FF]{2,}(?:\s+[\u0600-\u06FF]{2,})?)/u,
-    /(?:نام(?:م)?|اسم(?:م)?)\s+([\u0600-\u06FF]{2,}(?:\s+[\u0600-\u06FF]{2,})?)/u,
+    /(?:نام|اسم)\s+من\s+([A-Za-zÅÄÖåäöÉéÜüÁáÍíÓóÚúÑñÇçŞşĞğ'-]{2,}(?:\s+[A-Za-zÅÄÖåäöÉéÜüÁáÍíÓóÚúÑñÇçŞşĞğ'-]{2,})?)(?=\s+(?:است|هست)(?:\s|[.!؟]|$)|\s+(?:و|،)|[.!؟]|$)/u,
+    /(?:^|[.!؟]\s*)من\s+([A-Za-zÅÄÖåäöÉéÜüÁáÍíÓóÚúÑñÇçŞşĞğ'-]{2,}(?:\s+[A-Za-zÅÄÖåäöÉéÜüÁáÍíÓóÚúÑñÇçŞşĞğ'-]{2,})?)\s+هستم/u,
+    /(?:نام|اسم)\s+من\s+([\u0600-\u06FF]{2,}(?:\s+(?!(?:است|هست)(?:\s|$))[\u0600-\u06FF]{2,})?)(?=\s+(?:است|هست)(?:\s|[.!؟]|$)|\s+(?:و|،)|[.!؟]|$)/u,
+    /(?:^|[.!؟]\s*)من\s+([\u0600-\u06FF]{2,}(?:\s+[\u0600-\u06FF]{2,})?)\s+هستم/u,
+    /(?:نام(?:م)?|اسم(?:م)?)\s+(?!من(?:\s|$))([\u0600-\u06FF]{2,}(?:\s+[\u0600-\u06FF]{2,})?)/u,
   ];
 
   for (const pattern of patterns) {
@@ -10207,10 +10221,10 @@ function isEarliestAvailabilityRequest(text?: string): boolean {
     /\b(?:earliest|first\s+available|soonest|next\s+available|first\s+(?:free|open)\s+(?:time|slot|appointment))\b/iu.test(raw) ||
     /\b(?:tidigaste|första\s+lediga|närmast\s+lediga|nästa\s+lediga|närmast\s+efter|så\s+snart\s+som\s+möjligt|så\s+tidigt\s+som\s+möjligt)\b/iu.test(raw) ||
     /\b(?:as\s+soon\s+as\s+possible|nearest\s+after|soonest\s+after|earliest\s+after)\b/iu.test(raw) ||
-    /\b(?:früheste|erste\s+freie|nächste\s+freie)\b/iu.test(raw) ||
+    /\b(?:früheste|erste\s+freie|nächste\s+freie|nächsten?\s+(?:freien?|verfügbaren?)\s+(?:termin|termine|zeiten?))\b/iu.test(raw) ||
     /\b(?:más\s+tempran[oa]|primera\s+(?:hora|cita)\s+disponible|próxima\s+(?:hora|cita)\s+disponible)\b/iu.test(raw) ||
     /(?:زودترین|اولین\s+(?:وقت|زمان)\s+(?:خالی|آزاد)|نزدیکترین\s+وقت)/u.test(raw) ||
-    /(?:أقرب\s+موعد|أول\s+موعد\s+متاح|أبكر\s+موعد)/u.test(raw)
+    /(?:أقرب\s+(?:موعد|المواعيد(?:\s+المتاحة)?)|أول\s+موعد\s+متاح|أبكر\s+موعد)/u.test(raw)
   );
 }
 
@@ -10925,11 +10939,12 @@ function formatLocalizedDateTime(dateTime: string, language: string, timeZone: s
 function formatBookingSavedMessage(language: string, name: string, service: string, dateTime: string, phone?: string, toneConfig?: unknown): string {
   // Preserve the authoritative Gregorian year in the final booking facts.
   const { dateText, timeText } = formatLocalizedDateTime(dateTime, language, "Europe/Stockholm", { calendar: "gregory", year: "numeric" });
-  const localizedService = localizeServiceName(service, language);
   return renderDeterministicBookingConfirmation(language, {
     name,
     phone,
-    service: localizedService,
+    // The configured service name is an immutable booking fact. Localize the
+    // surrounding labels, but never replace the selected catalog identity.
+    service,
     date: dateText,
     time: timeText,
   }, toneConfig);
@@ -13325,6 +13340,11 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
       isExplicitNewBookingPivotText(text) ||
       isExplicitDatedBookingCreationText(text, normalizedRequest)
     );
+  const explicitlyReplacesCompletedBooking = isExplicitNewBookingPivotText(text);
+  if (explicitlyReplacesCompletedBooking) {
+    delete recentlyCompletedBookings[sessionId];
+    delete completedBookingSupportTurns[sessionId];
+  }
   const authoritativeTelegramNewBooking = Boolean(
     platformName === "telegram" &&
     pending?.operation === "new_booking" &&
@@ -28825,6 +28845,10 @@ export const priority1hUnifiedEngineTestBoundary = {
   extractPendingBookingCustomerName(text: string, pending: Record<string, any>) {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
     return extractPendingBookingCustomerName(text, pending);
+  },
+  formatBookingConfirmation(language: string, name: string, service: string, dateTime: string, phone?: string) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    return formatBookingSavedMessage(language, name, service, dateTime, phone);
   },
   reset() {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");

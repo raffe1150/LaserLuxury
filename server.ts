@@ -4494,10 +4494,32 @@ function hasAppointmentConversationState(sessionId: string): boolean {
   );
 }
 
+function isDeterministicActiveNewBookingContinuation(chatId: string, text: string): boolean {
+  const pending = pendingBookings[chatId];
+  if (pending?.operation !== "new_booking") return false;
+  if (
+    isExistingAppointmentLookupIntent(text) ||
+    isRescheduleIntent(text) ||
+    isCancellationIntent(text)
+  ) return false;
+
+  if (pending.status === "awaiting_time_selection") {
+    return Boolean(selectOwnedOfferedSlot(text, pending));
+  }
+  if (["awaiting_confirmation", "awaiting_contact"].includes(String(pending.status || ""))) {
+    if (isPendingSlotConfirmation(text, pending)) return true;
+    if (pending.status === "awaiting_contact") {
+      const contact = extractNameAndPhone(text, true);
+      return Boolean(contact.name && contact.phone);
+    }
+  }
+  return false;
+}
+
 function shouldDispatchWhatsAppUnifiedBooking(chatId: string, text: string, intent = classifyMessagingIntent(text)): boolean {
   if (intent === "language_repair") return false;
   if (getRecentCompletedBooking(chatId)?.bookingOperation?.ok) return true;
-  if (intent === "ambiguous") return false;
+  if (intent === "ambiguous") return isDeterministicActiveNewBookingContinuation(chatId, text);
   if (isBusinessInformationQuestion(text)) return true;
   const clearlyNonBooking = intent === "normal" &&
     !pendingBookings[chatId] && !hasAppointmentConversationState(chatId) &&
@@ -10573,7 +10595,9 @@ function isPendingSlotConfirmation(
     /^(?:لطفا )?رزرو (?:کنید|کن)$/u.test(normalizedConfirmation) ||
     /^(?:لطفا )?برایم ثبت (?:کنید|کن)$/u.test(normalizedConfirmation) ||
     /^(?:لطفا )?وقت (?:را|رو) رزرو (?:کنید|کن)$/u.test(normalizedConfirmation);
-  if (persianSelectedSlotAuthorization) {
+  const arabicSelectedSlotAuthorization =
+    /^نعم(?: [یي]رج[یيى]| من فضلك)? حجز هذا (?:الموعد|الوقت)$/u.test(normalizedConfirmation);
+  if (persianSelectedSlotAuthorization || arabicSelectedSlotAuthorization) {
     const pendingSlot = getZonedSlotParts(
       String(pending.dateTime || ""),
       String(pending?.businessConfig?.timezone || "Europe/Stockholm"),
@@ -22949,7 +22973,10 @@ async function processWhatsAppMessageClaimed(message: any, metadata: any, config
       await replyWhatsAppOnce(formatLanguageRepairAcknowledgement(userLanguage));
       return;
     }
-    if (shouldReturnWhatsAppAmbiguousClarification(chatId, whatsappIntent)) {
+    if (
+      shouldReturnWhatsAppAmbiguousClarification(chatId, whatsappIntent) &&
+      !isDeterministicActiveNewBookingContinuation(chatId, textMessage)
+    ) {
       await replyWhatsAppOnce(formatAmbiguousBookingIntentClarification(userLanguage));
       return;
     }
@@ -28996,7 +29023,8 @@ export const priority1hUnifiedEngineTestBoundary = {
     const intent = classifyMessagingIntent(text);
     return {
       intent,
-      returnsAmbiguousClarification: shouldReturnWhatsAppAmbiguousClarification(sessionId, intent),
+      returnsAmbiguousClarification: shouldReturnWhatsAppAmbiguousClarification(sessionId, intent) &&
+        !isDeterministicActiveNewBookingContinuation(sessionId, text),
       dispatchesUnifiedBooking: shouldDispatchWhatsAppUnifiedBooking(sessionId, text, intent),
     };
   },

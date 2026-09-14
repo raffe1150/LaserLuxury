@@ -151,6 +151,67 @@ try {
     assert.equal(boundary.recentCompletionClassification(sessionId, testCase.text, businessConfig, now), null);
   }
 
+  configure();
+  const arabicLiveSession = 'arabic-live-owned-slot-continuation';
+  const arabicLiveBusinessConfig = {
+    ...businessConfig,
+    workingHours: Object.fromEntries(
+      ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday']
+        .map((day) => [day, [{ start: '10:15', end: '11:15' }]]),
+    ),
+  };
+  const arabicLiveNow = new Date('2026-09-14T10:00:00+02:00');
+  const arabicLiveTurn = (text: string) => boundary.turn({
+    sessionId: arabicLiveSession,
+    platformName: 'whatsapp',
+    recipientUserId: arabicLiveSession,
+    text,
+    inputMode: 'text',
+    businessConfig: arabicLiveBusinessConfig,
+    now: arabicLiveNow,
+  });
+  const arabicStart = await arabicLiveTurn(
+    'لنبدأ حجزًا جديدًا. يرجى الاستمرار باللغة العربية. أريد حجز Video Consultation. اعرض لي أقرب المواعيد المتاحة.',
+  );
+  assert.equal(arabicStart.pending?.operation, 'new_booking');
+  assert.equal(arabicStart.pending?.status, 'awaiting_time_selection');
+  assert.match(arabicStart.replies.join(' '), /10:15.*10:30.*10:45/su);
+
+  const arabicSelection = 'أريد موعد الساعة 10:15. كلمة "hej" كانت مجرد مثال؛ يرجى الاستمرار باللغة العربية.';
+  assert.deepEqual(boundary.whatsappPreDispatchDecision(arabicLiveSession, arabicSelection), {
+    intent: 'ambiguous',
+    returnsAmbiguousClarification: false,
+    dispatchesUnifiedBooking: true,
+  });
+  const arabicSelected = await arabicLiveTurn(arabicSelection);
+  assert.equal(arabicSelected.pending?.operation, 'new_booking');
+  assert.equal(arabicSelected.pending?.status, 'awaiting_confirmation');
+  assert.match(arabicSelected.pending?.dateTime || '', /T10:15:00/);
+  assert.equal(arabicSelected.pending?.language, 'ar');
+
+  const arabicConfirmation = 'نعم، يرجى حجز هذا الموعد.';
+  assert.equal(
+    boundary.whatsappPreDispatchDecision(arabicLiveSession, arabicConfirmation).returnsAmbiguousClarification,
+    false,
+  );
+  const arabicConfirmed = await arabicLiveTurn(arabicConfirmation);
+  assert.equal(arabicConfirmed.pending?.operation, 'new_booking');
+  assert.equal(arabicConfirmed.pending?.status, 'awaiting_contact');
+  assert.match(arabicConfirmed.pending?.dateTime || '', /T10:15:00/);
+
+  const arabicContact = 'اسمي Alex Testsson ورقم هاتفي المحمول هو 0701234567.';
+  assert.equal(
+    boundary.whatsappPreDispatchDecision(arabicLiveSession, arabicContact).returnsAmbiguousClarification,
+    false,
+  );
+  const arabicCompleted = await arabicLiveTurn(arabicContact);
+  assert.equal(arabicCompleted.pending, null);
+  assert.equal(calls.calendarCreate, 1);
+  assert.equal(calls.databaseInsert, 1);
+  assert.equal(recordedService, 'Video Consultation');
+  assert.match(arabicCompleted.replies.join(' '), /الخدمة:\s*Video Consultation/u);
+  assert.match(arabicCompleted.replies.join(' '), /الاسم:\s*Alex Testsson/u);
+
   const persianContact = 'نام من Alex Testsson است و شماره موبایلم 0701234567 است.';
   const extracted = boundary.extractBookingContactParts(persianContact);
   assert.equal(extracted.combined?.name, 'Alex Testsson');

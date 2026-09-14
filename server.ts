@@ -10804,11 +10804,16 @@ function guardCustomerFacingReply(sessionId: string, reply: string, fallbackLang
   // Configured service names and customer-supplied identity values can legitimately
   // be in another language. Integrity checks above still validate the raw reply;
   // only omit exact verified facts when deciding whether presentation drifted.
-  const replyForLanguageDetection = recentCompleted?.bookingOperation?.ok
+  const verifiedBookingFacts = verifiedBookingReplyAuthorizations[sessionId]?.ok
+    ? verifiedBookingReplyAuthorizations[sessionId]
+    : recentCompleted?.bookingOperation?.ok
+      ? recentCompleted.bookingOperation
+      : null;
+  const replyForLanguageDetection = verifiedBookingFacts
     ? [
-        recentCompleted.bookingOperation.serviceName,
-        recentCompleted.bookingOperation.customerName,
-        recentCompleted.bookingOperation.customerPhone,
+        verifiedBookingFacts.serviceName,
+        verifiedBookingFacts.customerName,
+        verifiedBookingFacts.customerPhone,
       ].reduce(
         (value, verifiedFact) => verifiedFact
           ? value.split(String(verifiedFact)).join(" ")
@@ -10846,12 +10851,12 @@ function guardCustomerFacingReply(sessionId: string, reply: string, fallbackLang
       )
     : null;
   const verifiedCompletionPresentationMatchesLanguage = Boolean(
-    recentCompleted?.bookingOperation?.ok && (
+    verifiedBookingFacts && (
       (language === "en" && /^(?:Yes, the booking is verified\.|Exactly\. The booking is verified)/u.test(raw)) ||
       (language === "sv" && /^(?:Ja, bokningen är verifierad\.|Precis\. Bokningen är verifierad)/u.test(raw)) ||
       (language === "de" && /^(?:Ja, die Buchung ist bestätigt\.|Genau\. Die Buchung ist bestätigt)/u.test(raw)) ||
       (language === "es" && /^(?:Sí, la reserva está verificada\.|Exactamente\. La reserva está verificada)/u.test(raw)) ||
-      (language === "fa" && /^(?:بله، رزرو تأیید شده است\.|دقیقاً\. رزرو تأیید شده)/u.test(raw)) ||
+      (language === "fa" && /^(?:(?:بله، رزرو تأیید شده است\.|دقیقاً\. رزرو تأیید شده)|خدمت:.*\nتاریخ:.*\nزمان:.*\nنام:.*\nموبایل:)/su.test(raw)) ||
       (language === "ar" && /^(?:نعم، الحجز مؤكد\.|بالضبط\. الحجز مؤكد)/u.test(raw))
     )
   );

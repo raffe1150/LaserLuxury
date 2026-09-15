@@ -1,3 +1,5 @@
+import { containsWebOperationSuccess, webUnverifiedOperationReply } from "./src/ai/web-response-integrity";
+import { CalendarReadError, requireCalendarEvents } from "./src/calendar/read-contract";
 import { isBusinessInformationQuestion, businessInformationTopics, businessInformationSubject, formatConfiguredServiceOverview, isServiceCatalogQuestion } from './src/ai/business-information';
 import "dotenv/config";
 import { extractExplicitArabicCustomerName } from './src/ai/arabic-customer-name';
@@ -1557,7 +1559,7 @@ async function validateCanonicalExactSlot(params: {
       };
     });
 
-  const calendarEvents = params.calendarEvents || await adapter.getEvents(localDate, localDate);
+  const calendarEvents = params.calendarEvents || await requireCalendarEvents(adapter, localDate, localDate);
   const filteredEvents = (Array.isArray(calendarEvents) ? calendarEvents : []).filter(
     (event: any) => !excludeEventId || String(event?.id || "") !== String(excludeEventId)
   );
@@ -1616,9 +1618,7 @@ async function loadCanonicalAvailabilitySnapshot(params: {
   throwOnCalendarReadFailure?: boolean;
 }): Promise<CanonicalAvailabilitySnapshot> {
   const timezone = String(params.businessConfig?.timezone || "Europe/Stockholm");
-  const events = await params.adapter.getEvents(params.startDate, params.endDate, {
-    throwOnReadFailure: params.throwOnCalendarReadFailure,
-  });
+  const events = await requireCalendarEvents(params.adapter, params.startDate, params.endDate);
   const calendarEvents = (Array.isArray(events) ? events : []).filter(
     (event: any) => !params.excludeEventId || String(event?.id || "") !== String(params.excludeEventId)
   );
@@ -2110,16 +2110,19 @@ class GenericCalendarAdapter implements CalendarAdapter {
     try {
       const headers: any = {};
       if (this.apiKey) headers['Authorization'] = `Bearer ${this.apiKey}`;
-      const res = await fetch(`${this.apiUrl}/events?startDate=${startDate}&endDate=${endDate}`, { headers });
+      const res = await fetch(`${this.apiUrl}/events?startDate=${startDate}&endDate=${endDate}`, { headers, ...(options?.throwOnReadFailure ? { signal: AbortSignal.timeout(20_000) } : {}) });
       if (!res.ok) {
         if (options?.throwOnReadFailure) {
-          throw new Error(`Calendar read failed with status ${res.status}`);
+          throw new CalendarReadError('calendar_unavailable');
         }
         return [];
       }
       const data = await res.json().catch(() => ({}));
       if (options?.throwOnReadFailure && !Array.isArray(data.events) && !Array.isArray(data.items)) {
-        throw new Error("Calendar read returned an invalid response");
+        throw new CalendarReadError('calendar_malformed');
+      }
+      if (options?.throwOnReadFailure && (data.nextPageToken || data.next || data.hasMore)) {
+        throw new CalendarReadError('calendar_incomplete');
       }
       return data.events || data.items || [];
     } catch(e) {
@@ -2131,8 +2134,11 @@ class GenericCalendarAdapter implements CalendarAdapter {
     try {
       const headers: any = {};
       if (this.apiKey) headers['Authorization'] = `Bearer ${this.apiKey}`;
-      const res = await fetch(`${this.apiUrl}/check?startDate=${startDate}&endDate=${endDate || startDate}&duration=${durationMinutes || 60}`, { headers });
-      return await res.json();
+      const res = await fetch(`${this.apiUrl}/check?startDate=${startDate}&endDate=${endDate || startDate}&duration=${durationMinutes || 60}`, { headers, signal: AbortSignal.timeout(20_000) });
+      if (!res.ok) throw new CalendarReadError();
+      const data = await res.json();
+      if (!data || typeof data !== 'object' || data.nextPageToken || data.hasMore) throw new CalendarReadError('calendar_incomplete');
+      return data;
     } catch(e) {
       return { success: false, message: 'Failed to access remote calendar API to check slots.' };
     }
@@ -2254,14 +2260,24 @@ class GoogleCalendarAdapter implements CalendarAdapter {
     try {
       const timeMin = new Date(localStockholmDateBoundary(startDate, false)).toISOString();
       const timeMax = new Date(localStockholmDateBoundary(endDate, true)).toISOString();
-      const res = await this.calendar.events.list({
-        calendarId: this.calendarId,
-        timeMin,
-        timeMax,
-        singleEvents: true,
-        orderBy: 'startTime',
-      });
-      return res.data.items || [];
+      const events: any[] = [];
+      let pageToken: string | undefined;
+      const seen = new Set<string>();
+      do {
+        const res = await this.calendar.events.list({
+          calendarId: this.calendarId, timeMin, timeMax,
+          singleEvents: true, orderBy: 'startTime',
+          ...(pageToken ? { pageToken } : {}),
+        }, options?.throwOnReadFailure ? { timeout: 20_000 } : undefined);
+        if (options?.throwOnReadFailure && (!res.data || !Array.isArray(res.data.items))) {
+          throw new CalendarReadError('calendar_malformed');
+        }
+        events.push(...(res.data.items || []));
+        pageToken = options?.throwOnReadFailure ? res.data.nextPageToken : undefined;
+        if (pageToken && (seen.has(pageToken) || seen.size >= 100)) throw new CalendarReadError('calendar_incomplete');
+        if (pageToken) seen.add(pageToken);
+      } while (pageToken);
+      return events;
     } catch(e: any) {
       console.error("Google Calendar getEvents Error:", e.message);
       if (options?.throwOnReadFailure) throw e;
@@ -2271,18 +2287,8 @@ class GoogleCalendarAdapter implements CalendarAdapter {
 
   async checkSlots(startDate: string, endDate?: string, durationMinutes?: number, requestedTime?: string) {
     try {
-      const timeMin = new Date(localStockholmDateBoundary(startDate, false)).toISOString();
       const endDateString = endDate || startDate;
-      const timeMax = new Date(localStockholmDateBoundary(endDateString, true)).toISOString();
-
-      const res = await this.calendar.events.list({
-        calendarId: this.calendarId,
-        timeMin: timeMin,
-        timeMax: timeMax,
-        singleEvents: true,
-        orderBy: 'startTime',
-      });
-      const events = res.data.items || [];
+      const events = await requireCalendarEvents(this, startDate, endDateString);
       console.log(`[Availability] start=${startDate}, end=${endDateString}, requestedTime=${requestedTime || "none"}, duration=${durationMinutes || 60}, rawEvents=${events.length}`);
       for (const ev of events) {
         const evStart = ev.start?.dateTime || ev.start?.date || ev.startTime;
@@ -2396,7 +2402,7 @@ class GoogleCalendarAdapter implements CalendarAdapter {
       // exact-slot validation has just passed.
       if (!skipConflictCheck) {
         const bookingDate = stockholmDateString(startTime);
-        const existingEvents = await this.getEvents(bookingDate, bookingDate);
+        const existingEvents = await requireCalendarEvents(this, bookingDate, bookingDate);
         if (!isSlotFree(startTime.getTime(), safeDuration, Array.isArray(existingEvents) ? existingEvents : [])) {
           return { success: false, code: "SLOT_CONFLICT", message: "The selected slot is no longer available." };
         }
@@ -6491,6 +6497,24 @@ function formatRecentCompletedStatusReply(
   return `Yes, the booking is verified.\n\nDate: ${dateText}\nTime: ${timeText}`;
 }
 
+function minimizeBusinessSupportMessages(sessionId: string, messages: any[]): any[] {
+  if (!getActiveBusinessInformation(sessionId) && !getActiveRecentCompletedBusinessSupport(sessionId)) return messages;
+  const completed = getRecentCompletedBooking(sessionId)?.bookingOperation;
+  const pending = pendingBookings[sessionId];
+  const contacts = [completed?.ok ? completed.customerName : null, completed?.ok ? completed.customerPhone : null,
+    pending?.customerName, pending?.customerPhone].filter((value): value is string => Boolean(value));
+  const scrub = (value: any): any => {
+    if (typeof value === "string") {
+      for (const contact of contacts) value = value.split(contact).join("[customer contact omitted]");
+      return value;
+    }
+    if (Array.isArray(value)) return value.map(scrub);
+    if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, scrub(item)]));
+    return value;
+  };
+  return messages.map(scrub);
+}
+
 function buildRecentCompletedSupportInstruction(sessionId: string): string {
   const support = completedBookingSupportTurns[sessionId];
   const information = getActiveBusinessInformation(sessionId);
@@ -7073,8 +7097,6 @@ function buildBusinessGroundingSnapshot(
           status: "verified",
           serviceName: operation.serviceName,
           startTime: operation.startTime,
-          customerName: operation.customerName,
-          customerPhone: operation.customerPhone,
           durationMinutes: support.completed?.durationMinutes,
         }) || {}, null, 2)
       : "",
@@ -20144,7 +20166,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       language: getConversationLanguage(telegramSessionId, textForFlow, config),
     };
     let chatResponse = await generateContentWithFallback(null, {
-      messages,
+      messages: minimizeBusinessSupportMessages(telegramSessionId, messages),
       systemInstruction: finalSystemInstruction, 
       tools: getGeminiSupportTools(telegramSessionId),
       model: 'gemini-2.5-flash',
@@ -20278,7 +20300,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       messages.push(...functionResponsesParts);
       
       chatResponse = await generateContentWithFallback(null, {
-        messages,
+        messages: minimizeBusinessSupportMessages(telegramSessionId, messages),
         systemInstruction: finalSystemInstruction, 
         tools: getGeminiSupportTools(telegramSessionId),
         model: 'gemini-2.5-flash',
@@ -20289,7 +20311,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
     
     if (chatResponse.functionCalls && chatResponse.functionCalls.length > 0) {
       chatResponse = await generateContentWithFallback(null, {
-         messages,
+         messages: minimizeBusinessSupportMessages(telegramSessionId, messages),
          systemInstruction: finalSystemInstruction + "\nCRITICAL: Maximum tool calls reached. You MUST reply in natural language only. Summarize what you know. DO NOT USE TOOLS.",
          model: 'gemini-2.5-flash',
          context: aiRequestContext,
@@ -23053,7 +23075,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       language: getConversationLanguage(chatId, textMessage, businessConfig),
     };
     let chatResponse = await generateContentWithFallback(null, {
-      messages,
+      messages: minimizeBusinessSupportMessages(chatId, messages),
       systemInstruction: finalSystemInstruction,
       tools: getGeminiSupportTools(chatId),
       model: "gemini-2.5-flash",
@@ -23184,7 +23206,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       messages.push(...functionResponsesParts);
 
       chatResponse = await generateContentWithFallback(null, {
-        messages,
+        messages: minimizeBusinessSupportMessages(chatId, messages),
         systemInstruction: finalSystemInstruction,
         tools: getGeminiSupportTools(chatId),
         model: "gemini-2.5-flash",
@@ -23194,7 +23216,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
 
     if (chatResponse.functionCalls && chatResponse.functionCalls.length > 0) {
       chatResponse = await generateContentWithFallback(null, {
-        messages,
+        messages: minimizeBusinessSupportMessages(chatId, messages),
         systemInstruction: finalSystemInstruction + "\nCRITICAL: Maximum tool calls reached. You MUST reply in natural language only. Summarize what you know. DO NOT USE TOOLS.",
         model: "gemini-2.5-flash",
         context: aiRequestContext,
@@ -24222,7 +24244,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       language: getConversationLanguage(chatId, userMessageForLog, businessConfig),
     };
     let chatResponse = await generateContentWithFallback(null, {
-      messages,
+      messages: minimizeBusinessSupportMessages(chatId, messages),
       systemInstruction: finalSystemInstruction,
       tools: getGeminiSupportTools(chatId),
       model: "gemini-2.5-flash",
@@ -24378,7 +24400,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       messages.push(...functionResponsesParts);
 
       chatResponse = await generateContentWithFallback(null, {
-        messages,
+        messages: minimizeBusinessSupportMessages(chatId, messages),
         systemInstruction: finalSystemInstruction,
         tools: getGeminiSupportTools(chatId),
         model: "gemini-2.5-flash",
@@ -24388,7 +24410,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
 
     if (chatResponse.functionCalls && chatResponse.functionCalls.length > 0) {
       chatResponse = await generateContentWithFallback(null, {
-        messages,
+        messages: minimizeBusinessSupportMessages(chatId, messages),
         systemInstruction: finalSystemInstruction + "\nCRITICAL: Maximum tool calls reached. You MUST reply in natural language only. Summarize what you know. DO NOT USE TOOLS.",
         model: "gemini-2.5-flash",
         context: aiRequestContext,
@@ -24826,7 +24848,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       language: getConversationLanguage(chatId, userMessageForLog, businessConfig),
     };
     let chatResponse = await generateContentWithFallback(null, {
-      messages,
+      messages: minimizeBusinessSupportMessages(chatId, messages),
       systemInstruction: finalSystemInstruction,
       tools: getGeminiSupportTools(chatId),
       model: 'gemini-2.5-flash',
@@ -25038,7 +25060,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       messages.push(...functionResponsesParts);
 
       chatResponse = await generateContentWithFallback(null, {
-        messages,
+        messages: minimizeBusinessSupportMessages(chatId, messages),
         systemInstruction: finalSystemInstruction,
         tools: getGeminiSupportTools(chatId),
         model: 'gemini-2.5-flash',
@@ -25048,7 +25070,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
 
     if (chatResponse.functionCalls && chatResponse.functionCalls.length > 0) {
       chatResponse = await generateContentWithFallback(null, {
-        messages,
+        messages: minimizeBusinessSupportMessages(chatId, messages),
         systemInstruction: finalSystemInstruction + '\nCRITICAL: Maximum tool calls reached. You MUST reply in natural language only. Summarize what you know. DO NOT USE TOOLS.',
         model: 'gemini-2.5-flash',
         context: aiRequestContext,
@@ -25290,12 +25312,13 @@ Never translate unless requested.
   buildLanguageLockInstruction(userLanguage) +
   buildRecentCompletedSupportInstruction(chatId);
       let chatResponse = await generateContentWithFallback(null, {
-        messages,
+        messages: minimizeBusinessSupportMessages(chatId, messages),
         systemInstruction: finalSystemInstruction,
         tools: getGeminiSupportTools(chatId),
         model: 'gemini-2.5-flash'
       });
 
+      let deterministicWebReply = false;
       let maxWebTurns = 3;
       while (chatResponse.functionCalls && chatResponse.functionCalls.length > 0 && maxWebTurns > 0) {
         maxWebTurns--;
@@ -25348,6 +25371,7 @@ Never translate unless requested.
 
         const earlyTerm = functionResponsesParts.find((p: any) => p && p.TERMINATE_EARLY);
       if (earlyTerm) {
+          deterministicWebReply = true;
           chatResponse.text = earlyTerm.replyMessage;
           chatResponse.functionCalls = null;
           break;
@@ -25356,7 +25380,7 @@ Never translate unless requested.
       messages.push(...functionResponsesParts);
 
       chatResponse = await generateContentWithFallback(null, {
-          messages,
+          messages: minimizeBusinessSupportMessages(chatId, messages),
           systemInstruction: finalSystemInstruction,
           tools: getGeminiSupportTools(chatId),
           model: 'gemini-2.5-flash'
@@ -25366,7 +25390,7 @@ Never translate unless requested.
 
       if (chatResponse.functionCalls && chatResponse.functionCalls.length > 0) {
         chatResponse = await generateContentWithFallback(null, {
-           messages,
+           messages: minimizeBusinessSupportMessages(chatId, messages),
            systemInstruction: finalSystemInstruction + "\nCRITICAL: Maximum tool calls reached. You MUST reply in natural language only. Summarize what you know. DO NOT USE TOOLS.",
            model: 'gemini-2.5-flash'
         });
@@ -25374,6 +25398,10 @@ Never translate unless requested.
 
       history.push({ role: "user", content: Array.isArray(userMessageContent) ? "(User Voice Message)" : userMessageContent });
       let textPart = chatResponse.text || getErrorMessageByLanguage(userLanguage);
+      if (!deterministicWebReply && containsWebOperationSuccess(textPart)) {
+        textPart = webUnverifiedOperationReply(userLanguage);
+        console.warn("[WebResponseIntegrity]", { code: "unverified_operation_claim" });
+      }
       history.push({ role: "assistant", content: textPart });
 
       let audioDataOut = null;

@@ -31,7 +31,7 @@ const API_BASE = import.meta.env?.VITE_API_BASE_URL || '';
 
 export class ApiRequestError extends Error {
   readonly status: number;
-  readonly code: 'unauthenticated' | 'forbidden' | 'request_failed';
+  readonly code: 'unauthenticated' | 'forbidden' | 'request_failed' | 'temporarily_unavailable';
 
   constructor(status: number, code: ApiRequestError['code'], message: string) {
     super(message);
@@ -70,6 +70,9 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
     }
     if (response.status === 403) {
       throw new ApiRequestError(403, 'forbidden', 'You do not have permission to perform this action.');
+    }
+    if (response.status >= 500) {
+      throw new ApiRequestError(response.status, 'temporarily_unavailable', 'Service temporarily unavailable. Please try again.');
     }
     const message = await response.text().catch(() => response.statusText);
     throw new ApiRequestError(response.status, 'request_failed', message || `Request failed with status ${response.status}`);

@@ -45,7 +45,7 @@ function verificationClient(user: { id: string; email?: string } | null, fail = 
     auth: {
       async getUser() {
         if (fail) throw new Error('sensitive verification detail');
-        return user ? { data: { user }, error: null } : { data: { user: null }, error: { message: 'invalid JWT' } };
+        return user ? { data: { user }, error: null } : { data: { user: null }, error: { message: 'invalid JWT', status: 401, code: 'bad_jwt' } };
       },
     },
   };
@@ -99,8 +99,8 @@ async function runTests() {
     createRequireAuth(verificationClient(null, true)),
     authRequest('Bearer expired-token'),
   );
-  assert.equal(verificationFailure.response.statusCode, 401);
-  assert.deepEqual(verificationFailure.response.body, { error: 'unauthenticated' });
+  assert.equal(verificationFailure.response.statusCode, 503);
+  assert.deepEqual(verificationFailure.response.body, { error: 'verification_unavailable', code: 'verification_unavailable' });
 
   const authenticated = await runMiddleware(requireAuth, authRequest('Bearer valid-token'));
   assert.equal(authenticated.nextCalled, true);
@@ -186,8 +186,8 @@ async function runTests() {
     createRequireBusinessPermission('business.read', { client: membershipClient(null, true) }),
     { auth: { userId: user.id }, params: { businessId: '7' } },
   );
-  assert.equal(lookupFailure.response.statusCode, 500);
-  assert.deepEqual(lookupFailure.response.body, { error: 'authorization_failed' });
+  assert.equal(lookupFailure.response.statusCode, 503);
+  assert.deepEqual(lookupFailure.response.body, { error: 'membership_unavailable', code: 'membership_unavailable' });
 
   const migration = readFileSync(new URL('../../supabase/migrations/20260801120000_create_business_memberships.sql', import.meta.url), 'utf8');
   assert.match(migration, /unique \(business_id, user_id\)/i);

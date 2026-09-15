@@ -21,17 +21,18 @@ export function createRequireAuth(
     }
 
     try {
-      const user = await verifyAccessToken(match[1], verificationClient);
-      if (!user) {
-        response.status(401).json({ error: 'unauthenticated' });
+      const verification = await verifyAccessToken(match[1], verificationClient);
+      if (verification.ok === false) {
+        const unavailable = verification.code === 'verification_unavailable';
+        response.status(unavailable ? 503 : 401).json({ error: unavailable ? verification.code : 'unauthenticated', code: verification.code });
         return;
       }
       (request as AuthenticatedRequest).auth = {
-        userId: user.id,
+        userId: verification.user.id,
       };
       next();
     } catch {
-      response.status(500).json({ error: 'auth_configuration_error' });
+      response.status(503).json({ error: 'verification_unavailable', code: 'verification_unavailable' });
     }
   };
 }

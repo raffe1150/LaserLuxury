@@ -21,11 +21,7 @@ export function getBrowserSupabaseClient(): SupabaseClient {
 }
 
 export async function getCurrentAccessToken(): Promise<string | null> {
-  try {
-    const { data, error } = await getBrowserSupabaseClient().auth.getSession();
-    if (error) return null;
-    return data.session?.access_token || null;
-  } catch {
-    return null;
-  }
+  const { data, error } = await getBrowserSupabaseClient().auth.getSession();
+  if (error) throw new Error('Session verification is temporarily unavailable. Please try again.');
+  return data.session?.access_token || null;
 }

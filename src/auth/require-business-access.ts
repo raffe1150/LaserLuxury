@@ -55,7 +55,7 @@ export function createRequireBusinessPermission(
         .maybeSingle();
 
       if (error) {
-        response.status(500).json({ error: 'authorization_failed' });
+        response.status(503).json({ error: 'membership_unavailable', code: 'membership_unavailable' });
         return;
       }
       if (!data || !isBusinessRole(data.role) || !roleHasPermission(data.role, permission)) {
@@ -66,7 +66,7 @@ export function createRequireBusinessPermission(
       authenticatedRequest.businessAccess = { businessId, role: data.role };
       next();
     } catch {
-      response.status(500).json({ error: 'auth_configuration_error' });
+      response.status(503).json({ error: 'membership_unavailable', code: 'membership_unavailable' });
     }
   };
 }

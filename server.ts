@@ -1,4 +1,3 @@
-import { CalendarDiagnosticFailure, createCalendarContractDiagnosticRouter } from "./src/calendar/contract-diagnostic";
 import { isBusinessInformationQuestion, businessInformationTopics, businessInformationSubject, formatConfiguredServiceOverview, isServiceCatalogQuestion } from './src/ai/business-information';
 import "dotenv/config";
 import { extractExplicitArabicCustomerName } from './src/ai/arabic-customer-name';
@@ -2103,17 +2102,6 @@ class MockCalendarAdapter implements CalendarAdapter {
 class GenericCalendarAdapter implements CalendarAdapter {
   constructor(private apiUrl: string, private apiKey?: string) {}
 
-  // TEMPORARY P1: raw envelope read, no booking normalization or writes.
-  async inspectContractEnvelope(date: string, _timezone: string): Promise<unknown> {
-    const url = new URL(`${this.apiUrl.replace(/\/$/, '')}/events`);
-    if (url.protocol !== 'https:') throw new CalendarDiagnosticFailure('configuration');
-    url.searchParams.set('startDate', date); url.searchParams.set('endDate', date);
-    const response = await fetch(url, { method: 'GET', redirect: 'error',
-      headers: this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}, signal: AbortSignal.timeout(20_000) });
-    if (!response.ok) throw new CalendarDiagnosticFailure(response.status === 401 || response.status === 403 ? 'forbidden' : 'unavailable');
-    try { return await response.json(); } catch { throw new CalendarDiagnosticFailure('malformed'); }
-  }
-
   async getEvents(
     startDate: string,
     endDate: string,
@@ -2256,15 +2244,6 @@ class GoogleCalendarAdapter implements CalendarAdapter {
 
   getCalendarId() {
     return this.calendarId;
-  }
-
-  // TEMPORARY P1: preserve raw items omission and pagination metadata.
-  async inspectContractEnvelope(date: string, timezone: string): Promise<unknown> {
-    const response = await this.calendar.events.list({ calendarId: this.calendarId,
-      timeMin: new Date(zonedLocalIso(date, '00:00:00', timezone)).toISOString(),
-      timeMax: new Date(zonedLocalIso(date, '23:59:59', timezone)).toISOString(),
-      singleEvents: true, orderBy: 'startTime' }, { timeout: 20_000, retry: false });
-    return response.data;
   }
 
   async getEvents(
@@ -2505,7 +2484,7 @@ class GoogleCalendarAdapter implements CalendarAdapter {
   }
 }
 
-function getCalendarAdapter(config: any, diagnosticQuiet = false): CalendarAdapter {
+function getCalendarAdapter(config: any): CalendarAdapter {
   if (priority1hTestDependencies?.calendarAdapter) return priority1hTestDependencies.calendarAdapter;
   if (config.calendarProvider === 'google' || 
       (!config.calendarProvider && process.env.GOOGLE_CLIENT_EMAIL && process.env.GOOGLE_PRIVATE_KEY && (config.googleCalendarId || process.env.GOOGLE_CALENDAR_ID))) {
@@ -2513,16 +2492,16 @@ function getCalendarAdapter(config: any, diagnosticQuiet = false): CalendarAdapt
     const key = config.googlePrivateKey || process.env.GOOGLE_PRIVATE_KEY;
     const id = config.googleCalendarId || process.env.GOOGLE_CALENDAR_ID;
     if (email && key && id) {
-      if (!diagnosticQuiet) console.log(`[Calendar] Using Google calendar for business=${config.businessName || config.business_name || "unknown"}, business_id=${getBusinessIdFromConfig(config) || "missing"}, calendar_id=${id}`);
+      console.log(`[Calendar] Using Google calendar for business=${config.businessName || config.business_name || "unknown"}, business_id=${getBusinessIdFromConfig(config) || "missing"}, calendar_id=${id}`);
       return new GoogleCalendarAdapter(email, key, id);
     } else {
-      if (!diagnosticQuiet) console.warn("Google Calendar adapter requested but credentials missing. Falling back to Mock.");
+      console.warn("Google Calendar adapter requested but credentials missing. Falling back to Mock.");
     }
   } else if (config.calendarProvider === 'custom' && config.calendarApiUrl) {
     return new GenericCalendarAdapter(config.calendarApiUrl, config.calendarApiKey);
   }
   if (process.env.NODE_ENV === "production") {
-    if (!diagnosticQuiet) console.error("[Calendar]", {
+    console.error("[Calendar]", {
       stage: "provider_resolution",
       success: false,
       bookingOutcomeCode: "PROVIDER_FAILED",
@@ -2532,7 +2511,7 @@ function getCalendarAdapter(config: any, diagnosticQuiet = false): CalendarAdapt
       "Calendar provider is not configured"
     );
   }
-  if (!diagnosticQuiet) console.warn("[Calendar] Falling back to MockCalendarAdapter. This should not happen in production.");
+  console.warn("[Calendar] Falling back to MockCalendarAdapter. This should not happen in production.");
   return new MockCalendarAdapter();
 }
 
@@ -25449,24 +25428,6 @@ async function startServer() {
     createRequireBusinessPermission(permission, {
       resolveBusinessId: (request) => request.body?.businessId ?? request.body?.business_id,
     });
-
-  // TEMPORARY P1 calendar envelope diagnostic; no booking/state/analytics paths.
-  app.use(createCalendarContractDiagnosticRouter({
-    requireAuth,
-    requireSettings: requireBusinessPermission('settings.manage'),
-    loadConfig: async (businessId) => {
-      if (!supabase) throw new CalendarDiagnosticFailure('configuration');
-      const { data, error } = await supabase.from('businesses').select('*').eq('id', businessId).maybeSingle();
-      if (error) throw new CalendarDiagnosticFailure('unavailable');
-      return data ? normalizeBusinessConfig(data) : null;
-    },
-    resolve: (config) => {
-      const adapter = getCalendarAdapter(config, true);
-      if (adapter instanceof GoogleCalendarAdapter) return { adapter: 'google', read: (date, timezone) => adapter.inspectContractEnvelope(date, timezone) };
-      if (adapter instanceof GenericCalendarAdapter) return { adapter: 'generic', read: (date, timezone) => adapter.inspectContractEnvelope(date, timezone) };
-      return { adapter: 'other', read: async () => { throw new CalendarDiagnosticFailure('configuration'); } };
-    },
-  }));
 
   app.use('/api/businesses', createAnalyticsApiRouter({
     requireAuth,

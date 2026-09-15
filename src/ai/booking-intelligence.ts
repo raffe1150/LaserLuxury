@@ -264,6 +264,11 @@ export function detectNormalizedIntent(text: string): NormalizedIntent {
   if (/(?:^|\s)(?:reschedule|move|change|ändra|flytta|taghir|avaz).{0,30}(?:appointment|booking|time|tid|vaght|rezerv)(?=\s|$)/iu.test(raw) || /(?:^|\s)boka\s+om(?=\s|$)/iu.test(raw) || /\b(?:avaz|taghir)\s+(?:bedam|konam)\b/iu.test(raw) || /(?:تغییر|عوض).{0,20}(?:وقت|رزرو|کنم|بدم)/u.test(raw)) return 'reschedule';
   if (/\b(?:do i have|did i book|check|har jag|aya).{0,30}(?:appointment|booking|tid|vaght|rezerv)\b/iu.test(raw) || /(?:آیا|میشه).{0,24}(?:وقت|رزرو).{0,24}(?:دارم|کردم)|(?:هل\s+لدي(?=\s|$).{0,24}(?:موعد|حجز)|هل\s+حجزت|متى\s+موعدي|تحقق\s+من\s+موعدي)/u.test(raw)) return 'booking_lookup';
 
+  // Exact operation labels offered by the clarification prompt are actionable
+  // intent choices, not confirmation or permission to mutate an appointment.
+  const operationChoice = raw.replace(/[\u064B-\u065F\u0670]/gu, '').replace(/[.!،؛]+$/u, '').trim();
+  if (/^(?:(?:en )?ny bokning|(?:a )?new booking|(?:eine )?neue buchung|(?:una )?nueva reserva|رزرو جدید|حجز(?:ا)? جديد(?:ا)?)$/u.test(operationChoice)) return 'new_booking';
+
   const germanBookingAction =
     /\bich\s+(?:möchte|moechte|will)\b.{0,120}\b(?:buchen|reservieren)\b/iu.test(raw) ||
     /\b(?:einen?\s+)?termin\s+(?:buchen|reservieren)\b/iu.test(raw);

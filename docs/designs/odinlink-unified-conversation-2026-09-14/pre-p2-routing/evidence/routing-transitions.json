@@ -1,0 +1,490 @@
+{
+  "clock": "2026-09-15T08:00:00Z",
+  "base": "e866f81",
+  "status": "PASS",
+  "turns": [
+    {
+      "text": "Vilka tider är lediga imorgon?",
+      "after": "awaiting_service",
+      "service": "Bokning",
+      "operation": "new_booking",
+      "language": "sv",
+      "date": "2026-09-16",
+      "ownedOfferCount": 0,
+      "writes": 0,
+      "reads": 0,
+      "model": 0,
+      "pre": {
+        "intent": "normal",
+        "returnsAmbiguousClarification": false,
+        "dispatchesUnifiedBooking": true
+      },
+      "responses": [
+        "Absolut. Vilken tjänst vill du boka?"
+      ]
+    },
+    {
+      "text": "Video Consultation",
+      "before": "awaiting_service",
+      "after": "awaiting_time_selection",
+      "service": "Video Consultation",
+      "operation": "new_booking",
+      "language": "sv",
+      "date": "2026-09-16",
+      "ownedOfferCount": 3,
+      "writes": 0,
+      "reads": 1,
+      "model": 0,
+      "pre": {
+        "intent": "ambiguous",
+        "returnsAmbiguousClarification": false,
+        "dispatchesUnifiedBooking": true
+      },
+      "responses": [
+        "Nuvarande tillgänglighet är: onsdag 16 september kl 13:45, 14:00 och 14:15. Vilken tid fungerar bäst för dig?"
+      ]
+    },
+    {
+      "text": "Ny bokning",
+      "before": "awaiting_time_selection",
+      "after": "awaiting_service",
+      "service": "Bokning",
+      "operation": "new_booking",
+      "language": "sv",
+      "date": null,
+      "ownedOfferCount": 0,
+      "writes": 0,
+      "reads": 1,
+      "model": 0,
+      "pre": {
+        "intent": "new_booking",
+        "returnsAmbiguousClarification": false,
+        "dispatchesUnifiedBooking": true
+      },
+      "responses": [
+        "Absolut. Vilken tjänst vill du boka?"
+      ]
+    },
+    {
+      "text": "Ny bokning",
+      "before": "awaiting_service",
+      "after": "awaiting_service",
+      "service": "Bokning",
+      "operation": "new_booking",
+      "language": "sv",
+      "date": null,
+      "ownedOfferCount": 0,
+      "writes": 0,
+      "reads": 1,
+      "model": 0,
+      "pre": {
+        "intent": "new_booking",
+        "returnsAmbiguousClarification": false,
+        "dispatchesUnifiedBooking": true
+      },
+      "responses": [
+        "Absolut. Vilken tjänst vill du boka?"
+      ]
+    },
+    {
+      "text": "Ny bokning",
+      "before": "awaiting_service",
+      "after": "awaiting_service",
+      "service": "Bokning",
+      "operation": "new_booking",
+      "language": "sv",
+      "date": null,
+      "ownedOfferCount": 0,
+      "writes": 0,
+      "reads": 1,
+      "model": 0,
+      "pre": {
+        "intent": "new_booking",
+        "returnsAmbiguousClarification": false,
+        "dispatchesUnifiedBooking": true
+      },
+      "responses": [
+        "Absolut. Vilken tjänst vill du boka?"
+      ]
+    },
+    {
+      "text": "Vilka tider är lediga imorgon?",
+      "after": "awaiting_service",
+      "service": "Bokning",
+      "operation": "new_booking",
+      "language": "sv",
+      "date": "2026-09-16",
+      "ownedOfferCount": 0,
+      "writes": 0,
+      "reads": 0,
+      "model": 0,
+      "pre": {
+        "intent": "normal",
+        "returnsAmbiguousClarification": false,
+        "dispatchesUnifiedBooking": true
+      },
+      "responses": [
+        "Absolut. Vilken tjänst vill du boka?"
+      ]
+    },
+    {
+      "text": "Unknown Consultation",
+      "before": "awaiting_service",
+      "after": "awaiting_service",
+      "service": "Bokning",
+      "operation": "new_booking",
+      "language": "sv",
+      "date": "2026-09-16",
+      "ownedOfferCount": 0,
+      "writes": 0,
+      "reads": 0,
+      "model": 0,
+      "pre": {
+        "intent": "ambiguous",
+        "returnsAmbiguousClarification": true,
+        "dispatchesUnifiedBooking": false
+      },
+      "responses": [
+        "Menar du en ny bokning, ombokning, avbokning eller att kontrollera en tidigare bokning?"
+      ]
+    },
+    {
+      "text": "Vilka tider är lediga imorgon?",
+      "after": "awaiting_service",
+      "service": "Bokning",
+      "operation": "new_booking",
+      "language": "sv",
+      "date": "2026-09-16",
+      "ownedOfferCount": 0,
+      "writes": 0,
+      "reads": 0,
+      "model": 0,
+      "pre": {
+        "intent": "normal",
+        "returnsAmbiguousClarification": false,
+        "dispatchesUnifiedBooking": true
+      },
+      "responses": [
+        "Absolut. Vilken tjänst vill du boka?"
+      ]
+    },
+    {
+      "text": "Vad kostar en bokning?",
+      "before": "awaiting_service",
+      "after": "awaiting_service",
+      "service": "Bokning",
+      "operation": "new_booking",
+      "language": "sv",
+      "date": "2026-09-16",
+      "ownedOfferCount": 0,
+      "writes": 0,
+      "reads": 0,
+      "model": 0,
+      "pre": {
+        "intent": "ambiguous",
+        "returnsAmbiguousClarification": true,
+        "dispatchesUnifiedBooking": false
+      },
+      "responses": [
+        "Menar du en ny bokning, ombokning, avbokning eller att kontrollera en tidigare bokning?"
+      ]
+    },
+    {
+      "text": "Vilka tider är lediga imorgon?",
+      "after": "awaiting_service",
+      "service": "Bokning",
+      "operation": "new_booking",
+      "language": "sv",
+      "date": "2026-09-16",
+      "ownedOfferCount": 0,
+      "writes": 0,
+      "reads": 0,
+      "model": 0,
+      "pre": {
+        "intent": "normal",
+        "returnsAmbiguousClarification": false,
+        "dispatchesUnifiedBooking": true
+      },
+      "responses": [
+        "Absolut. Vilken tjänst vill du boka?"
+      ]
+    },
+    {
+      "text": "Vad kostar Video Consultation?",
+      "before": "awaiting_service",
+      "after": "awaiting_service",
+      "service": "Bokning",
+      "operation": "new_booking",
+      "language": "sv",
+      "date": "2026-09-16",
+      "ownedOfferCount": 0,
+      "writes": 0,
+      "reads": 0,
+      "model": 0,
+      "pre": {
+        "intent": "ambiguous",
+        "returnsAmbiguousClarification": true,
+        "dispatchesUnifiedBooking": false
+      },
+      "responses": [
+        "Menar du en ny bokning, ombokning, avbokning eller att kontrollera en tidigare bokning?"
+      ]
+    },
+    {
+      "text": "Video Consultation",
+      "writes": 0,
+      "reads": 0,
+      "model": 0,
+      "pre": {
+        "intent": "ambiguous",
+        "returnsAmbiguousClarification": true,
+        "dispatchesUnifiedBooking": false
+      },
+      "responses": [
+        "Do you mean a new booking, rescheduling, cancellation, or checking an existing booking?"
+      ]
+    },
+    {
+      "text": "Ny bokning",
+      "after": "awaiting_service",
+      "service": "Bokning",
+      "operation": "new_booking",
+      "language": "sv",
+      "date": null,
+      "ownedOfferCount": 0,
+      "writes": 0,
+      "reads": 0,
+      "model": 0,
+      "pre": {
+        "intent": "new_booking",
+        "returnsAmbiguousClarification": false,
+        "dispatchesUnifiedBooking": true
+      },
+      "responses": [
+        "Absolut. Vilken tjänst vill du boka?"
+      ]
+    },
+    {
+      "text": "Video Consultation",
+      "before": "awaiting_service",
+      "after": "awaiting_date_or_time",
+      "service": "Video Consultation",
+      "operation": "new_booking",
+      "language": "sv",
+      "date": null,
+      "ownedOfferCount": 0,
+      "writes": 0,
+      "reads": 0,
+      "model": 0,
+      "pre": {
+        "intent": "ambiguous",
+        "returnsAmbiguousClarification": false,
+        "dispatchesUnifiedBooking": true
+      },
+      "responses": [
+        "Jag har valt Video Consultation. Vilka datum finns i åtanke för bokningen?"
+      ]
+    },
+    {
+      "text": "Ny bokning",
+      "after": "awaiting_service",
+      "service": "Bokning",
+      "operation": "new_booking",
+      "language": "sv",
+      "date": null,
+      "ownedOfferCount": 0,
+      "writes": 0,
+      "reads": 0,
+      "model": 0,
+      "pre": {
+        "intent": "new_booking",
+        "returnsAmbiguousClarification": false,
+        "dispatchesUnifiedBooking": true
+      },
+      "responses": [
+        "Absolut. Vilken tjänst vill du boka?"
+      ]
+    },
+    {
+      "text": "New booking",
+      "after": "awaiting_service",
+      "service": "Bokning",
+      "operation": "new_booking",
+      "language": "en",
+      "date": null,
+      "ownedOfferCount": 0,
+      "writes": 0,
+      "reads": 0,
+      "model": 0,
+      "pre": {
+        "intent": "new_booking",
+        "returnsAmbiguousClarification": false,
+        "dispatchesUnifiedBooking": true
+      },
+      "responses": [
+        "Of course. Which service would you like to book?"
+      ]
+    },
+    {
+      "text": "Neue Buchung",
+      "after": "awaiting_service",
+      "service": "Bokning",
+      "operation": "new_booking",
+      "language": "de",
+      "date": null,
+      "ownedOfferCount": 0,
+      "writes": 0,
+      "reads": 0,
+      "model": 0,
+      "pre": {
+        "intent": "new_booking",
+        "returnsAmbiguousClarification": false,
+        "dispatchesUnifiedBooking": true
+      },
+      "responses": [
+        "Gerne. Welche Leistung möchten Sie buchen?"
+      ]
+    },
+    {
+      "text": "Nueva reserva",
+      "after": "awaiting_service",
+      "service": "Bokning",
+      "operation": "new_booking",
+      "language": "es",
+      "date": null,
+      "ownedOfferCount": 0,
+      "writes": 0,
+      "reads": 0,
+      "model": 0,
+      "pre": {
+        "intent": "new_booking",
+        "returnsAmbiguousClarification": false,
+        "dispatchesUnifiedBooking": true
+      },
+      "responses": [
+        "Claro. ¿Qué servicio quieres reservar?"
+      ]
+    },
+    {
+      "text": "رزرو جدید",
+      "after": "awaiting_service",
+      "service": "Bokning",
+      "operation": "new_booking",
+      "language": "ar",
+      "date": null,
+      "ownedOfferCount": 0,
+      "writes": 0,
+      "reads": 0,
+      "model": 0,
+      "pre": {
+        "intent": "new_booking",
+        "returnsAmbiguousClarification": false,
+        "dispatchesUnifiedBooking": true
+      },
+      "responses": [
+        "بالتأكيد. لأي خدمة تريد حجز موعد؟"
+      ]
+    },
+    {
+      "text": "حجزًا جديدًا",
+      "after": "awaiting_service",
+      "service": "Bokning",
+      "operation": "new_booking",
+      "language": "ar",
+      "date": null,
+      "ownedOfferCount": 0,
+      "writes": 0,
+      "reads": 0,
+      "model": 0,
+      "pre": {
+        "intent": "new_booking",
+        "returnsAmbiguousClarification": false,
+        "dispatchesUnifiedBooking": true
+      },
+      "responses": [
+        "بالتأكيد. لأي خدمة تريد حجز موعد؟"
+      ]
+    },
+    {
+      "text": "Vilka tider är lediga imorgon?",
+      "after": "awaiting_time_selection",
+      "service": "Video Consultation",
+      "operation": "new_booking",
+      "language": "sv",
+      "date": "2026-09-16",
+      "ownedOfferCount": 3,
+      "writes": 0,
+      "reads": 1,
+      "model": 0,
+      "pre": {
+        "intent": "normal",
+        "returnsAmbiguousClarification": false,
+        "dispatchesUnifiedBooking": true
+      },
+      "responses": [
+        "Nuvarande tillgänglighet är: onsdag 16 september kl 13:45, 14:00 och 14:15. Vilken tid fungerar bäst för dig?"
+      ]
+    },
+    {
+      "text": "Ny bokning",
+      "before": "awaiting_time_selection",
+      "after": "awaiting_date_or_time",
+      "service": "Video Consultation",
+      "operation": "new_booking",
+      "language": "sv",
+      "ownedOfferCount": 0,
+      "writes": 0,
+      "reads": 1,
+      "model": 1,
+      "pre": {
+        "intent": "new_booking",
+        "returnsAmbiguousClarification": false,
+        "dispatchesUnifiedBooking": true
+      },
+      "responses": [
+        "OFFLINE_INFORMATION_ONLY"
+      ]
+    },
+    {
+      "text": "Vilka tider är lediga imorgon?",
+      "after": "awaiting_service",
+      "service": "Bokning",
+      "operation": "new_booking",
+      "language": "sv",
+      "date": "2026-09-16",
+      "ownedOfferCount": 0,
+      "writes": 0,
+      "reads": 0,
+      "model": 0,
+      "pre": {
+        "intent": "normal",
+        "returnsAmbiguousClarification": false,
+        "dispatchesUnifiedBooking": true
+      },
+      "responses": [
+        "Absolut. Vilken tjänst vill du boka?"
+      ]
+    },
+    {
+      "text": "Remote Consultation",
+      "before": "awaiting_service",
+      "after": "awaiting_time_selection",
+      "service": "Video Consultation",
+      "operation": "new_booking",
+      "language": "sv",
+      "date": "2026-09-16",
+      "ownedOfferCount": 3,
+      "writes": 0,
+      "reads": 1,
+      "model": 0,
+      "pre": {
+        "intent": "ambiguous",
+        "returnsAmbiguousClarification": false,
+        "dispatchesUnifiedBooking": true
+      },
+      "responses": [
+        "Nuvarande tillgänglighet är: onsdag 16 september kl 13:45, 14:00 och 14:15. Vilken tid fungerar bäst för dig?"
+      ]
+    }
+  ]
+}

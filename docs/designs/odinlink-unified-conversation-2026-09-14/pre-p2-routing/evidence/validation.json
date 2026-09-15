@@ -1,0 +1,66 @@
+[
+  {
+    "name": "auth.test.ts",
+    "status": 0
+  },
+  {
+    "name": "browser.test.cjs",
+    "status": 0
+  },
+  {
+    "name": "browser-session.test.cjs",
+    "status": 0
+  },
+  {
+    "name": "calendar",
+    "status": 0
+  },
+  {
+    "name": "website",
+    "status": 0
+  },
+  {
+    "name": "privacy",
+    "status": 0
+  },
+  {
+    "name": "whatsapp-multilingual-production-regressions.integration.test.ts",
+    "status": 0
+  },
+  {
+    "name": "full-matrix-confirmation.integration.test.ts",
+    "status": 0
+  },
+  {
+    "name": "multichannel-booking-progression.integration.test.ts",
+    "status": 0
+  },
+  {
+    "name": "multichannel-language-isolation.integration.test.ts",
+    "status": 0
+  },
+  {
+    "name": "configured-service-duration-parity.integration.test.ts",
+    "status": 0
+  },
+  {
+    "name": "booking-completion-regressions.integration.test.ts",
+    "status": 0
+  },
+  {
+    "name": "shared-post-completion-routing.integration.test.ts",
+    "status": 0
+  },
+  {
+    "name": "priority-1h-unified-engine.integration.test.ts",
+    "status": 1
+  },
+  {
+    "name": "build",
+    "status": 0
+  },
+  {
+    "name": "typecheck",
+    "status": 2
+  }
+]

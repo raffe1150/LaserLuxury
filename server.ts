@@ -4509,6 +4509,15 @@ function isDeterministicActiveNewBookingContinuation(chatId: string, text: strin
     isCancellationIntent(text)
   ) return false;
 
+  // A configured service answer belongs to the existing service-selection turn,
+  // even when the stateless classifier reads its name as an ambiguous booking noun.
+  if (pending.status === "awaiting_service" && !isBusinessInformationQuestion(text)) {
+    const service = resolveAuthoritativeBookingService(text, pending.businessConfig);
+    return service.status === "resolved" && service.source === "evidence" &&
+      [service.service.name, ...service.service.aliases].some((label) =>
+        normalizeServiceMatchText(label) === normalizeServiceMatchText(text)
+      );
+  }
   if (pending.status === "awaiting_time_selection") {
     return Boolean(selectOwnedOfferedSlot(text, pending));
   }
@@ -17124,7 +17133,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
           serviceId: null,
           serviceResolution: "unresolved",
           requestedService,
-          selectedDate: latestAvailabilityConstraint?.startDate === latestAvailabilityConstraint?.endDate
+          selectedDate: latestAvailabilityConstraint && latestAvailabilityConstraint.startDate === latestAvailabilityConstraint.endDate
             ? latestAvailabilityConstraint.startDate
             : pending?.selectedDate || null,
           availabilityStartDate: latestAvailabilityConstraint?.startDate || pending?.availabilityStartDate || null,

@@ -1,0 +1,11 @@
+import assert from 'node:assert/strict';
+import {createRequire} from 'node:module';
+const {p1Internals:i}=createRequire(import.meta.url)('./.server.cjs');
+const generic=new i.GenericCalendarAdapter('https://synthetic.invalid');
+globalThis.fetch=async()=>new Response('{}',{status:500});
+assert.deepEqual(await generic.getEvents('2026-09-18','2026-09-18'),[]);
+await assert.rejects(()=>generic.getEvents('2026-09-18','2026-09-18',{throwOnReadFailure:true}));
+const google=Object.create(i.GoogleCalendarAdapter.prototype);let reads=0;
+google.calendar={events:{list:async()=>{reads++;return{data:{nextPageToken:'synthetic'}}}}};
+assert.deepEqual(await google.getEvents('2026-09-18','2026-09-18'),[]);assert.equal(reads,1);
+console.log('Production calendar normalization preserved; no P1 strict-read migration');

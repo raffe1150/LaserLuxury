@@ -45,6 +45,11 @@ export interface TaskRepository {
   ): Promise<OdinTask | null>;
 }
 
+export type InboxAcceptOnceResult = {
+  row: OdinInboxTurn;
+  inserted: boolean;
+};
+
 export interface InboxRepository {
   getByProviderEvent(params: {
     businessId: number;
@@ -52,6 +57,16 @@ export interface InboxRepository {
     providerScope: string;
     providerEventId: string;
   }): Promise<OdinInboxTurn | null>;
+
+  acceptOnce(params: {
+    businessId: number;
+    conversationId?: string | null;
+    channel: string;
+    providerScope?: string;
+    providerEventId: string;
+    turnSequence?: number | null;
+    payload: Record<string, unknown>;
+  }): Promise<InboxAcceptOnceResult>;
 }
 
 export interface ResourceRepository {

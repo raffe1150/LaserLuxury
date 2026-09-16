@@ -101,7 +101,10 @@ export class SupabaseConversationRepository
 }
 
 export class SupabaseOperationRepository
-  implements OperationRepository
+  implements Pick<
+    OperationRepository,
+    "getByOperationKey"
+  >
 {
   constructor(
     private readonly supabase: SupabaseLikeClient,

@@ -86,11 +86,28 @@ export interface ResourceRepository {
   ): Promise<OdinServiceResource[]>;
 }
 
+export type OperationGetOrCreateResult = {
+  row: OdinOperation;
+  inserted: boolean;
+};
+
 export interface OperationRepository {
   getByOperationKey(
     businessId: number,
     operationKey: string,
   ): Promise<OdinOperation | null>;
+
+  getOrCreate(params: {
+    businessId: number;
+    conversationId?: string | null;
+    taskId?: string | null;
+    turnId?: string | null;
+    operationType: string;
+    operationKey: string;
+    status: string;
+    actionDigest?: string | null;
+    provider?: string | null;
+  }): Promise<OperationGetOrCreateResult>;
 }
 
 export interface ReservationRepository {

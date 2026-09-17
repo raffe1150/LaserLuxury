@@ -10,6 +10,31 @@ import type {
   OdinTask,
 } from "./contracts";
 
+export type FinalizeTurnResult =
+  | {
+      outcome: "finalized";
+      conversationId: string;
+      inboxId: string;
+      previousRevision: number;
+      newRevision: number;
+      fenceEpoch: number;
+      inboxStatus: "processed";
+    }
+  | {
+      outcome:
+        | "rejected_revision"
+        | "rejected_worker"
+        | "rejected_fence"
+        | "rejected_expired_lease"
+        | "already_finalized";
+      conversationId: string;
+      inboxId: string;
+      previousRevision: number;
+      newRevision: number;
+      fenceEpoch: number;
+      inboxStatus: string | null;
+    };
+
 export interface ConversationRepository {
   getById(
     businessId: number,
@@ -36,6 +61,15 @@ export interface ConversationRepository {
     fenceEpoch: number;
     leaseSeconds: number;
   }): Promise<ConversationLease | null>;
+
+  finalizeTurn(params: {
+    businessId: number;
+    conversationId: string;
+    inboxId: string;
+    workerId: string;
+    expectedRevision: number;
+    fenceEpoch: number;
+  }): Promise<FinalizeTurnResult>;
 }
 
 export interface TaskRepository {

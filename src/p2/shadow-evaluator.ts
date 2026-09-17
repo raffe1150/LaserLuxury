@@ -2,6 +2,7 @@ export interface P2ShadowEvent {
   businessId: number;
   conversationKey: string;
   channel: string;
+  providerScope?: string;
   providerEventId: string;
   receivedAt: string;
   payload: Record<string, unknown>;
@@ -32,6 +33,7 @@ export interface P2ShadowEvaluationRecord {
   businessId: number;
   conversationKey: string;
   channel: string;
+  providerScope: string;
   providerEventId: string;
   executionMode: "shadow";
   legacy: P2LegacyObservation | null;
@@ -233,6 +235,10 @@ export class P2ShadowEvaluator {
           event.businessId,
         conversationKey,
         channel,
+        providerScope:
+          String(
+            event.providerScope ?? "",
+          ).trim(),
         providerEventId,
         executionMode: "shadow",
         legacy,

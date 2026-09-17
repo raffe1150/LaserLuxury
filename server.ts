@@ -82,6 +82,8 @@ import {
 import { understandBookingTurn } from "./src/ai/understanding/understand-booking-turn";
 import type { UnderstandingProviderInput } from "./src/ai/understanding/provider";
 import { createConfiguredUnderstandingShadowRuntime } from "./src/ai/understanding/shadow";
+import { createConfiguredUnderstandingProvider } from "./src/ai/understanding/config";
+import { createP2LiveShadowRuntime } from "./src/p2/live-shadow-runtime";
 import {
   createConfiguredUnderstandingAdoptionRuntime,
   resolveControlledUnderstandingAdoption,
@@ -222,6 +224,19 @@ if (process.env.SUPABASE_URL && (process.env.SUPABASE_SERVICE_ROLE_KEY || proces
 } else {
   console.warn("Supabase not configured: missing SUPABASE_URL and key.");
 }
+
+const p2StructuredUnderstandingProviderRuntime =
+  createConfiguredUnderstandingProvider();
+
+const p2LiveShadowRuntime =
+  createP2LiveShadowRuntime({
+    supabase,
+    provider:
+      p2StructuredUnderstandingProviderRuntime.status === "ready"
+        ? p2StructuredUnderstandingProviderRuntime.provider
+        : null,
+    environment: process.env,
+  });
 
 const knowledgeService = new KnowledgeService(
   supabase && process.env.SUPABASE_SERVICE_ROLE_KEY
@@ -11610,6 +11625,7 @@ function normalizeBusinessConfig(row: any) {
     website: row.website,
     phone: row.phone,
     email: row.email,
+    configuredTimezone: String(row?.timezone || "").trim() || null,
     timezone: row.timezone || "Europe/Stockholm",
     telegramToken: normalizeTelegramBotToken(
       row.telegram_bot_token ?? row.telegramToken
@@ -11656,6 +11672,176 @@ function normalizeBusinessConfig(row: any) {
     serviceDurations: row.service_durations || {},
     calendarProvider: "google",
   };
+}
+
+type P2InboundShadowMirrorParams = {
+  businessConfig: any;
+  sessionId: string;
+  channel: "telegram" | "whatsapp";
+  providerScope: string;
+  providerEventId: string | number;
+  receivedAt: string;
+  text: string;
+  activeLanguage?: string | null;
+};
+
+function p2ShadowConversationKey(
+  businessId: number,
+  channel: string,
+  sessionId: string,
+): string {
+  const fingerprint = crypto
+    .createHash("sha256")
+    .update(String(sessionId || ""))
+    .digest("hex")
+    .slice(0, 32);
+
+  return `${channel}:${businessId}:${fingerprint}`;
+}
+
+function mirrorP2InboundTextShadow(
+  params: P2InboundShadowMirrorParams,
+): void {
+  if (p2LiveShadowRuntime.status !== "ready") return;
+
+  const businessId = Number(
+    getBusinessIdFromConfig(
+      params.businessConfig,
+    ),
+  );
+
+  const message =
+    String(params.text || "").trim();
+
+  const configuredTimezone =
+    String(
+      params.businessConfig
+        ?.configuredTimezone || "",
+    ).trim();
+
+  if (
+    !Number.isInteger(businessId) ||
+    businessId <= 0 ||
+    !message ||
+    !configuredTimezone
+  ) {
+    return;
+  }
+
+  const pending =
+    pendingBookings[
+      params.sessionId
+    ];
+
+  const configuredServices =
+    getEligibleConfiguredBookingServices(
+      params.businessConfig,
+    )
+      .map((service) => service.name)
+      .filter(Boolean)
+      .slice(0, 50);
+
+  const knownFields = [
+    ...(pending?.service
+      ? ["service" as const]
+      : []),
+
+    ...(pending?.selectedDate ||
+    pending?.availabilityStartDate
+      ? ["date" as const]
+      : []),
+
+    ...(pending?.dateTime
+      ? ["time" as const]
+      : []),
+
+    ...(pending?.customerName
+      ? ["name" as const]
+      : []),
+
+    ...(pending?.customerPhone
+      ? ["phone" as const]
+      : []),
+  ];
+
+  void p2LiveShadowRuntime
+    .mirror({
+      event: {
+        businessId,
+        conversationKey:
+          p2ShadowConversationKey(
+            businessId,
+            params.channel,
+            params.sessionId,
+          ),
+        channel:
+          params.channel,
+        providerScope:
+          String(
+            params.providerScope ||
+              "",
+          ).trim(),
+        providerEventId:
+          String(
+            params.providerEventId,
+          ),
+        receivedAt:
+          params.receivedAt,
+        payload: {
+          text: message,
+
+          ...(params.activeLanguage
+            ? {
+                activeLanguage:
+                  params.activeLanguage,
+              }
+            : {}),
+
+          timezone:
+            configuredTimezone,
+
+          currentTimeIso:
+            params.receivedAt,
+
+          configuredServices,
+
+          bookingPhase:
+            pending
+              ? getBookingPhase(
+                  pending,
+                )
+              : "idle",
+
+          offeredSlotCount:
+            Array.isArray(
+              pending?.offeredSlots,
+            )
+              ? pending.offeredSlots.length
+              : 0,
+
+          selectedSlotPresent:
+            Boolean(
+              pending?.dateTime,
+            ),
+
+          knownFields,
+        },
+      },
+    })
+    .catch(() => {
+      // Observation-only: never interrupt the customer turn
+      // and never include customer content in diagnostics.
+      console.error(
+        "[P2DurableShadow]",
+        {
+          businessId,
+          channel:
+            params.channel,
+          category:
+            "unexpected_rejection",
+        },
+      );
+    });
 }
 
 const businessConfigVersions: Record<string, string> = {};
@@ -19880,6 +20066,12 @@ async function processTelegramUpdateClaimed(
       telegramInputMode,
       String(text || "")
     );
+    const telegramOccurredAt =
+      normalizeAcceptedMessageTimestamp(
+        update.message.date,
+        "seconds",
+      );
+
     if (text || voice) {
       recordAcceptedCustomerMessage({
         businessId,
@@ -19890,21 +20082,44 @@ async function processTelegramUpdateClaimed(
           : "telegram_polling",
         providerScope: telegramTokenFingerprint(telegramToken),
         messageId: update.update_id,
-        occurredAt: normalizeAcceptedMessageTimestamp(
-          update.message.date,
-          "seconds"
-        ),
+        occurredAt: telegramOccurredAt,
         messageType: voice && !text ? "voice" : "text",
       });
     }
 
-    // The inbound claim owns usage accounting. Count before any deterministic
-    // booking return so booking, lookup, reschedule and cancellation are included.
     const inboundUsageLanguage = getConversationLanguage(
       telegramSessionId,
       String(text || ""),
       config
     );
+
+    // P2 durable shadow v1 mirrors text only.
+    // Voice remains entirely on the existing legacy path.
+    if (
+      telegramInputMode === "text" &&
+      String(text || "").trim()
+    ) {
+      mirrorP2InboundTextShadow({
+        businessConfig: config,
+        sessionId: telegramSessionId,
+        channel: "telegram",
+        providerScope:
+          telegramTokenFingerprint(
+            telegramToken,
+          ),
+        providerEventId:
+          update.update_id,
+        receivedAt:
+          telegramOccurredAt,
+        text:
+          String(text),
+        activeLanguage:
+          inboundUsageLanguage,
+      });
+    }
+
+    // The inbound claim owns usage accounting. Count before any deterministic
+    // booking return so booking, lookup, reschedule and cancellation are included.
     const inboundUsage = await checkAndIncrementDailyUsage({
       businessId,
       platform: "telegram",
@@ -22948,16 +23163,41 @@ async function processWhatsAppMessageClaimed(message: any, metadata: any, config
   chatId = getScopedChannelSessionId("whatsapp", from, businessConfig, phoneNumberId);
   resetSessionIfBusinessConfigChanged(chatId, businessConfig);
   userLanguage = getConversationLanguage(chatId, textMessage || "", businessConfig);
+
+  const whatsappOccurredAt =
+    normalizeAcceptedMessageTimestamp(
+      message.timestamp,
+      "seconds",
+    );
+
   recordAcceptedCustomerMessage({
     businessId: getBusinessIdFromConfig(businessConfig),
     sessionId: chatId,
     platform: "whatsapp",
     source: "whatsapp_webhook",
     messageId: message.id,
-    occurredAt: normalizeAcceptedMessageTimestamp(message.timestamp, "seconds"),
+    occurredAt: whatsappOccurredAt,
     messageType: "text",
     language: userLanguage,
   });
+
+  if (String(textMessage || "").trim()) {
+    mirrorP2InboundTextShadow({
+      businessConfig,
+      sessionId: chatId,
+      channel: "whatsapp",
+      providerScope:
+        String(phoneNumberId || "").trim(),
+      providerEventId:
+        message.id,
+      receivedAt:
+        whatsappOccurredAt,
+      text:
+        String(textMessage),
+      activeLanguage:
+        userLanguage,
+    });
+  }
 
   try {
     if (!chatSessions[chatId as any]) chatSessions[chatId as any] = [];

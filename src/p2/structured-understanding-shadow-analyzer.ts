@@ -117,8 +117,14 @@ function providerInputFromEvent(
   }
 
   const timezone =
-    cleanString(payload.timezone) ||
-    "Europe/Stockholm";
+    cleanString(payload.timezone);
+
+  if (!timezone) {
+    throw new P2StructuredUnderstandingShadowAnalyzerError(
+      "Business timezone is required for shadow understanding.",
+      "invalid_provider_input",
+    );
+  }
 
   const currentTimeIso =
     cleanString(

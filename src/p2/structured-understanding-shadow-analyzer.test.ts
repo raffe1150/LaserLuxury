@@ -300,6 +300,50 @@ test(
   },
 );
 
+
+test(
+  "rejects missing business timezone before provider call",
+  async () => {
+    let called = false;
+
+    const analyzer =
+      new P2StructuredUnderstandingShadowAnalyzer({
+        provider: {
+          providerId:
+            "test-provider",
+
+          async interpret() {
+            called = true;
+            return baseUnderstanding();
+          },
+        },
+      });
+
+    await assert.rejects(
+      () =>
+        analyzer.analyze({
+          ...event,
+          payload: {
+            ...event.payload,
+            timezone: undefined,
+          },
+        }),
+      (
+        error: unknown,
+      ) =>
+        error instanceof
+          P2StructuredUnderstandingShadowAnalyzerError &&
+        error.causeCode ===
+          "invalid_provider_input",
+    );
+
+    assert.equal(
+      called,
+      false,
+    );
+  },
+);
+
 test(
   "rejects missing shadow text before provider call",
   async () => {

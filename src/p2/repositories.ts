@@ -110,11 +110,33 @@ export interface OperationRepository {
   }): Promise<OperationGetOrCreateResult>;
 }
 
+export type CapacityOneReservationResult =
+  | {
+      outcome: "created";
+      row: OdinResourceReservation;
+    }
+  | {
+      outcome: "conflict";
+      row: null;
+    };
+
 export interface ReservationRepository {
   getById(
     businessId: number,
     reservationId: string,
   ): Promise<OdinResourceReservation | null>;
+
+  createCapacityOne(params: {
+    businessId: number;
+    operationId: string;
+    resourceId: string;
+    startAt: string;
+    endAt: string;
+    bufferBeforeMinutes?: number;
+    bufferAfterMinutes?: number;
+    status?: "held" | "reserved" | "dispatching" | "uncertain" | "verified";
+    expiresAt?: string | null;
+  }): Promise<CapacityOneReservationResult>;
 }
 
 export interface OutboxRepository {

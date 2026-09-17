@@ -67,6 +67,27 @@ function isEnabled(
     .toLowerCase() === "true";
 }
 
+function configuredBusinessIds(
+  environment: P2Environment,
+): Set<number> {
+  const raw = String(
+    environment.P2_DURABLE_SHADOW_BUSINESS_IDS || "",
+  ).trim();
+
+  if (!raw) return new Set();
+
+  return new Set(
+    raw
+      .split(",")
+      .map((value) => Number(value.trim()))
+      .filter(
+        (value) =>
+          Number.isSafeInteger(value) &&
+          value > 0,
+      ),
+  );
+}
+
 function disabledResult(): P2ShadowRuntimeResult {
   return {
     status: "disabled",
@@ -84,6 +105,18 @@ export function createP2LiveShadowRuntime(
     return {
       status: "disabled",
 
+      async mirror() {
+        return disabledResult();
+      },
+    };
+  }
+
+  const allowedBusinessIds =
+    configuredBusinessIds(environment);
+
+  if (allowedBusinessIds.size === 0) {
+    return {
+      status: "disabled",
       async mirror() {
         return disabledResult();
       },
@@ -149,6 +182,16 @@ export function createP2LiveShadowRuntime(
     status: "ready",
 
     mirror(input) {
+      if (
+        !allowedBusinessIds.has(
+          input.event.businessId,
+        )
+      ) {
+        return Promise.resolve(
+          disabledResult(),
+        );
+      }
+
       return runtime.mirror(
         input,
       );

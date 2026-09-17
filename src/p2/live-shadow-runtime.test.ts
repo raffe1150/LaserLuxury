@@ -196,6 +196,8 @@ test(
         environment: {
           P2_DURABLE_SHADOW_ENABLED:
             "true",
+          P2_DURABLE_SHADOW_BUSINESS_IDS:
+            "101",
         },
       });
 
@@ -234,6 +236,8 @@ test(
         environment: {
           P2_DURABLE_SHADOW_ENABLED:
             "true",
+          P2_DURABLE_SHADOW_BUSINESS_IDS:
+            "101",
         },
       });
 
@@ -326,6 +330,8 @@ test(
         environment: {
           P2_DURABLE_SHADOW_ENABLED:
             "true",
+          P2_DURABLE_SHADOW_BUSINESS_IDS:
+            "101",
           P2_DURABLE_SHADOW_TIMEOUT_MS:
             "2000",
         },
@@ -369,5 +375,178 @@ test(
         .operationType,
       "new_booking",
     );
+  },
+);
+
+test(
+  "fails closed when enabled without a business allowlist",
+  async () => {
+    let providerCalled = false;
+    let storageTouched = false;
+
+    const runtime =
+      createP2LiveShadowRuntime({
+        supabase: {
+          from() {
+            storageTouched = true;
+            throw new Error(
+              "must not touch storage",
+            );
+          },
+        },
+        provider: {
+          providerId: "test-provider",
+          async interpret() {
+            providerCalled = true;
+            return {
+              schemaVersion: 1,
+              language: {
+                primary: {
+                  value: "en",
+                  confidence: 1,
+                },
+                codeSwitches: [],
+              },
+              intents: [],
+              acts: {},
+              entities: {},
+              ambiguities: [],
+            };
+          },
+        },
+        environment: {
+          P2_DURABLE_SHADOW_ENABLED:
+            "true",
+        },
+      });
+
+    assert.equal(runtime.status, "disabled");
+
+    const result =
+      await runtime.mirror(input);
+
+    assert.equal(result.status, "disabled");
+    assert.equal(providerCalled, false);
+    assert.equal(storageTouched, false);
+  },
+);
+
+test(
+  "does not mirror a business outside the configured cohort",
+  async () => {
+    let providerCalled = false;
+    let storageTouched = false;
+
+    const runtime =
+      createP2LiveShadowRuntime({
+        supabase: {
+          from() {
+            storageTouched = true;
+            throw new Error(
+              "must not touch storage",
+            );
+          },
+        },
+        provider: {
+          providerId: "test-provider",
+          async interpret() {
+            providerCalled = true;
+            return {};
+          },
+        },
+        environment: {
+          P2_DURABLE_SHADOW_ENABLED:
+            "true",
+          P2_DURABLE_SHADOW_BUSINESS_IDS:
+            "202,303",
+        },
+      });
+
+    assert.equal(runtime.status, "ready");
+
+    const result =
+      await runtime.mirror(input);
+
+    assert.equal(result.status, "disabled");
+    assert.equal(providerCalled, false);
+    assert.equal(storageTouched, false);
+  },
+);
+
+test(
+  "allows an explicitly configured business into durable shadow",
+  async () => {
+    let inserted = false;
+
+    const runtime =
+      createP2LiveShadowRuntime({
+        supabase: {
+          from(table: string) {
+            assert.equal(
+              table,
+              "odin_shadow_evaluations",
+            );
+
+            return {
+              insert(rows: any[]) {
+                inserted = true;
+
+                return {
+                  select() {
+                    return {
+                      async maybeSingle() {
+                        return {
+                          data: {
+                            id: "shadow-cohort-1",
+                            business_id: 101,
+                            schema_version: 1,
+                            conversation_key:
+                              "wa:scope:customer",
+                            channel: "whatsapp",
+                            provider_scope:
+                              "scope",
+                            provider_event_id:
+                              "evt-1",
+                            execution_mode:
+                              "shadow",
+                            legacy_observation:
+                              null,
+                            shadow_decision:
+                              rows[0]?.shadow_decision ?? {},
+                            comparison:
+                              "not_comparable",
+                            evaluated_at:
+                              "2026-09-17T20:00:00.000Z",
+                            created_at:
+                              "2026-09-17T20:00:00.000Z",
+                            updated_at:
+                              "2026-09-17T20:00:00.000Z",
+                          },
+                          error: null,
+                        };
+                      },
+                    };
+                  },
+                };
+              },
+            };
+          },
+        },
+        provider: provider(),
+        environment: {
+          P2_DURABLE_SHADOW_ENABLED:
+            "true",
+          P2_DURABLE_SHADOW_BUSINESS_IDS:
+            "101",
+        },
+      });
+
+    assert.equal(runtime.status, "ready");
+
+    const result =
+      await runtime.mirror(input);
+
+    assert.equal(result.status, "recorded");
+    assert.equal(inserted, true);
   },
 );

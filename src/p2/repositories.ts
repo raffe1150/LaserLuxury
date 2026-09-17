@@ -139,11 +139,27 @@ export interface ReservationRepository {
   }): Promise<CapacityOneReservationResult>;
 }
 
+export type OutboxEnqueueOnceResult = {
+  row: OdinOutboxEntry;
+  inserted: boolean;
+};
+
 export interface OutboxRepository {
   getByDeliveryKey(
     businessId: number,
     deliveryKey: string,
   ): Promise<OdinOutboxEntry | null>;
+
+  enqueueOnce(params: {
+    businessId: number;
+    conversationId?: string | null;
+    operationId?: string | null;
+    channel: string;
+    recipientKey: string;
+    deliveryKey: string;
+    artifact: Record<string, unknown>;
+    availableAt?: string | null;
+  }): Promise<OutboxEnqueueOnceResult>;
 }
 
 export interface P2Repositories {

@@ -146,7 +146,7 @@ export interface OperationRepository {
 
 export type CapacityOneReservationResult =
   | {
-      outcome: "created";
+      outcome: "created" | "existing";
       row: OdinResourceReservation;
     }
   | {

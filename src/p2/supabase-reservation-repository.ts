@@ -235,7 +235,7 @@ export class SupabaseReservationRepository
     }
 
     if (
-      row.outcome !== "created" ||
+      !["created", "existing"].includes(row.outcome) ||
       !row.reservation_id
     ) {
       throw new P2ReservationRepositoryError(
@@ -274,7 +274,7 @@ export class SupabaseReservationRepository
     }
 
     return {
-      outcome: "created",
+      outcome: row.outcome as "created" | "existing",
       row: reservation,
     };
   }

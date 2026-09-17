@@ -247,3 +247,37 @@ test("created result must prove exclusive capacity one", async () => {
     },
   );
 });
+
+test("idempotent retry returns existing reservation", async () => {
+  const client = new FakeSupabase({
+    data: [
+      createdRow({
+        outcome: "existing",
+      }),
+    ],
+    error: null,
+  });
+
+  const repo = new SupabaseReservationRepository(
+    client as any,
+  );
+
+  const result = await repo.createCapacityOne({
+    businessId: 100,
+    operationId: "operation-1",
+    resourceId: "resource-1",
+    startAt: "2026-09-18T12:00:00.000Z",
+    endAt: "2026-09-18T13:00:00.000Z",
+  });
+
+  assert.equal(result.outcome, "existing");
+
+  if (result.outcome !== "conflict") {
+    assert.equal(result.row.id, "reservation-1");
+    assert.equal(result.row.units, 1);
+    assert.equal(
+      result.row.exclusive_capacity_one,
+      true,
+    );
+  }
+});

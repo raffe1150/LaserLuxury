@@ -1,3 +1,8 @@
+import {
+  assertAuthorityExecution,
+  type P2ExecutionMode,
+} from "./execution-boundary";
+
 import type {
   ConversationLease,
   OdinConversation,
@@ -93,6 +98,7 @@ export interface P2ProcessingDependencies {
 }
 
 export interface CapacityOneProcessingPlan {
+  executionMode: P2ExecutionMode;
   businessId: number;
   inbox: OdinInboxTurn;
   workerId: string;
@@ -206,6 +212,10 @@ export class P2ProcessingCoordinator {
   async processCapacityOnePlan(
     plan: CapacityOneProcessingPlan,
   ): Promise<P2ProcessingResult> {
+    assertAuthorityExecution(
+      plan.executionMode,
+    );
+
     if (
       !Number.isInteger(plan.businessId) ||
       plan.businessId <= 0

@@ -104,6 +104,7 @@ const outbox = {
 
 function plan() {
   return {
+    executionMode: "authority" as const,
     businessId: 100,
     inbox,
     workerId: "worker-a",
@@ -487,5 +488,84 @@ test("finalization rejection is surfaced without pretending completion", async (
   assert.equal(
     result.outcome,
     "finalization_rejected",
+  );
+});
+
+test("shadow mode is rejected before authoritative processing begins", async () => {
+  let touchedStorage = false;
+
+  const coordinator =
+    new P2ProcessingCoordinator({
+      conversations: {
+        async getById() {
+          touchedStorage = true;
+          throw new Error(
+            "must not run",
+          );
+        },
+      },
+      leases: {
+        async claimLease() {
+          touchedStorage = true;
+          throw new Error(
+            "must not run",
+          );
+        },
+      },
+      operations: {
+        async getOrCreate() {
+          touchedStorage = true;
+          throw new Error(
+            "must not run",
+          );
+        },
+      },
+      reservations: {
+        async createCapacityOne() {
+          touchedStorage = true;
+          throw new Error(
+            "must not run",
+          );
+        },
+      },
+      outbox: {
+        async enqueueOnce() {
+          touchedStorage = true;
+          throw new Error(
+            "must not run",
+          );
+        },
+      },
+      finalization: {
+        async finalizeTurn() {
+          touchedStorage = true;
+          throw new Error(
+            "must not run",
+          );
+        },
+      },
+    });
+
+  await assert.rejects(
+    () =>
+      coordinator.processCapacityOnePlan({
+        ...plan(),
+        executionMode: "shadow",
+      }),
+    (error: unknown) => {
+      assert.equal(
+        (error as {
+          causeCode?: string;
+        }).causeCode,
+        "authority_required",
+      );
+
+      return true;
+    },
+  );
+
+  assert.equal(
+    touchedStorage,
+    false,
   );
 });

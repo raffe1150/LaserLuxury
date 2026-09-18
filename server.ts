@@ -10931,9 +10931,28 @@ function guardCustomerFacingReply(sessionId: string, reply: string, fallbackLang
       (language === "ar" && /^(?:نعم، الحجز مؤكد\.|بالضبط\. الحجز مؤكد)/u.test(raw))
     )
   );
+  const hasOppositeArabicScriptLanguageEvidence =
+    language === "fa"
+      ? hasStrongLanguageEvidence("ar", replyForLanguageClassification)
+      : language === "ar"
+        ? hasStrongLanguageEvidence("fa", replyForLanguageClassification)
+        : false;
+
+  const strongLanguageMismatch =
+    Boolean(
+      strongReplyLanguage &&
+      strongReplyLanguage !== language &&
+      !(
+        ["fa", "ar"].includes(language) &&
+        ["fa", "ar"].includes(strongReplyLanguage) &&
+        !hasOppositeArabicScriptLanguageEvidence
+      )
+    );
+
   const incompatible =
     !verifiedCompletionPresentationMatchesLanguage && (
-      Boolean(strongReplyLanguage && strongReplyLanguage !== language) ||
+      strongLanguageMismatch ||
+      hasOppositeArabicScriptLanguageEvidence ||
       (language === "sv" && hasEnglishStructure) ||
       (language === "fa" && (hasEnglishStructure || hasSwedishStructure)) ||
       (language === "en" && (hasSwedishStructure || hasPersianStructure)) ||

@@ -7386,6 +7386,29 @@ async function assessBusinessSupportGrounding(
   }
 }
 
+function serviceCatalogReplyCoversConfiguredServices(
+  candidateReply: string,
+  businessConfig: any,
+): boolean {
+  const names = getConfiguredBookingServiceNames(businessConfig);
+  if (names.length === 0) return true;
+
+  const normalizedReply = normalizeServicePresentationText(candidateReply);
+
+  return names.every((name) => {
+    const normalizedName = normalizeServicePresentationText(name);
+    if (!normalizedName) return false;
+
+    const escaped = normalizedName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const pattern = new RegExp(
+      `(?:^|[^\\p{L}\\p{N}])${escaped}(?:$|[^\\p{L}\\p{N}])`,
+      "u",
+    );
+
+    return pattern.test(normalizedReply);
+  });
+}
+
 async function guardBusinessSupportGrounding(
   sessionId: string,
   latestCustomerMessage: string,
@@ -7398,11 +7421,11 @@ async function guardBusinessSupportGrounding(
   }
   if (isGreetingOnlyBusinessSupportReply(candidateReply)) return candidateReply;
 
-  if (isServiceCatalogQuestion(latestCustomerMessage)) {
-    const names = getConfiguredBookingServiceNames(support.businessConfig);
-    if (names.length > 0) {
-      return currentBusinessSupportGap(sessionId, latestCustomerMessage, language);
-    }
+  if (
+    isServiceCatalogQuestion(latestCustomerMessage) &&
+    !serviceCatalogReplyCoversConfiguredServices(candidateReply, support.businessConfig)
+  ) {
+    return currentBusinessSupportGap(sessionId, latestCustomerMessage, language);
   }
 
   const previousService = "completed" in support ? support.completed.bookingOperation?.serviceName : getRecentCompletedBooking(sessionId)?.service;

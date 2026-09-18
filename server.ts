@@ -7421,11 +7421,30 @@ async function guardBusinessSupportGrounding(
   }
   if (isGreetingOnlyBusinessSupportReply(candidateReply)) return candidateReply;
 
-  if (
-    isServiceCatalogQuestion(latestCustomerMessage) &&
-    !serviceCatalogReplyCoversConfiguredServices(candidateReply, support.businessConfig)
-  ) {
-    return currentBusinessSupportGap(sessionId, latestCustomerMessage, language);
+  if (isServiceCatalogQuestion(latestCustomerMessage)) {
+    const configuredServiceNames = getConfiguredBookingServiceNames(support.businessConfig);
+    const catalogComplete = serviceCatalogReplyCoversConfiguredServices(
+      candidateReply,
+      support.businessConfig,
+    );
+
+    console.info("[ServiceCatalogPresentation]", {
+      sessionId,
+      businessId: getBusinessIdFromConfig(support.businessConfig),
+      language,
+      configuredServiceCount: configuredServiceNames.length,
+      catalogComplete,
+    });
+
+    if (!catalogComplete) {
+      console.warn("[ServiceCatalogPresentation]", {
+        sessionId,
+        businessId: getBusinessIdFromConfig(support.businessConfig),
+        language,
+        fallbackReason: "incomplete_configured_service_coverage",
+      });
+      return currentBusinessSupportGap(sessionId, latestCustomerMessage, language);
+    }
   }
 
   const previousService = "completed" in support ? support.completed.bookingOperation?.serviceName : getRecentCompletedBooking(sessionId)?.service;

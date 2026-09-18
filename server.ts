@@ -84,6 +84,7 @@ import type { UnderstandingProviderInput } from "./src/ai/understanding/provider
 import { createConfiguredUnderstandingShadowRuntime } from "./src/ai/understanding/shadow";
 import { createConfiguredUnderstandingProvider } from "./src/ai/understanding/config";
 import { createP2LiveShadowRuntime } from "./src/p2/live-shadow-runtime";
+import { createP2ConversationKey } from "./src/p2/conversation-key";
 import {
   createConfiguredUnderstandingAdoptionRuntime,
   resolveControlledUnderstandingAdoption,
@@ -11689,14 +11690,21 @@ function p2ShadowConversationKey(
   businessId: number,
   channel: string,
   sessionId: string,
-): string {
-  const fingerprint = crypto
-    .createHash("sha256")
-    .update(String(sessionId || ""))
-    .digest("hex")
-    .slice(0, 32);
-
-  return `${channel}:${businessId}:${fingerprint}`;
+): string | null {
+  try {
+    return createP2ConversationKey({
+      secret: String(
+        process.env.P2_CONVERSATION_KEY_SECRET || "",
+      ),
+      businessId,
+      channel,
+      sessionId,
+    });
+  } catch {
+    // Fail closed: legacy handling continues, but no shadow
+    // identity or evaluation is produced without a valid key.
+    return null;
+  }
 }
 
 function mirrorP2InboundTextShadow(
@@ -11725,6 +11733,17 @@ function mirrorP2InboundTextShadow(
     !message ||
     !configuredTimezone
   ) {
+    return;
+  }
+
+  const conversationKey =
+    p2ShadowConversationKey(
+      businessId,
+      params.channel,
+      params.sessionId,
+    );
+
+  if (!conversationKey) {
     return;
   }
 
@@ -11768,12 +11787,7 @@ function mirrorP2InboundTextShadow(
     .mirror({
       event: {
         businessId,
-        conversationKey:
-          p2ShadowConversationKey(
-            businessId,
-            params.channel,
-            params.sessionId,
-          ),
+        conversationKey,
         channel:
           params.channel,
         providerScope:

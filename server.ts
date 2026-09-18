@@ -7462,6 +7462,44 @@ async function guardBusinessSupportGrounding(
   };
   const assessment = await assessBusinessSupportGrounding(verificationRequest);
 
+  const assessmentCoverageOk = Boolean(
+    assessment &&
+    assessmentCoversMaterialCandidateClaims(candidateReply, assessment),
+  );
+
+  const assessmentClaimsNonEmpty = Boolean(
+    assessment &&
+    assessment.claims.length > 0,
+  );
+
+  const assessmentClaimsStructurallySupported = Boolean(
+    assessment &&
+    assessment.claims.every((claim) =>
+      Boolean(
+        claim?.requiresBusinessEvidence &&
+        claim.supported &&
+        Array.isArray(claim.evidence) &&
+        claim.evidence.length > 0
+      )
+    ),
+  );
+
+  const assessmentEvidenceQuotesPresent = Boolean(
+    assessment &&
+    assessment.claims.every((claim) =>
+      claim.evidence.every((item) => {
+        const sourceText = snapshot.sources[item?.source];
+        const quote = normalizeGroundingEvidenceText(item?.quote);
+
+        return Boolean(
+          sourceText &&
+          quote.length >= 4 &&
+          normalizeGroundingEvidenceText(sourceText).includes(quote)
+        );
+      })
+    ),
+  );
+
   const verifiedEvidence = Boolean(
     assessment &&
     assessmentHasVerifiedEvidence(assessment, snapshot, candidateReply),
@@ -7485,6 +7523,13 @@ async function guardBusinessSupportGrounding(
     sessionId,
     businessId: getBusinessIdFromConfig(support.businessConfig),
     verifierReturnedAssessment: Boolean(assessment),
+    hasBusinessFactualClaims: assessment?.hasBusinessFactualClaims ?? null,
+    allBusinessClaimsSupported: assessment?.allBusinessClaimsSupported ?? null,
+    assessmentClaimCount: assessment?.claims.length ?? 0,
+    assessmentClaimsNonEmpty,
+    assessmentCoverageOk,
+    assessmentClaimsStructurallySupported,
+    assessmentEvidenceQuotesPresent,
     verifiedEvidence,
     claimsEntailed,
   });

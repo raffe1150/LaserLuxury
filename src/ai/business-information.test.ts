@@ -30,6 +30,13 @@ for (const text of [
   '¿Qué servicios ofrecen?',
   'چه سرویس‌هایی ارائه می‌دهید؟',
   'ما الخدمات التي تقدمونها؟',
+  'What services are available?',
+  'Vilka tjänster finns tillgängliga?',
+  'Welche Dienstleistungen sind verfügbar?',
+  '¿Qué servicios están disponibles?',
+  'چه خدماتی ارائه می‌دهید؟',
+  'ما الخدمات المتاحة؟',
+
 ]) assert.equal(isServiceCatalogQuestion(text), true, `catalog: ${text}`);
 
 for (const text of [
@@ -58,3 +65,16 @@ for (const text of [
 ]) assert.equal(isServiceCatalogQuestion(text), false, `comparison: ${text}`);
 
 console.log('18 service-catalog boundary cases passed');
+
+
+for (const text of [
+  'Do you offer Video Consultation?',
+  'Is Golden video available?',
+  'Har ni Video Consultation?',
+  'Bieten Sie Video Consultation an?',
+  '¿Ofrecen Video Consultation?',
+  'آیا Video Consultation دارید؟',
+  'هل لديكم Video Consultation؟',
+]) assert.equal(isServiceCatalogQuestion(text), false, `specific-service-not-catalog: ${text}`);
+
+console.log('7 specific-service catalog exclusions passed');

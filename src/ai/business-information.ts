@@ -37,16 +37,37 @@ export function businessInformationSubject(text: string, language: string): stri
 
 export function isServiceCatalogQuestion(text: string): boolean {
   const raw = String(text || "").trim();
-  if (!raw || !businessInformationTopics(raw).includes("services")) return false;
+  if (!raw) return false;
 
-  return (
-    /\b(?:what\s+(?:services?|offerings?)\s+do\s+you\s+(?:offer|have)|which\s+services?\s+do\s+you\s+(?:offer|have)|what\s+do\s+you\s+offer|services?\s+available)\b/iu.test(raw) ||
-    /\b(?:welche\s+(?:dienstleistungen?|leistungen?)\s+(?:bieten|haben)\s+sie|was\s+bieten\s+sie\s+an)\b/iu.test(raw) ||
-    /\b(?:vilka\s+tjänster\s+(?:erbjuder|har)\s+ni|vad\s+erbjuder\s+ni)\b/iu.test(raw) ||
-    /\b(?:qué\s+servicios?\s+(?:ofrecen|tienen)|cuáles\s+son\s+sus\s+servicios)\b/iu.test(raw) ||
-    /(?:چه|کدام)\s+(?:سرویس|خدمت|خدمات)(?:‌|\s)*(?:ها|هایی)?\s+(?:ارائه|دارید)/u.test(raw) ||
-    /(?:ما|ما هي|ما هيَ|ما هيّ)\s+الخدمات\s+التي\s+(?:تقدمون|تقدمها|لديكم)/u.test(raw)
-  );
+  const topics = businessInformationTopics(raw);
+  if (!topics.includes("services")) return false;
+
+  // If the customer is actually asking about prices, policies, contact details,
+  // or opening hours, a plain service catalog is not sufficient.
+  if (topics.some((topic) =>
+    ["prices", "policies", "contact", "hours"].includes(topic)
+  )) {
+    return false;
+  }
+
+  if (!isBusinessInformationQuestion(raw)) return false;
+
+  // A catalog request asks about the service collection itself, not merely
+  // whether one named service is offered.
+  const mentionsServiceCollection =
+    /\b(?:services?|offerings?|dienstleistungen?|leistungen?|serviceportfolio|leistungskatalog|tjänster|utbud|servicios?|paquetes?)\b|خدمات|سرویس(?:‌|\s)*(?:ها|هایی)|الخدمات/iu.test(raw);
+
+  if (!mentionsServiceCollection) return false;
+
+  // Catalog questions ask what services exist. Explanation, comparison and
+  // recommendation requests require richer grounding and must not collapse
+  // into a deterministic list of service names.
+  const asksForExplanation =
+    /\b(?:describe|explain|tell\s+me\s+about|difference|compare|recommend|suitable|best\s+for|erklär\w*|beschreib\w*|unterschied|vergleich\w*|empfehl\w*|beskriv\w*|förklara|skillnad\w*|jämför\w*|rekommender\w*|explica\w*|describ\w*|diferencia|compar\w*|recomendar\w*)\b|(?:توضیح|شرح|فرق|تفاوت|مقایسه|پیشنهاد|مناسب(?:‌|\s)?تر)|(?:شرح|اشرح|الفرق|مقارنة|قارن|تنصح|أنسب)/iu.test(raw);
+
+  if (asksForExplanation) return false;
+
+  return true;
 }
 
 export function formatConfiguredServiceOverview(names: string[], language: string): string {

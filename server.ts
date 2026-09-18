@@ -11678,7 +11678,7 @@ function normalizeBusinessConfig(row: any) {
 type P2InboundShadowMirrorParams = {
   businessConfig: any;
   sessionId: string;
-  channel: "telegram" | "whatsapp";
+  channel: "telegram" | "whatsapp" | "messenger" | "instagram";
   providerScope: string;
   providerEventId: string | number;
   receivedAt: string;
@@ -20743,7 +20743,9 @@ function detectGrammaticalLatinLanguage(text?: string): string | null {
   add("es", /\b(qué|cuáles?|hay|quiero|para|el|la)\b/gu, 2);
   add("es", /\b(?:quiero|quisiera|me\s+gustar[ií]a)\b/gu, 2);
   add("es", /\b(horas?|disponibles?|citas?)\b/gu, 2);
-  add("en", /\b(what|which|i|me|are\s+there|for|on)\b/gu, 2);
+  // Avoid cross-language pronouns/prepositions as standalone evidence.
+  // For example, "me" is common Spanish and must not make a Spanish sentence English.
+  add("en", /\b(what|which|i|are\s+there)\b/gu, 2);
   add("en", /\bi\s+(?:want|would\s+like)\b/gu, 2);
   add("en", /\b(available|times?|appointments?)\b/gu, 2);
 
@@ -20751,11 +20753,13 @@ function detectGrammaticalLatinLanguage(text?: string): string | null {
   return ranked[0][1] >= 4 && ranked[0][1] > ranked[1][1] ? ranked[0][0] : null;
 }
 
-function detectUserLanguage(text: string): string {
-  if (!text) return "en";
+function detectUserLanguage(text: string): string;
+function detectUserLanguage(text: string, fallbackToEnglish: false): string | null;
+function detectUserLanguage(text: string, fallbackToEnglish = true): string | null {
+  if (!text) return fallbackToEnglish ? "en" : null;
 
   const raw = String(text).trim();
-  if (!raw) return "en";
+  if (!raw) return fallbackToEnglish ? "en" : null;
   const lower = raw.toLowerCase();
 
   // Explicit Arabic/Persian script checks first.
@@ -20815,7 +20819,7 @@ function detectUserLanguage(text: string): string {
     return ranked[0][0];
   }
 
-  return "en";
+  return fallbackToEnglish ? "en" : null;
 }
 
 function isAmbiguousShortReply(text?: string): boolean {
@@ -20825,6 +20829,22 @@ function isAmbiguousShortReply(text?: string): boolean {
 
 function isExplicitLanguageSwitch(text?: string): string | null {
   return detectExplicitLanguageSwitch(String(text || ""));
+}
+
+function messageMentionsSupportedLanguage(text: string, language?: string): boolean {
+  const raw = String(text || "").normalize("NFKC").toLowerCase();
+  if (!raw || !language) return false;
+
+  const patterns: Record<string, RegExp> = {
+    en: /(?:^|[^\p{L}\p{N}])(?:english|englisch|engelska|inglés|ingles|انگلیسی|الإنجليزية)(?=$|[^\p{L}\p{N}])/u,
+    sv: /(?:^|[^\p{L}\p{N}])(?:svenska|swedish|schwedisch|sueco|سوئدی|السويدية)(?=$|[^\p{L}\p{N}])/u,
+    de: /(?:^|[^\p{L}\p{N}])(?:deutsch|german|tyska|alemán|aleman|آلمانی|الألمانية)(?=$|[^\p{L}\p{N}])/u,
+    es: /(?:^|[^\p{L}\p{N}])(?:español|espanol|spanish|spanska|spanisch|اسپانیایی|الإسبانية)(?=$|[^\p{L}\p{N}])/u,
+    fa: /(?:^|[^\p{L}\p{N}])(?:farsi|persian|فارسی|persiska|persisch|persa|الفارسية)(?=$|[^\p{L}\p{N}])/u,
+    ar: /(?:^|[^\p{L}\p{N}])(?:arabic|عربي|العربية|بالعربية|عربی|arabiska|arabisch|árabe|arabe)(?=$|[^\p{L}\p{N}])/u,
+  };
+
+  return Boolean(patterns[language]?.test(raw));
 }
 
 
@@ -20895,16 +20915,27 @@ function shouldAllowLatestLanguageOverride(chatId: string, previous: string | un
   // established conversation must not overwrite the existing language lock.
   // For an implicit Latin-language change, require clear grammatical evidence
   // that the whole message is actually written in the new language.
-  const independentlyDetected = detectUserLanguage(text);
-  if (independentlyDetected !== detected) return false;
-
-  if (["sv", "de", "es", "en"].includes(detected)) {
-    const grammaticalLanguage = detectGrammaticalLatinLanguage(text);
-    if (grammaticalLanguage !== detected) return false;
+  if (messageMentionsSupportedLanguage(text, previous)) {
+    return false;
   }
 
-  return isMeaningfulLanguageMessage(text) &&
-    hasStrongLanguageEvidence(detected, text);
+  const independentlyDetected = detectUserLanguage(text, false);
+  if (!independentlyDetected || independentlyDetected !== detected) return false;
+
+  // A grammatical whole-message signal may veto a conflicting candidate,
+  // but its absence must not block an otherwise clear meaningful switch.
+  // This prevents incidental foreign words from taking over the conversation
+  // without making valid switches depend on a hard-coded grammatical phrase list.
+  if (["sv", "de", "es", "en"].includes(detected)) {
+    const grammaticalLanguage = detectGrammaticalLatinLanguage(text);
+    if (grammaticalLanguage && grammaticalLanguage !== detected) return false;
+  }
+
+  // A clear, meaningful full customer message may switch language when the
+  // primary detector and the independent detector agree. Do not require a
+  // language-specific vocabulary allowlist here; that made valid language
+  // switches depend on whether particular words had been hard-coded.
+  return isMeaningfulLanguageMessage(text);
 }
 
 function shouldKeepPreviousConversationLanguage(chatId: string, latestText?: string): boolean {
@@ -24352,19 +24383,37 @@ async function processMessengerUpdateClaimed(webhookEvent: any, config: any, pla
   chatId = getScopedChannelSessionId("messenger", senderId, businessConfig, recipientId);
   resetSessionIfBusinessConfigChanged(chatId, businessConfig);
   userLanguage = getConversationLanguage(chatId, textMessage || "", businessConfig);
+
+  const messengerOccurredAt = normalizeAcceptedMessageTimestamp(
+    webhookEvent.timestamp,
+    "milliseconds"
+  );
+
   recordAcceptedCustomerMessage({
     businessId: getBusinessIdFromConfig(businessConfig),
     sessionId: chatId,
     platform: "messenger",
     source: "messenger_webhook",
     messageId: webhookEvent.message.mid,
-    occurredAt: normalizeAcceptedMessageTimestamp(
-      webhookEvent.timestamp,
-      "milliseconds"
-    ),
+    occurredAt: messengerOccurredAt,
     messageType: isVoiceMessage ? "voice" : "text",
     language: textMessage ? userLanguage : undefined,
   });
+
+  // P2 durable shadow v1 mirrors text only.
+  // Voice remains entirely on the existing legacy path.
+  if (!isVoiceMessage && String(textMessage || "").trim()) {
+    mirrorP2InboundTextShadow({
+      businessConfig,
+      sessionId: chatId,
+      channel: "messenger",
+      providerScope: String(recipientId || "").trim(),
+      providerEventId: webhookEvent.message.mid,
+      receivedAt: messengerOccurredAt,
+      text: String(textMessage),
+      activeLanguage: userLanguage,
+    });
+  }
 
   const inboundUsage = await checkAndIncrementDailyUsage({
     businessId: getBusinessIdFromConfig(businessConfig),
@@ -24913,19 +24962,37 @@ async function processInstagramUpdateClaimed(webhook_event: any, config: any, pl
   chatId = getScopedChannelSessionId("instagram", senderId, businessConfig, recipientId);
   resetSessionIfBusinessConfigChanged(chatId, businessConfig);
   userLanguage = getConversationLanguage(chatId, textMessage || "", businessConfig);
+
+  const instagramOccurredAt = normalizeAcceptedMessageTimestamp(
+    webhook_event.timestamp,
+    "milliseconds"
+  );
+
   recordAcceptedCustomerMessage({
     businessId: getBusinessIdFromConfig(businessConfig),
     sessionId: chatId,
     platform: "instagram",
     source: "instagram_webhook",
     messageId: webhook_event.message.mid,
-    occurredAt: normalizeAcceptedMessageTimestamp(
-      webhook_event.timestamp,
-      "milliseconds"
-    ),
+    occurredAt: instagramOccurredAt,
     messageType: audioUrl && !textMessage ? "voice" : "text",
     language: textMessage ? userLanguage : undefined,
   });
+
+  // P2 durable shadow v1 mirrors text only.
+  // Audio remains entirely on the existing legacy path.
+  if (!audioUrl && String(textMessage || "").trim()) {
+    mirrorP2InboundTextShadow({
+      businessConfig,
+      sessionId: chatId,
+      channel: "instagram",
+      providerScope: String(recipientId || "").trim(),
+      providerEventId: webhook_event.message.mid,
+      receivedAt: instagramOccurredAt,
+      text: String(textMessage),
+      activeLanguage: userLanguage,
+    });
+  }
 
   const inboundUsage = await checkAndIncrementDailyUsage({
     businessId: getBusinessIdFromConfig(businessConfig),

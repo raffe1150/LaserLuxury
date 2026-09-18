@@ -7461,15 +7461,23 @@ async function guardBusinessSupportGrounding(
     businessId: getBusinessIdFromConfig(support.businessConfig),
   };
   const assessment = await assessBusinessSupportGrounding(verificationRequest);
-  if (
+
+  const verifiedEvidence = Boolean(
     assessment &&
-    assessmentHasVerifiedEvidence(assessment, snapshot, candidateReply) &&
+    assessmentHasVerifiedEvidence(assessment, snapshot, candidateReply),
+  );
+
+  const claimsEntailed = Boolean(
+    assessment &&
+    verifiedEvidence &&
     await assessmentClaimsAreEntailed(
       assessment,
       verificationRequest,
       ("completed" in support ? support.completed.bookingOperation?.serviceName : undefined),
-    )
-  ) {
+    ),
+  );
+
+  if (assessment && verifiedEvidence && claimsEntailed) {
     return candidateReply;
   }
 
@@ -7477,6 +7485,8 @@ async function guardBusinessSupportGrounding(
     sessionId,
     businessId: getBusinessIdFromConfig(support.businessConfig),
     verifierReturnedAssessment: Boolean(assessment),
+    verifiedEvidence,
+    claimsEntailed,
   });
   return currentBusinessSupportGap(sessionId, latestCustomerMessage, language);
 }

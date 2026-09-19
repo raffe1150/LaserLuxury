@@ -11159,6 +11159,10 @@ function formatNoAvailabilityRecovery(language: string): string {
   return "There is no availability for that same day and time constraint. Would you like to try another day or time?";
 }
 
+function getFinalConversationConcisionBudget(latestCustomerMessage: string): number {
+  return isServiceCatalogQuestion(latestCustomerMessage) ? 90 : 45;
+}
+
 function enforceFinalConversationConcision(reply: string, maxWords: number = 45): string {
   const original = String(reply || "").trim();
   if (!original) return original;
@@ -20987,7 +20991,10 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       textForFlow,
       isFirstIdentityReply,
     );
-    textResponse = enforceFinalConversationConcision(textResponse);
+    textResponse = enforceFinalConversationConcision(
+      textResponse,
+      getFinalConversationConcisionBudget(textForFlow),
+    );
     textResponse = await settleHumanHandoffReply({
       sessionId: telegramSessionId,
       inboundMessageId: String(update?.update_id || ""),
@@ -23948,7 +23955,10 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       textMessage,
       isFirstIdentityReply,
     );
-    textResponse = enforceFinalConversationConcision(textResponse);
+    textResponse = enforceFinalConversationConcision(
+      textResponse,
+      getFinalConversationConcisionBudget(textMessage),
+    );
     textResponse = await settleHumanHandoffReply({
       sessionId: chatId,
       inboundMessageId: String(message?.id || ""),
@@ -25160,7 +25170,10 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       userMessageForLog,
       isFirstIdentityReply,
     );
-    textResponse = enforceFinalConversationConcision(textResponse);
+    textResponse = enforceFinalConversationConcision(
+      textResponse,
+      getFinalConversationConcisionBudget(userMessageForLog),
+    );
     textResponse = await settleHumanHandoffReply({
       sessionId: chatId,
       inboundMessageId: String(
@@ -25838,7 +25851,10 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       userMessageForLog,
       isFirstIdentityReply,
     );
-    textResponse = enforceFinalConversationConcision(textResponse);
+    textResponse = enforceFinalConversationConcision(
+      textResponse,
+      getFinalConversationConcisionBudget(userMessageForLog),
+    );
     textResponse = await settleHumanHandoffReply({
       sessionId: chatId,
       inboundMessageId: String(webhook_event?.message?.mid || ""),

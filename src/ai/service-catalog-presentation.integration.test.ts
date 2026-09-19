@@ -483,3 +483,15 @@ test('catalog reply missing configured duration or price must fail completeness'
   assert.match(result, /Reklam/);
   assert.match(result, /1200 SEK/);
 });
+
+test('catalog-specific concision budget preserves the complete five-service follow-up', () => {
+  const reply =
+    'Our bookable services are: Video Consultation (60 minutes, 300 SEK), test (40 minutes, 150 SEK), video for tiktok (15 minutes, 900 SEK), Golden video (60 minutes, 1500 SEK), Reklam (60 minutes, 1200 SEK). We have more services too. Tell me what you are looking for and I can help you find the right one.';
+
+  const generic = b.enforceConversationConcision(reply, 45);
+  const catalog = b.enforceConversationConcision(reply, 90);
+
+  assert.notEqual(generic, reply);
+  assert.equal(catalog, reply);
+  assert.match(catalog, /Tell me what you are looking for/);
+});

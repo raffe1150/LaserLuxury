@@ -40,7 +40,7 @@ test('valid natural service-catalog presentation is preserved instead of replace
   );
 
   const factualQuote =
-    'Vi erbjuder Video Consultation, test, video for tiktok, Golden video och Reklam.';
+    'Vi erbjuder Video Consultation (30 minuter), test (30 minuter), video for tiktok (30 minuter), Golden video (30 minuter) och Reklam (30 minuter).';
 
   b.configure({
     assessBusinessSupportGrounding: async () => ({
@@ -48,7 +48,7 @@ test('valid natural service-catalog presentation is preserved instead of replace
       allBusinessClaimsSupported: true,
       claims: [{
         claim:
-          'The business offers Video Consultation, test, video for tiktok, Golden video and Reklam.',
+          'The business offers Video Consultation, test, video for tiktok, Golden video and Reklam, each with a configured duration of 30 minutes.',
         candidateQuote: factualQuote,
         claimKind: 'OTHER',
         requiresBusinessEvidence: true,
@@ -116,7 +116,7 @@ test('catalog coverage ignores harmless multilingual presentation outside the co
   );
 
   const factualQuote =
-    'Los servicios disponibles son Video Consultation, test, video for tiktok, Golden video y Reklam.';
+    'Los servicios disponibles son Video Consultation (30 minutos), test (30 minutos), video for tiktok (30 minutos), Golden video (30 minutos) y Reklam (30 minutos).';
 
   b.configure({
     assessBusinessSupportGrounding: async () => ({
@@ -124,7 +124,7 @@ test('catalog coverage ignores harmless multilingual presentation outside the co
       allBusinessClaimsSupported: true,
       claims: [{
         claim:
-          'The business offers Video Consultation, test, video for tiktok, Golden video and Reklam.',
+          'The business offers Video Consultation, test, video for tiktok, Golden video and Reklam, each with a configured duration of 30 minutes.',
         candidateQuote: factualQuote,
         claimKind: 'OTHER',
         requiresBusinessEvidence: true,
@@ -303,4 +303,183 @@ test('service-catalog renderer instruction locks canonical configured service na
       `Instruction must contain canonical service name: ${service.name}`,
     );
   }
+});
+
+const sixServiceBusinessConfig = {
+  ...businessConfig,
+  services: [
+    { name: 'Video Consultation', durationMinutes: 60, price: 300, currency: 'SEK' },
+    { name: 'test', durationMinutes: 40, price: 150, currency: 'SEK' },
+    { name: 'video for tiktok', durationMinutes: 15, price: 900, currency: 'SEK' },
+    { name: 'Golden video', durationMinutes: 60, price: 1500, currency: 'SEK' },
+    { name: 'Reklam', durationMinutes: 60, price: 1200, currency: 'SEK' },
+    { name: 'video for Instagram', durationMinutes: 1, price: 500, currency: 'SEK' },
+  ],
+};
+
+test('catalog presentation requires only the shared five-service display plan when more services exist', async () => {
+  const sessionId = 'catalog-five-of-six-plan';
+
+  b.reset();
+
+  b.businessInformationState(
+    sessionId,
+    sixServiceBusinessConfig,
+    'What services are available?',
+    'en',
+  );
+
+  const factualQuote =
+    'We offer Video Consultation (60 minutes, 300 SEK), test (40 minutes, 150 SEK), video for tiktok (15 minutes, 900 SEK), Golden video (60 minutes, 1500 SEK), and Reklam (60 minutes, 1200 SEK).';
+
+  b.configure({
+    assessBusinessSupportGrounding: async () => ({
+      hasBusinessFactualClaims: true,
+      allBusinessClaimsSupported: true,
+      claims: [{
+        claim:
+          'The business offers the five services shown in the customer-facing catalog with their configured durations and prices.',
+        candidateQuote: factualQuote,
+        claimKind: 'OTHER',
+        requiresBusinessEvidence: true,
+        supported: true,
+        evidence: [
+          { source: 'structured_business_config', quote: '"name": "Video Consultation"' },
+          { source: 'structured_business_config', quote: '"durationMinutes": 60' },
+          { source: 'structured_business_config', quote: '"price": 300' },
+          { source: 'structured_business_config', quote: '"name": "test"' },
+          { source: 'structured_business_config', quote: '"name": "video for tiktok"' },
+          { source: 'structured_business_config', quote: '"name": "Golden video"' },
+          { source: 'structured_business_config', quote: '"name": "Reklam"' },
+        ],
+      }],
+    }),
+
+    assessBusinessClaimEntailment: async () => ({
+      relation: 'ENTAILED',
+      claimKind: 'OTHER',
+      explicitAbsenceEvidence: false,
+    }),
+  });
+
+  const candidate =
+    `${factualQuote}\nWe have more services too. Tell me what you're looking for and I can help you find the right one.`;
+
+  const result = await b.businessSupportGrounding(
+    sessionId,
+    'What services are available?',
+    candidate,
+    'en',
+  );
+
+  assert.equal(
+    result,
+    candidate,
+    'A grounded five-service catalog plan must not require the hidden sixth service',
+  );
+
+  assert.doesNotMatch(result, /video for Instagram/);
+});
+
+
+test('greeting-only catalog reply cannot bypass the shared catalog requirement', async () => {
+  const sessionId = 'catalog-greeting-only-bypass';
+
+  b.reset();
+
+  b.businessInformationState(
+    sessionId,
+    sixServiceBusinessConfig,
+    '¿Qué servicios están disponibles?',
+    'es',
+  );
+
+  const greetingOnly =
+    '¡Hola! 👋 Soy Emily, la recepcionista de AdMotion Studio.';
+
+  const result = await b.businessSupportGrounding(
+    sessionId,
+    '¿Qué servicios están disponibles?',
+    greetingOnly,
+    'es',
+  );
+
+  assert.notEqual(
+    result,
+    greetingOnly,
+    'A greeting-only reply must never satisfy a service catalog request',
+  );
+
+  assert.match(result, /Video Consultation/);
+  assert.match(result, /60 minutos/);
+  assert.match(result, /300 SEK/);
+
+  assert.match(result, /Reklam/);
+  assert.match(result, /1200 SEK/);
+
+  assert.doesNotMatch(result, /video for Instagram/);
+});
+
+test('catalog reply missing configured duration or price must fail completeness', async () => {
+  const sessionId = 'catalog-missing-facts';
+
+  b.reset();
+
+  b.businessInformationState(
+    sessionId,
+    sixServiceBusinessConfig,
+    'What services are available?',
+    'en',
+  );
+
+  b.configure({
+    assessBusinessSupportGrounding: async () => ({
+      hasBusinessFactualClaims: true,
+      allBusinessClaimsSupported: true,
+      claims: [{
+        claim:
+          'The business offers Video Consultation, test, video for tiktok, Golden video and Reklam.',
+        candidateQuote:
+          'We offer Video Consultation, test, video for tiktok, Golden video, and Reklam.',
+        claimKind: 'OTHER',
+        requiresBusinessEvidence: true,
+        supported: true,
+        evidence: [
+          { source: 'structured_business_config', quote: '"name": "Video Consultation"' },
+          { source: 'structured_business_config', quote: '"name": "test"' },
+          { source: 'structured_business_config', quote: '"name": "video for tiktok"' },
+          { source: 'structured_business_config', quote: '"name": "Golden video"' },
+          { source: 'structured_business_config', quote: '"name": "Reklam"' },
+        ],
+      }],
+    }),
+
+    assessBusinessClaimEntailment: async () => ({
+      relation: 'ENTAILED',
+      claimKind: 'OTHER',
+      explicitAbsenceEvidence: false,
+    }),
+  });
+
+  const incompleteCandidate =
+    'We offer Video Consultation, test, video for tiktok, Golden video, and Reklam.';
+
+  const result = await b.businessSupportGrounding(
+    sessionId,
+    'What services are available?',
+    incompleteCandidate,
+    'en',
+  );
+
+  assert.notEqual(
+    result,
+    incompleteCandidate,
+    'Configured duration and price facts must not be silently omitted from the catalog',
+  );
+
+  assert.match(result, /Video Consultation/);
+  assert.match(result, /60 minutes/);
+  assert.match(result, /300 SEK/);
+  assert.match(result, /Reklam/);
+  assert.match(result, /1200 SEK/);
 });

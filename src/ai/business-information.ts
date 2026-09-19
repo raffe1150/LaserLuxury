@@ -70,6 +70,140 @@ export function isServiceCatalogQuestion(text: string): boolean {
   return true;
 }
 
+
+export type ConfiguredServiceCatalogItem = {
+  name: string;
+  durationMinutes: number | null;
+  price: number | null;
+  currency: string | null;
+};
+
+export type ConfiguredServiceCatalogPlan = {
+  totalServiceCount: number;
+  displayedServices: ConfiguredServiceCatalogItem[];
+  hasMoreServices: boolean;
+};
+
+export function buildConfiguredServiceCatalogPlan(
+  services: any[],
+  limit: number = 5,
+): ConfiguredServiceCatalogPlan {
+  const eligible = (Array.isArray(services) ? services : [])
+    .filter((service) => service && service.active !== false && service.bookable !== false)
+    .map((service) => {
+      const name = String(
+        service?.name || service?.service || service?.title || "",
+      ).trim();
+
+      const durationRaw =
+        service?.durationMinutes ??
+        service?.duration_minutes ??
+        service?.duration;
+
+      const durationMissing =
+        durationRaw === null ||
+        durationRaw === undefined ||
+        String(durationRaw).trim() === "";
+
+      const priceRaw = service?.price;
+      const priceMissing =
+        priceRaw === null ||
+        priceRaw === undefined ||
+        String(priceRaw).trim() === "";
+
+      const durationNumber = durationMissing ? NaN : Number(durationRaw);
+      const priceNumber = priceMissing ? NaN : Number(priceRaw);
+      const currency = String(service?.currency || "").trim();
+
+      return {
+        name,
+        durationMinutes:
+          Number.isFinite(durationNumber) && durationNumber > 0
+            ? durationNumber
+            : null,
+        price:
+          Number.isFinite(priceNumber) && priceNumber >= 0
+            ? priceNumber
+            : null,
+        currency: currency || null,
+      };
+    })
+    .filter((service) => service.name);
+
+  const safeLimit =
+    Number.isInteger(limit) && limit > 0 ? limit : 5;
+
+  return {
+    totalServiceCount: eligible.length,
+    displayedServices: eligible.slice(0, safeLimit),
+    hasMoreServices: eligible.length > safeLimit,
+  };
+}
+
+export function formatConfiguredServiceCatalogPlan(
+  plan: ConfiguredServiceCatalogPlan,
+  language: string,
+): string {
+  const lang = ["en", "sv", "de", "es", "fa", "ar"].includes(language)
+    ? language
+    : "en";
+
+  const intro: Record<string, string> = {
+    en: "Our bookable services are:",
+    sv: "Våra bokningsbara tjänster är:",
+    de: "Unsere buchbaren Dienstleistungen sind:",
+    es: "Nuestros servicios disponibles para reservar son:",
+    fa: "خدمات قابل رزرو ما عبارت‌اند از:",
+    ar: "خدماتنا المتاحة للحجز هي:",
+  };
+
+  const more: Record<string, string> = {
+    en: "We have more services too. Tell me what you're looking for and I can help you find the right one.",
+    sv: "Vi har fler tjänster också. Berätta vad du letar efter så hjälper jag dig att hitta rätt.",
+    de: "Wir haben noch weitere Leistungen. Sagen Sie mir, wonach Sie suchen, dann helfe ich Ihnen, die passende zu finden.",
+    es: "También tenemos más servicios. Dime qué estás buscando y te ayudo a encontrar el adecuado.",
+    fa: "خدمات بیشتری هم داریم. بگویید دنبال چه نوع خدمتی هستید تا گزینه مناسب را پیدا کنم.",
+    ar: "لدينا خدمات أخرى أيضًا. أخبرني بما تبحث عنه وسأساعدك في العثور على الخدمة المناسبة.",
+  };
+
+  const minuteLabel: Record<string, string> = {
+    en: "minutes",
+    sv: "minuter",
+    de: "Minuten",
+    es: "minutos",
+    fa: "دقیقه",
+    ar: "دقيقة",
+  };
+
+  const rows = plan.displayedServices.map((service) => {
+    const details: string[] = [];
+
+    if (service.durationMinutes !== null) {
+      details.push(`${service.durationMinutes} ${minuteLabel[lang]}`);
+    }
+
+    if (service.price !== null) {
+      details.push(
+        service.currency
+          ? `${service.price} ${service.currency}`
+          : String(service.price),
+      );
+    }
+
+    return details.length
+      ? `• ${service.name} (${details.join(", ")})`
+      : `• ${service.name}`;
+  });
+
+  if (!rows.length) return "";
+
+  return [
+    intro[lang],
+    ...rows,
+    ...(plan.hasMoreServices ? [more[lang]] : []),
+  ].join("\n");
+}
+
 export function formatConfiguredServiceOverview(names: string[], language: string): string {
   const prefix: Record<string, string> = {
     en: 'The configured bookable services are', de: 'Die buchbaren Dienstleistungen sind',

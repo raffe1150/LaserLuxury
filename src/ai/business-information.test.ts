@@ -1,5 +1,10 @@
 import assert from 'node:assert/strict';
-import { isBusinessInformationQuestion, isServiceCatalogQuestion } from './business-information';
+import {
+  buildConfiguredServiceCatalogPlan,
+  formatConfiguredServiceCatalogPlan,
+  isBusinessInformationQuestion,
+  isServiceCatalogQuestion,
+} from './business-information';
 
 for (const text of [
   'Tell me about the company and services before I book.',
@@ -78,3 +83,74 @@ for (const text of [
 ]) assert.equal(isServiceCatalogQuestion(text), false, `specific-service-not-catalog: ${text}`);
 
 console.log('7 specific-service catalog exclusions passed');
+
+
+const catalogPlan = buildConfiguredServiceCatalogPlan([
+  { name: 'Video Consultation', durationMinutes: 60, price: 300, currency: 'SEK' },
+  { name: 'test', durationMinutes: 40, price: 150, currency: 'SEK' },
+  { name: 'video for tiktok', durationMinutes: 15, price: 900, currency: 'SEK' },
+  { name: 'Golden video', durationMinutes: 60, price: 1500, currency: 'SEK' },
+  { name: 'Reklam', durationMinutes: 60, price: 1200, currency: 'SEK' },
+  { name: 'video for Instagram', durationMinutes: 1, price: 500, currency: 'SEK' },
+]);
+
+assert.equal(catalogPlan.totalServiceCount, 6);
+assert.equal(catalogPlan.displayedServices.length, 5);
+assert.equal(catalogPlan.hasMoreServices, true);
+assert.deepEqual(catalogPlan.displayedServices[0], {
+  name: 'Video Consultation',
+  durationMinutes: 60,
+  price: 300,
+  currency: 'SEK',
+});
+assert.equal(
+  catalogPlan.displayedServices.some(service => service.name === 'video for Instagram'),
+  false,
+);
+
+const englishCatalog = formatConfiguredServiceCatalogPlan(catalogPlan, 'en');
+
+assert.match(englishCatalog, /Video Consultation/);
+assert.match(englishCatalog, /60 minutes/);
+assert.match(englishCatalog, /300 SEK/);
+assert.match(englishCatalog, /Reklam/);
+assert.doesNotMatch(englishCatalog, /video for Instagram/);
+assert.match(
+  englishCatalog,
+  /more services|other services|looking for|interested in/i,
+);
+
+const partialFactsPlan = buildConfiguredServiceCatalogPlan([
+  { name: 'Name Only' },
+  { name: 'Duration Only', durationMinutes: 25 },
+  { name: 'Price Only', price: 450, currency: 'SEK' },
+]);
+
+const partialFactsReply = formatConfiguredServiceCatalogPlan(partialFactsPlan, 'en');
+
+assert.match(partialFactsReply, /Name Only/);
+assert.match(partialFactsReply, /Duration Only/);
+assert.match(partialFactsReply, /25 minutes/);
+assert.match(partialFactsReply, /Price Only/);
+assert.match(partialFactsReply, /450 SEK/);
+assert.doesNotMatch(partialFactsReply, /undefined|null|NaN/);
+
+console.log('shared service-catalog plan contract passed');
+
+const missingNumericFactsPlan = buildConfiguredServiceCatalogPlan([
+  { name: 'Null Price', price: null, currency: 'SEK' },
+  { name: 'Empty Price', price: '', currency: 'SEK' },
+  { name: 'Null Duration', durationMinutes: null },
+  { name: 'Empty Duration', durationMinutes: '' },
+]);
+
+for (const service of missingNumericFactsPlan.displayedServices) {
+  if (service.name.includes('Price')) {
+    assert.equal(service.price, null, `${service.name} must not turn missing price into zero`);
+  }
+  if (service.name.includes('Duration')) {
+    assert.equal(service.durationMinutes, null, `${service.name} must not turn missing duration into zero`);
+  }
+}
+
+console.log('missing catalog numeric facts remain null');

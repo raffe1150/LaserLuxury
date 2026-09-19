@@ -7490,6 +7490,8 @@ async function guardBusinessSupportGrounding(
         sessionId,
         businessId: getBusinessIdFromConfig(support.businessConfig),
         language,
+        catalogComplete: serviceCatalogComplete,
+        finalDisposition: "deterministic_fallback",
         fallbackReason: "incomplete_configured_service_coverage",
       });
       return currentBusinessSupportGap(sessionId, latestCustomerMessage, language);
@@ -7584,12 +7586,28 @@ async function guardBusinessSupportGrounding(
   );
 
   if (assessment && verifiedEvidence && claimsEntailed) {
+    if (serviceCatalogQuestion) {
+      console.info("[ServiceCatalogPresentationFinal]", {
+        sessionId,
+        businessId: getBusinessIdFromConfig(support.businessConfig),
+        language,
+        catalogComplete: serviceCatalogComplete,
+        assessmentCoverageOk,
+        verifiedEvidence,
+        claimsEntailed,
+        finalDisposition: "preserved_llm",
+        fallbackReason: null,
+      });
+    }
     return candidateReply;
   }
 
   console.warn("[BusinessSupportGrounding] unsupported reply replaced", {
     sessionId,
     businessId: getBusinessIdFromConfig(support.businessConfig),
+    language,
+    serviceCatalogQuestion,
+    catalogComplete: serviceCatalogComplete,
     verifierReturnedAssessment: Boolean(assessment),
     hasBusinessFactualClaims: assessment?.hasBusinessFactualClaims ?? null,
     allBusinessClaimsSupported: assessment?.allBusinessClaimsSupported ?? null,
@@ -7600,6 +7618,16 @@ async function guardBusinessSupportGrounding(
     assessmentEvidenceQuotesPresent,
     verifiedEvidence,
     claimsEntailed,
+    finalDisposition: "deterministic_fallback",
+    fallbackReason: !assessment
+      ? "missing_grounding_assessment"
+      : !assessmentCoverageOk
+        ? "coverage_failed"
+        : !verifiedEvidence
+          ? "verified_evidence_failed"
+          : !claimsEntailed
+            ? "entailment_failed"
+            : "unsupported_reply",
   });
   return currentBusinessSupportGap(sessionId, latestCustomerMessage, language);
 }

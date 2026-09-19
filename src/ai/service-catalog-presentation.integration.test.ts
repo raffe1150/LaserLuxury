@@ -269,3 +269,38 @@ test('invented catalog service must never survive', async () => {
   assert.match(result, /Video Consultation/);
   assert.match(result, /Golden video/);
 });
+
+
+test('service-catalog renderer instruction locks canonical configured service names', () => {
+  const instruction = b.businessInformationInstruction({
+    businessConfig,
+    question: 'What services are available?',
+    language: 'en',
+  });
+
+  assert.match(
+    instruction,
+    /preserve each configured service name exactly as provided/i,
+    'Catalog rendering must explicitly lock canonical service names',
+  );
+
+  assert.match(
+    instruction,
+    /do not translate, rename, summarize, merge,.*omit configured service names/i,
+    'Catalog rendering must forbid semantic rewriting or omission of canonical service names',
+  );
+
+  assert.match(
+    instruction,
+    /localize only the surrounding prose/i,
+    'The LLM should own presentation language without modifying canonical service names',
+  );
+
+  for (const service of businessConfig.services) {
+    assert.match(
+      instruction,
+      new RegExp(service.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+      `Instruction must contain canonical service name: ${service.name}`,
+    );
+  }
+});

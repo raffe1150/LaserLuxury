@@ -7409,6 +7409,40 @@ function serviceCatalogReplyCoversConfiguredServices(
   });
 }
 
+function assessmentCoversServiceCatalogClaim(
+  candidateReply: string,
+  assessment: BusinessGroundingAssessment,
+  businessConfig: any,
+): boolean {
+  if (!assessment.hasBusinessFactualClaims || assessment.claims.length === 0) {
+    return false;
+  }
+
+  const configuredServiceNames = getConfiguredBookingServiceNames(businessConfig);
+  if (configuredServiceNames.length === 0) return false;
+
+  const normalizedReply = normalizeServicePresentationText(candidateReply);
+
+  return assessment.claims.some((claim) => {
+    const candidateQuote = normalizeServicePresentationText(claim?.candidateQuote);
+    if (!candidateQuote || candidateQuote.length < 4) return false;
+    if (!normalizedReply.includes(candidateQuote)) return false;
+
+    return configuredServiceNames.every((serviceName) => {
+      const normalizedName = normalizeServicePresentationText(serviceName);
+      if (!normalizedName) return false;
+
+      const escaped = normalizedName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const pattern = new RegExp(
+        `(?:^|[^\\p{L}\\p{N}])${escaped}(?:$|[^\\p{L}\\p{N}])`,
+        "u",
+      );
+
+      return pattern.test(candidateQuote);
+    });
+  });
+}
+
 async function guardBusinessSupportGrounding(
   sessionId: string,
   latestCustomerMessage: string,
@@ -7421,9 +7455,12 @@ async function guardBusinessSupportGrounding(
   }
   if (isGreetingOnlyBusinessSupportReply(candidateReply)) return candidateReply;
 
-  if (isServiceCatalogQuestion(latestCustomerMessage)) {
+  const serviceCatalogQuestion = isServiceCatalogQuestion(latestCustomerMessage);
+  let serviceCatalogComplete = false;
+
+  if (serviceCatalogQuestion) {
     const configuredServiceNames = getConfiguredBookingServiceNames(support.businessConfig);
-    const catalogComplete = serviceCatalogReplyCoversConfiguredServices(
+    serviceCatalogComplete = serviceCatalogReplyCoversConfiguredServices(
       candidateReply,
       support.businessConfig,
     );
@@ -7433,10 +7470,10 @@ async function guardBusinessSupportGrounding(
       businessId: getBusinessIdFromConfig(support.businessConfig),
       language,
       configuredServiceCount: configuredServiceNames.length,
-      catalogComplete,
+      catalogComplete: serviceCatalogComplete,
     });
 
-    if (!catalogComplete) {
+    if (!serviceCatalogComplete) {
       console.warn("[ServiceCatalogPresentation]", {
         sessionId,
         businessId: getBusinessIdFromConfig(support.businessConfig),
@@ -7464,7 +7501,15 @@ async function guardBusinessSupportGrounding(
 
   const assessmentCoverageOk = Boolean(
     assessment &&
-    assessmentCoversMaterialCandidateClaims(candidateReply, assessment),
+    (
+      serviceCatalogQuestion && serviceCatalogComplete
+        ? assessmentCoversServiceCatalogClaim(
+            candidateReply,
+            assessment,
+            support.businessConfig,
+          )
+        : assessmentCoversMaterialCandidateClaims(candidateReply, assessment)
+    ),
   );
 
   const assessmentClaimsNonEmpty = Boolean(
@@ -7502,7 +7547,18 @@ async function guardBusinessSupportGrounding(
 
   const verifiedEvidence = Boolean(
     assessment &&
-    assessmentHasVerifiedEvidence(assessment, snapshot, candidateReply),
+    (
+      serviceCatalogQuestion && serviceCatalogComplete
+        ? (
+            assessment.hasBusinessFactualClaims &&
+            assessment.allBusinessClaimsSupported &&
+            assessmentClaimsNonEmpty &&
+            assessmentCoverageOk &&
+            assessmentClaimsStructurallySupported &&
+            assessmentEvidenceQuotesPresent
+          )
+        : assessmentHasVerifiedEvidence(assessment, snapshot, candidateReply)
+    ),
   );
 
   const claimsEntailed = Boolean(

@@ -103,6 +103,64 @@ test('valid natural service-catalog presentation is preserved instead of replace
 });
 
 
+
+test('catalog coverage ignores harmless multilingual presentation outside the complete catalog claim', async () => {
+  const sessionId = 'catalog-spanish-natural-presentation';
+  b.reset();
+
+  b.businessInformationState(
+    sessionId,
+    businessConfig,
+    '¿Qué servicios están disponibles?',
+    'es',
+  );
+
+  const factualQuote =
+    'Los servicios disponibles son Video Consultation, test, video for tiktok, Golden video y Reklam.';
+
+  b.configure({
+    assessBusinessSupportGrounding: async () => ({
+      hasBusinessFactualClaims: true,
+      allBusinessClaimsSupported: true,
+      claims: [{
+        claim:
+          'The business offers Video Consultation, test, video for tiktok, Golden video and Reklam.',
+        candidateQuote: factualQuote,
+        claimKind: 'OTHER',
+        requiresBusinessEvidence: true,
+        supported: true,
+        evidence: [
+          { source: 'structured_business_config', quote: '"name": "Video Consultation"' },
+          { source: 'structured_business_config', quote: '"name": "test"' },
+          { source: 'structured_business_config', quote: '"name": "video for tiktok"' },
+          { source: 'structured_business_config', quote: '"name": "Golden video"' },
+          { source: 'structured_business_config', quote: '"name": "Reklam"' },
+        ],
+      }],
+    }),
+    assessBusinessClaimEntailment: async () => ({
+      relation: 'ENTAILED',
+      claimKind: 'OTHER',
+      explicitAbsenceEvidence: false,
+    }),
+  });
+
+  const candidate = `¡Claro! ${factualQuote} 🎬✨`;
+
+  const result = await b.businessSupportGrounding(
+    sessionId,
+    '¿Qué servicios están disponibles?',
+    candidate,
+    'es',
+  );
+
+  assert.equal(
+    result,
+    candidate,
+    'Natural multilingual presentation must not be rejected when one complete grounded catalog claim covers every configured service',
+  );
+});
+
 test('entity-only atomic catalog quotes are rejected as incomplete verifier coverage', async () => {
   const sessionId = 'catalog-atomic-natural-presentation';
   b.reset();

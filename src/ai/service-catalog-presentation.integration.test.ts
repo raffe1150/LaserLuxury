@@ -102,6 +102,68 @@ test('valid natural service-catalog presentation is preserved instead of replace
   );
 });
 
+
+test('entity-only atomic catalog quotes are rejected as incomplete verifier coverage', async () => {
+  const sessionId = 'catalog-atomic-natural-presentation';
+  b.reset();
+
+  b.businessInformationState(
+    sessionId,
+    businessConfig,
+    'What services are available?',
+    'en',
+  );
+
+  const serviceNames = [
+    'Video Consultation',
+    'test',
+    'video for tiktok',
+    'Golden video',
+    'Reklam',
+  ];
+
+  b.configure({
+    assessBusinessSupportGrounding: async () => ({
+      hasBusinessFactualClaims: true,
+      allBusinessClaimsSupported: true,
+      claims: serviceNames.map((serviceName) => ({
+        claim: `The business offers ${serviceName}.`,
+        candidateQuote: serviceName,
+        claimKind: 'OTHER',
+        requiresBusinessEvidence: true,
+        supported: true,
+        evidence: [{
+          source: 'structured_business_config',
+          quote: `"name": "${serviceName}"`,
+        }],
+      })),
+    }),
+    assessBusinessClaimEntailment: async () => ({
+      relation: 'ENTAILED',
+      claimKind: 'OTHER',
+      explicitAbsenceEvidence: false,
+    }),
+  });
+
+  const candidate =
+    'We offer Video Consultation, test, video for tiktok, Golden video, and Reklam. 🎬✨';
+
+  const result = await b.businessSupportGrounding(
+    sessionId,
+    'What services are available?',
+    candidate,
+    'en',
+  );
+
+  assert.notEqual(
+    result,
+    candidate,
+    'Entity-only candidateQuote values must not bypass material-claim coverage',
+  );
+  assert.match(result, /Video Consultation/);
+  assert.match(result, /Reklam/);
+});
+
 test('invented catalog service must never survive', async () => {
   const sessionId = 'catalog-invented-service';
 

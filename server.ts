@@ -7331,7 +7331,7 @@ async function assessmentClaimsAreEntailed(
   serviceName?: string | null,
 ): Promise<boolean> {
   if (!assessment.hasBusinessFactualClaims) return true;
-  const results = await Promise.all(assessment.claims.map(async (claim) => {
+  const results = await Promise.all(assessment.claims.map(async (claim, claimIndex) => {
     const entailment = await assessBusinessClaimEntailment({
       customerMessage: request.customerMessage,
       atomicClaim: claim.claim,
@@ -7343,9 +7343,21 @@ async function assessmentClaimsAreEntailed(
       language: request.language,
       businessId: request.businessId,
     });
+
+    console.info("[BusinessSupportGroundingEntailment]", {
+      businessId: request.businessId || null,
+      language: request.language,
+      claimIndex,
+      relation: entailment?.relation ?? null,
+      claimKind: entailment?.claimKind ?? null,
+      explicitAbsenceEvidence: entailment?.explicitAbsenceEvidence ?? null,
+    });
+
     if (!entailment || entailment.relation !== "ENTAILED") return false;
+
     const isNegative = claim.claimKind === "NEGATIVE_ABSENCE" ||
       entailment.claimKind === "NEGATIVE_ABSENCE";
+
     return !isNegative || entailment.explicitAbsenceEvidence;
   }));
   return results.every(Boolean);

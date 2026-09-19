@@ -7486,10 +7486,29 @@ async function guardBusinessSupportGrounding(
     });
 
     if (!serviceCatalogComplete) {
+      const normalizedCandidate = normalizeServicePresentationText(candidateReply);
+      const serviceCoverage = configuredServiceNames.map((serviceName, index) => {
+        const normalizedName = normalizeServicePresentationText(serviceName);
+        if (!normalizedName) return { index, matched: false };
+
+        const escaped = normalizedName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const pattern = new RegExp(
+          `(?:^|[^\\p{L}\\p{N}])${escaped}(?:$|[^\\p{L}\\p{N}])`,
+          "u",
+        );
+
+        return { index, matched: pattern.test(normalizedCandidate) };
+      });
+
       console.warn("[ServiceCatalogPresentation]", {
         sessionId,
         businessId: getBusinessIdFromConfig(support.businessConfig),
         language,
+        configuredServiceCount: configuredServiceNames.length,
+        matchedServiceCount: serviceCoverage.filter((item) => item.matched).length,
+        missingServiceIndexes: serviceCoverage
+          .filter((item) => !item.matched)
+          .map((item) => item.index),
         catalogComplete: serviceCatalogComplete,
         finalDisposition: "deterministic_fallback",
         fallbackReason: "incomplete_configured_service_coverage",

@@ -4574,6 +4574,18 @@ function shouldReturnWhatsAppAmbiguousClarification(chatId: string, intent: Retu
   return intent === "ambiguous" && !getRecentCompletedBooking(chatId)?.bookingOperation?.ok;
 }
 
+async function hydrateWhatsAppAmbiguousBookingState(
+  chatId: string,
+  intent: ReturnType<typeof classifyMessagingIntent>,
+  businessConfig: any,
+): Promise<void> {
+  // The unified engine restores durable state, but the WhatsApp ambiguity gate
+  // runs first. Restore it here so an owned slot can reach the booking reducer.
+  if (intent === "ambiguous" && !pendingBookings[chatId]) {
+    await loadPendingBooking(chatId, "whatsapp", businessConfig);
+  }
+}
+
 function clearAppointmentConversationState(sessionId: string) {
   delete appointmentContexts[sessionId];
   delete appointmentSelectionContexts[sessionId];
@@ -10856,7 +10868,19 @@ function findOwnedOfferedSlot(pending: any, startIso?: string | null): OwnedOffe
 }
 
 function selectOwnedOfferedSlot(text: string, pending: any): OwnedOfferedSlot | null {
-  const explicitDate = resolveExplicitBookingDate(text);
+  // A date in an unrelated sentence must not override the date of an owned
+  // slot selection (for example, a customer selecting 14:00 then mentioning
+  // something that happened today). Keep explicit date corrections in scope.
+  const clauses = String(text || "").split(/\.(?!\d)|[!?؟؛]/u).map((part) => part.trim()).filter(Boolean);
+  const timeClauses = clauses.filter((part) => /(?:^|\s)(?:[01]?\d|2[0-3])[\.:][0-5]\d(?=[^\d]|$)/u.test(normalizeLocalizedDigits(part)));
+  const otherClauses = clauses.filter((part) => part !== timeClauses[0]);
+  const hasSeparateBookingCorrection = otherClauses.some((part) =>
+    isNewBookingRequestText(part) || isRescheduleIntent(part) || isCancellationIntent(part) ||
+    /\b(?:instead|actually|rather|istället|stattdessen|en\s+vez\s+de)\b/iu.test(part)
+  );
+  const explicitDate = resolveExplicitBookingDate(
+    timeClauses.length === 1 && !hasSeparateBookingCorrection ? timeClauses[0] : text
+  );
   const selectedIso = selectRescheduleOfferedSlot(
     text,
     Array.isArray(pending?.offeredSlots) ? pending.offeredSlots : []
@@ -23672,6 +23696,7 @@ async function processWhatsAppMessageClaimed(message: any, metadata: any, config
     }
 
     const whatsappIntent = classifyMessagingIntent(textMessage);
+    await hydrateWhatsAppAmbiguousBookingState(chatId, whatsappIntent, businessConfig);
     const replyWhatsAppOnce = async (reply: string) => {
       await sendWhatsAppMessage(from, reply, businessConfig, "conversation");
       appendLocalHistory(chatId, textMessage, reply);
@@ -29813,6 +29838,12 @@ export const priority1hUnifiedEngineTestBoundary = {
         !isDeterministicActiveNewBookingContinuation(sessionId, text),
       dispatchesUnifiedBooking: shouldDispatchWhatsAppUnifiedBooking(sessionId, text, intent),
     };
+  },
+  async whatsappPreDispatchDecisionAfterStateLoad(sessionId: string, text: string, businessConfig: any) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    const intent = classifyMessagingIntent(text);
+    await hydrateWhatsAppAmbiguousBookingState(sessionId, intent, businessConfig);
+    return this.whatsappPreDispatchDecision(sessionId, text);
   },
   instagramOutboundText(
     recipientId: string,

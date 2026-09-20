@@ -37,6 +37,14 @@ assert.equal(
   boundary.selectOwnedSlot('Då bokar jag in mig på 10:45 den 29 augusti.', pending),
   null,
 );
+assert.equal(
+  boundary.selectOwnedSlot('Jag tar 10:45. Någon berättade om något som hände idag.', pending)?.start,
+  owned[0].start,
+);
+assert.equal(
+  boundary.selectOwnedSlot('Jag tar 10:45. Actually, tomorrow instead.', pending),
+  null,
+);
 
 const sameTimeAcrossDates = {
   offeredSlots: [],

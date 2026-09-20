@@ -8030,6 +8030,15 @@ function extractNameOnly(text?: string, allowStandaloneName = true): string | nu
     return null;
   }
 
+  // A contact answer may include an unrelated follow-up sentence. Validate the
+  // self-contained first sentence with the same explicit-name rules.
+  const sentences = raw.split(/[.!。]+\s*/u);
+  const firstSentence = sentences[0]?.trim();
+  if (firstSentence && sentences.slice(1).some(sentence => sentence.trim())) {
+    const explicitFirstSentenceName = extractNameOnly(firstSentence, false);
+    if (explicitFirstSentenceName) return explicitFirstSentenceName;
+  }
+
   if (/(?:اسمي|إسمي|اسمی|إسمی|الاسم)(?=\s)/u.test(raw)) {
     return extractExplicitArabicCustomerName(raw);
   }
@@ -13533,6 +13542,40 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
     }
   }
 
+  // An owned, selected slot is the authority for later confirmation and contact
+  // turns. A date or time mentioned in another part of the message is not a
+  // replacement unless the customer actually asks to change the booking.
+  const authoritativeSelectedSlot = Boolean(
+    pending?.operation === "new_booking" &&
+    ["awaiting_confirmation", "awaiting_contact", "failed_recoverable"].includes(String(pending?.status || "")) &&
+    pending?.dateTime && pending?.selectedSlotEnd &&
+    findOwnedOfferedSlot(pending, pending.dateTime)
+  );
+  const explicitSelectedSlotCorrection = Boolean(
+    authoritativeSelectedSlot &&
+    (isRescheduleIntent(text) ||
+      isPendingSelectionRejectionRequest(text, pending) ||
+      /\b(?:change|move|correct|switch|shift)\s+(?:(?:my|the|this|our)\s+)?(?:booking|appointment|date|day|time)\b/iu.test(text) ||
+      (normalizedRequest.timeConstraint?.kind === "exact" &&
+        /^\s*\d{1,2}:\d{2}(?:\s+uhr)?[.!]?\s*$/iu.test(text)) ||
+      (Boolean(normalizedRequest.date || normalizedRequest.timeConstraint) &&
+        /\b(?:ändrat\s+mig|i\s+stället)\b/iu.test(text)) ||
+      (normalizedRequest.customerCorrection &&
+        (normalizedRequest.date || normalizedRequest.timeConstraint) &&
+        /\b(?:meant|instead|menade|istället|manzuram)\b|(?<![\p{L}\p{M}])(?:منظورم|به جاش)(?![\p{L}\p{M}])/iu.test(text)))
+  );
+  const retainAuthoritativeSelectedSlot = authoritativeSelectedSlot && !explicitSelectedSlotCorrection;
+  if (retainAuthoritativeSelectedSlot) {
+    normalizedRequest = {
+      ...normalizedRequest,
+      date: undefined,
+      timeConstraint: undefined,
+      dateConflict: undefined,
+      requiresClarification: false,
+      clarificationReason: undefined,
+    };
+  }
+
   const deliverDateConflictClarification = async (
     state: DateConflictClarificationState,
     stage: DateConflictClarificationStage,
@@ -13950,6 +13993,8 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
   }
   const pendingSlotConfirmationAtEntry =
     isPendingSlotConfirmation(text, pending, normalizedRequest) ||
+    (retainAuthoritativeSelectedSlot &&
+      isPendingSlotConfirmation(text.split(/[.!?؟。]+\s*/u)[0], pending, normalizedRequest)) ||
     contactSubmissionWhileAwaitingConfirmation;
   const controlledPendingConfirmationAtEntry = Boolean(
     controlledUnderstandingCandidates.confirmation &&
@@ -14025,6 +14070,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
   const entryExplicitNewBookingRequest =
     deterministicTransition?.reason !== "slot_confirmation_accepted" &&
     !continuesOwnedBooking &&
+    (!authoritativeSelectedSlot || isExplicitNewBookingPivotText(text)) &&
     (
       normalizedRequest.intent === "new_booking" ||
       isExplicitNewBookingPivotText(text) ||
@@ -17593,7 +17639,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
       (extractNameAndPhone(text, ["awaiting_contact", "failed_recoverable"].includes(String(pending?.status || ""))) || extractPhoneOnly(text) || extractPendingBookingCustomerName(text, pending) ||
         controlledUnderstandingCandidates.name || controlledUnderstandingCandidates.phone)
     );
-    const derivedLatestAvailabilityConstraint = ownedAwaitingContactInput
+    const derivedLatestAvailabilityConstraint = retainAuthoritativeSelectedSlot || ownedAwaitingContactInput
       ? null
       : deriveCanonicalAvailabilityConstraint(
           text,
@@ -18627,7 +18673,8 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
       explicitDate &&
       isBookingConversationContext(text, history) &&
       !entryOwnedSlotSelection &&
-      !pendingSlotConfirmationAtEntry
+      !pendingSlotConfirmationAtEntry &&
+      !retainAuthoritativeSelectedSlot
     ) {
       lockConversationFlowLanguage(sessionId, language, "booking");
       const adapter = getCalendarAdapter(businessConfig);

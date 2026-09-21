@@ -13186,9 +13186,12 @@ async function runSerializedUnifiedBookingTurn<T>(sessionId: string, work: () =>
 
 async function handleUnifiedBookingEngine(params: UnifiedBookingEngineParams): Promise<boolean> {
   const turnToken = Symbol(params.sessionId);
-  latestUnifiedBookingTurn.set(params.sessionId, turnToken);
-  try {
-    return await runSerializedUnifiedBookingTurn(params.sessionId, () => handleUnifiedBookingEngineTurn({
+  const runTurn = async () => {
+    // A queued turn must not suppress the reply of the turn that currently
+    // owns this serialized conversation.
+    latestUnifiedBookingTurn.set(params.sessionId, turnToken);
+    try {
+      return await handleUnifiedBookingEngineTurn({
       ...params,
       send: async (reply) => {
         if (latestUnifiedBookingTurn.get(params.sessionId) !== turnToken) {
@@ -13232,12 +13235,14 @@ async function handleUnifiedBookingEngine(params: UnifiedBookingEngineParams): P
 
         return params.send(finalReply);
       },
-    }));
-  } finally {
-    if (latestUnifiedBookingTurn.get(params.sessionId) === turnToken) {
-      latestUnifiedBookingTurn.delete(params.sessionId);
+      });
+    } finally {
+      if (latestUnifiedBookingTurn.get(params.sessionId) === turnToken) {
+        latestUnifiedBookingTurn.delete(params.sessionId);
+      }
     }
-  }
+  };
+  return runSerializedUnifiedBookingTurn(params.sessionId, runTurn);
 }
 
 function getPendingNormalizedBookingRequest(

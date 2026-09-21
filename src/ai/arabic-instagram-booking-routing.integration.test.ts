@@ -157,7 +157,108 @@ try {
       }
     }
   }
-  originalLog('Arabic Instagram routing regressions passed: 14 generic/unsupported flows with warm and restored state (AR/FA/EN)');
+
+  // Reproduce the production Instagram sequence and its delivery timing. A later
+  // accepted customer turn may queue while availability is still being built,
+  // but it must not suppress the deterministic reply of the turn ahead of it.
+  boundary.reset();
+  const liveStore = new FakePendingStore();
+  let releaseAvailability!: () => void;
+  let markAvailabilityEntered!: () => void;
+  const availabilityGate = new Promise<void>(resolve => { releaseAvailability = resolve; });
+  const availabilityEntered = new Promise<void>(resolve => { markAvailabilityEntered = resolve; });
+  let holdFirstAvailabilityRead = true;
+  const liveConfig = {
+    ...businessConfig,
+    id: '3',
+    businessRecordId: '3',
+    services: [
+      { name: 'test', duration: 15 },
+      { name: 'Video Consultation', duration: 30 },
+    ],
+    workingHours: Object.fromEntries(
+      ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday']
+        .map(day => [day, [{ start: '15:00', end: '16:00' }]]),
+    ),
+  };
+  boundary.configure({
+    supabaseClient: liveStore as any,
+    structuredUnderstandingAdoptionRuntime: null,
+    calendarAdapter: {
+      getCalendarId: () => 'routing-calendar',
+      getEvents: async () => {
+        if (holdFirstAvailabilityRead) {
+          holdFirstAvailabilityRead = false;
+          markAvailabilityEntered();
+          await availabilityGate;
+        }
+        return [];
+      },
+      checkSlots: async () => { throw new Error('legacy availability must not run'); },
+    },
+    postProcess: async () => undefined,
+    incrementUsage: async () => ({ allowed: true, count: 1, limit: 100 }),
+  } as any);
+  const liveSessionId = boundary.channelSessionId(
+    'instagram', 'live-routing-user', liveConfig, 'live-routing-page',
+  );
+  const liveTurn = async (text: string) => {
+    boundary.resolveConversationLanguage(liveSessionId, text, liveConfig);
+    const result = await boundary.turn({
+      sessionId: liveSessionId,
+      platformName: 'instagram',
+      recipientUserId: 'live-routing-user',
+      text,
+      businessConfig: liveConfig,
+      now: new Date('2026-09-21T12:00:00+02:00'),
+      shadowEligibleCustomerTurn: true,
+    });
+    const outbound = result.replies.map(reply =>
+      boundary.instagramOutboundText('live-routing-user', reply, 'conversation', liveSessionId),
+    );
+    assert.deepEqual(outbound, result.replies, 'Instagram must preserve each serialized booking reply');
+    return result;
+  };
+
+  const initial = await liveTurn('مرحباً، أريد حجز موعد بتاريخ الجمعة، 25 سبتمبر 2026.');
+  assert.equal(initial.pending?.status, 'awaiting_service');
+  assert.equal(initial.pending?.selectedDate, '2026-09-25');
+  assert.match(initial.replies.join(' '), /خدمة/u);
+
+  const unsupported = await liveTurn('أريد حجز تصوير زفاف بتاريخ الجمعة، 25 سبتمبر 2026.');
+  assert.equal(unsupported.pending?.status, 'awaiting_service');
+  assert.equal(unsupported.pending?.requestedService, 'تصوير زفاف');
+  assert.equal(unsupported.pending?.selectedDate, '2026-09-25');
+  assert.match(unsupported.replies.join(' '), /لا أستطيع مطابقة/u);
+  assert.match(unsupported.replies.join(' '), /test/u);
+
+  // Force durable restoration and queue the exact slot selection while the
+  // supported-service turn is still producing its availability response.
+  boundary.dropBookingSessionMemory(liveSessionId);
+  const supportedPromise = liveTurn('test');
+  await Promise.race([
+    availabilityEntered,
+    supportedPromise.then(result => {
+      throw new Error(`supported-service turn skipped availability: ${JSON.stringify(result.pending)}`);
+    }),
+  ]);
+  const slotPromise = liveTurn('الساعة 15:00 تناسبني. يرجى اختيار هذا الوقت. وبالمناسبة، قال لي أحدهم اليوم "hej".');
+  releaseAvailability();
+  const supported = await supportedPromise;
+  const slot = await slotPromise;
+
+  assert.equal(supported.replies.length, 1, 'queued slot selection must not suppress availability delivery');
+  assert.match(supported.replies[0], /15:00/u);
+  assert.equal(slot.handled, true);
+  assert.equal(slot.pending?.status, 'awaiting_confirmation');
+  assert.equal(slot.pending?.selectedDate, '2026-09-25');
+  assert.match(String(slot.pending?.dateTime), /^2026-09-25T15:00/u);
+  assert.equal(slot.pending?.language, 'ar');
+  assert.equal(slot.replies.length, 1);
+  assert.match(slot.replies[0], /15:00/u);
+  assert.doesNotMatch(slot.replies[0], /15:15|15:30/u);
+
+  originalLog('Arabic Instagram routing regressions passed: 14 generic/unsupported flows plus the exact live serialized sequence (AR/FA/EN)');
 } finally {
   boundary.reset();
   console.log = originalLog;

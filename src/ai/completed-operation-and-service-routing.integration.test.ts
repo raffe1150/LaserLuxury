@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { CURRENT_BOOKING_STATE_VERSION } from './booking-operation-state';
 
 process.env.NODE_ENV = 'test';
 const originalLog = console.log;
@@ -31,12 +32,48 @@ const completed = (sessionId: string, language: string, sourceChannel: string) =
     serviceName: 'test', startTime: '2026-09-22T14:00:00+02:00',
     customerName: 'Lina Test', customerPhone: '0701234567', sourceChannel,
   }, 15);
+const stalePendingFromCompletedOperation = (
+  sessionId: string,
+  language: string,
+  platform: string,
+) => boundary.seedPending(sessionId, {
+  bookingStateVersion: CURRENT_BOOKING_STATE_VERSION,
+  businessConfig,
+  businessId: '3',
+  platform,
+  userId: sessionId,
+  sessionId,
+  operation: 'new_booking',
+  status: 'awaiting_confirmation',
+  expectedInput: 'confirmation',
+  service: 'test',
+  serviceResolution: 'authoritative',
+  language,
+  selectedDate: '2026-09-22',
+  dateTime: '2026-09-22T14:00:00+02:00',
+  selectedSlotEnd: '2026-09-22T14:15:00+02:00',
+  durationMinutes: 15,
+  offeredSlots: [],
+  ownedOfferedSlots: [{
+    start: '2026-09-22T14:00:00+02:00', end: '2026-09-22T14:15:00+02:00',
+    durationMinutes: 15, service: 'test', businessId: '3', platform,
+    userId: sessionId, generatedAt: Date.now() - 60_000,
+    searchStartDate: '2026-09-22', searchEndDate: '2026-09-22',
+  }],
+  normalizedBookingRequest: {
+    intent: 'new_booking', language, sourceMode: 'text', requiresClarification: false,
+    date: { kind: 'exact_date', value: '2026-09-22', confidence: 'high' },
+  },
+  createdAt: Date.now() - 60_000,
+  updatedAt: Date.now() - 60_000,
+});
 const turn = (sessionId: string, platformName: string, text: string) => boundary.turn({
   sessionId, platformName, recipientUserId: sessionId, text, businessConfig, now,
 });
 
 for (const [channel, language, request] of [
   ['instagram', 'ar', 'مرحباً، أريد حجز موعد بتاريخ الأربعاء، 30 سبتمبر 2026.'],
+  ['instagram', 'en', 'Hello, I want to book an appointment on September 30, 2026.'],
   ['messenger', 'ar', 'مرحباً، أريد حجز موعد بتاريخ الأربعاء، 30 سبتمبر 2026.'],
   ['telegram', 'en', 'I want to book an appointment on September 30, 2026.'],
   ['whatsapp', 'en', 'I want to book an appointment on September 30, 2026.'],
@@ -44,10 +81,13 @@ for (const [channel, language, request] of [
   configure();
   const sessionId = `completed-${channel}-${language}`;
   completed(sessionId, language, channel);
+  stalePendingFromCompletedOperation(sessionId, language, channel);
   const result = await turn(sessionId, channel, request);
   assert.equal(result.handled, true, `${channel}/${language}: new operation handled`);
   assert.equal(result.pending?.status, 'awaiting_service', `${channel}/${language}: requests fresh service`);
   assert.equal(result.pending?.selectedDate, '2026-09-30');
+  assert.equal(result.pending?.dateTime, null, `${channel}/${language}: old selected slot cleared`);
+  assert.deepEqual(result.pending?.ownedOfferedSlots, [], `${channel}/${language}: old offers cleared`);
   assert.ok(boundary.recentCompletionState(sessionId).completed?.bookingOperation?.ok,
     `${channel}/${language}: previous success remains historical`);
   assert.doesNotMatch(result.replies.join(' '), /already completed|no further action|تم.*بالفعل/iu);

@@ -83,16 +83,33 @@ boundary.seedPending(sessionId, {
   dateTime: null, selectedSlotEnd: null, createdAt: Date.now(), updatedAt: Date.now(),
 });
 boundary.promptAuditHistory(sessionId, [{ role: 'user', content: 'First booking request' }]);
-assert.equal((await turn('الساعة 14:00 تناسبني. يرجى اختيار هذا الوقت.')).pending?.status, 'awaiting_confirmation');
+const firstSelection = await turn('الساعة 14:00 تناسبني. يرجى اختيار هذا الوقت.');
+assert.equal(firstSelection.pending?.status, 'awaiting_confirmation');
+const staleFirstOperation = structuredClone(firstSelection.pending);
 assert.equal((await turn('نعم، يرجى إتمام الحجز.')).pending?.status, 'awaiting_contact');
 assert.equal((await turn('اسمي لينا اختبار ورقم هاتفي 0700001106.')).pending, null);
 assert.equal(bookings.length, 1);
 const firstBookingId = boundary.recentCompletionState(sessionId).completed?.bookingOperation?.bookingId;
 
+// Model a stale durable/cache copy from the completed operation becoming visible
+// again on another runtime instance.
+boundary.seedPending(sessionId, staleFirstOperation);
 const fresh = await turn('مرحباً، أريد حجز موعد بتاريخ الأربعاء، 30 سبتمبر 2026.');
 assert.equal(fresh.pending?.status, 'awaiting_service');
 assert.equal(fresh.pending?.selectedDate, '2026-09-30');
+assert.equal(fresh.pending?.dateTime, null);
+assert.deepEqual(fresh.pending?.ownedOfferedSlots, []);
+assert.doesNotMatch(fresh.replies.join(' '), /الوقت المحدد|14:00/u);
 assert.equal(boundary.recentCompletionState(sessionId).completed?.bookingOperation?.bookingId, firstBookingId);
+assert.equal(
+  boundary.recentCompletionClassification(
+    sessionId,
+    'هل يمكنك تأكيد الحجز السابق من فضلك؟',
+    config,
+    now,
+  )?.category,
+  'current_booking_status',
+);
 const service = await turn('test');
 assert.equal(service.pending?.status, 'awaiting_time_selection');
 const secondSlot = service.pending?.ownedOfferedSlots?.[0];

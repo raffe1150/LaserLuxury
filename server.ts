@@ -13333,7 +13333,29 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
   const bookingCorrelationId = crypto.randomUUID();
   const bookingStartedAt = Date.now();
   let pending = await loadPendingBooking(sessionId, platformName, businessConfig);
-  const completedBookingAtEntry = Boolean(!pending && getRecentCompletedBooking(sessionId)?.bookingOperation?.ok);
+  const recentCompletedBookingAtEntry = getRecentCompletedBooking(sessionId);
+  const pendingCreatedAt = Number(pending?.createdAt || pending?.created_at || 0);
+  const pendingPredatesVerifiedCompletion = Boolean(
+    pending &&
+    recentCompletedBookingAtEntry?.bookingOperation?.ok &&
+    (
+      !Number.isFinite(pendingCreatedAt) ||
+      pendingCreatedAt <= 0 ||
+      pendingCreatedAt <= recentCompletedBookingAtEntry.completedAt
+    )
+  );
+  if (pendingPredatesVerifiedCompletion) {
+    console.warn("[BookingOperationBoundary]", {
+      event: "completed_operation_pending_cleared",
+      sessionKey: safeLogFingerprint(sessionId),
+      previousStatus: pending?.status || null,
+      selectedSlotExisted: Boolean(pending?.dateTime || pending?.selectedSlot),
+    });
+    await clearPendingBooking(sessionId);
+    delete availabilitySearchContexts[sessionId];
+    pending = null;
+  }
+  const completedBookingAtEntry = Boolean(!pending && recentCompletedBookingAtEntry?.bookingOperation?.ok);
   const entryPendingLanguage = pending?.language || null;
   // Answer the latest informational question before merging booking entities or
   // consuming awaiting_service. Keep pending slots/holds intact for a later turn.

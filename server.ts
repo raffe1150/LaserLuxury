@@ -4564,6 +4564,7 @@ function shouldDispatchWhatsAppUnifiedBooking(chatId: string, text: string, inte
     !pendingBookings[chatId] && !hasAppointmentConversationState(chatId) &&
     !extractNameAndPhone(text) && !extractPhoneOnly(text) && !extractNameOnly(text) &&
     !isNewBookingRequestText(text) && !isExplicitNewBookingPivotText(text) &&
+    !extractConcreteRequestedService(text) &&
     !isExistingAppointmentLookupIntent(text) && !isRescheduleIntent(text) &&
     !isCancellationIntent(text) && !resolveExplicitBookingDate(text) &&
     !inferRequestedTimeFromText(text);
@@ -6001,7 +6002,12 @@ function isExplicitDatedBookingCreationText(
     /(?:موعد|حجز|وقت|نوبت|رزرو)/u.test(raw);
   const hasBookingCreationVerb = /\b(?:book|schedule|reserve|boka|reservera|buchen|buche|buchst|bucht|vereinbaren|vereinbare|vereinbarst|vereinbart|reservar|agendar)\b/iu.test(raw) ||
     /(?:احجز|أحجز|رزرو\s+(?:کنم|کنیم|کنید|کن))/u.test(raw);
-  return hasBookingNoun && hasBookingCreationVerb;
+  return hasBookingNoun && (
+    hasBookingCreationVerb ||
+    (normalizedRequest?.intent === "new_booking" &&
+      !hasRecentCompletedBookingStatusSemantics(raw) &&
+      !hasRecentCompletedBookingDetailSemantics(raw))
+  );
 }
 
 function isNewBookingRequestText(
@@ -6150,7 +6156,7 @@ function hasRecentCompletedBookingStatusSemantics(text?: string): boolean {
     /\b(?:termin|buchung)\b.{0,50}\b(?:bestatigt|gebucht|reserviert)\b|\b(?:bestatigt|gebucht|reserviert)\b.{0,50}\b(?:termin|buchung)\b/u.test(normalized) ||
     /\b(?:cita|reserva|reservacion)\b.{0,50}\b(?:confirmada|confirmado|reservada|reservado)\b|\b(?:confirmada|confirmado|reservada|reservado)\b.{0,50}\b(?:cita|reserva|reservacion)\b/u.test(normalized) ||
     /(?:وقت|نوبت|رزرو|قرار).{0,45}(?:تایید|تأیید|قطعی|ثبت|رزرو\s+شده)|(?:تایید|تأیید|قطعی|ثبت).{0,45}(?:وقت|نوبت|رزرو|قرار)/u.test(normalized) ||
-    /(?:موعد|حجز).{0,45}(?:مؤ[كک]د|مو[كک]د|مؤ[كک]دة|مو[كک]دة|تم|محجوز)|(?:تأ[كک]يد|تا[كک]يد|مؤ[كک]د|مو[كک]د|تم).{0,45}(?:موعد|حجز)/u.test(normalized)
+    /(?:موعد|حجز).{0,45}(?:مؤ[كک]د|مو[كک]د|مؤ[كک]دة|مو[كک]دة|(?<![\p{L}\p{M}])تم(?![\p{L}\p{M}])|محجوز)|(?:تأ[كک]يد|تا[كک]يد|مؤ[كک]د|مو[كک]د|(?<![\p{L}\p{M}])تم(?![\p{L}\p{M}])).{0,45}(?:موعد|حجز)/u.test(normalized)
   );
 }
 
@@ -6323,6 +6329,13 @@ function classifyRecentCompletedBookingTurn(params: {
   // This must win before status heuristics, which can read Arabic availability
   // wording such as "المواعيد" as a reference to the completed appointment.
   if (isExplicitNewBookingPivotText(raw)) return "new_booking";
+  if (isExplicitDatedBookingCreationText(raw, params.normalizedRequest) &&
+      !hasRecentCompletedBookingStatusSemantics(raw) &&
+      !hasRecentCompletedBookingDetailSemantics(raw)) return "new_booking";
+  // A concrete service request starts a fresh operation on a reused identity.
+  if (!hasRecentCompletedBookingStatusSemantics(raw) &&
+      !hasRecentCompletedBookingDetailSemantics(raw) &&
+      extractConcreteRequestedService(raw)) return "new_booking";
 
   if (isPureRecentCompletionAcknowledgement(raw)) return "acknowledgement";
   if (isRecentCompletionRequirementsQuestion(raw)) return "completion_requirements";
@@ -8302,6 +8315,7 @@ function isDateOnlyServiceExtraction(value: string): boolean {
 function resolveAuthoritativeBookingService(
   text: string,
   businessConfig: any,
+  requireExplicitSelection = false,
 ): BookingServiceResolution {
   const eligible = getEligibleConfiguredBookingServices(businessConfig);
   const explicitDefault = String(
@@ -8345,7 +8359,7 @@ function resolveAuthoritativeBookingService(
     return { status: "unsupported", requestedService: concrete || evidence, candidates: [] };
   }
 
-  if (eligible.length === 1) return { status: "resolved", service: eligible[0], source: "single_service" };
+  if (eligible.length === 1 && !requireExplicitSelection) return { status: "resolved", service: eligible[0], source: "single_service" };
 
   return { status: "missing", candidates: eligible.slice(0, 5) };
 }
@@ -13314,6 +13328,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
   const bookingCorrelationId = crypto.randomUUID();
   const bookingStartedAt = Date.now();
   let pending = await loadPendingBooking(sessionId, platformName, businessConfig);
+  const completedBookingAtEntry = Boolean(!pending && getRecentCompletedBooking(sessionId)?.bookingOperation?.ok);
   const entryPendingLanguage = pending?.language || null;
   // Answer the latest informational question before merging booking entities or
   // consuming awaiting_service. Keep pending slots/holds intact for a later turn.
@@ -14070,6 +14085,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
   const entryExplicitNewBookingRequest =
     deterministicTransition?.reason !== "slot_confirmation_accepted" &&
     !continuesOwnedBooking &&
+    !isRescheduleIntent(text) && !isCancellationIntent(text) &&
     (!authoritativeSelectedSlot || isExplicitNewBookingPivotText(text)) &&
     (
       normalizedRequest.intent === "new_booking" ||
@@ -14078,7 +14094,6 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
     );
   const explicitlyReplacesCompletedBooking = isExplicitNewBookingPivotText(text);
   if (explicitlyReplacesCompletedBooking) {
-    delete recentlyCompletedBookings[sessionId];
     delete completedBookingSupportTurns[sessionId];
   }
   const authoritativeTelegramNewBooking = Boolean(
@@ -17784,7 +17799,15 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
           }
         : null
       );
-      const turnServiceResolution = resolveAuthoritativeBookingService(text, businessConfig);
+      const freshBookingAfterCompletion = Boolean(
+        completedBookingAtEntry &&
+        !getDefaultBookingServiceForBusiness(businessConfig) &&
+        !extractConcreteRequestedService(text) &&
+        (isExplicitNewBookingPivotText(text) || isExplicitDatedBookingCreationText(text, normalizedRequest))
+      );
+      const turnServiceResolution = resolveAuthoritativeBookingService(
+        text, businessConfig, freshBookingAfterCompletion,
+      );
       const turnHasServiceEvidence =
         !continuesOwnedBooking &&
         (

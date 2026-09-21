@@ -67,6 +67,39 @@ const stalePendingFromCompletedOperation = (
   createdAt: Date.now() - 60_000,
   updatedAt: Date.now() - 60_000,
 });
+const activePendingAfterCompletedOperation = (
+  sessionId: string,
+  platform: string,
+) => {
+  const createdAt = Date.now();
+  return boundary.seedPending(sessionId, {
+    bookingStateVersion: CURRENT_BOOKING_STATE_VERSION,
+    businessConfig,
+    businessId: '3',
+    platform,
+    userId: sessionId,
+    sessionId,
+    operation: 'new_booking',
+    status: 'awaiting_time_selection',
+    expectedInput: 'slot_selection',
+    service: 'test',
+    serviceResolution: 'authoritative',
+    language: 'en',
+    selectedDate: '2026-09-30',
+    durationMinutes: 15,
+    offeredSlots: [],
+    ownedOfferedSlots: [],
+    dateTime: null,
+    selectedSlotEnd: null,
+    normalizedBookingRequest: {
+      intent: 'new_booking', language: 'en', sourceMode: 'text', requiresClarification: false,
+      date: { kind: 'exact_date', value: '2026-09-30', confidence: 'high' },
+      service: { raw: 'test', normalized: 'test', confidence: 'high' },
+    },
+    createdAt,
+    updatedAt: createdAt,
+  });
+};
 const turn = (sessionId: string, platformName: string, text: string) => boundary.turn({
   sessionId, platformName, recipientUserId: sessionId, text, businessConfig, now,
 });
@@ -92,6 +125,36 @@ for (const [channel, language, request] of [
     `${channel}/${language}: previous success remains historical`);
   assert.doesNotMatch(result.replies.join(' '), /already completed|no further action|تم.*بالفعل/iu);
 }
+
+for (const [channel, request] of [
+  ['instagram', 'Hello, I want to book an appointment on October 5, 2026.'],
+  ['whatsapp', 'Hello, I want to book an appointment on October 5, 2026.'],
+] as const) {
+  configure();
+  const sessionId = `active-after-completion-${channel}`;
+  completed(sessionId, 'en', channel);
+  boundary.ageRecentCompletedBooking(sessionId, 1_000);
+  activePendingAfterCompletedOperation(sessionId, channel);
+  const result = await turn(sessionId, channel, request);
+  assert.equal(result.pending?.status, 'awaiting_service', `${channel}: a fresh operation cannot inherit service`);
+  assert.equal(result.pending?.selectedDate, '2026-10-05');
+  assert.equal(result.pending?.serviceResolution, 'unresolved');
+  assert.doesNotMatch(result.replies.join(' '), /available|times|slots|14:00/iu);
+}
+
+configure();
+completed('active-after-completion-supported', 'en', 'instagram');
+boundary.ageRecentCompletedBooking('active-after-completion-supported', 1_000);
+activePendingAfterCompletedOperation('active-after-completion-supported', 'instagram');
+const supportedFreshRequest = await turn(
+  'active-after-completion-supported',
+  'instagram',
+  'Hello, I want to book test on October 5, 2026.',
+);
+assert.equal(supportedFreshRequest.pending?.service, 'test');
+assert.equal(supportedFreshRequest.pending?.serviceResolution, 'authoritative');
+assert.equal(supportedFreshRequest.pending?.selectedDate, '2026-10-05');
+assert.equal(supportedFreshRequest.pending?.status, 'awaiting_time_selection');
 
 for (const message of ['thanks', 'okay']) {
   configure();

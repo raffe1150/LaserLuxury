@@ -91,15 +91,23 @@ assert.equal((await turn('اسمي لينا اختبار ورقم هاتفي 070
 assert.equal(bookings.length, 1);
 const firstBookingId = boundary.recentCompletionState(sessionId).completed?.bookingOperation?.bookingId;
 
-// Model a stale durable/cache copy from the completed operation becoming visible
-// again on another runtime instance.
+// First prove that residue from the completed operation is discarded.
 boundary.seedPending(sessionId, staleFirstOperation);
-const fresh = await turn('مرحباً، أريد حجز موعد بتاريخ الأربعاء، 30 سبتمبر 2026.');
+const firstFresh = await turn('مرحباً، أريد حجز موعد بتاريخ الجمعة، 25 سبتمبر 2026.');
+assert.equal(firstFresh.pending?.status, 'awaiting_service');
+assert.equal((await turn('test')).pending?.status, 'awaiting_time_selection');
+
+// Production can now contain an incomplete, post-completion new-booking operation
+// with an authoritative service. A later explicit dated request is a new operation,
+// so that service must not cross the operation boundary.
+const fresh = await turn('مرحباً، أريد حجز موعد بتاريخ الاثنين، 5 أكتوبر 2026.');
 assert.equal(fresh.pending?.status, 'awaiting_service');
-assert.equal(fresh.pending?.selectedDate, '2026-09-30');
+assert.equal(fresh.pending?.selectedDate, '2026-10-05');
+assert.equal(fresh.pending?.serviceResolution, 'unresolved');
 assert.equal(fresh.pending?.dateTime, null);
 assert.deepEqual(fresh.pending?.ownedOfferedSlots, []);
 assert.doesNotMatch(fresh.replies.join(' '), /الوقت المحدد|14:00/u);
+assert.doesNotMatch(fresh.replies.join(' '), /المواعيد المتاحة/u);
 assert.equal(boundary.recentCompletionState(sessionId).completed?.bookingOperation?.bookingId, firstBookingId);
 assert.equal(
   boundary.recentCompletionClassification(
@@ -110,8 +118,16 @@ assert.equal(
   )?.category,
   'current_booking_status',
 );
+const unsupported = await turn('أريد حجز تصوير زفاف بتاريخ الاثنين، 5 أكتوبر 2026.');
+assert.equal(unsupported.pending?.status, 'awaiting_service');
+assert.match(unsupported.replies.join(' '), /تصوير زفاف/u);
+assert.match(unsupported.replies.join(' '), /test/u);
+assert.doesNotMatch(unsupported.replies.join(' '), /المواعيد المتاحة|14:00/u);
+assert.equal(unsupported.pending?.selectedDate, '2026-10-05');
 const service = await turn('test');
 assert.equal(service.pending?.status, 'awaiting_time_selection');
+assert.equal(service.pending?.selectedDate, '2026-10-05');
+assert.match(service.replies.join(' '), /المواعيد.*متاحة/u);
 const secondSlot = service.pending?.ownedOfferedSlots?.[0];
 assert.ok(secondSlot);
 const selectedTime = new Date(secondSlot.start).toLocaleTimeString('sv-SE', {

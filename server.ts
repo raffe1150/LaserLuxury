@@ -13341,7 +13341,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
     (
       !Number.isFinite(pendingCreatedAt) ||
       pendingCreatedAt <= 0 ||
-      pendingCreatedAt <= recentCompletedBookingAtEntry.completedAt
+      pendingCreatedAt < recentCompletedBookingAtEntry.completedAt
     )
   );
   if (pendingPredatesVerifiedCompletion) {
@@ -13355,7 +13355,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
     delete availabilitySearchContexts[sessionId];
     pending = null;
   }
-  const completedBookingAtEntry = Boolean(!pending && recentCompletedBookingAtEntry?.bookingOperation?.ok);
+  let completedBookingAtEntry = Boolean(!pending && recentCompletedBookingAtEntry?.bookingOperation?.ok);
   const entryPendingLanguage = pending?.language || null;
   // Answer the latest informational question before merging booking entities or
   // consuming awaiting_service. Keep pending slots/holds intact for a later turn.
@@ -13582,6 +13582,47 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
         };
       }
     }
+  }
+
+  // A verified completion can be followed by an incomplete new-booking attempt.
+  // A later explicit booking creation request starts another operation; service,
+  // slot, contact, and availability ownership from that attempt cannot cross the
+  // new boundary. Date/time corrections inside the active operation remain intact.
+  const pendingOperationDate = String(
+    pending?.selectedDate ||
+    pending?.availabilityStartDate ||
+    (pending?.dateTime ? stockholmDateString(new Date(pending.dateTime)) : "")
+  ).trim();
+  const requestedOperationDate = String(normalizedRequest.date?.value || "").trim();
+  const startsFreshBookingOperation = Boolean(
+    pending?.operation === "new_booking" &&
+    recentCompletedBookingAtEntry?.bookingOperation?.ok &&
+    !normalizedRequest.customerCorrection &&
+    !isRescheduleIntent(text) &&
+    !isCancellationIntent(text) &&
+    (
+      isExplicitNewBookingRequest(text) ||
+      (
+        isExplicitDatedBookingCreationText(text, normalizedRequest) &&
+        Boolean(pendingOperationDate) &&
+        Boolean(requestedOperationDate) &&
+        pendingOperationDate !== requestedOperationDate
+      )
+    )
+  );
+  if (startsFreshBookingOperation) {
+    console.warn("[BookingOperationBoundary]", {
+      event: "explicit_new_booking_replaced_active_operation",
+      sessionKey: safeLogFingerprint(sessionId),
+      previousStatus: pending?.status || null,
+      previousServiceExisted: Boolean(pending?.service && pending.service !== "Bokning"),
+      selectedSlotExisted: Boolean(pending?.dateTime || pending?.selectedSlot),
+    });
+    await clearPendingBooking(sessionId);
+    delete availabilitySearchContexts[sessionId];
+    delete completedBookingSupportTurns[sessionId];
+    pending = null;
+    completedBookingAtEntry = Boolean(recentCompletedBookingAtEntry?.bookingOperation?.ok);
   }
 
   // An owned, selected slot is the authority for later confirmation and contact

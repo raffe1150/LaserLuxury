@@ -11902,9 +11902,16 @@ async function claimDurableSlotReservation(params: {
     const key = slotReservationMemoryKey(params);
     const existing = testSlotReservations.get(key);
     if (
-      existing && existing.operationId !== params.operationId &&
+      existing &&
       existing.status !== "released" &&
-      (existing.status === "settled" || Date.parse(String(existing.expiresAt || "")) > Date.now())
+      (
+        existing.status === "settled" ||
+        (
+          existing.status === "reserved" &&
+          existing.operationId !== params.operationId &&
+          Date.parse(String(existing.expiresAt || "")) > Date.now()
+        )
+      )
     ) return fallback;
     const claimed = { ...fallback, claimed: true, status: "reserved" as const };
     testSlotReservations.set(key, claimed);
@@ -12119,8 +12126,10 @@ async function completeBookingOutboxDelivery(operationId: string, deliveryToken:
   if (!supabase || process.env.NODE_ENV === "test") {
     if (process.env.NODE_ENV !== "test") return false;
     const record = testBookingResultOutbox.get(operationId);
-    if (!record || record.delivery_token !== deliveryToken || record.status !== "delivering") return false;
-    testBookingResultOutbox.set(operationId, { ...record, status: delivered ? "delivered" : "failed", delivery_token: null, lease_expires_at: null });
+    if (!record || record.delivery_token !== deliveryToken) return false;
+    if (record.status === "delivered") return delivered;
+    if (record.status !== "delivering") return false;
+    testBookingResultOutbox.set(operationId, { ...record, status: delivered ? "delivered" : "failed", lease_expires_at: null });
     return true;
   }
   const { data, error: storageError } = await supabase.rpc("complete_booking_result_outbox_delivery", {
@@ -30535,9 +30544,27 @@ export const priority1hUnifiedEngineTestBoundary = {
     const existing = testSlotReservations.get(key);
     if (existing) testSlotReservations.set(key, { ...existing, expiresAt: new Date(Date.now() - 1).toISOString() });
   },
+  slotReservationState(handle: SlotReservationHandle) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    const record = testSlotReservations.get(slotReservationMemoryKey(handle));
+    return record ? structuredClone(record) : null;
+  },
+  async claimBookingOutboxDelivery(operationId: string, deliveryToken: string) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    return claimBookingOutboxDelivery(operationId, deliveryToken);
+  },
+  async completeBookingOutboxDelivery(operationId: string, deliveryToken: string, delivered: boolean, error?: string) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    return completeBookingOutboxDelivery(operationId, deliveryToken, delivered, error);
+  },
   bookingOutboxState(operationId: string) {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
     const record = testBookingResultOutbox.get(operationId);
+    return record ? structuredClone(record) : null;
+  },
+  bookingOutboxForSession(sessionId: string) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    const record = [...testBookingResultOutbox.values()].find((candidate) => candidate.session_id === sessionId);
     return record ? structuredClone(record) : null;
   },
   webBookingContained(text: string, language: string = "en") {

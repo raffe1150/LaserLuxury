@@ -95,9 +95,14 @@ begin
     expires_at = excluded.expires_at,
     updated_at = now()
   where
-    reservation.operation_id = excluded.operation_id or
     reservation.status = 'released' or
-    (reservation.status = 'reserved' and reservation.expires_at <= now())
+    (
+      reservation.status = 'reserved' and
+      (
+        reservation.operation_id = excluded.operation_id or
+        reservation.expires_at <= now()
+      )
+    )
   returning reservation.*;
 end;
 $function$;
@@ -271,7 +276,20 @@ begin
     and delivery_token = p_delivery_token
     and status = 'delivering';
   get diagnostics changed = row_count;
-  return changed = 1;
+  if changed = 1 then
+    return true;
+  end if;
+
+  -- A provider acknowledgement may be retried after the process loses its
+  -- response. Return the existing terminal success only to the same lease
+  -- token; foreign tokens must not be able to acknowledge this delivery.
+  return p_delivered and exists (
+    select 1
+    from public.booking_result_outbox
+    where operation_id = btrim(p_operation_id)
+      and delivery_token = p_delivery_token
+      and status = 'delivered'
+  );
 end;
 $function$;
 

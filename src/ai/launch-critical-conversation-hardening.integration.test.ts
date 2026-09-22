@@ -87,8 +87,18 @@ try {
   const afterExpiry = await boundary.claimSlotReservation({ ...reservation, operationId: "operation-d", customerKey: "whatsapp:customer-d" });
   assert.equal(afterExpiry.claimed, true, "expired reservation is reclaimable");
   assert.equal(await boundary.settleSlotReservation(afterExpiry), true);
+  const sameOperationAfterSettlement = await boundary.claimSlotReservation({
+    ...reservation,
+    operationId: afterExpiry.operationId,
+    customerKey: afterExpiry.customerKey,
+  });
+  assert.equal(sameOperationAfterSettlement.claimed, false, "same operation cannot reopen a settled reservation");
   const afterSettlement = await boundary.claimSlotReservation({ ...reservation, operationId: "operation-e", customerKey: "whatsapp:customer-e" });
   assert.equal(afterSettlement.claimed, false, "confirmed slot cannot be claimed again");
+  boundary.expireSlotReservation(afterExpiry);
+  const afterFormerExpiry = await boundary.claimSlotReservation({ ...reservation, operationId: "operation-f", customerKey: "whatsapp:customer-f" });
+  assert.equal(afterFormerExpiry.claimed, false, "settled reservation remains terminal beyond its former expiry");
+  assert.equal(boundary.slotReservationState(afterExpiry)?.status, "settled");
 
   const webInfo = boundary.webBookingContained("What services do you offer?", "en");
   assert.equal(webInfo.contained, false, "informational Web support remains available");
@@ -240,6 +250,21 @@ try {
   assert.equal(databaseCreates, 1, "restart recovery does not repeat database mutation");
   assert.equal(recovered.replies.length, 1, "exact durable confirmation is delivered later");
   assert.match(recovered.replies[0], /Service: Consultation/i);
+  const deliveredOutbox = boundary.bookingOutboxForSession(sessionId);
+  assert.equal(deliveredOutbox?.status, "delivered");
+  assert.ok(deliveredOutbox?.delivery_token);
+  assert.equal(
+    await boundary.completeBookingOutboxDelivery(deliveredOutbox.operation_id, deliveredOutbox.delivery_token, true),
+    true,
+    "same delivery token receives the existing terminal success",
+  );
+  assert.equal(
+    await boundary.completeBookingOutboxDelivery(deliveredOutbox.operation_id, crypto.randomUUID(), true),
+    false,
+    "foreign delivery token cannot acknowledge a delivered record",
+  );
+  assert.equal(await boundary.claimBookingOutboxDelivery(deliveredOutbox.operation_id, crypto.randomUUID()), null);
+  assert.equal(boundary.bookingOutboxState(deliveredOutbox.operation_id)?.status, "delivered");
 
   const deliveredAgain = await boundary.turn({
     sessionId,

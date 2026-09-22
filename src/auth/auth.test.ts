@@ -255,11 +255,11 @@ async function runTests() {
   assert.doesNotMatch(server, /Business lookup failed:[^\n]*businessError/);
   assert.doesNotMatch(server, /from "\.\/src\/auth"/);
   for (const publicRoute of [
-    'app.post("/api/telegram-webhook", async',
-    'app.post("/webhook", async',
-    'app.post("/webhook/messenger", async',
-    'app.post("/webhook/instagram", async',
-  ]) assert.ok(server.includes(publicRoute), publicRoute);
+    /app\.post\("\/api\/telegram-webhook", verifyTelegramWebhookSecret, async/,
+    /app\.post\("\/webhook", verifyMetaWebhookSignature, async/,
+    /app\.post\("\/webhook\/messenger", verifyMetaWebhookSignature, async/,
+    /app\.post\("\/webhook\/instagram", verifyMetaWebhookSignature, async/,
+  ]) assert.match(server, publicRoute);
   assert.equal((server.match(/app\.get\(["']\/webhook\/instagram["']/g) || []).length, 1);
   assert.equal((server.match(/app\.post\(["']\/webhook\/instagram["']/g) || []).length, 1);
   assert.doesNotMatch(server, /analytics\/queries|getAnalyticsMetrics/);

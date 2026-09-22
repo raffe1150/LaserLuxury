@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { api } from '../../services/api';
+import { api, type ChannelAuthorizationStart, type ChannelConnectionSummary } from '../../services/api';
 import type { Business, IntegrationHealth, IntegrationKey } from '../../types/dashboard';
 import {
   INTEGRATION_PROVIDERS,
@@ -25,6 +25,80 @@ export interface IntegrationCenterProps {
 }
 
 type DetailMode = 'manage' | 'wizard' | 'advanced';
+type SelfServiceProvider = ChannelConnectionSummary['provider'];
+const SELF_SERVICE_PROVIDERS = new Set<SelfServiceProvider>(['instagram', 'messenger', 'whatsapp', 'telegram']);
+
+declare global {
+  interface Window { FB?: { init: (options: Record<string, unknown>) => void; login: (callback: (response: any) => void, options: Record<string, unknown>) => void } }
+}
+
+async function loadMetaSdk(configuration: ChannelAuthorizationStart): Promise<void> {
+  if (window.FB) return;
+  await new Promise<void>((resolve, reject) => {
+    const existing = document.getElementById('facebook-jssdk');
+    if (existing) {
+      existing.addEventListener('load', () => resolve(), { once: true });
+      existing.addEventListener('error', () => reject(new Error('meta_sdk_load_failed')), { once: true });
+      return;
+    }
+    const script = document.createElement('script');
+    script.id = 'facebook-jssdk';
+    script.async = true;
+    script.src = 'https://connect.facebook.net/en_US/sdk.js';
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error('meta_sdk_load_failed'));
+    document.head.appendChild(script);
+  });
+  window.FB?.init({ appId: configuration.appId, cookie: true, xfbml: false, version: configuration.graphVersion });
+}
+
+async function launchWhatsAppSignup(configuration: ChannelAuthorizationStart): Promise<{ code: string; wabaId: string; phoneNumberId: string }> {
+  if (!window.FB) await loadMetaSdk(configuration);
+  return new Promise((resolve, reject) => {
+    let assetResult: { wabaId: string; phoneNumberId: string } | null = null;
+    let code = '';
+    const finish = () => {
+      if (assetResult && code) {
+        window.removeEventListener('message', onMessage);
+        resolve({ code, ...assetResult });
+      }
+    };
+    const onMessage = (event: MessageEvent) => {
+      let eventHost = '';
+      try { eventHost = new URL(event.origin).hostname; } catch { return; }
+      if (event.origin.slice(0, 8) !== 'https://' || !/(^|\.)facebook\.com$/i.test(eventHost)) return;
+      let payload: any = event.data;
+      try { if (typeof payload === 'string') payload = JSON.parse(payload); } catch { return; }
+      if (payload?.type !== 'WA_EMBEDDED_SIGNUP') return;
+      if (payload.event === 'CANCEL' || payload.event === 'ERROR') {
+        window.removeEventListener('message', onMessage);
+        reject(new Error('whatsapp_signup_cancelled'));
+        return;
+      }
+      if (payload.event === 'FINISH') {
+        const wabaId = String(payload.data?.waba_id || '');
+        const phoneNumberId = String(payload.data?.phone_number_id || '');
+        if (wabaId && phoneNumberId) assetResult = { wabaId, phoneNumberId };
+        finish();
+      }
+    };
+    window.addEventListener('message', onMessage);
+    window.FB?.login((response: any) => {
+      code = String(response?.authResponse?.code || '');
+      if (!code) {
+        window.removeEventListener('message', onMessage);
+        reject(new Error('whatsapp_authorization_failed'));
+        return;
+      }
+      finish();
+    }, {
+      config_id: configuration.configId,
+      response_type: 'code',
+      override_default_response_type: true,
+      extras: { setup: {} },
+    });
+  });
+}
 
 export function IntegrationCenter({ business, health, onTest, onSaved }: IntegrationCenterProps) {
   const { t, formatDate } = useDashboardI18n();
@@ -37,6 +111,15 @@ export function IntegrationCenter({ business, health, onTest, onSaved }: Integra
   const [savedAwaitingVerification, setSavedAwaitingVerification] = useState<Set<IntegrationKey>>(new Set());
   const [healthOverrides, setHealthOverrides] = useState<Partial<Record<IntegrationKey, IntegrationHealth>>>({});
   const [validationMessage, setValidationMessage] = useState('');
+  const [channelConnections, setChannelConnections] = useState<ChannelConnectionSummary[]>([]);
+  const [channelAction, setChannelAction] = useState<SelfServiceProvider | null>(null);
+  const [pendingWhatsAppStart, setPendingWhatsAppStart] = useState<ChannelAuthorizationStart | null>(null);
+  const [whatsappSdkReady, setWhatsAppSdkReady] = useState(false);
+
+  const refreshChannelConnections = async () => {
+    try { setChannelConnections(await api.getChannelConnections(business.id)); }
+    catch { setChannelConnections([]); }
+  };
 
   useEffect(() => {
     setValues(getInitialIntegrationValues(business));
@@ -51,7 +134,80 @@ export function IntegrationCenter({ business, health, onTest, onSaved }: Integra
     setSavedAwaitingVerification(new Set());
     setHealthOverrides({});
     setValidationMessage('');
+    setPendingWhatsAppStart(null);
+    setWhatsAppSdkReady(false);
   }, [business.id]);
+
+  useEffect(() => { void refreshChannelConnections(); }, [business.id]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const result = params.get('connection');
+    if (result === 'connected') {
+      void refreshChannelConnections();
+      onSaved('Channel connected.', false);
+    } else if (result) {
+      setValidationMessage(t("We couldn't complete this connection. Please try again."));
+    }
+    if (result) {
+      params.delete('connection');
+      params.delete('channel');
+      window.history.replaceState({}, '', `${window.location.pathname}${params.size ? `?${params}` : ''}`);
+    }
+  }, [business.id]);
+
+  const connectChannel = async (provider: SelfServiceProvider) => {
+    setChannelAction(provider);
+    setValidationMessage('');
+    try {
+      const start = provider === 'whatsapp' && pendingWhatsAppStart
+        ? pendingWhatsAppStart
+        : await api.beginChannelAuthorization(business.id, provider);
+      if (start.mode === 'embedded_signup') {
+        if (!pendingWhatsAppStart) {
+          setPendingWhatsAppStart(start);
+          void loadMetaSdk(start)
+            .then(() => setWhatsAppSdkReady(true))
+            .catch(() => {
+              setPendingWhatsAppStart(null);
+              setWhatsAppSdkReady(false);
+              setValidationMessage(t("We couldn't prepare Meta authorization. Please try again."));
+            });
+          return;
+        }
+        const result = await launchWhatsAppSignup(start);
+        await api.completeWhatsAppAuthorization(business.id, { state: start.state || '', ...result });
+        setPendingWhatsAppStart(null);
+        setWhatsAppSdkReady(false);
+        await refreshChannelConnections();
+        onSaved('WhatsApp connected.', false);
+      } else if (start.authorizationUrl) {
+        window.location.assign(start.authorizationUrl);
+      }
+    } catch {
+      if (provider === 'whatsapp') {
+        setPendingWhatsAppStart(null);
+        setWhatsAppSdkReady(false);
+      }
+      setValidationMessage(t("We couldn't complete this connection. Please try again."));
+    } finally {
+      setChannelAction(null);
+    }
+  };
+
+  const disconnectChannel = async (provider: SelfServiceProvider) => {
+    setChannelAction(provider);
+    setValidationMessage('');
+    try {
+      await api.disconnectChannel(business.id, provider);
+      await refreshChannelConnections();
+      onSaved('Channel disconnected.', false);
+    } catch {
+      setValidationMessage(t("We couldn't disconnect this channel. Please try again."));
+    } finally {
+      setChannelAction(null);
+    }
+  };
 
   const healthByKey = useMemo(() => {
     const items = new Map(health.map((item) => [item.key, item]));
@@ -149,6 +305,12 @@ export function IntegrationCenter({ business, health, onTest, onSaved }: Integra
       {!selectedProvider ? (
         <div className="integration-card-grid" aria-label={t('Available integrations')}>
           {INTEGRATION_PROVIDERS.map((provider) => {
+            const selfService = SELF_SERVICE_PROVIDERS.has(provider.key as SelfServiceProvider);
+            const connection = selfService
+              ? channelConnections.find((item) => item.provider === provider.key && item.status !== 'disconnected')
+              : undefined;
+            const connected = connection?.status === 'connected' && !connection.reconnectRequired;
+            const needsReconnect = connection?.status === 'reconnect_required' || connection?.reconnectRequired;
             const item = healthByKey.get(provider.key);
             const state = getIntegrationDisplayState(item, checkingKey === provider.key);
             const needsSetup = item?.status === 'setup_required' || !item;
@@ -160,16 +322,25 @@ export function IntegrationCenter({ business, health, onTest, onSaved }: Integra
                   <div><h3>{provider.title}</h3><p>{t(provider.description)}</p>{unsaved && <span className="integration-unsaved-note">{t('Unsaved changes')}</span>}</div>
                 </div>
                 <div className="integration-card-footer">
-                  <span className={`integration-state ${state.tone}`} role="status">
-                    <StatusDot status={state.tone} />{t(state.label)}
+                  <span className={`integration-state ${selfService ? (connected ? 'connected' : needsReconnect ? 'attention' : 'disconnected') : state.tone}`} role="status">
+                    <StatusDot status={selfService ? (connected ? 'connected' : needsReconnect ? 'attention' : 'disconnected') : state.tone} />
+                    {selfService ? t(connected ? 'Connected' : needsReconnect ? 'Needs Reconnection' : 'Disconnected') : t(state.label)}
                   </span>
-                  <button className="btn btn-primary" type="button" onClick={() => openProvider(provider)}>
+                  {selfService ? <div className="integration-card-actions">
+                    <button className="btn btn-primary" type="button" disabled={channelAction === provider.key || (provider.key === 'whatsapp' && Boolean(pendingWhatsAppStart) && !whatsappSdkReady)} onClick={() => void connectChannel(provider.key as SelfServiceProvider)}>
+                      {t(provider.key === 'whatsapp' && pendingWhatsAppStart
+                        ? whatsappSdkReady ? 'Continue with Meta' : 'Preparing…'
+                        : connected || needsReconnect ? 'Reconnect' : 'Connect')}
+                    </button>
+                    {connected && <button className="btn btn-ghost" type="button" disabled={channelAction === provider.key} onClick={() => void disconnectChannel(provider.key as SelfServiceProvider)}>{t('Disconnect')}</button>}
+                  </div> : <button className="btn btn-primary" type="button" onClick={() => openProvider(provider)}>
                     {needsSetup ? t('Connect {provider}', { provider: provider.title }) : t('Manage')}
-                  </button>
+                  </button>}
                 </div>
               </article>
             );
           })}
+          {validationMessage && <div className="wizard-validation" role="alert">{validationMessage}</div>}
         </div>
       ) : (
         <div className="integration-detail">

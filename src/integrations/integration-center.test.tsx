@@ -92,7 +92,8 @@ const markup = renderToStaticMarkup(createElement(DashboardI18nProvider, null,
 assert.match(markup, /Integration Center/);
 for (const provider of INTEGRATION_PROVIDERS) assert.match(markup, new RegExp(provider.title));
 assert.match(markup, /Manage/);
-assert.match(markup, /Connect Instagram/);
+assert.match(markup, />Connect</);
+assert.doesNotMatch(markup, /Access Token|Bot Token|Phone Number ID/, 'normal dashboard cards never expose manual channel credentials');
 assert.doesNotMatch(markup, /must-never-render/);
 assert.equal((markup.match(/integration-card"/g) || []).length, 5);
 
@@ -168,7 +169,11 @@ assert.match(componentSource, /mode === 'advanced'/);
 assert.match(componentSource, /Saved configuration has not been verified/);
 assert.match(componentSource, /type=\{field\.secret \? 'password'/);
 assert.match(componentSource, /Leave blank to keep the existing credential/);
-assert.doesNotMatch(componentSource, /console\.|localStorage|sessionStorage|URLSearchParams/);
+assert.doesNotMatch(componentSource, /console\.|localStorage|sessionStorage/);
+assert.match(componentSource, /beginChannelAuthorization/);
+assert.match(componentSource, /launchWhatsAppSignup/);
+assert.match(componentSource, /Needs Reconnection/);
+assert.match(componentSource, /disconnectChannel/);
 assert.match(apiSource, /secret && typeof value === 'string' && value\.trim\(\) === ''/);
 assert.match(serverSource, /requireBusinessPermission\('settings\.manage'\)/);
 assert.match(serverSource, /\.update\(payload\)[\s\S]*?\.eq\('id', businessId\)/);

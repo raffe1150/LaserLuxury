@@ -148,6 +148,9 @@ import {
   type IntegrationHealthConfig,
 } from "./src/health/integration-health";
 import type { IntegrationKey } from "./src/types/dashboard";
+import { createChannelConnectionsRouter, handleTelegramConnectionUpdate } from "./src/channels/connections/api-router";
+import { resolveConnectionByIdentity, resolveConnectionForBusiness } from "./src/channels/connections/repository";
+import type { ChannelProvider, ResolvedChannelConnection } from "./src/channels/connections/contracts";
 import {
   getOdinLinkStartupPolicy,
   registerHealthEndpoint,
@@ -221,6 +224,96 @@ function safeLogFingerprint(value: unknown): string | null {
   const normalized = String(value || "").trim();
   if (!normalized) return null;
   return crypto.createHash("sha256").update(normalized).digest("hex").slice(0, 12);
+}
+
+function verifyMetaWebhookSignature(req: express.Request, res: express.Response, next: express.NextFunction) {
+  const secret = String(
+    req.body?.object === 'instagram'
+      ? process.env.INSTAGRAM_APP_SECRET || process.env.META_APP_SECRET
+      : process.env.META_APP_SECRET || '',
+  ).trim();
+  if (!secret) return next(); // Temporary legacy compatibility until the shared Meta app is configured.
+  const signature = String(req.header('x-hub-signature-256') || '');
+  const rawBody = (req as any).rawBody as Buffer | undefined;
+  const expected = rawBody
+    ? `sha256=${crypto.createHmac('sha256', secret).update(rawBody).digest('hex')}`
+    : '';
+  if (!signature || !expected || signature.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) {
+    res.sendStatus(401);
+    return;
+  }
+  next();
+}
+
+function verifyTelegramWebhookSecret(req: express.Request, res: express.Response, next: express.NextFunction) {
+  const secret = String(process.env.TELEGRAM_WEBHOOK_SECRET || '').trim();
+  if (!secret) return next(); // Legacy polling/webhook compatibility.
+  const received = String(req.header('x-telegram-bot-api-secret-token') || '');
+  if (!received || received.length !== secret.length || !crypto.timingSafeEqual(Buffer.from(received), Buffer.from(secret))) {
+    res.sendStatus(401);
+    return;
+  }
+  next();
+}
+
+async function findBusinessByChannelConnection(
+  provider: ChannelProvider,
+  providerIdentity: string,
+): Promise<{ business: any; connection: ResolvedChannelConnection } | null> {
+  if (!supabase || !providerIdentity) return null;
+  const connection = await resolveConnectionByIdentity(supabase, provider, String(providerIdentity));
+  if (!connection) return null;
+  const { data: business, error } = await supabase.from('businesses').select('*')
+    .eq('id', connection.businessId).maybeSingle();
+  if (error) throw error;
+  if (!business) return null;
+  return { business, connection };
+}
+
+function applyChannelConnectionToConfig(
+  config: any,
+  connection: ResolvedChannelConnection,
+): any {
+  const next = { ...config, channelConnectionId: connection.id, channelConnectionSource: 'self_service' };
+  if (connection.provider === 'instagram') {
+    next.instagramAccessToken = connection.credential.accessToken;
+    next.instagramToken = connection.credential.accessToken;
+    next.instagramAccountId = connection.providerAccountId;
+  } else if (connection.provider === 'messenger') {
+    next.messengerPageAccessToken = connection.credential.accessToken;
+    next.messengerAccessToken = connection.credential.accessToken;
+    next.messengerPageId = connection.providerAccountId;
+  } else if (connection.provider === 'whatsapp') {
+    next.whatsappAccessToken = connection.credential.accessToken;
+    next.whatsappPhoneNumberId = connection.providerAccountId;
+    next.whatsappBusinessAccountId = connection.providerConnectionId;
+  } else if (connection.provider === 'telegram') {
+    next.telegramToken = connection.credential.accessToken;
+    next.telegramBusinessConnectionId = connection.providerConnectionId;
+    next.telegramBusinessResolved = true;
+  }
+  return next;
+}
+
+async function hydrateBusinessChannelConfig(config: any, provider: ChannelProvider): Promise<any> {
+  if (!supabase) return config;
+  const businessId = Number(getBusinessIdFromConfig(config));
+  if (!Number.isSafeInteger(businessId) || businessId <= 0) return config;
+  const connection = await resolveConnectionForBusiness(supabase, businessId, provider);
+  return connection ? applyChannelConnectionToConfig(config, connection) : config;
+}
+
+async function markChannelCredentialFailure(config: any, httpStatus: number, providerCode?: unknown): Promise<void> {
+  const connectionId = String(config?.channelConnectionId || '').trim();
+  if (!supabase || !connectionId) return;
+  if (httpStatus !== 401 && httpStatus !== 403 && Number(providerCode) !== 190) return;
+  try {
+    await supabase.from('channel_connections').update({
+      status: 'reconnect_required', reconnect_required: true,
+    }).eq('id', connectionId);
+  } catch {
+    console.error('[ChannelConnection]', { category: 'credential_health_update_failed' });
+  }
 }
 if (process.env.SUPABASE_URL && (process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY)) {
   // Prefer SERVICE_ROLE for server-side writes. This is needed when RLS blocks inserts
@@ -9500,7 +9593,13 @@ async function sendCustomerMessage(
       const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ chat_id: recipient, text: message })
+        body: JSON.stringify({
+          chat_id: recipient,
+          text: message,
+          ...(businessConfig?.telegramBusinessConnectionId
+            ? { business_connection_id: businessConfig.telegramBusinessConnectionId }
+            : {}),
+        })
       });
       logTelegramMessageSent({
         token,
@@ -12875,6 +12974,7 @@ async function loadFreshBusinessConfigByTelegramToken(token: string, fallbackCon
       language: String(matchedRow.language || ""),
       services: Array.isArray(matchedRow.services) ? matchedRow.services : [],
       serviceDurations: matchedRow.service_durations || {},
+      channelConnectionSource: "legacy_manual",
       telegramBusinessResolved: true,
       telegramResolutionSource: resolutionSource
     };
@@ -21115,6 +21215,9 @@ async function sendTelegramPreferredReply(params: {
     const mp3Buffer = fs.readFileSync(outputPath);
     const formData = new FormData();
     formData.append("chat_id", chatId);
+    if (config?.telegramBusinessConnectionId) {
+      formData.append("business_connection_id", config.telegramBusinessConnectionId);
+    }
     formData.append("voice", new Blob([mp3Buffer as any], { type: "audio/mpeg" }), "response.mp3");
     voiceRequestAttempted = true;
     const response = await fetch(
@@ -21170,10 +21273,9 @@ async function processTelegramUpdate(
     `${platform}.processTelegramUpdate.config`,
     getBusinessIdFromConfig(config)
   );
-  const resolvedConfig = await loadFreshBusinessConfigByTelegramToken(
-    telegramToken,
-    config
-  );
+  const resolvedConfig = config?.channelConnectionId
+    ? config
+    : await loadFreshBusinessConfigByTelegramToken(telegramToken, config);
   const businessId = String(getBusinessIdFromConfig(resolvedConfig) || "");
   const businessResolved = Boolean(
     resolvedConfig?.telegramBusinessResolved &&
@@ -24340,6 +24442,7 @@ async function sendWhatsAppMessage(
       providerMessageIdPresent: Boolean(providerMessageId),
       providerMessageIdValid,
     });
+    await markChannelCredentialFailure(businessConfig, response.status, result?.error?.code);
     return false;
   } catch (err) {
     console.error("[ChannelSend]", { channel: "whatsapp", success: false, errorCategory: classifyAiFailure(err) });
@@ -24393,8 +24496,19 @@ async function processWhatsAppMessageClaimed(message: any, metadata: any, config
     if (supabase) {
       let data: any = null;
       let lookupError: any = null;
+      let connection: ResolvedChannelConnection | null = null;
 
-      for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        const connected = await findBusinessByChannelConnection('whatsapp', phoneNumberId);
+        if (connected) {
+          data = connected.business;
+          connection = connected.connection;
+        }
+      } catch (connectionError) {
+        lookupError = connectionError;
+      }
+
+      for (let attempt = 1; !data && !lookupError && attempt <= 2; attempt++) {
         const result = await supabase
           .from("businesses")
           .select("*")
@@ -24433,6 +24547,8 @@ async function processWhatsAppMessageClaimed(message: any, metadata: any, config
           whatsappEnabled: data.whatsapp_enabled,
           calendarProvider: "google"
         };
+        businessConfig.channelConnectionSource = connection ? 'self_service' : 'legacy_manual';
+        if (connection) businessConfig = applyChannelConnectionToConfig(businessConfig, connection);
         console.log(
           `[WhatsAppConfig] business=${data.business_name} (${data.id}), ` +
           `allowCancellation=${businessConfig.allowCancellation}, ` +
@@ -24934,6 +25050,7 @@ async function sendMessengerMessage(
     }
 
     console.error("Messenger send failed:", JSON.stringify({ code: result?.error?.code, type: result?.error?.type }));
+    await markChannelCredentialFailure(businessConfig, response.status, result?.error?.code);
     return false;
   } catch (err) {
     console.error("[ChannelSend]", { channel: "messenger", success: false, errorCategory: classifyAiFailure(err) });
@@ -25128,6 +25245,13 @@ async function findMessengerBusinessByPageId(pageId: string) {
   if (!supabase || !pageId) return null;
 
   try {
+    const connected = await findBusinessByChannelConnection('messenger', pageId);
+    if (connected) {
+      return {
+        ...connected.business,
+        _channelConnection: connected.connection,
+      };
+    }
     // We select all rows and match in JS so this works even if your column name is
     // messenger_page_id, facebook_page_id, or page_id.
     const { data, error } = await supabase.from("businesses").select("*");
@@ -25137,7 +25261,7 @@ async function findMessengerBusinessByPageId(pageId: string) {
       return null;
     }
 
-    return (data || []).find((row: any) => {
+    const matches = (data || []).filter((row: any) => {
       const candidates = [
         row.messenger_page_id,
         row.facebook_page_id,
@@ -25146,7 +25270,12 @@ async function findMessengerBusinessByPageId(pageId: string) {
       ].filter(Boolean).map((value: any) => String(value).trim());
 
       return candidates.includes(String(pageId).trim());
-    }) || null;
+    });
+    if (matches.length !== 1) {
+      if (matches.length > 1) console.error('Messenger legacy tenant identity is ambiguous.');
+      return null;
+    }
+    return matches[0];
   } catch (err) {
     console.error("Messenger business lookup crashed:", err);
     return null;
@@ -25242,13 +25371,17 @@ async function findMetaCommentBusiness(ownerId: string) {
   if (!supabase || !ownerId) return null;
 
   try {
+    for (const provider of ['instagram', 'messenger'] as const) {
+      const connected = await findBusinessByChannelConnection(provider, ownerId);
+      if (connected) return { ...connected.business, _channelConnection: connected.connection };
+    }
     const { data, error } = await supabase.from("businesses").select("*");
     if (error) {
       console.error("Meta comment business lookup error:", JSON.stringify(error));
       return null;
     }
 
-    return (data || []).find((row: any) => {
+    const matches = (data || []).filter((row: any) => {
       const candidates = [
         row.instagram_account_id,
         row.instagram_page_id,
@@ -25258,7 +25391,12 @@ async function findMetaCommentBusiness(ownerId: string) {
       ].filter(Boolean).map((value: any) => String(value).trim());
 
       return candidates.includes(String(ownerId).trim());
-    }) || null;
+    });
+    if (matches.length !== 1) {
+      if (matches.length > 1) console.error('Meta comment legacy tenant identity is ambiguous.');
+      return null;
+    }
+    return matches[0];
   } catch (err) {
     console.error("Meta comment business lookup crashed:", err);
     return null;
@@ -25266,7 +25404,7 @@ async function findMetaCommentBusiness(ownerId: string) {
 }
 
 function normalizeMetaCommentBusinessConfig(row: any, fallbackConfig: any = {}) {
-  return {
+  const normalized = {
     ...activeConfig,
     ...fallbackConfig,
     businessRecordId: row.id,
@@ -25298,6 +25436,9 @@ function normalizeMetaCommentBusinessConfig(row: any, fallbackConfig: any = {}) 
     messenger_page_access_token: row.messenger_page_access_token,
     calendarProvider: "google"
   };
+  return row._channelConnection
+    ? applyChannelConnectionToConfig(normalized, row._channelConnection)
+    : { ...normalized, channelConnectionSource: 'legacy_manual' };
 }
 
 function uniqueNonEmpty(values: any[]): string[] {
@@ -25637,6 +25778,10 @@ async function processMessengerUpdateClaimed(webhookEvent: any, config: any, pla
         messengerBusinessScopeVerified: Boolean(data.id),
         calendarProvider: "google"
       };
+      businessConfig.channelConnectionSource = data._channelConnection ? 'self_service' : 'legacy_manual';
+      if (data._channelConnection) {
+        businessConfig = applyChannelConnectionToConfig(businessConfig, data._channelConnection);
+      }
       messengerBusinessScopeVerified = Boolean(data.id);
       console.log(
         `[MessengerConfig] business=${data.business_name} (${data.id}), ` +
@@ -26197,11 +26342,11 @@ async function processInstagramUpdateClaimed(webhook_event: any, config: any, pl
 
   try {
     if (supabase) {
-      const { data, error } = await supabase
-        .from('businesses')
-        .select('*')
-        .eq('instagram_account_id', recipientId)
-        .maybeSingle();
+      const connected = await findBusinessByChannelConnection('instagram', recipientId);
+      const legacyResult = connected ? null : await supabase
+        .from('businesses').select('*').eq('instagram_account_id', recipientId).maybeSingle();
+      const data = connected?.business || legacyResult?.data;
+      const error = legacyResult?.error;
 
       if (error) {
         console.error('Instagram business lookup error:', JSON.stringify(error));
@@ -26220,6 +26365,8 @@ async function processInstagramUpdateClaimed(webhook_event: any, config: any, pl
           instagramAccountId: data.instagram_account_id,
           calendarProvider: 'google'
         };
+        businessConfig.channelConnectionSource = connected ? 'self_service' : 'legacy_manual';
+        if (connected) businessConfig = applyChannelConnectionToConfig(businessConfig, connected.connection);
         console.log(
           `[InstagramConfig] business=${data.business_name} (${data.id}), ` +
           `allowCancellation=${businessConfig.allowCancellation}, ` +
@@ -27101,7 +27248,10 @@ async function startServer() {
   const PORT = Number(process.env.PORT) || 3000;
   const app = express();
   registerHealthEndpoint(app);
-  app.use(express.json({ limit: '50mb' }));
+  app.use(express.json({
+    limit: '50mb',
+    verify: (request, _response, buffer) => { (request as any).rawBody = Buffer.from(buffer); },
+  }));
   app.use(createTestBridgeRouter());
 
   const requireAuth = createRequireAuth();
@@ -27111,6 +27261,14 @@ async function startServer() {
     createRequireBusinessPermission(permission, {
       resolveBusinessId: (request) => request.body?.businessId ?? request.body?.business_id,
     });
+
+  if (supabase) {
+    app.use('/api/channel-connections', createChannelConnectionsRouter({
+      client: supabase,
+      requireAuth,
+      requireBusinessPermission: (permission) => requireBusinessPermission(permission),
+    }));
+  }
 
   app.use('/api/businesses', createAnalyticsApiRouter({
     requireAuth,
@@ -27170,7 +27328,7 @@ async function startServer() {
   return res.sendStatus(403);
 });
 
-  app.post("/webhook", async (req, res) => {
+  app.post("/webhook", verifyMetaWebhookSignature, async (req, res) => {
     const body = req.body;
 
     if (body.object === 'instagram') {
@@ -27252,7 +27410,7 @@ async function startServer() {
     return res.sendStatus(403);
   });
 
-  app.post("/webhook/messenger", async (req, res) => {
+  app.post("/webhook/messenger", verifyMetaWebhookSignature, async (req, res) => {
     const body = req.body;
 
     if (body.object !== "page") {
@@ -27295,7 +27453,7 @@ async function startServer() {
     return res.sendStatus(403);
   });
 
-  app.post("/webhook/facebook", async (req, res) => {
+  app.post("/webhook/facebook", verifyMetaWebhookSignature, async (req, res) => {
     const body = req.body;
 
     if (body.object !== "page") {
@@ -27322,7 +27480,7 @@ async function startServer() {
     }
   });
 
-  app.post("/webhook/instagram", async (req, res) => {
+  app.post("/webhook/instagram", verifyMetaWebhookSignature, async (req, res) => {
   const body = req.body;
 
   if (body.object !== "instagram") {
@@ -27389,9 +27547,31 @@ async function startServer() {
     }
   });
 
-  app.post("/api/telegram-webhook", async (req, res) => {
+  app.post("/api/telegram-webhook", verifyTelegramWebhookSecret, async (req, res) => {
     res.status(200).send("OK");
-    await processTelegramUpdate(req.body, activeConfig, "telegram-webhook");
+    try {
+      if (supabase) {
+        const connectionUpdate = await handleTelegramConnectionUpdate(supabase, req.body);
+        if (connectionUpdate.handled) return;
+        if (connectionUpdate.connectionBusinessId && connectionUpdate.token && connectionUpdate.translatedUpdate) {
+          const { data: business, error } = await supabase.from('businesses').select('*')
+            .eq('id', connectionUpdate.connectionBusinessId).maybeSingle();
+          if (error || !business) throw error || new Error('telegram_connection_business_missing');
+          const connection = await resolveConnectionForBusiness(supabase, connectionUpdate.connectionBusinessId, 'telegram');
+          if (!connection) return;
+          const channelConfig = applyChannelConnectionToConfig({
+            ...activeConfig,
+            ...normalizeBusinessConfig(business),
+            calendarProvider: 'google',
+          }, connection);
+          await processTelegramUpdate(connectionUpdate.translatedUpdate, channelConfig, "telegram-webhook");
+          return;
+        }
+      }
+      await processTelegramUpdate(req.body, activeConfig, "telegram-webhook");
+    } catch {
+      logWebhookFailure('telegram_connection_webhook', 'telegram');
+    }
   });
 
   app.post("/api/chat", processWebChat);
@@ -28145,7 +28325,11 @@ app.post('/api/businesses/:businessId/conversations/:conversationId/messages', r
     }
 
     const recipient = normalizeUserId(matchingRow.user_id, requestedChannel);
-    const businessConfig = await loadBusinessConfigById(businessId);
+    let businessConfig = await loadBusinessConfigById(businessId);
+    businessConfig = await hydrateBusinessChannelConfig(
+      businessConfig,
+      requestedChannel as ChannelProvider,
+    );
     let sent = false;
 
     if (requestedChannel === 'whatsapp') {
@@ -28162,35 +28346,7 @@ app.post('/api/businesses/:businessId/conversations/:conversationId/messages', r
         'proactive',
       );
     } else if (requestedChannel === 'telegram') {
-      const token =
-        businessConfig?.telegramToken ||
-        businessConfig?.telegram_bot_token ||
-        activeConfig?.telegramToken ||
-        process.env.TELEGRAM_TOKEN ||
-        process.env.TELEGRAM_BOT_TOKEN;
-
-      if (!token) {
-        return res.status(400).json({
-          success: false,
-          message: 'Telegram token is not configured for this business.',
-        });
-      }
-
-      const telegramResponse = await fetch(
-        `https://api.telegram.org/bot${token}/sendMessage`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ chat_id: recipient, text }),
-        },
-      );
-
-      const telegramResult: any = await telegramResponse.json().catch(() => ({}));
-      sent = telegramResponse.ok && telegramResult?.ok !== false;
-
-      if (!sent) {
-        logOperatorApiFailure('manual_message_provider_failed', req, businessId);
-      }
+      sent = await sendCustomerMessage('telegram', recipient, text, businessConfig, 'proactive');
     }
 
     if (!sent) {
@@ -29703,64 +29859,70 @@ app.put('/api/businesses/:id', requireAuth, requireBusinessPermission('settings.
       'admin_whatsapp_number',
     );
 
+    // Temporary legacy channel credentials are restricted to business owners/admins.
+    // Normal dashboard customers use /api/channel-connections and never see secrets.
+    const legacyChannelAdmin = ['owner', 'admin'].includes(
+      String((req as AuthenticatedRequest).businessAccess?.role || ''),
+    );
+
     // Telegram
-    setText(['telegramToken'], 'telegram_bot_token', { secret: true });
+    if (legacyChannelAdmin) setText(['telegramToken'], 'telegram_bot_token', { secret: true });
     setText(
       ['telegramAdminChatId', 'adminTelegramChatId', 'admin_telegram_chat_id', 'telegramChatId'],
       'admin_telegram_chat_id',
     );
 
     // Instagram
-    setText(['instagramPageId'], 'instagram_page_id');
-    setText(['instagramAccountId'], 'instagram_account_id');
-    setText(
+    if (legacyChannelAdmin) setText(['instagramPageId'], 'instagram_page_id');
+    if (legacyChannelAdmin) setText(['instagramAccountId'], 'instagram_account_id');
+    if (legacyChannelAdmin) setText(
       ['instagramAccessToken', 'instagramToken'],
       'instagram_access_token',
       { secret: true },
     );
-    setText(
+    if (legacyChannelAdmin) setText(
       ['instagramWebhookVerifyToken', 'instagramVerifyToken'],
       'instagram_verify_token',
       { secret: true },
     );
-    setBoolean(['instagramEnabled'], 'instagram_enabled');
+    if (legacyChannelAdmin) setBoolean(['instagramEnabled'], 'instagram_enabled');
 
     // Facebook Messenger
-    setText(['messengerPageId'], 'messenger_page_id');
-    setText(
+    if (legacyChannelAdmin) setText(['messengerPageId'], 'messenger_page_id');
+    if (legacyChannelAdmin) setText(
       ['messengerAccessToken', 'messengerPageAccessToken'],
       'messenger_page_access_token',
       { secret: true },
     );
-    setText(
+    if (legacyChannelAdmin) setText(
       ['messengerAppSecret'],
       'messenger_app_secret',
       { secret: true },
     );
-    setText(
+    if (legacyChannelAdmin) setText(
       ['messengerWebhookVerifyToken', 'messengerVerifyToken'],
       'messenger_verify_token',
       { secret: true },
     );
-    setBoolean(['messengerEnabled'], 'messenger_enabled');
+    if (legacyChannelAdmin) setBoolean(['messengerEnabled'], 'messenger_enabled');
 
     // WhatsApp
-    setText(['whatsappPhoneNumberId'], 'whatsapp_phone_number_id');
-    setText(
+    if (legacyChannelAdmin) setText(['whatsappPhoneNumberId'], 'whatsapp_phone_number_id');
+    if (legacyChannelAdmin) setText(
       ['whatsappBusinessAccountId'],
       'whatsapp_business_account_id',
     );
-    setText(
+    if (legacyChannelAdmin) setText(
       ['whatsappAccessToken'],
       'whatsapp_access_token',
       { secret: true },
     );
-    setText(
+    if (legacyChannelAdmin) setText(
       ['whatsappWebhookVerifyToken', 'whatsappVerifyToken'],
       'whatsapp_verify_token',
       { secret: true },
     );
-    setBoolean(['whatsappEnabled'], 'whatsapp_enabled');
+    if (legacyChannelAdmin) setBoolean(['whatsappEnabled'], 'whatsapp_enabled');
 
     if (Object.keys(payload).length === 0) {
       return res.status(400).json({

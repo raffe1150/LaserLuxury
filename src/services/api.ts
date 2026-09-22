@@ -112,6 +112,30 @@ const defaultUsage: UsageInfo = {
   limit: 0,
 };
 
+export type ChannelConnectionSummary = {
+  id: string;
+  businessId: number;
+  provider: 'instagram' | 'messenger' | 'whatsapp' | 'telegram';
+  status: 'pending' | 'connected' | 'reconnect_required' | 'connection_error' | 'disconnected';
+  reconnectRequired: boolean;
+  connectedAt: string | null;
+  lastVerifiedAt: string | null;
+  displayName: string | null;
+  source: 'self_service' | 'legacy_manual';
+};
+
+export type ChannelAuthorizationStart = {
+  success: true;
+  mode: 'redirect' | 'embedded_signup' | 'telegram_business';
+  authorizationUrl?: string;
+  appId?: string;
+  configId?: string;
+  graphVersion?: string;
+  state?: string;
+  redirectUri?: string;
+  instructions?: string;
+};
+
 function analyticsWindowQuery(window: BusinessAnalyticsApiRequest): string {
   const query = new URLSearchParams({ window: window.preset });
   if (window.preset === 'custom') {
@@ -178,6 +202,27 @@ export const api = {
       signal,
     },
   ),
+  getChannelConnections: (businessId: string) =>
+    request<{ success: true; data: ChannelConnectionSummary[] }>(
+      `/api/channel-connections/${encodeURIComponent(businessId)}`,
+    ).then((result) => result.data),
+  beginChannelAuthorization: (businessId: string, provider: ChannelConnectionSummary['provider']) =>
+    request<ChannelAuthorizationStart>(
+      `/api/channel-connections/${encodeURIComponent(businessId)}/${provider}/authorize`,
+      { method: 'POST', body: '{}' },
+    ),
+  completeWhatsAppAuthorization: (
+    businessId: string,
+    payload: { state: string; code: string; wabaId: string; phoneNumberId: string },
+  ) => request<{ success: true; data: ChannelConnectionSummary }>(
+    `/api/channel-connections/${encodeURIComponent(businessId)}/whatsapp/complete`,
+    { method: 'POST', body: JSON.stringify(payload) },
+  ),
+  disconnectChannel: (businessId: string, provider: ChannelConnectionSummary['provider']) =>
+    request<{ success: true; disconnected: boolean }>(
+      `/api/channel-connections/${encodeURIComponent(businessId)}/${provider}`,
+      { method: 'DELETE' },
+    ),
   getPlatformPerformance: (businessId: string) =>
     request<PlatformPerformance>(`/api/businesses/${businessId}/performance`),
   getConversationPage: (

@@ -58,8 +58,11 @@ assert.deepEqual(parseNormalizedTimeRange('efter klockan 16'), { kind: 'exclusiv
 assert.deepEqual(parseNormalizedTimeRange('a bit later'), { kind: 'relative_later' });
 
 const server = readFileSync(new URL('../../server.ts', import.meta.url), 'utf8');
-assert.match(server, /const whatsappIntent = classifyMessagingIntent\(textMessage\)/);
-assert.match(server, /if \(!clearlyNonBookingTurn\)[\s\S]{0,500}handleUnifiedBookingEngine\(/);
+const whatsappStatePlan = server.indexOf('const whatsappRoutingPlan = await planWhatsAppStateFirstRouting(');
+const whatsappIntent = server.indexOf('const whatsappIntent = whatsappRoutingPlan.intent', whatsappStatePlan);
+assert.ok(whatsappStatePlan >= 0 && whatsappIntent > whatsappStatePlan);
+assert.match(server, /loadPendingBooking\(chatId, "whatsapp", businessConfig, \{[\s\S]{0,100}throwOnReadFailure: true/);
+assert.match(server, /if \(!clearlyNonBookingTurn && !whatsappUnifiedAttempted\)[\s\S]{0,500}handleUnifiedBookingEngine\(/);
 assert.match(server, /whatsappIntent === "language_repair"[\s\S]{0,200}formatLanguageRepairAcknowledgement/);
 assert.match(server, /shouldReturnWhatsAppAmbiguousClarification\(chatId, whatsappIntent\)[\s\S]{0,200}formatAmbiguousBookingIntentClarification/);
 assert.match(server, /const telegramReplyPreferences:/);

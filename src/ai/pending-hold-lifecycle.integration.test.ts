@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
+import { mock } from "node:test";
 
 process.env.NODE_ENV = "test";
+mock.timers.enable({ apis: ["Date"], now: new Date("2026-07-01T08:00:00.000Z") });
 const { priority1hUnifiedEngineTestBoundary: boundary } = await import("../../server");
 
 const businessConfig = {

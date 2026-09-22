@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
+import { mock } from 'node:test';
 
 process.env.NODE_ENV = 'test';
+mock.timers.enable({ apis: ['Date'], now: new Date('2026-07-01T08:00:00.000Z') });
 const { priority1hUnifiedEngineTestBoundary: boundary } = await import('../../server');
 
 function fixture(options: { fail?: 'calendar_create' | 'calendar_verify' | 'database_insert' | 'database_verify' | 'settlement' | 'reschedule_update' | 'cancellation' } = {}) {
@@ -142,8 +144,8 @@ for (const [index, confirmation] of [
   assert.equal(completed.pending, null);
   assert.equal(completed.replies.length, 1);
   const createdEvent = [...events.values()][0];
-  assert.match(createdEvent.summary, new RegExp(recipient));
-  assert.doesNotMatch(createdEvent.summary, /03585353563/);
+  assert.match(createdEvent.summary, /03585353563/, 'explicit customer phone remains authoritative on WhatsApp');
+  assert.doesNotMatch(createdEvent.summary, new RegExp(recipient));
   assert.deepEqual(counters, { calendarCreate: 1, calendarUpdate: 0, calendarDelete: 0, databaseInsert: 1, databaseUpdate: 0, databaseCancel: 0, completedSettlements: 1, admin: 1, usage: 0 });
 }
 

@@ -1,4 +1,4 @@
-import { containsWebOperationSuccess, webUnverifiedOperationReply } from "./src/ai/web-response-integrity";
+import { containsWebOperationSuccess } from "./src/ai/web-response-integrity";
 import { CalendarReadError, requireCalendarEvents } from "./src/calendar/read-contract";
 import {
   buildConfiguredServiceCatalogPlan,
@@ -730,6 +730,13 @@ type Priority1hTestDependencies = {
   cancelAppointmentRow?: (appointment: any) => Promise<any | null>;
   claimOperation?: (params: any) => Promise<any>;
   settleOperation?: (handle: any, status: "completed" | "failed") => Promise<boolean>;
+  claimSlotReservation?: (params: any) => Promise<any>;
+  settleSlotReservation?: (handle: any) => Promise<boolean>;
+  releaseSlotReservation?: (handle: any) => Promise<boolean>;
+  finalizeBookingOutbox?: (params: any) => Promise<any>;
+  findBookingOutbox?: (params: any) => Promise<any>;
+  claimBookingOutboxDelivery?: (operationId: string, deliveryToken: string) => Promise<any>;
+  completeBookingOutboxDelivery?: (operationId: string, deliveryToken: string, delivered: boolean, error?: string) => Promise<boolean>;
   postProcess?: () => Promise<void>;
   notifyBooking?: () => Promise<boolean>;
   notifyReschedule?: () => Promise<boolean>;
@@ -1376,6 +1383,7 @@ type ExactSlotValidationResult = {
     | "invalid_interval"
     | "calendar_conflict"
     | "pending_conflict"
+    | "calendar_read_failure"
     | "ownership_mismatch"
     | "stale_offer";
   normalizedIso: string | null;
@@ -1583,8 +1591,17 @@ async function validateCanonicalExactSlot(params: {
       };
     });
 
-  const calendarEvents = params.calendarEvents || await requireCalendarEvents(adapter, localDate, localDate);
-  const filteredEvents = (Array.isArray(calendarEvents) ? calendarEvents : []).filter(
+  let calendarEvents: any[];
+  try {
+    calendarEvents = params.calendarEvents || await requireCalendarEvents(adapter, localDate, localDate);
+  } catch (error) {
+    console.error("[CalendarReadSafety] Exact-slot validation failed closed.", {
+      businessId,
+      category: error instanceof CalendarReadError ? error.code : "calendar_unavailable",
+    });
+    return { free: false, category: "calendar_read_failure", normalizedIso, endIso: new Date(endMs).toISOString() };
+  }
+  const filteredEvents = calendarEvents.filter(
     (event: any) => !excludeEventId || String(event?.id || "") !== String(excludeEventId)
   );
   const bufferedCalendarEvents =
@@ -1643,7 +1660,7 @@ async function loadCanonicalAvailabilitySnapshot(params: {
 }): Promise<CanonicalAvailabilitySnapshot> {
   const timezone = String(params.businessConfig?.timezone || "Europe/Stockholm");
   const events = await requireCalendarEvents(params.adapter, params.startDate, params.endDate);
-  const calendarEvents = (Array.isArray(events) ? events : []).filter(
+  const calendarEvents = events.filter(
     (event: any) => !params.excludeEventId || String(event?.id || "") !== String(params.excludeEventId)
   );
   const pendingSnapshot = snapshotPendingBookingAvailability(
@@ -2134,24 +2151,23 @@ class GenericCalendarAdapter implements CalendarAdapter {
     try {
       const headers: any = {};
       if (this.apiKey) headers['Authorization'] = `Bearer ${this.apiKey}`;
-      const res = await fetch(`${this.apiUrl}/events?startDate=${startDate}&endDate=${endDate}`, { headers, ...(options?.throwOnReadFailure ? { signal: AbortSignal.timeout(20_000) } : {}) });
+      const res = await fetch(`${this.apiUrl}/events?startDate=${startDate}&endDate=${endDate}`, {
+        headers,
+        signal: AbortSignal.timeout(20_000),
+      });
       if (!res.ok) {
-        if (options?.throwOnReadFailure) {
-          throw new CalendarReadError('calendar_unavailable');
-        }
-        return [];
+        throw new CalendarReadError('calendar_unavailable');
       }
       const data = await res.json().catch(() => ({}));
-      if (options?.throwOnReadFailure && !Array.isArray(data.events) && !Array.isArray(data.items)) {
+      if (!Array.isArray(data.events) && !Array.isArray(data.items)) {
         throw new CalendarReadError('calendar_malformed');
       }
-      if (options?.throwOnReadFailure && (data.nextPageToken || data.next || data.hasMore)) {
+      if (data.nextPageToken || data.next || data.hasMore) {
         throw new CalendarReadError('calendar_incomplete');
       }
       return data.events || data.items || [];
     } catch(e) {
-      if (options?.throwOnReadFailure) throw e;
-      return [];
+      throw e;
     }
   }
   async checkSlots(startDate: string, endDate?: string, durationMinutes?: number, requestedTime?: string) {
@@ -2292,20 +2308,19 @@ class GoogleCalendarAdapter implements CalendarAdapter {
           calendarId: this.calendarId, timeMin, timeMax,
           singleEvents: true, orderBy: 'startTime',
           ...(pageToken ? { pageToken } : {}),
-        }, options?.throwOnReadFailure ? { timeout: 20_000 } : undefined);
-        if (options?.throwOnReadFailure && (!res.data || !Array.isArray(res.data.items))) {
+        }, { timeout: 20_000 });
+        if (!res.data || !Array.isArray(res.data.items)) {
           throw new CalendarReadError('calendar_malformed');
         }
         events.push(...(res.data.items || []));
-        pageToken = options?.throwOnReadFailure ? res.data.nextPageToken : undefined;
+        pageToken = res.data.nextPageToken;
         if (pageToken && (seen.has(pageToken) || seen.size >= 100)) throw new CalendarReadError('calendar_incomplete');
         if (pageToken) seen.add(pageToken);
       } while (pageToken);
       return events;
     } catch(e: any) {
       console.error("Google Calendar getEvents Error:", e.message);
-      if (options?.throwOnReadFailure) throw e;
-      return [];
+      throw e;
     }
   }
 
@@ -4575,16 +4590,33 @@ function shouldReturnWhatsAppAmbiguousClarification(chatId: string, intent: Retu
   return intent === "ambiguous" && !getRecentCompletedBooking(chatId)?.bookingOperation?.ok;
 }
 
-async function hydrateWhatsAppAmbiguousBookingState(
-  chatId: string,
-  intent: ReturnType<typeof classifyMessagingIntent>,
-  businessConfig: any,
-): Promise<void> {
-  // The unified engine restores durable state, but the WhatsApp ambiguity gate
-  // runs first. Restore it here so an owned slot can reach the booking reducer.
-  if (intent === "ambiguous" && !pendingBookings[chatId]) {
-    await loadPendingBooking(chatId, "whatsapp", businessConfig);
+async function planWhatsAppStateFirstRouting(chatId: string, text: string, businessConfig: any): Promise<{
+  intent: ReturnType<typeof classifyMessagingIntent>;
+  authoritativeStatePresent: boolean;
+  route: "unified_first" | "language_repair" | "ambiguous_clarification" | "unified" | "support";
+}> {
+  const restoredPending = await loadPendingBooking(chatId, "whatsapp", businessConfig, {
+    throwOnReadFailure: true,
+  });
+  const authoritativeStatePresent = Boolean(
+    restoredPending ||
+    hasAppointmentConversationState(chatId) ||
+    getRecentCompletedBooking(chatId)?.bookingOperation?.ok
+  );
+  const intent = classifyMessagingIntent(text);
+  if (authoritativeStatePresent) return { intent, authoritativeStatePresent, route: "unified_first" };
+  if (intent === "language_repair") return { intent, authoritativeStatePresent, route: "language_repair" };
+  if (shouldReturnWhatsAppAmbiguousClarification(chatId, intent)) {
+    return { intent, authoritativeStatePresent, route: "ambiguous_clarification" };
   }
+  if (isBusinessInformationQuestion(text)) {
+    return { intent, authoritativeStatePresent, route: "support" };
+  }
+  return {
+    intent,
+    authoritativeStatePresent,
+    route: shouldDispatchWhatsAppUnifiedBooking(chatId, text, intent) ? "unified" : "support",
+  };
 }
 
 function clearAppointmentConversationState(sessionId: string) {
@@ -9164,7 +9196,12 @@ async function savePendingBooking(chatId: string, platform: string, pending: any
   }
 }
 
-async function loadPendingBooking(chatId: string, platform: string, businessConfig: any) {
+async function loadPendingBooking(
+  chatId: string,
+  platform: string,
+  businessConfig: any,
+  options: { throwOnReadFailure?: boolean } = {},
+) {
   if (pendingBookings[chatId]) {
     if (isPendingBookingExpired(pendingBookings[chatId])) {
       console.log("[DeterministicBooking]", { event: "expired_memory_state_cleared", sessionKey: safeLogFingerprint(chatId) });
@@ -9228,6 +9265,7 @@ async function loadPendingBooking(chatId: string, platform: string, businessConf
       .maybeSingle();
     if (error) {
       console.error("Pending booking load error:", JSON.stringify(error));
+      if (options.throwOnReadFailure) throw error;
       return null;
     }
     if (!data?.ai_summary) return null;
@@ -9348,6 +9386,7 @@ async function loadPendingBooking(chatId: string, platform: string, businessConf
     return pending;
   } catch (err) {
     console.error("loadPendingBooking crashed:", err);
+    if (options.throwOnReadFailure) throw err;
     return null;
   }
 }
@@ -11524,7 +11563,38 @@ type AtomicClaimHandle = {
   duplicateStatus?: AtomicClaimState["status"];
 };
 
+type SlotReservationHandle = {
+  claimed: boolean;
+  businessId: string;
+  calendarIdentity: string;
+  startTime: string;
+  endTime: string;
+  operationId: string;
+  customerKey: string;
+  status?: "reserved" | "settled" | "released";
+  expiresAt?: string;
+};
+
+type BookingResultOutboxRecord = {
+  id?: string;
+  operation_id: string;
+  business_id: string | number;
+  channel: string;
+  customer_id: string;
+  session_id: string;
+  booking_id: string;
+  provider_booking_id: string;
+  terminal_result: Record<string, any>;
+  response_text: string;
+  status: "pending" | "delivering" | "delivered" | "failed" | "cancelled";
+  attempts?: number;
+  delivery_token?: string | null;
+  lease_expires_at?: string | null;
+};
+
 const atomicClaims = new Map<string, AtomicClaimState>();
+const testSlotReservations = new Map<string, SlotReservationHandle>();
+const testBookingResultOutbox = new Map<string, BookingResultOutboxRecord>();
 const IDEMPOTENCY_COMPLETED_TTL_MS = 24 * 60 * 60 * 1000;
 const IDEMPOTENCY_PROCESSING_TTL_MS = 2 * 60 * 1000;
 const IDEMPOTENCY_RETRY_DELAY_MS = 5 * 1000;
@@ -11789,6 +11859,277 @@ async function settleAtomicOperation(
     errorCode: String(lastError?.code || "storage_error")
   });
   return false;
+}
+
+const SLOT_RESERVATION_TTL_MS = Math.max(
+  30_000,
+  Math.min(15 * 60_000, Number(process.env.BOOKING_SLOT_RESERVATION_TTL_MS || 5 * 60_000)),
+);
+
+function getCalendarReservationIdentity(adapter: CalendarAdapter, businessConfig: any): string {
+  const provider = String(businessConfig?.calendarProvider || businessConfig?.calendar_provider || "google").trim().toLowerCase();
+  const providerCalendar = String(
+    adapter.getCalendarId?.() ||
+    businessConfig?.googleCalendarId ||
+    businessConfig?.google_calendar_id ||
+    businessConfig?.calendarApiUrl ||
+    businessConfig?.calendar_api_url ||
+    "default",
+  ).trim();
+  return crypto.createHash("sha256").update(`${provider}|${providerCalendar}`).digest("hex");
+}
+
+function slotReservationMemoryKey(params: Pick<SlotReservationHandle, "businessId" | "calendarIdentity" | "startTime" | "endTime">): string {
+  return `${params.businessId}|${params.calendarIdentity}|${new Date(params.startTime).toISOString()}|${new Date(params.endTime).toISOString()}`;
+}
+
+async function claimDurableSlotReservation(params: {
+  businessId: string;
+  calendarIdentity: string;
+  startTime: string;
+  endTime: string;
+  operationId: string;
+  customerKey: string;
+}): Promise<SlotReservationHandle> {
+  if (priority1hTestDependencies?.claimSlotReservation) {
+    return priority1hTestDependencies.claimSlotReservation(params);
+  }
+  const expiresAt = new Date(Date.now() + SLOT_RESERVATION_TTL_MS).toISOString();
+  const fallback: SlotReservationHandle = { ...params, claimed: false, expiresAt };
+
+  if (!supabase || process.env.NODE_ENV === "test") {
+    if (process.env.NODE_ENV !== "test") return fallback;
+    const key = slotReservationMemoryKey(params);
+    const existing = testSlotReservations.get(key);
+    if (
+      existing && existing.operationId !== params.operationId &&
+      existing.status !== "released" &&
+      (existing.status === "settled" || Date.parse(String(existing.expiresAt || "")) > Date.now())
+    ) return fallback;
+    const claimed = { ...fallback, claimed: true, status: "reserved" as const };
+    testSlotReservations.set(key, claimed);
+    return claimed;
+  }
+
+  const { data, error } = await supabase.rpc("claim_booking_slot_reservation", {
+    p_business_id: Number(params.businessId),
+    p_calendar_identity: params.calendarIdentity,
+    p_start_time: new Date(params.startTime).toISOString(),
+    p_end_time: new Date(params.endTime).toISOString(),
+    p_operation_id: params.operationId,
+    p_customer_key: params.customerKey,
+    p_expires_at: expiresAt,
+  });
+  if (error || !Array.isArray(data) || !data[0]) {
+    if (error) console.error("[SlotReservation] claim failed closed.", { code: String(error.code || "storage_error") });
+    return fallback;
+  }
+  return {
+    ...fallback,
+    claimed: String(data[0].operation_id || "") === params.operationId,
+    status: data[0].status,
+    expiresAt: data[0].expires_at,
+  };
+}
+
+async function settleDurableSlotReservation(handle: SlotReservationHandle): Promise<boolean> {
+  if (!handle.claimed) return false;
+  if (priority1hTestDependencies?.settleSlotReservation) {
+    return priority1hTestDependencies.settleSlotReservation(handle);
+  }
+  if (!supabase || process.env.NODE_ENV === "test") {
+    if (process.env.NODE_ENV !== "test") return false;
+    const key = slotReservationMemoryKey(handle);
+    const existing = testSlotReservations.get(key);
+    if (!existing || existing.operationId !== handle.operationId) return false;
+    testSlotReservations.set(key, { ...existing, status: "settled", expiresAt: new Date(8640000000000000).toISOString() });
+    return true;
+  }
+  const { data, error } = await supabase.rpc("settle_booking_slot_reservation", {
+    p_business_id: Number(handle.businessId),
+    p_calendar_identity: handle.calendarIdentity,
+    p_start_time: new Date(handle.startTime).toISOString(),
+    p_end_time: new Date(handle.endTime).toISOString(),
+    p_operation_id: handle.operationId,
+  });
+  return !error && data === true;
+}
+
+async function releaseDurableSlotReservation(handle: SlotReservationHandle | null): Promise<boolean> {
+  if (!handle?.claimed) return false;
+  if (priority1hTestDependencies?.releaseSlotReservation) {
+    return priority1hTestDependencies.releaseSlotReservation(handle);
+  }
+  if (!supabase || process.env.NODE_ENV === "test") {
+    if (process.env.NODE_ENV !== "test") return false;
+    const key = slotReservationMemoryKey(handle);
+    const existing = testSlotReservations.get(key);
+    if (!existing || existing.operationId !== handle.operationId || existing.status === "settled") return false;
+    testSlotReservations.set(key, { ...existing, status: "released", expiresAt: new Date().toISOString() });
+    return true;
+  }
+  const { data, error } = await supabase.rpc("release_booking_slot_reservation", {
+    p_business_id: Number(handle.businessId),
+    p_calendar_identity: handle.calendarIdentity,
+    p_start_time: new Date(handle.startTime).toISOString(),
+    p_end_time: new Date(handle.endTime).toISOString(),
+    p_operation_id: handle.operationId,
+  });
+  return !error && data === true;
+}
+
+async function finalizeBookingOperationWithOutbox(params: {
+  claim: AtomicClaimHandle;
+  slotReservation: SlotReservationHandle;
+  operationId: string;
+  businessId: string;
+  channel: string;
+  customerId: string;
+  sessionId: string;
+  bookingId: string;
+  providerBookingId: string;
+  terminalResult: Record<string, any>;
+  responseText: string;
+}): Promise<BookingResultOutboxRecord | null> {
+  if (priority1hTestDependencies?.finalizeBookingOutbox) {
+    const record = await priority1hTestDependencies.finalizeBookingOutbox(params);
+    if (record) atomicClaims.set(params.claim.keyHash, { ...params.claim.state, status: "completed", updatedAt: Date.now() });
+    return record;
+  }
+  const completedState: AtomicClaimState = {
+    ...params.claim.state,
+    status: "completed",
+    updatedAt: Date.now(),
+    retryAfter: undefined,
+  };
+  if (!supabase || process.env.NODE_ENV === "test") {
+    if (process.env.NODE_ENV !== "test") return null;
+    if (priority1hTestDependencies?.settleOperation) {
+      const settled = await priority1hTestDependencies.settleOperation(params.claim, "completed");
+      if (!settled) return null;
+    }
+    const existing = testBookingResultOutbox.get(params.operationId);
+    if (existing) return existing;
+    const reservationKey = slotReservationMemoryKey(params.slotReservation);
+    const reservation = testSlotReservations.get(reservationKey);
+    if (!reservation || reservation.operationId !== params.operationId || reservation.status !== "reserved") return null;
+    const record: BookingResultOutboxRecord = {
+      operation_id: params.operationId,
+      business_id: params.businessId,
+      channel: params.channel,
+      customer_id: params.customerId,
+      session_id: params.sessionId,
+      booking_id: params.bookingId,
+      provider_booking_id: params.providerBookingId,
+      terminal_result: params.terminalResult,
+      response_text: params.responseText,
+      status: "pending",
+      attempts: 0,
+    };
+    testBookingResultOutbox.set(params.operationId, record);
+    testSlotReservations.set(reservationKey, { ...reservation, status: "settled", expiresAt: "9999-12-31T23:59:59.999Z" });
+    atomicClaims.set(params.claim.keyHash, completedState);
+    return record;
+  }
+  const { data, error } = await supabase.rpc("finalize_booking_result_outbox", {
+    p_claim_user_id: params.claim.storageId,
+    p_claim_platform: params.claim.storagePlatform,
+    p_claim_state: JSON.stringify(completedState),
+    p_operation_id: params.operationId,
+    p_business_id: Number(params.businessId),
+    p_channel: normalizePlatformName(params.channel),
+    p_customer_id: params.customerId,
+    p_session_id: params.sessionId,
+    p_booking_id: params.bookingId,
+    p_provider_booking_id: params.providerBookingId,
+    p_calendar_identity: params.slotReservation.calendarIdentity,
+    p_slot_start_time: new Date(params.slotReservation.startTime).toISOString(),
+    p_slot_end_time: new Date(params.slotReservation.endTime).toISOString(),
+    p_terminal_result: params.terminalResult,
+    p_response_text: params.responseText,
+  });
+  if (error || !Array.isArray(data) || !data[0]) {
+    console.error("[BookingOutbox] Atomic finalization failed.", { code: String(error?.code || "missing_result") });
+    return null;
+  }
+  atomicClaims.set(params.claim.keyHash, completedState);
+  return data[0] as BookingResultOutboxRecord;
+}
+
+async function findBookingResultOutbox(params: {
+  businessId: string;
+  channel: string;
+  customerId: string;
+  sessionId: string;
+}): Promise<BookingResultOutboxRecord | null> {
+  if (priority1hTestDependencies?.findBookingOutbox) return priority1hTestDependencies.findBookingOutbox(params);
+  if (!supabase || process.env.NODE_ENV === "test") {
+    if (process.env.NODE_ENV !== "test") return null;
+    return [...testBookingResultOutbox.values()].reverse().find((record) =>
+      String(record.business_id) === params.businessId &&
+      normalizePlatformName(record.channel) === normalizePlatformName(params.channel) &&
+      record.customer_id === params.customerId &&
+      record.session_id === params.sessionId &&
+      ["pending", "failed", "delivering"].includes(record.status)
+    ) || null;
+  }
+  const { data, error } = await supabase
+    .from("booking_result_outbox")
+    .select("*")
+    .eq("business_id", Number(params.businessId))
+    .eq("channel", normalizePlatformName(params.channel))
+    .eq("customer_id", params.customerId)
+    .eq("session_id", params.sessionId)
+    .in("status", ["pending", "failed", "delivering"])
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) {
+    console.error("[BookingOutbox] Recovery lookup failed.", { code: String(error.code || "storage_error") });
+    return null;
+  }
+  return data as BookingResultOutboxRecord | null;
+}
+
+async function claimBookingOutboxDelivery(operationId: string, deliveryToken: string): Promise<BookingResultOutboxRecord | null> {
+  if (priority1hTestDependencies?.claimBookingOutboxDelivery) {
+    return priority1hTestDependencies.claimBookingOutboxDelivery(operationId, deliveryToken);
+  }
+  if (!supabase || process.env.NODE_ENV === "test") {
+    if (process.env.NODE_ENV !== "test") return null;
+    const record = testBookingResultOutbox.get(operationId);
+    if (!record || record.status === "delivered" || record.status === "cancelled" || (record.status === "delivering" && Date.parse(String(record.lease_expires_at || "")) > Date.now())) return null;
+    const claimed = { ...record, status: "delivering" as const, delivery_token: deliveryToken, lease_expires_at: new Date(Date.now() + 60_000).toISOString(), attempts: Number(record.attempts || 0) + 1 };
+    testBookingResultOutbox.set(operationId, claimed);
+    return claimed;
+  }
+  const { data, error } = await supabase.rpc("claim_booking_result_outbox_delivery", {
+    p_operation_id: operationId,
+    p_delivery_token: deliveryToken,
+    p_lease_seconds: 60,
+  });
+  if (error || !Array.isArray(data) || !data[0]) return null;
+  return data[0] as BookingResultOutboxRecord;
+}
+
+async function completeBookingOutboxDelivery(operationId: string, deliveryToken: string, delivered: boolean, error?: string): Promise<boolean> {
+  if (priority1hTestDependencies?.completeBookingOutboxDelivery) {
+    return priority1hTestDependencies.completeBookingOutboxDelivery(operationId, deliveryToken, delivered, error);
+  }
+  if (!supabase || process.env.NODE_ENV === "test") {
+    if (process.env.NODE_ENV !== "test") return false;
+    const record = testBookingResultOutbox.get(operationId);
+    if (!record || record.delivery_token !== deliveryToken || record.status !== "delivering") return false;
+    testBookingResultOutbox.set(operationId, { ...record, status: delivered ? "delivered" : "failed", delivery_token: null, lease_expires_at: null });
+    return true;
+  }
+  const { data, error: storageError } = await supabase.rpc("complete_booking_result_outbox_delivery", {
+    p_operation_id: operationId,
+    p_delivery_token: deliveryToken,
+    p_delivered: delivered,
+    p_error: error || null,
+  });
+  return !storageError && data === true;
 }
 
 async function runWithInboundMessageClaim(params: {
@@ -14000,6 +14341,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
     inputFingerprint: safeLogFingerprint(text),
   });
   let activeBookingOperationClaim: AtomicClaimHandle | null = null;
+  let activeSlotReservation: SlotReservationHandle | null = null;
   let bookingFailureStage: BookingFailureStage | null = null;
   let rollbackActiveBookingMutation: (() => Promise<boolean>) | null = null;
   const logBookingContinuationState = (
@@ -14299,6 +14641,83 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
       });
     }
   };
+
+  const hydrateCompletedBookingFromOutbox = (record: BookingResultOutboxRecord) => {
+    const result = record.terminal_result?.bookingOperationResult as BookingOperationResult | undefined;
+    if (!result?.ok) return;
+    rememberCompletedBooking(
+      sessionId,
+      String(record.terminal_result?.language || pending?.language || language),
+      result.customerName || undefined,
+      result.serviceName,
+      Number(record.terminal_result?.durationMinutes || pending?.durationMinutes || 30),
+      result.startTime,
+      result,
+    );
+  };
+
+  const deliverBookingOutboxRecord = async (record: BookingResultOutboxRecord): Promise<boolean> => {
+    hydrateCompletedBookingFromOutbox(record);
+    if (record.status === "delivered") return false;
+    const deliveryToken = crypto.randomUUID();
+    const claimed = await claimBookingOutboxDelivery(record.operation_id, deliveryToken);
+    if (!claimed) return true;
+    try {
+      const delivered = await send(claimed.response_text);
+      if (delivered === false) {
+        await completeBookingOutboxDelivery(record.operation_id, deliveryToken, false, "provider_rejected_delivery");
+        return true;
+      }
+      await completeBookingOutboxDelivery(record.operation_id, deliveryToken, true);
+      appendLocalHistory(sessionId, text, claimed.response_text);
+      try {
+        await postProcessMessage(
+          recipientUserId,
+          postProcessPlatform,
+          text,
+          claimed.response_text,
+          businessConfig?.telegramToken,
+          businessConfig?.apiKey,
+          getBusinessIdFromConfig(businessConfig),
+        );
+      } catch {
+        console.error("[BookingOutbox] Delivered confirmation history write failed.", {
+          businessId: getBusinessIdFromConfig(businessConfig),
+          channel: platformName,
+        });
+      }
+      return true;
+    } catch (error) {
+      await completeBookingOutboxDelivery(
+        record.operation_id,
+        deliveryToken,
+        false,
+        classifyAiFailure(error),
+      );
+      console.error("[BookingOutbox] Confirmation delivery deferred for retry.", {
+        businessId: getBusinessIdFromConfig(businessConfig),
+        channel: platformName,
+        category: classifyAiFailure(error),
+      });
+      return true;
+    }
+  };
+
+  const recoverableOutbox = await findBookingResultOutbox({
+    businessId: currentBookingSlotOwner.businessId,
+    channel: platformName,
+    customerId: currentBookingSlotOwner.userId,
+    sessionId,
+  });
+  if (recoverableOutbox) {
+    hydrateCompletedBookingFromOutbox(recoverableOutbox);
+    if (recoverableOutbox.status !== "delivered") {
+      await clearPendingBooking(sessionId);
+      pending = null;
+      await deliverBookingOutboxRecord(recoverableOutbox);
+      return true;
+    }
+  }
 
   if (stopUnfinishedBookingRequest) {
     await clearPendingBooking(sessionId);
@@ -15480,18 +15899,19 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
 
     const operationEndIso = finalSlotValidation.endIso ||
       new Date(candidateStartMs + duration * 60000).toISOString();
+    const rescheduleOperationId = [
+      currentAppointmentStateOwner.userId,
+      context.originalAppointmentId,
+      currentEventId,
+      new Date(candidateStartMs).toISOString(),
+      operationEndIso
+    ].join("|");
     const operationClaim = await claimAtomicOperation({
       type: "reschedule_operation_claim",
       tenantScope: String(getBusinessIdFromConfig(businessConfig) || ""),
       businessId: String(getBusinessIdFromConfig(businessConfig) || ""),
       platform: platformName,
-      exactId: [
-        currentAppointmentStateOwner.userId,
-        context.originalAppointmentId,
-        currentEventId,
-        new Date(candidateStartMs).toISOString(),
-        operationEndIso
-      ].join("|")
+      exactId: rescheduleOperationId
     });
     if (!operationClaim.claimed) {
       console.log("[Idempotency] Duplicate reschedule confirmation suppressed.", {
@@ -15508,6 +15928,61 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
         });
       }
       return true;
+    }
+
+    const rescheduleSlotReservation = await claimDurableSlotReservation({
+      businessId: currentBookingSlotOwner.businessId,
+      calendarIdentity: getCalendarReservationIdentity(adapter, businessConfig),
+      startTime: new Date(candidateStartMs).toISOString(),
+      endTime: operationEndIso,
+      operationId: crypto.createHash("sha256").update(rescheduleOperationId).digest("hex"),
+      customerKey: `${currentBookingSlotOwner.platform}:${currentBookingSlotOwner.userId}`,
+    });
+    if (!rescheduleSlotReservation.claimed) {
+      await settleAtomicOperation(operationClaim, "failed");
+      rememberRescheduleContext(sessionId, liveAppointment, lockedLanguage, context.requestedDate, context.requestedTime, {
+        ...context,
+        appointment: liveAppointment,
+        selectedNewStartTime: undefined,
+        selectedEndTime: undefined,
+        offeredSlots: [],
+        ownedOfferedSlots: [],
+        lastOperation: "awaiting_target",
+      });
+      await replyAndRecord(formatSlotNoLongerAvailable(lockedLanguage, getStockholmTimeFromIso(candidateIso), []));
+      return true;
+    }
+
+    const reservedRescheduleValidation = await validateCanonicalExactSlot({
+      adapter,
+      owner: currentBookingSlotOwner,
+      businessConfig,
+      start: candidateIso,
+      service: String(context.service || liveAppointment?.service || "Bokning"),
+      durationMinutes: duration,
+      excludeEventId: currentEventId,
+      ...(selectedOwnedOffer ? { offeredSlot: selectedOwnedOffer } : {}),
+    });
+    if (!reservedRescheduleValidation.free) {
+      await releaseDurableSlotReservation(rescheduleSlotReservation);
+      await settleAtomicOperation(operationClaim, "failed");
+      if (reservedRescheduleValidation.category === "calendar_read_failure") {
+        rememberRescheduleContext(sessionId, liveAppointment, lockedLanguage, context.requestedDate, context.requestedTime, {
+          ...context,
+          appointment: liveAppointment,
+          lastOperation: "update_failed",
+        });
+        await replyAndRecord(formatDeterministicRecovery("calendar_unavailable", lockedLanguage));
+        return true;
+      }
+      return prepareRescheduleTarget(
+        liveAppointment,
+        selectedDate,
+        getStockholmTimeFromIso(candidateIso),
+        lockedLanguage,
+        getDaypartSlotOptions(context.requestedDaypart),
+        context.requestedDaypart,
+      );
     }
 
     rememberRescheduleContext(sessionId, liveAppointment, lockedLanguage, context.requestedDate, context.requestedTime, {
@@ -15552,6 +16027,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
 
     const updateResult = await adapter.updateAppointment(currentEventId, candidateIso, duration);
     if (!updateResult?.success) {
+      await releaseDurableSlotReservation(rescheduleSlotReservation);
       await settleAtomicOperation(operationClaim, "failed");
       rememberRescheduleContext(sessionId, liveAppointment, lockedLanguage, context.requestedDate, context.requestedTime, {
         ...context,
@@ -15607,6 +16083,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
         dbTimeMatches
       });
       await rollbackPersistence();
+      await releaseDurableSlotReservation(rescheduleSlotReservation);
       await settleAtomicOperation(operationClaim, "failed");
       rememberRescheduleContext(sessionId, liveAppointment, lockedLanguage, context.requestedDate, context.requestedTime, {
         ...context,
@@ -15644,6 +16121,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
         expectedStart: candidateIso
       });
       await rollbackPersistence();
+      await releaseDurableSlotReservation(rescheduleSlotReservation);
       await settleAtomicOperation(operationClaim, "failed");
       rememberRescheduleContext(sessionId, liveAppointment, lockedLanguage, context.requestedDate, context.requestedTime, {
         ...context,
@@ -15661,6 +16139,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
     if (!operationCompletionRecorded) {
       console.error("[Reschedule] Durable operation completion could not be recorded; rolling back.");
       await rollbackPersistence();
+      await releaseDurableSlotReservation(rescheduleSlotReservation);
       await settleAtomicOperation(operationClaim, "failed");
       rememberRescheduleContext(sessionId, liveAppointment, lockedLanguage, context.requestedDate, context.requestedTime, {
         ...context,
@@ -15669,6 +16148,12 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
       });
       await replyAndRecord(formatRescheduleFailure(lockedLanguage));
       return true;
+    }
+    if (!await settleDurableSlotReservation(rescheduleSlotReservation)) {
+      console.error("[Reschedule] Durable slot settlement failed after verified mutation.");
+      // Provider truth now contains the moved event, so future strict reads still
+      // block the interval. Keep the completed operation authoritative and retry
+      // settlement through normal reconciliation rather than rolling back success.
     }
 
     const authoritativeNewStart = new Date(updatedRow.start_time).toISOString();
@@ -19561,6 +20046,20 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
       });
 
       if (!finalIso || !exactCheck.endIso) {
+        if (exactCheck.category === "calendar_read_failure") {
+          pending.status = "failed_recoverable";
+          pending.retryEligible = true;
+          pending.lastFailureStage = "final_validation";
+          await savePendingBooking(sessionId, platformName, pending);
+          recordDeterministicBookingFailure("calendar_unavailable");
+          await replyAndRecord(
+            formatDeterministicRecovery(
+              "calendar_unavailable",
+              getFlowReplyLanguage(pending.language, language, text),
+            ),
+          );
+          return true;
+        }
         const alternatives = await createCanonicalOfferedSlots({
           adapter,
           owner: currentBookingSlotOwner,
@@ -19701,9 +20200,90 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
       }
       activeBookingOperationClaim = bookingOperationClaim;
 
+      const slotReservation = await claimDurableSlotReservation({
+        businessId: currentBookingSlotOwner.businessId,
+        calendarIdentity: getCalendarReservationIdentity(adapter, businessConfig),
+        startTime: finalIso,
+        endTime: exactCheck.endIso,
+        operationId: operationIdentity,
+        customerKey: `${currentBookingSlotOwner.platform}:${currentBookingSlotOwner.userId}`,
+      });
+      if (!slotReservation.claimed) {
+        await settleAtomicOperation(bookingOperationClaim, "failed");
+        activeBookingOperationClaim = null;
+        pending.status = "awaiting_date_or_time";
+        pending.offeredSlots = [];
+        pending.ownedOfferedSlots = [];
+        pending.dateTime = null;
+        pending.selectedSlotEnd = null;
+        pending.operationIdentity = null;
+        await savePendingBooking(sessionId, platformName, pending);
+        await replyAndRecord(
+          formatSlotNoLongerAvailable(
+            getFlowReplyLanguage(pending.language, language, text),
+            selectedTime,
+            [],
+            deterministicToneConfig,
+          ),
+        );
+        return true;
+      }
+      activeSlotReservation = slotReservation;
+
+      // The first exact-slot check establishes intent. The durable reservation
+      // closes the cross-worker race; this second strict read establishes that
+      // provider truth is still free after this operation owns the interval.
+      const reservedSlotValidation = await validateCanonicalExactSlot({
+        adapter,
+        owner: currentBookingSlotOwner,
+        businessConfig,
+        start: finalIso,
+        service: String(pending.service || "Bokning"),
+        durationMinutes: Number(pending.durationMinutes || 30),
+        offeredSlot: selectedOwnedSlot,
+        nowMs: params.now?.getTime(),
+      });
+      if (!reservedSlotValidation.free) {
+        await releaseDurableSlotReservation(slotReservation);
+        activeSlotReservation = null;
+        await settleAtomicOperation(bookingOperationClaim, "failed");
+        activeBookingOperationClaim = null;
+        if (reservedSlotValidation.category === "calendar_read_failure") {
+          pending.status = "failed_recoverable";
+          pending.retryEligible = true;
+          pending.lastFailureStage = "final_validation";
+          await savePendingBooking(sessionId, platformName, pending);
+          await replyAndRecord(
+            formatDeterministicRecovery(
+              "calendar_unavailable",
+              getFlowReplyLanguage(pending.language, language, text),
+            ),
+          );
+          return true;
+        }
+        pending.status = "awaiting_date_or_time";
+        pending.offeredSlots = [];
+        pending.ownedOfferedSlots = [];
+        pending.dateTime = null;
+        pending.selectedSlotEnd = null;
+        pending.operationIdentity = null;
+        await savePendingBooking(sessionId, platformName, pending);
+        await replyAndRecord(
+          formatSlotNoLongerAvailable(
+            getFlowReplyLanguage(pending.language, language, text),
+            selectedTime,
+            [],
+            deterministicToneConfig,
+          ),
+        );
+        return true;
+      }
+
       pending.dateTime = finalIso;
       pending.selectedSlotEnd = exactCheck.endIso;
       if (!beginBookingFinalization(pending)) {
+        await releaseDurableSlotReservation(activeSlotReservation);
+        activeSlotReservation = null;
         await settleAtomicOperation(bookingOperationClaim, "failed");
         return true;
       }
@@ -19761,6 +20341,8 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
         recordDeterministicBookingFailure(
           String(result?.code || "calendar_create_failed").toLowerCase(),
         );
+        await releaseDurableSlotReservation(activeSlotReservation);
+        activeSlotReservation = null;
         await settleAtomicOperation(bookingOperationClaim, "failed");
         const conflict = ["SLOT_CONFLICT", "SLOT_NO_LONGER_AVAILABLE"].includes(
           String(result?.code || "")
@@ -19933,6 +20515,8 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
         );
         const recovery = await recoverBookingTransaction(pending, "calendar_verification", rollbackInsertedCalendarEvent);
         const calendarRollbackResult = recovery.rollbackSucceeded;
+        await releaseDurableSlotReservation(activeSlotReservation);
+        activeSlotReservation = null;
         await settleAtomicOperation(bookingOperationClaim, "failed");
         await savePendingBooking(sessionId, platformName, pending);
         logBookingContinuationState({
@@ -20043,6 +20627,8 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
         }
         const recovery = await recoverBookingTransaction(pending, databaseFailurePath === "database_insert_failed" ? "database_insert" : "database_verification", rollbackInsertedCalendarEvent);
         const calendarRollbackResult = recovery.rollbackSucceeded;
+        await releaseDurableSlotReservation(activeSlotReservation);
+        activeSlotReservation = null;
         await settleAtomicOperation(bookingOperationClaim, "failed");
         await savePendingBooking(sessionId, platformName, pending);
         logBookingContinuationState({
@@ -20086,10 +20672,62 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
       }
 
       bookingFailureStage = "idempotency_settlement";
-      const bookingSettlementRecorded = await settleAtomicOperation(
-        bookingOperationClaim,
-        "completed"
+      const bookingOperationResult = createBookingOperationResult({
+        calendarCreated: Boolean(result?.success),
+        calendarVerified,
+        databaseInserted,
+        databaseVerified,
+        settlementRecorded: true,
+        bookingId: databaseRow.id,
+        businessId: databaseRow.business_id,
+        serviceName: String(databaseRow.service),
+        startTime: new Date(databaseRow.start_time).toISOString(),
+        customerName: pending.customerName,
+        customerPhone: pending.customerPhone,
+        sourceChannel: currentBookingSlotOwner.platform,
+      });
+      if (!bookingOperationResult.ok) {
+        throw new Error("Verified booking result rejected");
+      }
+      const formattedConfirmation = formatBookingSavedMessage(
+        confirmedBookingLanguage,
+        bookingOperationResult.customerName || "",
+        bookingOperationResult.serviceName,
+        bookingOperationResult.startTime,
+        bookingOperationResult.customerPhone || undefined,
+        deterministicToneConfig,
       );
+      verifiedBookingReplyAuthorizations[sessionId] = bookingOperationResult;
+      const exactConfirmation = guardCustomerFacingReply(
+        sessionId,
+        formattedConfirmation,
+        confirmedBookingLanguage,
+        businessConfig?.toneConfig,
+      );
+      delete verifiedBookingReplyAuthorizations[sessionId];
+
+      const bookingOutbox = activeSlotReservation
+        ? await finalizeBookingOperationWithOutbox({
+            claim: bookingOperationClaim,
+            slotReservation: activeSlotReservation,
+            operationId: operationIdentity,
+            businessId: expectedBusinessId,
+            channel: currentBookingSlotOwner.platform,
+            customerId: currentBookingSlotOwner.userId,
+            sessionId,
+            bookingId: String(databaseRow.id),
+            providerBookingId: insertedEventId,
+            terminalResult: {
+              type: "verified_booking_result",
+              version: 1,
+              language: confirmedBookingLanguage,
+              durationMinutes: Number(pending.durationMinutes || 30),
+              bookingOperationResult,
+            },
+            responseText: exactConfirmation,
+          })
+        : null;
+      const bookingSettlementRecorded = Boolean(bookingOutbox);
       if (!bookingSettlementRecorded) {
         recordDeterministicBookingFailure("idempotency_settlement_failed");
         if (databaseRow?.id && supabase) {
@@ -20102,6 +20740,8 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
             .eq("user_id", String(recipientUserId));
         }
         await recoverBookingTransaction(pending, "idempotency_settlement", rollbackInsertedCalendarEvent);
+        await releaseDurableSlotReservation(activeSlotReservation);
+        activeSlotReservation = null;
         await settleAtomicOperation(bookingOperationClaim, "failed");
         await savePendingBooking(sessionId, platformName, pending);
         logBookingContinuationState({
@@ -20132,27 +20772,10 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
         );
         return true;
       }
+      activeSlotReservation = null;
       activeBookingOperationClaim = null;
       bookingFailureStage = null;
       rollbackActiveBookingMutation = null;
-
-      const bookingOperationResult = createBookingOperationResult({
-        calendarCreated: Boolean(result?.success),
-        calendarVerified,
-        databaseInserted,
-        databaseVerified,
-        settlementRecorded: bookingSettlementRecorded,
-        bookingId: databaseRow.id,
-        businessId: databaseRow.business_id,
-        serviceName: String(databaseRow.service),
-        startTime: new Date(databaseRow.start_time).toISOString(),
-        customerName: pending.customerName,
-        customerPhone: pending.customerPhone,
-        sourceChannel: currentBookingSlotOwner.platform,
-      });
-      if (!bookingOperationResult.ok) {
-        throw new Error("Verified booking result rejected");
-      }
 
       const appointmentCreatedAtMs = Date.parse(String(databaseRow.created_at || ""));
       const inferredTestExecutionContext = await resolveInferredTestExecutionContext({
@@ -20237,29 +20860,15 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
         failureCategory: null
       });
 
-      verifiedBookingReplyAuthorizations[sessionId] = bookingOperationResult;
-      try {
-        emitBookingLanguageTrace({
-          stage: "verified_confirmation_presentation",
-          sessionId,
-          currentLanguage: language,
-          flowLanguage: getStoredFlowLanguage(sessionId),
-          pendingLanguage: pending.language || null,
-          presentationLanguage: confirmedBookingLanguage,
-        });
-        await replyAndRecord(
-          formatBookingSavedMessage(
-            confirmedBookingLanguage,
-            bookingOperationResult.customerName || "",
-            bookingOperationResult.serviceName,
-            bookingOperationResult.startTime,
-            bookingOperationResult.customerPhone || undefined,
-            deterministicToneConfig
-          )
-        );
-      } finally {
-        delete verifiedBookingReplyAuthorizations[sessionId];
-      }
+      emitBookingLanguageTrace({
+        stage: "verified_confirmation_presentation",
+        sessionId,
+        currentLanguage: language,
+        flowLanguage: getStoredFlowLanguage(sessionId),
+        pendingLanguage: pending.language || null,
+        presentationLanguage: confirmedBookingLanguage,
+      });
+      await deliverBookingOutboxRecord(bookingOutbox!);
       try {
         await notifyAdminAboutBooking(
           businessConfig,
@@ -20326,6 +20935,8 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
     if (activeBookingOperationClaim?.claimed && pending) {
       const recovery = await recoverBookingTransaction(pending, bookingFailureStage || "unexpected", rollbackActiveBookingMutation || undefined);
       const rollbackSucceeded = recovery.rollbackSucceeded;
+      await releaseDurableSlotReservation(activeSlotReservation);
+      activeSlotReservation = null;
       await settleAtomicOperation(activeBookingOperationClaim, "failed");
       await savePendingBooking(sessionId, platformName, pending);
       console.error("[BookingTransactionRecovery]", { correlationId: bookingCorrelationId, businessId: currentBookingSlotOwner.businessId, channel: platformName, stage: bookingFailureStage || "unexpected", rollbackSucceeded });
@@ -22083,6 +22694,62 @@ async function loadBusinessConfigById(businessId: any) {
   return { ...activeConfig };
 }
 
+async function drainBookingResultOutbox(limit: number = 20): Promise<void> {
+  if (!supabase) return;
+  const nowIso = new Date().toISOString();
+  const { data, error } = await supabase
+    .from("booking_result_outbox")
+    .select("*")
+    .or(`status.in.(pending,failed),and(status.eq.delivering,lease_expires_at.lte.${nowIso})`)
+    .order("created_at", { ascending: true })
+    .limit(Math.max(1, Math.min(100, limit)));
+  if (error) {
+    console.error("[BookingOutbox] Worker lookup failed.", { code: String(error.code || "storage_error") });
+    return;
+  }
+
+  for (const candidate of data || []) {
+    const deliveryToken = crypto.randomUUID();
+    const claimed = await claimBookingOutboxDelivery(String(candidate.operation_id), deliveryToken);
+    if (!claimed) continue;
+    try {
+      const businessConfig = await loadBusinessConfigById(claimed.business_id);
+      const delivered = await sendCustomerMessage(
+        claimed.channel,
+        claimed.customer_id,
+        claimed.response_text,
+        businessConfig,
+        "conversation",
+      );
+      await completeBookingOutboxDelivery(
+        claimed.operation_id,
+        deliveryToken,
+        delivered,
+        delivered ? undefined : "provider_rejected_delivery",
+      );
+    } catch (deliveryError) {
+      await completeBookingOutboxDelivery(
+        claimed.operation_id,
+        deliveryToken,
+        false,
+        classifyAiFailure(deliveryError),
+      );
+    }
+  }
+}
+
+function setupBookingResultOutboxWorker(): void {
+  if (!odinLinkStartupPolicy.reminderCronEnabled) return;
+  cron.schedule("* * * * *", async () => {
+    try {
+      await drainBookingResultOutbox();
+    } catch (error) {
+      console.error("[BookingOutbox] Worker crashed.", { category: classifyAiFailure(error) });
+    }
+  }, { timezone: "Europe/Stockholm" });
+  console.log("[BookingOutbox] Verified booking confirmation worker scheduled every minute.");
+}
+
 const TEST_BRIDGE_SCHEMA_VERSION = "odinlink-test-bridge-v1";
 
 function isTestBridgeEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -23833,8 +24500,6 @@ async function processWhatsAppMessageClaimed(message: any, metadata: any, config
       return;
     }
 
-    const whatsappIntent = classifyMessagingIntent(textMessage);
-    await hydrateWhatsAppAmbiguousBookingState(chatId, whatsappIntent, businessConfig);
     const replyWhatsAppOnce = async (reply: string) => {
       await sendWhatsAppMessage(from, reply, businessConfig, "conversation");
       appendLocalHistory(chatId, textMessage, reply);
@@ -23857,6 +24522,34 @@ async function processWhatsAppMessageClaimed(message: any, metadata: any, config
       }
     };
 
+    // Stateful short replies only have meaning after durable booking state is
+    // restored. Keep the old fast path for conversations with no active state.
+    const whatsappRoutingPlan = await planWhatsAppStateFirstRouting(
+      chatId,
+      textMessage,
+      businessConfig,
+    );
+    const whatsappHasAuthoritativeState = whatsappRoutingPlan.authoritativeStatePresent;
+    let whatsappUnifiedAttempted = false;
+    if (whatsappHasAuthoritativeState) {
+      whatsappUnifiedAttempted = true;
+      const unifiedHandled = await handleUnifiedBookingEngine({
+        sessionId: chatId,
+        platformName: "whatsapp",
+        platformLogName: "WhatsApp",
+        recipientUserId: from,
+        text: textMessage,
+        history,
+        businessConfig,
+        send: (reply) => sendWhatsAppMessage(from, reply, businessConfig, "conversation"),
+        postProcessPlatform: platform,
+        shadowEligibleCustomerTurn: true
+      });
+      if (unifiedHandled) return;
+    }
+
+    const whatsappIntent = whatsappRoutingPlan.intent;
+
     if (whatsappIntent === "language_repair") {
       await replyWhatsAppOnce(formatLanguageRepairAcknowledgement(userLanguage));
       return;
@@ -23871,7 +24564,7 @@ async function processWhatsAppMessageClaimed(message: any, metadata: any, config
 
     const clearlyNonBookingTurn = !shouldDispatchWhatsAppUnifiedBooking(chatId, textMessage, whatsappIntent);
 
-    if (!clearlyNonBookingTurn) {
+    if (!clearlyNonBookingTurn && !whatsappUnifiedAttempted) {
       const unifiedHandled = await handleUnifiedBookingEngine({
         sessionId: chatId,
         platformName: "whatsapp",
@@ -26126,6 +26819,31 @@ try {
   }
 }
 
+function isContainedWebBookingIntent(text: string): boolean {
+  const intent = classifyMessagingIntent(text);
+  return ["new_booking", "reschedule", "cancellation", "ambiguous"].includes(intent) ||
+    isNewBookingRequestText(text) ||
+    isExplicitNewBookingPivotText(text) ||
+    isRescheduleIntent(text) ||
+    isCancellationIntent(text) ||
+    isReadOnlyAvailabilityInquiry(text);
+}
+
+function formatWebBookingContainment(language: string): string {
+  if (language === "sv") return "Jag kan hjälpa med information här, men bokningar kan inte slutföras säkert i webbchatten ännu. Kontakta oss via en av våra meddelandekanaler eller direkt med verksamheten för att boka.";
+  if (language === "de") return "Ich kann hier Informationen geben, aber Buchungen können im Webchat noch nicht sicher abgeschlossen werden. Bitte nutzen Sie einen unserer Nachrichtenkanäle oder kontaktieren Sie den Betrieb direkt.";
+  if (language === "es") return "Puedo ayudarte con información, pero todavía no es posible completar reservas de forma segura en el chat web. Usa uno de nuestros canales de mensajería o contacta directamente con el negocio.";
+  if (language === "fa") return "اینجا می‌توانم اطلاعات بدهم، اما فعلاً تکمیل امن رزرو در چت وب ممکن نیست. لطفاً از یکی از کانال‌های پیام‌رسان یا تماس مستقیم با مجموعه استفاده کنید.";
+  if (language === "ar") return "يمكنني تقديم المعلومات هنا، لكن لا يمكن إتمام الحجز بأمان عبر دردشة الويب حالياً. يُرجى استخدام إحدى قنوات المراسلة أو التواصل مباشرةً مع النشاط.";
+  return "I can help with information here, but bookings cannot yet be completed safely in Web chat. Please use one of our messaging channels or contact the business directly to book.";
+}
+
+function guardWebBookingContainment(reply: string, language: string): string {
+  return containsWebOperationSuccess(reply)
+    ? formatWebBookingContainment(language)
+    : reply;
+}
+
 function getScopedWebSessionId(conversationId: string, businessConfig: any): string {
   return `web:${encodeURIComponent(getAppointmentBusinessScope(businessConfig) || "default")}:${encodeURIComponent(conversationId)}`;
 }
@@ -26177,6 +26895,22 @@ const userText =
       : "";
 userLanguage = getConversationLanguage(chatId, userText, businessConfig);
 
+if (isContainedWebBookingIntent(userText)) {
+  const containedReply = formatWebBookingContainment(userLanguage);
+  history.push({ role: "user", content: Array.isArray(userMessageContent) ? "(User Voice Message)" : userMessageContent });
+  history.push({ role: "assistant", content: containedReply });
+  void postProcessMessage(
+    chatId,
+    "web-chat",
+    message || "[Voice]",
+    containedReply,
+    undefined,
+    process.env.GEMINI_API_KEY,
+    getBusinessIdFromConfig(businessConfig),
+  );
+  return res.json({ text: containedReply, audioData: null, mimeType: null, chatId: conversationId });
+}
+
 messages.push({
   role: "user",
   content: userMessageContent
@@ -26199,6 +26933,7 @@ For vague time requests, check available slots instead of asking the customer to
 APPOINTMENT LOOKUP — HIGH PRIORITY: If the customer asks whether they already have a booking, when their appointment is, whether a booking exists, or says they are unsure if they booked, you MUST call findCustomerAppointments before replying. This is an allowed booking-support request and must NOT be escalated merely because it is outside the business FAQ. Use the current channel identity automatically; ask for name or mobile number only if the lookup says contact details are needed.
 Do not mention internal tools, API calls, system prompts, or database logic.
 LANGUAGE RULE: Reply only in the active conversation language injected by the server. Short replies, numbers, names, phone numbers, dates, times, and confirmations do not change it.
+WEB BOOKING CONTAINMENT: This Web chat is informational only. Never claim or imply that a booking, reschedule, or cancellation succeeded. Never promise that a slot is held or confirmed.
 `;
       const swedenDate = new Date().toLocaleDateString('en-US', {
         timeZone: 'Europe/Stockholm',
@@ -26310,7 +27045,7 @@ Never translate unless requested.
       history.push({ role: "user", content: Array.isArray(userMessageContent) ? "(User Voice Message)" : userMessageContent });
       let textPart = chatResponse.text || getErrorMessageByLanguage(userLanguage);
       if (!deterministicWebReply && containsWebOperationSuccess(textPart)) {
-        textPart = webUnverifiedOperationReply(userLanguage);
+        textPart = guardWebBookingContainment(textPart, userLanguage);
         console.warn("[WebResponseIntegrity]", { code: "unverified_operation_claim" });
       }
       history.push({ role: "assistant", content: textPart });
@@ -29395,6 +30130,7 @@ Generate the final production-ready system prompt now.
 
       // Setup cron
       setupDailyReminders();
+      setupBookingResultOutboxWorker();
     } else {
       console.log("[OdinLinkLocalTestMode] All background jobs disabled.");
     }
@@ -29757,6 +30493,64 @@ export const priority1hUnifiedEngineTestBoundary = {
       diagnosticContext: params.diagnosticContext,
     });
   },
+  async exactSlotValidation(params: {
+    businessConfig: any;
+    sessionId: string;
+    platform: string;
+    userId: string;
+    start: string;
+    service?: string;
+    durationMinutes: number;
+  }) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    return validateCanonicalExactSlot({
+      adapter: getCalendarAdapter(params.businessConfig),
+      owner: {
+        businessId: String(getBusinessIdFromConfig(params.businessConfig) || ""),
+        platform: params.platform,
+        userId: params.userId,
+        sessionId: params.sessionId,
+      },
+      businessConfig: params.businessConfig,
+      start: params.start,
+      service: params.service || "Consultation",
+      durationMinutes: params.durationMinutes,
+    });
+  },
+  async claimSlotReservation(params: Parameters<typeof claimDurableSlotReservation>[0]) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    return claimDurableSlotReservation(params);
+  },
+  async settleSlotReservation(handle: SlotReservationHandle) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    return settleDurableSlotReservation(handle);
+  },
+  async releaseSlotReservation(handle: SlotReservationHandle) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    return releaseDurableSlotReservation(handle);
+  },
+  expireSlotReservation(handle: SlotReservationHandle) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    const key = slotReservationMemoryKey(handle);
+    const existing = testSlotReservations.get(key);
+    if (existing) testSlotReservations.set(key, { ...existing, expiresAt: new Date(Date.now() - 1).toISOString() });
+  },
+  bookingOutboxState(operationId: string) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    const record = testBookingResultOutbox.get(operationId);
+    return record ? structuredClone(record) : null;
+  },
+  webBookingContained(text: string, language: string = "en") {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    return {
+      contained: isContainedWebBookingIntent(text),
+      reply: formatWebBookingContainment(language),
+    };
+  },
+  webGuardReply(reply: string, language: string = "en") {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    return guardWebBookingContainment(reply, language);
+  },
   resolveConversationLanguage(sessionId: string, text: string, businessConfig: any) {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
     return getConversationLanguage(sessionId, text, businessConfig);
@@ -29853,6 +30647,8 @@ export const priority1hUnifiedEngineTestBoundary = {
     unifiedBookingTurnTails.clear();
     latestUnifiedBookingTurn.clear();
     atomicClaims.clear();
+    testSlotReservations.clear();
+    testBookingResultOutbox.clear();
     supabase = null;
   },
   seedOwnedAppointment(params: {
@@ -29979,9 +30775,16 @@ export const priority1hUnifiedEngineTestBoundary = {
   },
   async whatsappPreDispatchDecisionAfterStateLoad(sessionId: string, text: string, businessConfig: any) {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
-    const intent = classifyMessagingIntent(text);
-    await hydrateWhatsAppAmbiguousBookingState(sessionId, intent, businessConfig);
-    return this.whatsappPreDispatchDecision(sessionId, text);
+    const plan = await planWhatsAppStateFirstRouting(sessionId, text, businessConfig);
+    return {
+      intent: plan.intent,
+      returnsAmbiguousClarification: plan.route === "ambiguous_clarification",
+      dispatchesUnifiedBooking: plan.route === "unified_first" || plan.route === "unified",
+    };
+  },
+  async whatsappStateFirstPlan(sessionId: string, text: string, businessConfig: any) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    return planWhatsAppStateFirstRouting(sessionId, text, businessConfig);
   },
   instagramOutboundText(
     recipientId: string,

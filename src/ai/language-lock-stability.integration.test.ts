@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { priority1hUnifiedEngineTestBoundary as boundary } from "../../server";
+process.env.NODE_ENV = "test";
+const { priority1hUnifiedEngineTestBoundary: boundary } = await import("../../server");
 
 const businessConfig = {
   id: "language-lock-regression",

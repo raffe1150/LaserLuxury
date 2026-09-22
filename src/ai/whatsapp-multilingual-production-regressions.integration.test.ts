@@ -148,7 +148,11 @@ try {
     assert.equal(result.pending?.service, 'Video Consultation', testCase.language);
     assert.ok(calls.availability > 0, `${testCase.language}: availability must run`);
     assert.doesNotMatch(result.replies.join(' '), testCase.staleReply, testCase.language);
-    assert.equal(boundary.recentCompletionClassification(sessionId, testCase.text, businessConfig, now), null);
+    assert.equal(
+      boundary.recentCompletionClassification(sessionId, testCase.text, businessConfig, now)?.category,
+      'new_booking',
+      `${testCase.language}: the prior completion remains historical without owning the fresh operation`,
+    );
   }
 
   configure();

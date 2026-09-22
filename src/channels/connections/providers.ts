@@ -43,7 +43,7 @@ export const PROVIDER_SCOPES: Record<Exclude<ChannelProvider, 'telegram'>, strin
     'instagram_business_manage_messages',
     'instagram_business_manage_comments',
   ],
-  messenger: ['pages_show_list', 'pages_messaging', 'pages_manage_metadata', 'pages_read_engagement'],
+  messenger: ['pages_show_list', 'pages_messaging', 'pages_manage_metadata'],
   whatsapp: ['whatsapp_business_management', 'whatsapp_business_messaging'],
 };
 

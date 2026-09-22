@@ -117,8 +117,12 @@ test('official Instagram and Messenger authorization URLs keep state and least-p
   const messenger = new URL(buildAuthorizationUrl('messenger', 'state-value', 'https://app.example/api/channel-connections/messenger/callback'));
   assert.equal(messenger.origin, 'https://www.facebook.com');
   assert.equal(messenger.searchParams.get('state'), 'state-value');
-  assert.ok(PROVIDER_SCOPES.messenger.includes('pages_messaging'));
-  assert.ok(PROVIDER_SCOPES.messenger.includes('pages_manage_metadata'));
+  assert.deepEqual(messenger.searchParams.get('scope')?.split(','), [
+    'pages_show_list', 'pages_messaging', 'pages_manage_metadata',
+  ]);
+  assert.deepEqual(PROVIDER_SCOPES.messenger, [
+    'pages_show_list', 'pages_messaging', 'pages_manage_metadata',
+  ]);
 });
 
 test('provider health distinguishes revoked credentials, temporary failures, and refresh success', async () => {

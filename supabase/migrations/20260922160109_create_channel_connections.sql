@@ -83,6 +83,12 @@ create index channel_authorization_sessions_telegram_claim_idx
   on public.channel_authorization_sessions (provider, provider_user_id, expires_at desc)
   where consumed_at is null and provider = 'telegram';
 
+create unique index channel_authorization_sessions_active_telegram_user_key
+  on public.channel_authorization_sessions (provider, provider_user_id)
+  where provider = 'telegram'
+    and provider_user_id is not null
+    and consumed_at is null;
+
 create function public.set_channel_connection_updated_at()
 returns trigger
 language plpgsql
@@ -140,6 +146,13 @@ security definer
 set search_path = pg_catalog, public
 as $$
 begin
+  update public.channel_authorization_sessions as expired_session
+  set consumed_at = now()
+  where expired_session.provider = 'telegram'
+    and expired_session.provider_user_id = p_provider_user_id
+    and expired_session.consumed_at is null
+    and expired_session.expires_at <= now();
+
   return query
   update public.channel_authorization_sessions as session
   set provider_user_id = p_provider_user_id
@@ -148,7 +161,18 @@ begin
     and session.consumed_at is null
     and session.expires_at > now()
     and (session.provider_user_id is null or session.provider_user_id = p_provider_user_id)
+    and not exists (
+      select 1
+      from public.channel_authorization_sessions as competing_session
+      where competing_session.provider = 'telegram'
+        and competing_session.provider_user_id = p_provider_user_id
+        and competing_session.consumed_at is null
+        and competing_session.id <> session.id
+    )
   returning session.id, session.business_id, session.user_id;
+exception
+  when unique_violation then
+    return;
 end;
 $$;
 

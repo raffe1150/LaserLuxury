@@ -199,6 +199,9 @@ test('migration enforces tenant uniqueness, RLS, service-role-only access, and s
   assert.match(sql, /session\.browser_nonce_hash = p_browser_nonce_hash/i);
   assert.match(sql, /bind_telegram_channel_authorization_session/i);
   assert.match(sql, /session\.provider_user_id is null or session\.provider_user_id = p_provider_user_id/i);
+  assert.match(sql, /unique index channel_authorization_sessions_active_telegram_user_key/i);
+  assert.match(sql, /competing_session\.provider_user_id = p_provider_user_id/i);
+  assert.match(sql, /when unique_violation then/i);
 });
 
 test('production channel adapters resolve authoritative connections before legacy fallback', () => {

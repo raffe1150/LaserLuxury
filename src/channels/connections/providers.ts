@@ -130,6 +130,11 @@ export async function completeMessenger(code: string, redirectUri: string): Prom
   longUrl.searchParams.set('client_secret', requiredEnv('META_APP_SECRET'));
   longUrl.searchParams.set('fb_exchange_token', short.access_token);
   const long = await providerJson(longUrl.toString());
+  const authorizerUrl = new URL(`https://graph.facebook.com/${graphVersion()}/me`);
+  authorizerUrl.searchParams.set('fields', 'id');
+  authorizerUrl.searchParams.set('access_token', long.access_token);
+  const authorizer = await providerJson(authorizerUrl.toString());
+  if (!/^[0-9]+$/.test(String(authorizer?.id || ''))) throw new Error('messenger_authorizer_identity_missing');
   const accountsUrl = new URL(`https://graph.facebook.com/${graphVersion()}/me/accounts`);
   accountsUrl.searchParams.set('fields', 'id,name,access_token,tasks');
   accountsUrl.searchParams.set('access_token', long.access_token);
@@ -148,7 +153,7 @@ export async function completeMessenger(code: string, redirectUri: string): Prom
     credential: { accessToken: String(page.access_token), tokenType: 'page' },
     tokenExpiresAt: null,
     grantedScopes: PROVIDER_SCOPES.messenger,
-    metadata: { display_name: page.name || 'Facebook Page' },
+    metadata: { display_name: page.name || 'Facebook Page', authorizing_meta_user_id: String(authorizer.id) },
   };
 }
 

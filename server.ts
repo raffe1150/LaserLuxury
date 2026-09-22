@@ -149,6 +149,8 @@ import {
 } from "./src/health/integration-health";
 import type { IntegrationKey } from "./src/types/dashboard";
 import { createChannelConnectionsRouter, handleTelegramConnectionUpdate } from "./src/channels/connections/api-router";
+import { createMetaComplianceRouter } from "./src/channels/connections/meta-compliance";
+import { validMetaWebhookSignature } from "./src/channels/connections/meta-webhook-security";
 import { resolveConnectionByIdentity, resolveConnectionForBusiness } from "./src/channels/connections/repository";
 import type { ChannelProvider, ResolvedChannelConnection } from "./src/channels/connections/contracts";
 import {
@@ -227,18 +229,13 @@ function safeLogFingerprint(value: unknown): string | null {
 }
 
 function verifyMetaWebhookSignature(req: express.Request, res: express.Response, next: express.NextFunction) {
-  const secret = String(
-    req.body?.object === 'instagram'
-      ? process.env.INSTAGRAM_APP_SECRET || process.env.META_APP_SECRET
-      : process.env.META_APP_SECRET || '',
-  ).trim();
-  if (!secret) return next(); // Temporary legacy compatibility until the shared Meta app is configured.
+  const instagramWebhook = req.path === '/webhook/instagram' ||
+    (req.path === '/webhook' && req.body?.object === 'instagram');
+  const secret = String((instagramWebhook ? process.env.INSTAGRAM_APP_SECRET : process.env.META_APP_SECRET) || '').trim();
+  if (!secret) return res.sendStatus(503);
   const signature = String(req.header('x-hub-signature-256') || '');
   const rawBody = (req as any).rawBody as Buffer | undefined;
-  const expected = rawBody
-    ? `sha256=${crypto.createHmac('sha256', secret).update(rawBody).digest('hex')}`
-    : '';
-  if (!signature || !expected || signature.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) {
+  if (!validMetaWebhookSignature(rawBody, signature, secret)) {
     res.sendStatus(401);
     return;
   }
@@ -300,7 +297,22 @@ async function hydrateBusinessChannelConfig(config: any, provider: ChannelProvid
   const businessId = Number(getBusinessIdFromConfig(config));
   if (!Number.isSafeInteger(businessId) || businessId <= 0) return config;
   const connection = await resolveConnectionForBusiness(supabase, businessId, provider);
-  return connection ? applyChannelConnectionToConfig(config, connection) : config;
+  if (connection) return applyChannelConnectionToConfig(config, connection);
+  if (provider === 'messenger' || provider === 'instagram') {
+    const { data, error } = await supabase.from('channel_connections').select('id')
+      .eq('business_id', businessId).eq('provider', provider).maybeSingle();
+    if (error) throw error;
+    if (data) return { ...config, channelConnectionInactive: true };
+  }
+  return config;
+}
+
+async function hasExplicitMetaConnection(businessId: number, provider: 'messenger' | 'instagram'): Promise<boolean> {
+  if (!supabase) return false;
+  const { data, error } = await supabase.from('channel_connections').select('id')
+    .eq('business_id', businessId).eq('provider', provider).maybeSingle();
+  if (error) throw error;
+  return Boolean(data);
 }
 
 async function markChannelCredentialFailure(config: any, httpStatus: number, providerCode?: unknown): Promise<void> {
@@ -24097,6 +24109,7 @@ function getBusinessInstagramToken(businessConfig: any) {
   // IMPORTANT: Instagram must use the token stored for the matched business.
   // Do not fall back to ENV Instagram tokens here, because that can send with
   // the wrong account or a broken token in multi-business mode.
+  if (businessConfig?.channelConnectionInactive) return '';
   return cleanInstagramToken(
     businessConfig?.instagramAccessToken ||
     businessConfig?.instagram_access_token ||
@@ -24982,6 +24995,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
 
 
 function getBusinessMessengerToken(businessConfig: any) {
+  if (businessConfig?.channelConnectionInactive) return '';
   return cleanMetaToken(
     businessConfig?.messengerPageAccessToken ||
     businessConfig?.messenger_page_access_token ||
@@ -25275,6 +25289,7 @@ async function findMessengerBusinessByPageId(pageId: string) {
       if (matches.length > 1) console.error('Messenger legacy tenant identity is ambiguous.');
       return null;
     }
+    if (await hasExplicitMetaConnection(Number(matches[0].id), 'messenger')) return null;
     return matches[0];
   } catch (err) {
     console.error("Messenger business lookup crashed:", err);
@@ -25367,14 +25382,13 @@ function isProbablyBusinessOwnComment(username: string, fromId: string, ownerId:
   return false;
 }
 
-async function findMetaCommentBusiness(ownerId: string) {
+async function findMetaCommentBusiness(ownerId: string, source: 'instagram' | 'facebook') {
   if (!supabase || !ownerId) return null;
 
   try {
-    for (const provider of ['instagram', 'messenger'] as const) {
-      const connected = await findBusinessByChannelConnection(provider, ownerId);
-      if (connected) return { ...connected.business, _channelConnection: connected.connection };
-    }
+    const provider = source === 'instagram' ? 'instagram' : 'messenger';
+    const connected = await findBusinessByChannelConnection(provider, ownerId);
+    if (connected) return { ...connected.business, _channelConnection: connected.connection };
     const { data, error } = await supabase.from("businesses").select("*");
     if (error) {
       console.error("Meta comment business lookup error:", JSON.stringify(error));
@@ -25382,13 +25396,10 @@ async function findMetaCommentBusiness(ownerId: string) {
     }
 
     const matches = (data || []).filter((row: any) => {
-      const candidates = [
-        row.instagram_account_id,
-        row.instagram_page_id,
-        row.messenger_page_id,
-        row.facebook_page_id,
-        row.page_id
-      ].filter(Boolean).map((value: any) => String(value).trim());
+      const candidates = (source === 'instagram'
+        ? [row.instagram_account_id, row.instagram_page_id]
+        : [row.messenger_page_id, row.facebook_page_id, row.page_id]
+      ).filter(Boolean).map((value: any) => String(value).trim());
 
       return candidates.includes(String(ownerId).trim());
     });
@@ -25396,6 +25407,7 @@ async function findMetaCommentBusiness(ownerId: string) {
       if (matches.length > 1) console.error('Meta comment legacy tenant identity is ambiguous.');
       return null;
     }
+    if (await hasExplicitMetaConnection(Number(matches[0].id), provider)) return null;
     return matches[0];
   } catch (err) {
     console.error("Meta comment business lookup crashed:", err);
@@ -25457,6 +25469,11 @@ function getCommentAccessTokens(source: "instagram" | "facebook", businessConfig
   // Comment replies are sent through Meta Graph /{comment-id}/replies.
   // Depending on the app setup, Meta may require the Page access token, while DMs may work with the IG token.
   // So we try the business Page token first, then the Instagram token as fallback.
+  if (businessConfig?.channelConnectionSource === 'self_service') {
+    return uniqueNonEmpty([source === 'instagram'
+      ? businessConfig.instagramAccessToken
+      : businessConfig.messengerPageAccessToken]);
+  }
   if (source === "instagram") {
     return uniqueNonEmpty([
       businessConfig?.instagramCommentAccessToken,
@@ -25611,15 +25628,17 @@ async function processMetaCommentUpdate(entry: any, change: any, config: any, so
   let businessConfig: any = { ...activeConfig, ...(config || {}) };
 
   try {
-    const business = await findMetaCommentBusiness(ownerId);
+    const business = await findMetaCommentBusiness(ownerId, source);
     if (business) {
       businessConfig = normalizeMetaCommentBusinessConfig(business, businessConfig);
       console.log(`Meta comment business matched: ${business.business_name} (${business.id})`);
     } else {
       console.error("No business found for comment owner/page id:", ownerId);
+      return;
     }
   } catch (err) {
     console.error("Meta comment tenant lookup failed:", err);
+    return;
   }
 
   const businessName = businessConfig.businessName || businessConfig.business_name || "this business";
@@ -26345,7 +26364,9 @@ async function processInstagramUpdateClaimed(webhook_event: any, config: any, pl
       const connected = await findBusinessByChannelConnection('instagram', recipientId);
       const legacyResult = connected ? null : await supabase
         .from('businesses').select('*').eq('instagram_account_id', recipientId).maybeSingle();
-      const data = connected?.business || legacyResult?.data;
+      const legacyBusiness = legacyResult?.data;
+      const data = connected?.business || (legacyBusiness && !await hasExplicitMetaConnection(Number(legacyBusiness.id), 'instagram')
+        ? legacyBusiness : null);
       const error = legacyResult?.error;
 
       if (error) {
@@ -27263,6 +27284,7 @@ async function startServer() {
     });
 
   if (supabase) {
+    app.use('/api/meta', createMetaComplianceRouter(supabase));
     app.use('/api/channel-connections', createChannelConnectionsRouter({
       client: supabase,
       requireAuth,

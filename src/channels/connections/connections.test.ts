@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { decryptCredential, encryptCredential } from './credential-crypto';
-import { buildAuthorizationUrl, completeInstagram, PROVIDER_SCOPES, refreshInstagramCredential, verifyProviderCredential } from './providers';
+import { buildAuthorizationUrl, completeInstagram, completeMessenger, PROVIDER_SCOPES, refreshInstagramCredential, verifyProviderCredential } from './providers';
 import { disconnectConnection, resolveConnectionByIdentity, resolveConnectionForBusiness } from './repository';
 import { AUTHORIZATION_TTL_MS, authorizationCookie, hashAuthorizationValue, parseCookie, randomAuthorizationValue } from './security';
 import { consumeAuthorizationSession } from './api-router';
@@ -149,6 +149,33 @@ test('Instagram Login never falls back to Facebook app credentials', async () =>
   }
 });
 
+test('Messenger onboarding binds the app-scoped authorizer without requesting another scope', async () => {
+  const originalFetch = globalThis.fetch;
+  const called: string[] = [];
+  try {
+    globalThis.fetch = async (url: any) => {
+      const address = String(url);
+      called.push(address);
+      const data = address.includes('/me/accounts')
+        ? { data: [{ id: '123', name: 'Test Page', access_token: 'page-token', tasks: ['MESSAGING'] }] }
+        : address.includes('/me?')
+          ? { id: '456' }
+          : address.includes('/subscribed_apps')
+            ? { success: true }
+            : { access_token: 'user-token' };
+      return new Response(JSON.stringify(data), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    };
+    const connected = await completeMessenger('code', 'https://app.example/api/channel-connections/messenger/callback');
+    assert.equal(connected.providerAccountId, '123');
+    assert.equal(connected.metadata.authorizing_meta_user_id, '456');
+    assert.equal(connected.credential.accessToken, 'page-token');
+    assert.ok(called.some((url) => /\/me\?fields=id/.test(url)));
+    assert.deepEqual(connected.grantedScopes, PROVIDER_SCOPES.messenger);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('provider health distinguishes revoked credentials, temporary failures, and refresh success', async () => {
   const originalFetch = globalThis.fetch;
   try {
@@ -242,4 +269,8 @@ test('production channel adapters resolve authoritative connections before legac
   assert.match(server, /business_connection_id: businessConfig\.telegramBusinessConnectionId/);
   assert.match(server, /verifyMetaWebhookSignature/);
   assert.match(server, /verifyTelegramWebhookSecret/);
+  assert.match(server, /if \(await hasExplicitMetaConnection\(Number\(matches\[0\]\.id\), 'messenger'\)\) return null/);
+  assert.match(server, /legacyBusiness && !await hasExplicitMetaConnection\(Number\(legacyBusiness\.id\), 'instagram'\)/);
+  assert.match(server, /if \(businessConfig\?\.channelConnectionInactive\) return ''/);
+  assert.match(server, /if \(businessConfig\?\.channelConnectionSource === 'self_service'\) \{[\s\S]*?businessConfig\.instagramAccessToken[\s\S]*?businessConfig\.messengerPageAccessToken/);
 });

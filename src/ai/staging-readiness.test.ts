@@ -37,10 +37,11 @@ assertOrdered(booking, [
   'const calendarVerified',
   'recordAppointmentFromBooking',
   'const databaseVerified',
-  'const bookingSettlementRecorded = await settleAtomicOperation(',
   'createBookingOperationResult',
-  'verifiedBookingReplyAuthorizations[sessionId]',
   'formatBookingSavedMessage(',
+  'verifiedBookingReplyAuthorizations[sessionId]',
+  'finalizeBookingOperationWithOutbox({',
+  'const bookingSettlementRecorded = Boolean(bookingOutbox)',
 ]);
 
 for (const failurePath of [
@@ -56,7 +57,7 @@ for (const failurePath of [
 }
 const settlementFailure = section(
   'if (!bookingSettlementRecorded)',
-  'const bookingOperationResult',
+  'activeBookingOperationClaim = null',
   booking,
 );
 assert.match(settlementFailure, /formatDeterministicRecovery\([\s\S]*"idempotency_settlement_failed"/);

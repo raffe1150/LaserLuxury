@@ -50,7 +50,7 @@ export const PROVIDER_SCOPES: Record<Exclude<ChannelProvider, 'telegram'>, strin
 export function buildAuthorizationUrl(provider: 'instagram' | 'messenger', state: string, redirectUri: string): string {
   if (provider === 'instagram') {
     const url = new URL('https://www.instagram.com/oauth/authorize');
-    url.searchParams.set('client_id', requiredEnv('INSTAGRAM_APP_ID', 'META_APP_ID'));
+    url.searchParams.set('client_id', requiredEnv('INSTAGRAM_APP_ID'));
     url.searchParams.set('redirect_uri', redirectUri);
     url.searchParams.set('response_type', 'code');
     url.searchParams.set('scope', PROVIDER_SCOPES.instagram.join(','));
@@ -72,8 +72,8 @@ export function buildAuthorizationUrl(provider: 'instagram' | 'messenger', state
 
 export async function completeInstagram(code: string, redirectUri: string): Promise<ProviderConnectionResult> {
   const form = new URLSearchParams({
-    client_id: requiredEnv('INSTAGRAM_APP_ID', 'META_APP_ID'),
-    client_secret: requiredEnv('INSTAGRAM_APP_SECRET', 'META_APP_SECRET'),
+    client_id: requiredEnv('INSTAGRAM_APP_ID'),
+    client_secret: requiredEnv('INSTAGRAM_APP_SECRET'),
     grant_type: 'authorization_code',
     redirect_uri: redirectUri,
     code,
@@ -85,7 +85,7 @@ export async function completeInstagram(code: string, redirectUri: string): Prom
   if (!shortToken?.access_token) throw new Error('instagram_token_exchange_failed');
   const longUrl = new URL('https://graph.instagram.com/access_token');
   longUrl.searchParams.set('grant_type', 'ig_exchange_token');
-  longUrl.searchParams.set('client_secret', requiredEnv('INSTAGRAM_APP_SECRET', 'META_APP_SECRET'));
+  longUrl.searchParams.set('client_secret', requiredEnv('INSTAGRAM_APP_SECRET'));
   longUrl.searchParams.set('access_token', shortToken?.access_token);
   const long = await providerJson(longUrl.toString());
   const token = String(long.access_token || shortToken?.access_token || '');

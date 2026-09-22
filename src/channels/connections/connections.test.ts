@@ -2,14 +2,16 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { decryptCredential, encryptCredential } from './credential-crypto';
-import { buildAuthorizationUrl, PROVIDER_SCOPES, refreshInstagramCredential, verifyProviderCredential } from './providers';
+import { buildAuthorizationUrl, completeInstagram, PROVIDER_SCOPES, refreshInstagramCredential, verifyProviderCredential } from './providers';
 import { disconnectConnection, resolveConnectionByIdentity, resolveConnectionForBusiness } from './repository';
 import { AUTHORIZATION_TTL_MS, authorizationCookie, hashAuthorizationValue, parseCookie, randomAuthorizationValue } from './security';
 import { consumeAuthorizationSession } from './api-router';
 
 process.env.CHANNEL_CREDENTIAL_ENCRYPTION_KEY = Buffer.alloc(32, 7).toString('base64');
 process.env.INSTAGRAM_APP_ID = '123456';
+process.env.INSTAGRAM_APP_SECRET = 'instagram-secret';
 process.env.META_APP_ID = '987654';
+process.env.META_APP_SECRET = 'meta-secret';
 process.env.PUBLIC_BASE_URL = 'https://app.example';
 
 function fakeReadClient(rows: any[]) {
@@ -111,6 +113,7 @@ test('authorization callback consumes the exact state, browser nonce, provider, 
 test('official Instagram and Messenger authorization URLs keep state and least-privilege messaging scopes', () => {
   const instagram = new URL(buildAuthorizationUrl('instagram', 'state-value', 'https://app.example/api/channel-connections/instagram/callback'));
   assert.equal(instagram.origin, 'https://www.instagram.com');
+  assert.equal(instagram.searchParams.get('client_id'), '123456');
   assert.equal(instagram.searchParams.get('state'), 'state-value');
   assert.equal(instagram.searchParams.get('force_reauth'), 'true');
   assert.deepEqual(instagram.searchParams.get('scope')?.split(','), PROVIDER_SCOPES.instagram);
@@ -123,6 +126,27 @@ test('official Instagram and Messenger authorization URLs keep state and least-p
   assert.deepEqual(PROVIDER_SCOPES.messenger, [
     'pages_show_list', 'pages_messaging', 'pages_manage_metadata',
   ]);
+});
+
+test('Instagram Login never falls back to Facebook app credentials', async () => {
+  const instagramId = process.env.INSTAGRAM_APP_ID;
+  const instagramSecret = process.env.INSTAGRAM_APP_SECRET;
+  try {
+    delete process.env.INSTAGRAM_APP_ID;
+    assert.throws(
+      () => buildAuthorizationUrl('instagram', 'state-value', 'https://app.example/api/channel-connections/instagram/callback'),
+      /instagram_app_id_missing/,
+    );
+    process.env.INSTAGRAM_APP_ID = instagramId;
+    delete process.env.INSTAGRAM_APP_SECRET;
+    await assert.rejects(
+      () => completeInstagram('code-value', 'https://app.example/api/channel-connections/instagram/callback'),
+      /instagram_app_secret_missing/,
+    );
+  } finally {
+    process.env.INSTAGRAM_APP_ID = instagramId;
+    process.env.INSTAGRAM_APP_SECRET = instagramSecret;
+  }
 });
 
 test('provider health distinguishes revoked credentials, temporary failures, and refresh success', async () => {

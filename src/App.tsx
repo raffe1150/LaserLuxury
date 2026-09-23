@@ -2,13 +2,14 @@ import { useEffect, useState } from 'react';
 import Landing from './pages/Landing';
 import Login from './pages/Login';
 import Dashboard from './pages/dashboard';
+import LegalPage from './pages/LegalPage';
 import { useAuth } from './auth/AuthProvider';
 
-type Route = '/' | '/login' | '/dashboard';
+type Route = '/' | '/login' | '/dashboard' | '/privacy' | '/terms';
 
 function getRoute(): Route {
   const path = window.location.pathname;
-  if (path === '/login' || path === '/dashboard') return path;
+  if (path === '/login' || path === '/dashboard' || path === '/privacy' || path === '/terms') return path;
   return '/';
 }
 
@@ -38,6 +39,10 @@ export default function App() {
       setRoute('/dashboard');
     }
   }, [loading, recovery, route, user]);
+
+  // Legal pages are intentionally public and must not wait on or require an auth session.
+  if (route === '/privacy') return <LegalPage document="privacy" />;
+  if (route === '/terms') return <LegalPage document="terms" />;
 
   if (loading || (route === '/dashboard' && !user)) {
     return <main className="login-page"><div className="login-card" role="status">Loading secure session…</div></main>;

@@ -153,6 +153,7 @@ import { createMetaComplianceRouter } from "./src/channels/connections/meta-comp
 import { validMetaWebhookSignature } from "./src/channels/connections/meta-webhook-security";
 import { resolveConnectionByIdentity, resolveConnectionForBusiness } from "./src/channels/connections/repository";
 import type { ChannelProvider, ResolvedChannelConnection } from "./src/channels/connections/contracts";
+import { selectTelegramOutboundToken } from "./src/channels/connections/telegram-routing";
 import {
   getOdinLinkStartupPolicy,
   registerHealthEndpoint,
@@ -9596,7 +9597,7 @@ async function sendCustomerMessage(
   );
 
   if (channel === "telegram") {
-    const token = businessConfig?.telegramToken || activeConfig?.telegramToken || process.env.TELEGRAM_TOKEN || process.env.TELEGRAM_BOT_TOKEN;
+    const token = selectTelegramOutboundToken(businessConfig, activeConfig);
     if (!token) {
       console.error("[ChannelSend] Telegram skipped: missing token");
       return false;
@@ -27575,7 +27576,7 @@ async function startServer() {
       if (supabase) {
         const connectionUpdate = await handleTelegramConnectionUpdate(supabase, req.body);
         if (connectionUpdate.handled) return;
-        if (connectionUpdate.connectionBusinessId && connectionUpdate.token && connectionUpdate.translatedUpdate) {
+        if (connectionUpdate.connectionBusinessId && connectionUpdate.translatedUpdate) {
           const { data: business, error } = await supabase.from('businesses').select('*')
             .eq('id', connectionUpdate.connectionBusinessId).maybeSingle();
           if (error || !business) throw error || new Error('telegram_connection_business_missing');

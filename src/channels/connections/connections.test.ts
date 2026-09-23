@@ -265,10 +265,7 @@ test('production channel adapters resolve authoritative connections before legac
   assert.match(server, /findBusinessByChannelConnection\('whatsapp', phoneNumberId\)/);
   assert.match(server, /findBusinessByChannelConnection\('messenger', pageId\)/);
   assert.match(server, /hydrateBusinessChannelConfig\([\s\S]*requestedChannel as ChannelProvider/);
-  assert.match(server, /handleTelegramConnectionUpdate\(supabase, req\.body\)/);
-  assert.match(server, /business_connection_id: businessConfig\.telegramBusinessConnectionId/);
   assert.match(server, /verifyMetaWebhookSignature/);
-  assert.match(server, /verifyTelegramWebhookSecret/);
   assert.match(server, /if \(await hasExplicitMetaConnection\(Number\(matches\[0\]\.id\), 'messenger'\)\) return null/);
   assert.match(server, /legacyBusiness && !await hasExplicitMetaConnection\(Number\(legacyBusiness\.id\), 'instagram'\)/);
   assert.match(server, /if \(businessConfig\?\.channelConnectionInactive\) return ''/);

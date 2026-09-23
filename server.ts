@@ -148,7 +148,7 @@ import {
   type IntegrationHealthConfig,
 } from "./src/health/integration-health";
 import type { IntegrationKey } from "./src/types/dashboard";
-import { createChannelConnectionsRouter, handleTelegramConnectionUpdate } from "./src/channels/connections/api-router";
+import { createChannelConnectionsRouter } from "./src/channels/connections/api-router";
 import { createMetaComplianceRouter } from "./src/channels/connections/meta-compliance";
 import { validMetaWebhookSignature } from "./src/channels/connections/meta-webhook-security";
 import { resolveConnectionByIdentity, resolveConnectionForBusiness } from "./src/channels/connections/repository";
@@ -243,16 +243,6 @@ function verifyMetaWebhookSignature(req: express.Request, res: express.Response,
   next();
 }
 
-function verifyTelegramWebhookSecret(req: express.Request, res: express.Response, next: express.NextFunction) {
-  const secret = String(process.env.TELEGRAM_WEBHOOK_SECRET || '').trim();
-  if (!secret) return next(); // Legacy polling/webhook compatibility.
-  const received = String(req.header('x-telegram-bot-api-secret-token') || '');
-  if (!received || received.length !== secret.length || !crypto.timingSafeEqual(Buffer.from(received), Buffer.from(secret))) {
-    res.sendStatus(401);
-    return;
-  }
-  next();
-}
 
 async function findBusinessByChannelConnection(
   provider: ChannelProvider,
@@ -287,7 +277,6 @@ function applyChannelConnectionToConfig(
     next.whatsappBusinessAccountId = connection.providerConnectionId;
   } else if (connection.provider === 'telegram') {
     next.telegramToken = connection.credential.accessToken;
-    next.telegramBusinessConnectionId = connection.providerConnectionId;
     next.telegramBusinessResolved = true;
   }
   return next;
@@ -9609,9 +9598,6 @@ async function sendCustomerMessage(
         body: JSON.stringify({
           chat_id: recipient,
           text: message,
-          ...(businessConfig?.telegramBusinessConnectionId
-            ? { business_connection_id: businessConfig.telegramBusinessConnectionId }
-            : {}),
         })
       });
       logTelegramMessageSent({
@@ -21228,9 +21214,6 @@ async function sendTelegramPreferredReply(params: {
     const mp3Buffer = fs.readFileSync(outputPath);
     const formData = new FormData();
     formData.append("chat_id", chatId);
-    if (config?.telegramBusinessConnectionId) {
-      formData.append("business_connection_id", config.telegramBusinessConnectionId);
-    }
     formData.append("voice", new Blob([mp3Buffer as any], { type: "audio/mpeg" }), "response.mp3");
     voiceRequestAttempted = true;
     const response = await fetch(
@@ -27567,33 +27550,6 @@ async function startServer() {
     } catch (error: any) {
       logOperatorApiFailure('setup_telegram_failed', req, req.body?.businessId);
       res.status(500).json({ error: 'authorization_failed' });
-    }
-  });
-
-  app.post("/api/telegram-webhook", verifyTelegramWebhookSecret, async (req, res) => {
-    res.status(200).send("OK");
-    try {
-      if (supabase) {
-        const connectionUpdate = await handleTelegramConnectionUpdate(supabase, req.body);
-        if (connectionUpdate.handled) return;
-        if (connectionUpdate.connectionBusinessId && connectionUpdate.translatedUpdate) {
-          const { data: business, error } = await supabase.from('businesses').select('*')
-            .eq('id', connectionUpdate.connectionBusinessId).maybeSingle();
-          if (error || !business) throw error || new Error('telegram_connection_business_missing');
-          const connection = await resolveConnectionForBusiness(supabase, connectionUpdate.connectionBusinessId, 'telegram');
-          if (!connection) return;
-          const channelConfig = applyChannelConnectionToConfig({
-            ...activeConfig,
-            ...normalizeBusinessConfig(business),
-            calendarProvider: 'google',
-          }, connection);
-          await processTelegramUpdate(connectionUpdate.translatedUpdate, channelConfig, "telegram-webhook");
-          return;
-        }
-      }
-      await processTelegramUpdate(req.body, activeConfig, "telegram-webhook");
-    } catch {
-      logWebhookFailure('telegram_connection_webhook', 'telegram');
     }
   });
 

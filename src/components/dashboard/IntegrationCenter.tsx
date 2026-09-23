@@ -26,7 +26,7 @@ export interface IntegrationCenterProps {
 
 type DetailMode = 'manage' | 'wizard' | 'advanced';
 type SelfServiceProvider = ChannelConnectionSummary['provider'];
-const SELF_SERVICE_PROVIDERS = new Set<SelfServiceProvider>(['instagram', 'messenger', 'whatsapp', 'telegram']);
+const SELF_SERVICE_PROVIDERS = new Set<SelfServiceProvider>(['instagram', 'messenger', 'whatsapp']);
 
 declare global {
   interface Window { FB?: { init: (options: Record<string, unknown>) => void; login: (callback: (response: any) => void, options: Record<string, unknown>) => void } }

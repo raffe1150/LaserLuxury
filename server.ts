@@ -149,6 +149,10 @@ import {
 } from "./src/health/integration-health";
 import type { IntegrationKey } from "./src/types/dashboard";
 import { createChannelConnectionsRouter } from "./src/channels/connections/api-router";
+import { createCalendarConnectionsRouter } from "./src/integrations/calendar-connections/api-router";
+import { resolveCalendarConnectionForBusiness } from "./src/integrations/calendar-connections/repository";
+import { createGoogleCalendarOAuthClient } from "./src/integrations/calendar-connections/google-oauth";
+import { googleCalendarCallbackUrl } from "./src/integrations/calendar-connections/security";
 import { createMetaComplianceRouter } from "./src/channels/connections/meta-compliance";
 import { validMetaWebhookSignature } from "./src/channels/connections/meta-webhook-security";
 import { resolveConnectionByIdentity, resolveConnectionForBusiness } from "./src/channels/connections/repository";
@@ -280,6 +284,32 @@ function applyChannelConnectionToConfig(
     next.telegramBusinessResolved = true;
   }
   return next;
+}
+
+async function hydrateBusinessCalendarConfig(config: any): Promise<any> {
+  if (!supabase) return config;
+
+  const businessId = Number(getBusinessIdFromConfig(config));
+  if (!Number.isSafeInteger(businessId) || businessId <= 0) return config;
+
+  const connection = await resolveCalendarConnectionForBusiness(
+    supabase,
+    businessId,
+  );
+
+  if (!connection) return config;
+
+  return {
+    ...config,
+    calendarProvider: 'google',
+    googleCalendarId: connection.calendarId,
+    googleCalendarOAuthConnectionId: connection.id,
+    googleCalendarOAuthAccessToken: connection.credential.accessToken,
+    googleCalendarOAuthRefreshToken: connection.credential.refreshToken || '',
+    googleCalendarOAuthTokenType: connection.credential.tokenType || 'Bearer',
+    googleCalendarOAuthTokenExpiresAt: connection.tokenExpiresAt || null,
+    googleCalendarConnectionSource: 'self_service',
+  };
 }
 
 async function hydrateBusinessChannelConfig(config: any, provider: ChannelProvider): Promise<any> {
@@ -2355,31 +2385,80 @@ class GoogleCalendarAdapter implements CalendarAdapter {
   private calendar: any;
   private calendarId: string;
 
-  constructor(clientEmail: string, privateKey: string, calendarId: string) {
-    let finalKey = privateKey || process.env.GOOGLE_PRIVATE_KEY || '';
-    let finalEmail = clientEmail || process.env.GOOGLE_CLIENT_EMAIL;
+  constructor(
+    clientEmail: string,
+    privateKey: string,
+    calendarId: string,
+    oauthCredential?: {
+      accessToken: string;
+      refreshToken: string;
+      tokenType?: string;
+      expiresAt?: string | null;
+    },
+  ) {
+    let auth: any;
 
-    if (finalKey.trim().startsWith('{')) {
-      try {
-        const keyJson = JSON.parse(finalKey);
-        if (keyJson.private_key) finalKey = keyJson.private_key;
-        if (keyJson.client_email && !finalEmail) finalEmail = keyJson.client_email;
-      } catch (e) {
-        // ignore
+    if (oauthCredential?.refreshToken) {
+      auth = createGoogleCalendarOAuthClient(
+        googleCalendarCallbackUrl(),
+      );
+
+      const expiryMs = oauthCredential.expiresAt
+        ? Date.parse(oauthCredential.expiresAt)
+        : NaN;
+
+      auth.setCredentials({
+        access_token: oauthCredential.accessToken || undefined,
+        refresh_token: oauthCredential.refreshToken,
+        token_type: oauthCredential.tokenType || 'Bearer',
+        ...(Number.isFinite(expiryMs)
+          ? { expiry_date: expiryMs }
+          : {}),
+      });
+    } else {
+      let finalKey =
+        privateKey || process.env.GOOGLE_PRIVATE_KEY || '';
+
+      let finalEmail =
+        clientEmail || process.env.GOOGLE_CLIENT_EMAIL;
+
+      if (finalKey.trim().startsWith('{')) {
+        try {
+          const keyJson = JSON.parse(finalKey);
+
+          if (keyJson.private_key) {
+            finalKey = keyJson.private_key;
+          }
+
+          if (keyJson.client_email && !finalEmail) {
+            finalEmail = keyJson.client_email;
+          }
+        } catch {
+          // Preserve legacy service-account parsing behavior.
+        }
       }
+
+      if (
+        finalKey.startsWith('"') &&
+        finalKey.endsWith('"')
+      ) {
+        finalKey = finalKey.slice(1, -1);
+      }
+
+      const cleanKey = finalKey.replace(/\\n/g, '\n');
+
+      auth = new google.auth.JWT({
+        email: finalEmail,
+        key: cleanKey,
+        scopes: ['https://www.googleapis.com/auth/calendar'],
+      });
     }
 
-    if (finalKey.startsWith('"') && finalKey.endsWith('"')) {
-      finalKey = finalKey.slice(1, -1);
-    }
-    const cleanKey = finalKey.replace(/\\n/g, '\n');
-
-    const auth = new google.auth.JWT({
-      email: finalEmail,
-      key: cleanKey,
-      scopes: ['https://www.googleapis.com/auth/calendar']
+    this.calendar = google.calendar({
+      version: 'v3',
+      auth,
     });
-    this.calendar = google.calendar({ version: 'v3', auth: auth });
+
     this.calendarId = calendarId;
   }
 
@@ -2625,36 +2704,130 @@ class GoogleCalendarAdapter implements CalendarAdapter {
 }
 
 function getCalendarAdapter(config: any): CalendarAdapter {
-  if (priority1hTestDependencies?.calendarAdapter) return priority1hTestDependencies.calendarAdapter;
-  if (config.calendarProvider === 'google' || 
-      (!config.calendarProvider && process.env.GOOGLE_CLIENT_EMAIL && process.env.GOOGLE_PRIVATE_KEY && (config.googleCalendarId || process.env.GOOGLE_CALENDAR_ID))) {
-    const email = config.googleClientEmail || process.env.GOOGLE_CLIENT_EMAIL;
-    const key = config.googlePrivateKey || process.env.GOOGLE_PRIVATE_KEY;
-    const id = config.googleCalendarId || process.env.GOOGLE_CALENDAR_ID;
-    if (email && key && id) {
-      console.log(`[Calendar] Using Google calendar for business=${config.businessName || config.business_name || "unknown"}, business_id=${getBusinessIdFromConfig(config) || "missing"}, calendar_id=${id}`);
-      return new GoogleCalendarAdapter(email, key, id);
-    } else {
-      console.warn("Google Calendar adapter requested but credentials missing. Falling back to Mock.");
-    }
-  } else if (config.calendarProvider === 'custom' && config.calendarApiUrl) {
-    return new GenericCalendarAdapter(config.calendarApiUrl, config.calendarApiKey);
+  if (priority1hTestDependencies?.calendarAdapter) {
+    return priority1hTestDependencies.calendarAdapter;
   }
-  if (process.env.NODE_ENV === "production") {
-    console.error("[Calendar]", {
-      stage: "provider_resolution",
+
+  const calendarId = String(
+    config?.googleCalendarId ||
+    config?.google_calendar_id ||
+    '',
+  ).trim();
+
+  if (config?.googleCalendarConnectionSource === 'self_service') {
+    const accessToken = String(
+      config?.googleCalendarOAuthAccessToken || '',
+    ).trim();
+
+    const refreshToken = String(
+      config?.googleCalendarOAuthRefreshToken || '',
+    ).trim();
+
+    if (calendarId && accessToken && refreshToken) {
+      console.log(
+        `[Calendar] Using Google OAuth calendar for business=${config.businessName || config.business_name || "unknown"}, ` +
+        `business_id=${getBusinessIdFromConfig(config) || "missing"}, calendar_id=${calendarId}`,
+      );
+
+      return new GoogleCalendarAdapter(
+        '',
+        '',
+        calendarId,
+        {
+          accessToken,
+          refreshToken,
+          tokenType:
+            config.googleCalendarOAuthTokenType || 'Bearer',
+          expiresAt:
+            config.googleCalendarOAuthTokenExpiresAt || null,
+        },
+      );
+    }
+
+    console.error('[Calendar]', {
+      stage: 'oauth_provider_resolution',
       success: false,
-      bookingOutcomeCode: "PROVIDER_FAILED",
+      businessId:
+        getBusinessIdFromConfig(config) || null,
+      bookingOutcomeCode: 'PROVIDER_FAILED',
+      reason: 'self_service_calendar_credentials_missing',
     });
+
     throw new AiReliabilityError(
-      "PROVIDER_UNAVAILABLE",
-      "Calendar provider is not configured"
+      'PROVIDER_UNAVAILABLE',
+      'Google Calendar OAuth connection is incomplete',
     );
   }
-  console.warn("[Calendar] Falling back to MockCalendarAdapter. This should not happen in production.");
+
+  if (
+    config.calendarProvider === 'google' ||
+    (
+      !config.calendarProvider &&
+      process.env.GOOGLE_CLIENT_EMAIL &&
+      process.env.GOOGLE_PRIVATE_KEY &&
+      (
+        config.googleCalendarId ||
+        process.env.GOOGLE_CALENDAR_ID
+      )
+    )
+  ) {
+    const email =
+      config.googleClientEmail ||
+      process.env.GOOGLE_CLIENT_EMAIL;
+
+    const key =
+      config.googlePrivateKey ||
+      process.env.GOOGLE_PRIVATE_KEY;
+
+    const id =
+      config.googleCalendarId ||
+      process.env.GOOGLE_CALENDAR_ID;
+
+    if (email && key && id) {
+      console.log(
+        `[Calendar] Using legacy Google service-account calendar for business=${config.businessName || config.business_name || "unknown"}, ` +
+        `business_id=${getBusinessIdFromConfig(config) || "missing"}, calendar_id=${id}`,
+      );
+
+      return new GoogleCalendarAdapter(
+        email,
+        key,
+        id,
+      );
+    }
+
+    console.warn(
+      'Google Calendar adapter requested but legacy credentials are missing.',
+    );
+  } else if (
+    config.calendarProvider === 'custom' &&
+    config.calendarApiUrl
+  ) {
+    return new GenericCalendarAdapter(
+      config.calendarApiUrl,
+      config.calendarApiKey,
+    );
+  }
+
+  if (process.env.NODE_ENV === 'production') {
+    console.error('[Calendar]', {
+      stage: 'provider_resolution',
+      success: false,
+      bookingOutcomeCode: 'PROVIDER_FAILED',
+    });
+
+    throw new AiReliabilityError(
+      'PROVIDER_UNAVAILABLE',
+      'Calendar provider is not configured',
+    );
+  }
+
+  console.warn(
+    '[Calendar] Falling back to MockCalendarAdapter. This should not happen in production.',
+  );
+
   return new MockCalendarAdapter();
 }
-
 
 function normalizeLookupText(value?: string): string {
   return String(value || "")
@@ -12978,7 +13151,7 @@ async function loadFreshBusinessConfigByTelegramToken(token: string, fallbackCon
       telegramResolutionSource: resolutionSource
     };
     logResolution(businessId);
-    return freshConfig;
+    return await hydrateBusinessCalendarConfig(freshConfig);
   } catch (err) {
     queryError = err;
     return unresolved("public.businesses.exception");
@@ -22794,7 +22967,7 @@ async function loadBusinessConfigById(businessId: any) {
   try {
     const { data, error } = await supabase.from("businesses").select("*").eq("id", businessId).maybeSingle();
     if (error) console.error("Reminder business lookup error:", JSON.stringify(error));
-    if (data) return normalizeBusinessConfig(data);
+    if (data) return await hydrateBusinessCalendarConfig(normalizeBusinessConfig(data));
   } catch (err) {
     console.error("Reminder business lookup crashed:", err);
   }
@@ -24546,6 +24719,7 @@ async function processWhatsAppMessageClaimed(message: any, metadata: any, config
         };
         businessConfig.channelConnectionSource = connection ? 'self_service' : 'legacy_manual';
         if (connection) businessConfig = applyChannelConnectionToConfig(businessConfig, connection);
+        businessConfig = await hydrateBusinessCalendarConfig(businessConfig);
         console.log(
           `[WhatsAppConfig] business=${data.business_name} (${data.id}), ` +
           `allowCancellation=${businessConfig.allowCancellation}, ` +
@@ -25785,6 +25959,7 @@ async function processMessengerUpdateClaimed(webhookEvent: any, config: any, pla
       if (data._channelConnection) {
         businessConfig = applyChannelConnectionToConfig(businessConfig, data._channelConnection);
       }
+      businessConfig = await hydrateBusinessCalendarConfig(businessConfig);
       messengerBusinessScopeVerified = Boolean(data.id);
       console.log(
         `[MessengerConfig] business=${data.business_name} (${data.id}), ` +
@@ -26372,6 +26547,7 @@ async function processInstagramUpdateClaimed(webhook_event: any, config: any, pl
         };
         businessConfig.channelConnectionSource = connected ? 'self_service' : 'legacy_manual';
         if (connected) businessConfig = applyChannelConnectionToConfig(businessConfig, connected.connection);
+        businessConfig = await hydrateBusinessCalendarConfig(businessConfig);
         console.log(
           `[InstagramConfig] business=${data.business_name} (${data.id}), ` +
           `allowCancellation=${businessConfig.allowCancellation}, ` +
@@ -27270,6 +27446,12 @@ async function startServer() {
   if (supabase) {
     app.use('/api/meta', createMetaComplianceRouter(supabase));
     app.use('/api/channel-connections', createChannelConnectionsRouter({
+      client: supabase,
+      requireAuth,
+      requireBusinessPermission: (permission) => requireBusinessPermission(permission),
+    }));
+
+    app.use('/api/calendar-connections', createCalendarConnectionsRouter({
       client: supabase,
       requireAuth,
       requireBusinessPermission: (permission) => requireBusinessPermission(permission),
@@ -29232,71 +29414,137 @@ app.post('/api/businesses/:businessId/integrations/:integration/test', requireAu
       return fail(404, 'Business not found.');
     }
 
-    const config = normalizeBusinessConfig(businessRow);
+    const config = await hydrateBusinessCalendarConfig(
+      normalizeBusinessConfig(businessRow),
+    );
     const businessName =
       config.businessName ||
       config.business_name ||
       `Business ${businessId}`;
 
     if (integration === 'google_calendar') {
-      const calendarId =
+      const calendarId = String(
         config.googleCalendarId ||
         process.env.GOOGLE_CALENDAR_ID ||
-        '';
-
-      const clientEmail =
-        config.googleClientEmail ||
-        process.env.GOOGLE_CLIENT_EMAIL ||
-        '';
-
-      let privateKey =
-        config.googlePrivateKey ||
-        process.env.GOOGLE_PRIVATE_KEY ||
-        '';
+        '',
+      ).trim();
 
       if (!calendarId) {
-        return fail(400, 'Google Calendar ID is missing for this business.');
-      }
-
-      if (!clientEmail || !privateKey) {
         return fail(
           400,
-          'Google Calendar service-account credentials are missing on the server.',
+          'Google Calendar ID is missing for this business.',
         );
       }
 
-      if (privateKey.trim().startsWith('{')) {
-        try {
-          const parsed = JSON.parse(privateKey);
-          privateKey = parsed.private_key || privateKey;
-        } catch {
-          // Keep the original value. The JWT call below will return the real error.
+      let auth: any;
+
+      if (config.googleCalendarConnectionSource === 'self_service') {
+        const accessToken = String(
+          config.googleCalendarOAuthAccessToken || '',
+        ).trim();
+
+        const refreshToken = String(
+          config.googleCalendarOAuthRefreshToken || '',
+        ).trim();
+
+        if (!accessToken || !refreshToken) {
+          return fail(
+            400,
+            'Google Calendar OAuth connection is incomplete.',
+          );
         }
+
+        auth = createGoogleCalendarOAuthClient(
+          googleCalendarCallbackUrl(),
+        );
+
+        const expiryMs =
+          config.googleCalendarOAuthTokenExpiresAt
+            ? Date.parse(
+                config.googleCalendarOAuthTokenExpiresAt,
+              )
+            : NaN;
+
+        auth.setCredentials({
+          access_token: accessToken,
+          refresh_token: refreshToken,
+          token_type:
+            config.googleCalendarOAuthTokenType || 'Bearer',
+          ...(Number.isFinite(expiryMs)
+            ? { expiry_date: expiryMs }
+            : {}),
+        });
+      } else {
+        const clientEmail =
+          config.googleClientEmail ||
+          process.env.GOOGLE_CLIENT_EMAIL ||
+          '';
+
+        let privateKey =
+          config.googlePrivateKey ||
+          process.env.GOOGLE_PRIVATE_KEY ||
+          '';
+
+        if (!clientEmail || !privateKey) {
+          return fail(
+            400,
+            'Google Calendar service-account credentials are missing on the server.',
+          );
+        }
+
+        if (privateKey.trim().startsWith('{')) {
+          try {
+            const parsed = JSON.parse(privateKey);
+            privateKey =
+              parsed.private_key || privateKey;
+          } catch {
+            // Preserve legacy parsing behavior.
+          }
+        }
+
+        if (
+          privateKey.startsWith('"') &&
+          privateKey.endsWith('"')
+        ) {
+          privateKey = privateKey.slice(1, -1);
+        }
+
+        privateKey =
+          privateKey.replace(/\\n/g, '\n');
+
+        auth = new google.auth.JWT({
+          email: clientEmail,
+          key: privateKey,
+          scopes: [
+            'https://www.googleapis.com/auth/calendar',
+          ],
+        });
       }
 
-      if (privateKey.startsWith('"') && privateKey.endsWith('"')) {
-        privateKey = privateKey.slice(1, -1);
-      }
-
-      privateKey = privateKey.replace(/\\n/g, '\n');
-
-      const auth = new google.auth.JWT({
-        email: clientEmail,
-        key: privateKey,
-        scopes: ['https://www.googleapis.com/auth/calendar'],
+      const calendar = google.calendar({
+        version: 'v3',
+        auth,
       });
 
-      const calendar = google.calendar({ version: 'v3', auth });
+      const calendarResponse =
+        await calendar.calendars.get({
+          calendarId,
+        });
 
-      const calendarResponse = await calendar.calendars.get({
-        calendarId,
-      });
-
-      return succeed('Google Calendar connection successful.', {
-        businessName,
-        calendarId,
-        summary: calendarResponse.data.summary || calendarId,
-      });
+      return succeed(
+        'Google Calendar connection successful.',
+        {
+          businessName,
+          calendarId,
+          summary:
+            calendarResponse.data.summary || calendarId,
+          source:
+            config.googleCalendarConnectionSource ===
+            'self_service'
+              ? 'self_service'
+              : 'legacy_service_account',
+        },
+      );
     }
 
     if (integration === 'telegram') {
@@ -30731,6 +30979,14 @@ export const priority1hUnifiedEngineTestBoundary = {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
     return resolveExplicitBookingDate(text);
   },
+  calendarAdapterForConfig(config: any) {
+    if (process.env.NODE_ENV !== "test") {
+      throw new Error("Priority 1H test boundary is test-only");
+    }
+
+    return getCalendarAdapter(config);
+  },
+
   configure(dependencies: Priority1hTestDependencies) {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
     priority1hTestDependencies = dependencies;

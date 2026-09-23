@@ -112,6 +112,28 @@ const defaultUsage: UsageInfo = {
   limit: 0,
 };
 
+export type CalendarConnectionSummary = {
+  id: string;
+  businessId: number;
+  provider: 'google';
+  calendarId: string;
+  status:
+    | 'pending'
+    | 'connected'
+    | 'reconnect_required'
+    | 'connection_error'
+    | 'disconnected';
+  reconnectRequired: boolean;
+  connectedAt: string | null;
+  lastVerifiedAt: string | null;
+};
+
+export type CalendarAuthorizationStart = {
+  success: true;
+  mode: 'redirect';
+  authorizationUrl: string;
+};
+
 export type ChannelConnectionSummary = {
   id: string;
   businessId: number;
@@ -223,6 +245,23 @@ export const api = {
       `/api/channel-connections/${encodeURIComponent(businessId)}/${provider}`,
       { method: 'DELETE' },
     ),
+  getCalendarConnection: (businessId: string) =>
+    request<{ success: true; data: CalendarConnectionSummary | null }>(
+      `/api/calendar-connections/${encodeURIComponent(businessId)}`,
+    ).then((result) => result.data),
+
+  beginCalendarAuthorization: (businessId: string) =>
+    request<CalendarAuthorizationStart>(
+      `/api/calendar-connections/${encodeURIComponent(businessId)}/google/authorize`,
+      { method: 'POST', body: '{}' },
+    ),
+
+  disconnectCalendar: (businessId: string) =>
+    request<{ success: true; disconnected: boolean }>(
+      `/api/calendar-connections/${encodeURIComponent(businessId)}/google`,
+      { method: 'DELETE' },
+    ),
+
   getPlatformPerformance: (businessId: string) =>
     request<PlatformPerformance>(`/api/businesses/${businessId}/performance`),
   getConversationPage: (

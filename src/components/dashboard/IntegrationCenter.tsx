@@ -1,5 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
-import { api, type ChannelAuthorizationStart, type ChannelConnectionSummary } from '../../services/api';
+import {
+  api,
+  type CalendarConnectionSummary,
+  type ChannelAuthorizationStart,
+  type ChannelConnectionSummary,
+} from '../../services/api';
 import type { Business, IntegrationHealth, IntegrationKey } from '../../types/dashboard';
 import {
   INTEGRATION_PROVIDERS,
@@ -113,12 +118,25 @@ export function IntegrationCenter({ business, health, onTest, onSaved }: Integra
   const [validationMessage, setValidationMessage] = useState('');
   const [channelConnections, setChannelConnections] = useState<ChannelConnectionSummary[]>([]);
   const [channelAction, setChannelAction] = useState<SelfServiceProvider | null>(null);
+  const [calendarConnection, setCalendarConnection] =
+    useState<CalendarConnectionSummary | null>(null);
+  const [calendarAction, setCalendarAction] = useState(false);
   const [pendingWhatsAppStart, setPendingWhatsAppStart] = useState<ChannelAuthorizationStart | null>(null);
   const [whatsappSdkReady, setWhatsAppSdkReady] = useState(false);
 
   const refreshChannelConnections = async () => {
     try { setChannelConnections(await api.getChannelConnections(business.id)); }
     catch { setChannelConnections([]); }
+  };
+
+  const refreshCalendarConnection = async () => {
+    try {
+      setCalendarConnection(
+        await api.getCalendarConnection(business.id),
+      );
+    } catch {
+      setCalendarConnection(null);
+    }
   };
 
   useEffect(() => {
@@ -138,23 +156,86 @@ export function IntegrationCenter({ business, health, onTest, onSaved }: Integra
     setWhatsAppSdkReady(false);
   }, [business.id]);
 
-  useEffect(() => { void refreshChannelConnections(); }, [business.id]);
+  useEffect(() => {
+    void refreshChannelConnections();
+    void refreshCalendarConnection();
+  }, [business.id]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const result = params.get('connection');
+    const integration = params.get('integration');
+
     if (result === 'connected') {
-      void refreshChannelConnections();
-      onSaved('Channel connected.', false);
+      if (integration === 'google_calendar') {
+        void refreshCalendarConnection();
+        onSaved('Google Calendar connected.', false);
+      } else {
+        void refreshChannelConnections();
+        onSaved('Channel connected.', false);
+      }
     } else if (result) {
-      setValidationMessage(t("We couldn't complete this connection. Please try again."));
+      setValidationMessage(
+        t("We couldn't complete this connection. Please try again."),
+      );
     }
+
     if (result) {
       params.delete('connection');
       params.delete('channel');
-      window.history.replaceState({}, '', `${window.location.pathname}${params.size ? `?${params}` : ''}`);
+      params.delete('integration');
+
+      window.history.replaceState(
+        {},
+        '',
+        `${window.location.pathname}${params.size ? `?${params}` : ''}`,
+      );
     }
   }, [business.id]);
+
+  const connectCalendar = async () => {
+    setCalendarAction(true);
+    setValidationMessage('');
+
+    try {
+      const start =
+        await api.beginCalendarAuthorization(business.id);
+
+      if (!start.authorizationUrl) {
+        throw new Error(
+          'google_calendar_authorization_url_missing',
+        );
+      }
+
+      window.location.assign(start.authorizationUrl);
+    } catch {
+      setValidationMessage(
+        t(
+          "We couldn't start Google Calendar authorization. Please try again.",
+        ),
+      );
+      setCalendarAction(false);
+    }
+  };
+
+  const disconnectCalendar = async () => {
+    setCalendarAction(true);
+    setValidationMessage('');
+
+    try {
+      await api.disconnectCalendar(business.id);
+      await refreshCalendarConnection();
+      onSaved('Google Calendar disconnected.', false);
+    } catch {
+      setValidationMessage(
+        t(
+          "We couldn't disconnect Google Calendar. Please try again.",
+        ),
+      );
+    } finally {
+      setCalendarAction(false);
+    }
+  };
 
   const connectChannel = async (provider: SelfServiceProvider) => {
     setChannelAction(provider);
@@ -305,12 +386,34 @@ export function IntegrationCenter({ business, health, onTest, onSaved }: Integra
       {!selectedProvider ? (
         <div className="integration-card-grid" aria-label={t('Available integrations')}>
           {INTEGRATION_PROVIDERS.map((provider) => {
-            const selfService = SELF_SERVICE_PROVIDERS.has(provider.key as SelfServiceProvider);
-            const connection = selfService
-              ? channelConnections.find((item) => item.provider === provider.key && item.status !== 'disconnected')
-              : undefined;
-            const connected = connection?.status === 'connected' && !connection.reconnectRequired;
-            const needsReconnect = connection?.status === 'reconnect_required' || connection?.reconnectRequired;
+            const calendarSelfService =
+              provider.key === 'google_calendar';
+
+            const channelSelfService =
+              SELF_SERVICE_PROVIDERS.has(
+                provider.key as SelfServiceProvider,
+              );
+
+            const selfService =
+              calendarSelfService || channelSelfService;
+
+            const connection = calendarSelfService
+              ? calendarConnection
+              : channelSelfService
+                ? channelConnections.find(
+                    (item) =>
+                      item.provider === provider.key &&
+                      item.status !== 'disconnected',
+                  )
+                : undefined;
+
+            const connected =
+              connection?.status === 'connected' &&
+              !connection.reconnectRequired;
+
+            const needsReconnect =
+              connection?.status === 'reconnect_required' ||
+              connection?.reconnectRequired;
             const item = healthByKey.get(provider.key);
             const state = getIntegrationDisplayState(item, checkingKey === provider.key);
             const needsSetup = item?.status === 'setup_required' || !item;
@@ -327,12 +430,79 @@ export function IntegrationCenter({ business, health, onTest, onSaved }: Integra
                     {selfService ? t(connected ? 'Connected' : needsReconnect ? 'Needs Reconnection' : 'Disconnected') : t(state.label)}
                   </span>
                   {selfService ? <div className="integration-card-actions">
-                    <button className="btn btn-primary" type="button" disabled={channelAction === provider.key || (provider.key === 'whatsapp' && Boolean(pendingWhatsAppStart) && !whatsappSdkReady)} onClick={() => void connectChannel(provider.key as SelfServiceProvider)}>
-                      {t(provider.key === 'whatsapp' && pendingWhatsAppStart
-                        ? whatsappSdkReady ? 'Continue with Meta' : 'Preparing…'
-                        : connected || needsReconnect ? 'Reconnect' : 'Connect')}
-                    </button>
-                    {connected && <button className="btn btn-ghost" type="button" disabled={channelAction === provider.key} onClick={() => void disconnectChannel(provider.key as SelfServiceProvider)}>{t('Disconnect')}</button>}
+                    {calendarSelfService ? (
+                      <>
+                        <button
+                          className="btn btn-primary"
+                          type="button"
+                          disabled={calendarAction}
+                          onClick={() => void connectCalendar()}
+                        >
+                          {t(
+                            connected || needsReconnect
+                              ? 'Reconnect'
+                              : 'Connect Google Calendar',
+                          )}
+                        </button>
+
+                        {connected && (
+                          <button
+                            className="btn btn-ghost"
+                            type="button"
+                            disabled={calendarAction}
+                            onClick={() => void disconnectCalendar()}
+                          >
+                            {t('Disconnect')}
+                          </button>
+                        )}
+                      </>
+                    ) : (
+                      <>
+                        <button
+                          className="btn btn-primary"
+                          type="button"
+                          disabled={
+                            channelAction === provider.key ||
+                            (
+                              provider.key === 'whatsapp' &&
+                              Boolean(pendingWhatsAppStart) &&
+                              !whatsappSdkReady
+                            )
+                          }
+                          onClick={() =>
+                            void connectChannel(
+                              provider.key as SelfServiceProvider,
+                            )
+                          }
+                        >
+                          {t(
+                            provider.key === 'whatsapp' &&
+                            pendingWhatsAppStart
+                              ? whatsappSdkReady
+                                ? 'Continue with Meta'
+                                : 'Preparing…'
+                              : connected || needsReconnect
+                                ? 'Reconnect'
+                                : 'Connect',
+                          )}
+                        </button>
+
+                        {connected && (
+                          <button
+                            className="btn btn-ghost"
+                            type="button"
+                            disabled={channelAction === provider.key}
+                            onClick={() =>
+                              void disconnectChannel(
+                                provider.key as SelfServiceProvider,
+                              )
+                            }
+                          >
+                            {t('Disconnect')}
+                          </button>
+                        )}
+                      </>
+                    )}
                   </div> : <button className="btn btn-primary" type="button" onClick={() => openProvider(provider)}>
                     {needsSetup ? t('Connect {provider}', { provider: provider.title }) : t('Manage')}
                   </button>}

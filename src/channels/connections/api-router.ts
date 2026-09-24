@@ -15,6 +15,7 @@ import {
   completeInstagram,
   completeMessenger,
   completeWhatsApp,
+  completeManualWhatsApp,
   revokeProviderCredential,
   verifyProviderCredential,
   refreshInstagramCredential,
@@ -240,6 +241,37 @@ export function createChannelConnectionsRouter(options: RouterOptions): express.
     });
     response.setHeader('Set-Cookie', clearAuthorizationCookie());
     response.json({ success: true, data: publicConnection(connection) });
+  }));
+
+  router.post('/:businessId/whatsapp/manual', options.requireAuth, manage, asyncRoute(async (request, response) => {
+    const authenticated = request as AuthenticatedRequest;
+    const businessId = authenticated.businessAccess!.businessId;
+
+    const phoneNumberId = String(request.body?.phoneNumberId || '').trim();
+    const wabaId = String(request.body?.wabaId || '').trim();
+    const accessToken = String(request.body?.accessToken || '').trim();
+
+    if (!phoneNumberId || !wabaId || !accessToken) {
+      response.status(400).json({ error: 'whatsapp_manual_fields_required' });
+      return;
+    }
+
+    const completed = await completeManualWhatsApp({
+      phoneNumberId,
+      wabaId,
+      accessToken,
+    });
+
+    const connection = await saveConnection(options.client, {
+      businessId,
+      provider: 'whatsapp',
+      ...completed,
+    });
+
+    response.json({
+      success: true,
+      data: publicConnection(connection),
+    });
   }));
 
   router.delete('/:businessId/:provider', options.requireAuth, manage, asyncRoute(async (request, response) => {

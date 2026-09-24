@@ -201,6 +201,67 @@ export async function completeWhatsApp(input: {
   };
 }
 
+export async function completeManualWhatsApp(input: {
+  wabaId: string;
+  phoneNumberId: string;
+  accessToken: string;
+}): Promise<ProviderConnectionResult> {
+  const token = String(input.accessToken || '').trim();
+  const wabaId = String(input.wabaId || '').trim();
+  const phoneNumberId = String(input.phoneNumberId || '').trim();
+
+  const number = await providerJson(
+    `https://graph.facebook.com/${graphVersion()}/${encodeURIComponent(phoneNumberId)}?fields=id,display_phone_number,verified_name&access_token=${encodeURIComponent(token)}`,
+  );
+
+  if (String(number?.id || '') !== phoneNumberId) {
+    throw new Error('whatsapp_phone_number_mismatch');
+  }
+
+  const phonesUrl = new URL(
+    `https://graph.facebook.com/${graphVersion()}/${encodeURIComponent(wabaId)}/phone_numbers`,
+  );
+  phonesUrl.searchParams.set('fields', 'id');
+  phonesUrl.searchParams.set('limit', '100');
+  phonesUrl.searchParams.set('access_token', token);
+
+  const phones = await providerJson(phonesUrl.toString());
+  const belongsToWaba = (Array.isArray(phones?.data) ? phones.data : [])
+    .some((item: any) => String(item?.id || '') === phoneNumberId);
+
+  if (!belongsToWaba) {
+    throw new Error('whatsapp_waba_phone_mismatch');
+  }
+
+  await providerJson(
+    `https://graph.facebook.com/${graphVersion()}/${encodeURIComponent(wabaId)}/subscribed_apps`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+    },
+  );
+
+  return {
+    providerAccountId: phoneNumberId,
+    providerConnectionId: wabaId,
+    credential: {
+      accessToken: token,
+      tokenType: 'business',
+    },
+    tokenExpiresAt: null,
+    grantedScopes: PROVIDER_SCOPES.whatsapp,
+    metadata: {
+      display_name: number.verified_name || number.display_phone_number || 'WhatsApp Business',
+      waba_id: wabaId,
+      phone_number_id: phoneNumberId,
+      connection_method: 'manual',
+    },
+  };
+}
+
 export async function revokeProviderCredential(provider: ChannelProvider, accessToken: string): Promise<void> {
   if (provider === 'telegram') return;
   const endpoint = provider === 'instagram'

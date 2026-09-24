@@ -345,6 +345,24 @@ export function IntegrationCenter({ business, health, onTest, onSaved }: Integra
     setSavingKey(provider.key);
     setValidationMessage('');
     try {
+      if (provider.key === 'whatsapp') {
+        await api.connectWhatsAppManually(business.id, {
+          phoneNumberId: values.whatsappPhoneNumberId,
+          wabaId: values.whatsappBusinessAccountId,
+          accessToken: values.whatsappAccessToken,
+        });
+
+        await refreshChannelConnections();
+
+        setValues((current) => ({
+          ...current,
+          whatsappAccessToken: '',
+        }));
+
+        onSaved('WhatsApp connected.', false);
+        return true;
+      }
+
       await api.updateBusiness(business.id, getProviderPayload(provider, values));
       const pendingHealth: IntegrationHealth = {
         key: provider.key,
@@ -486,6 +504,17 @@ export function IntegrationCenter({ business, health, onTest, onSaved }: Integra
                                 : 'Connect',
                           )}
                         </button>
+
+                        {provider.key === 'whatsapp' && !connected && (
+                          <button
+                            className="btn btn-ghost"
+                            type="button"
+                            disabled={channelAction === provider.key}
+                            onClick={() => openProvider(provider, 'wizard')}
+                          >
+                            {t('Connect manually')}
+                          </button>
+                        )}
 
                         {connected && (
                           <button

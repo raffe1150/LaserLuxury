@@ -240,6 +240,14 @@ export const api = {
     `/api/channel-connections/${encodeURIComponent(businessId)}/whatsapp/complete`,
     { method: 'POST', body: JSON.stringify(payload) },
   ),
+  connectWhatsAppManually: (
+    businessId: string,
+    payload: { phoneNumberId: string; wabaId: string; accessToken: string },
+  ) => request<{ success: true; data: ChannelConnectionSummary }>(
+    `/api/channel-connections/${encodeURIComponent(businessId)}/whatsapp/manual`,
+    { method: 'POST', body: JSON.stringify(payload) },
+  ),
+
   disconnectChannel: (businessId: string, provider: ChannelConnectionSummary['provider']) =>
     request<{ success: true; disconnected: boolean }>(
       `/api/channel-connections/${encodeURIComponent(businessId)}/${provider}`,

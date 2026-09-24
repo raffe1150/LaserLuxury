@@ -240,44 +240,56 @@ async function probe(
     ).replace(/^\/?/, '');
 
     if (integration === 'messenger') {
-      const url = new URL(`https://graph.facebook.com/${metaGraphVersion}/me`);
-      url.searchParams.set('fields', 'id');
-      url.searchParams.set('access_token', token || '');
+      const appId = String(process.env.META_APP_ID || '').trim();
+      const appSecret = String(process.env.META_APP_SECRET || '').trim();
 
-      const { response, data } = await fetchJson(url, fetchImpl, controller.signal);
-
-      if (
-        response.ok &&
-        !data?.error &&
-        String(data?.id || '') === String(identifier || '')
-      ) {
-        return { status: 'connected', reasonCode: 'verified' };
+      if (!appId || !appSecret) {
+        return { status: 'degraded', reasonCode: 'provider_unavailable' };
       }
 
-      if (!response.ok || data?.error) {
-        console.warn('[MessengerHealthDiagnostic]', {
-          businessId,
-          httpStatus: response.status,
-          metaErrorCode: Number(data?.error?.code || 0) || null,
-          metaErrorSubcode: Number(data?.error?.error_subcode || 0) || null,
-          metaErrorType: String(data?.error?.type || '') || null,
-          metaErrorMessage: String(data?.error?.message || '').slice(0, 240) || null,
-          providerIdentityPresent: Boolean(identifier),
-          credentialPresent: Boolean(token),
-        });
-        return fromHttp(response, data);
+      const url = new URL(
+        `https://graph.facebook.com/${metaGraphVersion}/debug_token`
+      );
+
+      url.searchParams.set('input_token', token || '');
+      url.searchParams.set('access_token', `${appId}|${appSecret}`);
+
+      const { response, data } = await fetchJson(
+        url,
+        fetchImpl,
+        controller.signal
+      );
+
+      const debug = data?.data;
+      const valid =
+        response.ok &&
+        !data?.error &&
+        debug?.is_valid === true &&
+        String(debug?.app_id || '') === appId;
+
+      if (valid) {
+        return { status: 'connected', reasonCode: 'verified' };
       }
 
       console.warn('[MessengerHealthDiagnostic]', {
         businessId,
         httpStatus: response.status,
-        identityMismatch: true,
-        expectedPageIdPresent: Boolean(identifier),
-        returnedPageIdPresent: Boolean(data?.id),
+        metaErrorCode: Number(data?.error?.code || 0) || null,
+        metaErrorSubcode: Number(data?.error?.error_subcode || 0) || null,
+        metaErrorType: String(data?.error?.type || '') || null,
+        tokenValid: debug?.is_valid === true,
+        appMatches: String(debug?.app_id || '') === appId,
+        providerIdentityPresent: Boolean(identifier),
+        credentialPresent: Boolean(token),
       });
+
+      if (!response.ok || data?.error) {
+        return fromHttp(response, data);
+      }
 
       return { status: 'disconnected', reasonCode: 'authorization_invalid' };
     }
+
 
     const url = new URL(
       `https://graph.facebook.com/${metaGraphVersion}/${encodeURIComponent(identifier || '')}`

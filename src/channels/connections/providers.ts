@@ -109,6 +109,65 @@ export async function completeInstagram(code: string, redirectUri: string): Prom
   };
 }
 
+export async function completeManualInstagram(input: {
+  accountId: string;
+  pageId?: string;
+  accessToken: string;
+}): Promise<ProviderConnectionResult> {
+  const accountId = String(input.accountId || '').trim();
+  const pageId = String(input.pageId || '').trim();
+  const token = String(input.accessToken || '').trim();
+
+  const profileUrl = new URL(
+    `https://graph.instagram.com/${graphVersion()}/${encodeURIComponent(accountId)}`,
+  );
+  profileUrl.searchParams.set('fields', 'user_id,username,name');
+  profileUrl.searchParams.set('access_token', token);
+
+  const profile = await providerJson(profileUrl.toString());
+  const profileData = Array.isArray(profile?.data) ? profile.data[0] : profile;
+  const resolvedAccountId = String(profileData?.user_id || profileData?.id || '');
+
+  if (!resolvedAccountId || resolvedAccountId !== accountId) {
+    throw new Error('instagram_account_identity_mismatch');
+  }
+
+  await providerJson(
+    `https://graph.instagram.com/${graphVersion()}/${encodeURIComponent(accountId)}/subscribed_apps`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        subscribed_fields: [
+          'messages',
+          'messaging_postbacks',
+          'comments',
+          'live_comments',
+        ],
+      }),
+    },
+  );
+
+  return {
+    providerAccountId: accountId,
+    credential: {
+      accessToken: token,
+      tokenType: 'bearer',
+    },
+    tokenExpiresAt: null,
+    grantedScopes: PROVIDER_SCOPES.instagram,
+    metadata: {
+      display_name: profileData?.username || profileData?.name || 'Instagram account',
+      instagram_account_id: accountId,
+      page_id: pageId || null,
+      connection_method: 'manual',
+    },
+  };
+}
+
 export async function refreshInstagramCredential(accessToken: string): Promise<{ accessToken: string; expiresAt: string | null }> {
   const url = new URL('https://graph.instagram.com/refresh_access_token');
   url.searchParams.set('grant_type', 'ig_refresh_token');

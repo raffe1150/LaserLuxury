@@ -13,6 +13,7 @@ import {
 import {
   buildAuthorizationUrl,
   completeInstagram,
+  completeManualInstagram,
   completeMessenger,
   completeWhatsApp,
   completeManualWhatsApp,
@@ -241,6 +242,37 @@ export function createChannelConnectionsRouter(options: RouterOptions): express.
     });
     response.setHeader('Set-Cookie', clearAuthorizationCookie());
     response.json({ success: true, data: publicConnection(connection) });
+  }));
+
+  router.post('/:businessId/instagram/manual', options.requireAuth, manage, asyncRoute(async (request, response) => {
+    const authenticated = request as AuthenticatedRequest;
+    const businessId = authenticated.businessAccess!.businessId;
+
+    const accountId = String(request.body?.accountId || '').trim();
+    const pageId = String(request.body?.pageId || '').trim();
+    const accessToken = String(request.body?.accessToken || '').trim();
+
+    if (!accountId || !accessToken) {
+      response.status(400).json({ error: 'instagram_manual_fields_required' });
+      return;
+    }
+
+    const completed = await completeManualInstagram({
+      accountId,
+      pageId,
+      accessToken,
+    });
+
+    const connection = await saveConnection(options.client, {
+      businessId,
+      provider: 'instagram',
+      ...completed,
+    });
+
+    response.json({
+      success: true,
+      data: publicConnection(connection),
+    });
   }));
 
   router.post('/:businessId/whatsapp/manual', options.requireAuth, manage, asyncRoute(async (request, response) => {

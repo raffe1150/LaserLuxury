@@ -243,20 +243,38 @@ function verifyMetaWebhookSignature(req: express.Request, res: express.Response,
     req.path === '/webhook' &&
     req.body?.object === 'whatsapp_business_account';
 
-  const secret = String(
-    instagramWebhook
-      ? process.env.INSTAGRAM_APP_SECRET
-      : whatsappWebhook
-        ? process.env.WHATSAPP_APP_SECRET || process.env.META_APP_SECRET
-        : process.env.META_APP_SECRET
-  ).trim();
-  if (!secret) return res.sendStatus(503);
+  const secrets = instagramWebhook
+    ? [
+        process.env.INSTAGRAM_APP_SECRET,
+        process.env.INSTAGRAM_MANUAL_APP_SECRET,
+      ]
+    : whatsappWebhook
+      ? [
+          process.env.WHATSAPP_APP_SECRET,
+          process.env.META_APP_SECRET,
+        ]
+      : [
+          process.env.META_APP_SECRET,
+        ];
+
+  const usableSecrets = secrets
+    .map((value) => String(value || '').trim())
+    .filter(Boolean);
+
+  if (usableSecrets.length === 0) return res.sendStatus(503);
+
   const signature = String(req.header('x-hub-signature-256') || '');
   const rawBody = (req as any).rawBody as Buffer | undefined;
-  if (!validMetaWebhookSignature(rawBody, signature, secret)) {
+
+  const signatureValid = usableSecrets.some((secret) =>
+    validMetaWebhookSignature(rawBody, signature, secret)
+  );
+
+  if (!signatureValid) {
     res.sendStatus(401);
     return;
   }
+
   next();
 }
 

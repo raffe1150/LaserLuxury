@@ -345,6 +345,24 @@ export function IntegrationCenter({ business, health, onTest, onSaved }: Integra
     setSavingKey(provider.key);
     setValidationMessage('');
     try {
+      if (provider.key === 'instagram') {
+        await api.connectInstagramManually(business.id, {
+          accountId: values.instagramAccountId,
+          pageId: values.instagramPageId,
+          accessToken: values.instagramAccessToken,
+        });
+
+        await refreshChannelConnections();
+
+        setValues((current) => ({
+          ...current,
+          instagramAccessToken: '',
+        }));
+
+        onSaved('Instagram connected.', false);
+        return true;
+      }
+
       if (provider.key === 'whatsapp') {
         await api.connectWhatsAppManually(business.id, {
           phoneNumberId: values.whatsappPhoneNumberId,
@@ -505,7 +523,7 @@ export function IntegrationCenter({ business, health, onTest, onSaved }: Integra
                           )}
                         </button>
 
-                        {provider.key === 'whatsapp' && !connected && (
+                        {(provider.key === 'whatsapp' || provider.key === 'instagram') && !connected && (
                           <button
                             className="btn btn-ghost"
                             type="button"

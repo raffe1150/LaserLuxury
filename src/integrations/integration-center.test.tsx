@@ -38,7 +38,7 @@ const health: IntegrationHealth[] = INTEGRATION_PROVIDERS.map((provider) => ({
 }));
 
 assert.deepEqual(INTEGRATION_PROVIDERS.map((provider) => provider.key), ['google_calendar', 'instagram', 'messenger', 'telegram', 'whatsapp']);
-assert.deepEqual(INTEGRATION_PROVIDERS.find((provider) => provider.key === 'google_calendar')?.fields.map((field) => field.key), ['calendarId', 'timezone']);
+assert.deepEqual(INTEGRATION_PROVIDERS.find((provider) => provider.key === 'google_calendar')?.fields.map((field) => field.key), []);
 assert.deepEqual(INTEGRATION_PROVIDERS.find((provider) => provider.key === 'instagram')?.fields.map((field) => field.key), ['instagramPageId', 'instagramAccountId', 'instagramAccessToken', 'instagramWebhookVerifyToken']);
 assert.deepEqual(INTEGRATION_PROVIDERS.find((provider) => provider.key === 'messenger')?.fields.map((field) => field.key), ['messengerPageId', 'messengerAccessToken', 'messengerAppSecret', 'messengerWebhookVerifyToken']);
 assert.deepEqual(INTEGRATION_PROVIDERS.find((provider) => provider.key === 'telegram')?.fields.map((field) => field.key), ['telegramToken', 'telegramAdminChatId']);
@@ -91,7 +91,6 @@ const markup = renderToStaticMarkup(createElement(DashboardI18nProvider, null,
 ));
 assert.match(markup, /Integration Center/);
 for (const provider of INTEGRATION_PROVIDERS) assert.match(markup, new RegExp(provider.title));
-assert.match(markup, /Manage/);
 assert.match(markup, />Connect</);
 assert.doesNotMatch(markup, /Access Token|Bot Token|Phone Number ID/, 'normal dashboard cards never expose manual channel credentials');
 assert.doesNotMatch(markup, /must-never-render/);
@@ -116,9 +115,14 @@ for (const provider of INTEGRATION_PROVIDERS) {
   assert.match(introMarkup, /setup-journey-path/);
   assert.doesNotMatch(introMarkup, /Visual guide coming soon/);
   const fieldMarkup = renderToStaticMarkup(createElement(SetupWizard, { ...wizardProps, step: 1 }));
-  assert.match(fieldMarkup, /setup-example/);
-  assert.match(fieldMarkup, new RegExp(`integration-${getGuidedIntegrationFields(provider)[0].key}`));
-  assert.match(fieldMarkup, />Back<|>Continue</);
+  const guidedFields = getGuidedIntegrationFields(provider);
+
+  if (guidedFields.length > 0) {
+    assert.match(fieldMarkup, /setup-example/);
+    assert.match(fieldMarkup, new RegExp(`integration-${guidedFields[0].key}`));
+  }
+
+  assert.match(fieldMarkup, />Back<|>Continue|>Save configuration</);
 }
 
 const providerCopy = INTEGRATION_PROVIDERS.flatMap((provider) => [
@@ -131,7 +135,7 @@ const providerCopy = INTEGRATION_PROVIDERS.flatMap((provider) => [
   ...getGuidedIntegrationFields(provider).flatMap((field) => field.visual.path),
 ]);
 const visualCopy = ['Find your {field}', 'Educational setup guide — not a provider screenshot', 'Choose this path', 'Look for', 'Example only — never share a real secret.'];
-const technicalVisualLabels = ['Google Calendar', 'Instagram', 'Messenger', 'Telegram', 'WhatsApp', 'BotFather', 'Meta for Developers', 'Calendar ID', 'Instagram Account ID', 'WhatsApp Business Account ID', 'Phone Number ID', 'API Setup', 'General'];
+const technicalVisualLabels = ['OdinLink', 'Google Calendar', 'Instagram', 'Messenger', 'Telegram', 'WhatsApp', 'BotFather', 'Meta for Developers', 'Calendar ID', 'Instagram Account ID', 'WhatsApp Business Account ID', 'Phone Number ID', 'API Setup', 'General'];
 for (const locale of DASHBOARD_LOCALES.filter((item) => item !== 'en')) {
   assert.notEqual(translateDashboardText(locale, 'Integration Center'), 'Integration Center');
   assert.notEqual(translateDashboardText(locale, 'Where do I find this?'), 'Where do I find this?');

@@ -233,6 +233,14 @@ export const api = {
       `/api/channel-connections/${encodeURIComponent(businessId)}/${provider}/authorize`,
       { method: 'POST', body: '{}' },
     ),
+  connectInstagramManually: (
+    businessId: string,
+    payload: { accountId: string; pageId?: string; accessToken: string },
+  ) => request<{ success: true; data: ChannelConnectionSummary }>(
+    `/api/channel-connections/${encodeURIComponent(businessId)}/instagram/manual`,
+    { method: 'POST', body: JSON.stringify(payload) },
+  ),
+
   completeWhatsAppAuthorization: (
     businessId: string,
     payload: { state: string; code: string; wabaId: string; phoneNumberId: string },

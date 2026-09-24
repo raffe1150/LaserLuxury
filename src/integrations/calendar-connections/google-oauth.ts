@@ -34,6 +34,17 @@ export function buildGoogleCalendarAuthorizationUrl(
   });
 }
 
+export async function revokeGoogleCalendarCredential(
+  token: string,
+  redirectUri: string,
+): Promise<void> {
+  const value = String(token || '').trim();
+  if (!value) return;
+
+  const oauth = createGoogleCalendarOAuthClient(redirectUri);
+  await oauth.revokeToken(value);
+}
+
 export async function exchangeGoogleCalendarCode(
   code: string,
   redirectUri: string,

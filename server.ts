@@ -150,7 +150,10 @@ import {
 import type { IntegrationKey } from "./src/types/dashboard";
 import { createChannelConnectionsRouter } from "./src/channels/connections/api-router";
 import { createCalendarConnectionsRouter } from "./src/integrations/calendar-connections/api-router";
-import { resolveCalendarConnectionForBusiness } from "./src/integrations/calendar-connections/repository";
+import {
+  persistCalendarOAuthTokens,
+  resolveCalendarConnectionForBusiness,
+} from "./src/integrations/calendar-connections/repository";
 import { createGoogleCalendarOAuthClient } from "./src/integrations/calendar-connections/google-oauth";
 import { googleCalendarCallbackUrl } from "./src/integrations/calendar-connections/security";
 import { createMetaComplianceRouter } from "./src/channels/connections/meta-compliance";
@@ -2394,6 +2397,7 @@ class GoogleCalendarAdapter implements CalendarAdapter {
       refreshToken: string;
       tokenType?: string;
       expiresAt?: string | null;
+      onTokens?: (tokens: any) => void;
     },
   ) {
     let auth: any;
@@ -2415,6 +2419,10 @@ class GoogleCalendarAdapter implements CalendarAdapter {
           ? { expiry_date: expiryMs }
           : {}),
       });
+
+      if (oauthCredential.onTokens) {
+        auth.on('tokens', oauthCredential.onTokens);
+      }
     } else {
       let finalKey =
         privateKey || process.env.GOOGLE_PRIVATE_KEY || '';
@@ -2703,6 +2711,37 @@ class GoogleCalendarAdapter implements CalendarAdapter {
   }
 }
 
+function normalizeCalendarOAuthRefresh(
+  tokens: any,
+  currentRefreshToken: string,
+  currentTokenType?: string,
+) {
+  const accessToken = String(
+    tokens?.access_token || '',
+  ).trim();
+
+  const refreshToken = String(
+    tokens?.refresh_token || currentRefreshToken || '',
+  ).trim();
+
+  const tokenType =
+    tokens?.token_type ||
+    currentTokenType ||
+    'Bearer';
+
+  const expiryDate = Number(tokens?.expiry_date);
+
+  return {
+    accessToken,
+    refreshToken,
+    tokenType,
+    tokenExpiresAt:
+      Number.isFinite(expiryDate)
+        ? new Date(expiryDate).toISOString()
+        : null,
+  };
+}
+
 function getCalendarAdapter(config: any): CalendarAdapter {
   if (priority1hTestDependencies?.calendarAdapter) {
     return priority1hTestDependencies.calendarAdapter;
@@ -2740,6 +2779,48 @@ function getCalendarAdapter(config: any): CalendarAdapter {
             config.googleCalendarOAuthTokenType || 'Bearer',
           expiresAt:
             config.googleCalendarOAuthTokenExpiresAt || null,
+          onTokens: (tokens: any) => {
+            const refreshed =
+              normalizeCalendarOAuthRefresh(
+                tokens,
+                refreshToken,
+                config.googleCalendarOAuthTokenType,
+              );
+
+            if (
+              !refreshed.accessToken ||
+              !supabase ||
+              !config.googleCalendarOAuthConnectionId
+            ) {
+              return;
+            }
+
+            void persistCalendarOAuthTokens(
+              supabase,
+              {
+                connectionId:
+                  config.googleCalendarOAuthConnectionId,
+                accessToken: refreshed.accessToken,
+                refreshToken: refreshed.refreshToken,
+                tokenType: refreshed.tokenType,
+                tokenExpiresAt: refreshed.tokenExpiresAt,
+              },
+            ).catch((error) => {
+              console.error(
+                '[CalendarOAuth] Failed to persist refreshed token',
+                {
+                  businessId:
+                    getBusinessIdFromConfig(config) || null,
+                  connectionId:
+                    config.googleCalendarOAuthConnectionId,
+                  message:
+                    error instanceof Error
+                      ? error.message
+                      : String(error),
+                },
+              );
+            });
+          },
         },
       );
     }
@@ -30979,6 +31060,22 @@ export const priority1hUnifiedEngineTestBoundary = {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
     return resolveExplicitBookingDate(text);
   },
+  normalizeCalendarOAuthRefreshForTest(
+    tokens: any,
+    currentRefreshToken: string,
+    currentTokenType?: string,
+  ) {
+    if (process.env.NODE_ENV !== "test") {
+      throw new Error("Priority 1H test boundary is test-only");
+    }
+
+    return normalizeCalendarOAuthRefresh(
+      tokens,
+      currentRefreshToken,
+      currentTokenType,
+    );
+  },
+
   calendarAdapterForConfig(config: any) {
     if (process.env.NODE_ENV !== "test") {
       throw new Error("Priority 1H test boundary is test-only");

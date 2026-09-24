@@ -138,6 +138,37 @@ export async function disconnectCalendarConnection(
   return Boolean(data?.length);
 }
 
+export async function persistCalendarOAuthTokens(
+  client: SupabaseClient,
+  input: {
+    connectionId: string;
+    accessToken: string;
+    refreshToken: string;
+    tokenType?: string;
+    tokenExpiresAt?: string | null;
+  },
+): Promise<void> {
+  const credential: StoredCredential = {
+    accessToken: input.accessToken,
+    refreshToken: input.refreshToken,
+    tokenType: input.tokenType || 'Bearer',
+  };
+
+  const { error } = await client
+    .from('calendar_connections')
+    .update({
+      credential_ciphertext: encryptCredential(credential),
+      credential_key_id: credentialKeyId(),
+      token_expires_at: input.tokenExpiresAt || null,
+      status: 'connected',
+      reconnect_required: false,
+    })
+    .eq('id', input.connectionId)
+    .eq('provider', 'google');
+
+  if (error) throw error;
+}
+
 export async function markCalendarReconnectRequired(
   client: SupabaseClient,
   connectionId: string,

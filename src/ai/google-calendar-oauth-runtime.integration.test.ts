@@ -48,3 +48,53 @@ test('self-service Google Calendar never falls back to global service-account cr
     /Google Calendar OAuth connection is incomplete/,
   );
 });
+
+test('Google OAuth refresh preserves the existing refresh token when Google only returns a new access token', () => {
+  const refreshed =
+    boundary.normalizeCalendarOAuthRefreshForTest(
+      {
+        access_token: 'new-access-token',
+        expiry_date: 1790000000000,
+      },
+      'existing-refresh-token',
+      'Bearer',
+    );
+
+  assert.equal(
+    refreshed.accessToken,
+    'new-access-token',
+  );
+
+  assert.equal(
+    refreshed.refreshToken,
+    'existing-refresh-token',
+  );
+
+  assert.equal(
+    refreshed.tokenType,
+    'Bearer',
+  );
+
+  assert.equal(
+    refreshed.tokenExpiresAt,
+    new Date(1790000000000).toISOString(),
+  );
+});
+
+test('Google OAuth refresh uses a newly issued refresh token when Google provides one', () => {
+  const refreshed =
+    boundary.normalizeCalendarOAuthRefreshForTest(
+      {
+        access_token: 'new-access-token',
+        refresh_token: 'rotated-refresh-token',
+        token_type: 'Bearer',
+      },
+      'existing-refresh-token',
+      'Bearer',
+    );
+
+  assert.equal(
+    refreshed.refreshToken,
+    'rotated-refresh-token',
+  );
+});

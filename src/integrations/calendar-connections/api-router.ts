@@ -11,11 +11,13 @@ import type { AuthenticatedRequest } from '../../auth/types';
 import {
   buildGoogleCalendarAuthorizationUrl,
   exchangeGoogleCalendarCode,
+  revokeGoogleCalendarCredential,
 } from './google-oauth';
 
 import {
   disconnectCalendarConnection,
   getCalendarConnection,
+  resolveCalendarConnectionForBusiness,
   saveCalendarConnection,
 } from './repository';
 
@@ -187,15 +189,51 @@ export function createCalendarConnectionsRouter(
       const businessId =
         (request as AuthenticatedRequest).businessAccess!.businessId;
 
+      const connection =
+        await resolveCalendarConnectionForBusiness(
+          options.client,
+          businessId,
+        );
+
       const disconnected =
         await disconnectCalendarConnection(
           options.client,
           businessId,
         );
 
+      let providerRevoked = false;
+
+      if (connection) {
+        const token =
+          connection.credential.refreshToken ||
+          connection.credential.accessToken;
+
+        try {
+          await revokeGoogleCalendarCredential(
+            token,
+            googleCalendarCallbackUrl(),
+          );
+
+          providerRevoked = true;
+        } catch (error) {
+          console.warn(
+            '[CalendarConnection] Google token revocation failed after local disconnect',
+            {
+              businessId,
+              connectionId: connection.id,
+              message:
+                error instanceof Error
+                  ? error.message
+                  : String(error),
+            },
+          );
+        }
+      }
+
       response.json({
         success: true,
         disconnected,
+        providerRevoked,
       });
     }),
   );

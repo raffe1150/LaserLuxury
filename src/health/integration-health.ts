@@ -245,7 +245,23 @@ async function probe(
     url.searchParams.set('fields', 'id');
     url.searchParams.set('access_token', token || '');
     const { response, data } = await fetchJson(url, fetchImpl, controller.signal);
-    return response.ok && !data?.error ? { status: 'connected', reasonCode: 'verified' } : fromHttp(response, data);
+
+    if (integration === 'messenger' && (!response.ok || data?.error)) {
+      console.warn('[MessengerHealthDiagnostic]', {
+        businessId,
+        httpStatus: response.status,
+        metaErrorCode: Number(data?.error?.code || 0) || null,
+        metaErrorSubcode: Number(data?.error?.error_subcode || 0) || null,
+        metaErrorType: String(data?.error?.type || '') || null,
+        metaErrorMessage: String(data?.error?.message || '').slice(0, 240) || null,
+        providerIdentityPresent: Boolean(identifier),
+        credentialPresent: Boolean(token),
+      });
+    }
+
+    return response.ok && !data?.error
+      ? { status: 'connected', reasonCode: 'verified' }
+      : fromHttp(response, data);
   } catch (error) {
     if (error instanceof Error && error.name === 'AbortError') return { status: 'degraded', reasonCode: 'timeout' };
     return { status: 'degraded', reasonCode: 'provider_unavailable' };

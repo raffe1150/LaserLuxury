@@ -239,25 +239,53 @@ async function probe(
       process.env.META_GRAPH_API_VERSION || 'v26.0'
     ).replace(/^\/?/, '');
 
+    if (integration === 'messenger') {
+      const url = new URL(`https://graph.facebook.com/${metaGraphVersion}/me`);
+      url.searchParams.set('fields', 'id');
+      url.searchParams.set('access_token', token || '');
+
+      const { response, data } = await fetchJson(url, fetchImpl, controller.signal);
+
+      if (
+        response.ok &&
+        !data?.error &&
+        String(data?.id || '') === String(identifier || '')
+      ) {
+        return { status: 'connected', reasonCode: 'verified' };
+      }
+
+      if (!response.ok || data?.error) {
+        console.warn('[MessengerHealthDiagnostic]', {
+          businessId,
+          httpStatus: response.status,
+          metaErrorCode: Number(data?.error?.code || 0) || null,
+          metaErrorSubcode: Number(data?.error?.error_subcode || 0) || null,
+          metaErrorType: String(data?.error?.type || '') || null,
+          metaErrorMessage: String(data?.error?.message || '').slice(0, 240) || null,
+          providerIdentityPresent: Boolean(identifier),
+          credentialPresent: Boolean(token),
+        });
+        return fromHttp(response, data);
+      }
+
+      console.warn('[MessengerHealthDiagnostic]', {
+        businessId,
+        httpStatus: response.status,
+        identityMismatch: true,
+        expectedPageIdPresent: Boolean(identifier),
+        returnedPageIdPresent: Boolean(data?.id),
+      });
+
+      return { status: 'disconnected', reasonCode: 'authorization_invalid' };
+    }
+
     const url = new URL(
       `https://graph.facebook.com/${metaGraphVersion}/${encodeURIComponent(identifier || '')}`
     );
     url.searchParams.set('fields', 'id');
     url.searchParams.set('access_token', token || '');
-    const { response, data } = await fetchJson(url, fetchImpl, controller.signal);
 
-    if (integration === 'messenger' && (!response.ok || data?.error)) {
-      console.warn('[MessengerHealthDiagnostic]', {
-        businessId,
-        httpStatus: response.status,
-        metaErrorCode: Number(data?.error?.code || 0) || null,
-        metaErrorSubcode: Number(data?.error?.error_subcode || 0) || null,
-        metaErrorType: String(data?.error?.type || '') || null,
-        metaErrorMessage: String(data?.error?.message || '').slice(0, 240) || null,
-        providerIdentityPresent: Boolean(identifier),
-        credentialPresent: Boolean(token),
-      });
-    }
+    const { response, data } = await fetchJson(url, fetchImpl, controller.signal);
 
     return response.ok && !data?.error
       ? { status: 'connected', reasonCode: 'verified' }

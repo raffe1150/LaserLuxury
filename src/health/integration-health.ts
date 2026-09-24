@@ -235,7 +235,13 @@ async function probe(
     }
     const identifier = integration === 'messenger' ? config.messengerPageId : config.whatsappPhoneNumberId;
     const token = integration === 'messenger' ? config.messengerAccessToken : config.whatsappAccessToken;
-    const url = new URL(`https://graph.facebook.com/v22.0/${encodeURIComponent(identifier || '')}`);
+    const metaGraphVersion = String(
+      process.env.META_GRAPH_API_VERSION || 'v26.0'
+    ).replace(/^\/?/, '');
+
+    const url = new URL(
+      `https://graph.facebook.com/${metaGraphVersion}/${encodeURIComponent(identifier || '')}`
+    );
     url.searchParams.set('fields', 'id');
     url.searchParams.set('access_token', token || '');
     const { response, data } = await fetchJson(url, fetchImpl, controller.signal);

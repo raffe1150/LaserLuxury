@@ -29126,12 +29126,22 @@ function getHealthCheckConfig(businessRow: any): IntegrationHealthConfig {
   return {
     // Provider identities and tokens must come from this tenant's row. Global
     // messaging fallbacks cannot establish health for a selected business.
-    telegramToken: businessRow.telegram_bot_token || businessRow.telegram_token || undefined,
-    instagramAccessToken: cleanInstagramToken(businessRow.instagram_access_token) || undefined,
-    messengerPageId: businessRow.messenger_page_id || businessRow.facebook_page_id || businessRow.page_id || undefined,
-    messengerAccessToken: businessRow.messenger_page_access_token || businessRow.messenger_access_token || businessRow.facebook_page_access_token || undefined,
-    whatsappPhoneNumberId: businessRow.whatsapp_phone_number_id || undefined,
-    whatsappAccessToken: businessRow.whatsapp_access_token || undefined,
+    telegramToken: businessRow.telegramToken || businessRow.telegram_bot_token || businessRow.telegram_token || undefined,
+    instagramAccessToken: cleanInstagramToken(
+      businessRow.instagramAccessToken ||
+      businessRow.instagramToken ||
+      businessRow.instagram_access_token
+    ) || undefined,
+    messengerPageId: businessRow.messengerPageId || businessRow.messenger_page_id || businessRow.facebook_page_id || businessRow.page_id || undefined,
+    messengerAccessToken:
+      businessRow.messengerPageAccessToken ||
+      businessRow.messengerAccessToken ||
+      businessRow.messenger_page_access_token ||
+      businessRow.messenger_access_token ||
+      businessRow.facebook_page_access_token ||
+      undefined,
+    whatsappPhoneNumberId: businessRow.whatsappPhoneNumberId || businessRow.whatsapp_phone_number_id || undefined,
+    whatsappAccessToken: businessRow.whatsappAccessToken || businessRow.whatsapp_access_token || undefined,
     calendarId: businessRow.google_calendar_id || businessRow.calendar_id || undefined,
     // The service account may be shared infrastructure, but the calendar
     // identity above remains tenant-owned and mandatory.
@@ -29184,8 +29194,21 @@ async function loadHealthBusiness(businessId: number) {
   return data;
 }
 
-async function syncBusinessNotifications(businessId: number): Promise<void> {
+async function loadHydratedHealthBusiness(businessId: number) {
   const business = await loadHealthBusiness(businessId);
+  if (!business) return null;
+
+  let hydrated: any = business;
+
+  for (const provider of ['instagram', 'messenger', 'telegram', 'whatsapp'] as ChannelProvider[]) {
+    hydrated = await hydrateBusinessChannelConfig(hydrated, provider);
+  }
+
+  return hydrated;
+}
+
+async function syncBusinessNotifications(businessId: number): Promise<void> {
+  const business = await loadHydratedHealthBusiness(businessId);
   if (!business) return;
 
   const health = getIntegrationHealthSnapshot(businessId, getHealthCheckConfig(business));
@@ -29283,7 +29306,7 @@ async function loadDashboardOperationalSources(
   businessId: number,
 ): Promise<DashboardOperationalSources> {
   const [healthResult, notificationResult] = await Promise.allSettled([
-    loadHealthBusiness(businessId).then((business) => (
+    loadHydratedHealthBusiness(businessId).then((business) => (
       business
         ? getIntegrationHealthSnapshot(businessId, getHealthCheckConfig(business))
         : null
@@ -29406,7 +29429,7 @@ app.get('/api/businesses/:businessId/integrations/health', requireAuth, requireB
     if (!Number.isSafeInteger(businessId) || businessId <= 0) {
       return res.status(400).json({ success: false, message: 'A valid businessId is required.' });
     }
-    const business = await loadHealthBusiness(businessId);
+    const business = await loadHydratedHealthBusiness(businessId);
     if (!business) return res.status(404).json({ success: false, message: 'Business not found.' });
     res.setHeader('Cache-Control', 'no-store');
     return res.status(200).json(getIntegrationHealthSnapshot(businessId, getHealthCheckConfig(business)));
@@ -29425,7 +29448,7 @@ app.post('/api/businesses/:businessId/integrations/health/refresh', requireAuth,
     if (!Number.isSafeInteger(businessId) || businessId <= 0 || !supported.includes(integration)) {
       return res.status(400).json({ success: false, message: 'A valid businessId and integration are required.' });
     }
-    const business = await loadHealthBusiness(businessId);
+    const business = await loadHydratedHealthBusiness(businessId);
     if (!business) return res.status(404).json({ success: false, message: 'Business not found.' });
     const config = getHealthCheckConfig(business);
     if (isIntegrationConfigured(integration, config)) {

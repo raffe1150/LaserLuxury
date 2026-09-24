@@ -172,12 +172,16 @@ assert.match(componentSource, /All systems operational/);
 const readRoute = serverSource.match(/app\.get\('\/api\/businesses\/:businessId\/integrations\/health'[\s\S]*?\n\}\);/)?.[0] || '';
 const refreshRoute = serverSource.match(/app\.post\('\/api\/businesses\/:businessId\/integrations\/health\/refresh'[\s\S]*?\n\}\);/)?.[0] || '';
 const configLoader = serverSource.match(/function getHealthCheckConfig[\s\S]*?\n\}/)?.[0] || '';
+const hydratedHealthLoader = serverSource.match(/async function loadHydratedHealthBusiness[\s\S]*?\n\}/)?.[0] || '';
 assert.match(readRoute, /requireBusinessPermission\('business\.read'\)/);
 assert.match(refreshRoute, /requireBusinessPermission\('business\.read'\)/);
-assert.match(refreshRoute, /loadHealthBusiness\(businessId\)/);
+assert.match(refreshRoute, /loadHydratedHealthBusiness\(businessId\)/);
+assert.match(hydratedHealthLoader, /loadHealthBusiness\(businessId\)/, 'hydrated health loader starts from the tenant business row');
+assert.doesNotMatch(hydratedHealthLoader, /await loadHydratedHealthBusiness\(businessId\)/, 'hydrated health loader must not recurse into itself');
+assert.match(hydratedHealthLoader, /hydrateBusinessChannelConfig/, 'health uses authoritative channel connections before probing');
 assert.doesNotMatch(`${readRoute}\n${refreshRoute}`, /accessToken:|telegramToken:|privateKey:|provider payload/i);
 assert.doesNotMatch(refreshRoute, /\.update\(|\.insert\(|\.delete\(/, 'health refresh is configuration read-only');
 assert.doesNotMatch(configLoader, /activeConfig|TELEGRAM_TOKEN|INSTAGRAM_ACCESS_TOKEN|WHATSAPP_ACCESS_TOKEN|MESSENGER_ACCESS_TOKEN/, 'messaging health cannot borrow another/global tenant identity');
-assert.match(configLoader, /instagramAccessToken: cleanInstagramToken\(businessRow\.instagram_access_token\)/, 'Instagram health reuses runtime token normalization');
+assert.match(configLoader, /instagramAccessToken:\s*cleanInstagramToken\([\s\S]*businessRow\.instagram_access_token[\s\S]*\)/, 'Instagram health reuses runtime token normalization with hydrated and legacy values');
 
 console.log('Automatic integration health cache, timeout, isolation, and UX-state tests passed.');

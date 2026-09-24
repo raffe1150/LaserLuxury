@@ -239,7 +239,17 @@ function safeLogFingerprint(value: unknown): string | null {
 function verifyMetaWebhookSignature(req: express.Request, res: express.Response, next: express.NextFunction) {
   const instagramWebhook = req.path === '/webhook/instagram' ||
     (req.path === '/webhook' && req.body?.object === 'instagram');
-  const secret = String((instagramWebhook ? process.env.INSTAGRAM_APP_SECRET : process.env.META_APP_SECRET) || '').trim();
+  const whatsappWebhook =
+    req.path === '/webhook' &&
+    req.body?.object === 'whatsapp_business_account';
+
+  const secret = String(
+    instagramWebhook
+      ? process.env.INSTAGRAM_APP_SECRET
+      : whatsappWebhook
+        ? process.env.WHATSAPP_APP_SECRET || process.env.META_APP_SECRET
+        : process.env.META_APP_SECRET
+  ).trim();
   if (!secret) return res.sendStatus(503);
   const signature = String(req.header('x-hub-signature-256') || '');
   const rawBody = (req as any).rawBody as Buffer | undefined;

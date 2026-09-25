@@ -164,3 +164,50 @@ test("established language survives ambiguous or falsely detected natural messag
     assert.equal(resolve(session, message), base, message);
   });
 });
+
+test("production regression: completed Persian state cannot resurrect after German switch and Passt", async () => {
+  boundary.reset();
+
+  const session = "telegram-fa-de-passt-regression";
+
+  boundary.configure({
+    semanticLanguageResolver: async (text: string) => {
+      if (text.includes("آلمانی")) {
+        return {
+          language: "fa",
+          requestedReplyLanguage: "de",
+          confidence: 0.99,
+        };
+      }
+
+      return null;
+    },
+  });
+
+  boundary.rememberCompletedBookingForLanguageTest(
+    session,
+    "fa",
+  );
+
+  const switched = await boundary.prepareConversationLanguageForTest(
+    session,
+    "میشه از اینجا به بعد آلمانی صحبت کنیم؟",
+    businessConfig,
+  );
+
+  assert.equal(switched, "de");
+
+  const shortReply = await boundary.prepareConversationLanguageForTest(
+    session,
+    "Passt.",
+    businessConfig,
+  );
+
+  assert.equal(
+    shortReply,
+    "de",
+    "short acknowledgement must preserve the new German conversation language",
+  );
+
+  boundary.reset();
+});

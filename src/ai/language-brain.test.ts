@@ -248,3 +248,82 @@ test('business language is only fallback when no customer language is available'
     source: 'business_fallback',
   });
 });
+
+test("production regression: Persian to German switch survives short German acknowledgement", async () => {
+  let calls = 0;
+
+  const switchResult = await resolveLanguageBrain({
+    text: "میشه از اینجا به بعد آلمانی صحبت کنیم؟",
+    previousLanguage: "fa",
+    businessFallback: "sv",
+    explicitSwitch: null,
+    deterministicLanguage: null,
+    preservePrevious: false,
+    semanticEligible: true,
+    semanticResolver: async () => {
+      calls++;
+      return {
+        language: "fa",
+        requestedReplyLanguage: "de",
+        confidence: 0.99,
+      };
+    },
+  });
+
+  assert.equal(switchResult.language, "de");
+  assert.equal(switchResult.source, "semantic_requested_reply");
+  assert.equal(calls, 1);
+
+  const shortReplyResult = await resolveLanguageBrain({
+    text: "Passt.",
+    previousLanguage: "de",
+    businessFallback: "sv",
+    explicitSwitch: null,
+    deterministicLanguage: null,
+    preservePrevious: true,
+    semanticEligible: false,
+  });
+
+  assert.equal(shortReplyResult.language, "de");
+  assert.equal(shortReplyResult.source, "protected_previous");
+});
+
+test("production regression: Spanish request to continue in Persian prefers requested language", async () => {
+  const result = await resolveLanguageBrain({
+    text: "¿Podemos seguir hablando en persa?",
+    previousLanguage: "es",
+    businessFallback: "sv",
+    explicitSwitch: null,
+    deterministicLanguage: null,
+    preservePrevious: false,
+    semanticEligible: true,
+    semanticResolver: async () => ({
+      language: "es",
+      requestedReplyLanguage: "fa",
+      confidence: 0.99,
+    }),
+  });
+
+  assert.equal(result.language, "fa");
+  assert.equal(result.source, "semantic_requested_reply");
+});
+
+test("production regression: Arabic request to continue in Spanish prefers requested language", async () => {
+  const result = await resolveLanguageBrain({
+    text: "هل يمكننا متابعة الحديث بالإسبانية؟",
+    previousLanguage: "ar",
+    businessFallback: "sv",
+    explicitSwitch: null,
+    deterministicLanguage: null,
+    preservePrevious: false,
+    semanticEligible: true,
+    semanticResolver: async () => ({
+      language: "ar",
+      requestedReplyLanguage: "es",
+      confidence: 0.99,
+    }),
+  });
+
+  assert.equal(result.language, "es");
+  assert.equal(result.source, "semantic_requested_reply");
+});

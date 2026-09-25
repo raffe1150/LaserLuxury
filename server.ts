@@ -405,6 +405,19 @@ async function resolveSemanticConversationLanguage(
   const customerText = String(text || "").trim();
   if (!customerText) return null;
 
+  const testSemanticResolver =
+    process.env.NODE_ENV === "test"
+      ? priority1hTestDependencies?.semanticLanguageResolver
+      : undefined;
+
+  if (testSemanticResolver) {
+    return await testSemanticResolver(
+      customerText,
+      activeLanguage,
+      businessConfig,
+    );
+  }
+
   try {
     const response = await generateContentWithFallback(null, {
       messages: [
@@ -977,6 +990,11 @@ type BusinessGroundingVerificationRequest = {
 
 type Priority1hTestDependencies = {
   geminiGenerate?: (params: any) => Promise<any>;
+  semanticLanguageResolver?: (
+    text: string,
+    activeLanguage: string | null,
+    businessConfig: any,
+  ) => Promise<SemanticLanguageDecision | null> | SemanticLanguageDecision | null;
   calendarAdapter?: CalendarAdapter;
   supabaseClient?: any;
   recordAppointment?: (params: any) => Promise<any | null>;
@@ -22525,6 +22543,12 @@ function messageMentionsSupportedLanguage(text: string, language?: string): bool
 }
 
 
+function messageMentionsAnySupportedLanguage(text: string): boolean {
+  return ["sv", "en", "de", "es", "fa", "ar"].some((language) =>
+    messageMentionsSupportedLanguage(text, language)
+  );
+}
+
 function hasStrongLanguageEvidence(language: string, text?: string): boolean {
   const raw = String(text || "").trim();
   const lower = raw.toLowerCase();
@@ -22745,6 +22769,14 @@ function updateActiveFlowLanguage(chatId: string, language: string) {
   if (appointmentLookupContexts[chatId]) appointmentLookupContexts[chatId].language = language;
   if (cancellationContexts[chatId]) cancellationContexts[chatId].language = language;
   if (availabilitySearchContexts[chatId]) availabilitySearchContexts[chatId].language = language;
+
+  // Recent completion state is also read by getStoredFlowLanguage().
+  // Keep it synchronized so an old language cannot reappear after
+  // the customer switches languages.
+  const recentCompleted = getRecentCompletedBooking(chatId);
+  if (recentCompleted) {
+    recentCompleted.language = language;
+  }
   if (rescheduleContexts[chatId]) {
     rescheduleContexts[chatId].language = language;
     rescheduleContexts[chatId].lockedReplyLanguage = language;
@@ -22930,8 +22962,46 @@ async function prepareConversationLanguageForTurn(
   const strongDeterministic =
     detectStrongLatestLanguage(text, businessConfig);
 
-  // Preserve the existing deterministic engine whenever it already has
-  // strong evidence.
+  // A message can be written in one language while requesting replies
+  // in another. A language-name mention only triggers semantic analysis;
+  // it does not itself count as a switch.
+  if (
+    messageMentionsAnySupportedLanguage(text) &&
+    isMeaningfulLanguageMessage(text)
+  ) {
+    const semantic = await resolveSemanticConversationLanguage(
+      text,
+      previous,
+      businessConfig,
+    );
+
+    const requestedReplyLanguage =
+      normalizeSupportedConversationLanguage(
+        semantic?.requestedReplyLanguage,
+      );
+
+    if (
+      requestedReplyLanguage &&
+      typeof semantic?.confidence === "number" &&
+      semantic.confidence >= 0.85
+    ) {
+      chatLanguages[chatId] = requestedReplyLanguage;
+      updateActiveFlowLanguage(chatId, requestedReplyLanguage);
+
+      console.log("[LanguageBrain]", {
+        selected: requestedReplyLanguage,
+        source: "semantic_requested_reply",
+        previous: previous || "none",
+        sessionKey: safeLogFingerprint(chatId),
+        inputFingerprint: safeLogFingerprint(text),
+      });
+
+      return requestedReplyLanguage;
+    }
+  }
+
+  // Keep deterministic source-language behavior when no requested
+  // reply language was confirmed.
   if (strongDeterministic) {
     return getConversationLanguage(chatId, text, businessConfig);
   }
@@ -30917,6 +30987,27 @@ export const priority1hUnifiedEngineTestBoundary = {
     if (history) chatSessions[sessionId] = structuredClone(history);
     return structuredClone(chatSessions[sessionId] || []);
   },
+  async prepareConversationLanguageForTest(
+    sessionId: string,
+    text: string,
+    businessConfig: any,
+  ) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Test-only");
+    return prepareConversationLanguageForTurn(
+      sessionId,
+      text,
+      businessConfig,
+    );
+  },
+
+  rememberCompletedBookingForLanguageTest(
+    sessionId: string,
+    language: string,
+  ) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Test-only");
+    rememberCompletedBooking(sessionId, language);
+  },
+
   conversationIntroWindow(latestCreatedAt?: string | null, nowMs?: number) {
     if (process.env.NODE_ENV !== "test") throw new Error("Test-only");
     return isConversationIntroWindowOpen(latestCreatedAt, nowMs);

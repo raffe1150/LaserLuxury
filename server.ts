@@ -12766,6 +12766,44 @@ function recordAcceptedCustomerMessage(params: {
   );
 }
 
+function recordDeliveredAssistantResponse(params: {
+  businessId: number | string | null | undefined;
+  channel: string;
+  sessionId: string;
+  source: string;
+  sourceEventId: string | number;
+  deliveryType: "text" | "voice" | "web_response";
+  language?: string | null;
+}): void {
+  const businessId = Number(params.businessId);
+  if (!Number.isSafeInteger(businessId) || businessId <= 0) return;
+
+  const channel = normalizePlatformName(params.channel);
+  const sessionId = String(params.sessionId || "").trim();
+  const source = String(params.source || "").trim();
+  const sourceEventId = String(params.sourceEventId ?? "").trim();
+  const language = String(params.language || "").trim();
+
+  if (!channel || !sessionId || !source || !sourceEventId) return;
+
+  void recordRuntimeAnalyticsEvent(
+    "assistant_response_sent",
+    "conversation",
+    "sent",
+    {
+      businessId,
+      channel,
+      source,
+      sourceEventId,
+      sessionId,
+      ...(language && language.length <= 20 ? { language } : {}),
+      metadata: {
+        delivery_type: params.deliveryType,
+      },
+    },
+  );
+}
+
 function maskToken(token?: string) {
   if (!token) return "missing-token";
   if (token.length < 12) return token;
@@ -21592,6 +21630,17 @@ async function sendTelegramPreferredReply(params: {
   const delivery = selectTelegramDeliveryMode(preference, inputMode);
   if (delivery === "text") {
     const sent = await sendCustomerMessage("telegram", chatId, reply, config, "conversation");
+    if (sent && turnSequence !== undefined) {
+      recordDeliveredAssistantResponse({
+        businessId: getBusinessIdFromConfig(config),
+        channel: "telegram",
+        sessionId,
+        source,
+        sourceEventId: `${sessionId}:${turnSequence}:${source}:text`,
+        deliveryType: "text",
+        language: getStoredFlowLanguage(sessionId) || undefined,
+      });
+    }
     return { sent, delivery: sent ? "text" : "none" };
   }
 
@@ -21625,7 +21674,20 @@ async function sendTelegramPreferredReply(params: {
       source,
       success: response.ok,
     });
-    if (response.ok) return { sent: true, delivery: "voice" };
+    if (response.ok) {
+      if (turnSequence !== undefined) {
+        recordDeliveredAssistantResponse({
+          businessId: getBusinessIdFromConfig(config),
+          channel: "telegram",
+          sessionId,
+          source,
+          sourceEventId: `${sessionId}:${turnSequence}:${source}:voice`,
+          deliveryType: "voice",
+          language: getStoredFlowLanguage(sessionId) || undefined,
+        });
+      }
+      return { sent: true, delivery: "voice" };
+    }
   } catch (error) {
     console.error("[TelegramReplyMode]", {
       businessId: getBusinessIdFromConfig(config),
@@ -21647,6 +21709,17 @@ async function sendTelegramPreferredReply(params: {
   }
 
   const sent = await sendCustomerMessage("telegram", chatId, reply, config, "conversation");
+  if (sent && turnSequence !== undefined) {
+    recordDeliveredAssistantResponse({
+      businessId: getBusinessIdFromConfig(config),
+      channel: "telegram",
+      sessionId,
+      source,
+      sourceEventId: `${sessionId}:${turnSequence}:${source}:text`,
+      deliveryType: "text",
+      language: getStoredFlowLanguage(sessionId) || undefined,
+    });
+  }
   return { sent, delivery: sent ? "text" : "none" };
 }
 
@@ -25169,6 +25242,27 @@ async function processWhatsAppMessageClaimed(message: any, metadata: any, config
     if (!chatSessions[chatId as any]) chatSessions[chatId as any] = [];
     const history = chatSessions[chatId as any];
 
+    const sendWhatsAppConversationReply = async (
+      reply: string,
+      source: string,
+    ): Promise<boolean> => {
+      const sent = await sendWhatsAppMessage(from, reply, businessConfig, "conversation");
+
+      if (sent) {
+        recordDeliveredAssistantResponse({
+          businessId: getBusinessIdFromConfig(businessConfig),
+          channel: "whatsapp",
+          sessionId: chatId,
+          source,
+          sourceEventId: `${String(message?.id || "").trim()}:${source}`,
+          deliveryType: "text",
+          language: getStoredFlowLanguage(chatId) || userLanguage || undefined,
+        });
+      }
+
+      return sent;
+    };
+
     const usage = await checkAndIncrementDailyUsage({
       businessId: getBusinessIdFromConfig(businessConfig),
       platform,
@@ -25177,14 +25271,14 @@ async function processWhatsAppMessageClaimed(message: any, metadata: any, config
     });
     if (!usage.allowed) {
       const limitText = formatDailyLimitMessage(userLanguage);
-      await sendWhatsAppMessage(from, limitText, businessConfig, "conversation");
+      await sendWhatsAppConversationReply(limitText, "daily_usage_limit");
       appendLocalHistory(chatId, textMessage, limitText);
       await postProcessMessage(from, platform, textMessage, limitText, businessConfig?.telegramToken, businessConfig?.apiKey, getBusinessIdFromConfig(businessConfig));
       return;
     }
 
     const replyWhatsAppOnce = async (reply: string) => {
-      await sendWhatsAppMessage(from, reply, businessConfig, "conversation");
+      await sendWhatsAppConversationReply(reply, "whatsapp_direct_reply");
       appendLocalHistory(chatId, textMessage, reply);
       try {
         await postProcessMessage(
@@ -25224,7 +25318,7 @@ async function processWhatsAppMessageClaimed(message: any, metadata: any, config
         text: textMessage,
         history,
         businessConfig,
-        send: (reply) => sendWhatsAppMessage(from, reply, businessConfig, "conversation"),
+        send: (reply) => sendWhatsAppConversationReply(reply, "unified_booking_reply"),
         postProcessPlatform: platform,
         shadowEligibleCustomerTurn: true
       });
@@ -25256,7 +25350,7 @@ async function processWhatsAppMessageClaimed(message: any, metadata: any, config
         text: textMessage,
         history,
         businessConfig,
-        send: (reply) => sendWhatsAppMessage(from, reply, businessConfig, "conversation"),
+        send: (reply) => sendWhatsAppConversationReply(reply, "unified_booking_reply"),
         postProcessPlatform: platform,
         shadowEligibleCustomerTurn: true
       });
@@ -25398,7 +25492,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
             recipientUserId: from,
             history,
             businessConfig,
-            send: (reply) => sendWhatsAppMessage(from, reply, businessConfig, "conversation"),
+            send: (reply) => sendWhatsAppConversationReply(reply, "reschedule_tool_unified_route"),
             postProcessPlatform: platform
           });
           return {
@@ -25518,7 +25612,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
     history.push({ role: "user", content: textMessage });
     history.push({ role: "assistant", content: textResponse });
 
-    await sendWhatsAppMessage(from, textResponse, businessConfig, "conversation");
+    await sendWhatsAppConversationReply(textResponse, "gemini_conversation_reply");
 
     try {
       await postProcessMessage(from, platform, textMessage, textResponse, businessConfig?.telegramToken, businessConfig?.apiKey, getBusinessIdFromConfig(businessConfig));
@@ -25534,7 +25628,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       errorCategory: classifyAiFailure(err),
     });
     const errorMessage = getErrorMessageByLanguage(userLanguage || "en");
-    await sendWhatsAppMessage(from, errorMessage, businessConfig, "conversation");
+    await sendWhatsAppConversationReply(errorMessage, "processing_error_fallback");
   }
 }
 
@@ -26406,6 +26500,27 @@ async function processMessengerUpdateClaimed(webhookEvent: any, config: any, pla
     });
   }
 
+  const sendMessengerConversationReply = async (
+    reply: string,
+    source: string,
+  ): Promise<boolean> => {
+    const sent = await sendMessengerMessage(senderId, reply, businessConfig, "conversation");
+
+    if (sent) {
+      recordDeliveredAssistantResponse({
+        businessId: getBusinessIdFromConfig(businessConfig),
+        channel: "messenger",
+        sessionId: chatId,
+        source,
+        sourceEventId: `${String(webhookEvent?.message?.mid || webhookEvent?.postback?.mid || "").trim()}:${source}`,
+        deliveryType: "text",
+        language: getStoredFlowLanguage(chatId) || userLanguage || undefined,
+      });
+    }
+
+    return sent;
+  };
+
   const inboundUsage = await checkAndIncrementDailyUsage({
     businessId: getBusinessIdFromConfig(businessConfig),
     platform: "messenger",
@@ -26414,7 +26529,7 @@ async function processMessengerUpdateClaimed(webhookEvent: any, config: any, pla
   });
   if (!inboundUsage.allowed) {
     const limitText = formatDailyLimitMessage(userLanguage);
-    await sendMessengerMessage(senderId, limitText, businessConfig, "conversation");
+    await sendMessengerConversationReply(limitText, "daily_usage_limit");
     appendLocalHistory(chatId, textMessage || '[voice]', limitText);
     return;
   }
@@ -26430,7 +26545,7 @@ async function processMessengerUpdateClaimed(webhookEvent: any, config: any, pla
         text: textMessage,
         history: chatSessions[chatId as any],
         businessConfig,
-        send: (reply) => sendMessengerMessage(senderId, reply, businessConfig, "conversation"),
+        send: (reply) => sendMessengerConversationReply(reply, "unified_booking_reply"),
         postProcessPlatform: platform,
         shadowEligibleCustomerTurn: true
       });
@@ -26483,7 +26598,7 @@ async function processMessengerUpdateClaimed(webhookEvent: any, config: any, pla
           text: voiceTranscript,
           history,
           businessConfig,
-          send: (reply) => sendMessengerMessage(senderId, reply, businessConfig, "conversation"),
+          send: (reply) => sendMessengerConversationReply(reply, "unified_booking_reply"),
           postProcessPlatform: platform
         });
         if (unifiedHandled) return;
@@ -26657,7 +26772,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
             recipientUserId: senderId,
             history,
             businessConfig,
-            send: (reply) => sendMessengerMessage(senderId, reply, businessConfig, "conversation"),
+            send: (reply) => sendMessengerConversationReply(reply, "reschedule_tool_unified_route"),
             postProcessPlatform: platform
           });
           return {
@@ -26787,6 +26902,17 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       try {
         const voiceReply = await createMessengerVoiceReplyFile(textResponse);
         sentVoiceReply = await sendMessengerAudioMessage(senderId, voiceReply.url, businessConfig);
+        if (sentVoiceReply) {
+          recordDeliveredAssistantResponse({
+            businessId: getBusinessIdFromConfig(businessConfig),
+            channel: "messenger",
+            sessionId: chatId,
+            source: "gemini_conversation_reply",
+            sourceEventId: `${String(webhookEvent?.message?.mid || webhookEvent?.postback?.mid || "").trim()}:gemini_conversation_reply`,
+            deliveryType: "voice",
+            language: getStoredFlowLanguage(chatId) || userLanguage || undefined,
+          });
+        }
       } catch (ttsErr) {
         console.error("[VoiceOutput]", {
           channel: "messenger",
@@ -26797,10 +26923,10 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       }
 
       if (!sentVoiceReply) {
-        await sendMessengerMessage(senderId, textResponse, businessConfig, "conversation");
+        await sendMessengerConversationReply(textResponse, "voice_text_fallback");
       }
     } else {
-      await sendMessengerMessage(senderId, textResponse, businessConfig, "conversation");
+      await sendMessengerConversationReply(textResponse, "gemini_conversation_reply");
     }
 
     try {
@@ -26817,7 +26943,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       errorCategory: classifyAiFailure(err),
     });
     const errorMessage = getErrorMessageByLanguage(userLanguage || "en");
-    await sendMessengerMessage(senderId, errorMessage, businessConfig, "conversation");
+    await sendMessengerConversationReply(errorMessage, "processing_error_fallback");
   }
 }
 
@@ -27001,6 +27127,33 @@ async function processInstagramUpdateClaimed(webhook_event: any, config: any, pl
     });
   }
 
+  const sendInstagramConversationReply = async (
+    reply: string,
+    source: string,
+  ): Promise<boolean> => {
+    const sent = await sendInstagramMessage(
+      senderId,
+      reply,
+      getBusinessInstagramToken(businessConfig),
+      chatId,
+      "conversation",
+    );
+
+    if (sent) {
+      recordDeliveredAssistantResponse({
+        businessId: getBusinessIdFromConfig(businessConfig),
+        channel: "instagram",
+        sessionId: chatId,
+        source,
+        sourceEventId: `${String(webhook_event?.message?.mid || "").trim()}:${source}`,
+        deliveryType: "text",
+        language: getStoredFlowLanguage(chatId) || userLanguage || undefined,
+      });
+    }
+
+    return sent;
+  };
+
   const inboundUsage = await checkAndIncrementDailyUsage({
     businessId: getBusinessIdFromConfig(businessConfig),
     platform: "instagram",
@@ -27009,7 +27162,7 @@ async function processInstagramUpdateClaimed(webhook_event: any, config: any, pl
   });
   if (!inboundUsage.allowed) {
     const limitText = formatDailyLimitMessage(userLanguage);
-    await sendInstagramMessage(senderId, limitText, getBusinessInstagramToken(businessConfig), chatId, "conversation");
+    await sendInstagramConversationReply(limitText, "daily_usage_limit");
     appendLocalHistory(chatId, textMessage || '[voice]', limitText);
     return;
   }
@@ -27031,12 +27184,9 @@ async function processInstagramUpdateClaimed(webhook_event: any, config: any, pl
         text: textMessage,
         history,
         businessConfig,
-        send: (reply) => sendInstagramMessage(
-          senderId,
+        send: (reply) => sendInstagramConversationReply(
           reply,
-          getBusinessInstagramToken(businessConfig),
-          chatId,
-          "conversation",
+          "unified_booking_reply",
         ),
         postProcessPlatform: platform,
         shadowEligibleCustomerTurn: true
@@ -27047,7 +27197,7 @@ async function processInstagramUpdateClaimed(webhook_event: any, config: any, pl
     const completedBooking = getRecentCompletedBooking(chatId);
     if (textMessage && completedBooking && isThanksOnlyText(textMessage || "")) {
       const thanksText = formatThanksReply(completedBooking.language || userLanguage, completedBooking.name);
-      await sendInstagramMessage(senderId, thanksText, getBusinessInstagramToken(businessConfig), chatId, "conversation");
+      await sendInstagramConversationReply(thanksText, "thanks_reply");
       appendLocalHistory(chatId, textMessage || "", thanksText);
       await postProcessMessage(chatId, platform, userMessageForLog, thanksText, businessConfig?.telegramToken, businessConfig?.apiKey, getBusinessIdFromConfig(businessConfig));
       return;
@@ -27102,12 +27252,9 @@ if (contentType === "video/mp4") {
             text: voiceTranscript,
             history,
             businessConfig,
-            send: (reply) => sendInstagramMessage(
-              senderId,
+            send: (reply) => sendInstagramConversationReply(
               reply,
-              getBusinessInstagramToken(businessConfig),
-              chatId,
-              "conversation",
+              "unified_booking_reply",
             ),
             postProcessPlatform: platform
           });
@@ -27115,8 +27262,7 @@ if (contentType === "video/mp4") {
         }
       } catch (voiceErr) {
         console.error('Instagram voice download failed:', voiceErr);
-        await sendInstagramMessage(
-          senderId,
+        await sendInstagramConversationReply(
           userLanguage === "fa"
             ? "ببخشید، الان نتونستم پیام صوتی رو بشنوم. لطفاً پیام‌تون رو بنویسید."
             : userLanguage === "sv"
@@ -27128,9 +27274,7 @@ if (contentType === "video/mp4") {
                   : userLanguage === "ar"
                     ? "عذرًا، لم أتمكن من سماع الرسالة الصوتية الآن. يرجى كتابة رسالتك."
                     : "Sorry, I couldn’t listen to the voice message just now. Please type your message instead.",
-         getBusinessInstagramToken(businessConfig),
-         chatId,
-         "conversation",
+          "voice_input_error_fallback",
         );
         return;
       }
@@ -27344,12 +27488,9 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
             recipientUserId: senderId,
             history,
             businessConfig,
-            send: (reply) => sendInstagramMessage(
-              senderId,
+            send: (reply) => sendInstagramConversationReply(
               reply,
-              getBusinessInstagramToken(businessConfig),
-              chatId,
-              "conversation",
+              "reschedule_tool_unified_route",
             ),
             postProcessPlatform: platform
           });
@@ -27485,8 +27626,7 @@ if (isVoiceMessage) {
   try {
     const voiceReply = await createInstagramVoiceReplyFile(textResponse);
 
-    await sendInstagramMessage(
-      senderId,
+    sentVoiceReply = await sendInstagramConversationReply(
       `${textResponse}\n\n${
         userLanguage === "fa"
           ? "🎧 فایل صوتی:"
@@ -27500,12 +27640,8 @@ if (isVoiceMessage) {
                   ? "🎧 استمع هنا:"
                   : "🎧 Listen here:"
       } ${voiceReply.url}`,
-      instagramToken,
-      chatId,
-      "conversation",
+      "voice_link_reply",
     );
-
-    sentVoiceReply = true;
   } catch (ttsErr) {
     console.error("[VoiceOutput]", {
       channel: "instagram",
@@ -27516,10 +27652,10 @@ if (isVoiceMessage) {
   }
 
   if (!sentVoiceReply) {
-    await sendInstagramMessage(senderId, textResponse, instagramToken, chatId, "conversation");
+    await sendInstagramConversationReply(textResponse, "voice_text_fallback");
   }
 } else {
-  await sendInstagramMessage(senderId, textResponse, instagramToken, chatId, "conversation");
+  await sendInstagramConversationReply(textResponse, "gemini_conversation_reply");
 }
 try {
   await postProcessMessage(chatId, platform, userMessageForLog, textResponse, businessConfig?.telegramToken, businessConfig?.apiKey, getBusinessIdFromConfig(businessConfig));
@@ -27549,12 +27685,9 @@ try {
     });
    const errorLanguage = chatLanguages[chatId] || userLanguage || "en";
    const errorMessage = getErrorMessageByLanguage(errorLanguage);
-    await sendInstagramMessage(
-      senderId,
+    await sendInstagramConversationReply(
       errorMessage,
-     getBusinessInstagramToken(businessConfig),
-     chatId,
-     "conversation",
+      "processing_error_fallback",
     );
   }
 }
@@ -27590,8 +27723,9 @@ function getScopedWebSessionId(conversationId: string, businessConfig: any): str
 
 async function processWebChat(req: any, res: any) {
     const businessConfig = { ...activeConfig };
-    const { chatId: clientChatId } = req.body;
+    const { chatId: clientChatId, messageId: clientMessageId } = req.body;
     const conversationId = String(clientChatId || crypto.randomUUID());
+    const webMessageId = String(clientMessageId || "").trim();
     const chatId = getScopedWebSessionId(conversationId, businessConfig);
     resetSessionIfBusinessConfigChanged(chatId, businessConfig);
     let userLanguage = getConversationLanguage(chatId, String(req.body.message || ""), businessConfig);
@@ -27652,7 +27786,21 @@ if (isContainedWebBookingIntent(userText)) {
     process.env.GEMINI_API_KEY,
     getBusinessIdFromConfig(businessConfig),
   );
-  return res.json({ text: containedReply, audioData: null, mimeType: null, chatId: conversationId });
+  res.json({ text: containedReply, audioData: null, mimeType: null, chatId: conversationId });
+
+  if (webMessageId) {
+    recordDeliveredAssistantResponse({
+      businessId: getBusinessIdFromConfig(businessConfig),
+      channel: "web-chat",
+      sessionId: chatId,
+      source: "web_chat_contained_reply",
+      sourceEventId: webMessageId,
+      deliveryType: "web_response",
+      language: userLanguage || undefined,
+    });
+  }
+
+  return;
 }
 
 messages.push({
@@ -27818,12 +27966,36 @@ Never translate unless requested.
 
       postProcessMessage(chatId, "web-chat", message || "[Voice]", textPart, undefined, process.env.GEMINI_API_KEY, getBusinessIdFromConfig(businessConfig));
       res.json({ text: textPart, audioData: audioDataOut, mimeType: outMimeType, chatId: conversationId });
+
+      if (webMessageId) {
+        recordDeliveredAssistantResponse({
+          businessId: getBusinessIdFromConfig(businessConfig),
+          channel: "web-chat",
+          sessionId: chatId,
+          source: "web_chat_assistant_reply",
+          sourceEventId: webMessageId,
+          deliveryType: "web_response",
+          language: userLanguage || undefined,
+        });
+      }
     } catch (error: any) {
       console.error("Web chat processing error:", error);
       if (!res.headersSent) {
           const eStr = String(error.message || error);
           if (["RATE_LIMIT", "PROVIDER_UNAVAILABLE"].includes(classifyAiFailure(error))) {
               res.status(200).json({ text: getErrorMessageByLanguage(userLanguage), chatId: conversationId });
+
+              if (webMessageId) {
+                recordDeliveredAssistantResponse({
+                  businessId: getBusinessIdFromConfig(businessConfig),
+                  channel: "web-chat",
+                  sessionId: chatId,
+                  source: "web_chat_provider_fallback",
+                  sourceEventId: webMessageId,
+                  deliveryType: "web_response",
+                  language: userLanguage || undefined,
+                });
+              }
           } else {
               res.status(500).json({ error: getErrorMessageByLanguage(userLanguage), text: getErrorMessageByLanguage(userLanguage), chatId: conversationId });
           }
@@ -31735,6 +31907,18 @@ export const priority1hUnifiedEngineTestBoundary = {
   async persistCustomerExchange(userId: string, platform: string, customerText: string, replyText: string, businessId?: string) {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
     return postProcessMessage(userId, platform, customerText, replyText, undefined, undefined, businessId);
+  },
+  recordDeliveredAssistantResponse(params: {
+    businessId: number | string | null | undefined;
+    channel: string;
+    sessionId: string;
+    source: string;
+    sourceEventId: string | number;
+    deliveryType: "text" | "voice" | "web_response";
+    language?: string | null;
+  }) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    return recordDeliveredAssistantResponse(params);
   },
   instagramEventCanEnterConversation(webhookEvent: any) {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");

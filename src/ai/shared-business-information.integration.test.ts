@@ -1,9 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { readFileSync } from 'node:fs';
 process.env.NODE_ENV = 'test';
 const { priority1hUnifiedEngineTestBoundary: b } = await import('../../server');
-const evidence = JSON.parse(readFileSync(new URL('../../tests/fixtures/brain-quality-99dd8079.json', import.meta.url), 'utf8'));
 const config = {
   id: 'quality-audit', businessName: 'Example Studio', language: 'sv', timezone: 'Europe/Stockholm',
   systemPrompt: 'Example Studio produces short video advertisements. Parking is behind the studio.',
@@ -42,7 +40,11 @@ function completed(sessionId: string, channel: string) {
 }
 const turn = (sessionId: string, channel: any, text: string) => b.turn({ sessionId, platformName: channel,
   recipientUserId: sessionId, text, businessConfig: config, now });
-const info = evidence.transcripts.find((t: any) => t.scenarioId === 'load-de-business-knowledge' && t.channel === 'instagram');
+const info = {
+  turns: [{
+    customer: 'Können Sie mir etwas über dieses Unternehmen, Ihre Dienstleistungen und wichtige Informationen erzählen, die ich als Kunde wissen sollte?',
+  }],
+};
 for (const channel of ['instagram', 'whatsapp', 'messenger', 'telegram'] as const) {
   test(`${channel}: informational evidence escapes awaiting-service without changing pending state`, async () => {
     setup(); const id = `info-${channel}`;
@@ -67,7 +69,7 @@ for (const channel of ['instagram', 'whatsapp', 'messenger', 'telegram'] as cons
   });
   test(`${channel}: exact post-booking acknowledgment ends naturally`, async () => {
     setup(); const id = `thanks-${channel}`; completed(id, channel);
-    const text = evidence.transcripts.find((t: any) => t.scenarioId === 'load-de-booking' && t.channel === 'whatsapp').turns[6].customer;
+    const text = 'Alles klar, danke für die Bestätigung! Dann bis morgen um 14:00 Uhr.';
     const result = await turn(id, channel, text);
     assert.equal(result.handled, true);
     assert.match(result.replies.join(' '), /gern|dank|willkommen/iu);
@@ -79,7 +81,7 @@ for (const channel of ['instagram', 'whatsapp', 'messenger', 'telegram'] as cons
 for (const channel of ['instagram', 'whatsapp', 'messenger', 'telegram'] as const) {
   test(`${channel}: changed question cannot inherit the completed service fallback`, async () => {
     setup(); const id = `fresh-${channel}`; completed(id, channel);
-    const oldGap = evidence.transcripts.find((t: any) => t.scenarioId === 'load-de-business-knowledge' && t.channel === 'whatsapp').turns[0].assistant;
+    const oldGap = 'In den verfügbaren Unternehmensinformationen finde ich keine konkrete Angabe zu Ihrer Frage über Video Consultation. Das Unternehmen kann bestätigen, was gilt.';
     const replies: string[] = [];
     for (const [text, expected] of [
       ['Welche Dienstleistungen bieten Sie an?', /Golden video/],
@@ -125,7 +127,7 @@ test('selected tone, language and current evidence are shared across channels', 
     assert.match(prompt, /formal phrasing/i);
     assert.match(prompt, /Do not use emoji/i);
     assert.match(prompt, /Answer in de/);
-    assert.match(prompt, /no retrieved Knowledge/i);
+    assert.match(prompt, /SOURCE retrieved_knowledge:\n\(none\)/);
     assert.match(prompt, /SOURCE structured_business_config/);
   }
 });
@@ -138,6 +140,11 @@ test('harmless German greeting does not invalidate a grounded factual answer', a
       claims: [{ claim: 'Example Studio produces short video advertisements.',
         candidateQuote: 'Example Studio erstellt kurze Videoanzeigen.', claimKind: 'OTHER', requiresBusinessEvidence: true,
         supported: true, evidence: [{ source: 'business_system_prompt', quote: 'Example Studio produces short video advertisements.' }] }] }),
+    assessBusinessClaimEntailment: async () => ({
+      relation: 'ENTAILED',
+      claimKind: 'OTHER',
+      explicitAbsenceEvidence: false,
+    }),
   });
   const reply = 'Gerne! Example Studio erstellt kurze Videoanzeigen.';
   assert.equal(await b.finalizeGeneralAiReply(id, info.turns[0].customer, reply, 'de'), reply);
@@ -181,4 +188,63 @@ test('different tenant/channel/user sessions cannot share information context', 
   assert.doesNotMatch(b.completedSupportInstruction(ids[0]), /sells flowers/);
   assert.match(b.completedSupportInstruction(ids[2]), /sells flowers/);
   assert.doesNotMatch(b.completedSupportInstruction(ids[2]), /Parking is behind/);
+});
+
+test('retrieved tenant Knowledge reaches grounding and may support a factual reply', async () => {
+  setup();
+
+  const id = 'retrieved-knowledge-grounding';
+  const question = 'Where is the customer entrance?';
+  const knowledge =
+    'KNOWLEDGE CHUNK 1\n' +
+    'source_id: knowledge-source-1\n' +
+    'The customer entrance is on Oak Street.';
+
+  b.businessInformationState(
+    id,
+    config,
+    question,
+    'en',
+    knowledge,
+  );
+
+  const instruction = b.completedSupportInstruction(id);
+
+  assert.match(instruction, /SOURCE retrieved_knowledge:/);
+  assert.match(instruction, /The customer entrance is on Oak Street/);
+
+  b.configure({
+    assessBusinessSupportGrounding: async (request: any) => {
+      assert.match(request.evidenceCorpus, /SOURCE retrieved_knowledge:/);
+      assert.match(request.evidenceCorpus, /The customer entrance is on Oak Street/);
+
+      return {
+        hasBusinessFactualClaims: true,
+        allBusinessClaimsSupported: true,
+        claims: [{
+          claim: 'The customer entrance is on Oak Street.',
+          candidateQuote: 'The customer entrance is on Oak Street.',
+          claimKind: 'OTHER',
+          requiresBusinessEvidence: true,
+          supported: true,
+          evidence: [{
+            source: 'retrieved_knowledge',
+            quote: 'The customer entrance is on Oak Street.',
+          }],
+        }],
+      };
+    },
+    assessBusinessClaimEntailment: async () => ({
+      relation: 'ENTAILED',
+      claimKind: 'OTHER',
+      explicitAbsenceEvidence: false,
+    }),
+  });
+
+  const reply = 'The customer entrance is on Oak Street.';
+
+  assert.equal(
+    await b.finalizeGeneralAiReply(id, question, reply, 'en'),
+    reply,
+  );
 });

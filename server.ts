@@ -28615,6 +28615,172 @@ app.get('/api/businesses', requireAuth, async (req, res) => {
 });
 
 
+// Tenant-safe Knowledge API for dashboard-managed business information.
+app.get(
+  '/api/businesses/:businessId/knowledge',
+  requireAuth,
+  requireBusinessPermission('business.read'),
+  async (req, res) => {
+    try {
+      const authenticatedRequest = req as AuthenticatedRequest;
+      const businessId = authenticatedRequest.businessAccess?.businessId;
+
+      if (!businessId) {
+        return res.status(400).json({
+          success: false,
+          error: 'invalid_business_id',
+        });
+      }
+
+      const sources = await knowledgeService.list(businessId);
+
+      return res.json({
+        success: true,
+        data: sources,
+      });
+    } catch (error) {
+      console.error('[KnowledgeApi] list failed', {
+        businessId: (req as AuthenticatedRequest).businessAccess?.businessId ?? null,
+      });
+
+      return res.status(500).json({
+        success: false,
+        error: 'knowledge_list_failed',
+      });
+    }
+  },
+);
+
+app.post(
+  '/api/businesses/:businessId/knowledge',
+  requireAuth,
+  requireBusinessPermission('settings.manage'),
+  async (req, res) => {
+    try {
+      const authenticatedRequest = req as AuthenticatedRequest;
+      const businessId = authenticatedRequest.businessAccess?.businessId;
+
+      if (!businessId) {
+        return res.status(400).json({
+          success: false,
+          error: 'invalid_business_id',
+        });
+      }
+
+      const body = req.body || {};
+      const title = String(body.title || '').trim();
+      const content = String(body.content || '').trim();
+
+      if (!title) {
+        return res.status(400).json({
+          success: false,
+          error: 'title_required',
+        });
+      }
+
+      if (title.length > 200) {
+        return res.status(400).json({
+          success: false,
+          error: 'title_too_long',
+        });
+      }
+
+      if (!content) {
+        return res.status(400).json({
+          success: false,
+          error: 'content_required',
+        });
+      }
+
+      if (content.length > 100_000) {
+        return res.status(400).json({
+          success: false,
+          error: 'content_too_large',
+        });
+      }
+
+      const source = await knowledgeService.addSource({
+        businessId,
+        type: 'text',
+        title,
+        content,
+        status: 'ready',
+        metadata: {
+          source: 'manual',
+        },
+      });
+
+      return res.status(201).json({
+        success: true,
+        data: source,
+      });
+    } catch (error) {
+      console.error('[KnowledgeApi] create failed', {
+        businessId: (req as AuthenticatedRequest).businessAccess?.businessId ?? null,
+      });
+
+      return res.status(500).json({
+        success: false,
+        error: 'knowledge_create_failed',
+      });
+    }
+  },
+);
+
+app.delete(
+  '/api/businesses/:businessId/knowledge/:sourceId',
+  requireAuth,
+  requireBusinessPermission('settings.manage'),
+  async (req, res) => {
+    try {
+      const authenticatedRequest = req as AuthenticatedRequest;
+      const businessId = authenticatedRequest.businessAccess?.businessId;
+      const sourceId = String(req.params.sourceId || '').trim();
+
+      if (!businessId) {
+        return res.status(400).json({
+          success: false,
+          error: 'invalid_business_id',
+        });
+      }
+
+      if (
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(sourceId)
+      ) {
+        return res.status(400).json({
+          success: false,
+          error: 'invalid_source_id',
+        });
+      }
+
+      const deleted = await knowledgeService.deleteSource(
+        businessId,
+        sourceId,
+      );
+
+      if (!deleted) {
+        return res.status(404).json({
+          success: false,
+          error: 'knowledge_source_not_found',
+        });
+      }
+
+      return res.json({
+        success: true,
+      });
+    } catch (error) {
+      console.error('[KnowledgeApi] delete failed', {
+        businessId: (req as AuthenticatedRequest).businessAccess?.businessId ?? null,
+      });
+
+      return res.status(500).json({
+        success: false,
+        error: 'knowledge_delete_failed',
+      });
+    }
+  },
+);
+
 // API: دریافت رزروهای بیزینس برای داشبورد
 app.get('/api/businesses/:businessId/conversations', requireAuth, requireBusinessPermission('conversations.read'), async (req, res) => {
   try {

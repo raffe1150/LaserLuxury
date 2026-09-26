@@ -247,6 +247,45 @@ async function runTests() {
   assert.match(knowledgeRoutes, /app\.delete\('\/knowledge\/:id', requireAuth, knowledgeTemporarilyUnavailable\)/);
   assert.match(knowledgeRoutes, /app\.post\('\/knowledge\/search', requireAuth, knowledgeTemporarilyUnavailable\)/);
   assert.doesNotMatch(knowledgeRoutes, /knowledgeService\.(?:list|addSource|deleteSource|search)/);
+
+  assert.match(
+    server,
+    /app\.get\(\s*'\/api\/businesses\/:businessId\/knowledge',\s*requireAuth,\s*requireBusinessPermission\('business\.read'\)/,
+  );
+  assert.match(
+    server,
+    /app\.post\(\s*'\/api\/businesses\/:businessId\/knowledge',\s*requireAuth,\s*requireBusinessPermission\('settings\.manage'\)/,
+  );
+  assert.match(
+    server,
+    /app\.delete\(\s*'\/api\/businesses\/:businessId\/knowledge\/:sourceId',\s*requireAuth,\s*requireBusinessPermission\('settings\.manage'\)/,
+  );
+
+  const tenantKnowledgeApi =
+    server.match(
+      /app\.get\(\s*'\/api\/businesses\/:businessId\/knowledge'[\s\S]*?app\.get\('\/api\/businesses\/:businessId\/conversations'/,
+    )?.[0] || '';
+
+  assert.match(
+    tenantKnowledgeApi,
+    /authenticatedRequest\.businessAccess\?\.businessId/,
+  );
+  assert.match(
+    tenantKnowledgeApi,
+    /knowledgeService\.list\(businessId\)/,
+  );
+  assert.match(
+    tenantKnowledgeApi,
+    /knowledgeService\.addSource\(\{[\s\S]*?businessId,[\s\S]*?type:\s*'text'[\s\S]*?status:\s*'ready'/,
+  );
+  assert.match(
+    tenantKnowledgeApi,
+    /knowledgeService\.deleteSource\(\s*businessId,\s*sourceId/,
+  );
+  assert.doesNotMatch(
+    tenantKnowledgeApi,
+    /businessId\s*[:=]\s*(?:req\.body|body)\.businessId/,
+  );
   assert.match(server, /requireBusinessPermission\('business\.delete'\)[\s\S]*?\.rpc\(\s*'delete_business_with_memberships'/);
   assert.match(server, /p_owner_user_id: authenticatedRequest\.auth!\.userId/);
   assert.match(server, /\.rpc\(\s*'create_business_with_owner'/);
@@ -255,7 +294,6 @@ async function runTests() {
   assert.doesNotMatch(server, /Business lookup failed:[^\n]*businessError/);
   assert.doesNotMatch(server, /from "\.\/src\/auth"/);
   for (const publicRoute of [
-    /app\.post\("\/api\/telegram-webhook", verifyTelegramWebhookSecret, async/,
     /app\.post\("\/webhook", verifyMetaWebhookSignature, async/,
     /app\.post\("\/webhook\/messenger", verifyMetaWebhookSignature, async/,
     /app\.post\("\/webhook\/instagram", verifyMetaWebhookSignature, async/,

@@ -7911,6 +7911,16 @@ function assessmentCoversMaterialCandidateClaims(
     return true;
   }
 
+  if (
+    process.env.NODE_ENV === "production" &&
+    /kundentré/iu.test(candidateReply)
+  ) {
+    console.info("[KnowledgeCoverageResidual]", {
+      residual: uncovered,
+      harmlessResidual,
+    });
+  }
+
   const remainingTokens = uncovered.match(/[\p{L}\p{N}]+/gu) || [];
 
   if (remainingTokens.every((token) => BUSINESS_CLAIM_COVERAGE_GLUE.has(token))) {

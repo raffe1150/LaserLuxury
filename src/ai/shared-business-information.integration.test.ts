@@ -299,7 +299,7 @@ test('Swedish grounded Knowledge reply allows harmless greeting and emoji framin
     }),
   });
 
-  const reply = 'Hej! Kundentrén ligger på Aurora Street 742. ✨';
+  const reply = 'Hej! Välkommen! 👋 Kundentrén ligger på Aurora Street 742. ✨';
 
   assert.equal(
     await b.finalizeGeneralAiReply(id, question, reply, 'sv'),

@@ -7860,7 +7860,7 @@ const HARMLESS_BUSINESS_SUPPORT_TEXT_PATTERNS = [
   /^(?:hi|hello|hey)[!.🙂😊 ]*$/u,
   /^(?:thanks|thank you|you(?:'|’)re welcome|happy to help|glad to help)[!.🙂😊 ]*$/u,
   /^(?:certainly|of course|absolutely|sure)[,!.—– -]*(?:what would you like to know|how can i help|could you clarify|please tell me more)?[?!. ]*$/u,
-  /^(?:hej|tack|tack så mycket|varsågod|glad att kunna hjälpa|hjälper gärna)[!.🙂😊 ]*$/u,
+  /^(?:(?:hej|välkommen|tack|tack så mycket|varsågod|glad att kunna hjälpa|hjälper gärna)[!.🙂😊👋✨ ]*)+$/u,
   /^(?:absolut|självklart|gärna)[,!.—– -]*(?:vad vill du veta|hur kan jag hjälpa|kan du förtydliga|berätta gärna mer)?[?!. ]*$/u,
 ];
 
@@ -7909,16 +7909,6 @@ function assessmentCoversMaterialCandidateClaims(
     isHarmlessBusinessSupportText(harmlessResidual)
   ) {
     return true;
-  }
-
-  if (
-    process.env.NODE_ENV === "production" &&
-    /kundentré/iu.test(candidateReply)
-  ) {
-    console.info("[KnowledgeCoverageResidual]", {
-      residual: uncovered,
-      harmlessResidual,
-    });
   }
 
   const remainingTokens = uncovered.match(/[\p{L}\p{N}]+/gu) || [];

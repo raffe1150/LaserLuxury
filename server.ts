@@ -8363,6 +8363,19 @@ async function guardBusinessSupportGrounding(
   };
   const assessment = await assessBusinessSupportGrounding(verificationRequest);
 
+  if (
+    String(getBusinessIdFromConfig(support.businessConfig)) === "3" &&
+    /kundentré/iu.test(latestCustomerMessage)
+  ) {
+    console.info("[KnowledgeCoverageDebug]", {
+      candidateReply,
+      claims: assessment?.claims.map((claim) => ({
+        claim: claim.claim,
+        candidateQuote: claim.candidateQuote,
+      })) || [],
+    });
+  }
+
   const assessmentCoverageOk = Boolean(
     assessment &&
     (

@@ -420,3 +420,97 @@ test('semantic Knowledge retrieval bridges all six OdinLink languages to Swedish
     );
   }
 });
+
+test('meaningful current message switches conversation language from German to English', async () => {
+  setup();
+
+  const id = 'language-switch-de-en';
+
+  b.configure({
+    semanticLanguageResolver: async (
+      text: string,
+      activeLanguage: string | null,
+    ) => {
+      if (/park/i.test(text)) {
+        assert.equal(activeLanguage, 'de');
+
+        return {
+          language: 'en',
+          requestedReplyLanguage: null,
+          confidence: 0.99,
+        };
+      }
+
+      return {
+        language: 'de',
+        requestedReplyLanguage: null,
+        confidence: 0.99,
+      };
+    },
+  });
+
+  assert.equal(
+    await b.prepareConversationLanguage(
+      id,
+      'Wo befindet sich der Kundeneingang?',
+      config,
+    ),
+    'de',
+  );
+
+  assert.equal(
+    await b.prepareConversationLanguage(
+      id,
+      'Do you have free parking?',
+      config,
+    ),
+    'en',
+  );
+});
+
+test('Persian and Arabic remain distinct when the current message changes language', async () => {
+  setup();
+
+  const id = 'language-switch-fa-ar';
+
+  b.configure({
+    semanticLanguageResolver: async (
+      text: string,
+      activeLanguage: string | null,
+    ) => {
+      if (text.includes('مدخل')) {
+        assert.equal(activeLanguage, 'fa');
+
+        return {
+          language: 'ar',
+          requestedReplyLanguage: null,
+          confidence: 0.99,
+        };
+      }
+
+      return {
+        language: 'fa',
+        requestedReplyLanguage: null,
+        confidence: 0.99,
+      };
+    },
+  });
+
+  assert.equal(
+    await b.prepareConversationLanguage(
+      id,
+      'ورودی مشتری کجاست؟',
+      config,
+    ),
+    'fa',
+  );
+
+  assert.equal(
+    await b.prepareConversationLanguage(
+      id,
+      'أين يقع مدخل العملاء؟',
+      config,
+    ),
+    'ar',
+  );
+});

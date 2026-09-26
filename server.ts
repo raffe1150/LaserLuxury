@@ -498,7 +498,7 @@ Required JSON shape:
           .map((value) => value.trim())
           .filter(Boolean)
       )
-    ).slice(0, 6);
+    ).slice(0, 7);
 
     if (!canonicalMeaning || dedupedQueries.length === 0) {
       return null;
@@ -23375,10 +23375,7 @@ async function prepareConversationLanguageForTurn(
   // A message can be written in one language while requesting replies
   // in another. A language-name mention only triggers semantic analysis;
   // it does not itself count as a switch.
-  if (
-    messageMentionsAnySupportedLanguage(text) &&
-    isMeaningfulLanguageMessage(text)
-  ) {
+  if (isMeaningfulLanguageMessage(text)) {
     const semantic = await resolveSemanticConversationLanguage(
       text,
       previous,
@@ -23388,6 +23385,11 @@ async function prepareConversationLanguageForTurn(
     const requestedReplyLanguage =
       normalizeSupportedConversationLanguage(
         semantic?.requestedReplyLanguage,
+      );
+
+    const semanticCurrentLanguage =
+      normalizeSupportedConversationLanguage(
+        semantic?.language,
       );
 
     if (
@@ -23407,6 +23409,26 @@ async function prepareConversationLanguageForTurn(
       });
 
       return requestedReplyLanguage;
+    }
+
+    if (
+      semanticCurrentLanguage &&
+      typeof semantic?.confidence === "number" &&
+      semantic.confidence >= 0.85 &&
+      semanticCurrentLanguage !== previous
+    ) {
+      chatLanguages[chatId] = semanticCurrentLanguage;
+      updateActiveFlowLanguage(chatId, semanticCurrentLanguage);
+
+      console.log("[LanguageBrain]", {
+        selected: semanticCurrentLanguage,
+        source: "semantic_current_message",
+        previous: previous || "none",
+        sessionKey: safeLogFingerprint(chatId),
+        inputFingerprint: safeLogFingerprint(text),
+      });
+
+      return semanticCurrentLanguage;
     }
   }
 
@@ -31641,6 +31663,22 @@ Generate the final production-ready system prompt now.
 }
 
 export const priority1hUnifiedEngineTestBoundary = {
+  async prepareConversationLanguage(
+    chatId: string,
+    latestText: string,
+    businessConfig: any,
+  ) {
+    if (process.env.NODE_ENV !== "test") {
+      throw new Error("Test-only");
+    }
+
+    return prepareConversationLanguageForTurn(
+      chatId,
+      latestText,
+      businessConfig,
+    );
+  },
+
   async semanticKnowledgeQueries(
     question: string,
     businessConfig: any,

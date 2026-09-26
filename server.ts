@@ -7630,7 +7630,19 @@ async function retrieveBusinessKnowledgeForQuestion(
       5
     );
 
-    return formatRetrievedBusinessKnowledge(matches);
+    const formattedKnowledge = formatRetrievedBusinessKnowledge(matches);
+
+    console.log("[KnowledgeRetrieval]", {
+      businessId,
+      matchCount: Array.isArray(matches) ? matches.length : 0,
+      sourceIds: Array.isArray(matches)
+        ? matches.map((match: any) => String(match?.sourceId || "")).filter(Boolean)
+        : [],
+      formattedKnowledgePresent: Boolean(formattedKnowledge),
+      formattedKnowledgeLength: formattedKnowledge.length,
+    });
+
+    return formattedKnowledge;
   } catch (error) {
     console.error("[KnowledgeRetrieval] Business knowledge lookup failed:", {
       businessId,

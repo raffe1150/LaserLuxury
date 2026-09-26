@@ -7900,7 +7900,28 @@ function assessmentCoversMaterialCandidateClaims(
   }
 
   const remainingTokens = uncovered.match(/[\p{L}\p{N}]+/gu) || [];
-  return remainingTokens.every((token) => BUSINESS_CLAIM_COVERAGE_GLUE.has(token));
+
+  if (remainingTokens.every((token) => BUSINESS_CLAIM_COVERAGE_GLUE.has(token))) {
+    return true;
+  }
+
+  const harmlessResidualPatterns = [
+    /^(?:according to|based on|from) (?:the )?(?:available )?(?:business )?information[,.: -]*/u,
+    /^(?:enligt|utifrån) (?:den )?(?:tillgängliga )?(?:informationen|verksamhetsinformationen)[,.: -]*/u,
+    /^(?:laut|gemäß|nach) (?:den )?(?:verfügbaren )?(?:informationen|unternehmensinformationen)[,.: -]*/u,
+    /^(?:según|de acuerdo con) (?:la )?(?:información )?(?:disponible )?(?:del negocio)?[,.: -]*/u,
+    /^(?:طبق|بر اساس) (?:اطلاعات )?(?:موجود )?(?:کسب.?و.?کار)?[,.: -]*/u,
+    /^(?:وفقًا لـ|بناءً على) (?:المعلومات )?(?:المتاحة )?(?:للمنشأة)?[,.: -]*/u,
+  ];
+
+  let residual = uncovered.trim();
+
+  for (const pattern of harmlessResidualPatterns) {
+    residual = residual.replace(pattern, "").trim();
+  }
+
+  const residualTokens = residual.match(/[\p{L}\p{N}]+/gu) || [];
+  return residualTokens.every((token) => BUSINESS_CLAIM_COVERAGE_GLUE.has(token));
 }
 
 function assessmentHasVerifiedEvidence(

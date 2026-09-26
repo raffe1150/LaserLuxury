@@ -241,10 +241,15 @@ test('retrieved tenant Knowledge reaches grounding and may support a factual rep
     }),
   });
 
-  const reply = 'The customer entrance is on Oak Street.';
+  const replies = [
+    'The customer entrance is on Oak Street.',
+    'According to the available business information, the customer entrance is on Oak Street.',
+  ];
 
-  assert.equal(
-    await b.finalizeGeneralAiReply(id, question, reply, 'en'),
-    reply,
-  );
+  for (const reply of replies) {
+    assert.equal(
+      await b.finalizeGeneralAiReply(id, question, reply, 'en'),
+      reply,
+    );
+  }
 });

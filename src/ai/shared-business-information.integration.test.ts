@@ -253,3 +253,56 @@ test('retrieved tenant Knowledge reaches grounding and may support a factual rep
     );
   }
 });
+
+test('Swedish grounded Knowledge reply allows harmless greeting and emoji framing', async () => {
+  setup();
+
+  const id = 'retrieved-knowledge-swedish-framing';
+  const question = 'Var ligger kundentrén?';
+  const knowledge =
+    'KNOWLEDGE CHUNK 1\n' +
+    'source_id: knowledge-source-sv\n' +
+    'Kundentrén ligger på Aurora Street 742.';
+
+  b.businessInformationState(
+    id,
+    config,
+    question,
+    'sv',
+    knowledge,
+  );
+
+  b.configure({
+    assessBusinessSupportGrounding: async (request: any) => {
+      assert.match(request.evidenceCorpus, /Kundentrén ligger på Aurora Street 742/);
+
+      return {
+        hasBusinessFactualClaims: true,
+        allBusinessClaimsSupported: true,
+        claims: [{
+          claim: 'Kundentrén ligger på Aurora Street 742.',
+          candidateQuote: 'Kundentrén ligger på Aurora Street 742.',
+          claimKind: 'OTHER',
+          requiresBusinessEvidence: true,
+          supported: true,
+          evidence: [{
+            source: 'retrieved_knowledge',
+            quote: 'Kundentrén ligger på Aurora Street 742.',
+          }],
+        }],
+      };
+    },
+    assessBusinessClaimEntailment: async () => ({
+      relation: 'ENTAILED',
+      claimKind: 'OTHER',
+      explicitAbsenceEvidence: false,
+    }),
+  });
+
+  const reply = 'Hej! Kundentrén ligger på Aurora Street 742. ✨';
+
+  assert.equal(
+    await b.finalizeGeneralAiReply(id, question, reply, 'sv'),
+    reply,
+  );
+});

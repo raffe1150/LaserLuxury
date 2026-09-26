@@ -7899,6 +7899,18 @@ function assessmentCoversMaterialCandidateClaims(
     uncovered = uncovered.replace(quote, " ");
   }
 
+  const harmlessResidual = uncovered
+    .replace(/[\p{P}\p{S}]+/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
+
+  if (
+    isHarmlessBusinessSupportText(uncovered) ||
+    isHarmlessBusinessSupportText(harmlessResidual)
+  ) {
+    return true;
+  }
+
   const remainingTokens = uncovered.match(/[\p{L}\p{N}]+/gu) || [];
 
   if (remainingTokens.every((token) => BUSINESS_CLAIM_COVERAGE_GLUE.has(token))) {
@@ -8362,19 +8374,6 @@ async function guardBusinessSupportGrounding(
     businessId: getBusinessIdFromConfig(support.businessConfig),
   };
   const assessment = await assessBusinessSupportGrounding(verificationRequest);
-
-  if (
-    String(getBusinessIdFromConfig(support.businessConfig)) === "3" &&
-    /kundentré/iu.test(latestCustomerMessage)
-  ) {
-    console.info("[KnowledgeCoverageDebug]", {
-      candidateReply,
-      claims: assessment?.claims.map((claim) => ({
-        claim: claim.claim,
-        candidateQuote: claim.candidateQuote,
-      })) || [],
-    });
-  }
 
   const assessmentCoverageOk = Boolean(
     assessment &&

@@ -306,3 +306,117 @@ test('Swedish grounded Knowledge reply allows harmless greeting and emoji framin
     reply,
   );
 });
+
+test('semantic Knowledge retrieval bridges all six OdinLink languages to Swedish stored evidence', async () => {
+  const knowledgeConfig = {
+    ...config,
+    id: 77,
+    businessId: 77,
+    business_id: 77,
+    businessRecordId: 77,
+  };
+
+  const questions = {
+    en: 'Where is the customer entrance?',
+    sv: 'Var ligger kundentrén?',
+    de: 'Wo befindet sich der Kundeneingang?',
+    es: '¿Dónde está la entrada de clientes?',
+    fa: 'ورودی مشتری کجاست؟',
+    ar: 'أين يقع مدخل العملاء؟',
+  };
+
+  for (const [language, question] of Object.entries(questions)) {
+    setup();
+
+    const searchedQueries: string[] = [];
+
+    b.configure({
+      geminiGenerate: async (params: any) => {
+        assert.equal(
+          params?.config?.systemInstruction?.includes(
+            "multilingual Knowledge retrieval query planner"
+          ),
+          true,
+        );
+
+        return {
+          text: JSON.stringify({
+            canonicalMeaning:
+              'customer entrance location/address',
+            queries: [
+              'customer entrance address',
+              'kundentré adress',
+              'Kundeneingang Adresse',
+              'entrada de clientes dirección',
+              'آدرس ورودی مشتری',
+              'عنوان مدخل العملاء',
+            ],
+          }),
+        };
+      },
+
+      knowledgeSearch: async (
+        businessId: number,
+        query: string,
+        limit: number,
+      ) => {
+        assert.equal(businessId, 77);
+        assert.equal(limit, 5);
+
+        searchedQueries.push(query);
+
+        if (/kundentr[eé]/iu.test(query)) {
+          return [{
+            sourceId: 'knowledge-source-sv',
+            businessId,
+            score: 100,
+            text:
+              'Kundentrén ligger på Aurora Street 742.',
+            metadata: {},
+          }];
+        }
+
+        return [];
+      },
+    });
+
+    const plan =
+      await b.semanticKnowledgeQueries(
+        question,
+        knowledgeConfig,
+      );
+
+    assert.ok(plan);
+    assert.equal(
+      plan?.canonicalMeaning,
+      'customer entrance location/address',
+    );
+
+    assert.ok(
+      plan?.queries.some(
+        (query: string) =>
+          /kundentr[eé]/iu.test(query)
+      ),
+      `${language}: expected Swedish semantic bridge query`,
+    );
+
+    const retrieved =
+      await b.retrieveBusinessKnowledge(
+        question,
+        knowledgeConfig,
+      );
+
+    assert.match(
+      retrieved,
+      /Kundentrén ligger på Aurora Street 742/,
+      `${language}: Swedish stored Knowledge was not retrieved`,
+    );
+
+    assert.ok(
+      searchedQueries.some(
+        (query) => /kundentr[eé]/iu.test(query)
+      ),
+      `${language}: Swedish retrieval query was never executed`,
+    );
+  }
+});

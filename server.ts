@@ -397,6 +397,127 @@ if (process.env.SUPABASE_URL && (process.env.SUPABASE_SERVICE_ROLE_KEY || proces
 const p2StructuredUnderstandingProviderRuntime =
   createConfiguredUnderstandingProvider();
 
+
+type SemanticKnowledgeQueryPlan = {
+  canonicalMeaning: string;
+  queries: string[];
+};
+
+async function resolveSemanticKnowledgeQueries(
+  question: string,
+  businessConfig: any,
+): Promise<SemanticKnowledgeQueryPlan | null> {
+  const customerQuestion = String(question || "").trim();
+  if (!customerQuestion) return null;
+
+  try {
+    const response = await generateContentWithFallback(null, {
+      messages: [
+        {
+          role: "user",
+          content: customerQuestion,
+        },
+      ],
+      systemInstruction: `
+You are OdinLink's multilingual Knowledge retrieval query planner.
+
+Understand the customer's BUSINESS-INFORMATION question by meaning, not keywords.
+
+Create short search queries that help retrieve semantically equivalent business facts
+even when the stored Knowledge is written in another supported language.
+
+Supported languages:
+- sv Swedish
+- en English
+- de German
+- es Spanish
+- fa Persian/Farsi
+- ar Arabic
+
+Rules:
+- Do NOT answer the customer's question.
+- Do NOT invent business facts.
+- Do NOT infer facts that are not in the question.
+- Preserve important entities, service names, product names, locations, and numbers.
+- canonicalMeaning must be a short language-neutral description of what information
+  the customer is asking for.
+- queries must contain concise retrieval phrases covering the SAME meaning.
+- Include the original customer wording when useful.
+- Include semantically equivalent search phrases across the supported languages.
+- Do not broaden the topic.
+- Maximum 6 queries.
+- Each query must be at most 120 characters.
+- Return ONLY valid JSON.
+
+Required JSON shape:
+{
+  "canonicalMeaning": "customer entrance location/address",
+  "queries": [
+    "customer entrance address",
+    "kundentré adress",
+    "Kundeneingang Adresse"
+  ]
+}
+      `.trim(),
+      model: "gemini-2.5-flash",
+      context: {
+        businessId: getBusinessIdFromConfig(businessConfig),
+        channel: "knowledge-core",
+        stage: "semantic_knowledge_query_resolution",
+      },
+    });
+
+    let raw = String(response?.text || "").trim();
+
+    raw = raw
+      .replace(/^```json\s*/i, "")
+      .replace(/^```\s*/i, "")
+      .replace(/\s*```$/i, "")
+      .trim();
+
+    const parsed = JSON.parse(raw);
+
+    const canonicalMeaning =
+      typeof parsed?.canonicalMeaning === "string"
+        ? parsed.canonicalMeaning.trim().slice(0, 240)
+        : "";
+
+    const queries = Array.isArray(parsed?.queries)
+      ? parsed.queries
+          .filter((value: unknown): value is string => typeof value === "string")
+          .map((value: string) => value.trim().slice(0, 120))
+          .filter(Boolean)
+          .slice(0, 6)
+      : [];
+
+    const normalizedOriginal = customerQuestion.slice(0, 120);
+
+    const dedupedQueries = Array.from(
+      new Set(
+        [normalizedOriginal, ...queries]
+          .map((value) => value.trim())
+          .filter(Boolean)
+      )
+    ).slice(0, 6);
+
+    if (!canonicalMeaning || dedupedQueries.length === 0) {
+      return null;
+    }
+
+    return {
+      canonicalMeaning,
+      queries: dedupedQueries,
+    };
+  } catch (error) {
+    console.error("[KnowledgeQueryResolver] Semantic query planning failed:", {
+      businessId: getBusinessIdFromConfig(businessConfig),
+      error: error instanceof Error ? error.message : String(error),
+    });
+
+    return null;
+  }
+}
+
 async function resolveSemanticConversationLanguage(
   text: string,
   activeLanguage: string | null,
@@ -995,6 +1116,12 @@ type Priority1hTestDependencies = {
     activeLanguage: string | null,
     businessConfig: any,
   ) => Promise<SemanticLanguageDecision | null> | SemanticLanguageDecision | null;
+
+  knowledgeSearch?: (
+    businessId: number,
+    query: string,
+    limit: number,
+  ) => Promise<any[]> | any[];
   calendarAdapter?: CalendarAdapter;
   supabaseClient?: any;
   recordAppointment?: (params: any) => Promise<any | null>;
@@ -7624,22 +7751,99 @@ async function retrieveBusinessKnowledgeForQuestion(
   }
 
   try {
-    const matches = await knowledgeService.search(
-      businessId,
-      normalizedQuestion,
-      5
+    const semanticPlan =
+      await resolveSemanticKnowledgeQueries(
+        normalizedQuestion,
+        businessConfig,
+      );
+
+    const queries =
+      semanticPlan?.queries?.length
+        ? semanticPlan.queries
+        : [normalizedQuestion];
+
+    const searchKnowledge =
+      process.env.NODE_ENV === "test" &&
+      priority1hTestDependencies?.knowledgeSearch
+        ? priority1hTestDependencies.knowledgeSearch
+        : (
+            scopedBusinessId: number,
+            query: string,
+            limit: number,
+          ) =>
+            knowledgeService.search(
+              scopedBusinessId,
+              query,
+              limit,
+            );
+
+    const resultSets = await Promise.all(
+      queries.map((query) =>
+        Promise.resolve(
+          searchKnowledge(businessId, query, 5)
+        )
+          .catch((error) => {
+            console.error("[KnowledgeRetrieval] Query failed:", {
+              businessId,
+              queryLength: query.length,
+              error:
+                error instanceof Error
+                  ? error.message
+                  : String(error),
+            });
+
+            return [];
+          })
+      )
     );
 
-    const formattedKnowledge = formatRetrievedBusinessKnowledge(matches);
+    const deduped = new Map<string, any>();
+
+    for (const match of resultSets.flat()) {
+      const sourceId = String(match?.sourceId || "");
+      const content = String(match?.text || "").trim();
+      if (!content) continue;
+
+      const key = `${sourceId}:${content}`;
+
+      const existing = deduped.get(key);
+
+      if (
+        !existing ||
+        Number(match?.score || 0) >
+          Number(existing?.score || 0)
+      ) {
+        deduped.set(key, match);
+      }
+    }
+
+    const matches = Array.from(deduped.values())
+      .sort(
+        (a: any, b: any) =>
+          Number(b?.score || 0) -
+          Number(a?.score || 0)
+      )
+      .slice(0, 5);
+
+    const formattedKnowledge =
+      formatRetrievedBusinessKnowledge(matches);
 
     console.log("[KnowledgeRetrieval]", {
       businessId,
-      matchCount: Array.isArray(matches) ? matches.length : 0,
-      sourceIds: Array.isArray(matches)
-        ? matches.map((match: any) => String(match?.sourceId || "")).filter(Boolean)
-        : [],
-      formattedKnowledgePresent: Boolean(formattedKnowledge),
-      formattedKnowledgeLength: formattedKnowledge.length,
+      semanticPlanUsed: Boolean(semanticPlan),
+      canonicalMeaning:
+        semanticPlan?.canonicalMeaning || null,
+      queryCount: queries.length,
+      matchCount: matches.length,
+      sourceIds: matches
+        .map((match: any) =>
+          String(match?.sourceId || "")
+        )
+        .filter(Boolean),
+      formattedKnowledgePresent:
+        Boolean(formattedKnowledge),
+      formattedKnowledgeLength:
+        formattedKnowledge.length,
     });
 
     return formattedKnowledge;
@@ -31437,6 +31641,34 @@ Generate the final production-ready system prompt now.
 }
 
 export const priority1hUnifiedEngineTestBoundary = {
+  async semanticKnowledgeQueries(
+    question: string,
+    businessConfig: any,
+  ) {
+    if (process.env.NODE_ENV !== "test") {
+      throw new Error("Test-only");
+    }
+
+    return resolveSemanticKnowledgeQueries(
+      question,
+      businessConfig,
+    );
+  },
+
+  async retrieveBusinessKnowledge(
+    question: string,
+    businessConfig: any,
+  ) {
+    if (process.env.NODE_ENV !== "test") {
+      throw new Error("Test-only");
+    }
+
+    return retrieveBusinessKnowledgeForQuestion(
+      businessConfig,
+      question,
+    );
+  },
+
   promptAuditWebSession(conversationId: string, config: any) {
     if (process.env.NODE_ENV !== "test") throw new Error("Test-only");
     return getScopedWebSessionId(conversationId, config);

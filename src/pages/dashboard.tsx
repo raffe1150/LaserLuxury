@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useRef, useState } from 'react';
 import BookingsPanel from '../components/dashboard/BookingsPanel';
 import ConversationsPanel from '../components/dashboard/ConversationsPanel';
+import KnowledgePanel from '../components/dashboard/KnowledgePanel';
 import DashboardShell from '../components/dashboard/DashboardShell';
 import NotificationCenter from '../components/dashboard/NotificationCenter';
 import {
@@ -359,6 +360,13 @@ function DashboardContent({ onNavigate }: DashboardProps) {
                 onSelect={handleBusinessChange}
               />
               <BusinessSettings business={selectedBusiness} onSaved={handleSaved} />
+
+              <KnowledgePanel
+                key={`knowledge-${selectedBusiness.id}`}
+                businessId={selectedBusiness.id}
+                onSaved={handleSaved}
+              />
+
               <CancellationSettings business={selectedBusiness} onSaved={handleSaved} />
               <AdminNotificationSettings business={selectedBusiness} onSaved={handleSaved} />
               <BusinessToneControls

@@ -23,6 +23,7 @@ const NAV_ITEMS = [
   { id: 'bookings', label: 'Bookings' },
   { id: 'businesses', label: 'Businesses' },
   { id: 'business-settings', label: 'Business Settings' },
+  { id: 'knowledge', label: 'Knowledge' },
   { id: 'ai-tone', label: 'AI Tone' },
   { id: 'prompt-editor', label: 'Prompt Editor' },
   { id: 'channel-settings', label: 'Channel Settings' },

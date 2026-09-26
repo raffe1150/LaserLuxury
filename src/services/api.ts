@@ -146,6 +146,28 @@ export type ChannelConnectionSummary = {
   source: 'self_service' | 'legacy_manual';
 };
 
+export type KnowledgeSource = {
+  id: string;
+  businessId: number | string;
+  type: 'text' | string;
+  title: string;
+  content?: string;
+  status: 'pending' | 'ready' | 'failed' | string;
+  metadata?: Record<string, unknown>;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
+type KnowledgeEnvelope = {
+  success: true;
+  data: KnowledgeSource[];
+};
+
+type KnowledgeSourceEnvelope = {
+  success: true;
+  data: KnowledgeSource;
+};
+
 export type ChannelAuthorizationStart = {
   success: true;
   mode: 'redirect' | 'embedded_signup' | 'telegram_business';
@@ -188,6 +210,34 @@ export const api = {
     request<{ ok: boolean }>(`/api/businesses/${businessId}`, {
       method: 'DELETE',
     }),
+
+  getKnowledgeSources: (businessId: string) =>
+    request<KnowledgeEnvelope>(
+      `/api/businesses/${encodeURIComponent(businessId)}/knowledge`,
+    ).then((result) => result.data),
+
+  createKnowledgeSource: (
+    businessId: string,
+    payload: { title: string; content: string },
+  ) =>
+    request<KnowledgeSourceEnvelope>(
+      `/api/businesses/${encodeURIComponent(businessId)}/knowledge`,
+      {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      },
+    ).then((result) => result.data),
+
+  deleteKnowledgeSource: (
+    businessId: string,
+    sourceId: string,
+  ) =>
+    request<{ success: true }>(
+      `/api/businesses/${encodeURIComponent(businessId)}/knowledge/${encodeURIComponent(sourceId)}`,
+      {
+        method: 'DELETE',
+      },
+    ),
   getBusinessStats: (businessId: string) =>
     request<BusinessStats>(`/api/businesses/${businessId}/stats`),
   getBusinessAnalyticsSummary: (

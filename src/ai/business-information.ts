@@ -3,7 +3,7 @@ export type BusinessInformationTopic = 'company' | 'services' | 'contact' | 'hou
 const topicPatterns: Record<BusinessInformationTopic, RegExp> = {
   company: /\b(?:company|business|unternehmen|firma|företag|verksamhet|empresa|negocio)\b|کسب.?و.?کار|شرکت|الشركة|المنشأة/iu,
   services: /\b(?:services?|offer(?:ings?)?|dienstleistungen?|leistungen?|angebot\w*|serviceportfolio|leistungskatalog|pakete?|tjänst\w*|utbud|servicios?|ofrecen|paquetes?)\b|خدمات|سرویس|الخدمات|خدمة/iu,
-  contact: /(?<![\p{L}\p{M}\p{N}_])(?:contact\w*|reach|website|übersichtsseite|standort\w*|erreichen|kontakt\w*|address|adresse|adress|ubicaci[oó]n|direcci[oó]n)(?![\p{L}\p{M}\p{N}_])|تماس|آدرس|موقع|عنوان|اتصال/iu,
+  contact: /(?<![\p{L}\p{M}\p{N}_])(?:contact\w*|reach|website|location|located|entrance\w*|entry|übersichtsseite|standort\w*|kundeneingang\w*|eingang\w*|zugang\w*|erreichen|kontakt\w*|address|adresse|adress|ingång\w*|entré\w*|kundentré\w*|ubicaci[oó]n|direcci[oó]n|entrada\w*|acceso\w*)(?![\p{L}\p{M}\p{N}_])|تماس|آدرس|ورودی|محل|موقع|عنوان|اتصال|مدخل|المدخل|مكان/iu,
   hours: /(?<![\p{L}\p{M}\p{N}_])(?:opening hours|hours|öffnungszeiten|öppettider|horarios?)(?![\p{L}\p{M}\p{N}_])|ساعات کاری|ساعات العمل/iu,
   prices: /\b(?:prices?|costs?|pricing|preisen?|preise?|kosten|pris\w*|kostar|precios?|cuesta)\b|قیمت|هزینه|السعر|أسعار/iu,
   policies: /\b(?:polic\w*|conditions|requirements|preparation|prepare|bring|payment|documents?|bedingungen|geschäftsbedingungen|vorbereit\w*|mitbringen|betalning|villkor|förbereda|ta med|condiciones|preparar|llevar|pago)\b|شرایط|آماده|پرداخت|شروط|تحضير|دفع/iu,

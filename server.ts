@@ -25735,11 +25735,18 @@ async function processWhatsAppMessageClaimed(message: any, metadata: any, config
     return;
   }
 
+  const whatsappProviderTimestampSeconds = Number(message?.timestamp);
+  const providerMessageAgeMs =
+    Number.isFinite(whatsappProviderTimestampSeconds) && whatsappProviderTimestampSeconds > 0
+      ? Math.max(0, Date.now() - whatsappProviderTimestampSeconds * 1000)
+      : null;
+
   console.log("[WhatsAppWebhook]", {
     messageIdPresent: Boolean(message?.id),
     senderPresent: Boolean(from),
     businessPhonePresent: Boolean(phoneNumberId),
     messageLength: textMessage.length,
+    providerMessageAgeMs,
   });
 
   let chatId = `wa_${from}`;

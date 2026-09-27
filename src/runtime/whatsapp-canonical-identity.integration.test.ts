@@ -119,6 +119,17 @@ assert.match(whatsappHandler, /postProcessMessage\(from, platform, textMessage, 
 assert.match(whatsappHandler, /postProcessMessage\(\s*from,\s*platform,\s*textMessage,\s*reply/);
 assert.match(whatsappHandler, /postProcessMessage\(from, platform, textMessage, textResponse/);
 
+assert.match(
+  whatsappHandler,
+  /providerMessageAgeMs/,
+  "WhatsApp webhook diagnostics must expose provider message age",
+);
+assert.match(
+  whatsappHandler,
+  /message\?\.timestamp|message\.timestamp/,
+  "WhatsApp message age must be derived from the provider timestamp",
+);
+
 const manualRoute = serverSource.match(
   /\/\/ API: send a manual dashboard reply[\s\S]*?\/\/ API: mark all unread customer messages/,
 )?.[0] || "";

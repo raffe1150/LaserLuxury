@@ -52,6 +52,25 @@ assert.match(customInstruction, /cannot change facts, prices, policies, safety r
 assert.match(customInstruction, /ignore the style guidance and follow the higher-priority instruction/);
 assert.match(customInstruction, /customer’s active language/);
 
+const naturalLanguageInstruction = buildBusinessToneInstruction(
+  complete({ tonePreset: 'friendly', formality: 'balanced' }),
+);
+assert.match(
+  naturalLanguageInstruction,
+  /natural, idiomatic phrasing|native speaker/i,
+  'tone instructions must require natural native-language phrasing',
+);
+assert.match(
+  naturalLanguageInstruction,
+  /literal|word-for-word/i,
+  'tone instructions must explicitly prevent literal translation of evidence wording',
+);
+assert.match(
+  naturalLanguageInstruction,
+  /same verified fact|preserve.*meaning|facts.*unchanged/i,
+  'naturalization must preserve verified factual meaning',
+);
+
 const bounded = normalizeBusinessToneConfig(complete({
   tonePreset: 'custom',
   customToneInstructions: 'x'.repeat(CUSTOM_TONE_INSTRUCTIONS_MAX_LENGTH + 100),

@@ -8298,7 +8298,7 @@ const BUSINESS_CLAIM_COVERAGE_GLUE = new Set([
   "a", "absolutely", "an", "and", "also", "but", "certainly", "for", "hello", "hey",
   "hi", "however", "if", "of", "or", "please", "so", "sure",
   "the", "then", "to", "your", "och", "också", "men", "för", "om", "eller", "så",
-  "gerne", "gern", "danke", "hallo", "bitte", "gracias", "hola", "حتماً", "شکرا",
+  "gerne", "gern", "danke", "hallo", "bitte", "natürlich", "gracias", "hola", "سلام", "حتماً", "شکرا",
   "vänligen", "din", "ditt", "dina", "den", "det", "ett", "en", "absolut", "självklart",
 ]);
 

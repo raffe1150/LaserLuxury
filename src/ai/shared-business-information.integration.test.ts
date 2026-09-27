@@ -345,6 +345,113 @@ test('Swedish grounded Knowledge reply allows harmless greeting and emoji framin
   );
 });
 
+
+test('Persian grounded Knowledge reply allows harmless greeting framing', async () => {
+  setup();
+
+  const id = 'retrieved-knowledge-persian-framing';
+  const question = 'آدرستون کجاست؟';
+  const knowledge =
+    'KNOWLEDGE CHUNK 1\n' +
+    'source_id: knowledge-source-fa\n' +
+    'Kundentrén ligger på Aurora Street 742.';
+
+  b.businessInformationState(
+    id,
+    config,
+    question,
+    'fa',
+    knowledge,
+  );
+
+  b.configure({
+    assessBusinessSupportGrounding: async (request: any) => {
+      assert.match(request.evidenceCorpus, /Kundentrén ligger på Aurora Street 742/);
+
+      return {
+        hasBusinessFactualClaims: true,
+        allBusinessClaimsSupported: true,
+        claims: [{
+          claim: 'ورودی مشتری در Aurora Street 742 قرار دارد.',
+          candidateQuote: 'ورودی مشتری در Aurora Street 742 قرار دارد.',
+          claimKind: 'OTHER',
+          requiresBusinessEvidence: true,
+          supported: true,
+          evidence: [{
+            source: 'retrieved_knowledge',
+            quote: 'Kundentrén ligger på Aurora Street 742.',
+          }],
+        }],
+      };
+    },
+    assessBusinessClaimEntailment: async () => ({
+      relation: 'ENTAILED',
+      claimKind: 'OTHER',
+      explicitAbsenceEvidence: false,
+    }),
+  });
+
+  const reply = 'سلام! ورودی مشتری در Aurora Street 742 قرار دارد. 😊';
+
+  assert.equal(
+    await b.finalizeGeneralAiReply(id, question, reply, 'fa'),
+    reply,
+  );
+});
+
+test('German grounded Knowledge reply allows harmless acknowledgement framing', async () => {
+  setup();
+
+  const id = 'retrieved-knowledge-german-framing';
+  const question = 'Wie lautet Ihre Adresse?';
+  const knowledge =
+    'KNOWLEDGE CHUNK 1\n' +
+    'source_id: knowledge-source-de\n' +
+    'Kundentrén ligger på Aurora Street 742.';
+
+  b.businessInformationState(
+    id,
+    config,
+    question,
+    'de',
+    knowledge,
+  );
+
+  b.configure({
+    assessBusinessSupportGrounding: async (request: any) => {
+      assert.match(request.evidenceCorpus, /Kundentrén ligger på Aurora Street 742/);
+
+      return {
+        hasBusinessFactualClaims: true,
+        allBusinessClaimsSupported: true,
+        claims: [{
+          claim: 'Der Kundeneingang befindet sich in der Aurora Street 742.',
+          candidateQuote: 'Der Kundeneingang befindet sich in der Aurora Street 742.',
+          claimKind: 'OTHER',
+          requiresBusinessEvidence: true,
+          supported: true,
+          evidence: [{
+            source: 'retrieved_knowledge',
+            quote: 'Kundentrén ligger på Aurora Street 742.',
+          }],
+        }],
+      };
+    },
+    assessBusinessClaimEntailment: async () => ({
+      relation: 'ENTAILED',
+      claimKind: 'OTHER',
+      explicitAbsenceEvidence: false,
+    }),
+  });
+
+  const reply = 'Natürlich! Der Kundeneingang befindet sich in der Aurora Street 742. 😊';
+
+  assert.equal(
+    await b.finalizeGeneralAiReply(id, question, reply, 'de'),
+    reply,
+  );
+});
+
 test('semantic Knowledge retrieval bridges all six OdinLink languages to Swedish stored evidence', async () => {
   const knowledgeConfig = {
     ...config,

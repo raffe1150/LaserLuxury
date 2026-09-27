@@ -7314,7 +7314,7 @@ function isGreetingOnlyText(text?: string): boolean {
 
   if (!raw) return false;
 
-  return /^(?:he+j+|hejsan|hallå|halla|hell+o+|hi+|hey+|sala+m+|salaa+m+|slm|سلام|درود|god morgon|god kväll|god kvall|good morning|good evening|khob hastin|khoobi|خوب هستین|خوبی)$/.test(raw);
+  return /^(?:he+j+|hejsan|hallå|halla|hell+o+|hi+|hey+|god morgon|god kväll|god kvall|good morning|good evening|hola|buenos días|buenos dias|buenas tardes|buenas noches|hallo|guten morgen|guten tag|guten abend|sala+m+|salaa+m+|slm|سلام|درود|khob hastin|khoobi|خوب هستین|خوبی|مرحبا|مرحباً|مرحبًا|أهلا|اهلا|السلام عليكم|السلام علیکم)$/.test(raw);
 }
 
 function formatGreetingDuringActiveBooking(language: string): string {
@@ -8330,7 +8330,9 @@ function assessmentCoversMaterialCandidateClaims(
 
   if (
     isHarmlessBusinessSupportText(uncovered) ||
-    isHarmlessBusinessSupportText(harmlessResidual)
+    isHarmlessBusinessSupportText(harmlessResidual) ||
+    isGreetingOnlyText(uncovered) ||
+    isGreetingOnlyText(harmlessResidual)
   ) {
     return true;
   }

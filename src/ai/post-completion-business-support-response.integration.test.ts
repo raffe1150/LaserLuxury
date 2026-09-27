@@ -261,6 +261,55 @@ try {
   );
 
   configure();
+  const arabicAddressSession = 'support-response-natural-address-ar';
+  const arabicAddressQuestion = 'مرحباً، ما عنوانكم؟';
+
+  await enterBusinessSupport(
+    arabicAddressSession,
+    'ar',
+    'whatsapp',
+    arabicAddressQuestion,
+    naturalAddressConfig,
+  );
+
+  groundingAssessmentOverride = ({ candidateReply, evidenceCorpus }: any) => {
+    assert.match(evidenceCorpus, /Aurora Street 742/u);
+    assert.match(candidateReply, /742/u);
+
+    return {
+      hasBusinessFactualClaims: true,
+      claims: [{
+        claim: 'مدخل العملاء يقع في Aurora Street 742.',
+        candidateQuote: 'مدخل العملاء يقع في Aurora Street 742',
+        claimKind: 'OTHER',
+        requiresBusinessEvidence: true,
+        supported: true,
+        evidence: [{
+          source: 'business_system_prompt',
+          quote: 'Customer entrance: Aurora Street 742.',
+        }],
+      }],
+      allBusinessClaimsSupported: true,
+    };
+  };
+
+  const arabicAddressReply =
+    'مرحباً! مدخل العملاء يقع في Aurora Street 742.';
+
+  const preservedArabicAddress = await boundary.finalizeGeneralAiReply(
+    arabicAddressSession,
+    arabicAddressQuestion,
+    arabicAddressReply,
+    'ar',
+  );
+
+  assert.equal(
+    preservedArabicAddress,
+    arabicAddressReply,
+    'Arabic greeting-only framing around a verified factual claim must not fail coverage',
+  );
+
+  configure();
   const nullEvidenceConfig = {
     ...businessConfig,
     services: [{

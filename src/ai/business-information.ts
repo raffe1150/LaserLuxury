@@ -1,16 +1,24 @@
 /** Read-only topic recognition. It does not choose services or authorize bookings. */
-export type BusinessInformationTopic = 'company' | 'services' | 'contact' | 'hours' | 'prices' | 'policies';
+export type BusinessInformationTopic = 'company' | 'services' | 'contact' | 'hours' | 'prices' | 'policies' | 'parking';
+
+const businessAddressPattern = /(?<![\p{L}\p{M}\p{N}_])(?:location|located|standort\w*|kundeneingang\w*|adresse|adress|kundentré\w*|ubicaci[oó]n|ubicad\w*|direcci[oó]n|befind\w*)(?![\p{L}\p{M}\p{N}_])|\b(?:your|our|business|street|postal|mailing|physical)\s+address\b|\b(?:what(?:['’]s|\s+is)|where(?:['’]s|\s+is))\s+(?:the\s+|your\s+|our\s+)?address\b|\bcustomer\s+entrance\b|\bentrance\s+(?:for\s+)?customers?\b|\bvar\s+ligger\b|\bentrada\s+(?:de\s+|para\s+)?clientes?\b|آدرس|ورودی\s+مشتری(?:ان)?|کجا\s+هست|عنوان(?:كم|ك|نا)|مدخل\s+العملاء|(?:أين|اين)\s+(?:يقع\s+)?(?:مكان|موقع)/iu;
+
 const topicPatterns: Record<BusinessInformationTopic, RegExp> = {
   company: /\b(?:company|business|unternehmen|firma|företag|verksamhet|empresa|negocio)\b|کسب.?و.?کار|شرکت|الشركة|المنشأة/iu,
   services: /\b(?:services?|offer(?:ings?)?|dienstleistungen?|leistungen?|angebot\w*|serviceportfolio|leistungskatalog|pakete?|tjänst\w*|utbud|servicios?|ofrecen|paquetes?)\b|خدمات|سرویس|الخدمات|خدمة/iu,
-  contact: /(?<![\p{L}\p{M}\p{N}_])(?:contact\w*|reach|website|location|located|entrance\w*|entry|übersichtsseite|standort\w*|kundeneingang\w*|eingang\w*|zugang\w*|erreichen|kontakt\w*|address|adresse|adress|ingång\w*|entré\w*|kundentré\w*|ubicaci[oó]n|direcci[oó]n|entrada\w*|acceso\w*)(?![\p{L}\p{M}\p{N}_])|تماس|آدرس|ورودی|محل|موقع|عنوان|اتصال|مدخل|المدخل|مكان/iu,
+  contact: /(?<![\p{L}\p{M}\p{N}_])(?:contact\w*|reach|website|location|located|entrance\w*|entry|übersichtsseite|standort\w*|kundeneingang\w*|eingang\w*|zugang\w*|erreichen|kontakt\w*|address|adresse|adress|ingång\w*|entré\w*|kundentré\w*|ubicaci[oó]n|ubicad\w*|direcci[oó]n|entrada\w*|acceso\w*|befind\w*)(?![\p{L}\p{M}\p{N}_])|\bvar\s+ligger\b|تماس|آدرس|ورودی|محل|موقع|عنوان|اتصال|مدخل|المدخل|مكان|کجا\s+هست/iu,
   hours: /(?<![\p{L}\p{M}\p{N}_])(?:opening hours|hours|öffnungszeiten|öppettider|horarios?)(?![\p{L}\p{M}\p{N}_])|ساعات کاری|ساعات العمل/iu,
   prices: /\b(?:prices?|costs?|pricing|preisen?|preise?|kosten|pris\w*|kostar|precios?|cuesta)\b|قیمت|هزینه|السعر|أسعار/iu,
   policies: /\b(?:polic\w*|conditions|requirements|preparation|prepare|bring|payment|documents?|bedingungen|geschäftsbedingungen|vorbereit\w*|mitbringen|betalning|villkor|förbereda|ta med|condiciones|preparar|llevar|pago)\b|شرایط|آماده|پرداخت|شروط|تحضير|دفع/iu,
+  parking: /(?<![\p{L}\p{M}\p{N}_])(?:park(?:ing|er[\p{L}\p{M}]*|en|pl[\p{L}\p{M}]*)?|aparca[\p{L}\p{M}]*)(?![\p{L}\p{M}\p{N}_])|پارکینگ|پارک\s+کن|مواقف|ركن\s+سيار/iu,
 };
 export function businessInformationTopics(text: string): BusinessInformationTopic[] {
   return (Object.entries(topicPatterns) as [BusinessInformationTopic, RegExp][])
     .filter(([, pattern]) => pattern.test(text)).map(([topic]) => topic);
+}
+
+export function isBusinessAddressQuestion(text: string): boolean {
+  return businessAddressPattern.test(String(text || ''));
 }
 export function isBusinessInformationQuestion(text: string): boolean {
   if (!businessInformationTopics(text).length) return false;
@@ -23,12 +31,12 @@ export function isBusinessInformationQuestion(text: string): boolean {
 }
 
 const topicLabels: Record<string, Record<BusinessInformationTopic, string>> = {
-  en: { company: 'the company', services: 'services', contact: 'contact details and links', hours: 'opening hours', prices: 'prices', policies: 'terms and preparation' },
-  de: { company: 'das Unternehmen', services: 'die Dienstleistungen', contact: 'Kontaktmöglichkeiten und Links', hours: 'die Öffnungszeiten', prices: 'die Preise', policies: 'Bedingungen und Vorbereitung' },
-  sv: { company: 'företaget', services: 'tjänsterna', contact: 'kontaktuppgifter och länkar', hours: 'öppettiderna', prices: 'priserna', policies: 'villkor och förberedelser' },
-  es: { company: 'la empresa', services: 'los servicios', contact: 'contactos y enlaces', hours: 'los horarios', prices: 'los precios', policies: 'condiciones y preparación' },
-  fa: { company: 'شرکت', services: 'خدمات', contact: 'اطلاعات تماس و لینک‌ها', hours: 'ساعات کاری', prices: 'قیمت‌ها', policies: 'شرایط و آمادگی' },
-  ar: { company: 'الشركة', services: 'الخدمات', contact: 'بيانات الاتصال والروابط', hours: 'ساعات العمل', prices: 'الأسعار', policies: 'الشروط والتحضير' },
+  en: { company: 'the company', services: 'services', contact: 'contact details and links', hours: 'opening hours', prices: 'prices', policies: 'terms and preparation', parking: 'parking' },
+  de: { company: 'das Unternehmen', services: 'die Dienstleistungen', contact: 'Kontaktmöglichkeiten und Links', hours: 'die Öffnungszeiten', prices: 'die Preise', policies: 'Bedingungen und Vorbereitung', parking: 'Parkmöglichkeiten' },
+  sv: { company: 'företaget', services: 'tjänsterna', contact: 'kontaktuppgifter och länkar', hours: 'öppettiderna', prices: 'priserna', policies: 'villkor och förberedelser', parking: 'parkering' },
+  es: { company: 'la empresa', services: 'los servicios', contact: 'contactos y enlaces', hours: 'los horarios', prices: 'los precios', policies: 'condiciones y preparación', parking: 'aparcamiento' },
+  fa: { company: 'شرکت', services: 'خدمات', contact: 'اطلاعات تماس و لینک‌ها', hours: 'ساعات کاری', prices: 'قیمت‌ها', policies: 'شرایط و آمادگی', parking: 'پارکینگ' },
+  ar: { company: 'الشركة', services: 'الخدمات', contact: 'بيانات الاتصال والروابط', hours: 'ساعات العمل', prices: 'الأسعار', policies: 'الشروط والتحضير', parking: 'مواقف السيارات' },
 };
 export function businessInformationSubject(text: string, language: string): string {
   const labels = topicLabels[language] || topicLabels.en;
@@ -43,9 +51,9 @@ export function isServiceCatalogQuestion(text: string): boolean {
   if (!topics.includes("services")) return false;
 
   // If the customer is actually asking about prices, policies, contact details,
-  // or opening hours, a plain service catalog is not sufficient.
+  // opening hours, or parking, a plain service catalog is not sufficient.
   if (topics.some((topic) =>
-    ["prices", "policies", "contact", "hours"].includes(topic)
+    ["prices", "policies", "contact", "hours", "parking"].includes(topic)
   )) {
     return false;
   }

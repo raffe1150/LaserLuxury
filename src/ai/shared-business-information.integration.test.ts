@@ -132,6 +132,44 @@ test('selected tone, language and current evidence are shared across channels', 
   }
 });
 
+test('missing parking information is grounded consistently across all channels', async () => {
+  const noParkingConfig = {
+    ...config,
+    systemPrompt: 'Example Studio produces short video advertisements.',
+  };
+  const answers: string[] = [];
+
+  for (const channel of ['instagram', 'whatsapp', 'messenger', 'telegram'] as const) {
+    setup();
+    const id = `missing-parking-${channel}`;
+    const question = 'Do you have parking nearby? Where is it?';
+    const result = await b.turn({
+      sessionId: id,
+      platformName: channel,
+      recipientUserId: id,
+      text: question,
+      businessConfig: noParkingConfig,
+      now,
+    });
+
+    assert.equal(result.handled, false);
+    assert.ok(b.businessInformationState(id), `${channel} must enter the grounded information path`);
+
+    b.configure({ assessBusinessSupportGrounding: async () => null });
+    const answer = await b.finalizeGeneralAiReply(
+      id,
+      question,
+      'Several parking spaces are directly outside the studio.',
+      'en',
+    );
+    assert.match(answer, /can't find a specific answer.*parking/iu);
+    assert.doesNotMatch(answer, /several parking spaces|directly outside/iu);
+    answers.push(answer);
+  }
+
+  assert.equal(new Set(answers).size, 1, 'the four channel paths must use the same safe fallback');
+});
+
 test('harmless German greeting does not invalidate a grounded factual answer', async () => {
   setup(); const id = 'german-grounding-greeting';
   await turn(id, 'instagram', info.turns[0].customer);
@@ -427,6 +465,201 @@ test('semantic Knowledge retrieval bridges all six OdinLink languages to Swedish
         (query) => /kundentr[eé]/iu.test(query)
       ),
       `${language}: Swedish retrieval query was never executed`,
+    );
+  }
+});
+
+test('recognized address phrasings use a deterministic multilingual lexical bridge when planned and semantic queries miss', async () => {
+  const knowledgeConfig = {
+    ...config,
+    id: 77,
+    businessId: 77,
+    business_id: 77,
+    businessRecordId: 77,
+  };
+  const questions = {
+    en: 'Hi, what’s your address?',
+    sv: 'Var ligger kundentrén?',
+    es: 'Hola, ¿cuál es su dirección?',
+    de: 'Hallo, wie lautet Ihre Adresse?',
+    fa: 'سلام، آدرستون کجاست؟',
+    ar: 'مرحباً، ما عنوانكم؟',
+  };
+
+  for (const [language, question] of Object.entries(questions)) {
+    setup();
+    const searchedQueries: string[] = [];
+    const diagnostics: Array<Record<string, any>> = [];
+
+    b.configure({
+      geminiGenerate: async () => ({
+        text: JSON.stringify({
+          canonicalMeaning: 'business address',
+          queries: [question],
+        }),
+      }),
+      knowledgeSearch: async (
+        businessId: number,
+        query: string,
+        limit: number,
+      ) => {
+        assert.equal(businessId, 77);
+        assert.equal(limit, 5);
+        searchedQueries.push(query);
+
+        return query === 'kundentré adress'
+          ? [{
+              sourceId: 'knowledge-source-sv',
+              businessId,
+              score: 0.51,
+              text: 'Kundentrén ligger på Aurora Street 742.',
+              metadata: {},
+            }]
+          : [];
+      },
+      semanticKnowledgeSearch: async () => [],
+      knowledgeRetrievalDiagnostic: (event) => diagnostics.push(event),
+    });
+
+    const retrieved = await b.retrieveBusinessKnowledge(
+      question,
+      knowledgeConfig,
+    );
+
+    assert.match(
+      retrieved,
+      /Kundentrén ligger på Aurora Street 742/u,
+      `${language}: deterministic lexical bridge did not retrieve the address`,
+    );
+    assert.equal(searchedQueries[0], question);
+    assert.ok(searchedQueries.includes('kundentré adress'));
+    assert.equal(diagnostics.length, 1);
+    assert.equal(diagnostics[0].lexicalMatchCount, 1);
+    assert.equal(diagnostics[0].semanticRawMatchCount, 0);
+    assert.equal(diagnostics[0].semanticMatchCount, 0);
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(diagnostics[0], 'question'),
+      false,
+      'privacy-safe diagnostics must not contain the raw question',
+    );
+  }
+});
+
+test('unrelated Business Information questions do not run address lexical bridges', async () => {
+  setup();
+  const knowledgeConfig = {
+    ...config,
+    id: 77,
+    businessId: 77,
+    business_id: 77,
+    businessRecordId: 77,
+  };
+  const searchedQueries: string[] = [];
+
+  b.configure({
+    geminiGenerate: async () => ({
+      text: JSON.stringify({
+        canonicalMeaning: 'entry requirements',
+        queries: ['entry requirements'],
+      }),
+    }),
+    knowledgeSearch: async (
+      _businessId: number,
+      query: string,
+    ) => {
+      searchedQueries.push(query);
+      return query === 'kundentré adress'
+        ? [{
+            sourceId: 'unrelated-address-source',
+            businessId: 77,
+            score: 1,
+            text: 'Kundentrén ligger på Aurora Street 742.',
+          }]
+        : [];
+    },
+    semanticKnowledgeSearch: async () => [],
+  });
+
+  const retrieved = await b.retrieveBusinessKnowledge(
+    'What are the entry requirements?',
+    knowledgeConfig,
+  );
+
+  assert.equal(retrieved, '');
+  assert.deepEqual(searchedQueries, [
+    'What are the entry requirements?',
+    'entry requirements',
+  ]);
+  assert.equal(searchedQueries.includes('kundentré adress'), false);
+});
+
+test('translated address answers remain grounded by the unchanged Swedish Knowledge evidence', async () => {
+  const cases = {
+    en: 'Our customer entrance is at Aurora Street 742.',
+    sv: 'Kundentrén ligger på Aurora Street 742.',
+    es: 'Nuestra entrada de clientes está en Aurora Street 742.',
+    de: 'Unser Kundeneingang befindet sich in der Aurora Street 742.',
+    fa: 'ورودی مشتریان ما در Aurora Street 742 قرار دارد.',
+    ar: 'يقع مدخل العملاء في Aurora Street 742.',
+  };
+  const evidence = 'Kundentrén ligger på Aurora Street 742.';
+
+  for (const [language, candidateReply] of Object.entries(cases)) {
+    setup();
+    const id = `translated-address-${language}`;
+    const question = {
+      en: 'Hi, what’s your address?',
+      sv: 'Var ligger kundentrén?',
+      es: 'Hola, ¿cuál es su dirección?',
+      de: 'Hallo, wie lautet Ihre Adresse?',
+      fa: 'سلام، آدرستون کجاست؟',
+      ar: 'مرحباً، ما عنوانكم؟',
+    }[language] as string;
+    const diagnostics: Array<Record<string, any>> = [];
+
+    b.businessInformationState(
+      id,
+      config,
+      question,
+      language,
+      `KNOWLEDGE CHUNK 1\nsource_id: knowledge-source-sv\n${evidence}`,
+    );
+    b.configure({
+      assessBusinessSupportGrounding: async () => ({
+        hasBusinessFactualClaims: true,
+        allBusinessClaimsSupported: true,
+        claims: [{
+          claim: candidateReply,
+          candidateQuote: candidateReply,
+          claimKind: 'OTHER',
+          requiresBusinessEvidence: true,
+          supported: true,
+          evidence: [{ source: 'retrieved_knowledge', quote: evidence }],
+        }],
+      }),
+      assessBusinessClaimEntailment: async () => ({
+        relation: 'ENTAILED',
+        claimKind: 'OTHER',
+        explicitAbsenceEvidence: false,
+      }),
+      businessGroundingDiagnostic: (event) => diagnostics.push(event),
+    });
+
+    assert.equal(
+      await b.finalizeGeneralAiReply(id, question, candidateReply, language),
+      candidateReply,
+      `${language}: supported translated address was rejected`,
+    );
+    assert.equal(diagnostics.length, 1);
+    assert.equal(diagnostics[0].assessmentCoverageOk, true);
+    assert.equal(diagnostics[0].verifiedEvidence, true);
+    assert.equal(diagnostics[0].claimsEntailed, true);
+    assert.equal(diagnostics[0].claims[0].evidence[0].source, 'retrieved_knowledge');
+    assert.equal(diagnostics[0].claims[0].evidence[0].sourceContainsQuote, true);
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(diagnostics[0], 'candidateReply'),
+      false,
+      'privacy-safe diagnostics must not contain the raw candidate',
     );
   }
 });

@@ -6,6 +6,7 @@ import {
   businessInformationTopics,
   formatConfiguredServiceCatalogPlan,
   formatConfiguredServiceOverview,
+  isBusinessAddressQuestion,
   isBusinessInformationQuestion,
   isServiceCatalogQuestion,
 } from './src/ai/business-information';
@@ -1132,6 +1133,8 @@ type Priority1hTestDependencies = {
     query: string,
     limit: number,
   ) => Promise<any[]> | any[];
+  knowledgeRetrievalDiagnostic?: (event: Record<string, unknown>) => void;
+  businessGroundingDiagnostic?: (event: Record<string, unknown>) => void;
   calendarAdapter?: CalendarAdapter;
   supabaseClient?: any;
   recordAppointment?: (params: any) => Promise<any | null>;
@@ -7844,6 +7847,36 @@ function mergeKnowledgeMatchesByRank(
     .map(({ match }) => match);
 }
 
+const MULTILINGUAL_ADDRESS_KNOWLEDGE_QUERIES = [
+  "customer entrance address",
+  "kundentré adress",
+  "Kundeneingang Adresse",
+  "entrada de clientes dirección",
+  "آدرس ورودی مشتری",
+  "عنوان مدخل العملاء",
+];
+
+function buildBusinessKnowledgeQueries(
+  question: string,
+  semanticPlan: SemanticKnowledgeQueryPlan | null,
+): string[] {
+  const plannedQueries = semanticPlan?.queries?.length
+    ? semanticPlan.queries
+    : [question];
+  const candidates = isBusinessAddressQuestion(question)
+    ? [...plannedQueries, ...MULTILINGUAL_ADDRESS_KNOWLEDGE_QUERIES]
+    : plannedQueries;
+  const seen = new Set<string>();
+
+  return candidates.filter((candidate) => {
+    const query = String(candidate || "").trim();
+    const key = query.toLocaleLowerCase();
+    if (!query || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 async function retrieveBusinessKnowledgeForQuestion(
   businessConfig: any,
   question: string
@@ -7866,10 +7899,10 @@ async function retrieveBusinessKnowledgeForQuestion(
         businessConfig,
       );
 
-    const queries =
-      semanticPlan?.queries?.length
-        ? semanticPlan.queries
-        : [normalizedQuestion];
+    const queries = buildBusinessKnowledgeQueries(
+      normalizedQuestion,
+      semanticPlan,
+    );
 
     const searchKnowledge =
       process.env.NODE_ENV === "test" &&
@@ -7966,8 +7999,11 @@ async function retrieveBusinessKnowledgeForQuestion(
       )
       .slice(0, 5);
 
+    const rawSemanticMatches = Array.isArray(semanticMatches)
+      ? semanticMatches
+      : [];
     const scopedSemanticMatches = retainStrictlyScopedSemanticKnowledgeMatches(
-      Array.isArray(semanticMatches) ? semanticMatches : [],
+      rawSemanticMatches,
       businessId,
     );
 
@@ -7980,11 +8016,34 @@ async function retrieveBusinessKnowledgeForQuestion(
     const formattedKnowledge =
       formatRetrievedBusinessKnowledge(matches);
 
-    console.log("[KnowledgeRetrieval]", {
+    const semanticScores = scopedSemanticMatches
+      .map((match) => Number(match?.score))
+      .filter(Number.isFinite);
+    const retrievalDiagnostic = {
       businessId,
+      questionFingerprint: safeLogFingerprint(normalizedQuestion),
+      questionLength: normalizedQuestion.length,
       semanticPlanUsed: Boolean(semanticPlan),
       queryCount: queries.length,
+      lexicalQueries: queries.map((query, index) => ({
+        index,
+        fingerprint: safeLogFingerprint(query),
+        length: query.length,
+        matchCount: Array.isArray(resultSets[index])
+          ? resultSets[index].length
+          : 0,
+      })),
+      lexicalMatchCount: lexicalMatches.length,
+      semanticRawMatchCount: rawSemanticMatches.length,
       semanticMatchCount: scopedSemanticMatches.length,
+      semanticRejectedScopeCount:
+        rawSemanticMatches.length - scopedSemanticMatches.length,
+      semanticReturnedScoreMin: semanticScores.length
+        ? Math.min(...semanticScores)
+        : null,
+      semanticReturnedScoreMax: semanticScores.length
+        ? Math.max(...semanticScores)
+        : null,
       mergeStrategy:
         scopedSemanticMatches.length > 0
           ? "reciprocal_rank_fusion"
@@ -7999,7 +8058,12 @@ async function retrieveBusinessKnowledgeForQuestion(
         Boolean(formattedKnowledge),
       formattedKnowledgeLength:
         formattedKnowledge.length,
-    });
+    };
+
+    priority1hTestDependencies?.knowledgeRetrievalDiagnostic?.(
+      retrievalDiagnostic,
+    );
+    console.log("[KnowledgeRetrieval]", retrievalDiagnostic);
 
     return formattedKnowledge;
   } catch (error) {
@@ -8421,6 +8485,15 @@ async function assessmentClaimsAreEntailed(
       businessId: request.businessId || null,
       language: request.language,
       claimIndex,
+      claimFingerprint: safeLogFingerprint(claim.claim),
+      claimLength: String(claim.claim || "").length,
+      candidateQuoteFingerprint: safeLogFingerprint(claim.candidateQuote),
+      candidateQuoteLength: String(claim.candidateQuote || "").length,
+      evidence: claim.evidence.map((item) => ({
+        source: item.source,
+        quoteFingerprint: safeLogFingerprint(item.quote),
+        quoteLength: String(item.quote || "").length,
+      })),
       relation: entailment?.relation ?? null,
       claimKind: entailment?.claimKind ?? null,
       explicitAbsenceEvidence: entailment?.explicitAbsenceEvidence ?? null,
@@ -8805,6 +8878,52 @@ async function guardBusinessSupportGrounding(
       ("completed" in support ? support.completed.bookingOperation?.serviceName : undefined),
     ),
   );
+
+  const groundingDiagnostic = {
+    businessId: getBusinessIdFromConfig(support.businessConfig),
+    language,
+    questionFingerprint: safeLogFingerprint(latestCustomerMessage),
+    questionLength: latestCustomerMessage.length,
+    candidateFingerprint: safeLogFingerprint(candidateReply),
+    candidateLength: candidateReply.length,
+    evidenceFingerprint: safeLogFingerprint(snapshot.evidenceCorpus),
+    evidenceLength: snapshot.evidenceCorpus.length,
+    verifierReturnedAssessment: Boolean(assessment),
+    assessmentCoverageOk,
+    verifiedEvidence,
+    claimsEntailed,
+    claims: assessment?.claims.map((claim, claimIndex) => ({
+      claimIndex,
+      claimKind: claim.claimKind,
+      claimFingerprint: safeLogFingerprint(claim.claim),
+      claimLength: String(claim.claim || "").length,
+      candidateQuoteFingerprint: safeLogFingerprint(claim.candidateQuote),
+      candidateQuoteLength: String(claim.candidateQuote || "").length,
+      candidateContainsQuote: normalizeGroundingCandidateText(candidateReply)
+        .includes(normalizeGroundingCandidateText(claim.candidateQuote)),
+      supported: claim.supported,
+      evidence: claim.evidence.map((item) => {
+        const sourceText = snapshot.sources[item?.source];
+        const normalizedQuote = normalizeGroundingEvidenceText(item?.quote);
+
+        return {
+          source: item.source,
+          quoteFingerprint: safeLogFingerprint(item.quote),
+          quoteLength: String(item.quote || "").length,
+          sourceContainsQuote: Boolean(
+            sourceText &&
+            normalizedQuote.length >= 4 &&
+            normalizeGroundingEvidenceText(sourceText).includes(normalizedQuote)
+          ),
+        };
+      }),
+    })) ?? [],
+  };
+
+  priority1hTestDependencies?.businessGroundingDiagnostic?.(
+    groundingDiagnostic,
+  );
+  console.info("[BusinessSupportGroundingDiagnostic]", groundingDiagnostic);
 
   if (assessment && verifiedEvidence && claimsEntailed) {
     if (serviceCatalogQuestion) {

@@ -1,3 +1,4 @@
+import type { EmbeddingProvider, EmbeddingVector } from "./src/ai/embeddings";
 import crypto from "crypto";
 
 export const KNOWLEDGE_SOURCE_TYPES = ["faq", "pdf", "website", "text"] as const;
@@ -39,6 +40,11 @@ export interface KnowledgeChunkInput {
   chunkIndex: number;
   content: string;
   metadata?: KnowledgeSourceMetadata;
+  embedding?: number[];
+  embeddingProvider?: string;
+  embeddingModel?: string;
+  embeddingDimensions?: number;
+  embeddingVersion?: number;
 }
 
 export interface KnowledgeStorage {
@@ -55,6 +61,12 @@ export interface KnowledgeStorage {
     businessId: number,
     query: string,
     limit?: number
+  ): Promise<KnowledgeSearchMatch[]>;
+  semanticSearch?(
+    businessId: number,
+    embedding: EmbeddingVector,
+    limit?: number,
+    minSimilarity?: number
   ): Promise<KnowledgeSearchMatch[]>;
 }
 
@@ -224,11 +236,23 @@ export class SupabaseKnowledgeStorage implements KnowledgeStorage {
       throw new Error("Invalid knowledge chunk scope.");
     }
 
-    const normalizedChunks = chunks.map((chunk) => ({
-      chunk_index: chunk.chunkIndex,
-      content: String(chunk.content || "").trim(),
-      metadata: chunk.metadata || {},
-    }));
+    const normalizedChunks = chunks.map((chunk) => {
+      const payload: Record<string, unknown> = {
+        chunk_index: chunk.chunkIndex,
+        content: String(chunk.content || "").trim(),
+        metadata: chunk.metadata || {},
+      };
+
+      if (Array.isArray(chunk.embedding)) {
+        payload.embedding = chunk.embedding;
+        payload.embedding_provider = chunk.embeddingProvider;
+        payload.embedding_model = chunk.embeddingModel;
+        payload.embedding_dimensions = chunk.embeddingDimensions;
+        payload.embedding_version = chunk.embeddingVersion;
+      }
+
+      return payload;
+    });
 
     const { error } = await this.client.rpc("replace_knowledge_chunks", {
       p_business_id: normalizedBusinessId,
@@ -287,6 +311,64 @@ export class SupabaseKnowledgeStorage implements KnowledgeStorage {
       score: Number(row.score || 0),
       text: String(row.content || ""),
       metadata: row.metadata && typeof row.metadata === "object" ? row.metadata : {},
+    }));
+  }
+
+  async semanticSearch(
+    businessId: number,
+    embedding: EmbeddingVector,
+    limit = 5,
+    minSimilarity = 0.55
+  ): Promise<KnowledgeSearchMatch[]> {
+    const normalizedBusinessId = Number(businessId);
+
+    if (
+      !Number.isSafeInteger(normalizedBusinessId) ||
+      normalizedBusinessId <= 0 ||
+      !embedding ||
+      !Array.isArray(embedding.values) ||
+      embedding.values.length !== 768
+    ) {
+      return [];
+    }
+
+    const normalizedLimit = Math.max(
+      1,
+      Math.min(Number(limit) || 5, 10)
+    );
+
+    const normalizedThreshold = Number.isFinite(Number(minSimilarity))
+      ? Math.max(-1, Math.min(Number(minSimilarity), 1))
+      : 0.55;
+
+    const { data, error } = await this.client.rpc(
+      "search_knowledge_chunks_semantic",
+      {
+        p_business_id: normalizedBusinessId,
+        p_embedding: embedding.values,
+        p_limit: normalizedLimit,
+        p_min_similarity: normalizedThreshold,
+        p_embedding_provider: embedding.provider,
+        p_embedding_model: embedding.model,
+        p_embedding_version: embedding.version,
+      }
+    );
+
+    if (error) {
+      throw new Error(
+        error.message || "Unable to search semantic business knowledge."
+      );
+    }
+
+    return (data || []).map((row: any) => ({
+      sourceId: String(row.source_id),
+      businessId: Number(row.business_id),
+      score: Number(row.score || 0),
+      text: String(row.content || ""),
+      metadata:
+        row.metadata && typeof row.metadata === "object"
+          ? row.metadata
+          : {},
     }));
   }
 }
@@ -360,14 +442,17 @@ export class KnowledgeService {
   private initialized = false;
   private readonly primaryStorage: KnowledgeStorage;
   private readonly fallbackStorage: KnowledgeStorage;
+  private readonly embeddingProvider: EmbeddingProvider | null;
 
   constructor(
     primaryStorage: KnowledgeStorage = new InMemoryKnowledgeStorage(),
-    fallbackStorage: KnowledgeStorage = new InMemoryKnowledgeStorage()
+    fallbackStorage: KnowledgeStorage = new InMemoryKnowledgeStorage(),
+    embeddingProvider: EmbeddingProvider | null = null
   ) {
     this.primaryStorage = primaryStorage;
     this.fallbackStorage = fallbackStorage;
     this.storage = primaryStorage;
+    this.embeddingProvider = embeddingProvider;
   }
 
   async initialize(): Promise<void> {
@@ -412,10 +497,36 @@ export class KnowledgeService {
 
     const savedSource = await this.storage.create(source);
 
-    const chunks =
+    let chunks =
       savedSource.status === "ready"
         ? chunkKnowledgeContent(savedSource.content)
         : [];
+
+    if (chunks.length > 0 && this.embeddingProvider) {
+      try {
+        const embeddings = await this.embeddingProvider.embedDocuments(
+          chunks.map((chunk) => chunk.content)
+        );
+
+        if (embeddings.length !== chunks.length) {
+          throw new Error("Embedding count does not match Knowledge chunk count.");
+        }
+
+        chunks = chunks.map((chunk, index) => ({
+          ...chunk,
+          embedding: embeddings[index].values,
+          embeddingProvider: embeddings[index].provider,
+          embeddingModel: embeddings[index].model,
+          embeddingDimensions: embeddings[index].dimensions,
+          embeddingVersion: embeddings[index].version,
+        }));
+      } catch (error) {
+        console.warn(
+          "Knowledge embedding generation failed; preserving lexical-only chunks.",
+          getErrorMessage(error)
+        );
+      }
+    }
 
     try {
       await this.storage.replaceChunks(
@@ -482,6 +593,46 @@ export class KnowledgeService {
       normalizedQuery,
       Math.max(1, Math.min(Number(limit) || 5, 10))
     );
+  }
+
+  async semanticSearch(
+    businessId: number,
+    query: string,
+    limit = 5,
+    minSimilarity = 0.55
+  ): Promise<KnowledgeSearchMatch[]> {
+    await this.ensureInitialized();
+
+    const normalizedBusinessId = Number(businessId);
+    const normalizedQuery = String(query || "").trim();
+
+    if (
+      !Number.isSafeInteger(normalizedBusinessId) ||
+      normalizedBusinessId <= 0 ||
+      !normalizedQuery ||
+      !this.embeddingProvider ||
+      typeof this.storage.semanticSearch !== "function"
+    ) {
+      return [];
+    }
+
+    try {
+      const embedding =
+        await this.embeddingProvider.embedQuery(normalizedQuery);
+
+      return await this.storage.semanticSearch(
+        normalizedBusinessId,
+        embedding,
+        Math.max(1, Math.min(Number(limit) || 5, 10)),
+        minSimilarity
+      );
+    } catch (error) {
+      console.warn(
+        "Semantic Knowledge search failed; lexical fallback remains available.",
+        getErrorMessage(error)
+      );
+      return [];
+    }
   }
 
   private async ensureInitialized(): Promise<void> {

@@ -311,3 +311,161 @@ test('addSource removes the source if chunk persistence fails', async () => {
   assert.equal(deleted.businessId, 55);
   assert.ok(deleted.id);
 });
+
+test('Supabase semantic search sends tenant-safe embedding metadata to semantic RPC', async () => {
+  const rpcCalls: Array<{ name: string; args: any }> = [];
+
+  const client = {
+    rpc: async (name: string, args: any) => {
+      rpcCalls.push({ name, args });
+
+      return {
+        data: [{
+          source_id: '11111111-1111-1111-1111-111111111111',
+          business_id: 42,
+          content: 'Kundentrén ligger på Aurora Street 742.',
+          metadata: { language: 'sv' },
+          score: 0.91,
+        }],
+        error: null,
+      };
+    },
+  };
+
+  const storage = new SupabaseKnowledgeStorage(client);
+
+  const embedding = {
+    values: Array.from({ length: 768 }, (_, index) => index / 1000),
+    provider: 'google',
+    model: 'gemini-embedding-2',
+    dimensions: 768,
+    version: 1,
+  };
+
+  const matches = await storage.semanticSearch(
+    42,
+    embedding,
+    999,
+    0.6
+  );
+
+  assert.equal(rpcCalls.length, 1);
+  assert.equal(rpcCalls[0].name, 'search_knowledge_chunks_semantic');
+
+  assert.deepEqual(rpcCalls[0].args, {
+    p_business_id: 42,
+    p_embedding: embedding.values,
+    p_limit: 10,
+    p_min_similarity: 0.6,
+    p_embedding_provider: 'google',
+    p_embedding_model: 'gemini-embedding-2',
+    p_embedding_version: 1,
+  });
+
+  assert.equal(matches.length, 1);
+  assert.equal(matches[0].businessId, 42);
+  assert.equal(matches[0].score, 0.91);
+  assert.match(matches[0].text || '', /Aurora Street 742/);
+});
+
+test('addSource attaches generated embeddings to persisted Knowledge chunks', async () => {
+  let persistedChunks: any[] = [];
+
+  const storage: KnowledgeStorage = {
+    initialize: async () => {},
+    list: async () => [],
+    create: async (source) => source,
+    replaceChunks: async (_businessId, _sourceId, chunks) => {
+      persistedChunks = chunks;
+    },
+    delete: async () => false,
+    search: async () => [],
+  };
+
+  const embeddingProvider = {
+    async embedDocuments(texts: string[]) {
+      return texts.map(() => ({
+        values: Array(768).fill(0.25),
+        provider: 'google',
+        model: 'gemini-embedding-2',
+        dimensions: 768,
+        version: 1,
+      }));
+    },
+
+    async embedQuery() {
+      throw new Error('not used in this test');
+    },
+  };
+
+  const service = new KnowledgeService(
+    storage,
+    storage,
+    embeddingProvider
+  );
+
+  await service.addSource({
+    businessId: 77,
+    type: 'text',
+    title: 'Semantic Knowledge',
+    content: 'Kundentrén ligger på Aurora Street 742.',
+    status: 'ready',
+  });
+
+  assert.equal(persistedChunks.length, 1);
+  assert.equal(persistedChunks[0].embedding.length, 768);
+  assert.equal(persistedChunks[0].embeddingProvider, 'google');
+  assert.equal(
+    persistedChunks[0].embeddingModel,
+    'gemini-embedding-2'
+  );
+  assert.equal(persistedChunks[0].embeddingDimensions, 768);
+  assert.equal(persistedChunks[0].embeddingVersion, 1);
+});
+
+test('embedding failure preserves lexical-only Knowledge chunk persistence', async () => {
+  let persistedChunks: any[] = [];
+
+  const storage: KnowledgeStorage = {
+    initialize: async () => {},
+    list: async () => [],
+    create: async (source) => source,
+    replaceChunks: async (_businessId, _sourceId, chunks) => {
+      persistedChunks = chunks;
+    },
+    delete: async () => false,
+    search: async () => [],
+  };
+
+  const embeddingProvider = {
+    async embedDocuments() {
+      throw new Error('temporary embedding outage');
+    },
+
+    async embedQuery() {
+      throw new Error('not used in this test');
+    },
+  };
+
+  const service = new KnowledgeService(
+    storage,
+    storage,
+    embeddingProvider
+  );
+
+  const source = await service.addSource({
+    businessId: 88,
+    type: 'text',
+    title: 'Fallback Knowledge',
+    content: 'Fallback content remains searchable.',
+    status: 'ready',
+  });
+
+  assert.equal(source.businessId, 88);
+  assert.equal(persistedChunks.length, 1);
+  assert.equal(persistedChunks[0].embedding, undefined);
+  assert.equal(
+    persistedChunks[0].content,
+    'Fallback content remains searchable.'
+  );
+});

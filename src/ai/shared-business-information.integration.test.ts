@@ -378,6 +378,16 @@ test('semantic Knowledge retrieval bridges all six OdinLink languages to Swedish
 
         return [];
       },
+      semanticKnowledgeSearch: async (
+        businessId: number,
+        query: string,
+        limit: number,
+      ) => {
+        assert.equal(businessId, 77);
+        assert.equal(query, question);
+        assert.equal(limit, 5);
+        return [];
+      },
     });
 
     const plan =
@@ -419,6 +429,312 @@ test('semantic Knowledge retrieval bridges all six OdinLink languages to Swedish
       `${language}: Swedish retrieval query was never executed`,
     );
   }
+});
+
+test('Knowledge retrieval merges semantic and lexical ranks and deduplicates identical chunks', async () => {
+  setup();
+
+  const knowledgeConfig = {
+    ...config,
+    id: 77,
+    businessId: 77,
+    business_id: 77,
+    businessRecordId: 77,
+  };
+
+  b.configure({
+    geminiGenerate: async () => ({
+      text: JSON.stringify({
+        canonicalMeaning: 'combined retrieval regression',
+        queries: ['lexical lookup'],
+      }),
+    }),
+    knowledgeSearch: async (_businessId: number, query: string) =>
+      query === 'lexical lookup'
+        ? [
+            {
+              sourceId: 'lexical-only',
+              businessId: 77,
+              score: 1000,
+              text: 'Lexical-only fact.',
+            },
+            {
+              sourceId: 'shared',
+              businessId: 77,
+              score: 0.01,
+              text: 'Shared fact.',
+            },
+          ]
+        : [],
+    semanticKnowledgeSearch: async () => [
+      {
+        sourceId: 'shared',
+        businessId: 77,
+        score: 0.99,
+        text: '  Shared fact.  ',
+      },
+      {
+        sourceId: 'semantic-only',
+        businessId: 77,
+        score: 0.98,
+        text: 'Semantic-only fact.',
+      },
+    ],
+  });
+
+  const retrieved = await b.retrieveBusinessKnowledge(
+    'How does combined retrieval behave?',
+    knowledgeConfig,
+  );
+
+  assert.equal((retrieved.match(/Shared fact\./gu) || []).length, 1);
+  assert.ok(
+    retrieved.indexOf('Shared fact.') <
+      retrieved.indexOf('Lexical-only fact.'),
+    'a chunk present in both ranked lists should be fused ahead of a single-list chunk',
+  );
+  assert.match(retrieved, /Semantic-only fact\./u);
+});
+
+test('semantic Knowledge retrieval uses the original normalized natural paraphrase', async () => {
+  setup();
+
+  const knowledgeConfig = {
+    ...config,
+    id: 77,
+    businessId: 77,
+    business_id: 77,
+    businessRecordId: 77,
+  };
+  const semanticQueries: string[] = [];
+
+  b.configure({
+    geminiGenerate: async () => ({
+      text: JSON.stringify({
+        canonicalMeaning: 'parking location',
+        queries: ['parking address'],
+      }),
+    }),
+    knowledgeSearch: async () => [],
+    semanticKnowledgeSearch: async (
+      businessId: number,
+      query: string,
+      limit: number,
+    ) => {
+      assert.equal(businessId, 77);
+      assert.equal(limit, 5);
+      semanticQueries.push(query);
+      return [{
+        sourceId: 'parking',
+        businessId,
+        score: 0.87,
+        text: 'Customer parking is behind the studio.',
+      }];
+    },
+  });
+
+  const retrieved = await b.retrieveBusinessKnowledge(
+    '  Where can I leave my car?  ',
+    knowledgeConfig,
+  );
+
+  assert.deepEqual(semanticQueries, ['Where can I leave my car?']);
+  assert.match(retrieved, /Customer parking is behind the studio\./u);
+});
+
+test('semantic Knowledge failure preserves lexical ranking and response content', async () => {
+  setup();
+
+  const knowledgeConfig = {
+    ...config,
+    id: 77,
+    businessId: 77,
+    business_id: 77,
+    businessRecordId: 77,
+  };
+
+  b.configure({
+    geminiGenerate: async () => ({
+      text: JSON.stringify({
+        canonicalMeaning: 'lexical fallback',
+        queries: ['fallback lookup'],
+      }),
+    }),
+    knowledgeSearch: async (_businessId: number, query: string) =>
+      query === 'fallback lookup'
+        ? [
+            {
+              sourceId: 'lower',
+              businessId: 77,
+              score: 0.2,
+              text: 'Lower-ranked lexical fact.',
+            },
+            {
+              sourceId: 'higher',
+              businessId: 77,
+              score: 0.9,
+              text: 'Higher-ranked lexical fact.',
+            },
+          ]
+        : [],
+    semanticKnowledgeSearch: async () => {
+      throw new Error('injected semantic outage');
+    },
+  });
+
+  const retrieved = await b.retrieveBusinessKnowledge(
+    'What is the fallback fact?',
+    knowledgeConfig,
+  );
+
+  assert.ok(
+    retrieved.indexOf('Higher-ranked lexical fact.') <
+      retrieved.indexOf('Lower-ranked lexical fact.'),
+  );
+  assert.equal((retrieved.match(/KNOWLEDGE CHUNK/gu) || []).length, 2);
+});
+
+test('synchronous semantic Knowledge failure preserves completed lexical results', async () => {
+  setup();
+
+  const knowledgeConfig = {
+    ...config,
+    id: 77,
+    businessId: 77,
+    business_id: 77,
+    businessRecordId: 77,
+  };
+
+  b.configure({
+    geminiGenerate: async () => ({
+      text: JSON.stringify({
+        canonicalMeaning: 'synchronous semantic fallback',
+        queries: ['synchronous fallback lookup'],
+      }),
+    }),
+    knowledgeSearch: async (_businessId: number, query: string) =>
+      query === 'synchronous fallback lookup'
+        ? [{
+            sourceId: 'sync-fallback',
+            businessId: 77,
+            score: 0.8,
+            text: 'Completed lexical result survives.',
+          }]
+        : [],
+    semanticKnowledgeSearch: () => {
+      throw new Error('synchronous injected semantic outage');
+    },
+  });
+
+  const retrieved = await b.retrieveBusinessKnowledge(
+    'Does synchronous fallback work?',
+    knowledgeConfig,
+  );
+
+  assert.match(retrieved, /Completed lexical result survives\./u);
+  assert.equal((retrieved.match(/KNOWLEDGE CHUNK/gu) || []).length, 1);
+});
+
+test('semantic and lexical Knowledge retrieval remain scoped to businessId', async () => {
+  setup();
+
+  const knowledgeConfig = {
+    ...config,
+    id: 88,
+    businessId: 88,
+    business_id: 88,
+    businessRecordId: 88,
+  };
+  const scopes: number[] = [];
+
+  b.configure({
+    geminiGenerate: async () => ({
+      text: JSON.stringify({
+        canonicalMeaning: 'tenant scope',
+        queries: ['tenant lookup'],
+      }),
+    }),
+    knowledgeSearch: async (businessId: number) => {
+      scopes.push(businessId);
+      return [{
+        sourceId: 'wrong-lexical-tenant',
+        businessId: 999,
+        score: 1,
+        text: 'Other tenant lexical secret.',
+      }];
+    },
+    semanticKnowledgeSearch: async (businessId: number) => {
+      scopes.push(businessId);
+      return [
+        {
+          sourceId: 'wrong-semantic-tenant',
+          businessId: 999,
+          score: 1,
+          text: 'Other tenant semantic secret.',
+        },
+        {
+          sourceId: 'right-tenant',
+          businessId,
+          score: 0.8,
+          text: 'Scoped tenant fact.',
+        },
+      ];
+    },
+  });
+
+  const retrieved = await b.retrieveBusinessKnowledge(
+    'Show my tenant fact.',
+    knowledgeConfig,
+  );
+
+  assert.ok(scopes.length >= 2);
+  assert.equal(scopes.every((businessId) => businessId === 88), true);
+  assert.match(retrieved, /Scoped tenant fact\./u);
+  assert.doesNotMatch(retrieved, /Other tenant/u);
+});
+
+test('semantic Knowledge results without businessId are rejected', async () => {
+  setup();
+
+  const knowledgeConfig = {
+    ...config,
+    id: 88,
+    businessId: 88,
+    business_id: 88,
+    businessRecordId: 88,
+  };
+
+  b.configure({
+    geminiGenerate: async () => ({
+      text: JSON.stringify({
+        canonicalMeaning: 'strict semantic tenant scope',
+        queries: ['strict tenant lookup'],
+      }),
+    }),
+    knowledgeSearch: async (_businessId: number, query: string) =>
+      query === 'strict tenant lookup'
+        ? [{
+            sourceId: 'lexical-fallback',
+            businessId: 88,
+            score: 0.7,
+            text: 'Strictly scoped lexical fact.',
+          }]
+        : [],
+    semanticKnowledgeSearch: async () => [{
+      sourceId: 'missing-tenant',
+      score: 0.99,
+      text: 'Unscoped semantic secret.',
+    }],
+  });
+
+  const retrieved = await b.retrieveBusinessKnowledge(
+    'Show strictly scoped facts.',
+    knowledgeConfig,
+  );
+
+  assert.match(retrieved, /Strictly scoped lexical fact\./u);
+  assert.doesNotMatch(retrieved, /Unscoped semantic secret/u);
+  assert.equal((retrieved.match(/KNOWLEDGE CHUNK/gu) || []).length, 1);
 });
 
 test('meaningful current message switches conversation language from German to English', async () => {

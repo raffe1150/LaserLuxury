@@ -20,6 +20,7 @@ import crypto from "crypto";
 import fs from "fs";
 import { google } from "googleapis";
 import { createClient } from "@supabase/supabase-js";
+import { GoogleEmbeddingProvider } from "./src/ai/embeddings";
 import {
   InMemoryKnowledgeStorage,
   KnowledgeService,
@@ -639,7 +640,11 @@ const p2LiveShadowRuntime =
 const knowledgeService = new KnowledgeService(
   supabase && process.env.SUPABASE_SERVICE_ROLE_KEY
     ? new SupabaseKnowledgeStorage(supabase)
-    : new InMemoryKnowledgeStorage()
+    : new InMemoryKnowledgeStorage(),
+  new InMemoryKnowledgeStorage(),
+  new GoogleEmbeddingProvider({
+    apiKeyProvider: () => getApiKeys()[currentKeyIndex],
+  }),
 );
 
 let currentKeyIndex = 0;
@@ -1118,6 +1123,11 @@ type Priority1hTestDependencies = {
   ) => Promise<SemanticLanguageDecision | null> | SemanticLanguageDecision | null;
 
   knowledgeSearch?: (
+    businessId: number,
+    query: string,
+    limit: number,
+  ) => Promise<any[]> | any[];
+  semanticKnowledgeSearch?: (
     businessId: number,
     query: string,
     limit: number,
@@ -7735,6 +7745,105 @@ function formatRetrievedBusinessKnowledge(
   return chunks.join("\n\n").slice(0, 9000);
 }
 
+type RankedKnowledgeMatch = {
+  sourceId?: string;
+  businessId?: number;
+  text?: string;
+  score?: number;
+  metadata?: Record<string, unknown>;
+};
+
+function knowledgeMatchKey(match: RankedKnowledgeMatch): string | null {
+  const content = String(match?.text || "").trim();
+  if (!content) return null;
+  return JSON.stringify([String(match?.sourceId || ""), content]);
+}
+
+function retainScopedKnowledgeMatches(
+  matches: RankedKnowledgeMatch[],
+  businessId: number,
+): RankedKnowledgeMatch[] {
+  return matches.filter((match) =>
+    match?.businessId == null || Number(match.businessId) === businessId
+  );
+}
+
+function retainStrictlyScopedSemanticKnowledgeMatches(
+  matches: RankedKnowledgeMatch[],
+  businessId: number,
+): RankedKnowledgeMatch[] {
+  return matches.filter((match) =>
+    match?.businessId != null && Number(match.businessId) === businessId
+  );
+}
+
+function mergeKnowledgeMatchesByRank(
+  lexicalMatches: RankedKnowledgeMatch[],
+  semanticMatches: RankedKnowledgeMatch[],
+  limit = 5,
+): RankedKnowledgeMatch[] {
+  const validSemanticMatches = semanticMatches.filter(knowledgeMatchKey);
+
+  // Preserve the established lexical order exactly when semantic retrieval is
+  // unavailable. When both lists exist, reciprocal-rank fusion combines their
+  // positions without comparing lexical scores to cosine similarity scores.
+  if (validSemanticMatches.length === 0) {
+    return lexicalMatches.slice(0, limit);
+  }
+
+  const fused = new Map<string, {
+    match: RankedKnowledgeMatch;
+    reciprocalRank: number;
+    lexicalRank: number;
+    semanticRank: number;
+    insertionOrder: number;
+  }>();
+  let insertionOrder = 0;
+
+  const addRankedList = (
+    matches: RankedKnowledgeMatch[],
+    kind: "lexical" | "semantic",
+  ) => {
+    const seen = new Set<string>();
+
+    for (const [index, match] of matches.entries()) {
+      const key = knowledgeMatchKey(match);
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+
+      const rank = index + 1;
+      const existing = fused.get(key) || {
+        match,
+        reciprocalRank: 0,
+        lexicalRank: Number.POSITIVE_INFINITY,
+        semanticRank: Number.POSITIVE_INFINITY,
+        insertionOrder: insertionOrder++,
+      };
+
+      existing.reciprocalRank += 1 / (60 + rank);
+      if (kind === "lexical") {
+        existing.lexicalRank = rank;
+      } else {
+        existing.semanticRank = rank;
+      }
+      fused.set(key, existing);
+    }
+  };
+
+  addRankedList(lexicalMatches, "lexical");
+  addRankedList(validSemanticMatches, "semantic");
+
+  return Array.from(fused.values())
+    .sort((a, b) =>
+      b.reciprocalRank - a.reciprocalRank ||
+      a.lexicalRank - b.lexicalRank ||
+      a.semanticRank - b.semanticRank ||
+      a.insertionOrder - b.insertionOrder
+    )
+    .slice(0, limit)
+    .map(({ match }) => match);
+}
+
 async function retrieveBusinessKnowledgeForQuestion(
   businessConfig: any,
   question: string
@@ -7777,8 +7886,23 @@ async function retrieveBusinessKnowledgeForQuestion(
               limit,
             );
 
-    const resultSets = await Promise.all(
-      queries.map((query) =>
+    const semanticSearchKnowledge =
+      process.env.NODE_ENV === "test" &&
+      priority1hTestDependencies?.semanticKnowledgeSearch
+        ? priority1hTestDependencies.semanticKnowledgeSearch
+        : (
+            scopedBusinessId: number,
+            query: string,
+            limit: number,
+          ) =>
+            knowledgeService.semanticSearch(
+              scopedBusinessId,
+              query,
+              limit,
+            );
+
+    const [resultSets, semanticMatches] = await Promise.all([
+      Promise.all(queries.map((query) =>
         Promise.resolve(
           searchKnowledge(businessId, query, 5)
         )
@@ -7794,12 +7918,29 @@ async function retrieveBusinessKnowledgeForQuestion(
 
             return [];
           })
-      )
-    );
+      )),
+      Promise.resolve()
+        .then(() => semanticSearchKnowledge(
+          businessId,
+          normalizedQuestion,
+          5,
+        ))
+        .catch((error) => {
+          console.error("[KnowledgeRetrieval] Semantic query failed:", {
+            businessId,
+            queryLength: normalizedQuestion.length,
+            errorType:
+              error instanceof Error
+                ? error.name
+                : "unknown",
+          });
+          return [];
+        }),
+    ]);
 
     const deduped = new Map<string, any>();
 
-    for (const match of resultSets.flat()) {
+    for (const match of retainScopedKnowledgeMatches(resultSets.flat(), businessId)) {
       const sourceId = String(match?.sourceId || "");
       const content = String(match?.text || "").trim();
       if (!content) continue;
@@ -7817,7 +7958,7 @@ async function retrieveBusinessKnowledgeForQuestion(
       }
     }
 
-    const matches = Array.from(deduped.values())
+    const lexicalMatches = Array.from(deduped.values())
       .sort(
         (a: any, b: any) =>
           Number(b?.score || 0) -
@@ -7825,15 +7966,29 @@ async function retrieveBusinessKnowledgeForQuestion(
       )
       .slice(0, 5);
 
+    const scopedSemanticMatches = retainStrictlyScopedSemanticKnowledgeMatches(
+      Array.isArray(semanticMatches) ? semanticMatches : [],
+      businessId,
+    );
+
+    const matches = mergeKnowledgeMatchesByRank(
+      lexicalMatches,
+      scopedSemanticMatches,
+      5,
+    );
+
     const formattedKnowledge =
       formatRetrievedBusinessKnowledge(matches);
 
     console.log("[KnowledgeRetrieval]", {
       businessId,
       semanticPlanUsed: Boolean(semanticPlan),
-      canonicalMeaning:
-        semanticPlan?.canonicalMeaning || null,
       queryCount: queries.length,
+      semanticMatchCount: scopedSemanticMatches.length,
+      mergeStrategy:
+        scopedSemanticMatches.length > 0
+          ? "reciprocal_rank_fusion"
+          : "lexical_fallback",
       matchCount: matches.length,
       sourceIds: matches
         .map((match: any) =>

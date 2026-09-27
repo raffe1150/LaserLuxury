@@ -194,6 +194,73 @@ try {
   }
 
   configure();
+  const naturalAddressSession = 'support-response-natural-address-en';
+  const naturalAddressQuestion = "Hi, what's your address?";
+  const naturalAddressConfig = {
+    ...businessConfig,
+    systemPrompt: [
+      businessConfig.systemPrompt,
+      'Customer entrance: Aurora Street 742.',
+    ].join('\n'),
+  };
+
+  await enterBusinessSupport(
+    naturalAddressSession,
+    'en',
+    'whatsapp',
+    naturalAddressQuestion,
+    naturalAddressConfig,
+  );
+
+  let naturalAddressAssessmentCalls = 0;
+  groundingAssessmentOverride = ({ candidateReply, evidenceCorpus }: any) => {
+    naturalAddressAssessmentCalls += 1;
+
+    assert.match(evidenceCorpus, /Aurora Street 742/u);
+    assert.match(candidateReply, /Aurora Street 742/u);
+
+    return {
+      hasBusinessFactualClaims: true,
+      claims: [{
+        claim: 'The customer entrance is at Aurora Street 742.',
+        candidateQuote:
+          naturalAddressAssessmentCalls === 1
+            ? 'Aurora Street 742'
+            : 'Our customer entrance is located at Aurora Street 742',
+        claimKind: 'OTHER',
+        requiresBusinessEvidence: true,
+        supported: true,
+        evidence: [{
+          source: 'business_system_prompt',
+          quote: 'Customer entrance: Aurora Street 742.',
+        }],
+      }],
+      allBusinessClaimsSupported: true,
+    };
+  };
+
+  const naturalAddressReply =
+    'Hello! Our customer entrance is located at Aurora Street 742.';
+
+  const preservedNaturalAddress = await boundary.finalizeGeneralAiReply(
+    naturalAddressSession,
+    naturalAddressQuestion,
+    naturalAddressReply,
+    'en',
+  );
+
+  assert.equal(
+    preservedNaturalAddress,
+    naturalAddressReply,
+    'supported factual content with harmless natural framing must survive verifier quote repair',
+  );
+  assert.equal(
+    naturalAddressAssessmentCalls,
+    2,
+    'coverage-only failure must trigger exactly one grounding assessment repair attempt',
+  );
+
+  configure();
   const nullEvidenceConfig = {
     ...businessConfig,
     services: [{

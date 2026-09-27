@@ -23413,7 +23413,7 @@ function isMeaningfulLanguageMessage(text?: string): boolean {
   if (/^[\d\s:+().,\-/]+$/.test(normalizeLocalizedDigits(raw))) return false;
 
   const letters = raw.match(/[A-Za-zÅÄÖåäöÉéÜüÑñ\u0600-\u06FF]+/g) || [];
-  if (letters.length < 3) return false;
+  if (letters.length < 2) return false;
   return letters.join("").length >= 8;
 }
 

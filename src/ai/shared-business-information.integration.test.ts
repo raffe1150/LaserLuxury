@@ -771,6 +771,176 @@ test('translated address answers remain grounded by the unchanged Swedish Knowle
   }
 });
 
+test('Arabic retrieved Knowledge address survives inconclusive entailment when the exact address proposition is deterministic', async () => {
+  setup();
+
+  const id = 'retrieved-knowledge-arabic-deterministic-address';
+  const question = 'مرحباً، ما عنوانكم؟';
+  const evidence = 'Kundentrén ligger på Aurora Street 742.';
+  const reply = 'يقع مدخل العملاء في Aurora Street 742.';
+
+  b.businessInformationState(
+    id,
+    config,
+    question,
+    'ar',
+    `KNOWLEDGE CHUNK 1\nsource_id: knowledge-source-sv\n${evidence}`,
+  );
+
+  let entailmentCalls = 0;
+
+  b.configure({
+    assessBusinessSupportGrounding: async () => ({
+      hasBusinessFactualClaims: true,
+      allBusinessClaimsSupported: true,
+      claims: [{
+        claim: 'يقع مدخل العملاء في Aurora Street 742.',
+        candidateQuote: reply,
+        claimKind: 'OTHER',
+        requiresBusinessEvidence: true,
+        supported: true,
+        evidence: [{
+          source: 'retrieved_knowledge',
+          quote: evidence,
+        }],
+      }],
+    }),
+    assessBusinessClaimEntailment: async () => {
+      entailmentCalls += 1;
+      return {
+        relation: 'UNKNOWN',
+        claimKind: 'OTHER',
+        explicitAbsenceEvidence: false,
+      };
+    },
+  });
+
+  const answer = await b.finalizeGeneralAiReply(
+    id,
+    question,
+    reply,
+    'ar',
+  );
+
+  assert.equal(
+    answer,
+    reply,
+    'exact deterministic address evidence must not be rejected solely because semantic entailment stays inconclusive',
+  );
+
+  assert.equal(
+    entailmentCalls,
+    3,
+    'the existing two entailment attempts plus one adjudication should run before deterministic address recovery',
+  );
+});
+
+test('deterministic address recovery never overrides CONTRADICTED entailment', async () => {
+  setup();
+
+  const id = 'retrieved-knowledge-arabic-address-contradicted';
+  const question = 'ما عنوانكم؟';
+  const evidence = 'Kundentrén ligger på Aurora Street 742.';
+  const reply = 'يقع مدخل العملاء في Aurora Street 742.';
+
+  b.businessInformationState(
+    id,
+    config,
+    question,
+    'ar',
+    `KNOWLEDGE CHUNK 1\nsource_id: knowledge-source-sv\n${evidence}`,
+  );
+
+  b.configure({
+    assessBusinessSupportGrounding: async () => ({
+      hasBusinessFactualClaims: true,
+      allBusinessClaimsSupported: true,
+      claims: [{
+        claim: reply,
+        candidateQuote: reply,
+        claimKind: 'OTHER',
+        requiresBusinessEvidence: true,
+        supported: true,
+        evidence: [{
+          source: 'retrieved_knowledge',
+          quote: evidence,
+        }],
+      }],
+    }),
+    assessBusinessClaimEntailment: async () => ({
+      relation: 'CONTRADICTED',
+      claimKind: 'OTHER',
+      explicitAbsenceEvidence: false,
+    }),
+  });
+
+  const answer = await b.finalizeGeneralAiReply(
+    id,
+    question,
+    reply,
+    'ar',
+  );
+
+  assert.notEqual(
+    answer,
+    reply,
+    'CONTRADICTED entailment must never be recovered by deterministic address matching',
+  );
+});
+
+test('deterministic address recovery rejects a mismatched address value', async () => {
+  setup();
+
+  const id = 'retrieved-knowledge-arabic-address-mismatch';
+  const question = 'ما عنوانكم؟';
+  const evidence = 'Kundentrén ligger på Aurora Street 742.';
+  const reply = 'يقع مدخل العملاء في Aurora Street 999.';
+
+  b.businessInformationState(
+    id,
+    config,
+    question,
+    'ar',
+    `KNOWLEDGE CHUNK 1\nsource_id: knowledge-source-sv\n${evidence}`,
+  );
+
+  b.configure({
+    assessBusinessSupportGrounding: async () => ({
+      hasBusinessFactualClaims: true,
+      allBusinessClaimsSupported: true,
+      claims: [{
+        claim: reply,
+        candidateQuote: reply,
+        claimKind: 'OTHER',
+        requiresBusinessEvidence: true,
+        supported: true,
+        evidence: [{
+          source: 'retrieved_knowledge',
+          quote: evidence,
+        }],
+      }],
+    }),
+    assessBusinessClaimEntailment: async () => ({
+      relation: 'UNKNOWN',
+      claimKind: 'OTHER',
+      explicitAbsenceEvidence: false,
+    }),
+  });
+
+  const answer = await b.finalizeGeneralAiReply(
+    id,
+    question,
+    reply,
+    'ar',
+  );
+
+  assert.notEqual(
+    answer,
+    reply,
+    'a different street number must never pass deterministic address recovery',
+  );
+});
+
 test('Knowledge retrieval merges semantic and lexical ranks and deduplicates identical chunks', async () => {
   setup();
 

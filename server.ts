@@ -8284,6 +8284,61 @@ function normalizeGroundingCandidateText(value?: string): string {
   return normalizeGroundingEvidenceText(value).toLocaleLowerCase();
 }
 
+function extractDeterministicAddressPhrases(value?: string): string[] {
+  const normalized = normalizeGroundingEvidenceText(value);
+  const phrases = new Set<string>();
+
+  for (const match of normalized.matchAll(
+    /(?:[\p{L}\p{M}][\p{L}\p{M}'’.-]*\s+){2,6}\d+[\p{L}\p{N}-]*/gu,
+  )) {
+    const tokens = match[0].trim().split(/\s+/u);
+    const wordCount = tokens.length - 1;
+
+    for (
+      let addressWordCount = 2;
+      addressWordCount <= Math.min(6, wordCount);
+      addressWordCount += 1
+    ) {
+      phrases.add(
+        tokens
+          .slice(-(addressWordCount + 1))
+          .join(" ")
+          .toLocaleLowerCase(),
+      );
+    }
+  }
+
+  return Array.from(phrases);
+}
+
+function canRecoverDeterministicRetrievedAddressClaim(
+  claim: BusinessGroundingAssessment["claims"][number],
+  customerMessage: string,
+): boolean {
+  if (!isBusinessAddressQuestion(customerMessage)) return false;
+  if (claim.claimKind !== "OTHER") return false;
+  if (!claim.supported || !Array.isArray(claim.evidence) || claim.evidence.length === 0) {
+    return false;
+  }
+
+  if (claim.evidence.some((item) => item.source !== "retrieved_knowledge")) {
+    return false;
+  }
+
+  const candidateAddresses = new Set([
+    ...extractDeterministicAddressPhrases(claim.claim),
+    ...extractDeterministicAddressPhrases(claim.candidateQuote),
+  ]);
+
+  if (candidateAddresses.size === 0) return false;
+
+  return claim.evidence.some((item) =>
+    extractDeterministicAddressPhrases(item.quote).some((address) =>
+      candidateAddresses.has(address),
+    ),
+  );
+}
+
 const HARMLESS_BUSINESS_SUPPORT_TEXT_PATTERNS = [
   /^(?:hi|hello|hey)[!.🙂😊 ]*$/u,
   /^(?:thanks|thank you|you(?:'|’)re welcome|happy to help|glad to help)[!.🙂😊 ]*$/u,
@@ -8547,6 +8602,19 @@ async function assessmentClaimsAreEntailed(
       });
     }
 
+    const finalRelation = entailment?.relation ?? null;
+    const deterministicAddressRecovery =
+      claim.claimKind === "OTHER" &&
+      initialEntailment?.claimKind === "OTHER" &&
+      entailment?.claimKind === "OTHER" &&
+      (initialRelation === "UNKNOWN" || initialRelation === "NEUTRAL") &&
+      (regularFinalRelation === "UNKNOWN" || regularFinalRelation === "NEUTRAL") &&
+      (finalRelation === "UNKNOWN" || finalRelation === "NEUTRAL") &&
+      canRecoverDeterministicRetrievedAddressClaim(
+        claim,
+        request.customerMessage,
+      );
+
     console.info("[BusinessSupportGroundingEntailment]", {
       businessId: request.businessId || null,
       language: request.language,
@@ -8564,10 +8632,13 @@ async function assessmentClaimsAreEntailed(
       entailmentRetryAttempted,
       regularFinalRelation,
       adjudicationAttempted,
-      relation: entailment?.relation ?? null,
+      relation: finalRelation,
       claimKind: entailment?.claimKind ?? null,
       explicitAbsenceEvidence: entailment?.explicitAbsenceEvidence ?? null,
+      deterministicAddressRecovery,
     });
+
+    if (deterministicAddressRecovery) return true;
 
     if (!entailment || entailment.relation !== "ENTAILED") return false;
 

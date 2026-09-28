@@ -23474,7 +23474,7 @@ function detectStrongLatestLanguage(text?: string, businessConfig?: any): string
   if (!raw) return null;
 
   if (/[\u0600-\u06FF]/.test(raw)) {
-    if (/[پچژگ]/u.test(raw) || /(?:^|[^\p{L}\p{N}])(?:برای|مشاوره|شماره)(?=$|[^\p{L}\p{N}])/u.test(raw) || /(?:^|[^\p{L}\p{N}])(?:می|نمی)(?:‌|\s)*(?=[\p{L}])/u.test(raw)) return "fa";
+    if (/[پچژگکی]/u.test(raw) || /(?:^|[^\p{L}\p{N}])(?:برای|مشاوره|شماره)(?=$|[^\p{L}\p{N}])/u.test(raw) || /(?:^|[^\p{L}\p{N}])(?:می|نمی)(?:‌|\s)*(?=[\p{L}])/u.test(raw)) return "fa";
     return "ar";
   }
 

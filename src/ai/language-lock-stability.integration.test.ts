@@ -212,6 +212,42 @@ test("production regression: completed Persian state cannot resurrect after Germ
   boundary.reset();
 });
 
+test("production regression: Persian address question must override stale Arabic state in the same turn", async () => {
+  boundary.reset();
+
+  boundary.configure({
+    semanticLanguageResolver: async () => null,
+  });
+
+  const session = "stale-arabic-to-persian-address-regression";
+
+  const arabic = await boundary.prepareConversationLanguageForTest(
+    session,
+    "أين عنوانكم؟",
+    businessConfig,
+  );
+
+  assert.equal(
+    arabic,
+    "ar",
+    "Arabic setup turn must establish Arabic as the previous conversation language",
+  );
+
+  const persian = await boundary.prepareConversationLanguageForTest(
+    session,
+    "سلام، آدرستون کجاست؟",
+    businessConfig,
+  );
+
+  assert.equal(
+    persian,
+    "fa",
+    "Persian-specific script evidence must override stale Arabic state in the same turn",
+  );
+
+  boundary.reset();
+});
+
 test("production regression: short Persian address question must resolve as Persian, not Arabic", async () => {
   boundary.reset();
 

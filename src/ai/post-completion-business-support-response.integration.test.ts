@@ -393,6 +393,94 @@ try {
   );
 
   configure();
+  const persianAdjudicationSession = 'support-response-entailment-adjudication-fa';
+  const persianAdjudicationQuestion = 'سلام، آدرستون کجاست؟';
+
+  await enterBusinessSupport(
+    persianAdjudicationSession,
+    'fa',
+    'instagram',
+    persianAdjudicationQuestion,
+    naturalAddressConfig,
+  );
+
+  groundingAssessmentOverride = ({ candidateReply, evidenceCorpus }: any) => {
+    assert.match(evidenceCorpus, /Aurora Street 742/u);
+    assert.match(candidateReply, /۷۴۲|742/u);
+
+    return {
+      hasBusinessFactualClaims: true,
+      claims: [{
+        claim: 'ورودی مشتری ما در خیابان Aurora Street 742 قرار دارد.',
+        candidateQuote: candidateReply.replace(/[.!؟?]\s*$/u, ''),
+        claimKind: 'OTHER',
+        requiresBusinessEvidence: true,
+        supported: true,
+        evidence: [{
+          source: 'business_system_prompt',
+          quote: 'Customer entrance: Aurora Street 742.',
+        }],
+      }],
+      allBusinessClaimsSupported: true,
+    };
+  };
+
+  let persianRegularEntailmentCalls = 0;
+  let persianAdjudicationCalls = 0;
+
+  entailmentAssessmentOverride = (request: any) => {
+    if (request.adjudication === true) {
+      persianAdjudicationCalls += 1;
+      return {
+        relation: 'ENTAILED',
+        claimKind: 'OTHER',
+        explicitAbsenceEvidence: false,
+      };
+    }
+
+    persianRegularEntailmentCalls += 1;
+    return persianRegularEntailmentCalls === 1
+      ? {
+          relation: 'NEUTRAL',
+          claimKind: 'OTHER',
+          explicitAbsenceEvidence: false,
+        }
+      : {
+          relation: 'UNKNOWN',
+          claimKind: 'OTHER',
+          explicitAbsenceEvidence: false,
+        };
+  };
+
+  const persianAdjudicationReply =
+    'سلام! آدرس ورودی مشتری ما در خیابان Aurora Street 742 است.';
+
+  const preservedPersianAdjudication = await boundary.finalizeGeneralAiReply(
+    persianAdjudicationSession,
+    persianAdjudicationQuestion,
+    persianAdjudicationReply,
+    'fa',
+  );
+
+  assert.equal(
+    preservedPersianAdjudication,
+    persianAdjudicationReply,
+    'two uncertain entailment results should receive one separate strict adjudication',
+  );
+
+  assert.equal(
+    persianRegularEntailmentCalls,
+    2,
+    'Persian uncertain entailment should still use exactly two regular attempts',
+  );
+
+  assert.equal(
+    persianAdjudicationCalls,
+    1,
+    'Persian uncertain entailment should receive exactly one separate adjudication',
+  );
+
+  configure();
   const arabicAddressSession = 'support-response-natural-address-ar';
   const arabicAddressQuestion = 'مرحباً، ما عنوانكم؟';
 

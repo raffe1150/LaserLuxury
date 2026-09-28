@@ -12,6 +12,7 @@ for (const text of [
   'What are your service prices?', 'Kan du beskriva era tjänster?',
   '¿Qué servicios ofrece la empresa?', 'لطفاً درباره خدمات توضیح بدهید.', 'ما الخدمات التي تقدمها الشركة؟',
   'Gibt es eine zentrale Übersichtsseite?',
+  'هل يوجد موقف سيارات لديكم؟',
 ]) assert.equal(isBusinessInformationQuestion(text), true, text);
 for (const text of [
   'Please book Video Consultation tomorrow at 14:00.',

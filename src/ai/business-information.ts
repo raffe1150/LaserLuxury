@@ -232,6 +232,58 @@ export function formatConfiguredServiceCatalogPlan(
   ].join("\n");
 }
 
+
+export function formatRecommendationServiceSummary(
+  plan: ConfiguredServiceCatalogPlan,
+  language: string,
+): string {
+  const lang = ["en", "sv", "de", "es", "fa", "ar"].includes(language)
+    ? language
+    : "en";
+
+  const intro: Record<string, string> = {
+    en: "We offer several bookable services. Here are a few examples:",
+    sv: "Vi erbjuder flera bokningsbara tjänster. Här är några exempel:",
+    de: "Wir bieten mehrere buchbare Leistungen an. Hier sind einige Beispiele:",
+    es: "Ofrecemos varios servicios que puedes reservar. Aquí tienes algunos ejemplos:",
+    fa: "چندین خدمت قابل رزرو ارائه می‌دهیم. چند نمونه:",
+    ar: "نقدم عدة خدمات متاحة للحجز. إليك بعض الأمثلة:",
+  };
+
+  const minuteLabel: Record<string, string> = {
+    en: "minutes",
+    sv: "minuter",
+    de: "Minuten",
+    es: "minutos",
+    fa: "دقیقه",
+    ar: "دقيقة",
+  };
+
+  const rows = plan.displayedServices.slice(0, 3).map((service) => {
+    const details: string[] = [];
+
+    if (service.durationMinutes !== null) {
+      details.push(`${service.durationMinutes} ${minuteLabel[lang]}`);
+    }
+
+    if (service.price !== null) {
+      details.push(
+        service.currency
+          ? `${service.price} ${service.currency}`
+          : String(service.price),
+      );
+    }
+
+    return details.length
+      ? `• ${service.name} (${details.join(", ")})`
+      : `• ${service.name}`;
+  });
+
+  if (!rows.length) return "";
+
+  return [intro[lang], ...rows].join("\n");
+}
+
 export function formatConfiguredServiceOverview(names: string[], language: string): string {
   const prefix: Record<string, string> = {
     en: 'The configured bookable services are', de: 'Die buchbaren Dienstleistungen sind',

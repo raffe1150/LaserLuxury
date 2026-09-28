@@ -6,6 +6,7 @@ import {
   businessInformationTopics,
   formatConfiguredServiceCatalogPlan,
   formatConfiguredServiceOverview,
+  formatRecommendationServiceSummary,
   formatRecommendationClarification,
   isBusinessAddressQuestion,
   isBusinessInformationQuestion,
@@ -5224,8 +5225,8 @@ function isDeterministicActiveNewBookingContinuation(chatId: string, text: strin
 function shouldDispatchWhatsAppUnifiedBooking(chatId: string, text: string, intent = classifyMessagingIntent(text)): boolean {
   if (intent === "language_repair") return false;
   if (getRecentCompletedBooking(chatId)?.bookingOperation?.ok) return true;
-  if (intent === "ambiguous") return isDeterministicActiveNewBookingContinuation(chatId, text);
   if (isBusinessInformationQuestion(text)) return true;
+  if (intent === "ambiguous") return isDeterministicActiveNewBookingContinuation(chatId, text);
   const clearlyNonBooking = intent === "normal" &&
     !pendingBookings[chatId] && !hasAppointmentConversationState(chatId) &&
     !extractNameAndPhone(text) && !extractPhoneOnly(text) && !extractNameOnly(text) &&
@@ -5237,8 +5238,14 @@ function shouldDispatchWhatsAppUnifiedBooking(chatId: string, text: string, inte
   return !clearlyNonBooking;
 }
 
-function shouldReturnWhatsAppAmbiguousClarification(chatId: string, intent: ReturnType<typeof classifyMessagingIntent>): boolean {
-  return intent === "ambiguous" && !getRecentCompletedBooking(chatId)?.bookingOperation?.ok;
+function shouldReturnWhatsAppAmbiguousClarification(
+  chatId: string,
+  intent: ReturnType<typeof classifyMessagingIntent>,
+  text: string,
+): boolean {
+  return intent === "ambiguous" &&
+    !getRecentCompletedBooking(chatId)?.bookingOperation?.ok &&
+    !isBusinessInformationQuestion(text);
 }
 
 async function planWhatsAppStateFirstRouting(chatId: string, text: string, businessConfig: any): Promise<{
@@ -5257,7 +5264,7 @@ async function planWhatsAppStateFirstRouting(chatId: string, text: string, busin
   const intent = classifyMessagingIntent(text);
   if (authoritativeStatePresent) return { intent, authoritativeStatePresent, route: "unified_first" };
   if (intent === "language_repair") return { intent, authoritativeStatePresent, route: "language_repair" };
-  if (shouldReturnWhatsAppAmbiguousClarification(chatId, intent)) {
+  if (shouldReturnWhatsAppAmbiguousClarification(chatId, intent, text)) {
     return { intent, authoritativeStatePresent, route: "ambiguous_clarification" };
   }
   if (isBusinessInformationQuestion(text)) {
@@ -8147,11 +8154,13 @@ function currentBusinessSupportGap(sessionId: string, text: string, language: st
       : [],
   );
 
-  const overview = serviceCatalogQuestion || recommendationQuestion
+  const overview = serviceCatalogQuestion
     ? formatConfiguredServiceCatalogPlan(catalogPlan, language)
-    : (topics.length === 1 && topics[0] === "company")
-      ? formatConfiguredServiceOverview(names, language)
-      : "";
+    : recommendationQuestion
+      ? formatRecommendationServiceSummary(catalogPlan, language)
+      : (topics.length === 1 && topics[0] === "company")
+        ? formatConfiguredServiceOverview(names, language)
+        : "";
 
   if (serviceCatalogQuestion && overview) return overview;
 
@@ -26500,7 +26509,7 @@ async function processWhatsAppMessageClaimed(message: any, metadata: any, config
       return;
     }
     if (
-      shouldReturnWhatsAppAmbiguousClarification(chatId, whatsappIntent) &&
+      shouldReturnWhatsAppAmbiguousClarification(chatId, whatsappIntent, textMessage) &&
       !isDeterministicActiveNewBookingContinuation(chatId, textMessage)
     ) {
       await replyWhatsAppOnce(formatAmbiguousBookingIntentClarification(userLanguage));
@@ -33212,7 +33221,7 @@ export const priority1hUnifiedEngineTestBoundary = {
     const intent = classifyMessagingIntent(text);
     return {
       intent,
-      returnsAmbiguousClarification: shouldReturnWhatsAppAmbiguousClarification(sessionId, intent) &&
+      returnsAmbiguousClarification: shouldReturnWhatsAppAmbiguousClarification(sessionId, intent, text) &&
         !isDeterministicActiveNewBookingContinuation(sessionId, text),
       dispatchesUnifiedBooking: shouldDispatchWhatsAppUnifiedBooking(sessionId, text, intent),
     };

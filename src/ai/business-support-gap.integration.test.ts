@@ -293,3 +293,69 @@ test('genuine English reply is still blocked inside a Swedish conversation', () 
     'genuine English presentation drift must still be blocked',
   );
 });
+
+test('WhatsApp recommendation business-information question must not return booking ambiguity clarification', () => {
+  const sessionId = 'wa-live-services-recommendation';
+
+  b.reset();
+
+  const decision = b.whatsappPreDispatchDecision(
+    sessionId,
+    'Hi! Can you tell me a little about your services and what you would recommend for someone visiting for the first time?',
+  );
+
+  assert.equal(
+    decision.returnsAmbiguousClarification,
+    false,
+    'business-information/recommendation questions must not be intercepted by booking ambiguity clarification',
+  );
+  assert.equal(
+    decision.dispatchesUnifiedBooking,
+    true,
+    'business-information/recommendation questions must enter the unified read-only business-information path',
+  );
+});
+
+test('recommendation fallback summarizes verified services instead of dumping the full catalog', () => {
+  const sessionId = 'recommendation-summary-fallback';
+
+  b.reset();
+
+  b.businessInformationState(
+    sessionId,
+    {
+      id: 'test-business',
+      language: 'en',
+      services: [
+        { name: 'Video Consultation', durationMinutes: 60, price: 300, currency: 'SEK' },
+        { name: 'test', durationMinutes: 40, price: 150, currency: 'SEK' },
+        { name: 'video for tiktok', durationMinutes: 15, price: 900, currency: 'SEK' },
+        { name: 'Golden video', durationMinutes: 60, price: 1500, currency: 'SEK' },
+        { name: 'Reklam', durationMinutes: 60, price: 1200, currency: 'SEK' },
+      ],
+    },
+    'Hi! Can you tell me a little about your services and what you would recommend for someone visiting for the first time?',
+    'en',
+  );
+
+  const reply = b.businessSupportGap(
+    sessionId,
+    'Hi! Can you tell me a little about your services and what you would recommend for someone visiting for the first time?',
+    'en',
+  );
+
+  assert.doesNotMatch(
+    reply,
+    /^Our bookable services are:/,
+    'recommendation fallback should not read like a raw catalog dump',
+  );
+
+  const bulletCount = (reply.match(/^• /gm) || []).length;
+  assert.ok(
+    bulletCount <= 3,
+    `recommendation fallback should summarize a few representative services, got ${bulletCount}`,
+  );
+
+  assert.match(reply, /service/i);
+  assert.match(reply, /\?$/);
+});

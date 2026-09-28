@@ -41,6 +41,7 @@ import {
   renderDeterministicMissingDetailsReply,
 } from "./src/ai/deterministic-booking-presentation";
 import { applyBusinessToneConfigUpdate } from "./src/business/business-tone-update";
+import { buildRecentConversationHistory } from "./src/ai/conversation-context-window";
 import {
   appointmentIdentityKeyConflicts,
   appointmentStateOwnerMatches,
@@ -22976,7 +22977,7 @@ async function processTelegramUpdateClaimed(
       return;
     }
 
-    const messages = history.slice(-20);
+    const messages = buildRecentConversationHistory(history);
     messages.push({ role: "user", content: userMessageContent });
     
 const businessName =
@@ -26270,7 +26271,7 @@ async function processWhatsAppMessageClaimed(message: any, metadata: any, config
       });
     }
 
-    const messages = [...history];
+    const messages = buildRecentConversationHistory(history);
     messages.push({ role: "user", content: textMessage });
 
     const businessName = businessConfig.businessName || businessConfig.business_name || "this business";
@@ -27514,7 +27515,7 @@ async function processMessengerUpdateClaimed(webhookEvent: any, config: any, pla
       }
     }
 
-    const messages = [...history];
+    const messages = buildRecentConversationHistory(history);
     messages.push({ role: "user", content: userMessageContent });
 
     const businessName = businessConfig.businessName || businessConfig.business_name || "this business";
@@ -28187,7 +28188,7 @@ if (contentType === "video/mp4") {
       }
     }
 
-    const messages = [...history];
+    const messages = buildRecentConversationHistory(history);
     messages.push({ role: 'user', content: userMessageContent });
 
     const businessName = businessConfig.businessName || businessConfig.business_name || 'this business';

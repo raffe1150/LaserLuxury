@@ -261,6 +261,67 @@ try {
   );
 
   configure();
+  const overlappingAddressSession = 'support-response-overlapping-address-claims-en';
+
+  await enterBusinessSupport(
+    overlappingAddressSession,
+    'en',
+    'instagram',
+    naturalAddressQuestion,
+    naturalAddressConfig,
+  );
+
+  groundingAssessmentOverride = ({ candidateReply, evidenceCorpus }: any) => {
+    assert.match(evidenceCorpus, /Aurora Street 742/u);
+    assert.match(candidateReply, /Aurora Street 742/u);
+
+    return {
+      hasBusinessFactualClaims: true,
+      claims: [
+        {
+          claim: 'The customer entrance is located at Aurora Street 742.',
+          candidateQuote: 'Our customer entrance is located at Aurora Street 742',
+          claimKind: 'OTHER',
+          requiresBusinessEvidence: true,
+          supported: true,
+          evidence: [{
+            source: 'business_system_prompt',
+            quote: 'Customer entrance: Aurora Street 742.',
+          }],
+        },
+        {
+          claim: 'The address is Aurora Street 742.',
+          candidateQuote: 'Aurora Street 742',
+          claimKind: 'OTHER',
+          requiresBusinessEvidence: true,
+          supported: true,
+          evidence: [{
+            source: 'business_system_prompt',
+            quote: 'Customer entrance: Aurora Street 742.',
+          }],
+        },
+      ],
+      allBusinessClaimsSupported: true,
+    };
+  };
+
+  const overlappingAddressReply =
+    'Hello! Our customer entrance is located at Aurora Street 742.';
+
+  const preservedOverlappingAddress = await boundary.finalizeGeneralAiReply(
+    overlappingAddressSession,
+    naturalAddressQuestion,
+    overlappingAddressReply,
+    'en',
+  );
+
+  assert.equal(
+    preservedOverlappingAddress,
+    overlappingAddressReply,
+    'overlapping supported candidate quotes must not cause grounding coverage failure',
+  );
+
+  configure();
   const arabicAddressSession = 'support-response-natural-address-ar';
   const arabicAddressQuestion = 'مرحباً، ما عنوانكم؟';
 

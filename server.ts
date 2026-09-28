@@ -8314,17 +8314,48 @@ function assessmentCoversMaterialCandidateClaims(
     return assessment.claims.length === 0 && isHarmlessBusinessSupportText(candidateReply);
   }
 
-  let uncovered = normalizeGroundingCandidateText(candidateReply);
+  const normalizedCandidate = normalizeGroundingCandidateText(candidateReply);
   const quotes = assessment.claims
     .map((claim) => normalizeGroundingCandidateText(claim?.candidateQuote))
     .filter((quote) => quote.length >= 4)
     .sort((left, right) => right.length - left.length);
   if (quotes.length !== assessment.claims.length) return false;
 
+  const coveredRanges: Array<{ start: number; end: number }> = [];
+
   for (const quote of quotes) {
-    if (!uncovered.includes(quote)) return false;
-    uncovered = uncovered.replace(quote, " ");
+    const start = normalizedCandidate.indexOf(quote);
+    if (start < 0) return false;
+
+    coveredRanges.push({
+      start,
+      end: start + quote.length,
+    });
   }
+
+  coveredRanges.sort((left, right) => left.start - right.start);
+
+  const mergedRanges: Array<{ start: number; end: number }> = [];
+  for (const range of coveredRanges) {
+    const previous = mergedRanges[mergedRanges.length - 1];
+
+    if (previous && range.start <= previous.end) {
+      previous.end = Math.max(previous.end, range.end);
+    } else {
+      mergedRanges.push({ ...range });
+    }
+  }
+
+  let uncovered = "";
+  let cursor = 0;
+
+  for (const range of mergedRanges) {
+    uncovered += normalizedCandidate.slice(cursor, range.start);
+    uncovered += " ";
+    cursor = range.end;
+  }
+
+  uncovered += normalizedCandidate.slice(cursor);
 
   const harmlessResidual = uncovered
     .replace(/[\p{P}\p{S}]+/gu, " ")

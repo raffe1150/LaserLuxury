@@ -8558,12 +8558,76 @@ async function assessBusinessClaimEntailment(
   }
 }
 
+type BusinessClaimsEntailmentDecision = {
+  entailed: boolean;
+  deterministicReply?: string;
+};
+
+function extractVerifiedRetrievedAddress(
+  claim: BusinessGroundingAssessment["claims"][number],
+): string | null {
+  if (
+    claim.claimKind !== "OTHER" ||
+    !claim.supported ||
+    !Array.isArray(claim.evidence) ||
+    claim.evidence.length === 0 ||
+    claim.evidence.some((item) => item.source !== "retrieved_knowledge")
+  ) {
+    return null;
+  }
+
+  const addresses = claim.evidence.flatMap((item) => {
+    const normalized = normalizeGroundingEvidenceText(item.quote);
+    const matches: string[] = [];
+
+    for (const match of normalized.matchAll(
+      /(?:[\p{L}\p{M}][\p{L}\p{M}'’.-]*\s+){2,6}\d+[\p{L}\p{N}-]*/gu,
+    )) {
+      const tokens = match[0].trim().split(/\s+/u);
+      const wordCount = tokens.length - 1;
+
+      for (
+        let addressWordCount = 2;
+        addressWordCount <= Math.min(6, wordCount);
+        addressWordCount += 1
+      ) {
+        matches.push(
+          tokens.slice(-(addressWordCount + 1)).join(" "),
+        );
+      }
+    }
+
+    return matches;
+  });
+
+  if (addresses.length === 0) return null;
+
+  return addresses
+    .slice()
+    .sort((a, b) => {
+      const tokenDelta = a.split(/\s+/u).length - b.split(/\s+/u).length;
+      return tokenDelta || a.length - b.length;
+    })[0] ?? null;
+}
+
+function formatDeterministicAddressReply(
+  address: string,
+  language: string,
+): string {
+  if (language === "ar") return `العنوان هو ${address}.`;
+  if (language === "fa") return `آدرس ${address} است.`;
+  if (language === "sv") return `Adressen är ${address}.`;
+  if (language === "de") return `Die Adresse ist ${address}.`;
+  if (language === "es") return `La dirección es ${address}.`;
+  return `The address is ${address}.`;
+}
+
 async function assessmentClaimsAreEntailed(
   assessment: BusinessGroundingAssessment,
   request: BusinessGroundingVerificationRequest,
   serviceName?: string | null,
-): Promise<boolean> {
-  if (!assessment.hasBusinessFactualClaims) return true;
+): Promise<BusinessClaimsEntailmentDecision> {
+  if (!assessment.hasBusinessFactualClaims) return { entailed: true };
   const results = await Promise.all(assessment.claims.map(async (claim, claimIndex) => {
     const entailmentRequest: BusinessClaimEntailmentRequest = {
       customerMessage: request.customerMessage,
@@ -8638,16 +8702,54 @@ async function assessmentClaimsAreEntailed(
       deterministicAddressRecovery,
     });
 
-    if (deterministicAddressRecovery) return true;
+    if (deterministicAddressRecovery) {
+      return { entailed: true as const };
+    }
 
-    if (!entailment || entailment.relation !== "ENTAILED") return false;
+    const deterministicVerifiedAddress =
+      assessment.claims.length === 1 &&
+      claim.claimKind === "OTHER" &&
+      initialEntailment?.claimKind === "OTHER" &&
+      entailment?.claimKind === "OTHER" &&
+      isBusinessAddressQuestion(request.customerMessage) &&
+      (initialRelation === "UNKNOWN" || initialRelation === "NEUTRAL") &&
+      (regularFinalRelation === "UNKNOWN" || regularFinalRelation === "NEUTRAL") &&
+      (finalRelation === "UNKNOWN" || finalRelation === "NEUTRAL")
+        ? extractVerifiedRetrievedAddress(claim)
+        : null;
+
+    if (deterministicVerifiedAddress) {
+      return {
+        entailed: true as const,
+        deterministicReply: formatDeterministicAddressReply(
+          deterministicVerifiedAddress,
+          request.language,
+        ),
+      };
+    }
+
+    if (!entailment || entailment.relation !== "ENTAILED") {
+      return { entailed: false as const };
+    }
 
     const isNegative = claim.claimKind === "NEGATIVE_ABSENCE" ||
       entailment.claimKind === "NEGATIVE_ABSENCE";
 
-    return !isNegative || entailment.explicitAbsenceEvidence;
+    return {
+      entailed: Boolean(!isNegative || entailment.explicitAbsenceEvidence),
+    };
   }));
-  return results.every(Boolean);
+
+  if (!results.every((result) => result.entailed)) {
+    return { entailed: false };
+  }
+
+  return {
+    entailed: true,
+    deterministicReply: results.find(
+      (result) => result.deterministicReply,
+    )?.deterministicReply,
+  };
 }
 
 async function assessBusinessSupportGrounding(
@@ -9033,15 +9135,16 @@ async function guardBusinessSupportGrounding(
     ),
   );
 
-  const claimsEntailed = Boolean(
-    assessment &&
-    verifiedEvidence &&
-    await assessmentClaimsAreEntailed(
-      assessment,
-      verificationRequest,
-      ("completed" in support ? support.completed.bookingOperation?.serviceName : undefined),
-    ),
-  );
+  const entailmentDecision =
+    assessment && verifiedEvidence
+      ? await assessmentClaimsAreEntailed(
+          assessment,
+          verificationRequest,
+          ("completed" in support ? support.completed.bookingOperation?.serviceName : undefined),
+        )
+      : { entailed: false };
+
+  const claimsEntailed = entailmentDecision.entailed;
 
   const groundingDiagnostic = {
     businessId: getBusinessIdFromConfig(support.businessConfig),
@@ -9103,7 +9206,7 @@ async function guardBusinessSupportGrounding(
         fallbackReason: null,
       });
     }
-    return candidateReply;
+    return entailmentDecision.deterministicReply || candidateReply;
   }
 
   console.warn("[BusinessSupportGrounding] unsupported reply replaced", {

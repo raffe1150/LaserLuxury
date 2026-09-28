@@ -835,6 +835,59 @@ test('Arabic retrieved Knowledge address survives inconclusive entailment when t
   );
 });
 
+test('Arabic number-first address ordering survives inconclusive entailment', async () => {
+  setup();
+
+  const id = 'retrieved-knowledge-arabic-number-first-address';
+  const question = 'ما عنوانكم؟';
+  const evidence = 'Kundentrén ligger på Aurora Street 742.';
+  const reply = 'يقع مدخل العملاء في 742 شارع أورورا.';
+
+  b.businessInformationState(
+    id,
+    config,
+    question,
+    'ar',
+    `KNOWLEDGE CHUNK 1\nsource_id: knowledge-source-sv\n${evidence}`,
+  );
+
+  b.configure({
+    assessBusinessSupportGrounding: async () => ({
+      hasBusinessFactualClaims: true,
+      allBusinessClaimsSupported: true,
+      claims: [{
+        claim: reply,
+        candidateQuote: reply,
+        claimKind: 'OTHER',
+        requiresBusinessEvidence: true,
+        supported: true,
+        evidence: [{
+          source: 'retrieved_knowledge',
+          quote: evidence,
+        }],
+      }],
+    }),
+    assessBusinessClaimEntailment: async () => ({
+      relation: 'UNKNOWN',
+      claimKind: 'OTHER',
+      explicitAbsenceEvidence: false,
+    }),
+  });
+
+  const answer = await b.finalizeGeneralAiReply(
+    id,
+    question,
+    reply,
+    'ar',
+  );
+
+  assert.equal(
+    answer,
+    'العنوان هو Aurora Street 742.',
+    'cross-script address recovery must replace an inconclusive candidate with the verified Knowledge address',
+  );
+});
+
 test('deterministic address recovery never overrides CONTRADICTED entailment', async () => {
   setup();
 

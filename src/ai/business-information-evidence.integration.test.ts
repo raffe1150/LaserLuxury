@@ -432,3 +432,74 @@ test('behavioral and style prompt instructions are excluded from factual evidenc
   assert.match(factualSource, /Verified Studio provides gentle facial treatments/);
   assert.doesNotMatch(factualSource, /Be friendly|Recommend premium|Tone:|assistant should|upsell/i);
 });
+
+test('supported claim with non-verbatim evidence quote is repaired before falling back', async () => {
+  const sessionId = 'evidence-quote-repair';
+  const question = 'What services do you offer and what do you recommend for a first-time visitor?';
+  const factualClaim = 'Intro Facial takes 45 minutes.';
+  const clarification = 'What kind of result are you hoping for?';
+  const candidate = `${factualClaim} ${clarification}`;
+
+  seedInformation(sessionId, question);
+
+  let assessmentCalls = 0;
+
+  b.configure({
+    assessBusinessSupportGrounding: async () => {
+      assessmentCalls += 1;
+
+      if (assessmentCalls === 1) {
+        return {
+          hasBusinessFactualClaims: true,
+          allBusinessClaimsSupported: true,
+          claims: [{
+            claim: factualClaim,
+            candidateQuote: factualClaim,
+            claimKind: 'OTHER',
+            requiresBusinessEvidence: true,
+            supported: true,
+            evidence: [{
+              source: 'structured_business_config',
+              quote: 'Intro Facial takes 45 minutes',
+            }],
+          }],
+        };
+      }
+
+      return {
+        hasBusinessFactualClaims: true,
+        allBusinessClaimsSupported: true,
+        claims: [{
+          claim: factualClaim,
+          candidateQuote: factualClaim,
+          claimKind: 'OTHER',
+          requiresBusinessEvidence: true,
+          supported: true,
+          evidence: [{
+            source: 'structured_business_config',
+            quote: '"durationMinutes": 45',
+          }],
+        }],
+      };
+    },
+
+    assessBusinessClaimEntailment: async () => ({
+      relation: 'ENTAILED',
+      claimKind: 'OTHER',
+      explicitAbsenceEvidence: false,
+    }),
+  });
+
+  const reply = await b.businessSupportGrounding(
+    sessionId,
+    question,
+    candidate,
+    'en',
+  );
+
+  assert.ok(
+    assessmentCalls >= 2,
+    'invalid non-verbatim evidence should trigger a constrained evidence repair pass',
+  );
+  assert.equal(reply, candidate);
+});

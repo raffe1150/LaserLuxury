@@ -20,14 +20,28 @@ export function businessInformationTopics(text: string): BusinessInformationTopi
 export function isBusinessAddressQuestion(text: string): boolean {
   return businessAddressPattern.test(String(text || ''));
 }
+
+export function isBusinessRecommendationQuestion(text: string): boolean {
+  return /\b(?:recommend(?:ation|ed)?|suggest(?:ion|ed)?|best\s+(?:service|option|choice)|first[- ]time|first\s+visit|new\s+customer|what\s+(?:service|option)\s+(?:should|would)\s+(?:i|you)|what\s+(?:should|would)\s+(?:i|you)\s+(?:choose|pick|book|try|get)|empfehl\w*|erstbesuch|zum\s+ersten\s+mal|rekommend\w*|första\s+gången|förstagångsbesök|recomiend\w*|recomend\w*|primera\s+vez)\b|پیشنهاد|توصیه|بار اول|لأول مرة|توصي|اقتراح/iu.test(String(text || ''));
+}
+
 export function isBusinessInformationQuestion(text: string): boolean {
-  if (!businessInformationTopics(text).length) return false;
+  if (!businessInformationTopics(text).length && !isBusinessRecommendationQuestion(text)) return false;
   const informationFirst = /\b(?:before\s+i\s+book|bevor\s+ich|erstmal\s+informieren|innan\s+jag\s+bokar|antes\s+de\s+reservar)\b|قبل از رزرو|قبل الحجز/iu.test(text);
   // A real instruction, including a mixed question + booking request, must stay
   // with the deterministic engine. Mentioning "how booking works" is not one.
   const action = /\b(?:please\s+(?:book|cancel|reschedule)|(?:i\s+(?:want|would like)\s+to|can you)\s+(?:book|cancel|reschedule)|(?:bitte|ich möchte|ich will)\s+(?:(?:einen?|den|die|das)\s+)?(?:.{0,45}\s+)?(?:buchen|buche|stornieren|verschieben)|(?:boka|avboka|omboka)\s+(?:en|ett|min|den)|(?:quiero|por favor)\s+(?:reservar|cancelar|cambiar))\b|(?:رزرو|لغو)\s+کن|(?:احجز|أحجز|الغاء|إلغاء)\s/iu.test(text);
   if (action && !informationFirst) return false;
-  return /[?؟]|\b(?:tell me|explain|information|describe|erzähl\w*|erfahr\w*|informier\w*|erklär\w*|wissen|berätta|beskriv|förklara|veta|informaci[oó]n|explica\w*)\b|اطلاعات|توضیح|معلومات|اشرح/iu.test(text);
+  return isBusinessRecommendationQuestion(text) || /[?؟]|\b(?:tell me|explain|information|describe|erzähl\w*|erfahr\w*|informier\w*|erklär\w*|wissen|berätta|beskriv|förklara|veta|informaci[oó]n|explica\w*)\b|اطلاعات|توضیح|معلومات|اشرح/iu.test(text);
+}
+
+export function formatRecommendationClarification(language: string): string {
+  if (language === 'sv') return 'Vad vill du främst ha hjälp med, så kan jag hjälpa dig att välja bland de här verifierade tjänsterna?';
+  if (language === 'de') return 'Wobei möchten Sie vor allem Unterstützung, damit ich Ihnen bei der Auswahl aus diesen bestätigten Leistungen helfen kann?';
+  if (language === 'es') return '¿Qué te gustaría conseguir principalmente para que pueda ayudarte a elegir entre estos servicios verificados?';
+  if (language === 'fa') return 'بیشتر برای چه هدفی کمک می‌خواهید تا از میان این خدمات تأییدشده انتخاب کنیم؟';
+  if (language === 'ar') return 'ما الهدف الأساسي الذي تريد المساعدة فيه لكي أساعدك على الاختيار من هذه الخدمات المؤكدة؟';
+  return 'What would you mainly like help with, so I can help you choose among these verified services?';
 }
 
 const topicLabels: Record<string, Record<BusinessInformationTopic, string>> = {

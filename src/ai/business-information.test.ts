@@ -3,6 +3,7 @@ import {
   buildConfiguredServiceCatalogPlan,
   formatConfiguredServiceCatalogPlan,
   isBusinessInformationQuestion,
+  isBusinessRecommendationQuestion,
   isServiceCatalogQuestion,
 } from './business-information';
 
@@ -13,7 +14,18 @@ for (const text of [
   '¿Qué servicios ofrece la empresa?', 'لطفاً درباره خدمات توضیح بدهید.', 'ما الخدمات التي تقدمها الشركة؟',
   'Gibt es eine zentrale Übersichtsseite?',
   'هل يوجد موقف سيارات لديكم؟',
+  'What would you recommend for a first-time visitor?',
 ]) assert.equal(isBusinessInformationQuestion(text), true, text);
+
+for (const text of [
+  'What would you recommend for a first-time visitor?',
+  'Vad rekommenderar ni för någon som kommer första gången?',
+  'Welche Leistung empfehlen Sie beim ersten Besuch?',
+  'Recommend a service for a first-time visitor',
+]) {
+  assert.equal(isBusinessRecommendationQuestion(text), true, text);
+  assert.equal(isBusinessInformationQuestion(text), true, text);
+}
 for (const text of [
   'Please book Video Consultation tomorrow at 14:00.',
   'Can you book the service tomorrow?',

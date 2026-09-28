@@ -8507,7 +8507,7 @@ async function assessmentClaimsAreEntailed(
 ): Promise<boolean> {
   if (!assessment.hasBusinessFactualClaims) return true;
   const results = await Promise.all(assessment.claims.map(async (claim, claimIndex) => {
-    const entailment = await assessBusinessClaimEntailment({
+    const entailmentRequest: BusinessClaimEntailmentRequest = {
       customerMessage: request.customerMessage,
       atomicClaim: claim.claim,
       candidateQuote: claim.candidateQuote,
@@ -8517,7 +8517,16 @@ async function assessmentClaimsAreEntailed(
       workflow: serviceName ? "post_completion_business_support" : "business_information",
       language: request.language,
       businessId: request.businessId,
-    });
+    };
+
+    let entailment = await assessBusinessClaimEntailment(entailmentRequest);
+    const initialRelation = entailment?.relation ?? null;
+    const entailmentRetryAttempted =
+      entailment?.relation === "UNKNOWN" || entailment?.relation === "NEUTRAL";
+
+    if (entailmentRetryAttempted) {
+      entailment = await assessBusinessClaimEntailment(entailmentRequest);
+    }
 
     console.info("[BusinessSupportGroundingEntailment]", {
       businessId: request.businessId || null,
@@ -8532,6 +8541,8 @@ async function assessmentClaimsAreEntailed(
         quoteFingerprint: safeLogFingerprint(item.quote),
         quoteLength: String(item.quote || "").length,
       })),
+      initialRelation,
+      entailmentRetryAttempted,
       relation: entailment?.relation ?? null,
       claimKind: entailment?.claimKind ?? null,
       explicitAbsenceEvidence: entailment?.explicitAbsenceEvidence ?? null,

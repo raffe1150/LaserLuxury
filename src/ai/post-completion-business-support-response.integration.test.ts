@@ -322,6 +322,77 @@ try {
   );
 
   configure();
+  const entailmentRetrySession = 'support-response-entailment-retry-en';
+
+  await enterBusinessSupport(
+    entailmentRetrySession,
+    'en',
+    'whatsapp',
+    naturalAddressQuestion,
+    naturalAddressConfig,
+  );
+
+  groundingAssessmentOverride = ({ candidateReply, evidenceCorpus }: any) => {
+    assert.match(evidenceCorpus, /Aurora Street 742/u);
+    assert.match(candidateReply, /Aurora Street 742/u);
+
+    return {
+      hasBusinessFactualClaims: true,
+      claims: [{
+        claim: 'The customer entrance is at Aurora Street 742.',
+        candidateQuote: 'Our customer entrance is located at Aurora Street 742',
+        claimKind: 'OTHER',
+        requiresBusinessEvidence: true,
+        supported: true,
+        evidence: [{
+          source: 'business_system_prompt',
+          quote: 'Customer entrance: Aurora Street 742.',
+        }],
+      }],
+      allBusinessClaimsSupported: true,
+    };
+  };
+
+  let entailmentRetryCalls = 0;
+  entailmentAssessmentOverride = () => {
+    entailmentRetryCalls += 1;
+
+    return entailmentRetryCalls === 1
+      ? {
+          relation: 'UNKNOWN',
+          claimKind: 'OTHER',
+          explicitAbsenceEvidence: false,
+        }
+      : {
+          relation: 'ENTAILED',
+          claimKind: 'OTHER',
+          explicitAbsenceEvidence: false,
+        };
+  };
+
+  const entailmentRetryReply =
+    'Hello! Our customer entrance is located at Aurora Street 742.';
+
+  const preservedEntailmentRetry = await boundary.finalizeGeneralAiReply(
+    entailmentRetrySession,
+    naturalAddressQuestion,
+    entailmentRetryReply,
+    'en',
+  );
+
+  assert.equal(
+    preservedEntailmentRetry,
+    entailmentRetryReply,
+    'UNKNOWN entailment should receive one controlled retry before fallback',
+  );
+
+  assert.equal(
+    entailmentRetryCalls,
+    2,
+    'UNKNOWN entailment must trigger exactly one retry',
+  );
+
+  configure();
   const arabicAddressSession = 'support-response-natural-address-ar';
   const arabicAddressQuestion = 'مرحباً، ما عنوانكم؟';
 

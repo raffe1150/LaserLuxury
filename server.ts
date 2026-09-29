@@ -9605,6 +9605,14 @@ async function guardBusinessSupportGrounding(
           omittedClaimCount: assessment.claims.length - supportedClaims.length,
           recommendationClarificationAdded: Boolean(clarification),
           naturalRecommendationClarificationPreserved: Boolean(safeNaturalClarification),
+          omittedClaimsDiagnostic: assessment.claims
+            .filter((claim) => !claimHasVerifiedBusinessEvidence(claim, snapshot))
+            .map((claim) => ({
+              claim: claim.claim,
+              candidateQuote: claim.candidateQuote,
+              supported: claim.supported,
+              evidence: claim.evidence,
+            })),
         });
 
         return [supportedReply, clarification].filter(Boolean).join(" ");

@@ -8533,6 +8533,15 @@ function extractSafeBusinessRecommendationClarification(
 
   const match = questionMatches[0];
   const question = String(match[1] || "").trim();
+
+  const safeQuestion = question
+    .replace(/^(?:hello|hi|hey)[!,.:\s—–-]*/iu, "")
+    .replace(/^(?:here are some of our services|here are a few of our services|here are some services)[!,.:\s—–-]*/iu, "")
+    .replace(/^to help (?:me )?(?:recommend|suggest|choose)[^,?]{1,160},\s*/iu, "")
+    .trim();
+
+  if (!safeQuestion) return "";
+
   const fullMatch = String(match[0] || "");
   const questionOffset = fullMatch.lastIndexOf(question);
   const questionStart = (match.index || 0) + questionOffset;
@@ -8552,13 +8561,13 @@ function extractSafeBusinessRecommendationClarification(
     return "";
   }
 
-  const words = question.match(/[\p{L}\p{N}]+/gu) || [];
-  if (question.length > 220 || words.length > 30) return "";
+  const words = safeQuestion.match(/[\p{L}\p{N}]+/gu) || [];
+  if (safeQuestion.length > 220 || words.length > 30) return "";
 
   const normalizedLanguage = ["en", "sv", "de", "es", "fa", "ar"].includes(language)
     ? language
     : "en";
-  const normalizedQuestion = question
+  const normalizedQuestion = safeQuestion
     .replace(/^[¿¡\s]+/u, "")
     .toLocaleLowerCase();
   const questionOpeners: Record<string, RegExp> = {
@@ -8585,16 +8594,16 @@ function extractSafeBusinessRecommendationClarification(
     return "";
   }
 
-  const detectedLanguage = detectStrongLatestLanguage(question, businessConfig);
+  const detectedLanguage = detectStrongLatestLanguage(safeQuestion, businessConfig);
   if (detectedLanguage && detectedLanguage !== normalizedLanguage) return "";
-  if (["fa", "ar"].includes(normalizedLanguage) !== /[\u0600-\u06FF]/u.test(question)) {
+  if (["fa", "ar"].includes(normalizedLanguage) !== /[\u0600-\u06FF]/u.test(safeQuestion)) {
     return "";
   }
 
   if (
-    /\d|\p{Sc}|\b(?:sek|eur|usd|gbp)\b/iu.test(question) ||
-    /\b(?:price|cost|duration|minutes?|hours?|policy|available|availability|guarantee|guaranteed|confirmed|appointment|booking|book|cancel|reschedule|schedule|pris|kostar|minuter?|timmar?|policy|villkor|ledig|tillgänglig|garanti|bekräftad|bokning|boka|avboka|omboka|preis|kosten|dauer|minuten?|stunden?|richtlinie|verfügbar|garantie|bestätigt|termin|buchung|buchen|stornieren|verschieben|precio|cuesta|duración|minutos?|horas?|política|disponible|garantía|confirmad[oa]|cita|reserva|reservar|cancelar|reprogramar)\b|(?:قیمت|هزینه|مدت|دقیقه|ساعت|شرایط|موجود|تضمین|تأیید|رزرو|لغو|تغییر\s*وقت|السعر|التكلفة|المدة|دقيقة|ساعة|سياسة|متاح|ضمان|مؤكد|موعد|حجز|إلغاء|تغيير\s*الموعد)/iu.test(question) ||
-    /\b(?:best|ideal|recommended|recommend|premium|bäst|idealisk|rekommender|premie|premium|beste|ideal|empfohlen|empfehl|premium|mejor|ideal|recomendad|recomiend|premium)\b|(?:بهترین|ایده[‌\s]*آل|پیشنهاد|توصیه|الأفضل|مثالي|موصى|أنصح)/iu.test(question)
+    /\d|\p{Sc}|\b(?:sek|eur|usd|gbp)\b/iu.test(safeQuestion) ||
+    /\b(?:price|cost|duration|minutes?|hours?|policy|available|availability|guarantee|guaranteed|confirmed|appointment|booking|book|cancel|reschedule|schedule|pris|kostar|minuter?|timmar?|policy|villkor|ledig|tillgänglig|garanti|bekräftad|bokning|boka|avboka|omboka|preis|kosten|dauer|minuten?|stunden?|richtlinie|verfügbar|garantie|bestätigt|termin|buchung|buchen|stornieren|verschieben|precio|cuesta|duración|minutos?|horas?|política|disponible|garantía|confirmad[oa]|cita|reserva|reservar|cancelar|reprogramar)\b|(?:قیمت|هزینه|مدت|دقیقه|ساعت|شرایط|موجود|تضمین|تأیید|رزرو|لغو|تغییر\s*وقت|السعر|التكلفة|المدة|دقيقة|ساعة|سياسة|متاح|ضمان|مؤكد|موعد|حجز|إلغاء|تغيير\s*الموعد)/iu.test(safeQuestion) ||
+    /\b(?:best|ideal|recommended|recommend|premium|bäst|idealisk|rekommender|premie|premium|beste|ideal|empfohlen|empfehl|premium|mejor|ideal|recomendad|recomiend|premium)\b|(?:بهترین|ایده[‌\s]*آل|پیشنهاد|توصیه|الأفضل|مثالي|موصى|أنصح)/iu.test(safeQuestion)
   ) {
     return "";
   }
@@ -8623,7 +8632,7 @@ function extractSafeBusinessRecommendationClarification(
       );
     });
 
-  return restatesUnsupportedClaim ? "" : question;
+  return restatesUnsupportedClaim ? "" : safeQuestion;
 }
 
 function assessmentHasVerifiedEvidence(

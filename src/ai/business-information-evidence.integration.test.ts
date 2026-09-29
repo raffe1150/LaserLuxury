@@ -503,3 +503,50 @@ test('supported claim with non-verbatim evidence quote is repaired before fallin
   );
   assert.equal(reply, candidate);
 });
+
+test('natural recommendation clarification with purpose prefix and harmless intro is preserved', async () => {
+  const sessionId = 'recommendation-purpose-prefix';
+  const question =
+    'Hi! Can you tell me a little about your services and what you would recommend for someone visiting for the first time?';
+
+  const factualClaim = 'Intro Facial takes 45 minutes.';
+  const candidate =
+    'Hello! Here are some of our services: ' +
+    factualClaim +
+    ' To help recommend something perfect for your first visit, could you tell me a little about your main marketing goal or target platform? 🚀';
+
+  seedInformation(sessionId, question);
+
+  b.configure({
+    assessBusinessSupportGrounding: async () => ({
+      hasBusinessFactualClaims: true,
+      allBusinessClaimsSupported: true,
+      claims: [{
+        claim: factualClaim,
+        candidateQuote: factualClaim,
+        claimKind: 'OTHER',
+        requiresBusinessEvidence: true,
+        supported: true,
+        evidence: [{
+          source: 'structured_business_config',
+          quote: '"durationMinutes": 45',
+        }],
+      }],
+    }),
+
+    assessBusinessClaimEntailment: async () => ({
+      relation: 'ENTAILED',
+      claimKind: 'OTHER',
+      explicitAbsenceEvidence: false,
+    }),
+  });
+
+  const reply = await b.businessSupportGrounding(
+    sessionId,
+    question,
+    candidate,
+    'en',
+  );
+
+  assert.equal(reply, candidate);
+});

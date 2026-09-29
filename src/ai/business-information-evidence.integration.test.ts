@@ -550,3 +550,92 @@ test('natural recommendation clarification with purpose prefix and harmless intr
 
   assert.equal(reply, candidate);
 });
+
+test('candidate quote repair receives previous assessment and preserves grounding decisions', async () => {
+  const sessionId = 'candidate-quote-constrained-repair';
+  const question = 'Tell me about Intro Facial.';
+  const factualClaim = 'Intro Facial takes 45 minutes.';
+  const candidate = factualClaim;
+
+  seedInformation(sessionId, question);
+
+  let assessmentCalls = 0;
+  let repairReceivedPreviousAssessment = false;
+
+  b.configure({
+    assessBusinessSupportGrounding: async (request) => {
+      assessmentCalls += 1;
+
+      if (assessmentCalls === 1) {
+        return {
+          hasBusinessFactualClaims: true,
+          allBusinessClaimsSupported: true,
+          claims: [{
+            claim: factualClaim,
+            candidateQuote: 'Intro Facial lasts 45 minutes.',
+            claimKind: 'OTHER',
+            requiresBusinessEvidence: true,
+            supported: true,
+            evidence: [{
+              source: 'structured_business_config',
+              quote: '"durationMinutes": 45',
+            }],
+          }],
+        };
+      }
+
+      if (request.candidateQuoteRepair) {
+        repairReceivedPreviousAssessment = Boolean(
+          request.previousAssessment &&
+          request.previousAssessment.hasBusinessFactualClaims === true &&
+          request.previousAssessment.allBusinessClaimsSupported === true &&
+          request.previousAssessment.claims.length === 1 &&
+          request.previousAssessment.claims[0].claim === factualClaim &&
+          request.previousAssessment.claims[0].supported === true
+        );
+
+        return {
+          hasBusinessFactualClaims: true,
+          allBusinessClaimsSupported: true,
+          claims: [{
+            claim: factualClaim,
+            candidateQuote: factualClaim,
+            claimKind: 'OTHER',
+            requiresBusinessEvidence: true,
+            supported: true,
+            evidence: [{
+              source: 'structured_business_config',
+              quote: '"durationMinutes": 45',
+            }],
+          }],
+        };
+      }
+
+      throw new Error('unexpected grounding assessment pass');
+    },
+
+    assessBusinessClaimEntailment: async () => ({
+      relation: 'ENTAILED',
+      claimKind: 'OTHER',
+      explicitAbsenceEvidence: false,
+    }),
+  });
+
+  const reply = await b.businessSupportGrounding(
+    sessionId,
+    question,
+    candidate,
+    'en',
+  );
+
+  assert.ok(
+    assessmentCalls >= 2,
+    'invalid candidateQuote should trigger candidate quote repair',
+  );
+  assert.equal(
+    repairReceivedPreviousAssessment,
+    true,
+    'candidate quote repair must receive the previous assessment',
+  );
+  assert.equal(reply, candidate);
+});

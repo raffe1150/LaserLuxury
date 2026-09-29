@@ -9424,6 +9424,27 @@ async function guardBusinessSupportGrounding(
       : { entailed: false };
 
   const claimsEntailed = entailmentDecision.entailed;
+  let recommendationResidualDiagnostic = "";
+  if (assessment && recommendationQuestion) {
+    recommendationResidualDiagnostic = String(candidateReply || "");
+
+    const diagnosticQuotes = assessment.claims
+      .map((claim) => String(claim?.candidateQuote || "").trim())
+      .filter((quote) => quote.length >= 4)
+      .sort((left, right) => right.length - left.length);
+
+    for (const quote of diagnosticQuotes) {
+      const index = recommendationResidualDiagnostic.indexOf(quote);
+      if (index >= 0) {
+        recommendationResidualDiagnostic =
+          `${recommendationResidualDiagnostic.slice(0, index)} ${recommendationResidualDiagnostic.slice(index + quote.length)}`;
+      }
+    }
+
+    recommendationResidualDiagnostic =
+      recommendationResidualDiagnostic.replace(/\s+/g, " ").trim();
+  }
+
   const groundingDiagnostic = {
     businessId: getBusinessIdFromConfig(support.businessConfig),
     language,
@@ -9433,6 +9454,8 @@ async function guardBusinessSupportGrounding(
     candidateLength: candidateReply.length,
     evidenceFingerprint: safeLogFingerprint(snapshot.evidenceCorpus),
     evidenceLength: snapshot.evidenceCorpus.length,
+    safeNaturalClarificationPresent: Boolean(safeNaturalClarification),
+    recommendationResidualDiagnostic,
     verifierReturnedAssessment: Boolean(assessment),
     assessmentCoverageOk,
     verifiedEvidence,

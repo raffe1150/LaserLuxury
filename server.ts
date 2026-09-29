@@ -13020,7 +13020,16 @@ function formatNoAvailabilityRecovery(language: string): string {
 }
 
 function getFinalConversationConcisionBudget(latestCustomerMessage: string): number {
-  return isServiceCatalogQuestion(latestCustomerMessage) ? 90 : 45;
+  if (isServiceCatalogQuestion(latestCustomerMessage)) return 90;
+
+  if (
+    isBusinessInformationQuestion(latestCustomerMessage) &&
+    isBusinessRecommendationQuestion(latestCustomerMessage)
+  ) {
+    return 90;
+  }
+
+  return 45;
 }
 
 function enforceFinalConversationConcision(reply: string, maxWords: number = 45): string {
@@ -32946,6 +32955,16 @@ export const priority1hUnifiedEngineTestBoundary = {
   suppressRepeatedPromotionalCta(sessionId: string, reply: string) {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
     return suppressRepeatedPromotionalCta(sessionId, reply);
+  },
+
+  finalConversationConcisionBudget(text: string) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    return getFinalConversationConcisionBudget(text);
+  },
+
+  finalConversationConcision(reply: string, maxWords: number) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    return enforceFinalConversationConcision(reply, maxWords);
   },
 
   dropPendingMemory(sessionId: string) {

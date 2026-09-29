@@ -639,3 +639,24 @@ test('candidate quote repair receives previous assessment and preserves groundin
   );
   assert.equal(reply, candidate);
 });
+
+
+test('compound services plus recommendation question keeps expanded final concision budget', () => {
+  const question =
+    'Hi! Can you tell me a little about your services and what you would recommend for someone visiting for the first time?';
+
+  const reply =
+    'Hello! We create high-converting short video ads for major digital platforms, combining human creativity with AI speed. ' +
+    'Our services include Video Consultation, test, video for tiktok, Golden video, and Reklam. ' +
+    'Each service has its own configured duration and price depending on what you need. ' +
+    'To help recommend the right option for your first visit, could you tell me what marketing goal or target platform you are focusing on right now?';
+
+  const budget = b.finalConversationConcisionBudget(question);
+
+  assert.equal(budget, 90);
+  assert.equal(
+    b.finalConversationConcision(reply, budget),
+    reply,
+    'grounded compound business-information replies must not be truncated by the generic 45-word budget',
+  );
+});

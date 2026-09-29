@@ -20,6 +20,19 @@ import cron from "node-cron";
 import path from "path";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
+import {
+  buildGeminiGenerationParams,
+  normalizeGeminiGenerationResponse,
+} from "./src/ai/providers/gemini";
+import {
+  extractUnifiedAudioInput,
+  toGeminiAudioContent,
+} from "./src/ai/providers/audio";
+import { getConfiguredAiProvider } from "./src/ai/providers/provider";
+import {
+  generateWithConfiguredProvider,
+  transcribeWithConfiguredProvider,
+} from "./src/ai/providers/router";
 import crypto from "crypto";
 import fs from "fs";
 import { google } from "googleapis";
@@ -712,42 +725,26 @@ async function generateContentWithFallback(ai: GoogleGenAI | null, options: {
     language?: string;
   };
 }): Promise<any> {
-  const allKeys = getApiKeys();
-  let activeAi = ai || new GoogleGenAI({ apiKey: allKeys[currentKeyIndex] || process.env.GEMINI_API_KEY });
-
-
-  const modelName = options.model || 'gemini-2.5-flash';
-  const formattedMessages = options.messages.map(m => {
-    if (m.role === 'tool') {
-      return { role: 'user', parts: [{ functionResponse: { name: m.name, response: JSON.parse(m.content), id: m.id } }] };
-    }
-    if (m.tool_calls) {
-      const toolParts = m.tool_calls.map((c:any) => ({ functionCall: { name: c.function.name, args: JSON.parse(c.function.arguments), id: c.id } }));
-      if (typeof m.content === "string" && m.content.length > 0) {
-          return { role: 'model', parts: [{ text: m.content }, ...toolParts] };
-      }
-      return { role: 'model', parts: toolParts };
-    }
-    return { role: m.role === 'assistant' ? 'model' : 'user', parts: Array.isArray(m.content) ? m.content : [{ text: m.content }] };
-  });
-
-  const params: any = {
-    model: modelName,
-    contents: formattedMessages,
-    config: {
-        systemInstruction: options.systemInstruction,
-        tools: options.tools,
-        temperature: options.temperature
-    }
+  const provider = getConfiguredAiProvider();
+  const allKeys = provider === "gemini" ? getApiKeys() : [];
+  let activeAi = provider === "gemini"
+    ? ai || new GoogleGenAI({ apiKey: allKeys[currentKeyIndex] || process.env.GEMINI_API_KEY })
+    : null;
+  const request = {
+    messages: options.messages,
+    tools: options.tools,
+    systemInstruction: options.systemInstruction,
+    model: options.model,
+    temperature: options.temperature,
   };
-  
-  // Clean up undefined properties from config to avoid SDK issues
-  if (!params.config.systemInstruction) delete params.config.systemInstruction;
-  if (!params.config.tools) delete params.config.tools;
-  if (params.config.temperature === undefined) delete params.config.temperature;
+  const params = provider === "gemini"
+    ? buildGeminiGenerationParams(request)
+    : null;
 
-  if (params.config.tools) {
+  if (provider === "gemini" && params.config.tools) {
     console.log("DEBUG API CALL - Tools active:", params.config.tools[0]?.functionDeclarations?.map((f: any) => f.name));
+  } else if (provider !== "gemini" && options.tools) {
+    console.log("DEBUG API CALL - Tools active:", options.tools[0]?.functionDeclarations?.map((f: any) => f.name));
   } else {
     console.log("DEBUG API CALL - No tools configured!");
   }
@@ -761,11 +758,13 @@ async function generateContentWithFallback(ai: GoogleGenAI | null, options: {
   const response = await runAiProviderRequest({
     timeoutMs,
     retryDelayMs: 500,
-    invoke: () => runWithAiQueue(() => process.env.NODE_ENV === "test" && priority1hTestDependencies?.geminiGenerate
-      ? priority1hTestDependencies.geminiGenerate(params)
-      : activeAi.models.generateContent(params)),
+    invoke: () => runWithAiQueue(() => provider === "gemini"
+      ? process.env.NODE_ENV === "test" && priority1hTestDependencies?.geminiGenerate
+        ? priority1hTestDependencies.geminiGenerate(params)
+        : activeAi!.models.generateContent(params)
+      : generateWithConfiguredProvider(request)),
     beforeRetry: () => {
-      if (allKeys.length > 1) {
+      if (provider === "gemini" && allKeys.length > 1) {
         rotateKey(allKeys);
         activeAi = new GoogleGenAI({ apiKey: allKeys[currentKeyIndex] });
       }
@@ -785,31 +784,21 @@ async function generateContentWithFallback(ai: GoogleGenAI | null, options: {
     },
   });
 
-  const functionCalls = response.functionCalls ? response.functionCalls.map((fc: any) => ({
+  const normalizedResponse = provider === "gemini"
+    ? normalizeGeminiGenerationResponse(response)
+    : response;
 
-    id: fc.id || Math.random().toString(36).substring(7),
-    function: { name: fc.name, arguments: JSON.stringify(fc.args) }
-  })) : [];
-  
-  let safeText = "";
-  try {
-     safeText = normalizeAiResponseText(response.text);
-  } catch(e) {
-     const parts = response.candidates?.[0]?.content?.parts || [];
-     safeText = parts.map((p:any) => p.text || "").join("");
-  }
-  
-  if (!safeText.trim() && functionCalls.length === 0) {
+  if (
+    !normalizedResponse.text.trim() &&
+    normalizedResponse.functionCalls.length === 0
+  ) {
     throw new AiReliabilityError(
       "MALFORMED_RESPONSE",
       "AI provider returned no usable content"
     );
   }
 
-  return {
-    text: safeText || "",
-    functionCalls
-  };
+  return normalizedResponse;
 }
 
 async function transcribeVoiceMessageForFlow(
@@ -817,16 +806,51 @@ async function transcribeVoiceMessageForFlow(
   context?: { businessId?: string | number | null; channel?: string; language?: string }
 ): Promise<string | null> {
   try {
-    const response = await generateContentWithFallback(null, {
-      messages: [{ role: "user", content: audioContent }],
-      systemInstruction:
-        "Transcribe the customer's spoken message exactly in its spoken language. " +
-        "Persian/Farsi (fa-IR) is explicitly supported; preserve Persian names and spoken digits without translating them. " +
-        "Never guess an unclear name, phone number, date, or time. Mark an unclear segment as [unclear]. " +
-        "Return only the transcript, without a label, translation, explanation, markdown, or quotation marks.",
-      model: "gemini-2.5-flash",
-      context: { ...context, stage: "transcription" },
-    });
+    const audio = extractUnifiedAudioInput(audioContent, context?.channel);
+    if (!audio) return null;
+
+    const provider = getConfiguredAiProvider();
+    const transcriptionCorrelationId = crypto.randomUUID();
+    const configuredTimeoutMs = Number(process.env.AI_PROVIDER_TIMEOUT_MS || 20_000);
+    const transcriptionTimeoutMs = Number.isFinite(configuredTimeoutMs) && configuredTimeoutMs > 0
+      ? Math.min(60_000, Math.max(1_000, configuredTimeoutMs))
+      : 20_000;
+    const response = provider === "gemini"
+      ? await generateContentWithFallback(null, {
+          messages: [{
+            role: "user",
+            content: Array.isArray(audioContent)
+              ? audioContent
+              : toGeminiAudioContent(audio),
+          }],
+          systemInstruction:
+            "Transcribe the customer's spoken message exactly in its spoken language. " +
+            "Persian/Farsi (fa-IR) is explicitly supported; preserve Persian names and spoken digits without translating them. " +
+            "Never guess an unclear name, phone number, date, or time. Mark an unclear segment as [unclear]. " +
+            "Return only the transcript, without a label, translation, explanation, markdown, or quotation marks.",
+          model: "gemini-2.5-flash",
+          context: { ...context, stage: "transcription" },
+        })
+      : await runAiProviderRequest({
+          timeoutMs: transcriptionTimeoutMs,
+          retryDelayMs: 500,
+          invoke: () => runWithAiQueue(() =>
+            transcribeWithConfiguredProvider({ audio })
+          ),
+          onAttemptComplete: (event) => {
+            console.log("[AIRequest]", {
+              correlationId: transcriptionCorrelationId,
+              businessId: context?.businessId || null,
+              channel: context?.channel || "internal",
+              stage: "transcription",
+              language: context?.language || null,
+              attempt: event.attempt,
+              success: event.ok,
+              errorCategory: event.category || null,
+              durationMs: event.durationMs,
+            });
+          },
+        });
     const transcript = String(response?.text || "")
       .trim()
       .replace(/^(?:transcript|transcription)\s*:\s*/i, "")
@@ -24226,6 +24250,33 @@ function normalizeSupportedConversationLanguage(language?: string | null): strin
     : null;
 }
 
+function resolveWhatsAppVoicePreTranscriptionLanguage(
+  chatId: string,
+  businessConfig?: any,
+): { storedLanguage: string | null; usageLanguage: string } {
+  const storedLanguage = normalizeSupportedConversationLanguage(
+    getStoredFlowLanguage(chatId) || chatLanguages[chatId]
+  );
+  const businessLanguageRaw = String(
+    businessConfig?.language || businessConfig?.defaultLanguage || ""
+  ).trim().toLowerCase();
+  const businessLanguage = /^(?:sv|swedish|svenska)/.test(businessLanguageRaw) ? "sv"
+    : /^(?:fa|persian|farsi|فارسی)/u.test(businessLanguageRaw) ? "fa"
+      : /^(?:de|german|deutsch)/.test(businessLanguageRaw) ? "de"
+        : /^(?:es|spanish|español)/.test(businessLanguageRaw) ? "es"
+          : /^(?:ar|arabic|العربية)/u.test(businessLanguageRaw) ? "ar"
+            : /^(?:en|english)/.test(businessLanguageRaw) ? "en"
+              : null;
+
+  return {
+    storedLanguage,
+    usageLanguage:
+      storedLanguage ||
+      businessLanguage ||
+      "en",
+  };
+}
+
 function resolveActiveBookingLanguage(params: {
   latestText?: string;
   pendingLanguage?: string | null;
@@ -26321,6 +26372,43 @@ function getBusinessWhatsAppPhoneNumberId(businessConfig: any) {
   ).trim();
 }
 
+async function downloadWhatsAppAudio(
+  mediaId: string,
+  accessToken: string,
+): Promise<{ audioBuffer: ArrayBuffer; mimeType: string }> {
+  if (!mediaId || !accessToken) {
+    throw new Error("WhatsApp audio download requires a media id and access token");
+  }
+
+  const metadataResponse = await fetch(
+    `https://graph.facebook.com/v25.0/${encodeURIComponent(mediaId)}`,
+    { headers: { Authorization: `Bearer ${accessToken}` } },
+  );
+  const metadata = await metadataResponse.json().catch(() => ({}));
+  if (!metadataResponse.ok || !metadata?.url) {
+    throw new Error(`WhatsApp audio metadata download failed (${metadataResponse.status})`);
+  }
+
+  const audioResponse = await fetch(metadata.url, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (!audioResponse.ok) {
+    throw new Error(`WhatsApp audio download failed (${audioResponse.status})`);
+  }
+
+  const audioBuffer = await audioResponse.arrayBuffer();
+  const expectedSize = Number(metadata.file_size || 0);
+  if (expectedSize > 0 && audioBuffer.byteLength !== expectedSize) {
+    throw new Error("WhatsApp audio download was incomplete");
+  }
+
+  const mimeType = String(
+    metadata.mime_type || audioResponse.headers.get("content-type") || "audio/ogg",
+  ).split(";", 1)[0].trim();
+
+  return { audioBuffer, mimeType };
+}
+
 function prepareWhatsAppOutboundText(
   to: string,
   text: string,
@@ -26419,11 +26507,13 @@ async function processWhatsAppMessage(message: any, metadata: any, config: any, 
 
 async function processWhatsAppMessageClaimed(message: any, metadata: any, config: any, platform: string = "whatsapp-webhook") {
   const from = canonicalWhatsAppProviderCustomerId(message?.from);
-  const textMessage = message?.text?.body || "";
+  let textMessage = message?.text?.body || "";
+  const whatsappAudio = message?.type === "audio" ? message?.audio : null;
+  const isVoiceMessage = Boolean(whatsappAudio?.id && !textMessage);
   const phoneNumberId = metadata?.phone_number_id || "";
 
-  if (!from || !phoneNumberId || !textMessage) {
-    console.log("WhatsApp webhook ignored: no supported text message payload.");
+  if (!from || !phoneNumberId || (!textMessage && !isVoiceMessage)) {
+    console.log("WhatsApp webhook ignored: no supported text/audio message payload.");
     return;
   }
 
@@ -26438,6 +26528,7 @@ async function processWhatsAppMessageClaimed(message: any, metadata: any, config
     senderPresent: Boolean(from),
     businessPhonePresent: Boolean(phoneNumberId),
     messageLength: textMessage.length,
+    inputType: isVoiceMessage ? "voice" : "text",
     providerMessageAgeMs,
   });
 
@@ -26529,11 +26620,18 @@ async function processWhatsAppMessageClaimed(message: any, metadata: any, config
 
   chatId = getScopedChannelSessionId("whatsapp", from, businessConfig, phoneNumberId);
   resetSessionIfBusinessConfigChanged(chatId, businessConfig);
-  userLanguage = await prepareConversationLanguageForTurn(
-    chatId,
-    textMessage || "",
-    businessConfig,
-  );
+  const preTranscriptionVoiceLanguage = isVoiceMessage
+    ? resolveWhatsAppVoicePreTranscriptionLanguage(chatId, businessConfig)
+    : null;
+  if (preTranscriptionVoiceLanguage) {
+    userLanguage = preTranscriptionVoiceLanguage.usageLanguage;
+  } else {
+    userLanguage = await prepareConversationLanguageForTurn(
+      chatId,
+      textMessage,
+      businessConfig,
+    );
+  }
 
   const whatsappOccurredAt =
     normalizeAcceptedMessageTimestamp(
@@ -26548,8 +26646,10 @@ async function processWhatsAppMessageClaimed(message: any, metadata: any, config
     source: "whatsapp_webhook",
     messageId: message.id,
     occurredAt: whatsappOccurredAt,
-    messageType: "text",
-    language: userLanguage,
+    messageType: isVoiceMessage ? "voice" : "text",
+    language: isVoiceMessage
+      ? preTranscriptionVoiceLanguage?.storedLanguage || undefined
+      : userLanguage,
   });
 
   if (String(textMessage || "").trim()) {
@@ -26607,6 +26707,57 @@ async function processWhatsAppMessageClaimed(message: any, metadata: any, config
       appendLocalHistory(chatId, textMessage, limitText);
       await postProcessMessage(from, platform, textMessage, limitText, businessConfig?.telegramToken, businessConfig?.apiKey, getBusinessIdFromConfig(businessConfig));
       return;
+    }
+
+    if (isVoiceMessage) {
+      try {
+        const token = getBusinessWhatsAppToken(businessConfig);
+        const { audioBuffer, mimeType } = await downloadWhatsAppAudio(
+          String(whatsappAudio.id),
+          token,
+        );
+        const audio = {
+          data: Buffer.from(audioBuffer).toString("base64"),
+          mimeType,
+          channel: "whatsapp",
+        };
+        const voiceTranscript = await transcribeVoiceMessageForFlow(audio, {
+          businessId: getBusinessIdFromConfig(businessConfig),
+          channel: "whatsapp",
+          language: getStoredFlowLanguage(chatId) || undefined,
+        });
+
+        if (!voiceTranscript) throw new Error("WhatsApp voice transcription unavailable");
+
+        textMessage = voiceTranscript;
+        userLanguage = await prepareConversationLanguageForTurn(
+          chatId,
+          voiceTranscript,
+          businessConfig,
+        );
+        mirrorP2InboundTextShadow({
+          businessConfig,
+          sessionId: chatId,
+          channel: "whatsapp",
+          providerScope: String(phoneNumberId || "").trim(),
+          providerEventId: message.id,
+          receivedAt: whatsappOccurredAt,
+          text: voiceTranscript,
+          activeLanguage: userLanguage,
+        });
+      } catch (voiceErr) {
+        console.error("[VoiceInput]", {
+          channel: "whatsapp",
+          businessId: getBusinessIdFromConfig(businessConfig),
+          stage: "download_or_transcription",
+          success: false,
+          errorCategory: classifyAiFailure(voiceErr),
+        });
+        const fallback = formatVoiceInputFailure(userLanguage);
+        await sendWhatsAppConversationReply(fallback, "voice_input_error_fallback");
+        appendLocalHistory(chatId, "[voice unavailable]", fallback);
+        return;
+      }
     }
 
     const replyWhatsAppOnce = async (reply: string) => {
@@ -27936,6 +28087,12 @@ async function processMessengerUpdateClaimed(webhookEvent: any, config: any, pla
         if (unifiedHandled) return;
       } else {
         userMessageForLog = "[Messenger Voice Message]";
+        if (getConfiguredAiProvider() !== "gemini") {
+          const fallback = formatVoiceInputFailure(userLanguage);
+          await sendMessengerConversationReply(fallback, "voice_transcription_failure");
+          appendLocalHistory(chatId, userMessageForLog, fallback);
+          return;
+        }
       }
     }
 
@@ -28591,6 +28748,8 @@ if (contentType === "video/mp4") {
             postProcessPlatform: platform
           });
           if (unifiedHandled) return;
+        } else if (getConfiguredAiProvider() !== "gemini") {
+          throw new Error("Instagram voice transcription unavailable");
         }
       } catch (voiceErr) {
         console.error('Instagram voice download failed:', voiceErr);

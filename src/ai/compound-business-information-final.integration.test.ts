@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { beforeEach, afterEach, test } from 'node:test';
 import { Responses } from 'openai/resources/responses';
 import { Models } from '@google/genai';
-import { buildConfiguredServiceCatalogPlan, formatConfiguredServiceCatalogPlan } from './business-information';
+import { buildConfiguredServiceCatalogPlan, formatConfiguredServiceCatalogPlan, normalizeGroundedCompoundCatalogReply } from './business-information';
 
 process.env.NODE_ENV = 'test';
 const { priority1hUnifiedEngineTestBoundary: b } = await import('../../server');
@@ -37,14 +37,18 @@ function claim(atomicClaim: string, candidateQuote: string, source: 'structured_
 function harness(t: any, language: string, question: string, quote: string, atomicClaim: string,
   relation = 'ENTAILED', citation = exactLocationEvidence, order = 'services-first', locationSupported = true, extraSupported = true,
   options: { catalogQuote?: string; catalogAtomic?: string; catalogEvidence?: { source: string; quote: string }[];
-    extraClaims?: ReturnType<typeof claim>[]; businessConfig?: any } = {}) {
+    extraClaims?: ReturnType<typeof claim>[]; businessConfig?: any; includeUnknown?: boolean; catalogVerdict?: string; catalogSupported?: boolean; includeSeparateLocation?: boolean; locationEvidence?: ReturnType<typeof claim>["evidence"] } = {}) {
   const catalog = formatConfiguredServiceCatalogPlan(catalogPlan, language);
   const extra = 'All customer communications use Europe/Stockholm time.';
   const catalogClaim = claim(options.catalogAtomic || catalog, options.catalogQuote || catalog, 'structured_business_config', '"name": "Video Consultation"');
+  if (options.catalogSupported === false) catalogClaim.supported = false;
   if (options.catalogEvidence) catalogClaim.evidence = options.catalogEvidence as typeof catalogClaim.evidence;
   const unknown = claim(extra, extra, 'structured_business_config', '"timezone": "Europe/Stockholm"', extraSupported);
   const locationClaim = claim(atomicClaim, quote, 'retrieved_knowledge', citation, locationSupported);
+  if (options.locationEvidence) locationClaim.evidence = options.locationEvidence;
   const claims = order === 'location-first' ? [locationClaim, unknown, catalogClaim] : [catalogClaim, unknown, locationClaim];
+  if (options.includeSeparateLocation === false) claims.splice(claims.indexOf(locationClaim), 1);
+  if (options.includeUnknown === false) claims.splice(claims.indexOf(unknown), 1);
   claims.push(...options.extraClaims || []);
   const candidate = claims.map(c => c.candidateQuote).join('\n');
   const assessments: any[] = [], calls: any[] = [];
@@ -56,7 +60,7 @@ function harness(t: any, language: string, question: string, quote: string, atom
     const body = JSON.parse(params.input[0].content);
     const value = params.instructions.includes('strict business-response claim and citation extractor')
       ? (extractionCalls++, { hasBusinessFactualClaims: true, allBusinessClaimsSupported: claims.every(c => c.supported), claims })
-      : (calls.push(body), { relation: body.atomicClaim === extra ? 'UNKNOWN' : body.atomicClaim === atomicClaim ? relation : 'ENTAILED',
+      : (calls.push(body), { relation: body.atomicClaim === extra ? 'UNKNOWN' : body.atomicClaim === atomicClaim ? relation : body.atomicClaim === catalogClaim.claim ? options.catalogVerdict || 'ENTAILED' : 'ENTAILED',
           claimKind: 'OTHER', explicitAbsenceEvidence: false });
     return { output_text: JSON.stringify(value), output: [] } as any;
   });
@@ -67,7 +71,8 @@ function harness(t: any, language: string, question: string, quote: string, atom
     const budget = b.finalConversationConcisionBudget(question);
     // All four production channel handlers apply these same functions after
     // grounding/recovery, whereas older guard-only tests stopped before this.
-    const sent = b.finalConversationConcision(recovered, budget);
+    const presented = b.enforceAssistantIdentityLifecycle(b.suppressRepeatedPromotionalCta(id, recovered), question, false);
+    const sent = b.finalConversationConcision(presented, budget);
     return { recovered, sent, budget };
   } };
 }
@@ -114,9 +119,12 @@ test('English reversed topic and claim order preserve both supported topics', as
 });
 test('a verified compound quote exceeding a finite word limit cannot be silently lost', async t => {
   const [language, question, location, atomicClaim] = scenarios[1];
-  // Repeated presentation of the same proposition adds no new business fact.
-  const quote = Array.from({ length: 8 }, () => location).join(' ');
-  const h = harness(t, language, question, quote, atomicClaim);
+  const detail = 'Video Consultation services include a written creative brief with an overview of the planned visual direction, a summary of the agreed goals, a description of the intended audience, and a detailed account of the next preparation steps for the customer to review before the scheduled session.';
+  const quote = `${location} ${detail}`;
+  const h = harness(t, language, question, quote, `${atomicClaim} ${detail}`, 'ENTAILED', exactLocationEvidence, 'services-first', true, true,
+    { businessConfig: { ...fixture.business, systemPrompt: detail }, locationEvidence: [
+      { source: 'retrieved_knowledge', quote: exactLocationEvidence }, { source: 'business_system_prompt', quote: detail },
+    ] });
   const { recovered, sent } = await h.run();
   assert.ok(recovered.split(/\s+/u).length > 90);
   assert.ok(sent.includes(quote)); assert.equal(sent.includes(h.extra), false);
@@ -266,7 +274,7 @@ test('a shared price value does not suppress a different service outside the dis
   const { sent } = await h.run();
   assert.ok(sent.includes(text)); assert.equal(sent.split(quote).length - 1, 1);
 });
-test('mixed catalog and location quotation is preserved as a separate verified scope', async t => {
+test('mixed catalog and location quotation preserves the separate verified location role', async t => {
   const [language, question, quote, atomicClaim] = scenarios[1];
   const options = catalogOptions(language);
   options.catalogQuote += `\n${quote}`;
@@ -274,7 +282,9 @@ test('mixed catalog and location quotation is preserved as a separate verified s
   options.catalogEvidence.push({ source: 'retrieved_knowledge', quote: exactLocationEvidence });
   const h = harness(t, language, question, quote, atomicClaim, 'ENTAILED', exactLocationEvidence, 'services-first', true, true, options);
   const { sent } = await h.run();
-  assert.ok(sent.includes(options.catalogQuote), 'do not discard a whole quote containing another topic');
+  assert.ok(sent.includes(quote), 'preserve the independently verified other topic');
+  assertCatalogRoleOnce(sent);
+  assert.equal(sent.split(quote).length - 1, 1);
 });
 test('individual service duration entries already represented by the catalog are not appended again', async t => {
   const [language, question, quote, atomicClaim] = scenarios[1];
@@ -298,4 +308,141 @@ test('a verified service price for a separate package scope remains', async t =>
     { ...catalogOptions(language), businessConfig: { ...fixture.business, id: 717, systemPrompt: text }, extraClaims: [additional] });
   const { sent } = await h.run();
   assert.ok(sent.includes(text)); assert.equal(sent.split(quote).length - 1, 1);
+});
+
+// Catalog-role invariant: count configured names in list rows/enumerations,
+// separately from legitimate descriptions/preparation referring to those names.
+function assertCatalogRoleOnce(reply: string) {
+  const patterns = catalogPlan.displayedServices.map(service => {
+    const escaped = service.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])`, 'gu');
+  });
+  const roleCounts = catalogPlan.displayedServices.map(() => 0);
+  for (const part of reply.split(/\n|(?<=[.!?؟])\s+/u)) {
+    const counts = patterns.map(pattern => [...part.matchAll(pattern)].length);
+    // Independently inspect enumeration structure; prose references to a name
+    // are not catalog rows. No literal catalog/preamble equality is involved.
+    const catalogRole = /^\s*[•*-]\s/u.test(part) || counts.filter(count => count > 0).length > 1 ||
+      catalogPlan.displayedServices.some(service => part.startsWith(service.name) &&
+        /^\s*[:(–-]/u.test(part.slice(service.name.length)));
+    if (catalogRole) counts.forEach((count, index) => { roleCounts[index] += count; });
+  }
+  catalogPlan.displayedServices.forEach((service, index) =>
+    assert.equal(roleCounts[index], 1, `catalog role must display ${service.name} once`));
+}
+
+const availableIntros: Record<string, string> = {
+  de: 'Verfügbare Dienstleistungen:', en: 'Available services:', sv: 'Tillgängliga tjänster:',
+  es: 'Servicios disponibles:', ar: 'الخدمات المتاحة:', fa: 'خدمات موجود:',
+};
+function inlineCatalog(language: string) {
+  return `${availableIntros[language]} ${catalogPlan.displayedServices.map(service =>
+    `${service.name} – ${service.durationMinutes} min / ${service.currency} ${service.price?.toFixed(2)}`
+  ).join('; ')}.`;
+}
+for (const [language, question, quote, atomicClaim] of scenarios) {
+  for (const includeUnknown of [true, false]) {
+    test(`${language}: final catalog-role invariant for mixed inline catalog/location (${includeUnknown ? 'recovery' : 'fully grounded candidate'})`, async t => {
+      const location = language === 'de' ? `Unser Kundeneingang befindet sich in der ${address}.` : quote;
+      const options = catalogOptions(language);
+      options.catalogQuote = `${inlineCatalog(language)}\n${location}`;
+      options.catalogAtomic += ` ${atomicClaim}`;
+      options.catalogEvidence.push({ source: 'retrieved_knowledge', quote: exactLocationEvidence });
+      const h = harness(t, language, question, location, atomicClaim, 'ENTAILED', exactLocationEvidence,
+        'services-first', true, true, { ...options, includeUnknown, includeSeparateLocation: false });
+      const { sent } = await h.run();
+      if (language === 'de' && includeUnknown) console.error('[local-production-shape]', sent);
+      assertCatalogRoleOnce(sent);
+      assert.ok(sent.includes(h.catalog), 'authoritative catalog is selected once');
+      assert.equal(sent.split(location).length - 1, 1);
+      assert.equal(sent.includes(h.extra), false);
+    });
+  }
+}
+test('fully verified candidate already containing bullet and inline catalogs is normalized before the early return', async t => {
+  const [language, question, quote, atomicClaim] = scenarios[1];
+  const options = catalogOptions(language);
+  options.catalogQuote = `${formatConfiguredServiceCatalogPlan(catalogPlan, language)}\n${inlineCatalog(language)}`;
+  const h = harness(t, language, question, quote, atomicClaim, 'ENTAILED', exactLocationEvidence,
+    'services-first', true, true, { ...options, includeUnknown: false });
+  const { sent } = await h.run();
+  assertCatalogRoleOnce(sent); assert.equal(sent.split(quote).length - 1, 1);
+});
+test('final role normalization preserves non-catalog service facts and all other requested topics in a mixed quote', async t => {
+  const [language, , quote, atomicClaim] = scenarios[1];
+  const question = 'What services do you offer, where are you located, and what are your opening hours and preparation requirements?';
+  const facts = 'Video Consultation services include a written creative brief. Preparation for Video Consultation services requires photo ID. Opening hours are 09:00 to 17:00. Contact us at studio@example.test.';
+  const options = catalogOptions(language);
+  options.catalogQuote = `${inlineCatalog(language)}\n${facts}\n${quote}`;
+  options.catalogAtomic += ` ${facts} ${atomicClaim}`;
+  options.catalogEvidence.push({ source: 'retrieved_knowledge', quote: exactLocationEvidence },
+    { source: 'business_system_prompt', quote: facts });
+  const h = harness(t, language, question, quote, atomicClaim, 'ENTAILED', exactLocationEvidence,
+    'services-first', true, true, { ...options, businessConfig: { ...fixture.business, id: 812, systemPrompt: facts } });
+  const { sent } = await h.run();
+  assertCatalogRoleOnce(sent);
+  for (const fact of facts.split(/(?<=[.])\s/u)) assert.ok(sent.includes(fact));
+  assert.equal(sent.split(quote).length - 1, 1);
+});
+
+for (const [label, supported, verdict] of [
+  ['unsupported', false, 'ENTAILED'], ['contradicted', true, 'CONTRADICTED'],
+] as const) {
+  test(`mixed catalog with ${label} location cannot be promoted by final role normalization`, async t => {
+    const [language, question, quote, atomicClaim] = scenarios[0];
+    const options = catalogOptions(language);
+    options.catalogQuote = `${inlineCatalog(language)}\n${quote}`;
+    options.catalogAtomic += ` ${atomicClaim}`;
+    options.catalogEvidence.push({ source: 'retrieved_knowledge', quote: exactLocationEvidence });
+    const h = harness(t, language, question, quote, atomicClaim, verdict, exactLocationEvidence,
+      'services-first', supported, true, { ...options, catalogVerdict: verdict, catalogSupported: supported });
+    const { sent } = await h.run();
+    assertCatalogRoleOnce(sent); assert.equal(sent.includes(address), false);
+    assert.equal(sent.includes(h.extra), false); assert.match(sent, /Standort\/die Adresse/);
+  });
+}
+test('complete model catalog without UNKNOWN or duplicate clauses is normalized once', async t => {
+  const [language, question, quote, atomicClaim] = scenarios[1];
+  const h = harness(t, language, question, quote, atomicClaim, 'ENTAILED', exactLocationEvidence,
+    'services-first', true, true, { ...catalogOptions(language), includeUnknown: false });
+  const { sent } = await h.run(); assertCatalogRoleOnce(sent); assert.equal(sent.split(quote).length - 1, 1);
+});
+for (const [language] of scenarios) {
+  test(`${language}: final-role invariant handles company heading, localized short hour units and decimal prices`, () => {
+    const businessName = 'Example Creative Studio';
+    const rows = catalogPlan.displayedServices.map(service => `${service.name} – ${
+      new Intl.NumberFormat(language, { style: 'unit', unit: 'hour', unitDisplay: 'short' }).format(service.durationMinutes! / 60)
+    } / ${new Intl.NumberFormat(language, { minimumFractionDigits: 2 }).format(service.price!)} ${service.currency}`);
+    const duplicate = `${businessName}: ${rows.join('; ')}.`;
+    const location = scenarios.find(scenario => scenario[0] === language)![2];
+    const original = `${formatConfiguredServiceCatalogPlan(catalogPlan, language)}\n${duplicate}\n${location}`;
+    const normalized = normalizeGroundedCompoundCatalogReply(original, catalogPlan, language, businessName);
+    assertCatalogRoleOnce(normalized);
+    // No second service enumeration can hide behind a different company heading.
+    for (const service of catalogPlan.displayedServices) assert.equal(normalized.split(service.name).length - 1, 1);
+    assert.equal(normalized.split(location).length - 1, 1);
+    assert.equal(normalizeGroundedCompoundCatalogReply(normalized, catalogPlan, language, businessName), normalized, 'normalization is idempotent');
+  });
+}
+
+test('UNKNOWN extra factual clause attached to a catalog remains excluded after retry/adjudication', async t => {
+  const [language, question, quote, atomicClaim] = scenarios[1];
+  const options = catalogOptions(language);
+  const extra = 'All customer communications use Europe/Stockholm time.';
+  options.catalogQuote = `${inlineCatalog(language)}\n${extra}`;
+  options.catalogAtomic += ` ${extra}`;
+  options.catalogEvidence.push({ source: 'structured_business_config', quote: '\"timezone\": \"Europe/Stockholm\"' });
+  const h = harness(t, language, question, quote, atomicClaim, 'ENTAILED', exactLocationEvidence,
+    'services-first', true, true, { ...options, catalogVerdict: 'UNKNOWN' });
+  const { sent } = await h.run();
+  assertCatalogRoleOnce(sent); assert.equal(sent.includes(extra), false);
+  assert.equal(sent.split(quote).length - 1, 1);
+  assert.equal(h.calls.filter(call => call.atomicClaim === options.catalogAtomic).length, 3);
+});
+
+test('final role normalization retains separately grounded numeric service facts outside catalog values', () => {
+  const text = 'Video Consultation (18+).';
+  const catalog = formatConfiguredServiceCatalogPlan(catalogPlan, 'en');
+  const normalized = normalizeGroundedCompoundCatalogReply(`${catalog}\n${text}`, catalogPlan, 'en');
+  assert.ok(normalized.includes(text)); assert.equal(normalized.split(catalog).length - 1, 1);
 });

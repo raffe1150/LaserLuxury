@@ -5,6 +5,7 @@ import {
   businessInformationSubject,
   businessInformationTopics,
   formatConfiguredServiceCatalogPlan,
+  normalizeGroundedCompoundCatalogReply,
   formatConfiguredServiceOverview,
   formatRecommendationServiceSummary,
   formatRecommendationClarification,
@@ -9344,6 +9345,7 @@ async function recoverCompoundBusinessInformation(
 
   const parts: string[] = [];
   const supportedTopics = new Set<string>();
+  const verifiedLocationQuotes: string[] = [];
   const catalogPlan = isServiceCatalogQuestion(request.customerMessage, true)
     ? buildConfiguredServiceCatalogPlan(support.businessConfig?.services || [])
     : null;
@@ -9365,6 +9367,7 @@ async function recoverCompoundBusinessInformation(
     );
     if (!decision.entailed) continue;
     const claimTopics = businessInformationTopics(`${claim.claim} ${quote}`);
+    if (isBusinessAddressQuestion(claim.claim)) verifiedLocationQuotes.push(quote);
     // The authoritative catalog replaces its own service/price clauses while
     // independently grounded location, preparation, and other facts survive.
     const replacedByCatalog = catalog && catalogPlan &&
@@ -9388,7 +9391,11 @@ async function recoverCompoundBusinessInformation(
   if (missingTopics.length) parts.push(formatBusinessSupportKnowledgeGap(
     request.language, businessInformationSubject(request.customerMessage, request.language, missingTopics),
   ));
-  return [...new Set(parts)].join("\n");
+  const groundedReply = [...new Set(parts)].join("\n");
+  return catalog && catalogPlan
+    ? normalizeGroundedCompoundCatalogReply(groundedReply, catalogPlan, request.language,
+        String(support.businessConfig?.businessName || support.businessConfig?.business_name || ""), verifiedLocationQuotes)
+    : groundedReply;
 }
 
 async function guardBusinessSupportGrounding(
@@ -9779,7 +9786,18 @@ async function guardBusinessSupportGrounding(
         fallbackReason: null,
       });
     }
-    return entailmentDecision.deterministicReply || candidateReply;
+    const groundedReply = entailmentDecision.deterministicReply || candidateReply;
+    // Fully grounded compound candidates bypass recovery. Select/normalize the
+    // same authoritative catalog here as well, after all safety gates succeed.
+    if (businessInformationTopics(latestCustomerMessage).length > 1 &&
+        !isBusinessRecommendationQuestion(latestCustomerMessage) &&
+        isServiceCatalogQuestion(latestCustomerMessage, true)) {
+      return normalizeGroundedCompoundCatalogReply(groundedReply,
+        buildConfiguredServiceCatalogPlan(support.businessConfig?.services || []), language,
+        String(support.businessConfig?.businessName || support.businessConfig?.business_name || ""),
+        assessment.claims.filter(claim => isBusinessAddressQuestion(claim.claim)).map(claim => claim.candidateQuote));
+    }
+    return groundedReply;
   }
 
   const compoundReply = await recoverCompoundBusinessInformation(

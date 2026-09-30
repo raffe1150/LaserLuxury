@@ -249,6 +249,133 @@ export function formatConfiguredServiceCatalogPlan(
 }
 
 
+/** Presentation-only: call after grounding, when this tenant's catalog is selected.
+ * Remove catalog-role spans, not every sentence mentioning a configured service.
+ * Values and units may be formatted differently; prose describing another fact
+ * is retained. No evidence or entailment decision is made here.
+ */
+export function normalizeGroundedCompoundCatalogReply(
+  reply: string,
+  plan: ConfiguredServiceCatalogPlan,
+  language: string,
+  businessName = '',
+  verifiedLocationQuotes: string[] = [],
+): string {
+  const catalog = formatConfiguredServiceCatalogPlan(plan, language);
+  if (!catalog) return reply;
+  const escape = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const names = [...plan.displayedServices].sort((a, b) => b.name.length - a.name.length);
+  const namePatterns = names.map(service => new RegExp(
+    `(?<![\\p{L}\\p{N}])${escape(service.name)}(?![\\p{L}\\p{N}])`, 'gu',
+  ));
+  // Intl supplies localized unit and list labels, including short/narrow forms.
+  // The configured formatter supplies its own labels and optional follow-up.
+  const labels = new Set<string>();
+  const numberReaders: ((text: string) => number)[] = [];
+  for (const locale of ['en', 'sv', 'de', 'es', 'fa', 'ar']) {
+    const formatter = new Intl.NumberFormat(locale);
+    const parts = formatter.formatToParts(12345.6);
+    const group = parts.find(part => part.type === 'group')?.value;
+    const decimal = parts.find(part => part.type === 'decimal')?.value;
+    const digits = Array.from({ length: 10 }, (_, value) => formatter.format(value));
+    numberReaders.push(text => {
+      let numeric = text;
+      digits.forEach((digit, value) => { numeric = numeric.replaceAll(digit, String(value)); });
+      if (group) numeric = numeric.replaceAll(group, '');
+      if (decimal) numeric = numeric.replaceAll(decimal, '.');
+      return Number(numeric);
+    });
+    for (const unit of ['minute', 'hour'] as const) {
+      for (const unitDisplay of ['long', 'short', 'narrow'] as const) {
+        for (const value of [1, 2, 30]) {
+          for (const part of new Intl.NumberFormat(locale, { style: 'unit', unit, unitDisplay }).formatToParts(value)) {
+            if (part.type === 'unit') labels.add(part.value);
+          }
+        }
+      }
+    }
+    for (const part of new Intl.ListFormat(locale).formatToParts(['@a', '@b'])) {
+      if (part.type === 'literal' && part.value.trim()) labels.add(part.value.trim());
+    }
+  }
+  const labelPattern = new RegExp(
+    `(?<![\\p{L}\\p{N}])(?:${[...labels].sort((a, b) => b.length - a.length).map(escape).join('|')})(?![\\p{L}\\p{N}])`, 'giu',
+  );
+  const currencies = [...new Set(names.map(service => service.currency).filter((value): value is string => Boolean(value)))];
+  const currencyPattern = currencies.length ? new RegExp(
+    `(?<![\\p{L}\\p{N}])(?:${currencies.map(escape).join('|')})(?![\\p{L}\\p{N}])`, 'giu',
+  ) : null;
+  const isCatalogHeading = (text: string): boolean => {
+    const heading = businessName ? text.replaceAll(businessName, '') : text;
+    const topics = businessInformationTopics(heading);
+    return /[:：]$/u.test(text.trim()) &&
+      (topics.some(topic => topic === 'services' || topic === 'company') || Boolean(businessName && text.includes(businessName))) &&
+      topics.every(topic => topic === 'services' || topic === 'company' || topic === 'prices');
+  };
+  const isCatalogSpan = (text: string): boolean => {
+    let remainder = text;
+    // An inline list may include its offering preamble before the first name.
+    const colon = remainder.search(/[:：]/u);
+    if (colon >= 0 && isCatalogHeading(remainder.slice(0, colon + 1))) remainder = remainder.slice(colon + 1);
+    const matchedServices: ConfiguredServiceCatalogItem[] = [];
+    namePatterns.forEach((pattern, index) => {
+      remainder = remainder.replace(pattern, () => { matchedServices.push(names[index]); return ''; });
+    });
+    if (!matchedServices.length) return false;
+    const catalogValues = matchedServices.flatMap(service => [
+      service.price, service.durationMinutes,
+      service.durationMinutes === null ? null : service.durationMinutes / 60,
+    ]).filter((value): value is number => value !== null);
+    // A numeric-only non-catalog fact (e.g. an age requirement) must survive.
+    // Accept localized/decimal values and minute-to-hour presentation only.
+    const numbers = remainder.match(/\p{N}+(?:(?:[.,٫٬\u00a0\u202f])\p{N}+)*/gu) || [];
+    if (numbers.some(token => !numberReaders.some(read => catalogValues.some(value =>
+      read(token) === value || read(token) === Number(value.toFixed(3))
+    )))) return false;
+    if (currencyPattern) remainder = remainder.replace(currencyPattern, '');
+    remainder = remainder.replace(labelPattern, '');
+    // A row may label its price. Other lexical content is a separate fact and
+    // must survive, even if it names every service in the catalog.
+    remainder = remainder.replace(/[\p{L}\p{M}]+/gu, word => {
+      const topics = businessInformationTopics(word);
+      return topics.length === 1 && topics[0] === 'prices' ? '' : word;
+    });
+    return !/[\p{L}\p{M}]/u.test(remainder);
+  };
+  const segments = reply.split(/(\n+|(?<=[.!?؟。])\s+)/u);
+  // A localized unit abbreviation's period is not a sentence boundary.
+  const dottedUnits = [...labels].filter(label => label.endsWith('.'));
+  for (let index = 1; index < segments.length; index += 2) {
+    if (!segments[index].includes('\n') && names.some(service => segments[index - 1].includes(service.name)) &&
+        dottedUnits.some(unit => segments[index - 1].trimEnd().endsWith(unit))) {
+      segments[index - 1] += segments[index] + segments[index + 1];
+      segments.splice(index, 2);
+      index -= 2;
+    }
+  }
+  const fragments = segments.filter((_, index) => index % 2 === 0).map(part => part.trim());
+  const roles = fragments.map(isCatalogSpan);
+  const canonicalProse = new Set(catalog.split(/\n+|(?<=[.!?؟。])\s+/u)
+    .filter(part => !isCatalogSpan(part)));
+  const seenLocations = new Set<string>();
+  let remainder = '';
+  let previousKept = -2;
+  for (let index = 0; index < fragments.length; index++) {
+    const part = fragments[index];
+    if (!part || roles[index] || canonicalProse.has(part) ||
+        (isCatalogHeading(part) && roles[index + 1])) continue;
+    if (isBusinessAddressQuestion(part) || verifiedLocationQuotes.includes(part)) {
+      if (seenLocations.has(part)) continue;
+      seenLocations.add(part);
+    }
+    // Preserve contiguous non-catalog prose, including long verified passages.
+    remainder += (remainder ? previousKept === index - 1 ? segments[index * 2 - 1] : '\n' : '') + part;
+    previousKept = index;
+  }
+  return [catalog, remainder].filter(Boolean).join('\n');
+}
+
+
 export function formatRecommendationServiceSummary(
   plan: ConfiguredServiceCatalogPlan,
   language: string,

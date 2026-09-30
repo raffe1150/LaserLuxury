@@ -86,6 +86,7 @@ import {
   normalizeAiResponseText,
   runAiProviderRequest,
 } from "./src/ai/reliability";
+import { AiRequestQueue } from "./src/ai/request-queue";
 import {
   classifyMessagingIntent,
   detectExplicitLanguageSwitch,
@@ -668,23 +669,10 @@ let currentKeyIndex = 0;
 // Simple in-process AI request queue. This prevents too many simultaneous Gemini calls
 // when many customers message different businesses at the same time.
 const MAX_CONCURRENT_AI_REQUESTS = Number(process.env.MAX_CONCURRENT_AI_REQUESTS || 3);
-let activeAiRequests = 0;
-const aiRequestQueue: Array<() => void> = [];
+const aiRequestQueue = new AiRequestQueue(MAX_CONCURRENT_AI_REQUESTS);
 
-async function runWithAiQueue<T>(job: () => Promise<T>, onExecutionStart?: () => void): Promise<T> {
-  if (activeAiRequests >= MAX_CONCURRENT_AI_REQUESTS) {
-    await new Promise<void>((resolve) => aiRequestQueue.push(resolve));
-  }
-
-  activeAiRequests++;
-  try {
-    onExecutionStart?.();
-    return await job();
-  } finally {
-    activeAiRequests = Math.max(0, activeAiRequests - 1);
-    const next = aiRequestQueue.shift();
-    if (next) next();
-  }
+function runWithAiQueue<T>(job: () => Promise<T>, onExecutionStart?: () => void, signal?: AbortSignal): Promise<T> {
+  return aiRequestQueue.run(job, onExecutionStart, signal);
 }
 
 function getApiKeys(): string[] {
@@ -786,8 +774,9 @@ async function generateContentWithFallback(ai: GoogleGenAI | null, options: {
   };
   const response = await runAiProviderRequest({
     timeoutMs,
+    cancelOnTimeout: provider === "openai",
     retryDelayMs: 500,
-    invoke: (attempt) => {
+    invoke: (attempt, signal) => {
       attemptTimings.set(attempt, { queuedAt: Date.now() });
       return runWithAiQueue(async () => {
         try {
@@ -795,14 +784,14 @@ async function generateContentWithFallback(ai: GoogleGenAI | null, options: {
             ? process.env.NODE_ENV === "test" && priority1hTestDependencies?.geminiGenerate
               ? priority1hTestDependencies.geminiGenerate(params)
               : activeAi!.models.generateContent(params)
-            : generateWithConfiguredProvider(request));
+            : generateWithConfiguredProvider({ ...request, signal }));
         } finally {
           logVerifierTiming(attempt, "provider_complete");
         }
       }, () => {
         attemptTimings.get(attempt)!.executionStartedAt = Date.now();
         logVerifierTiming(attempt, "provider_start");
-      });
+      }, signal);
     },
     beforeRetry: () => {
       if (provider === "gemini" && allKeys.length > 1) {

@@ -57,8 +57,9 @@ export function normalizeAiResponseText(value: unknown): string {
 }
 
 export async function runAiProviderRequest<T>(options: {
-  invoke: (attempt: number) => Promise<T>;
+  invoke: (attempt: number, signal?: AbortSignal) => Promise<T>;
   timeoutMs: number;
+  cancelOnTimeout?: boolean;
   retryDelayMs?: number;
   beforeRetry?: (category: AiFailureCategory) => void | Promise<void>;
   onAttemptComplete?: (event: {
@@ -71,15 +72,19 @@ export async function runAiProviderRequest<T>(options: {
   const timeoutMs = Math.max(1, options.timeoutMs);
   for (let attempt = 1; attempt <= 2; attempt++) {
     const startedAt = Date.now();
+    const controller = options.cancelOnTimeout ? new AbortController() : undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       const timeout = new Promise<never>((_, reject) => {
-        timer = setTimeout(
-          () => reject(new AiReliabilityError('TIMEOUT', 'AI provider request timed out')),
-          timeoutMs,
-        );
+        timer = setTimeout(() => {
+          const error = new AiReliabilityError('TIMEOUT', 'AI provider request timed out');
+          // Settle the deadline first: an abort must not turn TIMEOUT into a
+          // retryable network failure, or allow a late result to become success.
+          reject(error);
+          controller?.abort(error);
+        }, timeoutMs);
       });
-      const result = await Promise.race([options.invoke(attempt), timeout]);
+      const result = await Promise.race([options.invoke(attempt, controller?.signal), timeout]);
       options.onAttemptComplete?.({ attempt, durationMs: Date.now() - startedAt, ok: true });
       return result;
     } catch (error) {

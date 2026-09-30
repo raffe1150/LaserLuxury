@@ -136,7 +136,7 @@ export async function generateWithOpenAi(
   };
   let response;
   try {
-    response = await client.responses.create(params as any);
+    response = await client.responses.create(params as any, request.signal ? { signal: request.signal } : undefined);
   } catch (error) {
     console.error("[OpenAIProviderFailure]", buildOpenAiFailureDiagnostic(error, {
       model,

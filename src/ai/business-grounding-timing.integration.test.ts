@@ -94,16 +94,18 @@ test('German tenant-3 catalog and location survive bounded latency; independent 
   assertSafe(timings);
 });
 
-test('production 20-second execution deadline fails closed, retains catalog, and reports late provider completion', async t => {
+test('production 20-second execution deadline aborts transport, fails closed and retains catalog', async t => {
   const { timings, diagnostics } = capture(t);
   const errors = t.mock.method(console, 'error', () => {});
   let calls = 0;
   let providerFinished!: () => void;
   const finished = new Promise<void>(resolve => { providerFinished = resolve; });
-  t.mock.method(Responses.prototype, 'create', async () => {
+  let aborted = false;
+  t.mock.method(Responses.prototype, 'create', async (_params: any, options: any) => {
     calls++;
-    await delay(20100);
-    providerFinished();
+    try { await delay(20100, undefined, { signal: options.signal }); }
+    catch (error) { aborted = options.signal.aborted; throw error; }
+    finally { providerFinished(); }
     return response(assessment);
   });
   seed();
@@ -119,13 +121,14 @@ test('production 20-second execution deadline fails closed, retains catalog, and
   assert.ok(timedOut.providerExecutionMs >= 19000);
   await finished;
   await delay(0);
-  assert.ok(timings.some(event => event.stage.endsWith('_provider_complete') && event.elapsedMs > 20000));
+  assert.ok(timings.some(event => event.stage.endsWith('_provider_complete') && event.elapsedMs >= 20000));
   assert.equal(reply.includes(address), false, 'late provider output cannot alter the returned reply');
-  assert.equal(errors.mock.callCount(), 1);
+  assert.equal(aborted, true);
+  assert.equal(errors.mock.callCount(), 2, 'safe provider failure and grounding failure diagnostics');
   assertSafe(timings);
 });
 
-test('queue wait consumes the existing deadline; diagnostics distinguish it and expose late queued execution', async t => {
+test('queue wait consumes the existing deadline; abandoned queued extraction never starts', async t => {
   process.env.AI_PROVIDER_TIMEOUT_MS = '1000'; // Test-only time scaling; production configuration is unchanged.
   const { timings, diagnostics } = capture(t);
   t.mock.method(console, 'error', () => {});
@@ -156,9 +159,8 @@ test('queue wait consumes the existing deadline; diagnostics distinguish it and 
   releases.forEach(release => release());
   await Promise.all(blockers);
   await delay(0);
-  assert.equal(extractionCalls, 1, 'existing queue starts the abandoned job after deadline');
-  const lateStart = timings.find(event => event.stage.endsWith('_provider_start'));
-  assert.ok(lateStart.queueWaitMs >= 950);
+  assert.equal(extractionCalls, 0, 'cancelled waiting job cannot execute after its deadline');
+  assert.equal(timings.some(event => event.stage.endsWith('_provider_start')), false);
   assert.equal(reply.includes(address), false);
   assertSafe(timings);
 });

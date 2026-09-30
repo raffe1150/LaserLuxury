@@ -1,5 +1,6 @@
 import OpenAI, { toFile } from "openai";
 import { buildOpenAiFailureDiagnostic } from "./openai-diagnostic";
+import { normalizeOpenAiToolSchema } from "./openai-tool-schema";
 import type {
   UnifiedAiGenerationRequest,
   UnifiedAiGenerationResponse,
@@ -18,7 +19,7 @@ export function toOpenAiTools(tools?: any[]): any[] | undefined {
     name: fn.name,
     description: fn.description,
     strict: false,
-    parameters: fn.parameters || {
+    parameters: fn.parameters ? normalizeOpenAiToolSchema(fn.parameters) : {
       type: "object",
       properties: {},
       additionalProperties: true,

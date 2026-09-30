@@ -9278,6 +9278,60 @@ function assessmentCoversServiceCatalogClaim(
   });
 }
 
+function recoveredClaimIsRepresentedByCatalog(
+  claim: BusinessGroundingAssessment["claims"][number],
+  catalogPlan: ReturnType<typeof buildConfiguredServiceCatalogPlan>,
+  businessConfig: any,
+): boolean {
+  const topics = businessInformationTopics(`${claim.claim} ${claim.candidateQuote}`);
+  // Individual catalog entries may contain only a configured name and numbers.
+  if (!topics.some(topic => topic === "services" || topic === "prices") &&
+      !catalogPlan.displayedServices.some(service => String(claim.candidateQuote).includes(service.name))) return false;
+  // A company name in an offering preamble does not create a separate topic.
+  // All other topics and all non-catalog evidence must survive independently.
+  if (topics.some(topic => !["company", "services", "prices"].includes(topic))) return false;
+  const quotedServiceNames = buildConfiguredServiceCatalogPlan(
+    businessConfig?.services || [], Number.MAX_SAFE_INTEGER,
+  ).displayedServices.filter(service => {
+    const escaped = service.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(`(?:^|[^\\p{L}\\p{N}])${escaped}(?=$|[^\\p{L}\\p{N}])`, "u").test(claim.candidateQuote);
+  });
+  if (quotedServiceNames.some(service => !catalogPlan.displayedServices.some(displayed => displayed.name === service.name))) return false;
+
+  let hasServiceFact = false;
+  const represented = (value: unknown): boolean => {
+    if (Array.isArray(value)) return value.length > 0 && value.every(represented);
+    if (!value || typeof value !== "object") return false;
+    const entries = Object.entries(value);
+    if (!entries.length) return false;
+    const fields = entries.filter(([key]) => key !== "services" && key !== "businessName");
+    if (fields.length) {
+      if (fields.some(([key]) => !["name", "price", "currency", "durationMinutes", "active"].includes(key))) return false;
+      // Match all fields of an object to the same displayed service. A verified
+      // service outside the displayed subset or another price scope is retained.
+      if (!catalogPlan.displayedServices.some(service => fields.every(([key, fact]) =>
+        key === "active" ? fact === true : fact !== null &&
+          (key === "price" || key === "durationMinutes" ? Number(fact) : fact) === service[key as keyof typeof service]
+      ))) return false;
+      hasServiceFact = true;
+    }
+    return entries.every(([key, fact]) => {
+      if (key === "services") return represented(fact);
+      if (key === "businessName") return fact === (businessConfig?.businessName ?? businessConfig?.business_name);
+      return true;
+    });
+  };
+  const covered = claim.evidence.length > 0 && claim.evidence.every(item => {
+    if (item.source !== "structured_business_config") return false;
+    const quote = item.quote.trim().replace(/,$/u, "");
+    // Accept exact JSON objects/arrays and exact field fragments. Exact source
+    // membership and independent entailment have already passed before this.
+    try { return represented(JSON.parse(quote)); } catch {}
+    try { return represented(JSON.parse(`{${quote}}`)); } catch { return false; }
+  });
+  return covered && hasServiceFact;
+}
+
 async function recoverCompoundBusinessInformation(
   support: { businessConfig: any; completed?: RecentCompletedBooking },
   assessment: BusinessGroundingAssessment | null,
@@ -9313,12 +9367,8 @@ async function recoverCompoundBusinessInformation(
     const claimTopics = businessInformationTopics(`${claim.claim} ${quote}`);
     // The authoritative catalog replaces its own service/price clauses while
     // independently grounded location, preparation, and other facts survive.
-    const replacedByCatalog = catalog &&
-      claim.evidence.every(item =>
-        item.source === "structured_business_config" &&
-        /^"(?:name|price|currency|durationMinutes|active)"\s*:\s*(?:"[^"\n]*"|-?\d+(?:\.\d+)?|true|false),?$/u.test(item.quote.trim())
-      ) &&
-      claimTopics.every(topic => topic === "services" || topic === "prices");
+    const replacedByCatalog = catalog && catalogPlan &&
+      recoveredClaimIsRepresentedByCatalog(claim, catalogPlan, support.businessConfig);
     if (!replacedByCatalog) parts.push(decision.deterministicReply || quote);
     for (const topic of claimTopics) supportedTopics.add(topic);
     if (claim.evidence.some(item =>

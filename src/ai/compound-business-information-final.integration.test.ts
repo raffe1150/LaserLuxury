@@ -30,19 +30,23 @@ const scenarios = [
   ['fa', 'آدرستون کجاست و چه خدماتی دارید؟', `آدرس ما ${address} است.`, `آدرس ما ${address} است.`],
   ['ar', 'ما عنوانكم وما الخدمات التي تقدمونها؟', `عنواننا هو ${address}.`, `عنواننا هو ${address}.`],
 ] as const;
-function claim(atomicClaim: string, candidateQuote: string, source: 'structured_business_config' | 'retrieved_knowledge', quote: string, supported = true) {
+function claim(atomicClaim: string, candidateQuote: string, source: 'structured_business_config' | 'retrieved_knowledge' | 'business_system_prompt', quote: string, supported = true) {
   return { claim: atomicClaim, candidateQuote, claimKind: 'OTHER' as const, requiresBusinessEvidence: true, supported,
     evidence: [{ source, quote }] };
 }
 function harness(t: any, language: string, question: string, quote: string, atomicClaim: string,
-  relation = 'ENTAILED', citation = exactLocationEvidence, order = 'services-first', locationSupported = true, extraSupported = true) {
+  relation = 'ENTAILED', citation = exactLocationEvidence, order = 'services-first', locationSupported = true, extraSupported = true,
+  options: { catalogQuote?: string; catalogAtomic?: string; catalogEvidence?: { source: string; quote: string }[];
+    extraClaims?: ReturnType<typeof claim>[]; businessConfig?: any } = {}) {
   const catalog = formatConfiguredServiceCatalogPlan(catalogPlan, language);
-  const extra = 'Video Consultation costs 300 SEK.';
-  const catalogClaim = claim(catalog, catalog, 'structured_business_config', '"name": "Video Consultation"');
-  const unknown = claim(extra, extra, 'structured_business_config', '"price": 300', extraSupported);
+  const extra = 'All customer communications use Europe/Stockholm time.';
+  const catalogClaim = claim(options.catalogAtomic || catalog, options.catalogQuote || catalog, 'structured_business_config', '"name": "Video Consultation"');
+  if (options.catalogEvidence) catalogClaim.evidence = options.catalogEvidence as typeof catalogClaim.evidence;
+  const unknown = claim(extra, extra, 'structured_business_config', '"timezone": "Europe/Stockholm"', extraSupported);
   const locationClaim = claim(atomicClaim, quote, 'retrieved_knowledge', citation, locationSupported);
   const claims = order === 'location-first' ? [locationClaim, unknown, catalogClaim] : [catalogClaim, unknown, locationClaim];
-  const candidate = order === 'location-first' ? `${quote}\n${extra}\n${catalog}` : `${catalog}\n${extra}\n${quote}`;
+  claims.push(...options.extraClaims || []);
+  const candidate = claims.map(c => c.candidateQuote).join('\n');
   const assessments: any[] = [], calls: any[] = [];
   let extractionCalls = 0;
   t.mock.method(console, 'info', () => {}); t.mock.method(console, 'log', () => {}); t.mock.method(console, 'warn', () => {});
@@ -57,7 +61,7 @@ function harness(t: any, language: string, question: string, quote: string, atom
     return { output_text: JSON.stringify(value), output: [] } as any;
   });
   const id = `final-${language}`;
-  b.businessInformationState(id, fixture.business, question, language, `source_id: ${fixture.sources[0].id}\n${fact}`);
+  b.businessInformationState(id, options.businessConfig || fixture.business, question, language, `source_id: ${fixture.sources[0].id}\n${fact}`);
   return { catalog, extra, candidate, assessments, calls, extractionCalls: () => extractionCalls, async run() {
     const recovered = await b.finalizeGeneralAiReply(id, question, candidate, language);
     const budget = b.finalConversationConcisionBudget(question);
@@ -95,7 +99,7 @@ for (const [label, supported, relation, citation] of [
 ] as const) {
   test(`${label}: location is omitted, catalog is authoritative and missing-topic handling remains`, async t => {
     const [language, question, quote, atomicClaim] = scenarios[0];
-    const h = harness(t, language, question, quote, atomicClaim, relation, citation, 'services-first', supported);
+    const h = harness(t, language, question, quote, atomicClaim, relation, citation, 'services-first', supported, true, catalogOptions(language));
     const { sent } = await h.run();
     assert.equal(sent.includes(address), false); assert.ok(sent.includes(h.catalog)); assert.equal(sent.includes(h.extra), false);
     assert.match(sent, /Standort\/die Adresse/);
@@ -166,4 +170,132 @@ test('recommendation catalog and natural clarification remain unchanged through 
   assert.equal(b.finalConversationConcisionBudget(question), 90);
   assert.equal(b.finalConversationConcision(grounded, b.finalConversationConcisionBudget(question)), text);
   assert.equal(entailments, 1);
+});
+
+const naturalIntros: Record<string, string> = {
+  de: 'AdMotion Studio bietet an:', en: 'AdMotion Studio offers:', sv: 'AdMotion Studio erbjuder:',
+  es: 'AdMotion Studio ofrece:', ar: 'AdMotion Studio يقدم الخدمات التالية:', fa: 'AdMotion Studio این خدمات را ارائه می‌دهد:',
+};
+const catalogAtomic = 'The business offers the listed services with their configured durations and prices.';
+function catalogOptions(language: string) {
+  const catalogQuote = formatConfiguredServiceCatalogPlan(catalogPlan, language)
+    .replace(/^[^\n]+/u, naturalIntros[language]);
+  // The extractor may cite complete exact service objects, not just leaf lines.
+  const catalogEvidence = catalogPlan.displayedServices.map(service => ({ source: 'structured_business_config',
+    quote: JSON.stringify({ name: service.name, durationMinutes: service.durationMinutes,
+      price: service.price, currency: service.currency, active: true }, null, 2) }));
+  return { catalogQuote, catalogAtomic, catalogEvidence };
+}
+for (const [language, question, quote, atomicClaim] of scenarios) {
+  test(`${language}: production-shaped natural catalog with object citations is replaced exactly once, with location retained`, async t => {
+    const options = catalogOptions(language);
+    const h = harness(t, language, question, quote, atomicClaim, 'ENTAILED', exactLocationEvidence, 'services-first', true, true, options);
+    const { recovered, sent, budget } = await h.run();
+    assert.equal(budget, Number.POSITIVE_INFINITY, 'compound presentation exemption remains');
+    assert.equal(recovered.split(h.catalog).length - 1, 1);
+    assert.equal(sent.split(h.catalog).length - 1, 1);
+    assert.equal(sent.includes(naturalIntros[language]), false, 'the second catalog preamble is redundant');
+    assert.equal(sent.split(quote).length - 1, 1);
+    for (const service of catalogPlan.displayedServices) assert.equal(sent.split(service.name).length - 1, 1);
+    assert.equal(sent.includes(h.extra), false);
+    assert.equal(h.assessments[0].verifiedEvidence, true);
+    assert.equal(h.assessments[0].claimsEntailed, false);
+    assert.equal(h.calls.filter(r => r.atomicClaim === catalogAtomic).length, 1, 'catalog still passes independent entailment');
+    assert.equal(h.calls.filter(r => r.atomicClaim === h.extra).length, 3, 'UNKNOWN still retries and adjudicates');
+    assert.equal(h.calls.filter(r => r.atomicClaim === atomicClaim).length, 1);
+  });
+}
+for (const shape of ['leaf-company', 'leaf-services', 'object-services', 'services-fragment'] as const) {
+  test(`catalog replacement handles ${shape} citations and topic wording`, async t => {
+    const [language, question, quote, atomicClaim] = scenarios[1];
+    const options = catalogOptions(language);
+    if (shape.startsWith('leaf')) options.catalogEvidence = catalogPlan.displayedServices.map(s => ({
+      source: 'structured_business_config', quote: `"name": "${s.name}"`,
+    }));
+    if (shape.endsWith('services')) options.catalogAtomic = 'The listed services have the configured durations and prices.';
+    if (shape === 'services-fragment') options.catalogEvidence = [{ source: 'structured_business_config',
+      quote: `"services": [\n${options.catalogEvidence.map(e => e.quote).join(',\n')}\n]` }];
+    const businessConfig = shape === 'services-fragment'
+      ? { ...fixture.business, services: fixture.business.services.slice(0, 5) } : fixture.business;
+    const h = harness(t, language, question, quote, atomicClaim, 'ENTAILED', exactLocationEvidence, 'location-first', true, true, { ...options, businessConfig });
+    const { sent } = await h.run();
+    for (const service of catalogPlan.displayedServices) assert.equal(sent.split(service.name).length - 1, 1);
+    assert.equal(sent.split(quote).length - 1, 1);
+    assert.equal(h.calls.filter(r => r.atomicClaim === options.catalogAtomic).length, 1);
+  });
+}
+for (const [label, text, field] of [
+  ['service description', 'Video Consultation services include a written creative brief.', 'description'],
+  ['service preparation', 'Preparation for Video Consultation services requires photo ID.', 'preparation'],
+  ['company fact', 'The company was founded in 2018.', 'prompt'],
+  ['contact fact', 'Contact us at studio@example.test.', 'prompt'],
+  ['hours fact', 'Opening hours are 09:00 to 17:00.', 'prompt'],
+] as const) {
+  test(`catalog replacement preserves a separate verified ${label}`, async t => {
+    const [language, question, quote, atomicClaim] = scenarios[1];
+    const businessConfig = { ...fixture.business, systemPrompt: text,
+      services: fixture.business.services.map((s: any, i: number) => i === 0 && field !== 'prompt' ? { ...s, [field]: text } : s) };
+    const additional = claim(text, text, field === 'prompt' ? 'business_system_prompt' : 'structured_business_config',
+      field === 'prompt' ? text : `"${field}": "${text}"`);
+    const h = harness(t, language, question, quote, atomicClaim, 'ENTAILED', exactLocationEvidence, 'services-first', true, true,
+      { ...catalogOptions(language), businessConfig, extraClaims: [additional] });
+    const { sent } = await h.run();
+    assert.equal(sent.split(text).length - 1, 1);
+    assert.equal(sent.split(quote).length - 1, 1);
+    assert.equal(sent.includes(h.extra), false);
+  });
+}
+test('verified service outside the displayed catalog is not suppressed', async t => {
+  const [language, question, quote, atomicClaim] = scenarios[1];
+  const omitted = fixture.business.services[5];
+  const text = `Our services also include ${omitted.name}.`;
+  const h = harness(t, language, question, quote, atomicClaim, 'ENTAILED', exactLocationEvidence, 'services-first', true, true,
+    { ...catalogOptions(language), extraClaims: [claim(text, text, 'structured_business_config', `"name": "${omitted.name}"`)] });
+  const { sent } = await h.run();
+  assert.ok(sent.includes(text)); assert.equal(sent.split(quote).length - 1, 1);
+});
+test('a shared price value does not suppress a different service outside the displayed catalog', async t => {
+  const [language, question, quote, atomicClaim] = scenarios[1];
+  const omitted = fixture.business.services[5];
+  const price = fixture.business.services[0].price;
+  const text = `Our services include ${omitted.name} at ${price} SEK.`;
+  const businessConfig = { ...fixture.business,
+    services: fixture.business.services.map((s: any, i: number) => i === 5 ? { ...s, price } : s) };
+  const h = harness(t, language, question, quote, atomicClaim, 'ENTAILED', exactLocationEvidence, 'services-first', true, true,
+    { ...catalogOptions(language), businessConfig, extraClaims: [claim(text, text, 'structured_business_config', `"price": ${price}`)] });
+  const { sent } = await h.run();
+  assert.ok(sent.includes(text)); assert.equal(sent.split(quote).length - 1, 1);
+});
+test('mixed catalog and location quotation is preserved as a separate verified scope', async t => {
+  const [language, question, quote, atomicClaim] = scenarios[1];
+  const options = catalogOptions(language);
+  options.catalogQuote += `\n${quote}`;
+  options.catalogAtomic += ` ${atomicClaim}`;
+  options.catalogEvidence.push({ source: 'retrieved_knowledge', quote: exactLocationEvidence });
+  const h = harness(t, language, question, quote, atomicClaim, 'ENTAILED', exactLocationEvidence, 'services-first', true, true, options);
+  const { sent } = await h.run();
+  assert.ok(sent.includes(options.catalogQuote), 'do not discard a whole quote containing another topic');
+});
+test('individual service duration entries already represented by the catalog are not appended again', async t => {
+  const [language, question, quote, atomicClaim] = scenarios[1];
+  const extraClaims = catalogPlan.displayedServices.map(service => {
+    const text = `${service.name}: ${service.durationMinutes} minutes.`;
+    const entry = claim(text, text, 'structured_business_config', `"name": "${service.name}"`);
+    entry.evidence.push({ source: 'structured_business_config', quote: `"durationMinutes": ${service.durationMinutes}` });
+    return entry;
+  });
+  const h = harness(t, language, question, quote, atomicClaim, 'ENTAILED', exactLocationEvidence, 'services-first', true, true,
+    { ...catalogOptions(language), extraClaims });
+  const { sent } = await h.run();
+  for (const service of catalogPlan.displayedServices) assert.equal(sent.split(service.name).length - 1, 1);
+  assert.equal(sent.split(quote).length - 1, 1);
+});
+test('a verified service price for a separate package scope remains', async t => {
+  const [language, question, quote, atomicClaim] = scenarios[1];
+  const text = 'A package of two Video Consultation services costs 500 SEK.';
+  const additional = claim(text, text, 'business_system_prompt', text);
+  const h = harness(t, language, question, quote, atomicClaim, 'ENTAILED', exactLocationEvidence, 'services-first', true, true,
+    { ...catalogOptions(language), businessConfig: { ...fixture.business, id: 717, systemPrompt: text }, extraClaims: [additional] });
+  const { sent } = await h.run();
+  assert.ok(sent.includes(text)); assert.equal(sent.split(quote).length - 1, 1);
 });

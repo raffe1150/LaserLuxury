@@ -28,6 +28,7 @@ export interface EmbeddingVector {
 }
 
 export interface EmbeddingProvider {
+  readonly supportsLocalSemanticSearch?: boolean;
   embedDocuments(texts: string[]): Promise<EmbeddingVector[]>;
   embedQuery(text: string): Promise<EmbeddingVector>;
 }

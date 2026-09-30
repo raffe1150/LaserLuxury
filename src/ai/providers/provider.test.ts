@@ -82,6 +82,7 @@ test("misspelled or unknown AI provider fails clearly without exposing its value
 
 test("provider capabilities report only implemented AI features", () => {
   assert.deepEqual(getAiProviderCapabilities("gemini"), {
+    embeddings: true,
     textGeneration: true,
     toolCalling: true,
     transcription: true,
@@ -89,6 +90,7 @@ test("provider capabilities report only implemented AI features", () => {
     realtimeVoice: false,
   });
   assert.deepEqual(getAiProviderCapabilities("openai"), {
+    embeddings: true,
     textGeneration: true,
     toolCalling: true,
     transcription: true,

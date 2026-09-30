@@ -1,8 +1,10 @@
+import type { EmbeddingVector } from "../embeddings";
 import type { UnifiedAudioInput } from "./audio";
 
 export type AiProviderName = "gemini" | "openai";
 
 export type AiProviderCapability =
+  | "embeddings"
   | "text_generation"
   | "tool_calling"
   | "transcription"
@@ -10,6 +12,7 @@ export type AiProviderCapability =
   | "realtime_voice";
 
 export interface AiProviderCapabilities {
+  embeddings: boolean;
   textGeneration: boolean;
   toolCalling: boolean;
   transcription: boolean;
@@ -76,6 +79,8 @@ export interface UnifiedAiSpeechResponse {
 export interface AiProviderAdapter {
   name: AiProviderName;
   capabilities: AiProviderCapabilities;
+
+  embed?: (texts: string[]) => Promise<EmbeddingVector[]>;
 
   generate?: (
     request: UnifiedAiGenerationRequest,

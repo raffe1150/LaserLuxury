@@ -1,5 +1,6 @@
 import type { EmbeddingProvider, EmbeddingVector } from "./src/ai/embeddings";
 import crypto from "crypto";
+import { CompatibleSemanticIndex, semanticCorpusFingerprint, type SemanticChunk } from "./src/knowledge/semantic-index";
 
 export const KNOWLEDGE_SOURCE_TYPES = ["faq", "pdf", "website", "text"] as const;
 
@@ -440,6 +441,7 @@ export function chunkKnowledgeContent(
 export class KnowledgeService {
   private storage: KnowledgeStorage;
   private initialized = false;
+  private readonly compatibleSemanticIndex = new CompatibleSemanticIndex();
   private readonly primaryStorage: KnowledgeStorage;
   private readonly fallbackStorage: KnowledgeStorage;
   private readonly embeddingProvider: EmbeddingProvider | null;
@@ -523,7 +525,7 @@ export class KnowledgeService {
       } catch (error) {
         console.warn(
           "Knowledge embedding generation failed; preserving lexical-only chunks.",
-          getErrorMessage(error)
+          { operation: "knowledge_document_embeddings", outcome: "provider_failure" }
         );
       }
     }
@@ -611,7 +613,7 @@ export class KnowledgeService {
       normalizedBusinessId <= 0 ||
       !normalizedQuery ||
       !this.embeddingProvider ||
-      typeof this.storage.semanticSearch !== "function"
+      (typeof this.storage.semanticSearch !== "function" && !this.embeddingProvider.supportsLocalSemanticSearch)
     ) {
       return [];
     }
@@ -620,19 +622,35 @@ export class KnowledgeService {
       const embedding =
         await this.embeddingProvider.embedQuery(normalizedQuery);
 
-      return await this.storage.semanticSearch(
-        normalizedBusinessId,
-        embedding,
-        Math.max(1, Math.min(Number(limit) || 5, 10)),
-        minSimilarity
-      );
+      const safeLimit = Math.max(1, Math.min(Number(limit) || 5, 10));
+      if (embedding.provider === "openai") {
+        // Existing Google vectors are incompatible. Search a read-only, tenant-scoped
+        // OpenAI index instead; source text/IDs and the cosine threshold stay intact.
+        const chunks = await this.semanticCorpus(normalizedBusinessId);
+        const matches = await this.compatibleSemanticIndex.search(
+          normalizedBusinessId, chunks, embedding, this.embeddingProvider, safeLimit, minSimilarity,
+        );
+        // Do not return evidence that changed or was disabled/deleted during embedding.
+        const currentChunks = await this.semanticCorpus(normalizedBusinessId);
+        return semanticCorpusFingerprint(chunks) === semanticCorpusFingerprint(currentChunks) ? matches : [];
+      }
+      if (typeof this.storage.semanticSearch !== "function") return [];
+      return await this.storage.semanticSearch(normalizedBusinessId, embedding, safeLimit, minSimilarity);
     } catch (error) {
       console.warn(
         "Semantic Knowledge search failed; lexical fallback remains available.",
-        getErrorMessage(error)
+        { businessId: normalizedBusinessId, operation: "knowledge_semantic_search", outcome: "provider_failure" }
       );
       return [];
     }
+  }
+
+  private async semanticCorpus(businessId: number): Promise<SemanticChunk[]> {
+    const sources = await this.storage.list(businessId);
+    return sources.filter((source) => source.businessId === businessId && source.status === "ready")
+      .flatMap((source) => chunkKnowledgeContent(source.content).map((chunk) => ({
+        sourceId: source.id, businessId, text: chunk.content, metadata: chunk.metadata,
+      })));
   }
 
   private async ensureInitialized(): Promise<void> {

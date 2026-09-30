@@ -1,4 +1,5 @@
 import OpenAI, { toFile } from "openai";
+import type { EmbeddingVector } from "../embeddings";
 import { buildOpenAiFailureDiagnostic } from "./openai-diagnostic";
 import { normalizeOpenAiToolSchema } from "./openai-tool-schema";
 import type {
@@ -203,4 +204,30 @@ export async function transcribeWithOpenAi(
   );
 
   return normalizeOpenAiTranscriptionResponse(response);
+}
+
+// Separate from the conversation model: the database's existing vector width is 768.
+export async function embedWithOpenAi(texts: string[]): Promise<EmbeddingVector[]> {
+  if (!texts.length || texts.some((text) => !text.trim())) {
+    throw new Error("Embedding input must contain non-empty text.");
+  }
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) throw new Error("OPENAI_API_KEY is not configured");
+  const client = new OpenAI({ apiKey, maxRetries: 0, timeout: 20_000 });
+  const model = "text-embedding-3-small";
+  const dimensions = 768;
+  const response = await client.embeddings.create({
+    model, input: texts, dimensions, encoding_format: "float",
+  });
+  if (!Array.isArray(response.data) || response.data.length !== texts.length) {
+    throw new Error("Embedding provider returned an unexpected result count.");
+  }
+  const ordered = [...response.data].sort((a, b) => a.index - b.index);
+  return ordered.map((item, index) => {
+    if (item.index !== index || !Array.isArray(item.embedding) ||
+        item.embedding.length !== dimensions || item.embedding.some((value) => !Number.isFinite(value))) {
+      throw new Error("Embedding provider returned an invalid vector.");
+    }
+    return { values: item.embedding, provider: "openai", model, dimensions, version: 1 };
+  });
 }

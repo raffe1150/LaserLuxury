@@ -37,7 +37,7 @@ import crypto from "crypto";
 import fs from "fs";
 import { google } from "googleapis";
 import { createClient } from "@supabase/supabase-js";
-import { GoogleEmbeddingProvider } from "./src/ai/embeddings";
+import { ConfiguredEmbeddingProvider } from "./src/ai/providers/embeddings";
 import {
   InMemoryKnowledgeStorage,
   KnowledgeService,
@@ -660,9 +660,7 @@ const knowledgeService = new KnowledgeService(
     ? new SupabaseKnowledgeStorage(supabase)
     : new InMemoryKnowledgeStorage(),
   new InMemoryKnowledgeStorage(),
-  new GoogleEmbeddingProvider({
-    apiKeyProvider: () => getApiKeys()[currentKeyIndex],
-  }),
+  new ConfiguredEmbeddingProvider(() => getApiKeys()[currentKeyIndex]),
 );
 
 let currentKeyIndex = 0;

@@ -1,3 +1,4 @@
+import type { EmbeddingProvider, EmbeddingVector } from "../embeddings";
 import type {
   AiProviderAdapter,
   AiProviderName,
@@ -5,9 +6,10 @@ import type {
   UnifiedAiGenerationResponse,
 } from "./provider";
 import { getConfiguredAiProvider } from "./provider";
-import { generateWithOpenAi, transcribeWithOpenAi } from "./openai";
+import { embedWithOpenAi, generateWithOpenAi, transcribeWithOpenAi } from "./openai";
 
 const geminiCapabilities = {
+  embeddings: true,
   textGeneration: true,
   toolCalling: true,
   transcription: true,
@@ -19,6 +21,7 @@ const openAiAdapter: AiProviderAdapter = {
   name: "openai",
 
   capabilities: {
+    embeddings: true,
     textGeneration: true,
     toolCalling: true,
     transcription: true,
@@ -26,6 +29,7 @@ const openAiAdapter: AiProviderAdapter = {
     realtimeVoice: false,
   },
 
+  embed: embedWithOpenAi,
   generate: generateWithOpenAi,
   transcribe: transcribeWithOpenAi,
 };
@@ -100,4 +104,17 @@ export async function transcribeWithConfiguredProvider(
   }
 
   return adapter.transcribe(request);
+}
+
+// Gemini retains its existing key-rotation-aware embedding implementation.
+// Selection happens before invocation; a failure never selects another provider.
+export async function embedWithConfiguredProvider(
+  texts: string[],
+  gemini: Pick<EmbeddingProvider, "embedDocuments">,
+): Promise<EmbeddingVector[]> {
+  const provider = getConfiguredAiProvider();
+  if (provider === "gemini") return gemini.embedDocuments(texts);
+  const adapter = getAiProviderAdapter(provider);
+  if (!adapter?.embed) throw new Error("Configured provider does not support embeddings.");
+  return adapter.embed(texts);
 }

@@ -13198,6 +13198,14 @@ function formatNoAvailabilityRecovery(language: string): string {
 function getFinalConversationConcisionBudget(latestCustomerMessage: string): number {
   if (isServiceCatalogQuestion(latestCustomerMessage)) return 90;
 
+  // Grounding has already selected verified quotes and explicit knowledge gaps.
+  // Trimming a compound answer by sentence can discard a later requested topic.
+  if (
+    isBusinessInformationQuestion(latestCustomerMessage) &&
+    businessInformationTopics(latestCustomerMessage).length > 1 &&
+    !isBusinessRecommendationQuestion(latestCustomerMessage)
+  ) return Number.POSITIVE_INFINITY;
+
   if (
     isBusinessInformationQuestion(latestCustomerMessage) &&
     isBusinessRecommendationQuestion(latestCustomerMessage)

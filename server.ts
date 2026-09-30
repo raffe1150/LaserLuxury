@@ -16246,10 +16246,14 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
     sessionId
   );
   let contactSubmissionWhileAwaitingConfirmation = false;
+  let contactNameSubmittedAtEntry = false;
 
   if (pending) {
     const currentCombinedContact = pending.operation === "new_booking"
       ? extractNameAndPhone(text, ["awaiting_contact", "failed_recoverable", "awaiting_confirmation"].includes(String(pending?.status || "")))
+      : null;
+    const currentContactName = pending.operation === "new_booking"
+      ? currentCombinedContact?.name || extractPendingBookingCustomerName(text, pending) || controlledUnderstandingCandidates.name
       : null;
     const entryContact = resolveAuthoritativeContact({
       serviceNames: [...getConfiguredBookingServiceNames(businessConfig), String(pending?.service || "")],
@@ -16257,14 +16261,13 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
       storedName: pending.customerName,
       storedPhone: pending.customerPhone,
       storedPhoneSource: pending.contactPhoneSource as ContactPhoneSource | null,
-      currentName: pending.operation === "new_booking"
-        ? currentCombinedContact?.name || extractPendingBookingCustomerName(text, pending) || controlledUnderstandingCandidates.name
-        : null,
+      currentName: currentContactName,
       currentPhone: pending.operation === "new_booking"
         ? currentCombinedContact?.phone || extractPhoneOnly(text) || controlledUnderstandingCandidates.phone
         : null,
       senderPhone: authoritativeSenderPhone
     });
+    contactNameSubmittedAtEntry = Boolean(currentContactName && entryContact.name === currentContactName);
     pending.customerName = entryContact.name;
     pending.customerPhone = entryContact.phone;
     pending.contactPhoneSource = entryContact.phoneSource;
@@ -20236,6 +20239,9 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
       );
       const turnHasServiceEvidence =
         !continuesOwnedBooking &&
+        // Contact continuation already preserved the authoritative service above.
+        // A name matching a catalog word must not replace that service and slot.
+        !(contactNameSubmittedAtEntry && deterministicTransition?.reason === "contact_submission_to_verified_engine") &&
         (
           turnServiceResolution.status === "ambiguous" ||
           turnServiceResolution.status === "unsupported" ||

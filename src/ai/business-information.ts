@@ -52,12 +52,25 @@ const topicLabels: Record<string, Record<BusinessInformationTopic, string>> = {
   fa: { company: 'شرکت', services: 'خدمات', contact: 'اطلاعات تماس و لینک‌ها', hours: 'ساعات کاری', prices: 'قیمت‌ها', policies: 'شرایط و آمادگی', parking: 'پارکینگ' },
   ar: { company: 'الشركة', services: 'الخدمات', contact: 'بيانات الاتصال والروابط', hours: 'ساعات العمل', prices: 'الأسعار', policies: 'الشروط والتحضير', parking: 'مواقف السيارات' },
 };
-export function businessInformationSubject(text: string, language: string): string {
+export function businessInformationSubject(
+  text: string,
+  language: string,
+  topics?: BusinessInformationTopic[],
+): string {
   const labels = topicLabels[language] || topicLabels.en;
-  return businessInformationTopics(text).map(topic => labels[topic]).join(' / ');
+  return (topics || businessInformationTopics(text)).map(topic => {
+    if (topics && topic === 'contact' && isBusinessAddressQuestion(text)) {
+      const addressLabels: Record<string, string> = {
+        en: 'the location/address', de: 'den Standort/die Adresse', sv: 'platsen/adressen',
+        es: 'la ubicación/dirección', fa: 'مکان/آدرس', ar: 'الموقع/العنوان',
+      };
+      return addressLabels[language] || addressLabels.en;
+    }
+    return labels[topic];
+  }).join(' / ');
 }
 
-export function isServiceCatalogQuestion(text: string): boolean {
+export function isServiceCatalogQuestion(text: string, allowAdditionalTopics = false): boolean {
   const raw = String(text || "").trim();
   if (!raw) return false;
 
@@ -66,7 +79,7 @@ export function isServiceCatalogQuestion(text: string): boolean {
 
   // If the customer is actually asking about prices, policies, contact details,
   // opening hours, or parking, a plain service catalog is not sufficient.
-  if (topics.some((topic) =>
+  if (!allowAdditionalTopics && topics.some((topic) =>
     ["prices", "policies", "contact", "hours", "parking"].includes(topic)
   )) {
     return false;
@@ -80,6 +93,9 @@ export function isServiceCatalogQuestion(text: string): boolean {
     /\b(?:services?|offerings?|dienstleistungen?|leistungen?|serviceportfolio|leistungskatalog|tjänster|utbud|servicios?|paquetes?)\b|خدمات|سرویس(?:‌|\s)*(?:ها|هایی)|الخدمات/iu.test(raw);
 
   if (!mentionsServiceCollection) return false;
+
+  // In a compound request, a singular named service is not a catalog request.
+  if (allowAdditionalTopics && !/\b(?:services|offerings|dienstleistungen|leistungen|serviceportfolio|leistungskatalog|tjänster|utbud|servicios|paquetes)\b|خدمات|الخدمات/iu.test(raw)) return false;
 
   // Catalog questions ask what services exist. Explanation, comparison and
   // recommendation requests require richer grounding and must not collapse

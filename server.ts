@@ -8170,7 +8170,8 @@ function currentBusinessSupportGap(sessionId: string, text: string, language: st
     info?.businessConfig || support?.businessConfig;
 
   const names = getConfiguredBookingServiceNames(businessConfig);
-  const serviceCatalogQuestion = isServiceCatalogQuestion(text);
+  const compoundFactualQuestion = topics.length > 1 && !isBusinessRecommendationQuestion(text);
+  const serviceCatalogQuestion = isServiceCatalogQuestion(text, compoundFactualQuestion);
   const recommendationQuestion = isBusinessRecommendationQuestion(text);
 
   const catalogPlan = buildConfiguredServiceCatalogPlan(
@@ -8187,7 +8188,13 @@ function currentBusinessSupportGap(sessionId: string, text: string, language: st
         ? formatConfiguredServiceOverview(names, language)
         : "";
 
-  if (serviceCatalogQuestion && overview) return overview;
+  if (serviceCatalogQuestion && overview) {
+    if (compoundFactualQuestion) {
+      const missingTopics = topics.filter(topic => topic !== "services");
+      return `${overview}\n${formatBusinessSupportKnowledgeGap(language, businessInformationSubject(text, language, missingTopics))}`;
+    }
+    return overview;
+  }
 
   if (recommendationQuestion && overview) {
     return `${overview}\n${formatRecommendationClarification(language)}`;
@@ -9201,6 +9208,67 @@ function assessmentCoversServiceCatalogClaim(
   });
 }
 
+async function recoverCompoundBusinessInformation(
+  support: { businessConfig: any; completed?: RecentCompletedBooking },
+  assessment: BusinessGroundingAssessment | null,
+  snapshot: BusinessGroundingSnapshot,
+  request: BusinessGroundingVerificationRequest,
+): Promise<string> {
+  const topics = businessInformationTopics(request.customerMessage);
+  if (topics.length < 2 || isBusinessRecommendationQuestion(request.customerMessage)) return "";
+
+  const parts: string[] = [];
+  const supportedTopics = new Set<string>();
+  const catalogPlan = isServiceCatalogQuestion(request.customerMessage, true)
+    ? buildConfiguredServiceCatalogPlan(support.businessConfig?.services || [])
+    : null;
+  const catalog = catalogPlan
+    ? formatConfiguredServiceCatalogPlan(catalogPlan, request.language)
+    : "";
+  // Whole-candidate coverage is required to emit the whole candidate. Here we
+  // emit only independently verified contiguous quotes; uncovered text is lost.
+  for (const claim of assessment?.claims || []) {
+    const quote = String(claim.candidateQuote || "").trim();
+    if (quote.length < 4 || !request.candidateReply.includes(quote)) continue;
+    const single: BusinessGroundingAssessment = {
+      hasBusinessFactualClaims: true, allBusinessClaimsSupported: true, claims: [claim],
+    };
+    if (!assessmentHasVerifiedEvidence(single, snapshot, quote)) continue;
+    const decision = await assessmentClaimsAreEntailed(
+      single, { ...request, candidateReply: quote }, support.completed?.bookingOperation?.serviceName,
+    );
+    if (!decision.entailed) continue;
+    const claimTopics = businessInformationTopics(`${claim.claim} ${quote}`);
+    // The authoritative catalog replaces its own service/price clauses while
+    // independently grounded location, preparation, and other facts survive.
+    const replacedByCatalog = catalog &&
+      claim.evidence.every(item =>
+        item.source === "structured_business_config" &&
+        /^"(?:name|price|currency|durationMinutes|active)"\s*:\s*(?:"[^"\n]*"|-?\d+(?:\.\d+)?|true|false),?$/u.test(item.quote.trim())
+      ) &&
+      claimTopics.every(topic => topic === "services" || topic === "prices");
+    if (!replacedByCatalog) parts.push(decision.deterministicReply || quote);
+    for (const topic of claimTopics) supportedTopics.add(topic);
+    if (claim.evidence.some(item =>
+      item.source === "structured_business_config" && /"name"\s*:/u.test(item.quote)
+    )) supportedTopics.add("services");
+  }
+
+  if (catalog && catalogPlan) {
+    parts.unshift(catalog);
+    supportedTopics.add("services");
+    if (catalogPlan.displayedServices.every(service => service.price !== null)) {
+      supportedTopics.add("prices");
+    }
+  }
+  if (!parts.length) return "";
+  const missingTopics = topics.filter(topic => !supportedTopics.has(topic));
+  if (missingTopics.length) parts.push(formatBusinessSupportKnowledgeGap(
+    request.language, businessInformationSubject(request.customerMessage, request.language, missingTopics),
+  ));
+  return [...new Set(parts)].join("\n");
+}
+
 async function guardBusinessSupportGrounding(
   sessionId: string,
   latestCustomerMessage: string,
@@ -9568,7 +9636,11 @@ async function guardBusinessSupportGrounding(
   );
   console.info("[BusinessSupportGroundingDiagnostic]", groundingDiagnostic);
 
-  if (assessment && verifiedEvidence && claimsEntailed) {
+  const compoundCatalogComplete =
+    businessInformationTopics(latestCustomerMessage).length < 2 ||
+    !isServiceCatalogQuestion(latestCustomerMessage, true) ||
+    serviceCatalogReplyCoversConfiguredServices(candidateReply, support.businessConfig);
+  if (assessment && verifiedEvidence && claimsEntailed && compoundCatalogComplete) {
     if (serviceCatalogQuestion) {
       console.info("[ServiceCatalogPresentationFinal]", {
         sessionId,
@@ -9584,6 +9656,11 @@ async function guardBusinessSupportGrounding(
     }
     return entailmentDecision.deterministicReply || candidateReply;
   }
+
+  const compoundReply = await recoverCompoundBusinessInformation(
+    support, assessment, snapshot, verificationRequest,
+  );
+  if (compoundReply) return compoundReply;
 
   if (
     assessment &&

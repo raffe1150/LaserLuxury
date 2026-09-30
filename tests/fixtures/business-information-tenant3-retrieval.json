@@ -1,0 +1,27 @@
+[
+  {
+    "question": "Hallo! Welche Dienstleistungen bieten Sie an und wo befinden Sie sich?",
+    "matches": null
+  },
+  {
+    "question": "kundentré adress",
+    "matches": [
+      {
+        "score": 0.51,
+        "content": "För detta tillfälliga produktionstest gäller följande kundinformation: kundentrén ligger på Aurora Street 742.",
+        "metadata": {
+          "lang": "sv",
+          "temporary": true,
+          "validation": "production-runtime-smoke-test"
+        },
+        "source_id": "7f61b8c0-0f2c-4f7f-9d61-d632fa8a5a58",
+        "business_id": 3,
+        "chunk_index": 0
+      }
+    ]
+  },
+  {
+    "question": "Hello! What services do you offer and where are you located?",
+    "matches": null
+  }
+]

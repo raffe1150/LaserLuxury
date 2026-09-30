@@ -671,13 +671,14 @@ const MAX_CONCURRENT_AI_REQUESTS = Number(process.env.MAX_CONCURRENT_AI_REQUESTS
 let activeAiRequests = 0;
 const aiRequestQueue: Array<() => void> = [];
 
-async function runWithAiQueue<T>(job: () => Promise<T>): Promise<T> {
+async function runWithAiQueue<T>(job: () => Promise<T>, onExecutionStart?: () => void): Promise<T> {
   if (activeAiRequests >= MAX_CONCURRENT_AI_REQUESTS) {
     await new Promise<void>((resolve) => aiRequestQueue.push(resolve));
   }
 
   activeAiRequests++;
   try {
+    onExecutionStart?.();
     return await job();
   } finally {
     activeAiRequests = Math.max(0, activeAiRequests - 1);
@@ -721,6 +722,9 @@ async function generateContentWithFallback(ai: GoogleGenAI | null, options: {
     channel?: string;
     stage?: string;
     language?: string;
+    candidateLength?: number;
+    evidenceLength?: number;
+    claimCount?: number;
   };
 }): Promise<any> {
   const provider = getConfiguredAiProvider();
@@ -754,14 +758,52 @@ async function generateContentWithFallback(ai: GoogleGenAI | null, options: {
   const timeoutMs = Number.isFinite(configuredTimeoutMs) && configuredTimeoutMs > 0
     ? Math.min(60_000, Math.max(1_000, configuredTimeoutMs))
     : 20_000;
+  // Temporary verifier-only timings distinguish queue starvation from slow
+  // transport, including late completion after the reliability deadline.
+  const verifierTimingEnabled = provider === "openai" && (
+    options.context?.stage === "business_support_grounding_verification" ||
+    options.context?.stage === "business_support_grounding_entailment"
+  );
+  const attemptTimings = new Map<number, { queuedAt: number; executionStartedAt?: number }>();
+  const logVerifierTiming = (attempt: number, phase: string) => {
+    if (!verifierTimingEnabled) return;
+    const timing = attemptTimings.get(attempt);
+    if (!timing) return;
+    const now = Date.now();
+    console.info("[BusinessSupportVerifierTiming]", {
+      stage: `${options.context!.stage}_${phase}`,
+      correlationId,
+      businessId: options.context?.businessId ?? null,
+      elapsedMs: now - timing.queuedAt,
+      queueWaitMs: (timing.executionStartedAt ?? now) - timing.queuedAt,
+      providerExecutionMs: timing.executionStartedAt === undefined ? null : now - timing.executionStartedAt,
+      attempt,
+      candidateLength: options.context?.candidateLength ?? null,
+      evidenceLength: options.context?.evidenceLength ?? null,
+      claimCount: options.context?.claimCount ?? null,
+      timeoutBudgetMs: timeoutMs,
+    });
+  };
   const response = await runAiProviderRequest({
     timeoutMs,
     retryDelayMs: 500,
-    invoke: () => runWithAiQueue(() => provider === "gemini"
-      ? process.env.NODE_ENV === "test" && priority1hTestDependencies?.geminiGenerate
-        ? priority1hTestDependencies.geminiGenerate(params)
-        : activeAi!.models.generateContent(params)
-      : generateWithConfiguredProvider(request)),
+    invoke: (attempt) => {
+      attemptTimings.set(attempt, { queuedAt: Date.now() });
+      return runWithAiQueue(async () => {
+        try {
+          return await (provider === "gemini"
+            ? process.env.NODE_ENV === "test" && priority1hTestDependencies?.geminiGenerate
+              ? priority1hTestDependencies.geminiGenerate(params)
+              : activeAi!.models.generateContent(params)
+            : generateWithConfiguredProvider(request));
+        } finally {
+          logVerifierTiming(attempt, "provider_complete");
+        }
+      }, () => {
+        attemptTimings.get(attempt)!.executionStartedAt = Date.now();
+        logVerifierTiming(attempt, "provider_start");
+      });
+    },
     beforeRetry: () => {
       if (provider === "gemini" && allKeys.length > 1) {
         rotateKey(allKeys);
@@ -769,6 +811,7 @@ async function generateContentWithFallback(ai: GoogleGenAI | null, options: {
       }
     },
     onAttemptComplete: (event) => {
+      logVerifierTiming(event.attempt, event.category === "TIMEOUT" ? "attempt_timeout" : "attempt_complete");
       console.log("[AIRequest]", {
         correlationId,
         businessId: options.context?.businessId || null,
@@ -8788,6 +8831,9 @@ async function assessBusinessClaimEntailment(
         channel: "internal",
         stage: "business_support_grounding_entailment",
         language: request.language,
+        candidateLength: request.candidateQuote.length,
+        evidenceLength: request.citedEvidence.reduce((length, item) => length + item.quote.length, 0),
+        claimCount: 1,
       },
     });
     return parseBusinessClaimEntailmentAssessment(response?.text);
@@ -9020,6 +9066,9 @@ async function assessBusinessSupportGrounding(
         channel: "internal",
         stage: "business_support_grounding_verification",
         language: request.language,
+        candidateLength: request.candidateReply.length,
+        evidenceLength: request.evidenceCorpus.length,
+        claimCount: request.previousAssessment?.claims.length,
       },
     });
     return parseBusinessGroundingAssessment(response?.text);

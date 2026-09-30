@@ -8910,10 +8910,42 @@ function formatDeterministicAddressReply(
   return `The address is ${address}.`;
 }
 
+type BusinessClaimEntailmentResults = Map<string, Promise<BusinessClaimEntailmentAssessment | null>>;
+
+async function assessBusinessClaimEntailmentWithReuse(
+  request: BusinessClaimEntailmentRequest,
+  results?: BusinessClaimEntailmentResults,
+  phase: "initial" | "retry" | "adjudication" = "initial",
+): Promise<BusinessClaimEntailmentAssessment | null> {
+  if (!results) return assessBusinessClaimEntailment(request);
+  // Exact request identity includes business, question, language, workflow,
+  // service, claim kind/text, candidate quote, ordered source/quote citations,
+  // and adjudication mode. Phase keeps the deliberate UNKNOWN/NEUTRAL second
+  // check independent of the first. The map owns one immutable snapshot.
+  const key = JSON.stringify([phase, request]);
+  const existing = results.get(key);
+  if (existing) return existing;
+  const pending = assessBusinessClaimEntailment(request).then(result => {
+    // A parsed UNKNOWN/NEUTRAL is still a completed verdict for this phase;
+    // recovery can reuse it without restarting the same completed sequence.
+    // Transport failures are not evidence and must never become cached verdicts.
+    if (!result) {
+      if (results.get(key) === pending) results.delete(key);
+    }
+    return result;
+  }, error => {
+    if (results.get(key) === pending) results.delete(key);
+    throw error;
+  });
+  results.set(key, pending);
+  return pending;
+}
+
 async function assessmentClaimsAreEntailed(
   assessment: BusinessGroundingAssessment,
   request: BusinessGroundingVerificationRequest,
   serviceName?: string | null,
+  entailmentResults?: BusinessClaimEntailmentResults,
 ): Promise<BusinessClaimsEntailmentDecision> {
   if (!assessment.hasBusinessFactualClaims) return { entailed: true };
   const results = await Promise.all(assessment.claims.map(async (claim, claimIndex) => {
@@ -8929,14 +8961,14 @@ async function assessmentClaimsAreEntailed(
       businessId: request.businessId,
     };
 
-    let entailment = await assessBusinessClaimEntailment(entailmentRequest);
+    let entailment = await assessBusinessClaimEntailmentWithReuse(entailmentRequest, entailmentResults);
     const initialEntailment = entailment;
     const initialRelation = initialEntailment?.relation ?? null;
     const entailmentRetryAttempted =
       initialRelation === "UNKNOWN" || initialRelation === "NEUTRAL";
 
     if (entailmentRetryAttempted) {
-      entailment = await assessBusinessClaimEntailment(entailmentRequest);
+      entailment = await assessBusinessClaimEntailmentWithReuse(entailmentRequest, entailmentResults, "retry");
     }
 
     const regularFinalRelation = entailment?.relation ?? null;
@@ -8948,10 +8980,10 @@ async function assessmentClaimsAreEntailed(
       (regularFinalRelation === "UNKNOWN" || regularFinalRelation === "NEUTRAL");
 
     if (adjudicationAttempted) {
-      entailment = await assessBusinessClaimEntailment({
+      entailment = await assessBusinessClaimEntailmentWithReuse({
         ...entailmentRequest,
         adjudication: true,
-      });
+      }, entailmentResults, "adjudication");
     }
 
     const finalRelation = entailment?.relation ?? null;
@@ -9262,6 +9294,7 @@ async function recoverCompoundBusinessInformation(
   assessment: BusinessGroundingAssessment | null,
   snapshot: BusinessGroundingSnapshot,
   request: BusinessGroundingVerificationRequest,
+  entailmentResults: BusinessClaimEntailmentResults,
 ): Promise<string> {
   const topics = businessInformationTopics(request.customerMessage);
   if (topics.length < 2 || isBusinessRecommendationQuestion(request.customerMessage)) return "";
@@ -9285,6 +9318,7 @@ async function recoverCompoundBusinessInformation(
     if (!assessmentHasVerifiedEvidence(single, snapshot, quote)) continue;
     const decision = await assessmentClaimsAreEntailed(
       single, { ...request, candidateReply: quote }, support.completed?.bookingOperation?.serviceName,
+      entailmentResults,
     );
     if (!decision.entailed) continue;
     const claimTopics = businessInformationTopics(`${claim.claim} ${quote}`);
@@ -9396,6 +9430,8 @@ async function guardBusinessSupportGrounding(
   }
 
   const snapshot = buildBusinessGroundingSnapshot(support);
+  // Operation-local: never shared across snapshots, turns, sessions or tenants.
+  const entailmentResults: BusinessClaimEntailmentResults = new Map();
   const verificationRequest: BusinessGroundingVerificationRequest = {
     customerMessage: latestCustomerMessage,
     candidateReply,
@@ -9612,6 +9648,7 @@ async function guardBusinessSupportGrounding(
           assessment,
           verificationRequest,
           ("completed" in support ? support.completed.bookingOperation?.serviceName : undefined),
+          entailmentResults,
         )
       : { entailed: false };
 
@@ -9707,7 +9744,7 @@ async function guardBusinessSupportGrounding(
   }
 
   const compoundReply = await recoverCompoundBusinessInformation(
-    support, assessment, snapshot, verificationRequest,
+    support, assessment, snapshot, verificationRequest, entailmentResults,
   );
   if (compoundReply) return compoundReply;
 
@@ -9731,6 +9768,7 @@ async function guardBusinessSupportGrounding(
         partialAssessment,
         verificationRequest,
         ("completed" in support ? support.completed.bookingOperation?.serviceName : undefined),
+        entailmentResults,
       );
 
       if (partialEntailment.entailed) {

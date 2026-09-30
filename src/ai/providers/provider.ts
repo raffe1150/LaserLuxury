@@ -32,6 +32,7 @@ export function getConfiguredAiProvider(): AiProviderName {
 }
 
 export interface UnifiedAiGenerationRequest {
+  diagnosticContext?: { correlationId?: string };
   messages: any[];
   tools?: any[];
   systemInstruction?: string;

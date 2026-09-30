@@ -730,7 +730,9 @@ async function generateContentWithFallback(ai: GoogleGenAI | null, options: {
   let activeAi = provider === "gemini"
     ? ai || new GoogleGenAI({ apiKey: allKeys[currentKeyIndex] || process.env.GEMINI_API_KEY })
     : null;
+  const correlationId = crypto.randomUUID();
   const request = {
+    diagnosticContext: { correlationId },
     messages: options.messages,
     tools: options.tools,
     systemInstruction: options.systemInstruction,
@@ -750,7 +752,6 @@ async function generateContentWithFallback(ai: GoogleGenAI | null, options: {
   }
 // Removed global wait checking
 
-  const correlationId = crypto.randomUUID();
   const configuredTimeoutMs = Number(process.env.AI_PROVIDER_TIMEOUT_MS || 20_000);
   const timeoutMs = Number.isFinite(configuredTimeoutMs) && configuredTimeoutMs > 0
     ? Math.min(60_000, Math.max(1_000, configuredTimeoutMs))

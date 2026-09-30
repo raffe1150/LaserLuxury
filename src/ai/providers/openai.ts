@@ -1,4 +1,5 @@
 import OpenAI, { toFile } from "openai";
+import { buildOpenAiFailureDiagnostic } from "./openai-diagnostic";
 import type {
   UnifiedAiGenerationRequest,
   UnifiedAiGenerationResponse,
@@ -111,15 +112,28 @@ export async function generateWithOpenAi(
     maxRetries: 0,
   });
 
-  const response = await client.responses.create({
-    model: resolveOpenAiTextModel(request.model),
+  const model = resolveOpenAiTextModel(request.model);
+  const tools = toOpenAiTools(request.tools);
+  const params = {
+    model,
     instructions: request.systemInstruction,
     input: toOpenAiInput(request.messages),
-    tools: toOpenAiTools(request.tools),
+    tools,
     ...(request.temperature !== undefined
       ? { temperature: request.temperature }
       : {}),
-  } as any);
+  };
+  let response;
+  try {
+    response = await client.responses.create(params as any);
+  } catch (error) {
+    console.error("[OpenAIProviderFailure]", buildOpenAiFailureDiagnostic(error, {
+      model,
+      toolCount: tools?.length || 0,
+      correlationId: request.diagnosticContext?.correlationId,
+    }));
+    throw error;
+  }
 
   return normalizeOpenAiGenerationResponse(response);
 }

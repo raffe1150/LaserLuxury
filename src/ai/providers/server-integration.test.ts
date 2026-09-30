@@ -14,6 +14,14 @@ test("generation boundary routes OpenAI while retaining Gemini build and normali
   assert.match(boundary, /beforeRetry[\s\S]*provider === "gemini"[\s\S]*rotateKey/);
 });
 
+test("OpenAI diagnostic correlation uses the existing AIRequest ID without entering the SDK payload", () => {
+  const boundary = serverSource.match(/async function generateContentWithFallback[\s\S]*?\n}\n\nasync function transcribeVoiceMessageForFlow/)?.[0] || "";
+  assert.equal((boundary.match(/const correlationId = crypto.randomUUID\(\)/g) || []).length, 1);
+  assert.match(boundary, /diagnosticContext: \{ correlationId \}/);
+  assert.match(boundary, /generateWithConfiguredProvider\(request\)/);
+  assert.match(boundary, /console.log\("\[AIRequest\]", \{\s*correlationId,/);
+});
+
 test("Gemini transcription remains on its existing generation path", () => {
   const boundary = serverSource.match(/async function transcribeVoiceMessageForFlow[\s\S]*?\n}\n\n\nasync function handleSystemAnalysisLog/)?.[0] || "";
   assert.match(boundary, /provider === "gemini"[\s\S]*generateContentWithFallback/);

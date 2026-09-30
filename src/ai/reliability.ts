@@ -1,3 +1,5 @@
+import { APIError } from 'openai';
+
 export type AiFailureCategory =
   | 'TIMEOUT'
   | 'RATE_LIMIT'
@@ -6,6 +8,9 @@ export type AiFailureCategory =
   | 'AUTHENTICATION'
   | 'SAFETY_BLOCK'
   | 'MALFORMED_RESPONSE'
+  | 'INVALID_REQUEST'
+  | 'NOT_FOUND'
+  | 'BILLING'
   | 'UNKNOWN';
 
 export class AiReliabilityError extends Error {
@@ -21,6 +26,15 @@ export class AiReliabilityError extends Error {
 
 export function classifyAiFailure(error: unknown): AiFailureCategory {
   if (error instanceof AiReliabilityError) return error.category;
+  // OpenAI SDK HTTP status takes precedence over incidental words in its message.
+  // Existing retryable categories and retry policy remain unchanged.
+  if (error instanceof APIError) {
+    if (error.status === 400 || error.status === 422) return 'INVALID_REQUEST';
+    if (error.status === 401 || error.status === 403) return 'AUTHENTICATION';
+    if (error.status === 404) return 'NOT_FOUND';
+    if (error.status === 402) return 'BILLING';
+    if (error.status === 429) return 'RATE_LIMIT';
+  }
   const status = Number((error as any)?.status || (error as any)?.code || (error as any)?.response?.status);
   const message = String((error as any)?.message || error || '').toLowerCase();
   if (message.includes('timeout') || message.includes('timed out') || message.includes('abort')) return 'TIMEOUT';

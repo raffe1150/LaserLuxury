@@ -313,16 +313,19 @@ test('a verified service price for a separate package scope remains', async t =>
 // Catalog-role invariant: count configured names in list rows/enumerations,
 // separately from legitimate descriptions/preparation referring to those names.
 function assertCatalogRoleOnce(reply: string) {
-  const patterns = catalogPlan.displayedServices.map(service => {
-    const escaped = service.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    return new RegExp(`(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])`, 'gu');
-  });
+  const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const connectors = ['de', 'en', 'sv', 'es', 'ar', 'fa'].flatMap(locale =>
+    new Intl.ListFormat(locale).formatToParts(['@a', '@b'])
+      .filter(part => part.type === 'literal').map(part => escape(part.value)));
+  const patterns = catalogPlan.displayedServices.map(service =>
+    new RegExp(`(?:^|[^\\p{L}\\p{N}]|${connectors.join('|')})${escape(service.name)}(?![\\p{L}\\p{N}])`, 'gu'));
+
   const roleCounts = catalogPlan.displayedServices.map(() => 0);
-  for (const part of reply.split(/\n|(?<=[.!?؟])\s+/u)) {
+  for (const part of reply.split(/\n+/u)) {
     const counts = patterns.map(pattern => [...part.matchAll(pattern)].length);
     // Independently inspect enumeration structure; prose references to a name
     // are not catalog rows. No literal catalog/preamble equality is involved.
-    const catalogRole = /^\s*[•*-]\s/u.test(part) || counts.filter(count => count > 0).length > 1 ||
+    const catalogRole = /^\s*[•*-]\s/u.test(part) || counts.every(count => count > 0) ||
       catalogPlan.displayedServices.some(service => part.startsWith(service.name) &&
         /^\s*[:(–-]/u.test(part.slice(service.name.length)));
     if (catalogRole) counts.forEach((count, index) => { roleCounts[index] += count; });
@@ -446,3 +449,57 @@ test('final role normalization retains separately grounded numeric service facts
   const normalized = normalizeGroundedCompoundCatalogReply(`${catalog}\n${text}`, catalogPlan, 'en');
   assert.ok(normalized.includes(text)); assert.equal(normalized.split(catalog).length - 1, 1);
 });
+
+const exactLiveReply = readFileSync(new URL('../../tests/fixtures/compound-catalog-inline-production-de.txt', import.meta.url), 'utf8').trim();
+const liveOfferingIntros: Record<string, string> = {
+  de: 'Wir bieten an:', en: 'We provide:', sv: 'Vi erbjuder:', es: 'Ofrecemos:', ar: 'نقدم:', fa: 'ارائه می‌دهیم:',
+};
+for (const [language, question, quote, atomicClaim] of scenarios) {
+  const rows = catalogPlan.displayedServices.map(service => `${service.name} (${new Intl.NumberFormat(language,
+    { style: 'unit', unit: 'minute', unitDisplay: 'short' }).format(service.durationMinutes!)}, ${
+      new Intl.NumberFormat(language).format(service.price!)} ${service.currency})`);
+  const liveReply = language === 'de' ? exactLiveReply : `${formatConfiguredServiceCatalogPlan(catalogPlan, language)}\n\n${
+    liveOfferingIntros[language]} ${new Intl.ListFormat(language).format(rows)}.\n\n${quote}`;
+  test(`${language}: boundary invariant detects a complete inline duplicate despite abbreviated units`, () => {
+    assert.throws(() => assertCatalogRoleOnce(liveReply), /catalog role must display/);
+  });
+  for (const includeUnknown of [true, false]) {
+    test(`${language}: literal live inline shape at actual normalization boundary: ${includeUnknown ? 'compound recovery' : 'fully grounded early return'}`, async t => {
+      const options = catalogOptions(language);
+      options.catalogQuote = liveReply;
+      options.catalogAtomic += ` ${atomicClaim}`;
+      options.catalogEvidence.push({ source: 'retrieved_knowledge', quote: exactLocationEvidence });
+      const h = harness(t, language, question, quote, atomicClaim, 'ENTAILED', exactLocationEvidence,
+        'services-first', true, true, { ...options, includeUnknown, includeSeparateLocation: false });
+      const { recovered, sent } = await h.run();
+      // Actual grounded composition return, before channel presentation. Inspect
+      // whole lines: Min. punctuation must never hide a complete representation.
+      assertCatalogRoleOnce(recovered); assertCatalogRoleOnce(sent);
+      assert.equal(recovered, `${h.catalog}\n${quote}`);
+      assert.equal(sent.split(quote).length - 1, 1);
+      assert.equal(sent.includes(h.extra), false);
+      assert.equal(h.assessments[0].claimsEntailed, !includeUnknown, 'prove which grounding return path executed');
+    });
+  }
+}
+
+for (const includeUnknown of [true, false]) {
+  test(`verified unknown factual heading survives actual ${includeUnknown ? 'compound recovery' : 'fully grounded early return'}`, async t => {
+    const [language, question, quote, atomicClaim] = scenarios[1];
+    const heading = 'Each session includes a written creative brief:';
+    const body = exactLiveReply.split('\n').find(line => line.startsWith('Wir bieten an:'))!.split(': ')[1];
+    const scopedFact = `${heading} ${body}`;
+    const options = catalogOptions(language);
+    options.catalogQuote = `${formatConfiguredServiceCatalogPlan(catalogPlan, language)}\n${scopedFact}\n${quote}`;
+    options.catalogAtomic += ` ${heading} ${atomicClaim}`;
+    options.catalogEvidence.push({ source: 'business_system_prompt', quote: heading },
+      { source: 'retrieved_knowledge', quote: exactLocationEvidence });
+    const h = harness(t, language, question, quote, atomicClaim, 'ENTAILED', exactLocationEvidence,
+      'services-first', true, true, { ...options, includeUnknown, includeSeparateLocation: false,
+        businessConfig: { ...fixture.business, systemPrompt: heading } });
+    const { recovered, sent } = await h.run();
+    assert.ok(recovered.includes(scopedFact)); assert.ok(sent.includes(scopedFact));
+    assert.equal(sent.split(quote).length - 1, 1); assert.equal(sent.includes(h.extra), false);
+    assert.equal(h.assessments[0].claimsEntailed, !includeUnknown);
+  });
+}

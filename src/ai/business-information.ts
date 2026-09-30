@@ -271,6 +271,7 @@ export function normalizeGroundedCompoundCatalogReply(
   // Intl supplies localized unit and list labels, including short/narrow forms.
   // The configured formatter supplies its own labels and optional follow-up.
   const labels = new Set<string>();
+  const listConnectors = new Set<string>();
   const numberReaders: ((text: string) => number)[] = [];
   for (const locale of ['en', 'sv', 'de', 'es', 'fa', 'ar']) {
     const formatter = new Intl.NumberFormat(locale);
@@ -295,7 +296,10 @@ export function normalizeGroundedCompoundCatalogReply(
       }
     }
     for (const part of new Intl.ListFormat(locale).formatToParts(['@a', '@b'])) {
-      if (part.type === 'literal' && part.value.trim()) labels.add(part.value.trim());
+      if (part.type === 'literal' && part.value.trim()) {
+        labels.add(part.value.trim());
+        listConnectors.add(part.value);
+      }
     }
   }
   const labelPattern = new RegExp(
@@ -312,11 +316,42 @@ export function normalizeGroundedCompoundCatalogReply(
       (topics.some(topic => topic === 'services' || topic === 'company') || Boolean(businessName && text.includes(businessName))) &&
       topics.every(topic => topic === 'services' || topic === 'company' || topic === 'prices');
   };
+  // Empty topic detection is not positive evidence of an offering preamble.
+  // Require an offering verb and only grammatical framing, never extra facts.
+  const offeringGrammar: Record<string, { verb: RegExp; framing: RegExp }> = {
+    en: { verb: /(?<![\p{L}\p{M}])(?:offer|provide)(?![\p{L}\p{M}])/giu, framing: /(?<![\p{L}\p{M}])(?:we|i)(?![\p{L}\p{M}])/giu },
+    de: { verb: /(?<![\p{L}\p{M}])biet(?:e|en|et|t)(?![\p{L}\p{M}])/giu, framing: /(?<![\p{L}\p{M}])(?:wir|ich|an)(?![\p{L}\p{M}])/giu },
+    sv: { verb: /(?<![\p{L}\p{M}])erbjud(?:er|s)(?![\p{L}\p{M}])/giu, framing: /(?<![\p{L}\p{M}])(?:vi|jag)(?![\p{L}\p{M}])/giu },
+    es: { verb: /(?<![\p{L}\p{M}])ofrec(?:emos|e|en)(?![\p{L}\p{M}])/giu, framing: /(?<![\p{L}\p{M}])nosotros(?![\p{L}\p{M}])/giu },
+    ar: { verb: /(?<![\p{L}\p{M}])(?:نقدم|أقدم)(?![\p{L}\p{M}])/gu, framing: /(?<![\p{L}\p{M}])(?:نحن|أنا)(?![\p{L}\p{M}])/gu },
+    fa: { verb: /(?<![\p{L}\p{M}])ارائه\s+می[\s‌]*ده(?:یم|م)(?![\p{L}\p{M}])/gu, framing: /(?<![\p{L}\p{M}])(?:ما|من)(?![\p{L}\p{M}])/gu },
+  };
+  const isOfferingPreamble = (heading: string): boolean => {
+    const grammar = offeringGrammar[language];
+    return Boolean(grammar && heading.search(grammar.verb) >= 0 &&
+      !/[\p{L}\p{M}]/u.test(heading.replace(grammar.verb, '').replace(grammar.framing, '')));
+  };
+  const attachedConnectorPattern = new RegExp(
+    `(?:${[...listConnectors].map(escape).join('|')})(?=(?:${names.map(service => escape(service.name)).join('|')})(?![\\p{L}\\p{N}]))`, 'gu',
+  );
   const isCatalogSpan = (text: string): boolean => {
-    let remainder = text;
+    // Intl may attach a list conjunction directly to the next configured name.
+    let remainder = text.replace(attachedConnectorPattern, ' ');
     // An inline list may include its offering preamble before the first name.
     const colon = remainder.search(/[:：]/u);
-    if (colon >= 0 && isCatalogHeading(remainder.slice(0, colon + 1))) remainder = remainder.slice(colon + 1);
+    if (colon >= 0) {
+      const heading = remainder.slice(0, colon + 1);
+      const body = remainder.slice(colon + 1);
+      // Offering preambles need not contain a services/company topic word.
+      // A complete enumeration still needs positive heading/offer recognition;
+      // its names, values, units and remaining prose are still checked below.
+      const headingTopics = businessInformationTopics(heading);
+      const completeInlineCatalog = (headingTopics.length > 0 || isOfferingPreamble(heading)) &&
+        namePatterns.every(pattern => body.search(pattern) >= 0) &&
+        !/\p{N}/u.test(heading) && headingTopics.every(topic =>
+          topic === 'services' || topic === 'company' || topic === 'prices');
+      if (isCatalogHeading(heading) || completeInlineCatalog) remainder = body;
+    }
     const matchedServices: ConfiguredServiceCatalogItem[] = [];
     namePatterns.forEach((pattern, index) => {
       remainder = remainder.replace(pattern, () => { matchedServices.push(names[index]); return ''; });

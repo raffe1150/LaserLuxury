@@ -79,6 +79,15 @@ export function resolveOpenAiTextModel(requestedModel?: string): string {
   return process.env.OPENAI_MODEL || "gpt-5.6-luna";
 }
 
+// Only documented non-reasoning Responses models accept temperature in this
+// runtime. Reasoning models can require an explicit reasoning effort; this
+// adapter does not set one, so unknown models and snapshots omit temperature.
+const OPENAI_TEMPERATURE_MODELS = new Set([
+  "gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano", "gpt-4o", "gpt-4o-mini",
+  "gpt-4.1-2025-04-14", "gpt-4.1-mini-2025-04-14", "gpt-4.1-nano-2025-04-14",
+  "gpt-4o-2024-08-06", "gpt-4o-mini-2024-07-18",
+]);
+
 export function normalizeOpenAiGenerationResponse(
   response: any,
 ): UnifiedAiGenerationResponse {
@@ -121,7 +130,7 @@ export async function generateWithOpenAi(
     instructions: request.systemInstruction,
     input: toOpenAiInput(request.messages),
     tools,
-    ...(request.temperature !== undefined
+    ...(request.temperature !== undefined && OPENAI_TEMPERATURE_MODELS.has(model)
       ? { temperature: request.temperature }
       : {}),
   };

@@ -116,7 +116,7 @@ test("diagnostic never serializes secrets, prompts, knowledge, tool arguments, h
   assert.equal(buildOpenAiFailureDiagnostic({ param: "tools[0].parameters.properties.customerSecret" }, context).parameter, null);
 });
 
-test("successful OpenAI generation preserves the exact request payload and response without diagnostics", async (t) => {
+test("successful OpenAI generation preserves nonsampling payload and response without diagnostics", async (t) => {
   const previous = process.env.OPENAI_API_KEY;
   process.env.OPENAI_API_KEY = "sk-test-success";
   t.after(() => {
@@ -133,7 +133,7 @@ test("successful OpenAI generation preserves the exact request payload and respo
   const create = t.mock.method(Responses.prototype, "create", async (params: unknown) => {
     assert.deepEqual(params, {
       model: request.model, instructions: request.systemInstruction,
-      input: toOpenAiInput(request.messages), tools: toOpenAiTools(request.tools), temperature: 0.2,
+      input: toOpenAiInput(request.messages), tools: toOpenAiTools(request.tools),
     });
     return { output_text: "Hello back", output: [] } as any;
   });

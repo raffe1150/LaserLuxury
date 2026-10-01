@@ -14,7 +14,10 @@ import {
   isBusinessInformationQuestion,
   isBusinessRecommendationQuestion,
   isServiceCatalogQuestion,
+  isSimpleCatalogLocationQuestion,
 } from './src/ai/business-information';
+import { beginBusinessInformationTiming, businessInformationTimingContext, clearBusinessInformationTiming,
+  markBusinessInformationTiming, timeBusinessInformationDelivery } from './src/ai/business-information-timing';
 import "dotenv/config";
 import { extractExplicitArabicCustomerName, extractStandaloneArabicScriptCustomerName, stripCustomerNameDiagnosticSuffix } from './src/ai/arabic-customer-name';
 import express from "express";
@@ -428,6 +431,7 @@ type SemanticKnowledgeQueryPlan = {
 async function resolveSemanticKnowledgeQueries(
   question: string,
   businessConfig: any,
+  timingContext: { businessInfoTurnId?: string } = {},
 ): Promise<SemanticKnowledgeQueryPlan | null> {
   const customerQuestion = String(question || "").trim();
   if (!customerQuestion) return null;
@@ -486,6 +490,7 @@ Required JSON shape:
         businessId: getBusinessIdFromConfig(businessConfig),
         channel: "knowledge-core",
         stage: "semantic_knowledge_query_resolution",
+        ...timingContext,
       },
     });
 
@@ -544,6 +549,7 @@ async function resolveSemanticConversationLanguage(
   text: string,
   activeLanguage: string | null,
   businessConfig: any,
+  timingContext: { businessInfoTurnId?: string } = {},
 ): Promise<SemanticLanguageDecision | null> {
   const customerText = String(text || "").trim();
   if (!customerText) return null;
@@ -606,6 +612,7 @@ Required JSON shape:
         businessId: getBusinessIdFromConfig(businessConfig),
         channel: "language-core",
         stage: "semantic_language_resolution",
+        ...timingContext,
         language: activeLanguage || undefined,
       },
     });
@@ -715,6 +722,7 @@ async function generateContentWithFallback(ai: GoogleGenAI | null, options: {
     candidateLength?: number;
     evidenceLength?: number;
     claimCount?: number;
+    businessInfoTurnId?: string;
   };
 }): Promise<any> {
   const provider = getConfiguredAiProvider();
@@ -772,6 +780,7 @@ async function generateContentWithFallback(ai: GoogleGenAI | null, options: {
       evidenceLength: options.context?.evidenceLength ?? null,
       claimCount: options.context?.claimCount ?? null,
       timeoutBudgetMs: timeoutMs,
+      ...(options.context?.businessInfoTurnId ? { businessInfoTurnId: options.context.businessInfoTurnId } : {}),
     });
   };
   const response = await runAiProviderRequest({
@@ -793,6 +802,13 @@ async function generateContentWithFallback(ai: GoogleGenAI | null, options: {
       }, () => {
         attemptTimings.get(attempt)!.executionStartedAt = Date.now();
         logVerifierTiming(attempt, "provider_start");
+        if (options.context?.businessInfoTurnId) {
+          console.info('[BusinessInformationProviderTiming]', {
+            businessInfoTurnId: options.context.businessInfoTurnId, correlationId,
+            stage: options.context.stage || 'generation', attempt, phase: 'provider_start',
+            queueWaitMs: Date.now() - attemptTimings.get(attempt)!.queuedAt,
+          });
+        }
       }, signal);
     },
     beforeRetry: () => {
@@ -813,6 +829,12 @@ async function generateContentWithFallback(ai: GoogleGenAI | null, options: {
         success: event.ok,
         errorCategory: event.category || null,
         durationMs: event.durationMs,
+        ...(options.context?.businessInfoTurnId ? {
+          businessInfoTurnId: options.context.businessInfoTurnId,
+          queueWaitMs: (attemptTimings.get(event.attempt)?.executionStartedAt ?? Date.now()) - attemptTimings.get(event.attempt)!.queuedAt,
+          providerExecutionMs: attemptTimings.get(event.attempt)?.executionStartedAt === undefined ? null
+            : Date.now() - attemptTimings.get(event.attempt)!.executionStartedAt!,
+        } : {}),
       });
     },
   });
@@ -1157,6 +1179,7 @@ type BusinessClaimEntailmentAssessment = {
 };
 
 type BusinessClaimEntailmentRequest = {
+  businessInfoTurnId?: string;
   customerMessage: string;
   atomicClaim: string;
   candidateQuote: string;
@@ -1173,6 +1196,7 @@ type BusinessClaimEntailmentRequest = {
 };
 
 type BusinessGroundingVerificationRequest = {
+  businessInfoTurnId?: string;
   customerMessage: string;
   candidateReply: string;
   language: string;
@@ -7959,8 +7983,10 @@ function buildBusinessKnowledgeQueries(
 
 async function retrieveBusinessKnowledgeForQuestion(
   businessConfig: any,
-  question: string
+  question: string,
+  timingContext: { businessInfoTurnId?: string } = {},
 ): Promise<string> {
+  const retrievalStartedAt = Date.now();
   const businessId = Number(getBusinessIdFromConfig(businessConfig));
   const normalizedQuestion = String(question || "").trim();
 
@@ -7977,12 +8003,15 @@ async function retrieveBusinessKnowledgeForQuestion(
       await resolveSemanticKnowledgeQueries(
         normalizedQuestion,
         businessConfig,
+        timingContext,
       );
 
     const queries = buildBusinessKnowledgeQueries(
       normalizedQuestion,
       semanticPlan,
     );
+    const queryPlanningDurationMs = Date.now() - retrievalStartedAt;
+    const searchStartedAt = Date.now();
 
     const searchKnowledge =
       process.env.NODE_ENV === "test" &&
@@ -8100,6 +8129,10 @@ async function retrieveBusinessKnowledgeForQuestion(
       .map((match) => Number(match?.score))
       .filter(Number.isFinite);
     const retrievalDiagnostic = {
+      ...timingContext,
+      durationMs: Date.now() - retrievalStartedAt,
+      queryPlanningDurationMs,
+      searchDurationMs: Date.now() - searchStartedAt,
       businessId,
       questionFingerprint: safeLogFingerprint(normalizedQuestion),
       questionLength: normalizedQuestion.length,
@@ -8824,6 +8857,7 @@ async function assessBusinessClaimEntailment(
         businessId: request.businessId,
         channel: "internal",
         stage: "business_support_grounding_entailment",
+        ...(request.businessInfoTurnId ? { businessInfoTurnId: request.businessInfoTurnId } : {}),
         language: request.language,
         candidateLength: request.candidateQuote.length,
         evidenceLength: request.citedEvidence.reduce((length, item) => length + item.quote.length, 0),
@@ -8932,16 +8966,15 @@ async function assessBusinessClaimEntailmentWithReuse(
   const pending = assessBusinessClaimEntailment(request).then(result => {
     // A parsed UNKNOWN/NEUTRAL is still a completed verdict for this phase;
     // recovery can reuse it without restarting the same completed sequence.
-    // Transport failures are not evidence and must never become cached verdicts.
+    // Retain an operation-local unavailable outcome, never a factual verdict.
+    // Recovery must not start the identical failed transport wait again.
     if (!result) {
       results.verificationUnavailable = true;
-      if (results.get(key) === pending) results.delete(key);
     }
     return result;
-  }, error => {
+  }, () => {
     results.verificationUnavailable = true;
-    if (results.get(key) === pending) results.delete(key);
-    throw error;
+    return null;
   });
   results.set(key, pending);
   return pending;
@@ -8956,6 +8989,7 @@ async function assessmentClaimsAreEntailed(
   if (!assessment.hasBusinessFactualClaims) return { entailed: true };
   const results = await Promise.all(assessment.claims.map(async (claim, claimIndex) => {
     const entailmentRequest: BusinessClaimEntailmentRequest = {
+      ...(request.businessInfoTurnId ? { businessInfoTurnId: request.businessInfoTurnId } : {}),
       customerMessage: request.customerMessage,
       atomicClaim: claim.claim,
       candidateQuote: claim.candidateQuote,
@@ -9103,6 +9137,7 @@ async function assessBusinessSupportGrounding(
         businessId: request.businessId,
         channel: "internal",
         stage: "business_support_grounding_verification",
+        ...(request.businessInfoTurnId ? { businessInfoTurnId: request.businessInfoTurnId } : {}),
         language: request.language,
         candidateLength: request.candidateReply.length,
         evidenceLength: request.evidenceCorpus.length,
@@ -9461,6 +9496,7 @@ async function recoverUnavailableBusinessLocation(
       customerMessage: request.customerMessage, atomicClaim: proposal, candidateQuote: proposal,
       claimKind: "OTHER", citedEvidence, workflow: "business_information",
       language: request.language, businessId: request.businessId,
+      ...(request.businessInfoTurnId ? { businessInfoTurnId: request.businessInfoTurnId } : {}),
     }, results);
   } catch {
     // Verification is still unavailable; preserve the existing safe notice.
@@ -9477,6 +9513,18 @@ async function recoverUnavailableBusinessLocation(
 }
 
 async function guardBusinessSupportGrounding(
+  sessionId: string,
+  latestCustomerMessage: string,
+  candidateReply: string,
+  language: string,
+): Promise<string> {
+  const started = Date.now();
+  markBusinessInformationTiming(sessionId, 'grounding_start');
+  try { return await guardBusinessSupportGroundingImpl(sessionId, latestCustomerMessage, candidateReply, language); }
+  finally { markBusinessInformationTiming(sessionId, 'grounding_complete', Date.now() - started, { language }); }
+}
+
+async function guardBusinessSupportGroundingImpl(
   sessionId: string,
   latestCustomerMessage: string,
   candidateReply: string,
@@ -9557,6 +9605,7 @@ async function guardBusinessSupportGrounding(
   // Operation-local: never shared across snapshots, turns, sessions or tenants.
   const entailmentResults: BusinessClaimEntailmentResults = new Map();
   const verificationRequest: BusinessGroundingVerificationRequest = {
+    ...businessInformationTimingContext(sessionId),
     customerMessage: latestCustomerMessage,
     candidateReply,
     language,
@@ -11634,14 +11683,14 @@ async function sendCustomerMessage(
       return false;
     }
     try {
-      const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      const res = await timeBusinessInformationDelivery(outboundContext === "conversation" ? recipient : "", () => fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           chat_id: recipient,
           text: message,
         })
-      });
+      }));
       logTelegramMessageSent({
         token,
         config: businessConfig,
@@ -15922,10 +15971,21 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
     const informationLanguage = recentCompletion?.bookingOperation?.ok
       ? resolveRecentCompletionPresentationLanguage(recentCompletion.language, currentLanguage, text, businessConfig)
       : currentLanguage;
-    const retrievedKnowledge = await retrieveBusinessKnowledgeForQuestion(
-      businessConfig,
-      text
+    if (!businessInformationTimingContext(sessionId).businessInfoTurnId) {
+      beginBusinessInformationTiming(sessionId, text, getBusinessIdFromConfig(businessConfig));
+    }
+    markBusinessInformationTiming(sessionId, 'intent_and_state_ready', Date.now() - bookingStartedAt, { language: informationLanguage });
+    const simpleCatalogLocation = isSimpleCatalogLocationQuestion(text);
+    const configuredAddress = typeof businessConfig?.address === 'string' && businessConfig.address.trim();
+    const catalog = simpleCatalogLocation
+      ? formatConfiguredServiceCatalogPlan(buildConfiguredServiceCatalogPlan(businessConfig?.services || []), informationLanguage) : '';
+    const retrievalStarted = Date.now();
+    markBusinessInformationTiming(sessionId, 'retrieval_start');
+    const retrievedKnowledge = catalog && configuredAddress ? '' : await retrieveBusinessKnowledgeForQuestion(
+      businessConfig, text, businessInformationTimingContext(sessionId),
     );
+    markBusinessInformationTiming(sessionId, 'retrieval_complete', Date.now() - retrievalStarted,
+      { disposition: catalog && configuredAddress ? 'configured_facts_no_retrieval' : 'retrieved' });
     if (recentCompletion?.bookingOperation?.ok) {
       completedBookingSupportTurns[sessionId] = {
         savedAt: Date.now(),
@@ -15945,6 +16005,39 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
     };
 
     nonMutatingSupportTurns[sessionId] = Date.now();
+    // Emit only our own configured catalog and a directly configured address,
+    // or a location accepted by the existing independent semantic trust gate.
+    // Never submit an arbitrary provider candidate to this fast path.
+    const snapshot = catalog ? buildBusinessGroundingSnapshot(businessInformationTurns[sessionId]) : null;
+    const retrievedAddress = snapshot && isBusinessAddressQuestion(snapshot.sources.retrieved_knowledge)
+      ? extractAddressCandidateFromEvidence([{ quote: snapshot.sources.retrieved_knowledge
+        .replace(/KNOWLEDGE CHUNK\s+\d+/giu, '').replace(/source_id:\s*[^\s]+/giu, '') }]) : null;
+    if (catalog && snapshot && (configuredAddress || retrievedAddress)) {
+      const groundingStarted = Date.now();
+      markBusinessInformationTiming(sessionId, 'grounding_start');
+      const location = await recoverUnavailableBusinessLocation(businessConfig, snapshot, {
+        customerMessage: text, candidateReply: catalog, language: informationLanguage,
+        evidenceCorpus: snapshot.evidenceCorpus, businessId: getBusinessIdFromConfig(businessConfig),
+        ...businessInformationTimingContext(sessionId),
+      }, new Map());
+      markBusinessInformationTiming(sessionId, 'grounding_complete', Date.now() - groundingStarted,
+        { disposition: configuredAddress ? 'configured_facts' : location ? 'independent_location_entailed' : 'verification_unavailable' });
+      const reply = location ? `${catalog}\n${location}` : currentBusinessSupportGap(sessionId, text, informationLanguage, true);
+      const finalReply = enforceFinalConversationConcision(
+        guardCustomerFacingReply(sessionId, reply, informationLanguage, businessConfig?.toneConfig),
+        getFinalConversationConcisionBudget(text),
+      );
+      markBusinessInformationTiming(sessionId, 'response_ready');
+      const sent = await timeBusinessInformationDelivery(sessionId, () => send(finalReply), 'response_dispatch');
+      if (sent !== false) {
+        appendLocalHistory(sessionId, text, finalReply);
+        await postProcessMessage(recipientUserId, postProcessPlatform, text, finalReply,
+          businessConfig?.telegramToken, businessConfig?.apiKey, getBusinessIdFromConfig(businessConfig)).catch(() => {
+            console.error('[BusinessInformationPostProcess]', { success: false });
+          });
+      }
+      return true;
+    }
     return false;
   }
 
@@ -23855,7 +23948,9 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
 }
       
     
+    markBusinessInformationTiming(telegramSessionId, 'generation_start');
     const aiRequestContext = {
+      ...businessInformationTimingContext(telegramSessionId),
       businessId,
       channel: "telegram",
       stage: "conversation",
@@ -24729,7 +24824,16 @@ function getConversationLanguage(chatId: string, latestText?: string, businessCo
   return previous || detected || businessLanguage || "en";
 }
 
-async function prepareConversationLanguageForTurn(
+async function prepareConversationLanguageForTurn(chatId: string, latestText: string, businessConfig?: any): Promise<string> {
+  const info = isBusinessInformationQuestion(latestText);
+  if (info) beginBusinessInformationTiming(chatId, latestText, getBusinessIdFromConfig(businessConfig));
+  else clearBusinessInformationTiming(chatId);
+  const started = Date.now();
+  try { return await resolveConversationLanguageForTurn(chatId, latestText, businessConfig); }
+  finally { if (info) markBusinessInformationTiming(chatId, 'language_complete', Date.now() - started); }
+}
+
+async function resolveConversationLanguageForTurn(
   chatId: string,
   latestText: string,
   businessConfig?: any,
@@ -24763,6 +24867,7 @@ async function prepareConversationLanguageForTurn(
       text,
       previous,
       businessConfig,
+      businessInformationTimingContext(chatId),
     );
 
     const requestedReplyLanguage =
@@ -24863,6 +24968,7 @@ async function prepareConversationLanguageForTurn(
         candidateText,
         previous,
         businessConfig,
+        businessInformationTimingContext(chatId),
       ),
   });
 
@@ -26518,11 +26624,11 @@ async function sendInstagramMessage(
 
   try {
     const endpoint = 'https://graph.instagram.com/v25.0/me/messages';
-    const response = await fetch(`${endpoint}?access_token=${encodeURIComponent(token)}`, {
+    const response = await timeBusinessInformationDelivery(outboundContext === "conversation" ? sessionId || "" : "", () => fetch(`${endpoint}?access_token=${encodeURIComponent(token)}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
-    });
+    }));
 
     const result = await response.json().catch(() => ({}));
 
@@ -26821,14 +26927,14 @@ async function sendWhatsAppMessage(
   };
 
   try {
-    const response = await fetch(`https://graph.facebook.com/v25.0/${phoneNumberId}/messages`, {
+    const response = await timeBusinessInformationDelivery(outboundContext === "conversation" ? getScopedChannelSessionId("whatsapp", recipient, businessConfig, phoneNumberId) : "", () => fetch(`https://graph.facebook.com/v25.0/${phoneNumberId}/messages`, {
       method: "POST",
       headers: {
         "Authorization": `Bearer ${token}`,
         "Content-Type": "application/json"
       },
       body: JSON.stringify(payload)
-    });
+    }));
 
     const result = await response.json().catch(() => ({}));
 
@@ -27253,7 +27359,9 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
 
     let finalSystemInstruction = buildBusinessPromptWithTone(businessConfig.systemPrompt || "", businessConfig.toneConfig) + currentDateContext + constraint + languageEngine + buildLanguageLockInstruction(userLanguage) + buildRecentCompletedSupportInstruction(chatId) + buildAssistantIdentityLifecycleInstruction(isFirstIdentityReply, textMessage);
 
+    markBusinessInformationTiming(chatId, 'generation_start');
     const aiRequestContext = {
+      ...businessInformationTimingContext(chatId),
       businessId: getBusinessIdFromConfig(businessConfig),
       channel: "whatsapp",
       stage: "conversation",
@@ -27538,11 +27646,11 @@ async function sendMessengerMessage(
   };
 
   try {
-    const response = await fetch(`https://graph.facebook.com/v25.0/me/messages?access_token=${encodeURIComponent(token)}`, {
+    const response = await timeBusinessInformationDelivery(outboundContext === "conversation" ? getScopedChannelSessionId("messenger", recipientId, businessConfig, getBusinessMessengerPageId(businessConfig)) : "", () => fetch(`https://graph.facebook.com/v25.0/me/messages?access_token=${encodeURIComponent(token)}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload)
-    });
+    }));
 
     const result = await response.json().catch(() => ({}));
 
@@ -28514,7 +28622,9 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
         "Keep responses under 60 words unless more detail is required.\n";
     }
 
+    markBusinessInformationTiming(chatId, 'generation_start');
     const aiRequestContext = {
+      ...businessInformationTimingContext(chatId),
       businessId: getBusinessIdFromConfig(businessConfig),
       channel: "messenger",
       stage: "conversation",
@@ -29183,7 +29293,9 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
         "\nVoice specific instructions: The message was transcribed before routing. Reply in the server's active conversation language and do not switch for a short spoken reply. Keep the response natural, short, and suitable for voice playback.";
     }
 
+    markBusinessInformationTiming(chatId, 'generation_start');
     const aiRequestContext = {
+      ...businessInformationTimingContext(chatId),
       businessId: getBusinessIdFromConfig(businessConfig),
       channel: "instagram",
       stage: "conversation",
@@ -33781,6 +33893,7 @@ export const priority1hUnifiedEngineTestBoundary = {
     for (const key of Object.keys(availabilitySearchContexts)) delete availabilitySearchContexts[key];
     for (const key of Object.keys(recentlyCompletedBookings)) delete recentlyCompletedBookings[key];
     for (const key of Object.keys(businessInformationTurns)) delete businessInformationTurns[key];
+    clearBusinessInformationTiming();
     for (const key of Object.keys(completedBookingSupportTurns)) delete completedBookingSupportTurns[key];
     for (const key of Object.keys(nonMutatingSupportTurns)) delete nonMutatingSupportTurns[key];
     for (const key of Object.keys(telegramReplyPreferences)) delete telegramReplyPreferences[key];

@@ -331,6 +331,6 @@ for (const [language, unit, question] of [
       assessBusinessClaimEntailment: async () => ({ relation: 'ENTAILED', claimKind: 'OTHER', explicitAbsenceEvidence: false }) });
     const reply = await b.finalizeGeneralAiReply('rtl-service-only', question, legacy, language);
     assert.equal(reply, catalog);
-    assert.ok(reply.includes(language === 'ar' ? `المدة:\n60 ${unit}\nالسعر:\n300 SEK` : `مدت:\n60 ${unit}\nقیمت:\n300 SEK`));
+    assert.ok(reply.includes('\u206660 min, 300 SEK\u2069'));
   });
 }

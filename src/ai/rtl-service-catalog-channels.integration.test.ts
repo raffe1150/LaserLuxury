@@ -2,11 +2,15 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { buildConfiguredServiceCatalogPlan, formatConfiguredServiceCatalogPlan } from './business-information';
+import { beginBusinessInformationTiming } from './business-information-timing';
 process.env.NODE_ENV = 'test';
 const { priority1hUnifiedEngineTestBoundary: b } = await import('../../server');
 const fixture = JSON.parse(readFileSync(new URL('../../tests/fixtures/business-information-tenant3.json', import.meta.url), 'utf8'));
 const config = {
   ...fixture.business,
+  services: fixture.business.services.map((service: any, index: number) => ({
+    ...service, currency: ['SEK', 'EUR', 'USD'][index % 3],
+  })),
   whatsappAccessToken: 'offline-whatsapp-token', whatsappPhoneNumberId: 'rtl-test-phone-id',
   messengerPageAccessToken: 'offline-messenger-token', messengerPageId: 'rtl-test-page-id',
   instagramAccessToken: 'offline-instagram-token',
@@ -14,18 +18,22 @@ const config = {
 };
 const plan = buildConfiguredServiceCatalogPlan(config.services);
 const cases = [
-  ['ar', 'ما الخدمات التي تقدمونها وأين يقع مكانكم؟', 'تجدوننا في Aurora Street 742.', 'المدة:\n60 دقيقة\nالسعر:\n300 SEK'],
-  ['fa', 'چه خدماتی دارید و کجا هستین؟', 'ما را در Aurora Street 742 پیدا می‌کنید.', 'مدت:\n60 دقیقه\nقیمت:\n300 SEK'],
+  ['ar', 'ما الخدمات التي تقدمونها وأين يقع مكانكم؟', 'تجدوننا في Aurora Street 742.', '\u206660 min, 300 SEK\u2069'],
+  ['fa', 'چه خدماتی دارید و کجا هستین؟', 'ما را در Aurora Street 742 پیدا می‌کنید.', '\u206660 min, 300 SEK\u2069'],
 ] as const;
 for (const [language, question, location, fields] of cases) {
   for (const channel of ['whatsapp', 'messenger', 'instagram', 'telegram'] as const) {
     test(`${channel}/${language}: shared grounded multiline catalog survives real text adapter JSON serialization`, async t => {
       b.reset(); t.after(() => b.reset());
-      for (const method of ['log', 'info', 'warn', 'error'] as const) t.mock.method(console, method, () => {});
+      const timings: any[] = [];
+      for (const method of ['log', 'info', 'warn', 'error'] as const) t.mock.method(console, method, (label: string, event: any) => {
+        if (label === '[BusinessInformationTiming]') timings.push(event);
+      });
       const recipient = channel === 'whatsapp' ? '46700000001' : channel === 'telegram' ? '123456789' : `rtl-${channel}-customer`;
       const scope = channel === 'whatsapp' ? config.whatsappPhoneNumberId : channel === 'messenger' ? config.messengerPageId : undefined;
       const session = channel === 'telegram' ? recipient : b.channelSessionId(channel, recipient, config, scope);
       b.seedFlowLanguage(session, language);
+      beginBusinessInformationTiming(session, question, config.id);
       b.businessInformationState(session, config, question, language, fixture.sources[0].content);
       const catalog = formatConfiguredServiceCatalogPlan(plan, language);
       b.configure({
@@ -50,6 +58,11 @@ for (const [language, question, location, fields] of cases) {
       });
       assert.equal(await b.sendCustomerMessage(channel, recipient, final, config, 'conversation'), true);
       assert.equal(requests.length, 1);
+      const deliveryEvents = timings.filter(event => event.stage === 'delivery_complete');
+      assert.equal(deliveryEvents.length, 1);
+      assert.equal(deliveryEvents[0].success, true);
+      assert.equal(deliveryEvents[0].httpStatus, 200);
+      assert.equal(new Set(timings.map(event => event.businessInfoTurnId)).size, 1);
       const { url, payload } = requests[0];
       const delivered = channel === 'whatsapp' ? payload.text.body : channel === 'telegram' ? payload.text : payload.message.text;
       assert.equal(delivered, final, 'conversation guard and adapter preserve all fields and line breaks byte-for-byte');
@@ -57,7 +70,12 @@ for (const [language, question, location, fields] of cases) {
       assert.match(url, channel === 'telegram' ? /^https:\/\/api.telegram.org\//u : channel === 'instagram' ? /^https:\/\/graph.instagram.com\//u : /^https:\/\/graph.facebook.com\//u);
       for (const service of plan.displayedServices) assert.equal(delivered.split(service.name).length - 1, 1);
       assert.equal(delivered.split('Aurora Street 742').length - 1, 1);
-      assert.doesNotMatch(delivered, /[\u2066-\u2069]/u);
+      for (const service of plan.displayedServices) {
+        assert.ok(delivered.includes(`\u2066${service.durationMinutes} min, ${service.price} ${service.currency}\u2069`));
+      }
+      for (const currency of ['SEK', 'EUR', 'USD']) assert.ok(delivered.includes(currency));
+      assert.doesNotMatch(delivered, /دقيقة|دقیقه|\u2067| · /u);
+      assert.equal([...delivered.matchAll(/[\u2066\u2067]/gu)].length, [...delivered.matchAll(/\u2069/gu)].length);
     });
   }
 }

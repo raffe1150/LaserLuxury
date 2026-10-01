@@ -6,6 +6,7 @@ import { Responses } from 'openai/resources/responses';
 import { Embeddings } from 'openai/resources/embeddings';
 import { InMemoryKnowledgeStorage, KnowledgeService, SupabaseKnowledgeStorage } from '../../knowledge';
 import { ConfiguredEmbeddingProvider } from './providers/embeddings';
+import { isSimpleCatalogLocationQuestion } from './business-information';
 
 process.env.NODE_ENV = 'test';
 const { priority1hUnifiedEngineTestBoundary: b } = await import('../../server');
@@ -43,7 +44,9 @@ function configureAssessment(claims: any[], entailment?: (r: any) => any) {
 async function enter(t: any, question: string, language: string, withLocation = true) {
   let googleCalls = 0;
   t.mock.method(Models.prototype as any, 'embedContentInternal', async () => { googleCalls++; throw new Error('Gemini must not run'); });
-  t.mock.method(Responses.prototype, 'create', async () => ({ output_text: '{"canonicalMeaning":"services and location","queries":["services location"]}' }));
+  t.mock.method(Responses.prototype, 'create', async (params: any) => ({ output_text: params.instructions.includes('entailment gate')
+    ? JSON.stringify({ relation: 'ENTAILED', claimKind: 'OTHER', explicitAbsenceEvidence: false })
+    : '{"canonicalMeaning":"services and location","queries":["services location"]}' }));
   t.mock.method(Embeddings.prototype, 'create', async (r: any) => ({ data: r.input.map((_: string, index: number) => ({ index, embedding: Array.from({ length: 768 }, (_, i) => i === 0 ? 1 : 0) })) }));
   const storage = new InMemoryKnowledgeStorage();
   if (withLocation) {
@@ -62,7 +65,11 @@ async function enter(t: any, question: string, language: string, withLocation = 
   });
   const id = `compound-${language}`;
   const result = await b.turn({ sessionId: id, platformName: 'whatsapp', recipientUserId: id, text: question, businessConfig: config });
-  assert.equal(result.handled, false);
+  assert.equal(result.handled, withLocation && isSimpleCatalogLocationQuestion(question));
+  if (result.handled) {
+    assert.ok(result.replies.join('\n').includes(address));
+    assert.doesNotMatch(result.replies.join('\n'), /Foreign Road|Private foreign/);
+  }
   const state = b.businessInformationState(id)!;
   assert.equal(state.language, language);
   const instruction = b.completedSupportInstruction(id);

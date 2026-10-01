@@ -131,6 +131,23 @@ export function isServiceCatalogQuestion(text: string, allowAdditionalTopics = f
   return true;
 }
 
+/** Conservative whole-question coverage for the catalog + address fast path.
+ * Additional/unrecognized clauses stay on the full grounding path. */
+export function isSimpleCatalogLocationQuestion(text: string): boolean {
+  if (!isServiceCatalogQuestion(text, true) || !isBusinessAddressQuestion(text)) return false;
+  const question = text.normalize('NFKC').replace(/[\u064b-\u065f]/gu, '').trim()
+    .replace(/^[¡¿]*(?:hello|hi|hej|hallo|hola|مرحبا|سلام)(?=[\s!,،.])[\s!,،.]+/iu, '')
+    .replace(/^[¿¡]+|[?!؟.]+$/gu, '').trim();
+  return [
+    /^(?:what|which) services do you (?:offer|provide) and (?:where are you located|where can I find you|what is your address)$/iu,
+    /^vilka tjänster erbjuder ni och (?:var finns ni|var ligger ni|vad är er adress)$/iu,
+    /^welche dienstleistungen bieten sie an und (?:wo befinden sie sich|wo sind sie|wie lautet ihre adresse)$/iu,
+    /^qué servicios ofrecen y (?:dónde están ubicados|dónde se encuentran|cuál es su dirección)$/iu,
+    /^ما الخدمات التي تقدمونها وأين (?:موقعكم|يقع مكانكم)$/u,
+    /^چه خدماتی دارید و (?:کجا هستین|کجا هستید|آدرستون کجاست)$/u,
+  ].some(pattern => pattern.test(question));
+}
+
 
 export type ConfiguredServiceCatalogItem = {
   name: string;
@@ -204,24 +221,20 @@ export function buildConfiguredServiceCatalogPlan(
 const serviceMinuteLabels: Record<string, string> = {
   en: "minutes", sv: "minuter", de: "Minuten", es: "minutos", fa: "دقیقه", ar: "دقيقة",
 };
-const rtlServiceFieldLabels: Record<string, { duration: string; price: string }> = {
-  ar: { duration: "المدة", price: "السعر" },
-  fa: { duration: "مدت", price: "قیمت" },
-};
+const isRtlCatalogLanguage = (language: string) => language === 'ar' || language === 'fa';
 
 function formatConfiguredServiceRow(service: ConfiguredServiceCatalogItem, language: string): string {
   const duration = service.durationMinutes !== null
-    ? `${service.durationMinutes} ${serviceMinuteLabels[language]}` : "";
+    ? `${service.durationMinutes} ${isRtlCatalogLanguage(language) ? 'min' : serviceMinuteLabels[language]}` : "";
   const price = service.price !== null
     ? service.currency ? `${service.price} ${service.currency}` : String(service.price) : "";
-  const fields = rtlServiceFieldLabels[language];
-  if (fields) {
-    // Keep labels and values on separate lines too: an RTL label must not land
-    // between a number and its Latin currency in an LTR client container.
+  if (isRtlCatalogLanguage(language)) {
+    // Keep the entire metadata line LTR; values and currency come from the
+    // configured service record, with no translation or currency inference.
+    const details = [duration, price].filter(Boolean).join(', ');
     return [
       `• ${service.name}`,
-      ...(duration ? [`${fields.duration}:`, duration] : []),
-      ...(price ? [`${fields.price}:`, price] : []),
+      ...(details ? [`  \u2066${details}\u2069`] : []),
     ].join("\n");
   }
   const details = [duration, price].filter(Boolean);
@@ -260,7 +273,7 @@ export function formatConfiguredServiceCatalogPlan(
 
   return [
     intro[lang],
-    rows.join(rtlServiceFieldLabels[lang] ? "\n\n" : "\n"),
+    rows.join(isRtlCatalogLanguage(lang) ? "\n\n" : "\n"),
     ...(plan.hasMoreServices ? [more[lang]] : []),
   ].join("\n");
 }
@@ -408,15 +421,27 @@ export function normalizeGroundedCompoundCatalogReply(
   const fragments = segments.filter((_, index) => index % 2 === 0).map(part => part.trim());
   const roles = fragments.map(isCatalogSpan);
   const detailParts = new Set<string>();
-  if (rtlServiceFieldLabels[language]) {
+  if (isRtlCatalogLanguage(language)) {
     for (const service of names) {
-      const fields = formatConfiguredServiceRow(service, language).split("\n").slice(1);
-      fields.forEach(field => detailParts.add(field));
+      const fields = formatConfiguredServiceRow(service, language).split("\n").slice(1).map(field => field.trim());
+      // Recognize previous localized representations only beneath their exact
+      // configured service header, never beneath an unrelated factual heading.
+      const legacyFields = [
+        ...(service.durationMinutes !== null ? [language === 'ar' ? 'المدة:' : 'مدت:', `${service.durationMinutes} ${serviceMinuteLabels[language]}`] : []),
+        ...(service.price !== null ? [language === 'ar' ? 'السعر:' : 'قیمت:', service.currency ? `${service.price} ${service.currency}` : String(service.price)] : []),
+      ];
+      const legacyCompact = [
+        service.durationMinutes !== null ? `\u2067${service.durationMinutes} ${serviceMinuteLabels[language]}\u2069` : '',
+        service.price !== null ? `\u2066${service.currency ? `${service.price} ${service.currency}` : String(service.price)}\u2069` : '',
+      ].filter(Boolean).join(' · ');
+      const variants = [fields, legacyFields, ...(legacyCompact ? [[legacyCompact]] : [])];
+      variants.flat().forEach(field => detailParts.add(field));
       fragments.forEach((part, index) => {
         if (!roles[index] || part.replace(/^[•*-]\s*/u, '').trim() !== service.name) return;
-        for (let offset = 1; offset <= fields.length; offset++) {
-          if (!fields.includes(fragments[index + offset])) break;
-          roles[index + offset] = true;
+        for (const variant of variants) {
+          if (variant.every((field, offset) => fragments[index + offset + 1] === field)) {
+            variant.forEach((_, offset) => { roles[index + offset + 1] = true; });
+          }
         }
       });
     }
@@ -463,7 +488,7 @@ export function formatRecommendationServiceSummary(
 
   if (!rows.length) return "";
 
-  return [intro[lang], rows.join(rtlServiceFieldLabels[lang] ? "\n\n" : "\n")].join("\n");
+  return [intro[lang], rows.join(isRtlCatalogLanguage(lang) ? "\n\n" : "\n")].join("\n");
 }
 
 export function formatConfiguredServiceOverview(names: string[], language: string): string {

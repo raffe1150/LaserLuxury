@@ -180,14 +180,18 @@ test('UNKNOWN/NEUTRAL retry and different adjudication prompt remain real indepe
 });
 
 test('timeout results are not reused as verification; repeated failure still emits no unverified address', async t => {
+  const failureBaseline = process.env.BUSINESS_FAILURE_BASELINE === '1';
   const h = harness(t, [catalogClaim(), locationClaim()], body => body.atomicClaim.includes(address) ? 'TIMEOUT' : 'ENTAILED');
   seed();
   const reply = await run();
   assert.equal(reply.includes(address), false);
   assert.ok(reply.includes('Video Consultation'));
-  assert.equal(h.perClaim.get(location), 2, 'failed transport is not cached as a verdict');
-  assert.equal(h.counts().entailment, 4, 'the narrow fallback also fails and cannot authorize the address');
+  assert.equal(h.perClaim.get(location), failureBaseline ? 2 : 1, 'unavailable outcome is reused within this operation, never as a factual verdict');
+  assert.equal(h.counts().entailment, failureBaseline ? 4 : 3, 'only the distinct narrow fallback is allowed; it also fails closed');
   assert.equal(h.diagnostics[0].claimsEntailed, false);
+  t.diagnostic(JSON.stringify({ scenario: 'unavailable-entailment', mode: failureBaseline ? 'before' : 'after', ...h.counts() }));
+  await run();
+  assert.equal(h.perClaim.get(location), failureBaseline ? 4 : 2, 'next turn still makes its own check; no failure status crosses turns');
 });
 
 test('recommendation catalog and natural clarification retain exact evidence and a separate entailment call', async t => {

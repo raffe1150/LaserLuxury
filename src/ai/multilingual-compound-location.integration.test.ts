@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, test } from 'node:test';
 import { Responses } from 'openai/resources/responses';
 import { businessInformationTopics, buildConfiguredServiceCatalogPlan, formatConfiguredServiceCatalogPlan,
-  isBusinessAddressQuestion, isServiceCatalogQuestion } from './business-information';
+  isBusinessAddressQuestion, isServiceCatalogQuestion, isSimpleCatalogLocationQuestion } from './business-information';
 
 process.env.NODE_ENV = 'test';
 const { priority1hUnifiedEngineTestBoundary: b } = await import('../../server');
@@ -40,8 +40,10 @@ async function enter(t: any, language: string, question: string, withLocation = 
   t.mock.method(console, 'log', () => {});
   t.mock.method(console, 'info', () => {});
   t.mock.method(console, 'warn', () => {});
-  t.mock.method(Responses.prototype, 'create', async () => ({
-    output_text: JSON.stringify({ canonicalMeaning: 'customer question', queries: [question] }),
+  t.mock.method(Responses.prototype, 'create', async (params: any) => ({
+    output_text: JSON.stringify(params.instructions.includes('entailment gate')
+      ? { relation: 'ENTAILED', claimKind: 'OTHER', explicitAbsenceEvidence: false }
+      : { canonicalMeaning: 'customer question', queries: [question] }),
   }));
   b.configure({
     semanticLanguageResolver: async () => ({ language, requestedReplyLanguage: null, confidence: 1 }),
@@ -59,7 +61,10 @@ async function enter(t: any, language: string, question: string, withLocation = 
   const sessionId = `location-role-${language}`;
   const result = await b.turn({ sessionId, platformName: 'whatsapp', recipientUserId: '46700000001',
     text: question, businessConfig: fixture.business });
-  assert.equal(result.handled, false);
+  assert.equal(result.handled, withLocation && isSimpleCatalogLocationQuestion(question));
+  if (result.handled) assert.ok(result.replies.join('\n').includes('Aurora Street 742'));
+  // Keep the separate full-candidate grounding regressions below: richer
+  // queries/provider candidates still use those exact quote/evidence gates.
   return { sessionId, queries, state: b.businessInformationState(sessionId)! };
 }
 

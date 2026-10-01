@@ -101,8 +101,9 @@ test('production 20-second execution deadline aborts transport, fails closed and
   let providerFinished!: () => void;
   const finished = new Promise<void>(resolve => { providerFinished = resolve; });
   let aborted = false;
-  t.mock.method(Responses.prototype, 'create', async (_params: any, options: any) => {
+  t.mock.method(Responses.prototype, 'create', async (params: any, options: any) => {
     calls++;
+    if (params.instructions.includes('final strict entailment gate')) return response({});
     try { await delay(20100, undefined, { signal: options.signal }); }
     catch (error) { aborted = options.signal.aborted; throw error; }
     finally { providerFinished(); }
@@ -114,7 +115,7 @@ test('production 20-second execution deadline aborts transport, fails closed and
   assert.equal(reply.includes(address), false);
   assert.equal(diagnostics[0].verifierReturnedAssessment, false);
   assert.equal(diagnostics[0].claimsEntailed, false);
-  assert.equal(calls, 1, 'timeout is not retried and entailment is never reached');
+  assert.equal(calls, 2, 'timeout is not retried; the one narrow entailment check also fails closed');
   const timedOut = timings.find(event => event.stage.endsWith('_attempt_timeout'));
   assert.equal(timedOut.timeoutBudgetMs, 20000);
   assert.ok(timedOut.queueWaitMs < 1000);

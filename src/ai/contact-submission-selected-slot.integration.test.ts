@@ -217,6 +217,10 @@ const numericNameCases = [
   ['en', 'My name is Mira Testmann AIBB 93414557 whatsapp-en.', 'Mira Testmann'],
   ['sv', 'Jag heter Mira Testmann AIBB 93414557 whatsapp-sv.', 'Mira Testmann'],
   ['es', 'Me llamo Mira Testmann AIBB 93414557 whatsapp-es.', 'Mira Testmann'],
+  ['ar', 'اسمي لينا اختبار AIBB 93414557 whatsapp-ar. وبالمناسبة، قال لي أحدهم اليوم \"hej\".', 'لينا اختبار'],
+  ['ar', 'اسمي لينا اختبار.', 'لينا اختبار'],
+  ['fa', 'نام من میرا آزمون AIBB ۹۳۴۱۴۵۵۷ whatsapp-fa. ضمناً امروز کسی به من \"hej\" گفت.', 'میرا آزمون'],
+  ['fa', 'نام من میرا آزمون است.', 'میرا آزمون'],
   ['ar', 'اسمي ميرا اختبار. AIBB 93414557 whatsapp-ar.', 'ميرا اختبار'],
   ['fa', 'نام من میرا تستمن است. AIBB ۹۳۴۱۴۵۵۷ whatsapp-fa.', 'میرا تستمن'],
 ] as const;
@@ -248,6 +252,10 @@ for (const [language, message, expectedName] of numericNameCases) {
     assert.match([...f.events.values()][0].summary, /\+46700000001/u);
     assert.ok(completed.replies.join(' ').includes(expectedName));
     assert.ok(completed.replies.join(' ').includes(expectedPhone));
+    await f.turn(message);
+    assert.equal(f.created.length, 1);
+    assert.equal(f.recorded.length, 1);
+    assert.equal(f.notifications.length, 1);
     assert.doesNotMatch(completed.replies.join(' '), /93414557|۹۳۴۱۴۵۵۷|AIBB/u);
     const traces = f.traces.slice(traceStart);
     assert.equal(traces.some(event => event.label === '[BookingRefinement]' && event.detail?.freshScanStarted), false);
@@ -312,3 +320,28 @@ for (const withPhone of [true, false]) {
     }
   });
 }
+
+test('invalid diagnostic name keeps the owned booking slot until a valid Arabic name completes once', async t => {
+  const f = fixture(t);
+  await select(f);
+  const confirmed = await confirm(f);
+  boundary.seedFlowLanguage(f.sessionId, 'ar');
+  boundary.seedPending(f.sessionId, { ...confirmed.pending, language: 'ar' });
+  for (const message of ['اسمي', 'اسمي AIBB 93414557 whatsapp-ar.', 'اسمي 1234 AIBB 93414557 whatsapp-ar.']) {
+    const incomplete = await f.turn(message);
+    assert.equal(incomplete.pending?.status, 'awaiting_contact');
+    assert.equal(incomplete.pending?.customerName ?? null, null);
+    assert.equal(incomplete.pending?.dateTime, confirmed.pending.dateTime);
+    assert.equal(incomplete.pending?.selectedSlotEnd, confirmed.pending.selectedSlotEnd);
+    assert.deepEqual(incomplete.pending?.ownedOfferedSlots, confirmed.pending.ownedOfferedSlots);
+    assert.equal(f.created.length, 0);
+  }
+  const message = 'اسمي لينا اختبار AIBB 93414557 whatsapp-ar. وبالمناسبة، قال لي أحدهم اليوم "hej".';
+  assert.equal((await f.turn(message)).pending, null);
+  await f.turn(message);
+  assert.equal(f.created.length, 1);
+  assert.equal(f.recorded.length, 1);
+  assert.equal(f.notifications.length, 1);
+  assert.equal(f.created[0].name, 'لينا اختبار');
+  assert.equal(f.created[0].phone, '+46700000001');
+});

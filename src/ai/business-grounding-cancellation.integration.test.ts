@@ -107,14 +107,15 @@ test('installed OpenAI SDK aborts timed-out extraction transport and releases al
   const h = capture(t), requests = transport(t, 1300);
   const ids = ['cancel-a', 'cancel-b', 'cancel-c']; ids.forEach(seed);
   const replies = await Promise.all(ids.map(id => b.businessSupportGrounding(id, question, candidate, 'de')));
-  for (const reply of replies) { assert.ok(reply.includes('Video Consultation')); assert.equal(reply.includes(address), false); }
+  for (const reply of replies) { assert.ok(reply.includes('Video Consultation')); assert.equal(reply.includes(address), true, 'the separate location entailment succeeded'); }
   assert.ok(h.diagnostics.every(d => !d.verifierReturnedAssessment && !d.claimsEntailed));
   await delay(0); // allow SDK rejection and queue finally blocks to drain
-  assert.equal(requests.length, 3);
-  assert.ok(requests.every(r => r.aborted && r.providerCompleteMs === null && r.parseCompleteMs === null));
+  assert.equal(requests.length, 6);
+  assert.ok(requests.filter(r => r.extraction).every(r => r.aborted && r.providerCompleteMs === null && r.parseCompleteMs === null));
+  assert.equal(requests.filter(r => !r.extraction).length, 3);
   const result = await b.promptAuditGenerate(null, { messages: [{ role: 'user', content: JSON.stringify({ atomicClaim: 'offline follow-up' }) }], systemInstruction: 'offline follow-up' });
   assert.ok(result.text.includes('ENTAILED'));
-  assert.equal(requests.length, 4);
+  assert.equal(requests.length, 7);
   assert.equal(h.failures.length, 3);
   const diagnosticText = JSON.stringify(h.failures);
   for (const secret of [question, candidate, fact, address, 'sk-offline-cancel']) assert.equal(diagnosticText.includes(secret), false);
@@ -124,7 +125,7 @@ test('abort remains effective after response headers, during unfinished SDK JSON
   const h = capture(t), requests = transport(t, 1300, true); seed('body-abort');
   const reply = await b.businessSupportGrounding('body-abort', question, candidate, 'de');
   await delay(0);
-  assert.equal(reply.includes(address), false);
+  assert.equal(reply.includes(address), true, 'the separate location entailment succeeded');
   assert.equal(h.diagnostics[0].verifierReturnedAssessment, false);
   assert.ok(requests[0].headersMs !== null && requests[0].headersMs < 1000);
   assert.equal(requests[0].aborted, true);
@@ -145,13 +146,13 @@ test('six repeated production-shaped path runs record variance and deadline outc
     const groundingMs = Math.round(performance.now() - started);
     const extraction = requests[0];
     const success = reply.includes(address);
-    assert.equal(success, modeledMs < 20000);
-    assert.equal(requests.length, success ? 3 : 1, 'successful extraction still requires two independent entailment calls');
+    assert.equal(success, true, 'positive independent location verification can recover after extraction timeout');
+    assert.equal(requests.length, modeledMs < 20000 ? 3 : 2, 'timeout adds only one independent address check');
     if (modeledMs > 20000) {
       await delay(modeledMs / 20 - 1000 + 40);
       assert.equal(extraction.aborted, !baseline);
       assert.equal(extraction.parseCompleteMs, null, 'late extraction never reaches grounding parser');
-      assert.equal(reply.includes(address), false);
+      assert.equal(reply.includes(address), true, 'the separate location entailment succeeded');
     }
     rows.push({ modeledProviderMs: modeledMs, extractionCompletionMs: extraction.providerCompleteMs === null ? null : Math.round(extraction.providerCompleteMs),
       firstResponseMs: extraction.headersMs === null ? null : Math.round(extraction.headersMs),

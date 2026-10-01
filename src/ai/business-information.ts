@@ -251,6 +251,12 @@ export function formatConfiguredServiceCatalogPlan(
       );
     }
 
+    if (lang === "ar" || lang === "fa") {
+      // Isolate each mixed-direction component. Parentheses and commas are
+      // ambiguous between RTL units and LTR service/currency names in WhatsApp.
+      return `• ${[service.name, ...details].map(value => `\u2068${value}\u2069`).join(" — ")}`;
+    }
+
     return details.length
       ? `• ${service.name} (${details.join(", ")})`
       : `• ${service.name}`;

@@ -1,9 +1,16 @@
 // Explicit self-identification only; do not harvest names from booking prose.
 // Keep the complete name rather than using the legacy two-word cleanup.
+export function stripCustomerNameDiagnosticSuffix(text: string): string {
+  // A diagnostic run marker is a boundary, never part of a person's name.
+  // Require a run identifier (or an abbreviated diagnostic placeholder) so
+  // ordinary prose and names containing the word AIBB are not silently cut.
+  return text.replace(/\s+AIBB\s+(?:[\p{N}]+(?=\s|[.,]|$)|\.{3}|…)[\s\S]*$/u, '').trim();
+}
+
 export function extractExplicitArabicCustomerName(text: string): string | null {
-  const raw = text.normalize('NFKC')
+  const raw = stripCustomerNameDiagnosticSuffix(text.normalize('NFKC')
     .replace(/[\u200e\u200f\u202a-\u202e\u2066-\u2069]/gu, '')
-    .trim();
+    .trim());
   const match = raw.match(/^(?:نعم[،,]?\s+)?(?:(?:أنا|انا)\s+)?(?:اسمي|إسمي|اسمی|إسمی|الاسم)\s+(.+?)\s*[.۔!]*$/u);
   if (!match) return null;
   const candidate = match[1].replace(

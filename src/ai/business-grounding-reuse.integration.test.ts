@@ -180,12 +180,13 @@ test('UNKNOWN/NEUTRAL retry and different adjudication prompt remain real indepe
 });
 
 test('timeout results are not reused as verification; repeated failure still emits no unverified address', async t => {
-  const h = harness(t, [catalogClaim(), locationClaim()], body => body.atomicClaim === location ? 'TIMEOUT' : 'ENTAILED');
+  const h = harness(t, [catalogClaim(), locationClaim()], body => body.atomicClaim.includes(address) ? 'TIMEOUT' : 'ENTAILED');
   seed();
   const reply = await run();
   assert.equal(reply.includes(address), false);
   assert.ok(reply.includes('Video Consultation'));
   assert.equal(h.perClaim.get(location), 2, 'failed transport is not cached as a verdict');
+  assert.equal(h.counts().entailment, 4, 'the narrow fallback also fails and cannot authorize the address');
   assert.equal(h.diagnostics[0].claimsEntailed, false);
 });
 

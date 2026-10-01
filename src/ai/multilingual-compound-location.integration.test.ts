@@ -93,7 +93,7 @@ for (const [language, question, location] of cases) {
       const presented = b.enforceAssistantIdentityLifecycle(b.suppressRepeatedPromotionalCta(h.sessionId, grounded), question, false);
       const sent = b.finalConversationConcision(presented, b.finalConversationConcisionBudget(question));
       assert.equal(sent, `${catalog}\n${location}`, 'keep the localized catalog/help continuation and exact verified location only');
-      for (const service of plan.displayedServices) assert.equal(sent.split(`• ${service.name} (`).length - 1, 1);
+      for (const service of plan.displayedServices) assert.equal(sent.replace(/[\u2068\u2069]/gu, '').split(`• ${service.name}`).length - 1, 1);
       assert.equal(sent.split('Aurora Street 742').length - 1, 1);
       assert.equal(sent.includes(unknown), false);
       assert.doesNotMatch(sent, /can't find a specific answer|ingen specifik uppgift|keine konkrete Angabe|No encuentro información|پاسخ مشخصی|لا أجد/u);
@@ -184,7 +184,7 @@ test('German fallback distinguishes an unavailable verifier from rejected eviden
         claims: [claim(catalog, 'structured_business_config', '"name": "Video Consultation"'),
           claim(location, 'retrieved_knowledge', fact)],
       }),
-      assessBusinessClaimEntailment: async request => ({
+      assessBusinessClaimEntailment: async request => failure === 'missing-assessment' ? null : ({
         relation: failure === 'contradicted-claim' && request.atomicClaim === location ? 'CONTRADICTED' : 'ENTAILED',
         claimKind: 'OTHER', explicitAbsenceEvidence: false,
       }),

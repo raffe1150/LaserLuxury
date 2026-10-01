@@ -16,7 +16,7 @@ import {
   isServiceCatalogQuestion,
 } from './src/ai/business-information';
 import "dotenv/config";
-import { extractExplicitArabicCustomerName } from './src/ai/arabic-customer-name';
+import { extractExplicitArabicCustomerName, stripCustomerNameDiagnosticSuffix } from './src/ai/arabic-customer-name';
 import express from "express";
 import cron from "node-cron";
 import path from "path";
@@ -8858,7 +8858,14 @@ function extractVerifiedRetrievedAddress(
     return null;
   }
 
-  const addresses = claim.evidence.flatMap((item) => {
+  return extractAddressCandidateFromEvidence(claim.evidence);
+}
+
+// Syntax only: callers must establish trust separately before emitting this.
+function extractAddressCandidateFromEvidence(
+  evidence: Array<{ quote: string }>,
+): string | null {
+  const addresses = evidence.flatMap((item) => {
     const normalized = normalizeGroundingEvidenceText(item.quote);
     const matches: string[] = [];
 
@@ -9395,6 +9402,15 @@ async function recoverCompoundBusinessInformation(
       supportedTopics.add("prices");
     }
   }
+  if (isBusinessAddressQuestion(request.customerMessage) && !supportedTopics.has("contact") &&
+      (!assessment || entailmentResults.verificationUnavailable)) {
+    const location = await recoverUnavailableBusinessLocation(support.businessConfig, snapshot, request, entailmentResults);
+    if (location) {
+      parts.push(location);
+      verifiedLocationQuotes.push(location);
+      supportedTopics.add("contact");
+    }
+  }
   if (!parts.length) return "";
   const missingTopics = topics.filter(topic => !supportedTopics.has(topic));
   const formatGap = !assessment || entailmentResults.verificationUnavailable
@@ -9408,6 +9424,56 @@ async function recoverCompoundBusinessInformation(
     ? normalizeGroundedCompoundCatalogReply(groundedReply, catalogPlan, request.language,
         String(support.businessConfig?.businessName || support.businessConfig?.business_name || ""), verifiedLocationQuotes)
     : groundedReply;
+}
+
+async function recoverUnavailableBusinessLocation(
+  config: any,
+  snapshot: BusinessGroundingSnapshot,
+  request: BusinessGroundingVerificationRequest,
+  results: BusinessClaimEntailmentResults,
+): Promise<string> {
+  // The explicit business-owned address field has the same direct trust as the
+  // configured catalog. Prose/retrieval and the candidate do not inherit it.
+  const configuredAddress = typeof config?.address === "string" ? config.address.trim() : "";
+  if (configuredAddress) {
+    console.info("[BusinessSupportLocationRecovery]", {
+      businessId: request.businessId, language: request.language, disposition: "configured_address",
+    });
+    return formatDeterministicAddressReply(configuredAddress, request.language);
+  }
+
+  const retrieved = snapshot.sources.retrieved_knowledge;
+  if (!isBusinessAddressQuestion(retrieved)) return "";
+  const address = extractAddressCandidateFromEvidence([{ quote: retrieved
+    .replace(/KNOWLEDGE CHUNK\s+\d+/giu, "")
+    .replace(/source_id:\s*[^\s]+/giu, "") }]);
+  if (!address) return "";
+  const proposal = formatDeterministicAddressReply(address, request.language);
+  // A narrow independent semantic check can succeed even when extraction of
+  // the full compound reply failed. Include complete factual sources, retaining
+  // negation, qualifiers and conflicting context. Matching digits is not trust.
+  const citedEvidence = (["retrieved_knowledge", "business_system_prompt", "structured_business_config"] as const)
+    .filter(source => snapshot.sources[source])
+    .map(source => ({ source, quote: snapshot.sources[source] }));
+  let decision: BusinessClaimEntailmentAssessment | null = null;
+  try {
+    decision = await assessBusinessClaimEntailmentWithReuse({
+      customerMessage: request.customerMessage, atomicClaim: proposal, candidateQuote: proposal,
+      claimKind: "OTHER", citedEvidence, workflow: "business_information",
+      language: request.language, businessId: request.businessId,
+    }, results);
+  } catch {
+    // Verification is still unavailable; preserve the existing safe notice.
+  }
+  const accepted = decision?.relation === "ENTAILED" && decision.claimKind === "OTHER";
+  console.info("[BusinessSupportLocationRecovery]", {
+    businessId: request.businessId, language: request.language,
+    disposition: accepted ? "independently_verified" : "verification_unavailable",
+    relation: decision?.relation ?? null, evidenceFingerprint: safeLogFingerprint(snapshot.evidenceCorpus),
+  });
+  // Unlike an already verified claim, this proposal cannot use the legacy
+  // repeated UNKNOWN/NEUTRAL address recovery. Only positive verification wins.
+  return accepted ? proposal : "";
 }
 
 async function guardBusinessSupportGrounding(
@@ -9817,8 +9883,9 @@ async function guardBusinessSupportGrounding(
     const groundedReply = entailmentDecision.deterministicReply || candidateReply;
     // Fully grounded compound candidates bypass recovery. Select/normalize the
     // same authoritative catalog here as well, after all safety gates succeed.
-    if (businessInformationTopics(latestCustomerMessage).length > 1 &&
-        !isBusinessRecommendationQuestion(latestCustomerMessage) &&
+    if (((businessInformationTopics(latestCustomerMessage).length > 1 &&
+          !isBusinessRecommendationQuestion(latestCustomerMessage)) ||
+         ((language === "ar" || language === "fa") && serviceCatalogQuestion)) &&
         isServiceCatalogQuestion(latestCustomerMessage, true)) {
       return normalizeGroundedCompoundCatalogReply(groundedReply,
         buildConfiguredServiceCatalogPlan(support.businessConfig?.services || []), language,
@@ -10132,7 +10199,7 @@ function maskPhoneForDiagnostic(phone?: string): string {
 }
 
 function extractNameOnly(text?: string, allowStandaloneName = true): string | null {
-  const raw = String(text || "").trim();
+  const raw = stripCustomerNameDiagnosticSuffix(String(text || "").trim());
   if (!raw) return null;
 
   if (

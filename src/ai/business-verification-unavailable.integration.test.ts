@@ -68,7 +68,8 @@ function harness(t: any, language: string, question: string, location: string, m
       return { output_text: JSON.stringify({ hasBusinessFactualClaims: true, allBusinessClaimsSupported: true,
         claims: [claim(catalog, 'structured_business_config', '"name": "Video Consultation"'), claim(location, 'retrieved_knowledge', retrieved)] }) };
     }
-    if (mode === 'entailment-failure' && body.atomicClaim === location) throw new AiReliabilityError('TIMEOUT', 'offline entailment timeout');
+    if (['timeout', 'provider-failure', 'malformed'].includes(mode)) return { output_text: '{}' };
+    if (mode === 'entailment-failure' && /Aurora Street 742/u.test(body.atomicClaim)) throw new AiReliabilityError('TIMEOUT', 'offline entailment timeout');
     return { output_text: '{"relation":"ENTAILED","claimKind":"OTHER","explicitAbsenceEvidence":false}' };
   });
   return { catalog, candidate, requests, diagnostics, failures, sdkMock, async run() {
@@ -91,7 +92,7 @@ for (const [language, question, location, unavailable] of cases) {
       const h = harness(t, language, question, location, mode);
       const reply = await h.run();
       assert.ok(reply.startsWith(h.catalog));
-      for (const service of plan.displayedServices) assert.equal(reply.split(`• ${service.name} (`).length - 1, 1);
+      for (const service of plan.displayedServices) assert.equal(reply.replace(/[\u2068\u2069]/gu, '').split(`• ${service.name}`).length - 1, 1);
       assert.doesNotMatch(reply, falseAbsence);
       assert.match(reply, unavailable);
       assert.doesNotMatch(reply, /Aurora Street 742/u, 'unverified candidate is withheld, never promoted on transport failure');
@@ -103,7 +104,7 @@ for (const [language, question, location, unavailable] of cases) {
       assert.equal(h.diagnostics[0].verificationUnavailable, true);
       if (mode === 'provider-failure') assert.equal(h.failures[0].httpStatus, 400);
       if (mode === 'entailment-failure') assert.ok(h.requests.length > 2);
-      else assert.equal(h.requests.length, 2, 'no timeout retry or second conversation generation');
+      else assert.equal(h.requests.length, 3, 'one narrow location check, no repeated conversation generation');
     });
   }
   test(`${language}: outage with no retrieved location cannot fabricate candidate address`, async t => {
@@ -158,10 +159,11 @@ test('actual SDK deadline abort produces the later generation failure diagnostic
     requests++;
     const params = JSON.parse(init.body);
     assert.equal(params.model, 'gpt-5.6-luna');
-    assert.match(params.instructions, /strict business-response claim and citation extractor/u);
+    assert.match(params.instructions, /strict business-response claim and citation extractor|final strict entailment gate/u);
     const body = JSON.parse(params.input[0].content);
-    assert.ok(body.groundingEvidence.includes(fact));
-    assert.ok(body.candidateReply.includes('Aurora Street 742'));
+    assert.ok((body.groundingEvidence || JSON.stringify(body.citedEvidence)).includes(fact));
+    assert.ok((body.candidateReply || body.exactCandidateQuote).includes('Aurora Street 742'));
+    if (params.instructions.includes('final strict entailment gate')) return new Response(JSON.stringify({ output_text: '{}' }), { status: 200, headers: { 'content-type': 'application/json' } });
     assert.equal(params.tools, undefined);
     notifyStart();
     return new Promise<Response>((_resolve, reject) => {
@@ -178,7 +180,7 @@ test('actual SDK deadline abort produces the later generation failure diagnostic
   const reply = await pending;
   await new Promise<void>(resolve => setImmediate(resolve));
   assert.equal(aborted, true);
-  assert.equal(requests, 1);
+  assert.equal(requests, 2, 'one failed extraction and one unavailable narrow location check');
   assert.match(reply, unavailable);
   assert.doesNotMatch(reply, falseAbsence);
   assert.doesNotMatch(reply, /Aurora Street 742/u);
@@ -223,6 +225,7 @@ test('retryable verifier provider failure keeps the existing bounded retry polic
       extractions++;
       throw APIError.generate(503, { error: { message: 'offline unavailable' } }, undefined, new Headers());
     }
+    if (params.instructions.includes('final strict entailment gate')) return { output_text: '{}' };
     return create.call(this, params, ...rest);
   });
   const reply = await h.run();
@@ -232,3 +235,102 @@ test('retryable verifier provider failure keeps the existing bounded retry polic
   assert.doesNotMatch(reply, falseAbsence);
   assert.doesNotMatch(reply, /Aurora Street 742/u);
 });
+
+for (const [language, question, location] of cases) {
+  test(`${language}: full verifier timeout can recover a location only through independent positive verification`, async t => {
+    const h = harness(t, language, question, location, 'success');
+    let narrowCalls = 0;
+    b.configure({
+      assessBusinessSupportGrounding: async () => null,
+      assessBusinessClaimEntailment: async request => {
+        narrowCalls++;
+        assert.ok(request.candidateQuote.length < h.candidate.length);
+        assert.ok(request.citedEvidence.some(item => item.source === 'retrieved_knowledge' && item.quote.includes(fact)));
+        assert.ok(request.citedEvidence.some(item => item.source === 'structured_business_config'));
+        return { relation: 'ENTAILED', claimKind: 'OTHER', explicitAbsenceEvidence: false };
+      },
+    });
+    const reply = await h.run();
+    assert.ok(reply.startsWith(h.catalog));
+    assert.equal(reply.split('Aurora Street 742').length - 1, 1);
+    assert.doesNotMatch(reply, falseAbsence);
+    assert.equal(narrowCalls, 1);
+  });
+  test(`${language}: configured location remains answerable during total verification failure`, async t => {
+    const h = harness(t, language, question, location, 'timeout', '');
+    b.businessInformationState('unavailable', { ...fixture.business, address: 'Aurora Street 742' }, question, language, '');
+    b.configure({ assessBusinessSupportGrounding: async () => null,
+      assessBusinessClaimEntailment: async () => { throw new Error('Configured address needs no provider'); } });
+    const reply = await h.run();
+    assert.ok(reply.startsWith(h.catalog));
+    assert.equal(reply.split('Aurora Street 742').length - 1, 1);
+    assert.doesNotMatch(reply, falseAbsence);
+    assert.doesNotMatch(reply, /cannot verify|kan inte verifiera|nicht überprüfen|No puedo verificar|لا أستطيع التحقق|نمی‌توانم.*تأیید/u);
+  });
+}
+for (const relation of ['UNKNOWN', 'NEUTRAL', 'CONTRADICTED', 'NOT_APPLICABLE', null] as const) {
+  test(`Swedish: narrow location recovery rejects ${relation} without retries or lexical rescue`, async t => {
+    const [language, question, location, unavailable] = cases[1];
+    const h = harness(t, language, question, location, 'success');
+    let calls = 0;
+    b.configure({ assessBusinessSupportGrounding: async () => null,
+      assessBusinessClaimEntailment: async () => { calls++; return relation ?
+        { relation, claimKind: 'OTHER', explicitAbsenceEvidence: false } : null; } });
+    const reply = await h.run();
+    assert.match(reply, unavailable);
+    assert.doesNotMatch(reply, /Aurora Street 742/u);
+    assert.doesNotMatch(reply, falseAbsence);
+    assert.equal(calls, 1);
+  });
+}
+for (const evidence of [
+  'Kundentrén ligger inte på Aurora Street 742.',
+  'Aurora Street 742 är en annan verksamhets adress.',
+  'Kundentrén ligger på Aurora Street 742 endast under oktober.',
+]) {
+  test(`Swedish: recovery must verify the full negated/qualified evidence: ${evidence}`, async t => {
+    const [language, question, location, unavailable] = cases[1];
+    const h = harness(t, language, question, location, 'success', evidence);
+    b.configure({ assessBusinessSupportGrounding: async () => null,
+      assessBusinessClaimEntailment: async request => {
+        assert.ok(request.citedEvidence.some(item => item.quote.includes(evidence)), 'never remove qualifier/negation');
+        return { relation: 'UNKNOWN', claimKind: 'OTHER', explicitAbsenceEvidence: false };
+      } });
+    const reply = await h.run();
+    assert.match(reply, unavailable);
+    assert.doesNotMatch(reply, /Aurora Street 742/u);
+  });
+}
+test('Swedish: identical source can succeed, suffer extraction failure, recover, and still fail safely during a total outage', async t => {
+  const [language, question, location, unavailable] = cases[1];
+  const h = harness(t, language, question, location, 'success');
+  assert.equal(await h.run(), h.candidate);
+  b.configure({ assessBusinessSupportGrounding: async () => null,
+    assessBusinessClaimEntailment: async () => ({ relation: 'ENTAILED', claimKind: 'OTHER', explicitAbsenceEvidence: false }) });
+  assert.ok((await h.run()).includes('Aurora Street 742'));
+  b.configure({ assessBusinessSupportGrounding: async () => null, assessBusinessClaimEntailment: async () => null });
+  const reply = await h.run();
+  assert.match(reply, unavailable);
+  assert.doesNotMatch(reply, /Aurora Street 742/u, 'a previous turn never authorizes a changed or unverified snapshot');
+});
+
+for (const [language, unit, question] of [
+  ['ar', 'دقيقة', 'ما الخدمات التي تقدمونها؟'],
+  ['fa', 'دقیقه', 'چه خدماتی ارائه می‌دهید؟'],
+]) {
+  test(`${language}: a verified service-only provider catalog receives the same RTL formatter`, async t => {
+    const catalog = formatConfiguredServiceCatalogPlan(plan, language);
+    const legacy = catalog.replace(/[\u2068\u2069]/gu, '').split('\n').map(line => {
+      const parts = line.split(' — ');
+      return parts.length === 3 ? `${parts[0]} (${parts[1]}, ${parts[2]})` : line;
+    }).join('\n');
+    t.mock.method(console, 'log', () => {}); t.mock.method(console, 'info', () => {});
+    b.businessInformationState('rtl-service-only', fixture.business, question, language, '');
+    b.configure({ assessBusinessSupportGrounding: async () => ({ hasBusinessFactualClaims: true,
+      allBusinessClaimsSupported: true, claims: [claim(legacy, 'structured_business_config', '"name": "Video Consultation"')] }),
+      assessBusinessClaimEntailment: async () => ({ relation: 'ENTAILED', claimKind: 'OTHER', explicitAbsenceEvidence: false }) });
+    const reply = await b.finalizeGeneralAiReply('rtl-service-only', question, legacy, language);
+    assert.equal(reply, catalog);
+    assert.ok(reply.includes(`\u206860 ${unit}\u2069 — \u2068300 SEK\u2069`));
+  });
+}

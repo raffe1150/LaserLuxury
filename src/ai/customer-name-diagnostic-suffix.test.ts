@@ -5,6 +5,9 @@ process.env.NODE_ENV = 'test';
 const { priority1hUnifiedEngineTestBoundary: b } = await import('../../server');
 
 for (const [message, name] of [
+  ['اسمي لينا اختبار AIBB 7a928ba6 whatsapp-ar. وبالمناسبة، قال لي أحدهم اليوم \"hej\".', 'لينا اختبار'],
+  ['اسمي سلمى منصور AIBB x7abc-90 whatsapp-ar.', 'سلمى منصور'],
+  ['نام من میرا آزمون AIBB 7a928ba6 whatsapp-fa. ضمناً امروز کسی به من \"hej\" گفت.', 'میرا آزمون'],
   ['اسمي لينا اختبار', 'لينا اختبار'],
   ['اسمي لينا اختبار AIBB 93414557 whatsapp-ar. وبالمناسبة، قال لي أحدهم اليوم "hej".', 'لينا اختبار'],
   ['اسمي لَيْنَا اِخْتِبَار AIBB ٩٣٤١٤٥٥٧ whatsapp-ar.', 'لَيْنَا اِخْتِبَار'],
@@ -32,4 +35,16 @@ for (const text of ['', 'اسمي', 'اسمي 1234 AIBB 93414557 whatsapp-ar.', 
 test('diagnostic stripping does not trim arbitrary unmarked Arabic prose or a name-like AIBB word', () => {
   assert.equal(stripCustomerNameDiagnosticSuffix('اسمي لينا اختبار وأريد تغيير الموعد.'), 'اسمي لينا اختبار وأريد تغيير الموعد.');
   assert.equal(stripCustomerNameDiagnosticSuffix('My name is Mira AIBB'), 'My name is Mira AIBB');
+});
+
+for (const message of ['اسم من', 'نام من', 'الاسم', 'اسمي', 'رقم الهاتف', 'نام', 'سلام', 'مرحبا', 'السلام عليكم']) {
+  test(`empty contact field is not a standalone person name: ${message}`, () => {
+    assert.equal(b.extractPendingBookingCustomerName(message, { operation: 'new_booking', status: 'awaiting_contact' }), null);
+  });
+}
+test('bare Arabic/Persian names are accepted only during contact collection', () => {
+  for (const name of ['لينا اختبار', 'میرا آزمون']) {
+    assert.equal(b.extractPendingBookingCustomerName(name, { operation: 'new_booking', status: 'awaiting_contact' }), name);
+    assert.equal(b.extractPendingBookingCustomerName(name, { operation: 'new_booking', status: 'awaiting_time_selection' }), null);
+  }
 });

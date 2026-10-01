@@ -28,6 +28,7 @@ function fixture(t: any, platformName: BookingContactChannel = 'whatsapp', withP
   const notifications: any[] = [];
   const adoptionDecisions: any[] = [];
   boundary.configure({
+    semanticLanguageResolver: async () => null,
     calendarAdapter: {
       getCalendarId: () => 'cal-7',
       getEvents: async () => [...events.values()],
@@ -217,8 +218,20 @@ const numericNameCases = [
   ['en', 'My name is Mira Testmann AIBB 93414557 whatsapp-en.', 'Mira Testmann'],
   ['sv', 'Jag heter Mira Testmann AIBB 93414557 whatsapp-sv.', 'Mira Testmann'],
   ['es', 'Me llamo Mira Testmann AIBB 93414557 whatsapp-es.', 'Mira Testmann'],
+  ['ar', 'لينا اختبار', 'لينا اختبار'],
+  ['ar', 'لينا اختبار AIBB d8f3c129', 'لينا اختبار'],
+  ['ar', 'اسمي لينا اختبار', 'لينا اختبار'],
+  ['ar', 'اسمي سلمى منصور AIBB cafeaffe channel-test. هذا نص إضافي.', 'سلمى منصور'],
+  ['ar', 'اسمي سلمى منصور AIBB ab3e71cf', 'سلمى منصور'],
+  ['ar', 'اسمي لينا اختبار AIBB 7a928ba6', 'لينا اختبار'],
+  ['ar', 'اسمي لينا اختبار AIBB 7a928ba6 whatsapp-ar', 'لينا اختبار'],
+  ['ar', 'اسمي لينا اختبار AIBB 7a928ba6 whatsapp-ar. وبالمناسبة، كان اليوم جميلًا.', 'لينا اختبار'],
+  ['ar', 'اسمي لينا اختبار AIBB 7a928ba6 whatsapp-ar. وبالمناسبة، قال لي أحدهم اليوم \"hej\".', 'لينا اختبار'],
   ['ar', 'اسمي لينا اختبار AIBB 93414557 whatsapp-ar. وبالمناسبة، قال لي أحدهم اليوم \"hej\".', 'لينا اختبار'],
   ['ar', 'اسمي لينا اختبار.', 'لينا اختبار'],
+  ['fa', 'میرا آزمون', 'میرا آزمون'],
+  ['fa', 'نام من میرا آزمون AIBB 7a928ba6 whatsapp-fa. ضمناً امروز کسی به من \"hej\" گفت.', 'میرا آزمون'],
+  ['fa', 'نام من میرا آزمون AIBB a11b0099-52ac-4fba-9dde-1f1f414af771 whatsapp-fa.', 'میرا آزمون'],
   ['fa', 'نام من میرا آزمون AIBB ۹۳۴۱۴۵۵۷ whatsapp-fa. ضمناً امروز کسی به من \"hej\" گفت.', 'میرا آزمون'],
   ['fa', 'نام من میرا آزمون است.', 'میرا آزمون'],
   ['ar', 'اسمي ميرا اختبار. AIBB 93414557 whatsapp-ar.', 'ميرا اختبار'],
@@ -232,6 +245,8 @@ for (const [language, message, expectedName] of numericNameCases) {
     const confirmed = await confirm(f);
     boundary.seedFlowLanguage(f.sessionId, language);
     boundary.seedPending(f.sessionId, { ...confirmed.pending, language });
+    assert.equal(await boundary.prepareConversationLanguageForTest(f.sessionId, message, businessConfig), language);
+    assert.equal((await boundary.whatsappPreDispatchDecisionAfterStateLoad(f.sessionId, message, businessConfig)).dispatchesUnifiedBooking, true);
     const traceStart = f.traces.length;
     const completed = await f.turn(message);
     const expectedPhone = '+46700000001';
@@ -252,6 +267,9 @@ for (const [language, message, expectedName] of numericNameCases) {
     assert.match([...f.events.values()][0].summary, /\+46700000001/u);
     assert.ok(completed.replies.join(' ').includes(expectedName));
     assert.ok(completed.replies.join(' ').includes(expectedPhone));
+    assert.doesNotMatch(completed.replies.join(' '), /أحتاج.*اسمك|نیاز.*نام|فقط.*اسمك/u);
+    assert.equal(f.traces.slice(traceStart).some(event => event.label === '[BookingContactPolicy]' &&
+      event.detail?.namePresent === true && event.detail?.finalizationAttempted === true), true);
     await f.turn(message);
     assert.equal(f.created.length, 1);
     assert.equal(f.recorded.length, 1);
@@ -327,16 +345,18 @@ test('invalid diagnostic name keeps the owned booking slot until a valid Arabic 
   const confirmed = await confirm(f);
   boundary.seedFlowLanguage(f.sessionId, 'ar');
   boundary.seedPending(f.sessionId, { ...confirmed.pending, language: 'ar' });
-  for (const message of ['اسمي', 'اسمي AIBB 93414557 whatsapp-ar.', 'اسمي 1234 AIBB 93414557 whatsapp-ar.']) {
+  for (const message of ['', 'اسمي', 'اسمي AIBB 7a928ba6 whatsapp-ar.', 'اسمي 1234 AIBB 7a928ba6 whatsapp-ar.', 'اسمي AIBB 7a928ba6 whatsapp-ar. وبالمناسبة، كان اليوم جميلًا.']) {
     const incomplete = await f.turn(message);
     assert.equal(incomplete.pending?.status, 'awaiting_contact');
     assert.equal(incomplete.pending?.customerName ?? null, null);
+    if (message.trim()) assert.match(incomplete.replies.join(' '), /اسم/u);
+    else assert.equal(incomplete.replies.length, 0, 'empty inbound text is ignored while the name prompt remains pending');
     assert.equal(incomplete.pending?.dateTime, confirmed.pending.dateTime);
     assert.equal(incomplete.pending?.selectedSlotEnd, confirmed.pending.selectedSlotEnd);
     assert.deepEqual(incomplete.pending?.ownedOfferedSlots, confirmed.pending.ownedOfferedSlots);
     assert.equal(f.created.length, 0);
   }
-  const message = 'اسمي لينا اختبار AIBB 93414557 whatsapp-ar. وبالمناسبة، قال لي أحدهم اليوم "hej".';
+  const message = 'اسمي لينا اختبار AIBB 7a928ba6 whatsapp-ar. وبالمناسبة، قال لي أحدهم اليوم "hej".';
   assert.equal((await f.turn(message)).pending, null);
   await f.turn(message);
   assert.equal(f.created.length, 1);
@@ -344,4 +364,60 @@ test('invalid diagnostic name keeps the owned booking slot until a valid Arabic 
   assert.equal(f.notifications.length, 1);
   assert.equal(f.created[0].name, 'لينا اختبار');
   assert.equal(f.created[0].phone, '+46700000001');
+});
+
+for (const platform of ['telegram', 'messenger', 'instagram'] as const) {
+  for (const [language, message, name] of [
+    ['ar', 'اسمي لينا اختبار AIBB 7a928ba6 whatsapp-ar. وبالمناسبة، قال لي أحدهم اليوم "hej".', 'لينا اختبار'],
+    ['fa', 'نام من میرا آزمون AIBB cafeaffe channel-test. ضمناً امروز کسی به من "hej" گفت.', 'میرا آزمون'],
+  ]) {
+    test(`${platform}/${language}: native contact name survives marker while missing phone still uses normal collection`, async t => {
+      const f = fixture(t, platform, false);
+      await select(f);
+      const confirmed = await confirm(f);
+      boundary.seedFlowLanguage(f.sessionId, language);
+      boundary.seedPending(f.sessionId, { ...confirmed.pending, language });
+      const named = await f.turn(message);
+      assert.equal(named.pending?.status, 'awaiting_contact');
+      assert.equal(named.pending?.customerName, name);
+      assert.equal(named.pending?.customerPhone ?? null, null);
+      assert.equal(named.pending?.dateTime, confirmed.pending.dateTime);
+      assert.equal(named.pending?.selectedSlotEnd, confirmed.pending.selectedSlotEnd);
+      assert.equal(f.created.length, 0);
+      const completed = await f.turn('0701234567');
+      assert.equal(completed.pending, null);
+      assert.equal(f.created.length, 1);
+      assert.equal(f.recorded.length, 1);
+      assert.equal(f.notifications.length, 1);
+      assert.equal(f.created[0].name, name);
+      assert.equal(f.created[0].phone, '0701234567');
+      assert.equal(new Date(f.created[0].dateTime).getTime(), new Date(confirmed.pending.dateTime).getTime());
+      assert.ok(completed.replies.join(' ').includes(name));
+    });
+  }
+}
+
+test('Arabic explicit phone before diagnostic boundary keeps the existing intentional override behavior', async t => {
+  const f = fixture(t);
+  await select(f);
+  const confirmed = await confirm(f);
+  boundary.seedFlowLanguage(f.sessionId, 'ar');
+  boundary.seedPending(f.sessionId, { ...confirmed.pending, language: 'ar' });
+  const completed = await f.turn('اسمي سلمى منصور ورقم هاتفي 0701234567 AIBB c1ea9b33 channel-test. وبالمناسبة، كان اليوم جميلًا.');
+  assert.equal(completed.pending, null);
+  assert.equal(f.created.length, 1);
+  assert.equal(f.created[0].name, 'سلمى منصور');
+  assert.equal(f.created[0].phone, '0701234567');
+  assert.equal(f.recorded[0].phone, '0701234567');
+  assert.equal(f.notifications[0].phone, '0701234567');
+  assert.equal(new Date(f.created[0].dateTime).getTime(), new Date(confirmed.pending.dateTime).getTime());
+});
+
+test('a real slot correction before a diagnostic boundary still reaches the existing booking state logic', async t => {
+  const f = fixture(t);
+  await select(f);
+  await confirm(f);
+  const corrected = await f.turn('I want to change the date to 2026-10-02 AIBB c1ea9b33 channel-test.');
+  assert.notEqual(corrected.pending?.selectedDate, '2026-10-01');
+  assert.equal(f.created.length, 0);
 });

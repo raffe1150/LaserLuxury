@@ -118,7 +118,7 @@ try {
     assert.equal(boundary.extractPendingBookingCustomerName(text, { operation: 'new_booking', status: 'awaiting_contact' }), null, text);
   }
   for (const channel of ['instagram', 'messenger', 'telegram', 'whatsapp'] as const) {
-    for (const mode of ['combined', 'name-first', 'phone-first', 'contaminated-service'] as const) {
+    for (const mode of ['combined', 'name-first', 'phone-first', 'contaminated-service', 'diagnostic-name'] as const) {
       activeChannel = channel;
       const counters = fixture();
       const userId = channel === 'whatsapp' ? '46700001106' : 'arabic-intake';
@@ -153,13 +153,14 @@ try {
         assertRetained(result);
         assert.equal(result.pending?.customerName ?? null, null);
       }
-      if (mode === 'name-first' && channel !== 'whatsapp') {
-        const result = await turn(nameOnly);
+      if ((mode === 'name-first' || mode === 'diagnostic-name') && channel !== 'whatsapp') {
+        const result = await turn(mode === 'diagnostic-name' ? `اسمي لينا اختبار AIBB 7a928ba6 ${channel}-ar. وبالمناسبة، قال لي أحدهم اليوم \"hej\".` : nameOnly);
         assertRetained(result);
         assert.equal(result.pending.customerName, 'لينا اختبار');
         await turn('رقم هاتفي 0700001106.');
       } else {
-        await turn(mode === 'combined' ? combined : nameOnly);
+        await turn(mode === 'combined' ? combined : mode === 'diagnostic-name' ?
+          `اسمي لينا اختبار AIBB 7a928ba6 ${channel}-ar. وبالمناسبة، قال لي أحدهم اليوم \"hej\".` : nameOnly);
       }
       assert.equal(counters.calendarCreate, 1, `${channel}/${mode}`);
       assert.equal(counters.databaseInsert, 1);
@@ -168,11 +169,11 @@ try {
       assert.equal(new Date(counters.createdStart).getTime() + counters.createdDuration * 60000, new Date(selected.pending.selectedSlotEnd).getTime());
       assert.equal(
         counters.createdPhone,
-        channel === 'whatsapp' && mode === 'name-first'
+        channel === 'whatsapp' && (mode === 'name-first' || mode === 'diagnostic-name')
           ? '+46700001106'
           : '0700001106'
       );
     }
   }
-  log('Arabic extraction and 16 shared contact journeys passed');
+  log('Arabic extraction and 20 shared contact journeys passed');
 } finally { boundary.reset(); console.log = log; }

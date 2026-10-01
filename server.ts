@@ -16,7 +16,7 @@ import {
   isServiceCatalogQuestion,
 } from './src/ai/business-information';
 import "dotenv/config";
-import { extractExplicitArabicCustomerName, stripCustomerNameDiagnosticSuffix } from './src/ai/arabic-customer-name';
+import { extractExplicitArabicCustomerName, extractStandaloneArabicScriptCustomerName, stripCustomerNameDiagnosticSuffix } from './src/ai/arabic-customer-name';
 import express from "express";
 import cron from "node-cron";
 import path from "path";
@@ -10251,6 +10251,8 @@ function extractNameOnly(text?: string, allowStandaloneName = true): string | nu
   if (!allowStandaloneName) return null;
 
   // Accept a short standalone person name while collecting contact details.
+  const arabicScriptName = isGreetingOnlyText(raw) ? null : extractStandaloneArabicScriptCustomerName(raw);
+  if (arabicScriptName) return arabicScriptName;
   const standaloneNameCandidate = raw.replace(/[.!?:]+$/u, "").trim();
   if (
     /^[A-Za-zÅÄÖåäöÉéÜüÖöÄäÁáÍíÓóÚúÑñÇçŞşĞğ'\-]{2,}(?:\s+[A-Za-zÅÄÖåäöÉéÜüÖöÄäÁáÍíÓóÚúÑñÇçŞşĞğ'\-]{2,})?$/.test(standaloneNameCandidate)
@@ -15841,7 +15843,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
   const appointmentTurnNow = params.now ?? new Date();
   const appointmentTurnNowMs = appointmentTurnNow.getTime();
 
-  const text = normalizeConversationText(inboundText);
+  let text = normalizeConversationText(inboundText);
 
   if (!text) return false;
   delete nonMutatingSupportTurns[sessionId];
@@ -15900,6 +15902,14 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
     pending = null;
   }
   let completedBookingAtEntry = Boolean(!pending && recentCompletedBookingAtEntry?.bookingOperation?.ok);
+  const contactText = stripCustomerNameDiagnosticSuffix(text);
+  if (contactText !== text &&
+      ["awaiting_contact", "failed_recoverable"].includes(String(pending?.status || ""))) {
+    // During contact collection, diagnostic metadata is not booking input.
+    // Its incidental dates/services must not replace the selected slot, even
+    // when the human contact field is invalid and still needs clarification.
+    text = contactText;
+  }
   const entryPendingLanguage = pending?.language || null;
   // Answer the latest informational question before merging booking entities or
   // consuming awaiting_service. Keep pending slots/holds intact for a later turn.

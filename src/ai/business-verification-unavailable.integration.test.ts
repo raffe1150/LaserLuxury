@@ -320,10 +320,10 @@ for (const [language, unit, question] of [
 ]) {
   test(`${language}: a verified service-only provider catalog receives the same RTL formatter`, async t => {
     const catalog = formatConfiguredServiceCatalogPlan(plan, language);
-    const legacy = catalog.replace(/[\u2068\u2069]/gu, '').split('\n').map(line => {
-      const parts = line.split(' — ');
-      return parts.length === 3 ? `${parts[0]} (${parts[1]}, ${parts[2]})` : line;
-    }).join('\n');
+    const legacy = formatConfiguredServiceCatalogPlan(plan, 'en')
+      .replace('Our bookable services are:', language === 'ar' ? 'خدماتنا المتاحة للحجز هي:' : 'خدمات قابل رزرو ما عبارت‌اند از:')
+      .replaceAll('minutes', unit)
+      .replace(/We have more services too[^\n]*/u, catalog.split('\n').at(-1)!);
     t.mock.method(console, 'log', () => {}); t.mock.method(console, 'info', () => {});
     b.businessInformationState('rtl-service-only', fixture.business, question, language, '');
     b.configure({ assessBusinessSupportGrounding: async () => ({ hasBusinessFactualClaims: true,
@@ -331,6 +331,6 @@ for (const [language, unit, question] of [
       assessBusinessClaimEntailment: async () => ({ relation: 'ENTAILED', claimKind: 'OTHER', explicitAbsenceEvidence: false }) });
     const reply = await b.finalizeGeneralAiReply('rtl-service-only', question, legacy, language);
     assert.equal(reply, catalog);
-    assert.ok(reply.includes(`\u206860 ${unit}\u2069 — \u2068300 SEK\u2069`));
+    assert.ok(reply.includes(language === 'ar' ? `المدة:\n60 ${unit}\nالسعر:\n300 SEK` : `مدت:\n60 ${unit}\nقیمت:\n300 SEK`));
   });
 }

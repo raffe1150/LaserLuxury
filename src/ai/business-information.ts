@@ -201,6 +201,33 @@ export function buildConfiguredServiceCatalogPlan(
   };
 }
 
+const serviceMinuteLabels: Record<string, string> = {
+  en: "minutes", sv: "minuter", de: "Minuten", es: "minutos", fa: "دقیقه", ar: "دقيقة",
+};
+const rtlServiceFieldLabels: Record<string, { duration: string; price: string }> = {
+  ar: { duration: "المدة", price: "السعر" },
+  fa: { duration: "مدت", price: "قیمت" },
+};
+
+function formatConfiguredServiceRow(service: ConfiguredServiceCatalogItem, language: string): string {
+  const duration = service.durationMinutes !== null
+    ? `${service.durationMinutes} ${serviceMinuteLabels[language]}` : "";
+  const price = service.price !== null
+    ? service.currency ? `${service.price} ${service.currency}` : String(service.price) : "";
+  const fields = rtlServiceFieldLabels[language];
+  if (fields) {
+    // Keep labels and values on separate lines too: an RTL label must not land
+    // between a number and its Latin currency in an LTR client container.
+    return [
+      `• ${service.name}`,
+      ...(duration ? [`${fields.duration}:`, duration] : []),
+      ...(price ? [`${fields.price}:`, price] : []),
+    ].join("\n");
+  }
+  const details = [duration, price].filter(Boolean);
+  return details.length ? `• ${service.name} (${details.join(", ")})` : `• ${service.name}`;
+}
+
 export function formatConfiguredServiceCatalogPlan(
   plan: ConfiguredServiceCatalogPlan,
   language: string,
@@ -227,46 +254,13 @@ export function formatConfiguredServiceCatalogPlan(
     ar: "لدينا خدمات أخرى أيضًا. أخبرني بما تبحث عنه وسأساعدك في العثور على الخدمة المناسبة.",
   };
 
-  const minuteLabel: Record<string, string> = {
-    en: "minutes",
-    sv: "minuter",
-    de: "Minuten",
-    es: "minutos",
-    fa: "دقیقه",
-    ar: "دقيقة",
-  };
-
-  const rows = plan.displayedServices.map((service) => {
-    const details: string[] = [];
-
-    if (service.durationMinutes !== null) {
-      details.push(`${service.durationMinutes} ${minuteLabel[lang]}`);
-    }
-
-    if (service.price !== null) {
-      details.push(
-        service.currency
-          ? `${service.price} ${service.currency}`
-          : String(service.price),
-      );
-    }
-
-    if (lang === "ar" || lang === "fa") {
-      // Isolate each mixed-direction component. Parentheses and commas are
-      // ambiguous between RTL units and LTR service/currency names in WhatsApp.
-      return `• ${[service.name, ...details].map(value => `\u2068${value}\u2069`).join(" — ")}`;
-    }
-
-    return details.length
-      ? `• ${service.name} (${details.join(", ")})`
-      : `• ${service.name}`;
-  });
+  const rows = plan.displayedServices.map(service => formatConfiguredServiceRow(service, lang));
 
   if (!rows.length) return "";
 
   return [
     intro[lang],
-    ...rows,
+    rows.join(rtlServiceFieldLabels[lang] ? "\n\n" : "\n"),
     ...(plan.hasMoreServices ? [more[lang]] : []),
   ].join("\n");
 }
@@ -413,8 +407,22 @@ export function normalizeGroundedCompoundCatalogReply(
   }
   const fragments = segments.filter((_, index) => index % 2 === 0).map(part => part.trim());
   const roles = fragments.map(isCatalogSpan);
+  const detailParts = new Set<string>();
+  if (rtlServiceFieldLabels[language]) {
+    for (const service of names) {
+      const fields = formatConfiguredServiceRow(service, language).split("\n").slice(1);
+      fields.forEach(field => detailParts.add(field));
+      fragments.forEach((part, index) => {
+        if (!roles[index] || part.replace(/^[•*-]\s*/u, '').trim() !== service.name) return;
+        for (let offset = 1; offset <= fields.length; offset++) {
+          if (!fields.includes(fragments[index + offset])) break;
+          roles[index + offset] = true;
+        }
+      });
+    }
+  }
   const canonicalProse = new Set(catalog.split(/\n+|(?<=[.!?؟。])\s+/u)
-    .filter(part => !isCatalogSpan(part)));
+    .filter(part => !isCatalogSpan(part) && !detailParts.has(part)));
   const seenLocations = new Set<string>();
   let remainder = '';
   let previousKept = -2;
@@ -451,38 +459,11 @@ export function formatRecommendationServiceSummary(
     ar: "نقدم عدة خدمات متاحة للحجز. إليك بعض الأمثلة:",
   };
 
-  const minuteLabel: Record<string, string> = {
-    en: "minutes",
-    sv: "minuter",
-    de: "Minuten",
-    es: "minutos",
-    fa: "دقیقه",
-    ar: "دقيقة",
-  };
-
-  const rows = plan.displayedServices.slice(0, 3).map((service) => {
-    const details: string[] = [];
-
-    if (service.durationMinutes !== null) {
-      details.push(`${service.durationMinutes} ${minuteLabel[lang]}`);
-    }
-
-    if (service.price !== null) {
-      details.push(
-        service.currency
-          ? `${service.price} ${service.currency}`
-          : String(service.price),
-      );
-    }
-
-    return details.length
-      ? `• ${service.name} (${details.join(", ")})`
-      : `• ${service.name}`;
-  });
+  const rows = plan.displayedServices.slice(0, 3).map(service => formatConfiguredServiceRow(service, lang));
 
   if (!rows.length) return "";
 
-  return [intro[lang], ...rows].join("\n");
+  return [intro[lang], rows.join(rtlServiceFieldLabels[lang] ? "\n\n" : "\n")].join("\n");
 }
 
 export function formatConfiguredServiceOverview(names: string[], language: string): string {

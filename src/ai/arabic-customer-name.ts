@@ -2,9 +2,20 @@
 // Keep the complete name rather than using the legacy two-word cleanup.
 export function stripCustomerNameDiagnosticSuffix(text: string): string {
   // A diagnostic run marker is a boundary, never part of a person's name.
-  // Require a run identifier (or an abbreviated diagnostic placeholder) so
+  // Require an opaque run identifier (hex or digit-bearing/UUID tokens)
+  // or an abbreviated diagnostic placeholder so
   // ordinary prose and names containing the word AIBB are not silently cut.
-  return text.replace(/\s+AIBB\s+(?:[\p{N}]+(?=\s|[.,]|$)|\.{3}|…)[\s\S]*$/u, '').trim();
+  return text.replace(/\s+AIBB\s+(?:(?:[A-Fa-f\d]{8,}|[A-Za-z\p{N}_-]*\p{N}[A-Za-z\p{N}_-]*)(?=\s|[.,]|$)|\.{3}|…)[\s\S]*$/u, '').trim();
+}
+
+export function extractStandaloneArabicScriptCustomerName(text: string): string | null {
+  const candidate = stripCustomerNameDiagnosticSuffix(text.normalize('NFKC'))
+    .replace(/[.!۔]+$/u, '').trim();
+  // Only called when collecting contact details. Keep bare input short and
+  // reuse the explicit parser's Unicode validation and conversational rejection.
+  if (!/^[\p{Script=Arabic}\p{M}]+(?:\s+[\p{Script=Arabic}\p{M}]+){0,1}$/u.test(candidate)) return null;
+  if (/(?:^|\s)(?:نام|اسم|من|است|هست|هستم|الاسم)(?=\s|$)/u.test(candidate)) return null;
+  return extractExplicitArabicCustomerName(`اسمي ${candidate}`);
 }
 
 export function extractExplicitArabicCustomerName(text: string): string | null {

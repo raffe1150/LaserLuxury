@@ -3,6 +3,11 @@ export type BusinessInformationTopic = 'company' | 'services' | 'contact' | 'hou
 
 const businessAddressPattern = /(?<![\p{L}\p{M}\p{N}_])(?:location|located|standort\w*|kundeneingang\w*|adresse|adress|kundentré\w*|ubicaci[oó]n|ubicad\w*|direcci[oó]n|befind\w*)(?![\p{L}\p{M}\p{N}_])|\b(?:your|our|business|street|postal|mailing|physical)\s+address\b|\b(?:what(?:['’]s|\s+is)|where(?:['’]s|\s+is))\s+(?:the\s+|your\s+|our\s+)?address\b|\bcustomer\s+entrance\b|\bentrance\s+(?:for\s+)?customers?\b|\bvar\s+ligger\b|\bentrada\s+(?:de\s+|para\s+)?clientes?\b|آدرس|ورودی\s+مشتری(?:ان)?|کجا\s+هست|عنوان(?:كم|ك|نا)|مدخل\s+العملاء|(?:أين|اين)\s+(?:يقع\s+)?(?:مكان|موقع)/iu;
 
+// Location can be expressed as a relationship to the business without an
+// address/location noun. Use the same role for requests and verified claims;
+// recognizing the role does not establish that the claim is supported.
+const businessLocationRelationPattern = /\bvar\s+finns\s+ni\b|\b(?:ni|du)\s+(?:kan\s+)?hitta(?:r)?\s+oss\s+(?:på|i)(?![\p{L}\p{M}])|\b(?:you\s+(?:can\s+)?find\s+us\s+at|where\s+can\s+i\s+find\s+you)\b|\b(?:sie|du|ihr)\s+(?:finden|findest|findet)\s+uns\s+(?:in|an|auf)\b|\bnos\s+encuentra(?:s|n)?\s+en\b|(?<![\p{L}\p{M}])تجدوننا\s+في\s|(?<![\p{L}\p{M}])ما\s+را\s+در\s+[^.!?؟\n]{1,120}\s+پیدا\s+می[‌\s]?کنید/iu;
+
 const topicPatterns: Record<BusinessInformationTopic, RegExp> = {
   company: /\b(?:company|business|unternehmen|firma|företag|verksamhet|empresa|negocio)\b|کسب.?و.?کار|شرکت|الشركة|المنشأة/iu,
   services: /\b(?:services?|offer(?:ings?)?|dienstleistungen?|leistungen?|angebot\w*|serviceportfolio|leistungskatalog|pakete?|tjänst\w*|utbud|servicios?|ofrecen|paquetes?)\b|خدمات|سرویس|الخدمات|خدمة/iu,
@@ -14,11 +19,13 @@ const topicPatterns: Record<BusinessInformationTopic, RegExp> = {
 };
 export function businessInformationTopics(text: string): BusinessInformationTopic[] {
   return (Object.entries(topicPatterns) as [BusinessInformationTopic, RegExp][])
-    .filter(([, pattern]) => pattern.test(text)).map(([topic]) => topic);
+    .filter(([topic, pattern]) => pattern.test(text) || (topic === 'contact' && isBusinessAddressQuestion(text)))
+    .map(([topic]) => topic);
 }
 
 export function isBusinessAddressQuestion(text: string): boolean {
-  return businessAddressPattern.test(String(text || ''));
+  const raw = String(text || '');
+  return businessAddressPattern.test(raw) || businessLocationRelationPattern.test(raw);
 }
 
 export function isBusinessRecommendationQuestion(text: string): boolean {

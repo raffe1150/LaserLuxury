@@ -170,7 +170,7 @@ test('single-service final reply retains the complete configured catalog fallbac
     formatConfiguredServiceCatalogPlan(plan, 'sv'));
 });
 
-test('saved German catalog-plus-gap shape cannot distinguish missing retrieval, extraction or rejected entailment', async t => {
+test('German fallback distinguishes an unavailable verifier from rejected evidence or contradiction', async t => {
   const [language, question, location] = cases[2];
   const catalog = formatConfiguredServiceCatalogPlan(plan, language);
   let firstReply: string | undefined;
@@ -192,10 +192,16 @@ test('saved German catalog-plus-gap shape cannot distinguish missing retrieval, 
     });
     const reply = await b.finalizeGeneralAiReply(h.sessionId, question, `${catalog}\n${location}`, language);
     assert.ok(reply.startsWith(catalog));
-    assert.match(reply, /keine konkrete Angabe.*Standort\/die Adresse/u);
+    if (failure === 'missing-assessment') {
+      assert.match(reply, /nicht überprüfen/u);
+      assert.doesNotMatch(reply, /keine konkrete Angabe/u);
+      assert.notEqual(reply, firstReply, 'verification failure must not be rendered as missing facts');
+    } else {
+      assert.match(reply, /keine konkrete Angabe.*Standort\/die Adresse/u);
+      if (firstReply === undefined) firstReply = reply;
+      else assert.equal(reply, firstReply);
+    }
     assert.doesNotMatch(reply, /Aurora Street 742/u);
     assert.equal(diagnostics.length, 1);
-    if (firstReply === undefined) firstReply = reply;
-    else assert.equal(reply, firstReply, 'same final reply despite distinct upstream failures');
   }
 });

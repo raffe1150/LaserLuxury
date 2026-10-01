@@ -406,7 +406,7 @@ test('no verified information fails closed without inventing services or recomme
     'en',
   );
 
-  assert.match(reply, /can't find a specific answer/i);
+  assert.match(reply, /cannot verify an answer/i);
   assert.doesNotMatch(reply, /Premium|999/);
 });
 

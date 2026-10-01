@@ -162,7 +162,7 @@ test('missing parking information is grounded consistently across all channels',
       'Several parking spaces are directly outside the studio.',
       'en',
     );
-    assert.match(answer, /can't find a specific answer.*parking/iu);
+    assert.match(answer, /cannot verify an answer.*parking/iu);
     assert.doesNotMatch(answer, /several parking spaces|directly outside/iu);
     answers.push(answer);
   }

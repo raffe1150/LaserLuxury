@@ -77,6 +77,16 @@ export function businessInformationSubject(
   }).join(' / ');
 }
 
+/** A failed verifier says nothing about whether the business has the fact. */
+export function formatBusinessSupportVerificationUnavailable(language: string, subject: string): string {
+  if (language === 'sv') return `Jag kan inte verifiera ett svar om ${subject} just nu. Verksamheten kan bekräfta vad som gäller.`;
+  if (language === 'de') return `Ich kann eine Antwort zu ${subject} derzeit nicht überprüfen. Das Unternehmen kann bestätigen, was gilt.`;
+  if (language === 'es') return `No puedo verificar una respuesta sobre ${subject} en este momento. El negocio puede confirmar qué corresponde.`;
+  if (language === 'ar') return `لا أستطيع التحقق من إجابة بشأن ${subject} الآن. يمكن للمنشأة تأكيد ما ينطبق.`;
+  if (language === 'fa') return `در حال حاضر نمی‌توانم پاسخی درباره ${subject} تأیید کنم. خود مجموعه می‌تواند مورد دقیق را تأیید کند.`;
+  return `I cannot verify an answer about ${subject} right now. The business can confirm what applies.`;
+}
+
 export function isServiceCatalogQuestion(text: string, allowAdditionalTopics = false): boolean {
   const raw = String(text || "").trim();
   if (!raw) return false;

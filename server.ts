@@ -4,6 +4,7 @@ import {
   buildConfiguredServiceCatalogPlan,
   businessInformationSubject,
   businessInformationTopics,
+  formatBusinessSupportVerificationUnavailable,
   formatConfiguredServiceCatalogPlan,
   normalizeGroundedCompoundCatalogReply,
   formatConfiguredServiceOverview,
@@ -8181,7 +8182,7 @@ ${buildBusinessGroundingSnapshot(info).evidenceCorpus}
 ${buildBusinessPromptWithTone("", info.businessConfig?.toneConfig)}`;
 }
 
-function currentBusinessSupportGap(sessionId: string, text: string, language: string): string {
+function currentBusinessSupportGap(sessionId: string, text: string, language: string, verificationUnavailable = false): string {
   const info = getActiveBusinessInformation(sessionId);
   const support = getActiveRecentCompletedBusinessSupport(sessionId);
   const topics = businessInformationTopics(text);
@@ -8197,7 +8198,10 @@ function currentBusinessSupportGap(sessionId: string, text: string, language: st
       : "",
   ].filter(Boolean).join(" / ");
 
-  const gap = formatBusinessSupportKnowledgeGap(language, subject);
+  const formatGap = verificationUnavailable
+    ? formatBusinessSupportVerificationUnavailable
+    : formatBusinessSupportKnowledgeGap;
+  const gap = formatGap(language, subject);
 
   const businessConfig =
     info?.businessConfig || support?.businessConfig;
@@ -8224,7 +8228,7 @@ function currentBusinessSupportGap(sessionId: string, text: string, language: st
   if (serviceCatalogQuestion && overview) {
     if (compoundFactualQuestion) {
       const missingTopics = topics.filter(topic => topic !== "services");
-      return `${overview}\n${formatBusinessSupportKnowledgeGap(language, businessInformationSubject(text, language, missingTopics))}`;
+      return `${overview}\n${formatGap(language, businessInformationSubject(text, language, missingTopics))}`;
     }
     return overview;
   }
@@ -8900,7 +8904,10 @@ function formatDeterministicAddressReply(
   return `The address is ${address}.`;
 }
 
-type BusinessClaimEntailmentResults = Map<string, Promise<BusinessClaimEntailmentAssessment | null>>;
+type BusinessClaimEntailmentResults = Map<string, Promise<BusinessClaimEntailmentAssessment | null>> & {
+  // Operation-local failure status, never a cached factual verdict.
+  verificationUnavailable?: boolean;
+};
 
 async function assessBusinessClaimEntailmentWithReuse(
   request: BusinessClaimEntailmentRequest,
@@ -8920,10 +8927,12 @@ async function assessBusinessClaimEntailmentWithReuse(
     // recovery can reuse it without restarting the same completed sequence.
     // Transport failures are not evidence and must never become cached verdicts.
     if (!result) {
+      results.verificationUnavailable = true;
       if (results.get(key) === pending) results.delete(key);
     }
     return result;
   }, error => {
+    results.verificationUnavailable = true;
     if (results.get(key) === pending) results.delete(key);
     throw error;
   });
@@ -9388,7 +9397,10 @@ async function recoverCompoundBusinessInformation(
   }
   if (!parts.length) return "";
   const missingTopics = topics.filter(topic => !supportedTopics.has(topic));
-  if (missingTopics.length) parts.push(formatBusinessSupportKnowledgeGap(
+  const formatGap = !assessment || entailmentResults.verificationUnavailable
+    ? formatBusinessSupportVerificationUnavailable
+    : formatBusinessSupportKnowledgeGap;
+  if (missingTopics.length) parts.push(formatGap(
     request.language, businessInformationSubject(request.customerMessage, request.language, missingTopics),
   ));
   const groundedReply = [...new Set(parts)].join("\n");
@@ -9720,6 +9732,14 @@ async function guardBusinessSupportGrounding(
       recommendationResidualDiagnostic.replace(/\s+/g, " ").trim();
   }
 
+  // Diagnostic only: exclude retrieval wrappers from address-like phrase
+  // matching. These booleans never authorize a factual reply.
+  const retrievedAddressPhrases = isBusinessAddressQuestion(snapshot.sources.retrieved_knowledge)
+    ? extractDeterministicAddressPhrases(snapshot.sources.retrieved_knowledge
+        .replace(/^(?:KNOWLEDGE CHUNK \d+|source_id:.*)$/gmu, ""))
+    : [];
+  const candidateAddressPhrases = retrievedAddressPhrases
+    .filter(phrase => normalizeGroundingCandidateText(candidateReply).includes(phrase));
   const groundingDiagnostic = {
     businessId: getBusinessIdFromConfig(support.businessConfig),
     language,
@@ -9729,6 +9749,14 @@ async function guardBusinessSupportGrounding(
     candidateLength: candidateReply.length,
     evidenceFingerprint: safeLogFingerprint(snapshot.evidenceCorpus),
     evidenceLength: snapshot.evidenceCorpus.length,
+    retrievedKnowledgeLength: snapshot.sources.retrieved_knowledge.length,
+    retrievedKnowledgeFingerprint: safeLogFingerprint(snapshot.sources.retrieved_knowledge),
+    retrievedAddressPhrasePresent: retrievedAddressPhrases.length > 0,
+    retrievedAddressPhraseCount: retrievedAddressPhrases.length,
+    retrievedAddressPhraseFingerprints: retrievedAddressPhrases.slice(0, 20).map(safeLogFingerprint),
+    candidateContainsRetrievedAddressPhrase: candidateAddressPhrases.length > 0,
+    candidateAddressPhraseFingerprints: candidateAddressPhrases.slice(0, 20).map(safeLogFingerprint),
+    verificationUnavailable: !assessment || Boolean(entailmentResults.verificationUnavailable),
     safeNaturalClarificationPresent: Boolean(safeNaturalClarification),
     recommendationResidualDiagnostic,
     verifierReturnedAssessment: Boolean(assessment),
@@ -9891,7 +9919,8 @@ async function guardBusinessSupportGrounding(
             ? "entailment_failed"
             : "unsupported_reply",
   });
-  return currentBusinessSupportGap(sessionId, latestCustomerMessage, language);
+  return currentBusinessSupportGap(sessionId, latestCustomerMessage, language,
+    !assessment || Boolean(entailmentResults.verificationUnavailable));
 }
 
 function guardGeneralAiReplyRepetition(

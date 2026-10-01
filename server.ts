@@ -1218,7 +1218,7 @@ type Priority1hTestDependencies = {
   claimBookingOutboxDelivery?: (operationId: string, deliveryToken: string) => Promise<any>;
   completeBookingOutboxDelivery?: (operationId: string, deliveryToken: string, delivered: boolean, error?: string) => Promise<boolean>;
   postProcess?: () => Promise<void>;
-  notifyBooking?: () => Promise<boolean>;
+  notifyBooking?: (params: { name: string; phone: string; dateTime: string; service?: string }) => Promise<boolean>;
   notifyReschedule?: () => Promise<boolean>;
   notifyCancellation?: () => Promise<boolean>;
   incrementUsage?: (params: any) => Promise<{ allowed: boolean; count: number; limit: number }>;
@@ -9984,12 +9984,36 @@ function extractExplicitEnglishBookingName(text?: string): string | null {
   return null;
 }
 
+function findExplicitContactPhone(raw: string, allowCompactContact = false): RegExpMatchArray | null {
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return null;
+  for (const match of raw.matchAll(/(?<![\p{L}\d])\+?\d[\d\s\-()]{6,}\d(?![\p{L}\d])/gu)) {
+    const phone = match[0].replace(/[^\d+]/g, "");
+    const digitCount = phone.replace(/\D/g, "").length;
+    if (digitCount < 7 || digitCount > 15) continue;
+    const before = raw.slice(0, match.index).trim();
+    const after = raw.slice(Number(match.index) + match[0].length).trim();
+    // A phone-only reply or an immediately labeled phone field is deliberate
+    // contact input. A long numeric token elsewhere in prose is not.
+    const labeled = /(?:\b(?:phone(?:\s+number)?|mobile(?:\s+number)?|mobil(?:nummer)?|handy(?:nummer)?|telefon(?:nummer|numret)?|(?:my|mitt|min|meine?|mi)\s+(?:nummer|number|n[uú]mero)|tel[eé]fono|m[oó]vil|celular|shomare|shomaram)\b|(?:رقم\s*(?:هاتفي|الهاتف|الجوال)|هاتفي|المحمول|شماره\s*(?:تلفن|موبایل|موبایلم)|موبایلم|تلفن))\s*(?:(?:is|ist|är|es|هو|هي|است)\s*)?[:=：]?\s*$/iu.test(before);
+    if (labeled || (!before && /^[.!?؟]*$/u.test(after))) return match;
+    // Preserve the existing compact name + phone contact form, bounded to a
+    // short name and recognizable local/international phone syntax.
+    if (allowCompactContact && /^[+0]/u.test(phone) && /^(?:[.!?؟](?:\s|$)|$)/u.test(after)) {
+      const segment = before.match(/(?:^|[.!?:])\s*([^.!?:]+)$/u)?.[1]?.trim() || before;
+      const compactName = segment.replace(/[,;]+$/u, '').replace(/\s+(?:and|och|und|y|hier|here)$/iu, '').trim();
+      if (/^[\p{Lu}][\p{L}'’-]+(?:\s+[\p{Lu}][\p{L}'’-]+)?$/u.test(compactName) ||
+        (segment.endsWith(',') && extractNameOnly(compactName, false))) return match;
+    }
+  }
+  return null;
+}
+
 function extractNameAndPhone(text?: string, allowStandaloneName = true): { name: string; phone: string } | null {
   const raw = normalizeLocalizedDigits(String(text || "")).trim();
   if (!raw) return null;
   if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return null;
 
-  const phoneMatch = raw.match(/(?:\+?\d[\d\s\-()]{6,}\d)/);
+  const phoneMatch = findExplicitContactPhone(raw, true);
   if (!phoneMatch) return null;
 
   const phone = phoneMatch[0].replace(/[^\d+]/g, "");
@@ -10058,7 +10082,7 @@ function extractPhoneOnly(text?: string): string | null {
   if (!raw) return null;
   if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return null;
 
-  const match = raw.match(/(?:\+?\d[\d\s\-()]{6,}\d)/);
+  const match = findExplicitContactPhone(raw, true);
   if (!match) return null;
 
   const phone = match[0].replace(/[^\d+]/g, "");
@@ -11650,7 +11674,7 @@ async function notifyAdminAboutBooking(
   dateTime: string,
   service?: string
 ) {
-  if (priority1hTestDependencies?.notifyBooking) return priority1hTestDependencies.notifyBooking();
+  if (priority1hTestDependencies?.notifyBooking) return priority1hTestDependencies.notifyBooking({ name, phone, dateTime, service });
   const notifyText = formatNewBookingAdminNotification({
     businessConfig,
     platformLabel,
@@ -15996,10 +16020,12 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
               channel: platformName,
               currentName: candidate,
             }).name : null,
-        validatePhone: (candidate) => resolveAuthoritativeContact({
-          channel: platformName,
-          currentPhone: candidate,
-        }).phone,
+        validatePhone: (candidate) => {
+          const phone = resolveAuthoritativeContact({ channel: platformName, currentPhone: candidate }).phone;
+          // Provider contact candidates follow the same explicit-input rule as
+          // deterministic extraction; model inference cannot promote prose digits.
+          return phone && (phone === deterministicCurrentPhone || phone === pending?.customerPhone) ? phone : null;
+        },
       });
       controlledUnderstandingCandidates = resolution.candidates;
       activeStructuredUnderstandingAdoptionRuntime.emitDecisions(

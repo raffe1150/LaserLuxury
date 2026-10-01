@@ -42,6 +42,7 @@ export function resolveAuthoritativeContact(input: {
   storedPhone?: string | null;
   storedPhoneSource?: ContactPhoneSource | null;
   currentName?: string | null;
+  // Only a clearly supplied phone field/reply, never a numeric token from prose.
   currentPhone?: string | null;
   senderPhone?: string | null;
 }): ResolvedBookingContact {
@@ -54,6 +55,8 @@ export function resolveAuthoritativeContact(input: {
   let phone: string | null = null;
   let phoneSource: ContactPhoneSource = 'missing';
 
+  // Intentional explicit overrides are supported by the product. Otherwise the
+  // verified WhatsApp sender remains authoritative over untrusted stored values.
   if (currentPhone) {
     phone = currentPhone;
     phoneSource = 'explicit_customer_message';

@@ -16,7 +16,7 @@ const businessConfig = {
     .map(day => [day, [{ start: '14:00', end: '17:00' }]])),
 };
 
-function fixture(t: any, platformName: BookingContactChannel = 'whatsapp', withPhone = true) {
+function fixture(t: any, platformName: BookingContactChannel = 'whatsapp', withPhone = true, inferredPhone?: string) {
   boundary.reset();
   t.after(() => boundary.reset());
   const traces: Array<{ label: unknown; detail: any }> = [];
@@ -25,6 +25,8 @@ function fixture(t: any, platformName: BookingContactChannel = 'whatsapp', withP
   const claims = new Map<string, any>();
   const created: any[] = [];
   const recorded: any[] = [];
+  const notifications: any[] = [];
+  const adoptionDecisions: any[] = [];
   boundary.configure({
     calendarAdapter: {
       getCalendarId: () => 'cal-7',
@@ -47,7 +49,8 @@ function fixture(t: any, platformName: BookingContactChannel = 'whatsapp', withP
       cancelAppointment: async (id: string) => { events.delete(id); return { success: true }; },
       verifyEventDeleted: async (id: string) => !events.has(id),
     },
-    postProcess: async () => undefined, notifyBooking: async () => true,
+    postProcess: async () => undefined,
+    notifyBooking: async (params: any) => { notifications.push(params); return true; },
     incrementUsage: async () => ({ allowed: true, count: 1, limit: 100 }),
     validateAppointment: async (appointment: any) => appointment,
     recordAppointment: async (params: any) => {
@@ -67,13 +70,21 @@ function fixture(t: any, platformName: BookingContactChannel = 'whatsapp', withP
       return handle;
     },
     settleOperation: async (handle: any, status: string) => { handle.state.status = status; return true; },
+    ...(inferredPhone ? { structuredUnderstandingAdoptionRuntime: {
+      evaluate: async () => ({ schemaVersion: 1,
+        language: { primary: { value: 'en', confidence: 1 }, codeSwitches: [] },
+        intents: [], acts: {}, entities: { phone: { value: inferredPhone, confidence: 1 } }, ambiguities: [],
+      }),
+      emitDecisions: (_correlationId: string, decisions: readonly any[]) => { adoptionDecisions.push(...decisions); },
+    } } : {}),
   });
   const recipientUserId = platformName === 'whatsapp' && withPhone ? '46700000001' : `contact-${platformName}`;
   const sessionId = platformName === 'telegram'
     ? recipientUserId
     : boundary.channelSessionId(platformName, recipientUserId, businessConfig, 'contact-phone-id');
-  const turn = (text: string) => boundary.turn({ sessionId, recipientUserId, platformName, text, businessConfig, now });
-  return { traces, created, recorded, turn, events, platformName, withPhone };
+  const turn = (text: string) => boundary.turn({ sessionId, recipientUserId, platformName, text, businessConfig, now,
+    shadowEligibleCustomerTurn: Boolean(inferredPhone) });
+  return { traces, created, recorded, notifications, adoptionDecisions, turn, events, platformName, withPhone, sessionId };
 }
 
 async function select(f: ReturnType<typeof fixture>) {
@@ -199,3 +210,105 @@ test('completed contact still fails final validation when the selected slot beco
   assert.equal(f.recorded.length, 0);
   assert.equal(f.traces.some(event => event.label === '[FinalBookingValidationResult]' && event.detail?.free === false), true);
 });
+
+const numericNameCases = [
+  ['de', 'Mein Name ist Mira Testmann 93414557.', 'Mira Testmann'],
+  ['de', 'Mein Name ist Mira Testmann AIBB 93414557 whatsapp-de. Übrigens hat heute jemand "hej" zu mir gesagt.', 'Mira Testmann'],
+  ['en', 'My name is Mira Testmann AIBB 93414557 whatsapp-en.', 'Mira Testmann'],
+  ['sv', 'Jag heter Mira Testmann AIBB 93414557 whatsapp-sv.', 'Mira Testmann'],
+  ['es', 'Me llamo Mira Testmann AIBB 93414557 whatsapp-es.', 'Mira Testmann'],
+  ['ar', 'اسمي ميرا اختبار. AIBB 93414557 whatsapp-ar.', 'ميرا اختبار'],
+  ['fa', 'نام من میرا تستمن است. AIBB ۹۳۴۱۴۵۵۷ whatsapp-fa.', 'میرا تستمن'],
+] as const;
+
+for (const [language, message, expectedName] of numericNameCases) {
+  test(`WhatsApp ${language}: numeric name text preserves sender through state, persistence and confirmation: ${message}`, async (t) => {
+    const f = fixture(t);
+    await select(f);
+    const confirmed = await confirm(f);
+    boundary.seedFlowLanguage(f.sessionId, language);
+    boundary.seedPending(f.sessionId, { ...confirmed.pending, language });
+    const traceStart = f.traces.length;
+    const completed = await f.turn(message);
+    const expectedPhone = '+46700000001';
+    assert.equal(completed.pending, null);
+    assert.equal(f.created.length, 1);
+    assert.equal(f.recorded.length, 1);
+    assert.equal(f.notifications.length, 1);
+    for (const payload of [f.created[0], f.recorded[0], f.notifications[0]]) {
+      assert.equal(payload.name, expectedName);
+      assert.equal(payload.phone, expectedPhone);
+      assert.equal(payload.service, confirmed.pending.service);
+      assert.equal(new Date(payload.dateTime).getTime(), new Date(confirmed.pending.dateTime).getTime());
+    }
+    assert.equal(f.created[0].duration, confirmed.pending.durationMinutes);
+    const completion = boundary.recentCompletionState(f.sessionId).completed?.bookingOperation;
+    assert.equal(completion?.customerName, expectedName);
+    assert.equal(completion?.customerPhone, expectedPhone);
+    assert.match([...f.events.values()][0].summary, /\+46700000001/u);
+    assert.ok(completed.replies.join(' ').includes(expectedName));
+    assert.ok(completed.replies.join(' ').includes(expectedPhone));
+    assert.doesNotMatch(completed.replies.join(' '), /93414557|۹۳۴۱۴۵۵۷|AIBB/u);
+    const traces = f.traces.slice(traceStart);
+    assert.equal(traces.some(event => event.label === '[BookingRefinement]' && event.detail?.freshScanStarted), false);
+    assert.equal(traces.some(event => event.detail?.nextStateType === 'awaiting_time_selection'), false);
+    assert.equal(traces.some(event => event.label === '[BookingContactPolicy]' && event.detail?.phoneSourceType === 'verified_sender_metadata'), true);
+  });
+}
+
+for (const channel of ['whatsapp', 'telegram', 'messenger', 'instagram'] as const) {
+  test(`${channel}: no channel phone collects explicit phone after numeric name text without resetting selection`, async (t) => {
+    const f = fixture(t, channel, false);
+    await select(f);
+    const confirmed = await confirm(f);
+    const named = await f.turn('My name is Mira Testmann AIBB 93414557.');
+    assert.equal(named.pending?.status, 'awaiting_contact');
+    assert.equal(named.pending?.customerName, 'Mira Testmann');
+    assert.equal(named.pending?.customerPhone ?? null, null);
+    assert.equal(named.pending?.service, confirmed.pending.service);
+    assert.equal(named.pending?.dateTime, confirmed.pending.dateTime);
+    assert.equal(named.pending?.selectedSlotEnd, confirmed.pending.selectedSlotEnd);
+    assert.deepEqual(named.pending?.ownedOfferedSlots, confirmed.pending.ownedOfferedSlots);
+    const completed = await f.turn('0701234567');
+    assert.equal(completed.pending, null);
+    assert.equal(f.created[0].phone, '0701234567');
+    assert.equal(f.recorded[0].phone, '0701234567');
+    assert.equal(f.notifications[0].phone, '0701234567');
+    assert.match(completed.replies.join(' '), /Mira Testmann/u);
+    assert.match(completed.replies.join(' '), /0701234567/u);
+  });
+}
+
+test('WhatsApp intentional labeled customer phone override remains supported', async (t) => {
+  const f = fixture(t);
+  await select(f);
+  await confirm(f);
+  const completed = await f.turn('My name is Mira Testmann. My phone number is 0701234567.');
+  assert.equal(completed.pending, null);
+  assert.equal(f.created[0].phone, '0701234567');
+  assert.equal(f.recorded[0].phone, '0701234567');
+  assert.equal(f.notifications[0].phone, '0701234567');
+  assert.match(completed.replies.join(' '), /0701234567/u);
+});
+
+for (const withPhone of [true, false]) {
+  test(`inferred numeric run identifier cannot bypass contact validation (sender present: ${withPhone})`, async (t) => {
+    const f = fixture(t, 'whatsapp', withPhone, '93414557');
+    await select(f);
+    const confirmed = await confirm(f);
+    f.adoptionDecisions.length = 0;
+    const result = await f.turn('My name is Mira Testmann AIBB 93414557 whatsapp-en.');
+    assert.equal(f.adoptionDecisions.some(decision => decision.field === 'phone' &&
+      decision.disposition === 'provider_rejected_validation'), true);
+    if (withPhone) {
+      assert.equal(result.pending, null);
+      assert.equal(f.created[0].phone, '+46700000001');
+      assert.equal(f.recorded[0].phone, '+46700000001');
+    } else {
+      assert.equal(result.pending?.status, 'awaiting_contact');
+      assert.equal(result.pending?.customerPhone ?? null, null);
+      assert.equal(result.pending?.dateTime, confirmed.pending.dateTime);
+      assert.equal(f.created.length, 0);
+    }
+  });
+}

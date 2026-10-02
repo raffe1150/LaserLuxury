@@ -344,7 +344,7 @@ export function formatConfiguredServiceCatalogPlan(
 
   return [
     intro[lang],
-    rows.join(isRtlCatalogLanguage(lang) ? "\n\n" : "\n"),
+    rows.join("\n"),
     ...(plan.hasMoreServices ? [more[lang]] : []),
   ].join("\n");
 }
@@ -559,7 +559,7 @@ export function formatRecommendationServiceSummary(
 
   if (!rows.length) return "";
 
-  return [intro[lang], rows.join(isRtlCatalogLanguage(lang) ? "\n\n" : "\n")].join("\n");
+  return [intro[lang], rows.join("\n")].join("\n");
 }
 
 export function formatConfiguredServiceOverview(names: string[], language: string): string {

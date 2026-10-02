@@ -23,7 +23,7 @@ for (const [language, unit, durationLabel, priceLabel] of [
     assert.doesNotMatch(reply, new RegExp(`${durationLabel}|${priceLabel}`, 'u'));
     assert.ok(reply.includes(detail));
     assert.equal(block.split('\n').length, 2);
-    assert.ok(reply.includes('\n\n• خدمة محلية'), 'service blocks are separated');
+    assert.ok(reply.includes('\n• خدمة محلية'), 'service blocks stay compact without blank lines');
     const location = language === 'ar' ? 'تجدوننا في Aurora Street 742.' : 'ما را در Aurora Street 742 پیدا می‌کنید.';
     const normalized = normalizeGroundedCompoundCatalogReply(`${reply}\n${reply}\n${location}`, plan, language, '', [location]);
     assert.equal(normalized, `${reply}\n${location}`);

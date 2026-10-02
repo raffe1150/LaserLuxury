@@ -449,6 +449,100 @@ function applyFormality(
     : value.replaceAll('يرجى إرسال ', 'أرسل ').replaceAll('يرجى اختيار', 'اختر');
 }
 
+const availabilityPresetLead: Record<
+  BookingPresentationLanguage,
+  Record<Exclude<BusinessToneConfig['tonePreset'], 'professional' | 'concise' | 'custom'>, {
+    positive: string;
+    constrained: string;
+  }>
+> = {
+  en: {
+    friendly: { positive: 'Good news — ', constrained: 'No worries — ' },
+    warm: { positive: 'I’d be happy to help — ', constrained: 'I’m sorry — ' },
+    casual: { positive: 'Sure — ', constrained: 'Okay — ' },
+  },
+  sv: {
+    friendly: { positive: 'Toppen — ', constrained: 'Ingen fara — ' },
+    warm: { positive: 'Självklart. ', constrained: 'Jag förstår — ' },
+    casual: { positive: 'Absolut — ', constrained: 'Okej — ' },
+  },
+  es: {
+    friendly: { positive: 'Genial — ', constrained: 'No pasa nada — ' },
+    warm: { positive: 'Por supuesto. ', constrained: 'Lo siento — ' },
+    casual: { positive: 'Claro — ', constrained: 'Vale — ' },
+  },
+  de: {
+    friendly: { positive: 'Prima — ', constrained: 'Kein Problem — ' },
+    warm: { positive: 'Sehr gern. ', constrained: 'Das tut mir leid — ' },
+    casual: { positive: 'Klar — ', constrained: 'Okay — ' },
+  },
+  fa: {
+    friendly: { positive: 'عالیه — ', constrained: 'نگران نباشید — ' },
+    warm: { positive: 'حتماً. ', constrained: 'متأسفم — ' },
+    casual: { positive: 'حتماً — ', constrained: 'باشه — ' },
+  },
+  ar: {
+    friendly: { positive: 'رائع — ', constrained: 'لا بأس — ' },
+    warm: { positive: 'بكل سرور. ', constrained: 'أعتذر — ' },
+    casual: { positive: 'أكيد — ', constrained: 'حسنًا — ' },
+  },
+};
+
+function stripAvailabilityAffirmative(
+  value: string,
+  language: BookingPresentationLanguage,
+): string {
+  const patterns: Record<BookingPresentationLanguage, RegExp> = {
+    en: /^Yes,\s*/u,
+    sv: /^Ja,\s*/u,
+    es: /^Sí,\s*/u,
+    de: /^Ja,\s*/u,
+    fa: /^بله،\s*/u,
+    ar: /^نعم،\s*/u,
+  };
+  return value.replace(patterns[language], '');
+}
+
+function stripAvailabilityApology(
+  value: string,
+  language: BookingPresentationLanguage,
+): string {
+  const patterns: Record<BookingPresentationLanguage, RegExp> = {
+    en: /^Sorry,\s*/u,
+    sv: /^Tyvärr\s*/u,
+    es: /^Lo siento,\s*/u,
+    de: /^Leider\s*/u,
+    fa: /^متأسفانه\s*/u,
+    ar: /^للأسف\s*/u,
+  };
+  return value.replace(patterns[language], '');
+}
+
+function applyAvailabilityPreset(
+  value: string,
+  language: BookingPresentationLanguage,
+  tone: BusinessToneConfig,
+  kind: AvailabilityFacts['kind'],
+): string {
+  if (
+    tone.tonePreset === 'professional' ||
+    tone.tonePreset === 'concise' ||
+    tone.tonePreset === 'custom'
+  ) {
+    return value;
+  }
+
+  const positive = kind === 'available_exact';
+  const lead = availabilityPresetLead[language][tone.tonePreset][
+    positive ? 'positive' : 'constrained'
+  ];
+
+  const body = positive
+    ? stripAvailabilityAffirmative(value, language)
+    : stripAvailabilityApology(value, language);
+  return `${lead}${body}`;
+}
+
 function finishPresentation(
   body: string,
   detailedTail: string,
@@ -484,7 +578,13 @@ export function renderDeterministicAvailabilityReply(
   const shortest = tone.responseLength === 'short' || tone.tonePreset === 'concise';
   if (shortest) return finishPresentation(localized.short(facts), '', tone, lang, protectedFacts);
   if (facts.kind !== 'found') {
-    return finishPresentation(localized.balanced(facts), '', tone, lang, protectedFacts);
+    const body = applyAvailabilityPreset(
+      localized.balanced(facts),
+      lang,
+      tone,
+      facts.kind,
+    );
+    return finishPresentation(body, '', tone, lang, protectedFacts);
   }
   const lexicon = naturalToneLexicons[lang];
   const stableFacts = JSON.stringify(facts);

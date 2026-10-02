@@ -120,7 +120,7 @@ export function isPositiveBookingConfirmation(text: string): boolean {
   // misclassified as confirmation merely because it also contains contact data.
   const contactContinuation =
     /\b(?:my name is|name is|i am|i'm|mein name ist|ich hei(?:ss|ß)e|me llamo|mi nombre es|jag heter|mitt namn är|mitt namn ar|phone|phone number|telephone|telefon|telefonnummer|telefono|numero de telefono)\b/u.test(raw) ||
-    /(?:اسم من|نام من|شماره من|شماره تلفن|اسمي|رقم هاتفي|رقم الهاتف)/u.test(raw) ||
+    /(?:اسم من|نام من|شماره من|شماره تلفن|اسمی|رقم هاتفی|رقم الهاتف)/u.test(raw) ||
     /(?:^|\s)\+?\d(?:[\s-]?\d){6,14}(?:\s|$)/u.test(raw);
 
   if (

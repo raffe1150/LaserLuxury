@@ -15,6 +15,7 @@ import {
   isBusinessRecommendationQuestion,
   isServiceCatalogQuestion,
   isSimpleCatalogLocationQuestion,
+  isGenericRecommendationClarificationQuestion,
 } from './src/ai/business-information';
 import { beginBusinessInformationTiming, businessInformationTimingContext, clearBusinessInformationTiming,
   markBusinessInformationTiming, timeBusinessInformationDelivery } from './src/ai/business-information-timing';
@@ -10164,6 +10165,11 @@ function extractNameAndPhone(text?: string, allowStandaloneName = true): { name:
   const phone = phoneMatch[0].replace(/[^\d+]/g, "");
   if (phone.replace(/\D/g, "").length < 7) return null;
 
+  if (isPositiveBookingConfirmation(raw)) {
+    const name = extractNameOnly(raw, false);
+    return name ? { name, phone } : null;
+  }
+
   if (/(?:اسمي|إسمي|اسمی|إسمی|الاسم)(?=\s)/u.test(raw)) {
     const name = extractExplicitArabicCustomerName(raw);
     return name ? { name, phone } : null;
@@ -10253,10 +10259,19 @@ function extractNameOnly(text?: string, allowStandaloneName = true): string | nu
 
   if (
     isThanksOnlyText(raw) ||
-    isAffirmativeBookingText(raw) ||
-    isPositiveBookingConfirmation(raw)
+    (isAffirmativeBookingText(raw) && !isPositiveBookingConfirmation(raw))
   ) {
     return null;
+  }
+
+  const confirmation = isPositiveBookingConfirmation(raw);
+  if (confirmation) {
+    // Confirmation and explicit self-identification can coexist. Bare words
+    // and quoted/reported identities still cannot donate a name on this turn.
+    allowStandaloneName = false;
+    const contactPayload = raw.replace(/^(?:yes|yeah|yep|sure|ja|japp|absolut|sí|si|claro|نعم|أجل|اجل|موافق|بله|آره|اره|باشه|baleh?|are|bashe)(?:\s+(?:please|tack|gärna|لطفا))?[\s،,;:!.-]*/iu, '');
+    if (!/^(?:my\s+name\s+is|name\s+is|jag\s+heter|mitt\s+namn\s+är|mein\s+name\s+ist|ich\s+hei(?:ß|ss)e|me\s+llamo|mi\s+nombre\s+es|(?:نام|اسم)\s+من|esme?\s+man|esmam|namam|name\s+man|(?:(?:أنا|انا)\s+)?(?:اسمي|إسمي|اسمی|إسمی|الاسم))\s+/iu.test(contactPayload) &&
+        !extractExplicitEnglishBookingName(raw)) return null;
   }
 
   // A contact answer may include an unrelated follow-up sentence. Validate the
@@ -10293,6 +10308,14 @@ function extractNameOnly(text?: string, allowStandaloneName = true): string | nu
     const match = raw.match(pattern);
     if (!match?.[1]) continue;
     const cleaned = cleanCustomerNameCandidate(match[1]);
+    if (confirmation) {
+      const suffix = raw.slice((match.index || 0) + match[0].length).trim();
+      const validSuffix = /^[.!؟،,]*$/u.test(suffix) || /^(?:است|هست)[.!؟،,]*$/u.test(suffix) ||
+        (/^(?:(?:است|هست)\s+)?[،,]?\s*(?:and|och|und|y|و)\s+(?:my\s+)?(?:phone|mobile|telefon|teléfono|شماره|رقم)/iu.test(suffix) && Boolean(findExplicitContactPhone(suffix)));
+      if (isInvalidCustomerNameToken(cleaned) ||
+          /\b(?:please|book|booking|appointment|confirm|cancel|change|tomorrow|today|quiero|reservar|reserva|boka|avboka|bitte|buchen)\b/iu.test(match[1]) ||
+          !validSuffix) return null;
+    }
     if (cleaned) return cleaned;
     if (/[\u0600-\u06FF]/.test(match[1])) return match[1].trim();
   }
@@ -10366,8 +10389,7 @@ function extractPendingBookingCustomerName(text: string | undefined, pending: an
 
   if (
     isThanksOnlyText(raw) ||
-    isAffirmativeBookingText(raw) ||
-    isPositiveBookingConfirmation(raw)
+    (isAffirmativeBookingText(raw) && !isPositiveBookingConfirmation(raw))
   ) {
     return null;
   }
@@ -10378,6 +10400,7 @@ function extractPendingBookingCustomerName(text: string | undefined, pending: an
     !String(pending?.customerName || "").trim();
   const existing = extractNameOnly(text, collectingName);
   if (existing) return existing;
+  if (isPositiveBookingConfirmation(raw)) return null;
 
   const operation = resolveAuthoritativeOperation({ pending });
   if (
@@ -15953,7 +15976,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
   let completedBookingAtEntry = Boolean(!pending && recentCompletedBookingAtEntry?.bookingOperation?.ok);
   const contactText = stripCustomerNameDiagnosticSuffix(text);
   if (contactText !== text &&
-      ["awaiting_contact", "failed_recoverable"].includes(String(pending?.status || ""))) {
+      ["awaiting_confirmation", "awaiting_slot_confirmation", "awaiting_contact", "failed_recoverable"].includes(String(pending?.status || ""))) {
     // During contact collection, diagnostic metadata is not booking input.
     // Its incidental dates/services must not replace the selected slot, even
     // when the human contact field is invalid and still needs clarification.
@@ -15976,16 +15999,26 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
     }
     markBusinessInformationTiming(sessionId, 'intent_and_state_ready', Date.now() - bookingStartedAt, { language: informationLanguage });
     const simpleCatalogLocation = isSimpleCatalogLocationQuestion(text);
+    // Clarify only a wholly generic request without prior customer goals or an
+    // active booking. Richer questions/context retain retrieval and verification.
+    const genericRecommendation = !pending && isGenericRecommendationClarificationQuestion(text) &&
+      history.every(message => message?.role !== 'user' ||
+        isGreetingOnlyText(String(message.content || '')) ||
+        isSimpleCatalogLocationQuestion(String(message.content || '')) ||
+        isGenericRecommendationClarificationQuestion(String(message.content || '')));
+    const recommendationSummary = genericRecommendation
+      ? formatRecommendationServiceSummary(buildConfiguredServiceCatalogPlan(businessConfig?.services || []), informationLanguage) : '';
     const configuredAddress = typeof businessConfig?.address === 'string' && businessConfig.address.trim();
     const catalog = simpleCatalogLocation
       ? formatConfiguredServiceCatalogPlan(buildConfiguredServiceCatalogPlan(businessConfig?.services || []), informationLanguage) : '';
     const retrievalStarted = Date.now();
     markBusinessInformationTiming(sessionId, 'retrieval_start');
-    const retrievedKnowledge = catalog && configuredAddress ? '' : await retrieveBusinessKnowledgeForQuestion(
+    const configuredOnly = Boolean(recommendationSummary || (catalog && configuredAddress));
+    const retrievedKnowledge = configuredOnly ? '' : await retrieveBusinessKnowledgeForQuestion(
       businessConfig, text, businessInformationTimingContext(sessionId),
     );
     markBusinessInformationTiming(sessionId, 'retrieval_complete', Date.now() - retrievalStarted,
-      { disposition: catalog && configuredAddress ? 'configured_facts_no_retrieval' : 'retrieved' });
+      { disposition: configuredOnly ? 'configured_facts_no_retrieval' : 'retrieved' });
     if (recentCompletion?.bookingOperation?.ok) {
       completedBookingSupportTurns[sessionId] = {
         savedAt: Date.now(),
@@ -16012,17 +16045,18 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
     const retrievedAddress = snapshot && isBusinessAddressQuestion(snapshot.sources.retrieved_knowledge)
       ? extractAddressCandidateFromEvidence([{ quote: snapshot.sources.retrieved_knowledge
         .replace(/KNOWLEDGE CHUNK\s+\d+/giu, '').replace(/source_id:\s*[^\s]+/giu, '') }]) : null;
-    if (catalog && snapshot && (configuredAddress || retrievedAddress)) {
+    if (recommendationSummary || (catalog && snapshot && (configuredAddress || retrievedAddress))) {
       const groundingStarted = Date.now();
       markBusinessInformationTiming(sessionId, 'grounding_start');
-      const location = await recoverUnavailableBusinessLocation(businessConfig, snapshot, {
+      const location = recommendationSummary ? null : await recoverUnavailableBusinessLocation(businessConfig, snapshot!, {
         customerMessage: text, candidateReply: catalog, language: informationLanguage,
-        evidenceCorpus: snapshot.evidenceCorpus, businessId: getBusinessIdFromConfig(businessConfig),
+        evidenceCorpus: snapshot!.evidenceCorpus, businessId: getBusinessIdFromConfig(businessConfig),
         ...businessInformationTimingContext(sessionId),
       }, new Map());
       markBusinessInformationTiming(sessionId, 'grounding_complete', Date.now() - groundingStarted,
-        { disposition: configuredAddress ? 'configured_facts' : location ? 'independent_location_entailed' : 'verification_unavailable' });
-      const reply = location ? `${catalog}\n${location}` : currentBusinessSupportGap(sessionId, text, informationLanguage, true);
+        { disposition: recommendationSummary ? 'configured_catalog_clarification' : configuredAddress ? 'configured_facts' : location ? 'independent_location_entailed' : 'verification_unavailable' });
+      const reply = recommendationSummary ? `${recommendationSummary}\n${formatRecommendationClarification(informationLanguage)}`
+        : location ? `${catalog}\n${location}` : currentBusinessSupportGap(sessionId, text, informationLanguage, true);
       const finalReply = enforceFinalConversationConcision(
         guardCustomerFacingReply(sessionId, reply, informationLanguage, businessConfig?.toneConfig),
         getFinalConversationConcisionBudget(text),

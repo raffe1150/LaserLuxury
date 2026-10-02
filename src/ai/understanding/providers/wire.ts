@@ -1,6 +1,6 @@
 import type { CanonicalStructuredUnderstandingV1, UnderstandingIntent } from '../types';
 
-export const GEMINI_WIRE_SCHEMA_VERSION = 1 as const;
+export const STRUCTURED_UNDERSTANDING_WIRE_SCHEMA_VERSION = 1 as const;
 
 const intentValues = [
   'new_booking',
@@ -19,12 +19,12 @@ const slotKinds = ['ordinal', 'deictic', 'time'] as const;
 const correctionKinds = ['correction', 'replacement', 'mind_change'] as const;
 const correctionTargets = ['service', 'date', 'time', 'name', 'phone', 'slot'] as const;
 
-export const GEMINI_STRUCTURED_UNDERSTANDING_WIRE_SCHEMA = {
+export const STRUCTURED_UNDERSTANDING_WIRE_SCHEMA = {
   type: 'object',
   additionalProperties: false,
   required: ['schemaVersion', 'language', 'confidence', 'intents', 'ambiguityFields'],
   properties: {
-    schemaVersion: { type: 'integer', enum: [GEMINI_WIRE_SCHEMA_VERSION] },
+    schemaVersion: { type: 'integer', enum: [STRUCTURED_UNDERSTANDING_WIRE_SCHEMA_VERSION] },
     language: { type: 'string' },
     confidence: { type: 'number' },
     intents: { type: 'array', items: { type: 'string', enum: intentValues } },
@@ -41,7 +41,9 @@ export const GEMINI_STRUCTURED_UNDERSTANDING_WIRE_SCHEMA = {
     timeEnd: { type: 'string' },
     daypart: { type: 'string', enum: dayparts },
     name: { type: 'string' },
+    nameEvidenceText: { type: 'string' },
     phone: { type: 'string' },
+    phoneEvidenceText: { type: 'string' },
     slotReferenceKind: { type: 'string', enum: slotKinds },
     slotOrdinal: { type: 'integer' },
     slotTime: { type: 'string' },
@@ -51,8 +53,8 @@ export const GEMINI_STRUCTURED_UNDERSTANDING_WIRE_SCHEMA = {
   },
 } as const;
 
-type GeminiWireUnderstanding = {
-  schemaVersion: typeof GEMINI_WIRE_SCHEMA_VERSION;
+type StructuredUnderstandingWire = {
+  schemaVersion: typeof STRUCTURED_UNDERSTANDING_WIRE_SCHEMA_VERSION;
   language: string;
   confidence: number;
   intents: UnderstandingIntent[];
@@ -69,7 +71,9 @@ type GeminiWireUnderstanding = {
   timeEnd?: string;
   daypart?: typeof dayparts[number];
   name?: string;
+  nameEvidenceText?: string;
   phone?: string;
+  phoneEvidenceText?: string;
   slotReferenceKind?: typeof slotKinds[number];
   slotOrdinal?: number;
   slotTime?: string;
@@ -78,11 +82,11 @@ type GeminiWireUnderstanding = {
   ambiguityFields: string[];
 };
 
-export type GeminiWireDecodeResult =
-  | { ok: true; value: GeminiWireUnderstanding }
+export type StructuredUnderstandingWireDecodeResult =
+  | { ok: true; value: StructuredUnderstandingWire }
   | { ok: false };
 
-const allowedKeys = new Set(Object.keys(GEMINI_STRUCTURED_UNDERSTANDING_WIRE_SCHEMA.properties));
+const allowedKeys = new Set(Object.keys(STRUCTURED_UNDERSTANDING_WIRE_SCHEMA.properties));
 const languagePattern = /^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$/;
 const datePattern = /^\d{4}-\d{2}-\d{2}$/;
 const clockPattern = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
@@ -109,9 +113,9 @@ function hasAny(record: Record<string, unknown>, keys: string[]): boolean {
   return keys.some((key) => record[key] !== undefined);
 }
 
-export function decodeGeminiWireUnderstanding(input: unknown): GeminiWireDecodeResult {
+export function decodeStructuredUnderstandingWire(input: unknown): StructuredUnderstandingWireDecodeResult {
   if (!isRecord(input) || Object.keys(input).some((key) => !allowedKeys.has(key))) return { ok: false };
-  if (input.schemaVersion !== GEMINI_WIRE_SCHEMA_VERSION) return { ok: false };
+  if (input.schemaVersion !== STRUCTURED_UNDERSTANDING_WIRE_SCHEMA_VERSION) return { ok: false };
   if (typeof input.language !== 'string' || !languagePattern.test(input.language)) return { ok: false };
   if (typeof input.confidence !== 'number' || !Number.isFinite(input.confidence) || input.confidence < 0 || input.confidence > 1) return { ok: false };
   if (!Array.isArray(input.intents) || input.intents.length > 8 || !input.intents.every((value) => isEnum(value, intentValues))) return { ok: false };
@@ -121,10 +125,14 @@ export function decodeGeminiWireUnderstanding(input: unknown): GeminiWireDecodeR
   for (const [key, maximum] of [
     ['serviceText', 160], ['dateValue', 10], ['dateEndValue', 10],
     ['dateRelativeExpression', 160], ['timeStart', 5], ['timeEnd', 5],
-    ['name', 160], ['phone', 40], ['slotTime', 5],
+    ['name', 160], ['nameEvidenceText', 240],
+    ['phone', 40], ['phoneEvidenceText', 240], ['slotTime', 5],
   ] as const) {
     if (!optionalString(input[key], maximum)) return { ok: false };
   }
+
+  if (input.nameEvidenceText !== undefined && input.name === undefined) return { ok: false };
+  if (input.phoneEvidenceText !== undefined && input.phone === undefined) return { ok: false };
 
   const dateFields = ['dateValue', 'dateEndValue', 'dateWeekday', 'dateRelativeExpression'];
   if (input.dateKind === undefined) {
@@ -162,13 +170,36 @@ export function decodeGeminiWireUnderstanding(input: unknown): GeminiWireDecodeR
     if (!isEnum(input.correctionKind, correctionKinds) || !Array.isArray(input.correctionTargets) || input.correctionTargets.length === 0 || input.correctionTargets.length > 6 || !input.correctionTargets.every((value) => isEnum(value, correctionTargets)) || new Set(input.correctionTargets).size !== input.correctionTargets.length) return { ok: false };
   }
 
-  return { ok: true, value: input as GeminiWireUnderstanding };
+  return { ok: true, value: input as StructuredUnderstandingWire };
 }
 
-export function mapGeminiWireToCanonical(
-  wire: GeminiWireUnderstanding,
+function exactEvidenceFromQuote(
+  sourceText: string,
+  quote: string | undefined,
+): { start: number; end: number; explicit: boolean } | undefined {
+  if (!sourceText || !quote) return undefined;
+
+  const start = sourceText.indexOf(quote);
+  if (start < 0) return undefined;
+
+  // Ambiguous repeated quotes are not promoted to canonical evidence.
+  if (sourceText.indexOf(quote, start + 1) >= 0) return undefined;
+
+  return {
+    start,
+    end: start + quote.length,
+    explicit: true,
+  };
+}
+
+export function mapStructuredUnderstandingWireToCanonical(
+  wire: StructuredUnderstandingWire,
+  sourceText = '',
 ): CanonicalStructuredUnderstandingV1 {
   const confidence = wire.confidence;
+  const nameEvidence = exactEvidenceFromQuote(sourceText, wire.nameEvidenceText);
+  const phoneEvidence = exactEvidenceFromQuote(sourceText, wire.phoneEvidenceText);
+
   const date = wire.dateKind ? {
     kind: wire.dateKind,
     ...(wire.dateValue ? { value: wire.dateValue } : {}),
@@ -199,8 +230,20 @@ export function mapGeminiWireToCanonical(
       ...(wire.serviceText ? { service: { value: { statedValue: wire.serviceText }, confidence } } : {}),
       ...(date ? { date: { value: date, confidence } } : {}),
       ...(time ? { time: { value: time, confidence } } : {}),
-      ...(wire.name ? { name: { value: wire.name, confidence } } : {}),
-      ...(wire.phone ? { phone: { value: wire.phone, confidence } } : {}),
+      ...(wire.name ? {
+        name: {
+          value: wire.name,
+          confidence,
+          ...(nameEvidence ? { evidence: [nameEvidence] } : {}),
+        },
+      } : {}),
+      ...(wire.phone ? {
+        phone: {
+          value: wire.phone,
+          confidence,
+          ...(phoneEvidence ? { evidence: [phoneEvidence] } : {}),
+        },
+      } : {}),
       ...(slotReference ? { slotReference: { value: slotReference, confidence } } : {}),
     },
     ...(wire.correctionKind ? {

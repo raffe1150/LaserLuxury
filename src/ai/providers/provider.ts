@@ -34,6 +34,13 @@ export function getConfiguredAiProvider(): AiProviderName {
   );
 }
 
+export interface UnifiedAiStructuredOutputRequest {
+  name: string;
+  schema: Record<string, unknown>;
+  description?: string;
+  strict?: boolean;
+}
+
 export interface UnifiedAiGenerationRequest {
   signal?: AbortSignal;
   diagnosticContext?: { correlationId?: string };
@@ -42,6 +49,7 @@ export interface UnifiedAiGenerationRequest {
   systemInstruction?: string;
   model?: string;
   temperature?: number;
+  structuredOutput?: UnifiedAiStructuredOutputRequest;
 }
 
 export interface UnifiedAiGenerationResponse {

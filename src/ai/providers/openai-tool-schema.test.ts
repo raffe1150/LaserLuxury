@@ -91,6 +91,54 @@ test("Responses generation sends the normalized live tool schema and preserves r
   assert.equal(create.mock.callCount(), 1);
 });
 
+test("Responses generation maps unified structured output to text.format json_schema", async (t) => {
+  const previous = process.env.OPENAI_API_KEY;
+  process.env.OPENAI_API_KEY = "test-no-network";
+
+  t.after(() => {
+    if (previous === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = previous;
+  });
+
+  const schema = {
+    type: "object",
+    additionalProperties: false,
+    required: ["phone"],
+    properties: {
+      phone: { type: "string" },
+    },
+  };
+
+  const create = t.mock.method(Responses.prototype, "create", async (params: any) => {
+    assert.deepEqual(params.text, {
+      format: {
+        type: "json_schema",
+        name: "contact_understanding",
+        schema,
+        description: "Extract grounded customer contact.",
+        strict: true,
+      },
+    });
+    return { output_text: '{"phone":"0701234567"}', output: [] } as any;
+  });
+
+  assert.deepEqual(await generateWithOpenAi({
+    model: "gpt-5.6-luna",
+    messages: [{ role: "user", content: "My phone number is 0701234567." }],
+    structuredOutput: {
+      name: "contact_understanding",
+      schema,
+      description: "Extract grounded customer contact.",
+      strict: true,
+    },
+  }), {
+    text: '{"phone":"0701234567"}',
+    functionCalls: [],
+  });
+
+  assert.equal(create.mock.callCount(), 1);
+});
+
 test("nested objects and arrays preserve constraints and optional properties without mutation", () => {
   const schema = {
     type: "OBJECT", additionalProperties: false, required: ["records"],

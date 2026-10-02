@@ -130,6 +130,21 @@ export async function generateWithOpenAi(
     instructions: request.systemInstruction,
     input: toOpenAiInput(request.messages),
     tools,
+    ...(request.structuredOutput ? {
+      text: {
+        format: {
+          type: "json_schema",
+          name: request.structuredOutput.name,
+          schema: request.structuredOutput.schema,
+          ...(request.structuredOutput.description
+            ? { description: request.structuredOutput.description }
+            : {}),
+          ...(request.structuredOutput.strict !== undefined
+            ? { strict: request.structuredOutput.strict }
+            : {}),
+        },
+      },
+    } : {}),
     ...(request.temperature !== undefined && OPENAI_TEMPERATURE_MODELS.has(model)
       ? { temperature: request.temperature }
       : {}),

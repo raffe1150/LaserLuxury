@@ -16214,6 +16214,45 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
       bookingCorrelationId,
     );
     if (providerUnderstanding) {
+      const hasExplicitGroundedContactEvidence = (
+        candidate: string,
+        evidence: readonly { start: number; end: number; explicit: boolean }[] | undefined,
+        field: "name" | "phone",
+      ): boolean => {
+        if (!candidate || !Array.isArray(evidence) || evidence.length === 0) return false;
+
+        return evidence.some((item) => {
+          if (
+            !item?.explicit ||
+            !Number.isInteger(item.start) ||
+            !Number.isInteger(item.end) ||
+            item.start < 0 ||
+            item.end <= item.start ||
+            item.end > text.length
+          ) {
+            return false;
+          }
+
+          const span = text.slice(item.start, item.end);
+
+          if (field === "phone") {
+            const candidateDigits = normalizeLocalizedDigits(candidate).replace(/\D/g, "");
+            const spanDigits = normalizeLocalizedDigits(span).replace(/\D/g, "");
+
+            return candidateDigits.length >= 7 &&
+              candidateDigits.length <= 15 &&
+              spanDigits.includes(candidateDigits) &&
+              /\p{L}/u.test(span);
+          }
+
+          const normalizedCandidate = candidate.normalize("NFKC").trim().toLocaleLowerCase();
+          const normalizedSpan = span.normalize("NFKC").toLocaleLowerCase();
+
+          return normalizedCandidate.length >= 2 &&
+            normalizedSpan.includes(normalizedCandidate);
+        });
+      };
+
       const resolution = resolveControlledUnderstandingAdoption({
         provider: providerUnderstanding,
         legacy: {
@@ -16245,19 +16284,48 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
           const owned = pending ? selectUniqueOwnedOfferedSlotByTime(candidate, pending) : null;
           return owned ? getStockholmTimeFromIso(owned.start) : null;
         },
-        validateName: (candidate) => (deterministicCurrentName ||
-          ["awaiting_contact", "failed_recoverable"].includes(String(pending?.status || "")) ||
-          (deterministicCurrentPhone && text.toLocaleLowerCase().includes(candidate.toLocaleLowerCase())))
-          ? resolveAuthoritativeContact({
-              serviceNames: [...getConfiguredBookingServiceNames(businessConfig), String(pending?.service || "")],
-              channel: platformName,
-              currentName: candidate,
-            }).name : null,
+        validateName: (candidate) => {
+          const normalizedCandidate = candidate.normalize("NFKC").trim().toLocaleLowerCase();
+          const matchesLegacyName = [deterministicCurrentName, pending?.customerName]
+            .filter(Boolean)
+            .some((value) =>
+              String(value).normalize("NFKC").trim().toLocaleLowerCase() === normalizedCandidate
+            );
+
+          const groundedProviderName = hasExplicitGroundedContactEvidence(
+            candidate,
+            providerUnderstanding.entities.name?.evidence,
+            "name",
+          );
+
+          if (!matchesLegacyName && !groundedProviderName) return null;
+
+          return resolveAuthoritativeContact({
+            serviceNames: [...getConfiguredBookingServiceNames(businessConfig), String(pending?.service || "")],
+            channel: platformName,
+            currentName: candidate,
+          }).name;
+        },
         validatePhone: (candidate) => {
-          const phone = resolveAuthoritativeContact({ channel: platformName, currentPhone: candidate }).phone;
-          // Provider contact candidates follow the same explicit-input rule as
-          // deterministic extraction; model inference cannot promote prose digits.
-          return phone && (phone === deterministicCurrentPhone || phone === pending?.customerPhone) ? phone : null;
+          const phone = resolveAuthoritativeContact({
+            channel: platformName,
+            currentPhone: candidate,
+          }).phone;
+
+          if (!phone) return null;
+
+          if (
+            phone === deterministicCurrentPhone ||
+            phone === pending?.customerPhone
+          ) {
+            return phone;
+          }
+
+          return hasExplicitGroundedContactEvidence(
+            candidate,
+            providerUnderstanding.entities.phone?.evidence,
+            "phone",
+          ) ? phone : null;
         },
       });
       controlledUnderstandingCandidates = resolution.candidates;

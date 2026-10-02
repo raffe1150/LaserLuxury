@@ -16,7 +16,13 @@ const businessConfig = {
     .map(day => [day, [{ start: '14:00', end: '17:00' }]])),
 };
 
-function fixture(t: any, platformName: BookingContactChannel = 'whatsapp', withPhone = true, inferredPhone?: string) {
+function fixture(
+  t: any,
+  platformName: BookingContactChannel = 'whatsapp',
+  withPhone = true,
+  inferredPhone?: string,
+  inferredPhoneEvidence?: Array<{ start: number; end: number; explicit: boolean }>,
+) {
   boundary.reset();
   t.after(() => boundary.reset());
   const traces: Array<{ label: unknown; detail: any }> = [];
@@ -74,7 +80,13 @@ function fixture(t: any, platformName: BookingContactChannel = 'whatsapp', withP
     ...(inferredPhone ? { structuredUnderstandingAdoptionRuntime: {
       evaluate: async () => ({ schemaVersion: 1,
         language: { primary: { value: 'en', confidence: 1 }, codeSwitches: [] },
-        intents: [], acts: {}, entities: { phone: { value: inferredPhone, confidence: 1 } }, ambiguities: [],
+        intents: [], acts: {}, entities: {
+          phone: {
+            value: inferredPhone,
+            confidence: 1,
+            ...(inferredPhoneEvidence ? { evidence: inferredPhoneEvidence } : {}),
+          },
+        }, ambiguities: [],
       }),
       emitDecisions: (_correlationId: string, decisions: readonly any[]) => { adoptionDecisions.push(...decisions); },
     } } : {}),
@@ -338,6 +350,45 @@ for (const withPhone of [true, false]) {
     }
   });
 }
+
+
+test('evidence-grounded Persian phone can be adopted when deterministic parsing misses it', async (t) => {
+  const message = 'نام من مینا آزمون و شماره تلفنم 0700001105 است.';
+  const evidenceText = 'شماره تلفنم 0700001105';
+  const evidenceStart = message.indexOf(evidenceText);
+
+  const f = fixture(
+    t,
+    'telegram',
+    false,
+    '0700001105',
+    [{
+      start: evidenceStart,
+      end: evidenceStart + evidenceText.length,
+      explicit: true,
+    }],
+  );
+
+  await select(f);
+  await confirm(f);
+  f.adoptionDecisions.length = 0;
+
+  const result = await f.turn(message);
+
+  assert.equal(
+    f.adoptionDecisions.some((decision) =>
+      decision.field === 'phone' &&
+      decision.disposition === 'provider_adopted'
+    ),
+    true,
+  );
+
+  assert.equal(result.pending, null);
+  assert.equal(f.created.length, 1);
+  assert.equal(f.created[0].name, 'مینا آزمون');
+  assert.equal(f.created[0].phone, '0700001105');
+  assert.equal(f.recorded[0].phone, '0700001105');
+});
 
 test('invalid diagnostic name keeps the owned booking slot until a valid Arabic name completes once', async t => {
   const f = fixture(t);

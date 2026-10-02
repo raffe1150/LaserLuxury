@@ -129,6 +129,7 @@ assert.deepEqual(understandBookingTurn(disabledInput), disabledLegacy);
 let configuredProviderCreations = 0;
 const configuredButNotShadow = createConfiguredUnderstandingShadowRuntime({
   STRUCTURED_UNDERSTANDING_ENABLED: 'true',
+  STRUCTURED_UNDERSTANDING_PROVIDER: 'gemini',
   STRUCTURED_UNDERSTANDING_SHADOW_MODE: 'false',
   GEMINI_API_KEY: 'unused',
 }, {

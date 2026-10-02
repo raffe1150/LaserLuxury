@@ -187,6 +187,7 @@ class FakeProvider implements UnderstandingProvider {
 let providerCreations = 0;
 const disabled = createConfiguredUnderstandingAdoptionRuntime({
   STRUCTURED_UNDERSTANDING_ENABLED: 'true',
+  STRUCTURED_UNDERSTANDING_PROVIDER: 'gemini',
   STRUCTURED_UNDERSTANDING_ADOPTION_ENABLED: 'false',
   GEMINI_API_KEY: 'unused',
 }, {
@@ -204,6 +205,7 @@ const fakeProvider = new FakeProvider(understanding({
 }));
 const configured = createConfiguredUnderstandingAdoptionRuntime({
   STRUCTURED_UNDERSTANDING_ENABLED: 'true',
+  STRUCTURED_UNDERSTANDING_PROVIDER: 'gemini',
   STRUCTURED_UNDERSTANDING_ADOPTION_ENABLED: 'true',
   STRUCTURED_UNDERSTANDING_MODEL: 'test-model',
   GEMINI_API_KEY: 'test-key',

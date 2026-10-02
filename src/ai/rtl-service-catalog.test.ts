@@ -11,19 +11,20 @@ for (const [language, unit, durationLabel, priceLabel] of [
   ['ar', 'دقيقة', 'المدة', 'السعر'], ['fa', 'دقیقه', 'مدت', 'قیمت'],
 ]) {
   const detail = '\u206660 min, 300 SEK\u2069';
-  const block = `• Video Consultation\n  ${detail}`;
-  test(`${language}: compact two-line service blocks preserves exact names, duration, price and currency`, () => {
+  const block = `• Video Consultation — ${detail}`;
+  test(`${language}: compact one-line service rows preserve exact names, duration, price and currency`, () => {
     const reply = formatConfiguredServiceCatalogPlan(plan, language);
     assert.ok(reply.includes(block));
-    assert.ok(reply.includes('• خدمة محلية\n  \u206625 min, 450.5 EUR\u2069'));
-    assert.ok(reply.includes('• US Service\n  \u206637.5 min, 9.95 USD\u2069'));
+    const visibleReply = reply.replace(/[\u2066\u2069]/gu, '');
+    assert.ok(visibleReply.includes('• خدمة محلية — 25 min, 450.5 EUR'));
+    assert.ok(visibleReply.includes('• US Service — 37.5 min, 9.95 USD'));
     assert.ok(reply.endsWith('• Name Only'));
     assert.doesNotMatch(reply, /[()]|undefined|null|دقيقة|دقیقه|\u2067| · /u);
     assert.equal([...reply.matchAll(/[\u2066\u2067]/gu)].length, [...reply.matchAll(/\u2069/gu)].length);
     assert.doesNotMatch(reply, new RegExp(`${durationLabel}|${priceLabel}`, 'u'));
     assert.ok(reply.includes(detail));
-    assert.equal(block.split('\n').length, 2);
-    assert.ok(reply.includes('\n• خدمة محلية'), 'service blocks stay compact without blank lines');
+    assert.equal(block.split('\n').length, 1);
+    assert.ok(reply.includes('\n• خدمة محلية — '), 'service rows stay compact without blank lines');
     const location = language === 'ar' ? 'تجدوننا في Aurora Street 742.' : 'ما را در Aurora Street 742 پیدا می‌کنید.';
     const normalized = normalizeGroundedCompoundCatalogReply(`${reply}\n${reply}\n${location}`, plan, language, '', [location]);
     assert.equal(normalized, `${reply}\n${location}`);
@@ -49,7 +50,7 @@ for (const [language, unit, durationLabel, priceLabel] of [
     for (const currency of ['SEK', 'EUR', 'USD', 'GBP', 'xbt']) {
       const configured = buildConfiguredServiceCatalogPlan([{ name: 'Currency Service', durationMinutes: 60, price: 300, currency }]);
       const reply = formatConfiguredServiceCatalogPlan(configured, language);
-      assert.ok(reply.endsWith(`• Currency Service\n  \u206660 min, 300 ${currency}\u2069`));
+      assert.ok(reply.endsWith(`• Currency Service — \u206660 min, 300 ${currency}\u2069`));
       if (currency !== 'SEK') assert.doesNotMatch(reply, /SEK/u);
     }
   });
@@ -61,10 +62,10 @@ for (const [language, unit, durationLabel, priceLabel] of [
       { name: 'Free Service', durationMinutes: 15, price: 0, currency: 'USD' },
     ]);
     const reply = formatConfiguredServiceCatalogPlan(configured, language);
-    assert.ok(reply.includes('• Duration Only\n  \u206620 min\u2069'));
-    assert.ok(reply.includes('• Price Only\n  \u206675 EUR\u2069'));
-    assert.ok(reply.includes('• No Currency\n  \u206630 min, 100\u2069'));
-    assert.ok(reply.includes('• Free Service\n  \u206615 min, 0 USD\u2069'));
+    assert.ok(reply.includes('• Duration Only — \u206620 min\u2069'));
+    assert.ok(reply.includes('• Price Only — \u206675 EUR\u2069'));
+    assert.ok(reply.includes('• No Currency — \u206630 min, 100\u2069'));
+    assert.ok(reply.includes('• Free Service — \u206615 min, 0 USD\u2069'));
     assert.doesNotMatch(reply, /SEK|undefined|null/u);
   });
   test(`${language}: matching detail text under an unknown factual heading is preserved`, () => {
@@ -78,10 +79,18 @@ for (const [language, unit, durationLabel, priceLabel] of [
     assert.ok(normalizeGroundedCompoundCatalogReply(`${reply}\n${qualified}`, plan, language).includes(qualified));
   });
 }
-for (const [language, unit] of [['en', 'minutes'], ['sv', 'minuter'], ['de', 'Minuten'], ['es', 'minutos']]) {
-  test(`${language}: existing LTR rendering remains unchanged`, () => {
+for (const [language, unit] of [
+  ['en', 'minutes'],
+  ['sv', 'minuter'],
+  ['de', 'Minuten'],
+  ['es', 'minutos'],
+]) {
+  test(`${language}: LTR rendering uses compact one-line service rows`, () => {
     const reply = formatConfiguredServiceCatalogPlan(plan, language);
-    assert.ok(reply.includes(`• Video Consultation (60 ${unit}, 300 SEK)`));
-    assert.doesNotMatch(reply, /[\u2068\u2069]/u);
+    assert.ok(reply.includes(`• Video Consultation — 60 ${unit}, 300 SEK`));
+    assert.ok(reply.includes(`• خدمة محلية — 25 ${unit}, 450.5 EUR`));
+    assert.ok(reply.includes(`• US Service — 37.5 ${unit}, 9.95 USD`));
+    assert.ok(reply.endsWith('• Name Only'));
+    assert.doesNotMatch(reply, /[\u2068\u2069]|undefined|null/u);
   });
 }

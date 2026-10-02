@@ -300,16 +300,18 @@ function formatConfiguredServiceRow(service: ConfiguredServiceCatalogItem, langu
   const price = service.price !== null
     ? service.currency ? `${service.price} ${service.currency}` : String(service.price) : "";
   if (isRtlCatalogLanguage(language)) {
-    // Keep the entire metadata line LTR; values and currency come from the
-    // configured service record, with no translation or currency inference.
+    // Keep metadata LTR inside the mixed-direction one-line service row.
+    // Values and currency come from the configured service record, with no
+    // translation or currency inference.
     const details = [duration, price].filter(Boolean).join(', ');
-    return [
-      `• ${service.name}`,
-      ...(details ? [`  \u2066${details}\u2069`] : []),
-    ].join("\n");
+    return details
+      ? `• ${service.name} — \u2066${details}\u2069`
+      : `• ${service.name}`;
   }
   const details = [duration, price].filter(Boolean);
-  return details.length ? `• ${service.name} (${details.join(", ")})` : `• ${service.name}`;
+  return details.length
+    ? `• ${service.name} — ${details.join(", ")}`
+    : `• ${service.name}`;
 }
 
 export function formatConfiguredServiceCatalogPlan(

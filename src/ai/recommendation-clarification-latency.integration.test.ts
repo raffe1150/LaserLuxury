@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Responses } from 'openai/resources/responses';
-import { buildConfiguredServiceCatalogPlan, formatRecommendationClarification, formatRecommendationServiceSummary, isGenericRecommendationClarificationQuestion } from './business-information';
+import { buildConfiguredServiceCatalogPlan, formatRecommendationClarification, formatRecommendationServiceSummary, isGenericRecommendationClarificationQuestion, isRecommendationInformationRequest } from './business-information';
 process.env.NODE_ENV = 'test';
 const { priority1hUnifiedEngineTestBoundary: b } = await import(process.env.REMAINING_LATENCY_BASELINE === '1' ? '../../.remaining-baseline-server.ts' : '../../server');
 const fixture = JSON.parse(readFileSync(new URL('../../tests/fixtures/business-information-tenant3.json', import.meta.url), 'utf8'));
@@ -344,6 +344,44 @@ test('generic recommendation clarification explains the information needed inste
 });
 
 
+test('recommendation information fallback answers the information request without listing services', () => {
+  const cases = [
+    ['en', 'I am not sure which service suits me. What do you need to know before recommending one?'],
+    ['sv', 'Jag vet inte vilken tjänst som passar mig. Vad behöver ni veta innan ni rekommenderar en?'],
+    ['de', 'Ich weiß nicht, welche Dienstleistung zu mir passt. Was müssen Sie wissen, bevor Sie eine empfehlen?'],
+    ['es', 'No sé qué servicio me conviene. ¿Qué necesitan saber antes de recomendar uno?'],
+    ['fa', 'نمی‌دانم کدام خدمت برای من مناسب است. پیش از پیشنهاد یک خدمت چه اطلاعاتی نیاز دارید؟'],
+    ['ar', 'لا أعرف أي خدمة تناسبني. ما الذي تحتاجون إلى معرفته قبل التوصية بخدمة؟'],
+  ] as const;
+
+  for (const [language, question] of cases) {
+    b.reset();
+
+    const id = `recommendation-information-fallback-${language}`;
+    const config = { ...fixture.business, language };
+
+    b.businessInformationState(id, config, question, language, '');
+
+    const fallback = b.businessSupportGap(id, question, language);
+
+    assert.equal(
+      fallback,
+      formatRecommendationClarification(language),
+      `${language}: information-only recommendation fallback must contain only the clarification`,
+    );
+
+    for (const service of fixture.business.services) {
+      assert.equal(
+        fallback.includes(service.name),
+        false,
+        `${language}: fallback must not list service ${service.name}`,
+      );
+    }
+  }
+
+  b.reset();
+});
+
 test('uncertain service-fit meta question delegates to grounded LLM instead of deterministic catalog', async t => {
   b.reset();
   t.after(() => b.reset());
@@ -426,6 +464,28 @@ for (const question of [
   'لا أعرف أي خدمة تناسبني. ما الذي تحتاجون إلى معرفته قبل التوصية بخدمة؟',
 ]) test(`uncertain service-fit clarification is recognized: ${question}`, () => {
   assert.equal(isGenericRecommendationClarificationQuestion(question), true);
+});
+
+for (const question of [
+  'I am not sure which service suits me. What do you need to know before recommending one?',
+  'Jag vet inte vilken tjänst som passar mig. Vad behöver ni veta innan ni rekommenderar en?',
+  'Ich weiß nicht, welche Dienstleistung zu mir passt. Was müssen Sie wissen, bevor Sie eine empfehlen?',
+  'No sé qué servicio me conviene. ¿Qué necesitan saber antes de recomendar uno?',
+  'نمی‌دانم کدام خدمت برای من مناسب است. پیش از پیشنهاد یک خدمت چه اطلاعاتی نیاز دارید؟',
+  'لا أعرف أي خدمة تناسبني. ما الذي تحتاجون إلى معرفته قبل التوصية بخدمة؟',
+]) test(`recommendation information request is recognized narrowly: ${question}`, () => {
+  assert.equal(isRecommendationInformationRequest(question), true);
+});
+
+for (const question of [
+  'What services do you offer and what do you recommend for a first-time visitor?',
+  'Vilka tjänster har ni och vad rekommenderar ni för första gången?',
+  'Welche Dienstleistungen bieten Sie an und was empfehlen Sie beim ersten Besuch?',
+  '¿Qué servicios ofrecen y qué recomiendan para alguien que viene por primera vez?',
+  'چه خدماتی دارید و برای بار اول چه پیشنهادی دارید؟',
+  'ما الخدمات التي تقدمونها وماذا توصي به لزيارة أولى؟',
+]) test(`catalog plus recommendation is not an information-only request: ${question}`, () => {
+  assert.equal(isRecommendationInformationRequest(question), false);
 });
 
 for (const question of [

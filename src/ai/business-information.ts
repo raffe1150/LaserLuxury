@@ -104,6 +104,11 @@ export function isServiceCatalogQuestion(text: string, allowAdditionalTopics = f
 
   if (!isBusinessInformationQuestion(raw)) return false;
 
+  // Recommendation requests require recommendation handling even when they
+  // mention the service collection. They must never collapse into a
+  // deterministic catalog-only response.
+  if (isBusinessRecommendationQuestion(raw)) return false;
+
   // A catalog request asks about the service collection itself, not merely
   // whether one named service is offered.
   const mentionsServiceCollection =
@@ -198,6 +203,47 @@ export function isGenericRecommendationClarificationQuestion(text: string): bool
   // Structural clarification pattern:
   // A) customer says they do not know which service fits them
   // B) customer asks what information is needed before a recommendation
+  const uncertainServiceFit = [
+    /\b(?:i(?:'m| am)? not sure|i do not know|i don't know|unsure).{0,80}\b(?:which|what).{0,30}\b(?:service|option).{0,40}\b(?:suit(?:s|ed|able)?|fit(?:s)?|right|appropriate|best)(?:\s+me)?(?=\s*[.!?]|$)/iu,
+    /\b(?:jag vet inte|jag är osäker).{0,80}\b(?:vilken|vilka).{0,30}\b(?:tjänst|tjänster|alternativ).{0,40}\b(?:passar|lämplig)(?:\s+(?:mig|för mig))?(?=\s*[.!?]|$)/iu,
+    /\b(?:ich weiß nicht|ich weiss nicht|ich bin unsicher).{0,80}\b(?:welche|welcher).{0,30}\b(?:dienstleistung|leistung|option).{0,40}\b(?:passt|geeignet)(?=\s*[.!?]|$)/iu,
+    /\b(?:no sé|no se|no estoy seguro|no estoy segura).{0,80}\b(?:qué|que|cuál|cual).{0,30}\b(?:servicio|opción|opcion).{0,40}\b(?:conviene|adecuad[oa]?|encaja)(?:\s+(?:para mí|para mi))?(?=\s*[.!?]|$)/iu,
+    /(?:نمی[‌\s]?دانم|مطمئن نیستم).{0,80}(?:کدام|چه).{0,30}(?:خدمت|سرویس|گزینه).{0,40}(?:مناسب|بهتر)(?:\s+(?:است|هست))?(?=\s*[.!؟?]|$)/u,
+    /(?:لا أعرف|لست متأكدا|لست متأكدة).{0,80}(?:أي|ما).{0,30}(?:خدمة|خدمات|خيار).{0,40}(?:تناسب(?:ني)?|مناسب(?:ة)?)(?=\s*[.!؟?]|$)/u,
+  ].some(pattern => pattern.test(question));
+
+  const asksWhatIsNeeded = [
+    /\bwhat.{0,40}(?:do you need to know|information do you need).{0,60}(?:before|to).{0,30}(?:recommend|suggest)/iu,
+    /\bvad.{0,40}(?:behöver ni veta|behöver du veta|behöver ni för information).{0,60}(?:innan|för att).{0,30}rekommend/iu,
+    /\bwas.{0,40}(?:müssen sie wissen|muessen sie wissen|brauchen sie).{0,60}(?:bevor|um).{0,30}empfehl/iu,
+    /\bqué.{0,40}(?:necesitan saber|información necesitan|informacion necesitan).{0,60}(?:antes de|para).{0,30}recomend/iu,
+    /(?:چه|چقدر).{0,40}(?:اطلاعات|چیزی).{0,40}(?:نیاز دارید|لازم دارید).{0,60}(?:پیش از|قبل از|برای).{0,30}پیشنهاد/u,
+    /(?:پیش از|قبل از).{0,20}پیشنهاد.{0,40}(?:چه|چقدر).{0,30}(?:اطلاعات|چیزی).{0,30}(?:نیاز دارید|لازم دارید)/u,
+    /(?:ما|ماذا).{0,40}(?:تحتاجون إلى معرفته|تحتاج أن تعرف|المعلومات التي تحتاج).{0,60}(?:قبل|لأجل|من أجل).{0,30}(?:التوصية|توصي)/u,
+  ].some(pattern => pattern.test(question));
+
+  return uncertainServiceFit && asksWhatIsNeeded;
+}
+
+export function isRecommendationInformationRequest(text: string): boolean {
+  if (!isBusinessRecommendationQuestion(text)) return false;
+
+  const question = text.normalize('NFKC')
+    .replace(/[\u064b-\u065f]/gu, '')
+    .trim()
+    .replace(/^[¡¿]*(?:hello|hi|hej|hallo|hola|مرحبا|سلام)(?=[\s!,،.])[\s!,،.]+/iu, '')
+    .replace(/^[¿¡]+|[?!؟.]+$/gu, '')
+    .trim();
+
+  if (businessInformationTopics(question).some(topic =>
+    ['company', 'prices', 'contact', 'hours', 'policies', 'parking'].includes(topic)
+  )) return false;
+
+  if (
+    /\b(?:please\s+(?:book|reserve)|i\s+(?:want|would like)\s+to\s+(?:book|reserve)|boka|buche?n|reservar|reserva)\b|(?:رزرو\s+کن|احجز|أحجز)/iu
+      .test(question)
+  ) return false;
+
   const uncertainServiceFit = [
     /\b(?:i(?:'m| am)? not sure|i do not know|i don't know|unsure).{0,80}\b(?:which|what).{0,30}\b(?:service|option).{0,40}\b(?:suit(?:s|ed|able)?|fit(?:s)?|right|appropriate|best)(?:\s+me)?(?=\s*[.!?]|$)/iu,
     /\b(?:jag vet inte|jag är osäker).{0,80}\b(?:vilken|vilka).{0,30}\b(?:tjänst|tjänster|alternativ).{0,40}\b(?:passar|lämplig)(?:\s+(?:mig|för mig))?(?=\s*[.!?]|$)/iu,

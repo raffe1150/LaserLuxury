@@ -16,6 +16,7 @@ import {
   isServiceCatalogQuestion,
   isSimpleCatalogLocationQuestion,
   isGenericRecommendationClarificationQuestion,
+  isRecommendationInformationRequest,
 } from './src/ai/business-information';
 import { beginBusinessInformationTiming, businessInformationTimingContext, clearBusinessInformationTiming,
   markBusinessInformationTiming, timeBusinessInformationDelivery } from './src/ai/business-information-timing';
@@ -8265,6 +8266,10 @@ function currentBusinessSupportGap(sessionId: string, text: string, language: st
       return `${overview}\n${formatGap(language, businessInformationSubject(text, language, missingTopics))}`;
     }
     return overview;
+  }
+
+  if (recommendationQuestion && isRecommendationInformationRequest(text)) {
+    return formatRecommendationClarification(language);
   }
 
   if (recommendationQuestion && overview) {

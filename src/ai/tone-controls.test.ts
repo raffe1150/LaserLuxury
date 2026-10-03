@@ -86,7 +86,9 @@ assert.match(composed, /Tool results are authoritative/);
 
 const serverSource = readFileSync(new URL('../../server.ts', import.meta.url), 'utf8');
 const runtimeCalls = serverSource.match(/buildBusinessPromptWithTone\(/g) || [];
-assert.equal(runtimeCalls.length, 8, 'Telegram, WhatsApp, Messenger, Instagram, Meta comments, web chat, service clarification, and business-information context use the shared builder');
+assert.ok(runtimeCalls.length >= 7, 'existing channel and business-information paths retain the shared tone builder');
+const bookingCompositionSource = readFileSync(new URL('./grounded-booking-composition.ts', import.meta.url), 'utf8');
+assert.match(bookingCompositionSource, /buildBusinessPromptWithTone\([\s\S]*options\.toneConfig/, 'grounded booking composition also receives the existing tone controls');
 for (const channel of ['telegram', 'whatsapp', 'messenger', 'instagram']) {
   assert.match(serverSource, new RegExp(`channel:\\s*["']${channel}["'][\\s\\S]{0,16000}buildBusinessPromptWithTone|buildBusinessPromptWithTone[\\s\\S]{0,16000}channel:\\s*["']${channel}["']`, 'i'));
 }

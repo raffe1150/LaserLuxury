@@ -1,3 +1,14 @@
+import {
+  bookingCompositionLanguageMatches,
+  composeGroundedBookingReply,
+  getBookingPresentationFacts,
+  registerBookingPresentation,
+  recordDeliveredBookingPresentation,
+  resetBookingPresentationMemory,
+  runBookingPresentationScope,
+  type BookingReplyFacts,
+} from './src/ai/grounded-booking-composition';
+import type { UnifiedAiGenerationRequest, UnifiedAiGenerationResponse } from './src/ai/providers/provider';
 import { containsWebOperationSuccess } from "./src/ai/web-response-integrity";
 import { CalendarReadError, requireCalendarEvents } from "./src/calendar/read-contract";
 import {
@@ -1210,6 +1221,8 @@ type BusinessGroundingVerificationRequest = {
 };
 
 type Priority1hTestDependencies = {
+  bookingPresentationGenerate?: (request: UnifiedAiGenerationRequest) => Promise<UnifiedAiGenerationResponse>;
+  bookingPresentationDiagnostic?: (event: { kind: string; source: string; repeated: boolean; fallbackReason?: string }) => void;
   geminiGenerate?: (params: any) => Promise<any>;
   semanticLanguageResolver?: (
     text: string,
@@ -1705,9 +1718,6 @@ function buildLocalizedSlotReply(slotsArray: string[], specificTime?: string, la
   return renderDeterministicAvailabilityReply(lang, { kind: "found", slots: slotsText }, toneConfig);
 }
 
-function formatSwedishTimeSlots(slotsArray: string[], specificTime?: string, language: string = "sv", toneConfig?: unknown): string {
-  return buildLocalizedSlotReply(slotsArray, specificTime, language, toneConfig);
-}
 
 function isSlotFree(
   startMs: number,
@@ -4761,12 +4771,7 @@ function formatAuthoritativeBookingContinuation(
     pending?.status === "awaiting_confirmation" &&
     pending.dateTime
   ) {
-    return formatSwedishTimeSlots(
-      Array.isArray(pending.offeredSlots) ? pending.offeredSlots : [],
-      getStockholmTimeFromIso(String(pending.dateTime)) || undefined,
-      language,
-      toneConfig,
-    );
+    return formatSelectedSlotConfirmationPrompt(language);
   }
   if (
     pending?.status === "awaiting_time_selection" &&
@@ -4777,12 +4782,7 @@ function formatAuthoritativeBookingContinuation(
   if (getRecentCompletedBooking(sessionId)?.bookingOperation?.ok) {
     return formatRecentCompletedIntegrityFallback(language);
   }
-  if (language === "sv") return "Jag fortsätter gärna med bokningen här. Vilken tid vill du välja?";
-  if (language === "fa") return "حتماً، رزرو را همین‌جا ادامه می‌دهیم. کدام زمان را انتخاب می‌کنید؟";
-  if (language === "de") return "Gern, wir setzen die Buchung hier sicher fort. Welche Zeit möchten Sie wählen?";
-  if (language === "es") return "Claro, seguimos con la reserva aquí. ¿Qué hora quieres elegir?";
-  if (language === "ar") return "بالتأكيد، سنواصل الحجز هنا. ما الوقت الذي تود اختياره؟";
-  return "Of course — we’ll continue the booking here. Which time would you like?";
+  return formatNewBookingServiceDatePrompt(language);
 }
 
 function formatRecentCompletedIntegrityFallback(language: string): string {
@@ -6256,7 +6256,7 @@ function formatRescheduleSuccess(language: string, dateTime: string): string {
   return `Your appointment has been rescheduled to ${dateText} at ${timeText}. 😊`;
 }
 
-function formatRescheduleConfirmation(language: string, dateTime: string): string {
+function fallbackRescheduleConfirmation(language: string, dateTime: string): string {
   const { dateText, timeText } = formatLocalizedDateTime(dateTime, language);
   if (language === "fa") return `${dateText} ساعت ${timeText} خالیه. وقتتون رو به همون زمان منتقل کنم؟`;
   if (language === "sv") return `${dateText} kl. ${timeText} är ledigt. Ska jag flytta din bokning dit?`;
@@ -6297,7 +6297,7 @@ function formatRescheduleTimeRejected(language: string, rejectedTime?: string | 
     : "Okay, I’ve removed that time. What time works better?";
 }
 
-function formatChooseRescheduleTime(language: string): string {
+function fallbackChooseRescheduleTime(language: string): string {
   if (language === "fa") return "لطفاً اول یکی از زمان‌های پیشنهادی را انتخاب کنید.";
   if (language === "sv") return "Välj först en av de föreslagna tiderna.";
   if (language === "de") return "Bitte wählen Sie zuerst eine der vorgeschlagenen Zeiten.";
@@ -6306,7 +6306,7 @@ function formatChooseRescheduleTime(language: string): string {
   return "Please choose one of the offered times first.";
 }
 
-function formatAskRescheduleTarget(language: string): string {
+function fallbackAskRescheduleTarget(language: string): string {
   if (language === "fa") return "حتماً 😊 چه روز و ساعتی براتون بهتره؟";
   if (language === "sv") return "Absolut 😊 Vilken dag och tid passar bättre?";
   if (language === "de") return "Gern 😊 Welcher Tag und welche Uhrzeit passen besser?";
@@ -6315,7 +6315,7 @@ function formatAskRescheduleTarget(language: string): string {
   return "Of course 😊 What day and time works better?";
 }
 
-function formatAskRescheduleDayForTime(language: string, time: string): string {
+function fallbackAskRescheduleDayForTime(language: string, time: string): string {
   if (language === "fa") return `حتماً 😊 چه روزی برای ساعت ${time} مناسبه؟`;
   if (language === "sv") return `Absolut 😊 Vilken dag passar för kl. ${time}?`;
   if (language === "de") return `Gern 😊 Welcher Tag passt für ${time} Uhr?`;
@@ -6324,7 +6324,7 @@ function formatAskRescheduleDayForTime(language: string, time: string): string {
   return `Of course 😊 What day works for ${time}?`;
 }
 
-function formatAskRescheduleTimeForDate(language: string): string {
+function fallbackAskRescheduleTimeForDate(language: string): string {
   if (language === "fa") return "شماره‌تون ثبت شد 😊 چه ساعتی در همان روز براتون بهتره؟";
   if (language === "sv") return "Numret är sparat 😊 Vilken tid den dagen passar bäst?";
   if (language === "de") return "Die Nummer ist gespeichert 😊 Welche Uhrzeit passt an diesem Tag am besten?";
@@ -7663,7 +7663,14 @@ function formatThanksReply(language: string = "en", name?: string, toneConfig?: 
   return name ? `You're welcome, ${name}! Have a lovely day 😊` : "You're welcome! Have a lovely day 😊";
 }
 
+const stagedBookingPresentations = new Map<string, { scope: string; facts: BookingReplyFacts; reply: string; at: number }>();
+
 function appendLocalHistory(chatId: string, userMessage: string, botMessage: string) {
+  const staged = stagedBookingPresentations.get(chatId);
+  if (staged) {
+    stagedBookingPresentations.delete(chatId);
+    if (staged.reply === botMessage && Date.now() - staged.at < 30 * 60_000) recordDeliveredBookingPresentation(staged.scope, staged.facts, botMessage);
+  }
   if (!chatSessions[chatId]) chatSessions[chatId] = [];
   chatSessions[chatId].push({ role: "user", content: userMessage || "" });
   chatSessions[chatId].push({ role: "assistant", content: botMessage || "" });
@@ -10629,6 +10636,18 @@ function getConfiguredBookingServiceNames(businessConfig: any): string[] {
   return getEligibleConfiguredBookingServices(businessConfig).map((service) => service.name);
 }
 
+function extractAwaitingServiceLabel(text: string): string | null {
+  // In this one deterministic state, a terse answer to the service question is
+  // explicit selection evidence. It still must pass the configured catalog;
+  // recognizing the customer's label does not make that service bookable.
+  const label = text.trim().replace(/[.!?؟]+$/u, '').trim();
+  if (label.length > 80 || !/^[\p{L}\p{M}][\p{L}\p{M}'’\-]*(?:\s+[\p{L}\p{M}][\p{L}\p{M}'’\-]*){0,3}$/u.test(label)) return null;
+  if (isGreetingOnlyText(label) || isThanksOnlyText(label) || isAffirmativeBookingText(label) || isAmbiguousShortReply(label) ||
+      isServiceGuidanceRequest(label) || isDateOnlyServiceExtraction(label) || extractNameOnly(label, false) || extractPhoneOnly(label)) return null;
+  if (/^(?:appointment|booking|time|slot|service|tid|bokning|tjänst|termin|cita|reserva|servicio|وقت|نوبت|رزرو|سرویس|خدمت|موعد|حجز|خدمة)$/iu.test(label)) return null;
+  return label;
+}
+
 function extractConcreteRequestedService(text?: string): string | null {
   const raw = String(text || "").replace(/\s+/g, " ").trim();
   if (!raw) return null;
@@ -10844,7 +10863,7 @@ function extractConcreteRequestedService(text?: string): string | null {
   return null;
 }
 
-function formatUnsupportedServiceBookingReply(
+function fallbackUnsupportedServiceBookingReply(
   language: string,
   requestedService: string,
   configuredServices: string[]
@@ -10862,7 +10881,7 @@ function formatUnsupportedServiceBookingReply(
   return catalog ? `I cannot match “${requestedService}” to a bookable service. That service is not offered. Available services are: ${catalog}. Which one would you like to book?` : `I cannot match “${requestedService}” to a bookable service. That service is not offered. Which other service would you like to book?`;
 }
 
-function formatMissingServiceBookingReply(language: string): string {
+function fallbackMissingServiceBookingReply(language: string): string {
   if (language === "sv") return "Absolut. Vilken tjänst vill du boka?";
   if (language === "de") return "Gerne. Welche Leistung möchten Sie buchen?";
   if (language === "es") return "Claro. ¿Qué servicio quieres reservar?";
@@ -10871,7 +10890,7 @@ function formatMissingServiceBookingReply(language: string): string {
   return "Of course. Which service would you like to book?";
 }
 
-function formatAmbiguousServiceBookingReply(
+function fallbackAmbiguousServiceBookingReply(
   language: string,
   requestedService: string,
   candidates: string[],
@@ -10893,11 +10912,6 @@ type ServiceClarificationPresentationInput = {
   requestedService: string | null;
   candidates: string[];
   catalogServices: string[];
-};
-
-type ServiceClarificationPresentationResult = {
-  text: string;
-  source: "gemini" | "deterministic";
 };
 
 function getDeterministicServiceClarificationFallback(
@@ -10925,99 +10939,7 @@ function getDeterministicServiceClarificationFallback(
 }
 
 function normalizeServicePresentationText(value: string): string {
-  return normalizeConversationText(String(value || ""))
-    .normalize("NFKD")
-    .replace(/[\u0300-\u036f]/gu, "")
-    .toLocaleLowerCase();
-}
-
-function validateServiceClarificationPresentation(
-  reply: string,
-  input: ServiceClarificationPresentationInput,
-): boolean {
-  const raw = String(reply || "").trim();
-  if (!raw) return false;
-
-  const normalized = normalizeServicePresentationText(raw);
-
-  // Presentation must never claim transactional availability, slot times,
-  // booking completion, or confirmation while service identity is unresolved.
-  const forbiddenTransactionalClaims = [
-    /\b(?:available|availability|slot|slots|booked|confirmed|scheduled)\b/iu,
-    /\b(?:tomorrow|today|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b.{0,24}\b\d{1,2}:\d{2}\b/iu,
-    /\b\d{1,2}:\d{2}\b/iu,
-    /\b(?:ledig|lediga|bokad|bekräftad|bekraftad)\b/iu,
-    /\b(?:verfügbar|verfugbar|gebucht|bestätigt|bestatigt)\b/iu,
-    /\b(?:disponible|reservado|confirmado)\b/iu,
-    /(?:وقت\s+داریم|وقت\s+خالی|موجود\s+است|رزرو\s+شد|تأیید\s+شد|تاييد\s+شد)/u,
-    /(?:متاح|موعد\s+متاح|تم\s+الحجز|مؤكد|موكد)/u,
-  ];
-
-  if (forbiddenTransactionalClaims.some((pattern) => pattern.test(raw))) {
-    return false;
-  }
-
-  // When a requested service is unsupported, the reply must not positively
-  // present it as bookable/supported.
-  if (input.status === "unsupported" && input.requestedService) {
-    const requested = normalizeServicePresentationText(input.requestedService);
-
-    if (!requested || !normalized.includes(requested)) {
-      return false;
-    }
-
-    const unsupportedMeaningPatterns = [
-      /\b(?:cannot|can't|could not|couldn't|unable to|not)\b.{0,80}\b(?:match|bookable|supported|available|offer|provide)\b/iu,
-      /\b(?:hittar|finner)\b.{0,80}\binte\b.{0,80}\b(?:bokningsbar(?:a)?|tillgänglig(?:a)?|tillganglig(?:a)?|matcha)\b/iu,
-      /\b(?:inte|kan inte)\b.{0,80}\b(?:matcha|bokningsbar(?:a)?|tillgänglig(?:a)?|tillganglig(?:a)?)\b/iu,
-      /\b(?:finde|finden)\b.{0,80}\bnicht\b.{0,80}\b(?:buchbar(?:e|en|er|es)?|verfügbar(?:e|en|er|es)?|verfugbar(?:e|en|er|es)?|zuordnen)\b/iu,
-      /\b(?:nicht|kann nicht)\b.{0,80}\b(?:zuordnen|buchbar(?:e|en|er|es)?|verfügbar(?:e|en|er|es)?|verfugbar(?:e|en|er|es)?)\b/iu,
-      /\bno\b.{0,80}\b(?:encuentro|puedo encontrar|puedo asociar)\b.{0,80}\b(?:reservable(?:s)?|disponible(?:s)?|servicio(?:s)?)\b/iu,
-      /\b(?:no puedo|no)\b.{0,80}\b(?:asociar|reservable(?:s)?|disponible(?:s)?)\b/iu,
-      /(?:پیدا\s*نمی(?:‌|\s)?کنم|نمی(?:‌|\s)?توانم|قابل\s+رزرو\s+نیست|پشتیبانی\s+نمی(?:‌|\s)?شود)/u,
-      /(?:لا\s+أجد).{0,80}(?:قابل(?:ة)?\s+للحجز|الخدمات\s+القابلة\s+للحجز)/u,
-      /(?:لا\s+أستطيع|غير\s+مدعوم|غير\s+قابل\s+للحجز|ليست\s+خدمة\s+قابلة\s+للحجز)/u,
-    ];
-
-    if (!unsupportedMeaningPatterns.some((pattern) => pattern.test(raw))) {
-      return false;
-    }
-
-    const positiveUnsupportedPatterns = [
-      /\b(?:is|it's|it is)\s+(?:bookable|supported|available)\b/iu,
-      /\b(?:can\s+book|we\s+offer|we\s+provide)\b/iu,
-      /\b(?:är|ar)\s+(?:bokningsbar|tillgänglig|tillganglig)\b/iu,
-      /\b(?:ist)\s+(?:buchbar|verfügbar|verfugbar)\b/iu,
-      /\b(?:es|está|esta)\s+(?:reservable|disponible)\b/iu,
-      /(?:قابل\s+رزرو\s+است|موجود\s+است|ارائه\s+می(?:‌|\s)?دهیم)/u,
-      /(?:يمكن\s+حجز|نقدم|نوفر)/u,
-    ];
-
-    if (positiveUnsupportedPatterns.some((pattern) => pattern.test(raw))) {
-      return false;
-    }
-  }
-
-  const normalizedCandidates = new Set(
-    input.candidates
-      .map((service) => normalizeServicePresentationText(service))
-      .filter(Boolean),
-  );
-
-  // Gemini may only mention configured service names that were explicitly
-  // supplied in the safe candidate subset. This prevents catalog drift.
-  for (const catalogService of input.catalogServices) {
-    const normalizedService = normalizeServicePresentationText(catalogService);
-    if (!normalizedService) continue;
-    if (
-      normalized.includes(normalizedService) &&
-      !normalizedCandidates.has(normalizedService)
-    ) {
-      return false;
-    }
-  }
-
-  return true;
+  return normalizeConversationText(String(value || '')).normalize('NFKD').replace(/[\u0300-\u036f]/gu, '').toLocaleLowerCase();
 }
 
 function serviceClarificationPresentationMatchesLanguage(
@@ -11052,97 +10974,6 @@ function serviceClarificationPresentationMatchesLanguage(
   return detected === input.language;
 }
 
-function buildServiceClarificationPresentationInstruction(
-  input: ServiceClarificationPresentationInput,
-): string {
-  const safeCandidates = input.candidates.slice(0, 5);
-
-  const truth = {
-    status: input.status,
-    requestedService: input.requestedService,
-    allowedCandidateServices: safeCandidates,
-    language: input.language,
-  };
-
-  return [
-    "You are only rewriting a deterministic service-clarification result into natural customer-facing language.",
-    "The structured facts below are authoritative and immutable.",
-    "Do not decide whether a service exists. Do not infer additional services.",
-    "Do not mention any service name except the requested service and allowedCandidateServices supplied below.",
-    "Do not claim that any appointment, date, time, slot, availability, booking, reservation, or confirmation exists.",
-    "Do not invent prices, durations, business policies, dates, times, or availability.",
-    "Do not use tools and do not describe internal system logic.",
-    "Write exactly one short, natural reply in the requested language.",
-    "",
-    "Meaning of status:",
-    "- missing: the customer has not identified a service yet; ask which service they want.",
-    "- ambiguous: the requested wording could match multiple allowed candidates; ask the customer to choose between only those candidates.",
-    "- unsupported: the requested service is not offered in the bookable catalog; explicitly tell the customer it is not offered and present the supplied candidates or catalog services so they can choose. Never substitute a service.",
-    "",
-    `AUTHORITATIVE_TRUTH=${JSON.stringify(truth)}`,
-    "",
-    "Return only the customer-facing reply.",
-  ].join("\n");
-}
-
-async function renderServiceClarificationPresentation(
-  input: ServiceClarificationPresentationInput,
-  candidateReply?: string | null,
-  generate = generateContentWithFallback,
-): Promise<ServiceClarificationPresentationResult> {
-  const fallback = getDeterministicServiceClarificationFallback(input);
-
-  try {
-    let proposed = String(candidateReply || "").trim();
-
-    // candidateReply is a test-only/injected presentation candidate.
-    // Normal runtime generation uses the shared Gemini reliability path.
-    if (!proposed) {
-      const response = await generate(null, {
-        messages: [
-          {
-            role: "user",
-            content:
-              "Produce the service clarification reply using only the authoritative truth in the system instruction.",
-          },
-        ],
-        systemInstruction:
-          buildBusinessPromptWithTone(buildServiceClarificationPresentationInstruction(input), input.toneConfig),
-        model: "gemini-2.5-flash",
-        context: {
-          stage: "service_clarification_presentation",
-          language: input.language,
-        },
-      });
-
-      proposed = String(response?.text || "").trim();
-    }
-
-    if (
-      proposed &&
-      serviceClarificationPresentationMatchesLanguage(proposed, input) &&
-      validateServiceClarificationPresentation(proposed, input)
-    ) {
-      return {
-        text: proposed,
-        source: "gemini",
-      };
-    }
-  } catch (error) {
-    console.warn("[ServiceClarificationPresentation]", {
-      status: input.status,
-      language: input.language,
-      source: "deterministic_fallback",
-      errorCategory: classifyAiFailure(error),
-    });
-  }
-
-  return {
-    text: fallback,
-    source: "deterministic",
-  };
-}
-
 async function renderUnsupportedServiceBookingReply(
   language: string,
   requestedService: string,
@@ -11160,15 +10991,7 @@ async function renderUnsupportedServiceBookingReply(
     toneConfig,
   };
 
-  // Integration tests must remain deterministic and must never require
-  // external AI/network access. The presentation helper itself is tested
-  // independently through the test boundary.
-  if (process.env.NODE_ENV === "test") {
-    return getDeterministicServiceClarificationFallback(input);
-  }
-
-  const presentation = await renderServiceClarificationPresentation(input);
-  return presentation.text;
+  return getDeterministicServiceClarificationFallback(input);
 }
 
 
@@ -11190,12 +11013,7 @@ async function renderAmbiguousServiceBookingReply(
     toneConfig,
   };
 
-  if (process.env.NODE_ENV === "test") {
-    return getDeterministicServiceClarificationFallback(input);
-  }
-
-  const presentation = await renderServiceClarificationPresentation(input);
-  return presentation.text;
+  return getDeterministicServiceClarificationFallback(input);
 }
 
 
@@ -11213,15 +11031,10 @@ async function renderMissingServiceBookingReply(
     toneConfig,
   };
 
-  if (process.env.NODE_ENV === "test") {
-    return getDeterministicServiceClarificationFallback(input);
-  }
-
-  const presentation = await renderServiceClarificationPresentation(input);
-  return presentation.text;
+  return getDeterministicServiceClarificationFallback(input);
 }
 
-function formatConfiguredServiceDatePrompt(language: string, service: string, requestedTime?: string): string {
+function fallbackConfiguredServiceDatePrompt(language: string, service: string, requestedTime?: string): string {
   const retainedTime = requestedTime
     ? language === "de" ? ` Die gewünschte Uhrzeit ${requestedTime} habe ich vorgemerkt.`
       : language === "sv" ? ` Jag har sparat önskemålet om kl ${requestedTime}.`
@@ -11254,13 +11067,6 @@ function getWhatsAppConversationPhone(
   return null;
 }
 
-function formatMissingBookingDetailsMessage(
-  language: string,
-  missing: Array<"name" | "phone" | "service">,
-  toneConfig?: unknown,
-): string {
-  return renderDeterministicMissingDetailsReply(language, missing, toneConfig);
-}
 
 function getPendingOwnedUserId(
   pending: any,
@@ -12974,7 +12780,7 @@ function isEarliestAvailabilityRequest(text?: string): boolean {
   );
 }
 
-function formatRangeAvailabilityReply(
+function fallbackRangeAvailabilityReply(
   slots: string[],
   language: string,
   request: AvailabilityRangeRequest,
@@ -13000,7 +12806,7 @@ function formatRangeAvailabilityReply(
   return `Outside the original requested range, I found: ${base}`;
 }
 
-function formatSlotNoLongerAvailable(
+function fallbackSlotNoLongerAvailable(
   language: string,
   selectedTime: string | undefined,
   alternatives: string[],
@@ -13438,7 +13244,7 @@ function formatAmbiguousBookingIntentClarification(language: string): string {
   return "Do you mean a new booking, rescheduling, cancellation, or checking an existing booking?";
 }
 
-function formatSelectedSlotConfirmationPrompt(language: string): string {
+function fallbackSelectedSlotConfirmationPrompt(language: string): string {
   if (language === "sv") return "Vill du att jag bokar den valda tiden?";
   if (language === "de") return "Soll ich die ausgewählte Zeit für Sie buchen?";
   if (language === "es") return "¿Quieres que reserve la hora seleccionada?";
@@ -13447,7 +13253,7 @@ function formatSelectedSlotConfirmationPrompt(language: string): string {
   return "Would you like me to book the selected time?";
 }
 
-function formatChooseStoredSlotClarification(language: string): string {
+function fallbackChooseStoredSlotClarification(language: string): string {
   if (language === "fa") return "کدام‌یک از زمان‌های پیشنهادی را انتخاب می‌کنید؟ اگر می‌خواهید فهرست را دوباره بفرستم، بگویید «زمان‌ها را دوباره بفرست».";
   if (language === "sv") return "Vilken av de föreslagna tiderna väljer du? Säg till om du vill att jag visar tiderna igen.";
   if (language === "de") return "Welche der vorgeschlagenen Zeiten wählen Sie? Ich kann die Liste auf Wunsch erneut senden.";
@@ -13456,7 +13262,7 @@ function formatChooseStoredSlotClarification(language: string): string {
   return "Which proposed time would you like? I can show the list again if you ask.";
 }
 
-function formatNoAvailabilityRecovery(language: string): string {
+function fallbackNoAvailabilityRecovery(language: string): string {
   if (language === "fa") return "برای همین روز و محدودیت زمانی، وقت آزادی پیدا نشد. روز یا بازه زمانی دیگری می‌خواهید؟";
   if (language === "sv") return "Det finns ingen ledig tid för samma dag och tidsönskemål. Vill du prova en annan dag eller tid?";
   if (language === "de") return "Für denselben Tag und Zeitwunsch gibt es keinen freien Termin. Möchten Sie einen anderen Tag oder Zeitraum versuchen?";
@@ -13528,7 +13334,7 @@ function enforceFinalConversationConcision(reply: string, maxWords: number = 45)
   return candidate;
 }
 
-function guardCustomerFacingReply(sessionId: string, reply: string, fallbackLanguage?: string, toneConfig?: unknown): string {
+function guardCustomerFacingReply(sessionId: string, reply: string, fallbackLanguage?: string, toneConfig?: unknown, presentationFacts?: BookingReplyFacts): string {
   const raw = suppressBookingCtaDuringSupportTurn(
     sessionId,
     String(reply || "").trim()
@@ -13590,6 +13396,10 @@ function guardCustomerFacingReply(sessionId: string, reply: string, fallbackLang
     : recentCompleted?.bookingOperation?.ok
       ? recentCompleted.bookingOperation
       : null;
+  const replyWithoutPresentationEntities = presentationFacts
+    ? [presentationFacts.requestedService, presentationFacts.service, ...(presentationFacts.services || [])].filter(Boolean)
+      .reduce((value, fact) => value.split(String(fact)).join(' '), raw)
+    : raw;
   const replyForLanguageDetection = verifiedBookingFacts
     ? [
         verifiedBookingFacts.serviceName,
@@ -13601,7 +13411,7 @@ function guardCustomerFacingReply(sessionId: string, reply: string, fallbackLang
           : value,
         raw,
       )
-    : raw;
+    : replyWithoutPresentationEntities;
   const hasEnglishStructure = /\b(to confirm|can i ask|please send|please choose|i need|i can'?t find|what mobile|what day|what time|which time|of course|your appointment|your booking|would you like|sorry|couldn'?t|is available|is booked|try again)\b/i.test(replyForLanguageDetection);
   const hasSwedishStructure = /\b(för att|kan jag|ditt namn|din bokning|mobilnummer|vill du|tyvärr|är ledig|är bokad)\b/i.test(replyForLanguageDetection);
   const hasPersianStructure = /[\u0600-\u06FF]/u.test(replyForLanguageDetection) &&
@@ -13669,6 +13479,7 @@ function guardCustomerFacingReply(sessionId: string, reply: string, fallbackLang
       (["de", "es", "ar"].includes(language) && hasEnglishStructure)
     );
 
+  if (presentationFacts && bookingCompositionLanguageMatches(replyForLanguageClassification, language, () => !incompatible)) return raw;
   if (!incompatible) return raw;
   console.warn("[CustomerReplyGuard]", {
     language,
@@ -15772,6 +15583,139 @@ async function startAllBusinessTelegramPollers() {
 }
 
 
+
+function bookingSlotPresentationLabels(slots: string[]): string[] {
+  return slots.map(slot => parseSlotIso(slot)).filter((iso): iso is string => Boolean(iso))
+    .flatMap(iso => { const parts = getZonedSlotParts(iso, 'Europe/Stockholm'); return parts ? [`${parts.date} ${String(Math.floor(parts.minutes / 60)).padStart(2, '0')}:${String(parts.minutes % 60).padStart(2, '0')}`] : []; });
+}
+
+function formatChooseRescheduleTime(language: string): string {
+  return registerBookingPresentation(fallbackChooseRescheduleTime(language), { kind: 'choose_slot', language, operation: 'reschedule' });
+}
+function formatAskRescheduleTarget(language: string): string {
+  return registerBookingPresentation(fallbackAskRescheduleTarget(language), { kind: 'date', language, operation: 'reschedule' });
+}
+function formatAskRescheduleDayForTime(language: string, time: string): string {
+  return registerBookingPresentation(fallbackAskRescheduleDayForTime(language, time), { kind: 'date', language, operation: 'reschedule', requestedTime: time });
+}
+function formatAskRescheduleTimeForDate(language: string): string {
+  return registerBookingPresentation(fallbackAskRescheduleTimeForDate(language), { kind: 'time', language, operation: 'reschedule' });
+}
+function formatRescheduleConfirmation(language: string, dateTime: string): string {
+  return registerBookingPresentation(fallbackRescheduleConfirmation(language, dateTime), { kind: 'confirm_slot', language, operation: 'reschedule', selectedStart: dateTime, slots: bookingSlotPresentationLabels([`(ISO: ${dateTime})`]) });
+}
+
+function formatNewBookingServiceDatePrompt(language: string): string {
+  const replies: Record<string, string> = {
+    en: 'Which service and date would you like for a new booking?',
+    sv: 'Vilken tjänst och vilket datum vill du välja för en ny bokning?',
+    de: 'Welche Leistung und welches Datum möchten Sie für eine neue Buchung wählen?',
+    es: '¿Qué servicio y qué fecha quieres elegir para una nueva reserva?',
+    fa: 'برای رزرو جدید کدام سرویس و چه تاریخی می‌خواهید؟',
+    ar: 'أي خدمة وما التاريخ الذي تريد اختياره لحجز جديد؟',
+  };
+  return registerBookingPresentation(replies[language] || replies.en, { kind: 'service_date', language });
+}
+
+function formatUnsupportedServiceBookingReply(language: string, requestedService: string, configuredServices: string[]): string {
+  return registerBookingPresentation(fallbackUnsupportedServiceBookingReply(language, requestedService, configuredServices), { kind: 'unsupported_service', language, requestedService, services: configuredServices.slice(0, 5) });
+}
+function formatMissingServiceBookingReply(language: string): string {
+  return registerBookingPresentation(fallbackMissingServiceBookingReply(language), { kind: 'missing_service', language });
+}
+function formatAmbiguousServiceBookingReply(language: string, requestedService: string, candidates: string[]): string {
+  return registerBookingPresentation(fallbackAmbiguousServiceBookingReply(language, requestedService, candidates), { kind: 'ambiguous_service', language, requestedService, services: candidates.slice(0, 5) });
+}
+function formatConfiguredServiceDatePrompt(language: string, service: string, requestedTime?: string): string {
+  return registerBookingPresentation(fallbackConfiguredServiceDatePrompt(language, service, requestedTime), { kind: 'date', language, service, requestedTime });
+}
+function formatSwedishTimeSlots(slotsArray: string[], specificTime?: string, language = 'sv', toneConfig?: unknown): string {
+  const exact = specificTime && findOfferedSlotIso(slotsArray, specificTime);
+  return registerBookingPresentation(buildLocalizedSlotReply(slotsArray, specificTime, language, toneConfig), { kind: exact ? 'confirm_slot' : 'availability', language, slots: bookingSlotPresentationLabels(exact ? slotsArray.filter(slot => parseSlotIso(slot) === exact) : slotsArray), requestedTime: specificTime });
+}
+function formatRangeAvailabilityReply(slots: string[], language: string, request: AvailabilityRangeRequest, outsideOriginalRange: boolean, toneConfig?: unknown): string {
+  return registerBookingPresentation(fallbackRangeAvailabilityReply(slots, language, request, outsideOriginalRange, toneConfig), { kind: 'availability', language, slots: bookingSlotPresentationLabels(slots), constraint: { ...request, outsideOriginalRange } });
+}
+function formatSlotNoLongerAvailable(language: string, selectedTime: string | undefined, alternatives: string[], toneConfig?: unknown): string {
+  return registerBookingPresentation(fallbackSlotNoLongerAvailable(language, selectedTime, alternatives, toneConfig), { kind: 'availability', language, slots: bookingSlotPresentationLabels(alternatives), unavailableTime: selectedTime });
+}
+function formatMissingBookingDetailsMessage(language: string, missing: Array<'name' | 'phone' | 'service'>, toneConfig?: unknown): string {
+  return registerBookingPresentation(renderDeterministicMissingDetailsReply(language, missing, toneConfig), { kind: 'missing_contact', language, missing });
+}
+function formatSelectedSlotConfirmationPrompt(language: string): string {
+  return registerBookingPresentation(fallbackSelectedSlotConfirmationPrompt(language), { kind: 'confirm_slot', language });
+}
+function formatChooseStoredSlotClarification(language: string): string {
+  return registerBookingPresentation(fallbackChooseStoredSlotClarification(language), { kind: 'choose_slot', language });
+}
+function formatNoAvailabilityRecovery(language: string): string {
+  return registerBookingPresentation(fallbackNoAvailabilityRecovery(language), { kind: 'availability', language, slots: [] });
+}
+
+
+async function composeAdapterBookingPresentation(params: {
+  sessionId: string; platformName: string; recipientUserId: string; businessConfig: any;
+  history: any[]; text: string; format: () => string; service?: string; constraint?: Record<string, unknown>;
+}): Promise<string> {
+  return runBookingPresentationScope(async () => {
+    const fallback = params.format();
+    const registered = getBookingPresentationFacts(fallback);
+    if (!registered) return fallback;
+    // Residual tool arguments are not catalog evidence. Even when canonical
+    // slots were calculated, never present an unconfigured tool service as
+    // bookable. Reuse the deterministic configured-service resolver here.
+    const catalog = getConfiguredBookingServiceNames(params.businessConfig);
+    const configuredService = params.service && findConfiguredBookingService(params.service, params.businessConfig);
+    if (params.service && catalog.length && !configuredService) {
+      const unsupportedFallback = formatUnsupportedServiceBookingReply(registered.language, params.service, catalog);
+      return composeBookingPresentationForTurn({ ...params, fallback: unsupportedFallback,
+        facts: getBookingPresentationFacts(unsupportedFallback)! });
+    }
+    return composeBookingPresentationForTurn({ ...params, fallback,
+      facts: { ...registered, operation: 'new_booking', service: configuredService || params.service || pendingBookings[params.sessionId]?.service, constraint: params.constraint || presentationConstraint(pendingBookings[params.sessionId]?.availabilityConstraint) } });
+  });
+}
+
+async function composeBookingPresentationForTurn(params: {
+  sessionId: string; platformName: string; recipientUserId: string; businessConfig: any;
+  history: any[]; text: string; fallback: string; facts: BookingReplyFacts;
+}): Promise<string> {
+  const scope = JSON.stringify([getAppointmentBusinessScope(params.businessConfig), params.platformName, normalizePlatformUserId(params.platformName, params.recipientUserId), params.sessionId]);
+  const generate = process.env.NODE_ENV === 'test'
+    ? priority1hTestDependencies?.bookingPresentationGenerate
+    : getConfiguredAiProvider() === 'openai'
+      ? (request: UnifiedAiGenerationRequest) => runWithAiQueue(() => generateWithConfiguredProvider(request), undefined, request.signal)
+      : undefined;
+  const result = await composeGroundedBookingReply({
+    scope, facts: params.facts, fallback: params.fallback, history: params.history,
+    latestText: params.text, toneConfig: params.businessConfig?.toneConfig, generate,
+    languageMatches: (reply) => bookingCompositionLanguageMatches(reply, params.facts.language, probe => serviceClarificationPresentationMatchesLanguage(probe, {
+      status: 'missing', language: params.facts.language, requestedService: params.facts.requestedService || null,
+      candidates: params.facts.services || [], catalogServices: getConfiguredBookingServiceNames(params.businessConfig),
+    })),
+  });
+  priority1hTestDependencies?.bookingPresentationDiagnostic?.({ kind: params.facts.kind, source: result.source, repeated: result.repeated, fallbackReason: result.fallbackReason });
+  stagedBookingPresentations.set(params.sessionId, { scope, facts: structuredClone(params.facts), reply: result.text, at: Date.now() });
+  if (stagedBookingPresentations.size > 10_000) stagedBookingPresentations.delete(stagedBookingPresentations.keys().next().value!);
+  console.info('[BookingPresentation]', { kind: params.facts.kind, source: result.source, repeated: result.repeated, fallbackReason: result.fallbackReason, channel: params.platformName });
+  return result.text;
+}
+
+function presentationConstraint(constraint: any): Record<string, unknown> | undefined {
+  if (!constraint) return undefined;
+  const { startDate, endDate, kind, exactTime, minTime, maxTime, timeBoundary, rejectedTimes } = constraint;
+  return { startDate, endDate, kind, exactTime, minTime, maxTime, timeBoundary, rejectedTimes };
+}
+
+function presentationRequestedServiceLabel(label: string | null | undefined, dateAlreadyResolved: boolean): string | null | undefined {
+  if (!label || !dateAlreadyResolved) return label;
+  // Older service extraction can retain a relative-date suffix. The engine's
+  // resolved date stays authoritative; remove only that suffix from wording
+  // and the presentation outcome identity, never from booking state.
+  return label.replace(/\s+(?:(?:for|on|för|på|till|für|fuer|para|برای|في)\s+)?(?:today|tomorrow|idag|imorgon|heute|morgen|hoy|mañana|امروز|فردا|اليوم|غدًا|غداً|غدا)$/iu, '').trim() || label;
+}
+
+
 type UnifiedBookingSend = (text: string) => Promise<any>;
 
 type UnifiedBookingEngineParams = {
@@ -15817,7 +15761,7 @@ async function handleUnifiedBookingEngine(params: UnifiedBookingEngineParams): P
     // owns this serialized conversation.
     latestUnifiedBookingTurn.set(params.sessionId, turnToken);
     try {
-      return await handleUnifiedBookingEngineTurn({
+      return await runBookingPresentationScope(() => handleUnifiedBookingEngineTurn({
       ...params,
       send: async (reply) => {
         if (latestUnifiedBookingTurn.get(params.sessionId) !== turnToken) {
@@ -15861,7 +15805,7 @@ async function handleUnifiedBookingEngine(params: UnifiedBookingEngineParams): P
 
         return params.send(finalReply);
       },
-      });
+      }));
     } finally {
       if (latestUnifiedBookingTurn.get(params.sessionId) === turnToken) {
         latestUnifiedBookingTurn.delete(params.sessionId);
@@ -17030,7 +16974,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
     lockConversationFlowLanguage(sessionId, getStoredFlowLanguage(sessionId) || language, "appointment");
   }
 
-  const replyAndRecord = async (reply: string, resolvedPresentationLanguage?: string) => {
+  const replyAndRecord = async (reply: string, resolvedPresentationLanguage?: string, explicitFacts?: BookingReplyFacts) => {
     // Presentation and the final safety guard must resolve language from the same
     // active-flow source. A short continuation (for example "13:00 Uhr" or "2")
     // must not let a stale/default turn language make the guard replace an already
@@ -17041,12 +16985,29 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
         language,
         text,
       );
-    const guardedReply = guardCustomerFacingReply(
-      sessionId,
-      reply,
-      replyLanguage,
-      businessConfig?.toneConfig,
-    );
+    const registeredFacts = explicitFacts || getBookingPresentationFacts(reply);
+    const authoritativePending = pendingBookings[sessionId] || pending;
+    const availability = availabilitySearchContexts[sessionId];
+    const reschedule = getRescheduleContext(sessionId);
+    const facts = registeredFacts ? {
+      ...registeredFacts, language: replyLanguage,
+      ...(registeredFacts.kind === 'unsupported_service' ? {
+        requestedService: presentationRequestedServiceLabel(registeredFacts.requestedService, Boolean(authoritativePending?.selectedDate)),
+      } : {}),
+      operation: registeredFacts.operation || (reschedule ? 'reschedule' : 'new_booking'),
+      // Enrich only with deterministic state, never with customer/assistant prose.
+      ...(['availability', 'choose_slot', 'confirm_slot', 'missing_contact', 'date', 'time'].includes(registeredFacts.kind) ? {
+        service: reschedule ? reschedule.appointment?.service : authoritativePending?.service !== 'Bokning' ? authoritativePending?.service || availability?.service : undefined,
+        constraint: registeredFacts.constraint || presentationConstraint(authoritativePending?.availabilityConstraint || availability?.constraint),
+        ...(registeredFacts.kind === 'choose_slot' ? { slots: bookingSlotPresentationLabels(reschedule?.offeredSlots || authoritativePending?.offeredSlots || []) } : {}),
+        ...(registeredFacts.kind === 'confirm_slot' ? { selectedStart: registeredFacts.selectedStart || reschedule?.selectedNewStartTime || authoritativePending?.dateTime || undefined } : {}),
+      } : {}),
+    } : undefined;
+    const composed = facts ? await composeBookingPresentationForTurn({
+      sessionId, platformName, recipientUserId, businessConfig, history: (chatSessions[sessionId]?.length || 0) >= history.length ? chatSessions[sessionId] || [] : history,
+      text, fallback: reply, facts,
+    }) : reply;
+    const guardedReply = guardCustomerFacingReply(sessionId, composed, replyLanguage, businessConfig?.toneConfig, facts);
     emitBookingLanguageTrace({
       stage: "final_reply_guard",
       sessionId,
@@ -17259,7 +17220,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
     } else {
       const nextRequestedService = serviceResolution.status === "ambiguous" || serviceResolution.status === "unsupported"
         ? serviceResolution.requestedService
-        : extractConcreteRequestedService(text);
+        : extractConcreteRequestedService(text) || extractAwaitingServiceLabel(text);
       if (nextRequestedService) pending.requestedService = nextRequestedService;
       const nextRequestedTime = inferRequestedTimeFromText(text);
       if (nextRequestedTime) pending.requestedTime = nextRequestedTime;
@@ -17274,7 +17235,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
               configuredServiceNames,
               deterministicToneConfig,
             )
-          : serviceResolution.status === "missing"
+          : serviceResolution.status === "missing" && !pending.requestedService
             ? await renderMissingServiceBookingReply(
                 serviceResolutionLanguage,
                 configuredServiceNames,
@@ -19143,11 +19104,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
         await clearPendingBooking(sessionId);
         lockConversationFlowLanguage(sessionId, recoveryLanguage, "booking");
         await replyAndRecord(
-          recoveryLanguage === "fa"
-            ? "حتماً 😊 برای وقت جدید چه خدماتی و چه روزی مدنظرتان است؟"
-            : recoveryLanguage === "sv"
-              ? "Absolut 😊 Vilken behandling och vilken dag passar för en ny tid?"
-              : "Of course 😊 What service and day would you like for the new appointment?"
+          formatNewBookingServiceDatePrompt(recoveryLanguage)
         );
         return true;
       } else if (isInterveningNonMutatingQuestion(text)) {
@@ -20086,17 +20043,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
         await clearPendingBooking(sessionId);
         lockConversationFlowLanguage(sessionId, lockedLanguage, "booking");
         await replyAndRecord(
-          lockedLanguage === "fa"
-            ? "حتماً 😊 برای وقت جدید چه خدماتی و چه روزی مدنظرتان است؟"
-            : lockedLanguage === "sv"
-              ? "Absolut 😊 Vilken behandling och vilken dag passar för en ny tid?"
-              : lockedLanguage === "de"
-                ? "Gern 😊 Welche Behandlung und welcher Tag passen für einen neuen Termin?"
-                : lockedLanguage === "es"
-                  ? "Claro 😊 ¿Qué servicio y qué día prefieres para una nueva cita?"
-                  : lockedLanguage === "ar"
-                    ? "بالتأكيد 😊 ما الخدمة واليوم المناسبان للموعد الجديد؟"
-                    : "Of course 😊 What service and day would you like for a new appointment?"
+          formatNewBookingServiceDatePrompt(lockedLanguage)
         );
         return true;
       }
@@ -21570,7 +21517,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
                       ? "نحن مغلقون في ذلك اليوم. "
                       : "We’re closed that day. ";
 
-          await replyAndRecord(prefix + nearestSlotsReply);
+          await replyAndRecord(prefix + nearestSlotsReply, lockedLanguage, { kind: 'availability', language: lockedLanguage, service: inferredService, slots: bookingSlotPresentationLabels(nearestAvailability.displaySlots), closedDate: constraint.startDate, constraint: presentationConstraint(constraint) });
           return true;
         }
 
@@ -21587,7 +21534,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
                     ? `نحن مغلقون في ذلك اليوم، ولم أجد موعدًا متاحًا ضمن فترة الحجز.`
                     : `We’re closed that day, and I couldn’t find any available times within the booking window.`;
 
-        await replyAndRecord(closedDayReply);
+        await replyAndRecord(closedDayReply + ' ' + fallbackNoAvailabilityRecovery(lockedLanguage), lockedLanguage, { kind: 'availability', language: lockedLanguage, service: inferredService, slots: [], closedDate: constraint.startDate, constraint: presentationConstraint(constraint) });
         return true;
       }
 
@@ -23138,13 +23085,22 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
         deterministicToneConfig,
       );
       verifiedBookingReplyAuthorizations[sessionId] = bookingOperationResult;
-      const exactConfirmation = guardCustomerFacingReply(
+      const guardedConfirmation = guardCustomerFacingReply(
         sessionId,
         formattedConfirmation,
         confirmedBookingLanguage,
         businessConfig?.toneConfig,
       );
       delete verifiedBookingReplyAuthorizations[sessionId];
+      const confirmationLabels = formatLocalizedDateTime(bookingOperationResult.startTime, confirmedBookingLanguage, 'Europe/Stockholm', { calendar: 'gregory', year: 'numeric' });
+      const exactConfirmation = await composeBookingPresentationForTurn({
+        sessionId, platformName, recipientUserId, businessConfig, history: (chatSessions[sessionId]?.length || 0) >= history.length ? chatSessions[sessionId] || [] : history, text,
+        fallback: guardedConfirmation,
+        facts: { kind: 'confirmed', language: confirmedBookingLanguage, verified: bookingOperationResult.ok,
+          service: bookingOperationResult.serviceName, selectedStart: bookingOperationResult.startTime,
+          name: bookingOperationResult.customerName || '', phone: bookingOperationResult.customerPhone || undefined,
+          dateLabel: confirmationLabels.dateText, timeLabel: confirmationLabels.timeText },
+      });
 
       const bookingOutbox = activeSlotReservation
         ? await finalizeBookingOperationWithOutbox({
@@ -24117,17 +24073,21 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
             requestedTime
           });
 
-          if (offers.displaySlots.length > 0) {
-            const replyMessage = formatSwedishTimeSlots(
+          {
+            const replyMessage = await composeAdapterBookingPresentation({
+              sessionId: telegramSessionId, platformName: 'telegram', recipientUserId: chatId.toString(), businessConfig: config,
+              history, text: textForFlow, service, constraint: { startDate: args.startDate, endDate: args.endDate || args.startDate, requestedTime },
+              format: () => formatSwedishTimeSlots(
               offers.displaySlots,
               requestedTime,
               getLockedReplyLanguage(telegramSessionId, textForFlow),
               config.toneConfig
-            );
+            )
+            });
             return { TERMINATE_EARLY: true, replyMessage };
           }
 
-          adapterRes = { available_slots_string: "" };
+
         }
         else if (call.function.name === "findCustomerAppointments" && args) {
           adapterRes = await findCustomerAppointments(adapter, { ...args, lookupMode: args.lookupMode || detectAppointmentLookupMode(textForFlow), lookupText: textForFlow, lookupPath: "telegram_gemini_tool" }, chatId.toString(), "telegram", config);
@@ -24171,11 +24131,14 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
         else if (call.function.name === "insertAppointment" && args) {
           return {
             TERMINATE_EARLY: true,
-            replyMessage: formatAuthoritativeBookingContinuation(
+            replyMessage: await composeAdapterBookingPresentation({
+              sessionId: telegramSessionId, platformName: 'telegram', recipientUserId: chatId.toString(), businessConfig: config,
+              history, text: textForFlow, format: () => formatAuthoritativeBookingContinuation(
               telegramSessionId,
               getLockedReplyLanguage(telegramSessionId, textForFlow),
               config.toneConfig
             )
+            })
           };
         }
         else if (call.function.name === "logSystemAnalysis" && args) adapterRes = await handleSystemAnalysisLog(chatId, args, config);
@@ -27529,17 +27492,21 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
             requestedTime
           });
 
-          if (offers.displaySlots.length > 0) {
-            const replyMessage = formatSwedishTimeSlots(
+          {
+            const replyMessage = await composeAdapterBookingPresentation({
+              sessionId: chatId, platformName: 'whatsapp', recipientUserId: from, businessConfig: businessConfig,
+              history, text: textMessage || "", service, constraint: { startDate: args.startDate, endDate: args.endDate || args.startDate, requestedTime },
+              format: () => formatSwedishTimeSlots(
               offers.displaySlots,
               requestedTime,
               getConversationLanguage(chatId, textMessage || ""),
               businessConfig.toneConfig
-            );
+            )
+            });
             return { TERMINATE_EARLY: true, replyMessage };
           }
 
-          adapterRes = { available_slots_string: "" };
+
         } else if (call.function.name === "findCustomerAppointments" && args) {
           adapterRes = await findCustomerAppointments(adapter, { ...args, lookupMode: args.lookupMode || detectAppointmentLookupMode(textMessage), lookupText: textMessage, lookupPath: "whatsapp_gemini_tool" }, from, "whatsapp", businessConfig);
           const lookupLanguage = getConversationLanguage(chatId, textMessage || "");
@@ -27577,11 +27544,14 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
           });
           return {
             TERMINATE_EARLY: true,
-            replyMessage: formatAuthoritativeBookingContinuation(
+            replyMessage: await composeAdapterBookingPresentation({
+              sessionId: chatId, platformName: 'whatsapp', recipientUserId: from, businessConfig: businessConfig,
+              history, text: textMessage || "", format: () => formatAuthoritativeBookingContinuation(
               chatId,
               getConversationLanguage(chatId, textMessage || ""),
               businessConfig.toneConfig
             )
+            })
           };
         } else if (call.function.name === "logSystemAnalysis" && args) {
           adapterRes = await handleSystemAnalysisLog(chatId, args, businessConfig);
@@ -28821,12 +28791,16 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
           }
           return {
             TERMINATE_EARLY: true,
-            replyMessage: formatSwedishTimeSlots(
+            replyMessage: await composeAdapterBookingPresentation({
+              sessionId: chatId, platformName: 'messenger', recipientUserId: senderId, businessConfig: businessConfig,
+              history, text: textMessage || "", service, constraint: { startDate: args.startDate, endDate: args.endDate || args.startDate, requestedTime },
+              format: () => formatSwedishTimeSlots(
               offers.displaySlots,
               requestedTime,
               getConversationLanguage(chatId, textMessage || ""),
               businessConfig.toneConfig
             )
+            })
           };
         } else if (call.function.name === "findCustomerAppointments" && args) {
           adapterRes = await findCustomerAppointments(adapter, { ...args, lookupMode: args.lookupMode || detectAppointmentLookupMode(textMessage), lookupText: textMessage, lookupPath: "messenger_gemini_tool" }, senderId, "messenger", businessConfig);
@@ -28865,11 +28839,14 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
           });
           return {
             TERMINATE_EARLY: true,
-            replyMessage: formatAuthoritativeBookingContinuation(
+            replyMessage: await composeAdapterBookingPresentation({
+              sessionId: chatId, platformName: 'messenger', recipientUserId: senderId, businessConfig: businessConfig,
+              history, text: textMessage || "", format: () => formatAuthoritativeBookingContinuation(
               chatId,
               getConversationLanguage(chatId, textMessage || ""),
               businessConfig.toneConfig
             )
+            })
           };
         } else if (call.function.name === "logSystemAnalysis" && args) {
           adapterRes = await handleSystemAnalysisLog(chatId, args, businessConfig);
@@ -29541,12 +29518,16 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
           }
           return {
             TERMINATE_EARLY: true,
-            replyMessage: formatSwedishTimeSlots(
+            replyMessage: await composeAdapterBookingPresentation({
+              sessionId: chatId, platformName: 'instagram', recipientUserId: senderId, businessConfig: businessConfig,
+              history, text: textMessage || "", service, constraint: { startDate: args.startDate, endDate: args.endDate || args.startDate, requestedTime },
+              format: () => formatSwedishTimeSlots(
               offers.displaySlots,
               requestedTime,
               lockedLanguage,
               businessConfig.toneConfig
             )
+            })
           };
         } else if (call.function.name === 'findCustomerAppointments' && args) {
           adapterRes = await findCustomerAppointments(adapter, { ...args, lookupMode: args.lookupMode || detectAppointmentLookupMode(textMessage), lookupText: textMessage, lookupPath: "instagram_gemini_tool" }, senderId, 'instagram', businessConfig);
@@ -29589,11 +29570,14 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
           });
           return {
             TERMINATE_EARLY: true,
-            replyMessage: formatAuthoritativeBookingContinuation(
+            replyMessage: await composeAdapterBookingPresentation({
+              sessionId: chatId, platformName: 'instagram', recipientUserId: senderId, businessConfig: businessConfig,
+              history, text: textMessage || "", format: () => formatAuthoritativeBookingContinuation(
               chatId,
               getConversationLanguage(chatId, textMessage || ""),
               businessConfig.toneConfig
             )
+            })
           };
         } else if (call.function.name === 'logSystemAnalysis' && args) {
           adapterRes = await handleSystemAnalysisLog(chatId, args, businessConfig);
@@ -33727,23 +33711,10 @@ export const priority1hUnifiedEngineTestBoundary = {
     delete completedBookingSupportTurns[sessionId];
   delete businessInformationTurns[sessionId];
   },
-  validateServiceClarificationPresentation(
-    reply: string,
-    input: ServiceClarificationPresentationInput,
-  ) {
-    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
-    return validateServiceClarificationPresentation(reply, input);
+  bookingPresentationLanguageMatches(reply: string, language: string, services: string[] = []) {
+    if (process.env.NODE_ENV !== 'test') throw new Error('Test-only');
+    return bookingCompositionLanguageMatches(reply, language, probe => serviceClarificationPresentationMatchesLanguage(probe, { status: 'missing', language, requestedService: null, candidates: services, catalogServices: services }));
   },
-
-  async renderServiceClarificationPresentation(
-    input: ServiceClarificationPresentationInput,
-    candidateReply?: string | null,
-    generate?: typeof generateContentWithFallback,
-  ) {
-    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
-    return renderServiceClarificationPresentation(input, candidateReply, generate);
-  },
-
   geminiToolNames(sessionId: string) {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
     return getGeminiSupportTools(sessionId).flatMap((group: any) =>
@@ -33989,6 +33960,10 @@ export const priority1hUnifiedEngineTestBoundary = {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
     return formatBookingSavedMessage(language, name, service, dateTime, phone);
   },
+  composeAdapterBookingReply(params: { sessionId: string; platformName: string; recipientUserId: string; businessConfig: any; history: any[]; text: string; service: string; slots: string[]; language: string }) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    return composeAdapterBookingPresentation({ ...params, format: () => formatSwedishTimeSlots(params.slots, undefined, params.language) });
+  },
   reset() {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
     priority1hTestDependencies = null;
@@ -34009,6 +33984,8 @@ export const priority1hUnifiedEngineTestBoundary = {
     for (const key of Object.keys(chatLanguages)) delete chatLanguages[key];
     for (const key of Object.keys(conversationFlowLanguages)) delete conversationFlowLanguages[key];
     for (const key of Object.keys(businessConfigVersions)) delete businessConfigVersions[key];
+    resetBookingPresentationMemory();
+    stagedBookingPresentations.clear();
     unifiedBookingTurnTails.clear();
     latestUnifiedBookingTurn.clear();
     atomicClaims.clear();

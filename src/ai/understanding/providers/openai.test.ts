@@ -59,8 +59,16 @@ test('OpenAI structured understanding uses the shared schema and canonical decod
     transport,
   });
 
+  const generalInput: UnderstandingProviderInput = {
+    ...input,
+    context: {
+      ...input.context,
+      bookingPhase: 'awaiting_slot_selection',
+    },
+  };
+
   const result: any = await provider.interpret(
-    input,
+    generalInput,
     { signal: new AbortController().signal },
   );
 
@@ -78,7 +86,7 @@ test('OpenAI structured understanding uses the shared schema and canonical decod
   );
 
   const sent = JSON.parse(transport.lastRequest?.contents || '{}');
-  assert.equal(sent.customerTurn, input.message);
+  assert.equal(sent.customerTurn, generalInput.message);
   assert.equal(sent.activeLanguage, 'fa');
 });
 
@@ -103,8 +111,12 @@ test('OpenAI structured understanding rejects wire-schema violations', async () 
       schemaVersion: 1,
       language: 'fa',
       confidence: 0.99,
-      intents: [],
+      nameStatus: 'absent',
+      name: null,
+      nameEvidenceText: null,
+      phoneStatus: 'explicit',
       phone: 700001105,
+      phoneEvidenceText: 'شماره تلفنم 0700001105 است',
       ambiguityFields: [],
     })),
   });
@@ -195,9 +207,10 @@ test('OpenAI contact phase asks one call to exhaustively extract every missing e
     schemaVersion: 1,
     language: 'fa',
     confidence: 0.99,
-    intents: [],
+    nameStatus: 'explicit',
     name: 'مینا آزمون',
     nameEvidenceText: 'نام من مینا آزمون است',
+    phoneStatus: 'explicit',
     phone: '0700001105',
     phoneEvidenceText: 'شماره تلفنم 0700001105 است',
     ambiguityFields: [],
@@ -219,6 +232,8 @@ test('OpenAI contact phase asks one call to exhaustively extract every missing e
     mode: 'exhaustive_missing_contact_fields',
     missingFields: ['name', 'phone'],
   });
+
+  assert.equal(transport.lastRequest?.strict, true);
 
   assert.match(
     transport.lastRequest?.systemInstruction || '',

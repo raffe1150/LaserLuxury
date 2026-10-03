@@ -11,7 +11,9 @@ import {
   structuredUnderstandingProviderContents,
 } from './shared';
 import {
+  STRUCTURED_CONTACT_UNDERSTANDING_WIRE_SCHEMA,
   STRUCTURED_UNDERSTANDING_WIRE_SCHEMA,
+  decodeStructuredContactUnderstandingWire,
   decodeStructuredUnderstandingWire,
   mapStructuredUnderstandingWireToCanonical,
 } from './wire';
@@ -21,6 +23,7 @@ export type OpenAiUnderstandingTransportRequest = {
   systemInstruction: string;
   contents: string;
   responseJsonSchema: unknown;
+  strict?: boolean;
 };
 
 export interface OpenAiUnderstandingTransport {
@@ -43,7 +46,7 @@ class UnifiedOpenAiUnderstandingTransport implements OpenAiUnderstandingTranspor
         name: 'odinlink_structured_understanding',
         description: 'Structured semantic understanding of the current customer turn.',
         schema: request.responseJsonSchema as Record<string, unknown>,
-        strict: false,
+        strict: request.strict ?? false,
       },
       temperature: 0,
       signal,
@@ -76,11 +79,18 @@ export class OpenAiUnderstandingProvider implements UnderstandingProvider {
     options: UnderstandingProviderCallOptions,
   ): Promise<unknown> {
     try {
+      const contactMode = ['awaiting_contact', 'failed_recoverable'].includes(
+        input.context.bookingPhase,
+      );
+
       const response = await this.options.transport.generate({
         model: this.options.model,
         systemInstruction: STRUCTURED_UNDERSTANDING_SYSTEM_INSTRUCTION,
         contents: structuredUnderstandingProviderContents(input),
-        responseJsonSchema: STRUCTURED_UNDERSTANDING_WIRE_SCHEMA,
+        responseJsonSchema: contactMode
+          ? STRUCTURED_CONTACT_UNDERSTANDING_WIRE_SCHEMA
+          : STRUCTURED_UNDERSTANDING_WIRE_SCHEMA,
+        strict: contactMode,
       }, options.signal);
 
       if (typeof response !== 'string' || !response.trim()) {
@@ -94,7 +104,9 @@ export class OpenAiUnderstandingProvider implements UnderstandingProvider {
         throw new StructuredUnderstandingProviderError('malformed_response');
       }
 
-      const wire = decodeStructuredUnderstandingWire(parsed);
+      const wire = contactMode
+        ? decodeStructuredContactUnderstandingWire(parsed)
+        : decodeStructuredUnderstandingWire(parsed);
       if (!wire.ok) {
         throw new StructuredUnderstandingProviderError('schema_validation_failed');
       }

@@ -65,6 +65,68 @@ export const STRUCTURED_UNDERSTANDING_WIRE_SCHEMA = {
   },
 } as const;
 
+
+export const STRUCTURED_CONTACT_UNDERSTANDING_WIRE_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: [
+    'schemaVersion',
+    'language',
+    'confidence',
+    'nameStatus',
+    'name',
+    'nameEvidenceText',
+    'phoneStatus',
+    'phone',
+    'phoneEvidenceText',
+    'ambiguityFields',
+  ],
+  properties: {
+    schemaVersion: { type: 'integer', enum: [1] },
+    language: { type: 'string' },
+    confidence: { type: 'number' },
+
+    nameStatus: {
+      type: 'string',
+      enum: ['explicit', 'absent', 'ambiguous'],
+      description:
+        'Whether the current customerTurn explicitly states the customer name.',
+    },
+    name: {
+      type: ['string', 'null'],
+      description:
+        'Exact customer name when nameStatus is explicit; otherwise null.',
+    },
+    nameEvidenceText: {
+      type: ['string', 'null'],
+      description:
+        'Shortest exact verbatim phrase from customerTurn proving the customer name; otherwise null.',
+    },
+
+    phoneStatus: {
+      type: 'string',
+      enum: ['explicit', 'absent', 'ambiguous'],
+      description:
+        'Whether the current customerTurn explicitly states the customer contact phone.',
+    },
+    phone: {
+      type: ['string', 'null'],
+      description:
+        'Customer contact phone when phoneStatus is explicit; otherwise null.',
+    },
+    phoneEvidenceText: {
+      type: ['string', 'null'],
+      description:
+        'Shortest exact verbatim phrase from customerTurn proving the customer contact phone; otherwise null.',
+    },
+
+    ambiguityFields: {
+      type: 'array',
+      items: { type: 'string' },
+    },
+  },
+} as const;
+
 type StructuredUnderstandingWire = {
   schemaVersion: typeof STRUCTURED_UNDERSTANDING_WIRE_SCHEMA_VERSION;
   language: string;
@@ -183,6 +245,130 @@ export function decodeStructuredUnderstandingWire(input: unknown): StructuredUnd
   }
 
   return { ok: true, value: input as StructuredUnderstandingWire };
+}
+
+
+export function decodeStructuredContactUnderstandingWire(
+  input: unknown,
+): StructuredUnderstandingWireDecodeResult {
+  if (!isRecord(input)) return { ok: false };
+
+  const allowed = new Set([
+    'schemaVersion',
+    'language',
+    'confidence',
+    'nameStatus',
+    'name',
+    'nameEvidenceText',
+    'phoneStatus',
+    'phone',
+    'phoneEvidenceText',
+    'ambiguityFields',
+  ]);
+
+  if (Object.keys(input).some((key) => !allowed.has(key))) {
+    return { ok: false };
+  }
+
+  if (input.schemaVersion !== STRUCTURED_UNDERSTANDING_WIRE_SCHEMA_VERSION) {
+    return { ok: false };
+  }
+
+  if (
+    typeof input.language !== 'string' ||
+    !languagePattern.test(input.language)
+  ) {
+    return { ok: false };
+  }
+
+  if (
+    typeof input.confidence !== 'number' ||
+    !Number.isFinite(input.confidence) ||
+    input.confidence < 0 ||
+    input.confidence > 1
+  ) {
+    return { ok: false };
+  }
+
+  if (!validStringArray(input.ambiguityFields, 16, 64)) {
+    return { ok: false };
+  }
+
+  const statuses = ['explicit', 'absent', 'ambiguous'] as const;
+
+  if (!isEnum(input.nameStatus, statuses)) return { ok: false };
+  if (!isEnum(input.phoneStatus, statuses)) return { ok: false };
+
+  const validNullableString = (
+    value: unknown,
+    maximum: number,
+  ): value is string | null =>
+    value === null ||
+    (typeof value === 'string' &&
+      value.length > 0 &&
+      value.length <= maximum);
+
+  if (!validNullableString(input.name, 160)) return { ok: false };
+  if (!validNullableString(input.nameEvidenceText, 240)) return { ok: false };
+  if (!validNullableString(input.phone, 40)) return { ok: false };
+  if (!validNullableString(input.phoneEvidenceText, 240)) return { ok: false };
+
+  const contactFieldIsConsistent = (
+    status: typeof statuses[number],
+    value: unknown,
+    evidence: unknown,
+  ): boolean => {
+    if (status === 'explicit') {
+      return (
+        typeof value === 'string' &&
+        value.length > 0 &&
+        typeof evidence === 'string' &&
+        evidence.length > 0
+      );
+    }
+
+    return value === null && evidence === null;
+  };
+
+  if (
+    !contactFieldIsConsistent(
+      input.nameStatus,
+      input.name,
+      input.nameEvidenceText,
+    )
+  ) {
+    return { ok: false };
+  }
+
+  if (
+    !contactFieldIsConsistent(
+      input.phoneStatus,
+      input.phone,
+      input.phoneEvidenceText,
+    )
+  ) {
+    return { ok: false };
+  }
+
+  const wire: StructuredUnderstandingWire = {
+    schemaVersion: STRUCTURED_UNDERSTANDING_WIRE_SCHEMA_VERSION,
+    language: input.language,
+    confidence: input.confidence,
+    intents: [],
+    ambiguityFields: [...input.ambiguityFields],
+  };
+
+  if (input.nameStatus === 'explicit') {
+    wire.name = input.name as string;
+    wire.nameEvidenceText = input.nameEvidenceText as string;
+  }
+
+  if (input.phoneStatus === 'explicit') {
+    wire.phone = input.phone as string;
+    wire.phoneEvidenceText = input.phoneEvidenceText as string;
+  }
+
+  return { ok: true, value: wire };
 }
 
 function exactEvidenceFromQuote(

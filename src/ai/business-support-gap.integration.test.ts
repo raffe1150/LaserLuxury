@@ -357,5 +357,5 @@ test('recommendation fallback summarizes verified services instead of dumping th
   );
 
   assert.match(reply, /service/i);
-  assert.match(reply, /\?$/);
+  assert.match(reply, /tell me what you want to achieve/i);
 });

@@ -93,7 +93,7 @@ for (const [language, question, quote, atomicClaim] of scenarios) {
     assert.doesNotMatch(sent, /keine konkrete Angabe|can't find a specific answer|ingen specifik uppgift|No encuentro información específica|پاسخ مشخصی|لا أجد/);
     if (language === 'de') {
       assert.equal(quote.length, 40); assert.equal(exactLocationEvidence.length, 39); assert.equal(atomicClaim.length, 52);
-      assert.equal(b.finalConversationConcision(recovered, 45).includes(address), false, 'reproduces the old presentation drop');
+      assert.equal(b.finalConversationConcision(recovered, 45).includes(address), true, 'verified location must survive final concision');
     }
   });
 }

@@ -16,65 +16,207 @@ const cases = [
   ['fa', 'برای بار اول چه خدماتی پیشنهاد می‌کنید؟'],
   ['ar', 'ما الخدمة التي توصي بها لزيارة أولى؟'],
 ] as const;
-for (const [language, question] of cases) test(`${language}: generic recommendation needs catalog scaffolding, not generation/verification`, async t => {
+for (const [language, question] of cases) test(`${language}: generic recommendation delegates to grounded LLM instead of deterministic scaffolding`, async t => {
   const env = { ...process.env };
   Object.assign(process.env, { AI_PROVIDER: 'openai', OPENAI_API_KEY: 'sk-offline-recommendation' });
   b.reset();
-  t.after(() => { b.reset(); for (const k of Object.keys(process.env)) if (!(k in env)) delete process.env[k]; Object.assign(process.env, env); });
+  t.after(() => {
+    b.reset();
+    for (const k of Object.keys(process.env)) if (!(k in env)) delete process.env[k];
+    Object.assign(process.env, env);
+  });
+
   const config = { ...fixture.business, language };
   const id = `recommendation-${language}`;
   b.promptAuditHistory(id, []);
-  const summary = formatRecommendationServiceSummary(buildConfiguredServiceCatalogPlan(config.services), language);
-  const neutralGoals = { en: 'What is your main goal?', sv: 'Vilket mål vill du uppnå?', de: 'Welches Ergebnis möchten Sie erreichen?', es: '¿Qué resultado buscas?', fa: 'بیشتر برای چه هدفی کمک می‌خواهید؟', ar: 'ما الهدف الأساسي الذي تريد المساعدة فيه؟' };
-  const candidate = `${summary}\n${neutralGoals[language]}`;
-  const deterministic = `${summary}\n${formatRecommendationClarification(language)}`;
-  const counts = { language: 0, planner: 0, generation: 0, extraction: 0, repair: 0, entailment: 0, lexical: 0, semantic: 0 };
-  const timings: any[] = [];
-  for (const method of ['log', 'info', 'warn', 'error'] as const) t.mock.method(console, method, (label: string, event: any) => {
-    if (['[BusinessInformationTiming]', '[KnowledgeRetrieval]', '[AIRequest]', '[BusinessSupportVerifierTiming]', '[BusinessInformationProviderTiming]'].includes(label)) timings.push({ label, ...event });
+
+  const summary = formatRecommendationServiceSummary(
+    buildConfiguredServiceCatalogPlan(config.services),
+    language,
+  );
+
+  const neutralGoals = {
+    en: 'What is your main goal?',
+    sv: 'Vilket mål vill du uppnå?',
+    de: 'Welches Ergebnis möchten Sie erreichen?',
+    es: '¿Qué resultado buscas?',
+    fa: 'بیشتر برای چه هدفی کمک می‌خواهید؟',
+    ar: 'ما الهدف الأساسي الذي تريد المساعدة فيه؟',
+  };
+
+  const oldCandidate = `${summary}\n${neutralGoals[language]}`;
+  const oldDeterministic = `${summary}\n${formatRecommendationClarification(language)}`;
+  const llmCandidate = neutralGoals[language];
+
+  const counts = {
+    language: 0,
+    planner: 0,
+    generation: 0,
+    extraction: 0,
+    repair: 0,
+    entailment: 0,
+    lexical: 0,
+    semantic: 0,
+  };
+
+  b.configure({
+    postProcess: async () => {},
+    knowledgeSearch: async () => { counts.lexical++; return []; },
+    semanticKnowledgeSearch: async () => { counts.semantic++; return []; },
   });
-  b.configure({ postProcess: async () => {},
-    knowledgeSearch: async () => { counts.lexical++; await delay(5); return []; },
-    semanticKnowledgeSearch: async () => { counts.semantic++; await delay(5); return []; },
-  });
+
   t.mock.method(Responses.prototype, 'create', async (params: any) => {
-    await delay(10);
     const instructions = params.instructions;
-    if (instructions.includes('language-routing classifier')) { counts.language++; return { output_text: JSON.stringify({ language, requestedReplyLanguage: null, confidence: 0.99 }), output: [] } as any; }
-    if (instructions.includes('retrieval query planner')) { counts.planner++; return { output_text: JSON.stringify({ canonicalMeaning: 'unspecified first visit recommendation', queries: [question] }), output: [] } as any; }
-    if (instructions.includes('claim and citation extractor')) { const body = JSON.parse(params.input[0].content); if (body.previousAssessment) counts.repair++; else counts.extraction++; return { output_text: JSON.stringify({ hasBusinessFactualClaims: true, allBusinessClaimsSupported: true, claims: [{
-      claim: summary, candidateQuote: summary, claimKind: 'OTHER', requiresBusinessEvidence: true, supported: true,
-      evidence: [{ source: 'structured_business_config', quote: '"name": "Video Consultation"' }],
-    }] }), output: [] } as any; }
-    if (instructions.includes('entailment gate')) { counts.entailment++; return { output_text: JSON.stringify({ relation: 'ENTAILED', claimKind: 'OTHER', explicitAbsenceEvidence: false }), output: [] } as any; }
-    assert.equal(instructions, 'offline conversation candidate'); counts.generation++;
-    return { output_text: candidate, output: [] } as any;
+
+    if (instructions.includes('language-routing classifier')) {
+      counts.language++;
+      return {
+        output_text: JSON.stringify({
+          language,
+          requestedReplyLanguage: null,
+          confidence: 0.99,
+        }),
+        output: [],
+      } as any;
+    }
+
+    if (instructions.includes('retrieval query planner')) {
+      counts.planner++;
+      return {
+        output_text: JSON.stringify({
+          canonicalMeaning: 'service recommendation',
+          queries: [question],
+        }),
+        output: [],
+      } as any;
+    }
+
+    if (instructions.includes('claim and citation extractor')) {
+      const body = JSON.parse(params.input[0].content);
+      if (body.previousAssessment) counts.repair++;
+      else counts.extraction++;
+
+      if (!baseline) {
+        return {
+          output_text: JSON.stringify({
+            hasBusinessFactualClaims: false,
+            allBusinessClaimsSupported: true,
+            claims: [],
+          }),
+          output: [],
+        } as any;
+      }
+
+      return {
+        output_text: JSON.stringify({
+          hasBusinessFactualClaims: true,
+          allBusinessClaimsSupported: true,
+          claims: [{
+            claim: summary,
+            candidateQuote: summary,
+            claimKind: 'OTHER',
+            requiresBusinessEvidence: true,
+            supported: true,
+            evidence: [{
+              source: 'structured_business_config',
+              quote: '"name": "Video Consultation"',
+            }],
+          }],
+        }),
+        output: [],
+      } as any;
+    }
+
+    if (instructions.includes('entailment gate')) {
+      counts.entailment++;
+      return {
+        output_text: JSON.stringify({
+          relation: 'ENTAILED',
+          claimKind: 'OTHER',
+          explicitAbsenceEvidence: false,
+        }),
+        output: [],
+      } as any;
+    }
+
+    assert.equal(instructions, 'offline conversation candidate');
+    counts.generation++;
+
+    return {
+      output_text: baseline ? oldCandidate : llmCandidate,
+      output: [],
+    } as any;
   });
-  const started = performance.now();
-  assert.equal(await b.prepareConversationLanguageForTest(id, question, config), language);
-  const result = await b.turn({ sessionId: id, platformName: 'whatsapp', recipientUserId: '46700000001', text: question, businessConfig: config });
+
+  assert.equal(
+    await b.prepareConversationLanguageForTest(id, question, config),
+    language,
+  );
+
+  const result = await b.turn({
+    sessionId: id,
+    platformName: 'whatsapp',
+    recipientUserId: '46700000001',
+    text: question,
+    businessConfig: config,
+  });
+
   let final = result.replies.join('\n');
+
   if (!result.handled) {
-    const generated = await b.promptAuditGenerate(null, { messages: [{ role: 'user', content: question }], systemInstruction: 'offline conversation candidate', context: { businessId: 3, channel: 'whatsapp', stage: 'conversation', language } });
-    final = await b.finalizeGeneralAiReply(id, question, generated.text, language);
+    const generated = await b.promptAuditGenerate(null, {
+      messages: [{ role: 'user', content: question }],
+      systemInstruction: 'offline conversation candidate',
+      context: {
+        businessId: 3,
+        channel: 'whatsapp',
+        stage: 'conversation',
+        language,
+      },
+    });
+
+    final = await b.finalizeGeneralAiReply(
+      id,
+      question,
+      generated.text,
+      language,
+    );
   }
-  if (baseline) assert.ok([candidate, deterministic].includes(final));
-  else assert.equal(final, deterministic);
+
   assert.equal(result.pending, null);
-  assert.equal(counts.language, 1, 'real language classifier is included in request count');
-  if (!baseline) {
-    assert.equal(result.handled, true);
-    assert.deepEqual(counts, { language: 1, planner: 0, generation: 0, extraction: 0, repair: 0, entailment: 0, lexical: 0, semantic: 0 });
-    const stages = timings.filter(e => e.label === '[BusinessInformationTiming]');
-    assert.ok(stages.some(e => e.stage === 'response_ready'));
-    assert.ok(stages.some(e => e.stage === 'response_dispatch_complete'));
-    assert.ok(stages.some(e => e.stage === 'grounding_complete' && e.disposition === 'configured_catalog_clarification'));
-    assert.equal(new Set(stages.map(e => e.businessInfoTurnId)).size, 1);
-    assert.equal(timings.filter(e => e.label === '[AIRequest]').length, 1);
+
+  if (baseline) {
+    assert.ok([oldCandidate, oldDeterministic].includes(final));
+    return;
   }
-  t.diagnostic(JSON.stringify({ mode: baseline ? 'before' : 'after', language, counts, elapsedMs: Math.round(performance.now() - started),
-    provider: timings.filter(e => e.label === '[AIRequest]').map(e => ({ stage: e.stage, durationMs: e.durationMs, providerExecutionMs: e.providerExecutionMs, queueWaitMs: e.queueWaitMs })),
-    stages: timings.filter(e => e.label === '[BusinessInformationTiming]') }));
+
+  assert.equal(
+    result.handled,
+    false,
+    'recommendation must continue to grounded conversation generation',
+  );
+  assert.equal(
+    result.replies.length,
+    0,
+    'unified engine must not emit deterministic recommendation scaffolding',
+  );
+  assert.equal(final, llmCandidate);
+
+  assert.ok(counts.planner > 0, 'Knowledge query planning remains active');
+  assert.ok(counts.lexical > 0, 'Knowledge retrieval remains active');
+  assert.equal(counts.generation, 1);
+  assert.equal(counts.extraction, 1);
+  assert.equal(counts.entailment, 0);
+
+  const information = b.businessInformationState(id);
+  assert.ok(information);
+
+  const instruction = b.businessInformationInstruction(information);
+  assert.match(
+    instruction,
+    /For other recommendation requests, use the verified business context and the customer's stated needs\./u,
+  );
+  assert.match(instruction, /CUSTOMER_FACING_CATALOG_PLAN:/u);
 });
 
 const informationCases = [
@@ -85,30 +227,104 @@ const informationCases = [
   ['fa', 'سلام! چه خدماتی دارید و کجا هستین؟'],
   ['ar', 'مرحباً! ما الخدمات التي تقدمونها وأين موقعكم؟'],
 ] as const;
-for (const [language, question] of informationCases) test(`${language}: configured business info still includes only the existing language provider call`, async t => {
+for (const [language, question] of informationCases) test(`${language}: configured catalog and location seed grounded LLM context without Knowledge retrieval`, async t => {
   const env = { ...process.env };
   Object.assign(process.env, { AI_PROVIDER: 'openai', OPENAI_API_KEY: 'sk-offline-configured-info' });
-  b.reset(); t.after(() => { b.reset(); for (const k of Object.keys(process.env)) if (!(k in env)) delete process.env[k]; Object.assign(process.env, env); });
+
+  b.reset();
+  t.after(() => {
+    b.reset();
+    for (const k of Object.keys(process.env)) if (!(k in env)) delete process.env[k];
+    Object.assign(process.env, env);
+  });
+
   const config = { ...fixture.business, address: 'Aurora Street 742', language };
-  const id = `configured-info-${language}`; b.promptAuditHistory(id, []);
-  const events: any[] = []; let languageCalls = 0;
-  for (const method of ['log', 'info', 'warn', 'error'] as const) t.mock.method(console, method, (label: string, event: any) => {
-    if (['[AIRequest]', '[BusinessInformationTiming]'].includes(label)) events.push({ label, ...event });
+  const id = `configured-info-${language}`;
+  b.promptAuditHistory(id, []);
+
+  const events: any[] = [];
+  let languageCalls = 0;
+
+  for (const method of ['log', 'info', 'warn', 'error'] as const) {
+    t.mock.method(console, method, (label: string, event: any) => {
+      if (['[AIRequest]', '[BusinessInformationTiming]'].includes(label)) {
+        events.push({ label, ...event });
+      }
+    });
+  }
+
+  b.configure({
+    postProcess: async () => {},
+    knowledgeSearch: async () => {
+      throw new Error('configured catalog/location must not retrieve Knowledge');
+    },
+    semanticKnowledgeSearch: async () => {
+      throw new Error('configured catalog/location must not run semantic Knowledge search');
+    },
   });
-  b.configure({ postProcess: async () => {}, knowledgeSearch: async () => { throw new Error('configured info does not retrieve'); },
-    semanticKnowledgeSearch: async () => { throw new Error('configured info does not embed'); } });
+
   t.mock.method(Responses.prototype, 'create', async (params: any) => {
-    assert.match(params.instructions, /language-routing classifier/u); languageCalls++; await delay(10);
-    return { output_text: JSON.stringify({ language, requestedReplyLanguage: null, confidence: 0.99 }), output: [] } as any;
+    assert.match(params.instructions, /language-routing classifier/u);
+    languageCalls++;
+    await delay(10);
+
+    return {
+      output_text: JSON.stringify({
+        language,
+        requestedReplyLanguage: null,
+        confidence: 0.99,
+      }),
+      output: [],
+    } as any;
   });
+
   const started = performance.now();
-  assert.equal(await b.prepareConversationLanguageForTest(id, question, config), language);
-  const r = await b.turn({ sessionId: id, platformName: 'whatsapp', recipientUserId: '46700000001', text: question, businessConfig: config });
-  assert.equal(r.handled, true); assert.equal(languageCalls, 1); assert.equal(events.filter(e => e.label === '[AIRequest]').length, 1);
-  assert.ok(r.replies.join(' ').includes('Aurora Street 742'));
-  t.diagnostic(JSON.stringify({ mode: baseline ? 'before' : 'after', flow: 'configured_business_info', language, languageCalls,
-    elapsedMs: Math.round(performance.now() - started), provider: events.filter(e => e.label === '[AIRequest]').map(e => ({ stage: e.stage, durationMs: e.durationMs, providerExecutionMs: e.providerExecutionMs, queueWaitMs: e.queueWaitMs })),
-    stages: events.filter(e => e.label === '[BusinessInformationTiming]') }));
+
+  assert.equal(
+    await b.prepareConversationLanguageForTest(id, question, config),
+    language,
+  );
+
+  const r = await b.turn({
+    sessionId: id,
+    platformName: 'whatsapp',
+    recipientUserId: '46700000001',
+    text: question,
+    businessConfig: config,
+  });
+
+  assert.equal(r.handled, false);
+  assert.equal(r.replies.length, 0);
+  assert.equal(languageCalls, 1);
+  assert.equal(events.filter(e => e.label === '[AIRequest]').length, 1);
+
+  const information = b.businessInformationState(id);
+  assert.ok(information);
+
+  const instruction = b.businessInformationInstruction(information);
+  assert.ok(instruction.includes('Aurora Street 742'));
+  assert.match(instruction, /CUSTOMER_FACING_CATALOG_PLAN:/u);
+
+  for (const service of config.services) {
+    assert.ok(instruction.includes(`"name": "${service.name}"`));
+  }
+
+  t.diagnostic(JSON.stringify({
+    mode: baseline ? 'before' : 'after',
+    flow: 'configured_business_info',
+    language,
+    languageCalls,
+    elapsedMs: Math.round(performance.now() - started),
+    provider: events
+      .filter(e => e.label === '[AIRequest]')
+      .map(e => ({
+        stage: e.stage,
+        durationMs: e.durationMs,
+        providerExecutionMs: e.providerExecutionMs,
+        queueWaitMs: e.queueWaitMs,
+      })),
+    stages: events.filter(e => e.label === '[BusinessInformationTiming]'),
+  }));
 });
 
 if (!baseline) {
@@ -125,6 +341,80 @@ test('generic recommendation clarification explains the information needed inste
   for (const [language, clarification] of Object.entries(expected)) {
     assert.equal(formatRecommendationClarification(language), clarification, language);
   }
+});
+
+
+test('uncertain service-fit meta question delegates to grounded LLM instead of deterministic catalog', async t => {
+  b.reset();
+  t.after(() => b.reset());
+
+  const question = 'نمی‌دانم کدام خدمت برای من مناسب است. پیش از پیشنهاد یک خدمت چه اطلاعاتی نیاز دارید؟';
+  const id = 'meta-recommendation-fa';
+  const config = { ...fixture.business, language: 'fa' };
+  let searches = 0;
+
+  b.seedFlowLanguage(id, 'fa');
+  b.promptAuditHistory(id, []);
+
+  b.configure({
+    postProcess: async () => {},
+    knowledgeSearch: async () => { searches++; return []; },
+    semanticKnowledgeSearch: async () => [],
+  });
+
+  t.mock.method(Responses.prototype, 'create', async (params: any) => {
+    if (params.instructions.includes('retrieval query planner')) {
+      return {
+        output_text: JSON.stringify({
+          canonicalMeaning: 'information needed before making a service recommendation',
+          queries: [question],
+        }),
+        output: [],
+      } as any;
+    }
+    throw new Error(`unexpected provider call: ${params.instructions}`);
+  });
+
+  const result = await b.turn({
+    sessionId: id,
+    platformName: 'whatsapp',
+    recipientUserId: '46700000001',
+    text: question,
+    businessConfig: config,
+  });
+
+  assert.equal(
+    result.handled,
+    false,
+    'meta recommendation must continue to grounded LLM generation',
+  );
+  assert.equal(
+    result.replies.length,
+    0,
+    'the unified engine must not emit a deterministic service catalog before the LLM answers',
+  );
+  assert.ok(searches > 0, 'relevant Knowledge retrieval must remain active');
+
+  const information = b.businessInformationState(id);
+  assert.ok(information, 'grounded business-information context must be seeded');
+  const normalizeQuestion = (value: string) =>
+    String(value || '')
+      .normalize('NFKC')
+      .replace(/\u200c/gu, ' ')
+      .replace(/؟/gu, '?')
+      .replace(/\s+/gu, ' ')
+      .trim();
+
+  assert.equal(
+    normalizeQuestion(information.question),
+    normalizeQuestion(question),
+  );
+
+  const instruction = b.businessInformationInstruction(information);
+  assert.match(
+    instruction,
+    /If the customer asks what information you need before making a recommendation, answer that question directly and do not list services unless they explicitly ask for them\./u,
+  );
 });
 
 for (const question of [
@@ -182,25 +472,80 @@ for (const question of [
   assert.equal(isGenericRecommendationClarificationQuestion(question), false);
 });
 for (const channel of ['whatsapp', 'telegram', 'messenger', 'instagram'] as const) {
-  test(`${channel}: configured recommendation scaffold uses shared format and no provider`, async t => {
-    b.reset(); t.after(() => b.reset());
-    for (const method of ['log', 'warn', 'info', 'error'] as const) t.mock.method(console, method, () => {});
-    b.configure({ postProcess: async () => {}, knowledgeSearch: async () => { throw new Error('no retrieval'); },
-      semanticKnowledgeSearch: async () => { throw new Error('no embeddings'); },
-      geminiGenerate: async () => { throw new Error('no generation'); },
-      assessBusinessSupportGrounding: async () => { throw new Error('no extraction'); },
-      assessBusinessClaimEntailment: async () => { throw new Error('no verification'); },
+  test(`${channel}: recommendation delegates through shared grounded business context`, async t => {
+    b.reset();
+    t.after(() => b.reset());
+
+    for (const method of ['log', 'warn', 'info', 'error'] as const) {
+      t.mock.method(console, method, () => {});
+    }
+
+    let searches = 0;
+
+    b.configure({
+      postProcess: async () => {},
+      knowledgeSearch: async () => { searches++; return []; },
+      semanticKnowledgeSearch: async () => [],
     });
-    t.mock.method(Responses.prototype, 'create', async () => { throw new Error('no provider'); });
-    const id = `scaffold-${channel}`; b.seedFlowLanguage(id, 'ar'); b.promptAuditHistory(id, []);
-    const config = { ...fixture.business, services: fixture.business.services.map((s: any, i: number) => ({ ...s, currency: ['EUR', 'USD', 'SEK'][i % 3] })) };
-    const r = await b.turn({ sessionId: id, platformName: channel, recipientUserId: '46700000001', text: cases[5][1], businessConfig: config });
-    assert.equal(r.handled, true); assert.equal(r.pending, null);
-    const expected = `${formatRecommendationServiceSummary(buildConfiguredServiceCatalogPlan(config.services), 'ar')}\n${formatRecommendationClarification('ar')}`;
-    assert.equal(r.replies.join('\n'), expected);
-    for (const currency of ['EUR', 'USD', 'SEK']) assert.ok(expected.includes(` ${currency}`));
+
+    t.mock.method(Responses.prototype, 'create', async (params: any) => {
+      if (params.instructions.includes('retrieval query planner')) {
+        return {
+          output_text: JSON.stringify({
+            canonicalMeaning: 'service recommendation',
+            queries: [cases[5][1]],
+          }),
+          output: [],
+        } as any;
+      }
+
+      throw new Error(`unexpected provider call: ${params.instructions}`);
+    });
+
+    const id = `grounded-${channel}`;
+    b.seedFlowLanguage(id, 'ar');
+    b.promptAuditHistory(id, []);
+
+    const config = {
+      ...fixture.business,
+      services: fixture.business.services.map((s: any, i: number) => ({
+        ...s,
+        currency: ['EUR', 'USD', 'SEK'][i % 3],
+      })),
+    };
+
+    const r = await b.turn({
+      sessionId: id,
+      platformName: channel,
+      recipientUserId: '46700000001',
+      text: cases[5][1],
+      businessConfig: config,
+    });
+
+    assert.equal(r.handled, false);
+    assert.equal(r.replies.length, 0);
+    assert.equal(r.pending, null);
+    assert.ok(searches > 0);
+
+    const information = b.businessInformationState(id);
+    assert.ok(information);
+
+    const instruction = b.businessInformationInstruction(information);
+
+    assert.match(
+      instruction,
+      /For other recommendation requests, use the verified business context and the customer's stated needs\./u,
+    );
+
+    for (const currency of ['EUR', 'USD', 'SEK']) {
+      assert.ok(
+        instruction.includes(`"currency": "${currency}"`),
+        `${currency} must remain available to the grounded LLM`,
+      );
+    }
   });
 }
+
 for (const scenario of ['prior_goal', 'active_booking', 'no_catalog', 'inactive_catalog', 'specific_goal'] as const) {
   test(`${scenario}: existing read-only retrieval path remains active`, async t => {
     b.reset(); t.after(() => b.reset());
@@ -230,3 +575,76 @@ for (const scenario of ['prior_goal', 'active_booking', 'no_catalog', 'inactive_
 }
 
 }
+
+
+test('configured catalog and address delegate to grounded LLM instead of deterministic fast path', async t => {
+  b.reset();
+  t.after(() => b.reset());
+
+  const id = 'grounded-configured-catalog-address-fa';
+  const question = 'چه خدماتی دارید و کجا هستید؟';
+  const config = {
+    ...fixture.business,
+    language: 'fa',
+    address: 'Aurora Street 742',
+  };
+
+  let lexicalSearches = 0;
+  let semanticSearches = 0;
+
+  b.seedFlowLanguage(id, 'fa');
+  b.promptAuditHistory(id, []);
+
+  b.configure({
+    postProcess: async () => {},
+    knowledgeSearch: async () => {
+      lexicalSearches++;
+      return [];
+    },
+    semanticKnowledgeSearch: async () => {
+      semanticSearches++;
+      return [];
+    },
+  });
+
+  const result = await b.turn({
+    sessionId: id,
+    platformName: 'whatsapp',
+    recipientUserId: '46700000001',
+    text: question,
+    businessConfig: config,
+  });
+
+  assert.equal(
+    result.handled,
+    false,
+    'configured catalog/location question must continue to grounded LLM generation',
+  );
+  assert.equal(
+    result.replies.length,
+    0,
+    'unified engine must not emit the deterministic catalog/location reply',
+  );
+
+  assert.equal(
+    lexicalSearches,
+    0,
+    'direct structured catalog and configured address do not require Knowledge retrieval',
+  );
+  assert.equal(semanticSearches, 0);
+
+  const information = b.businessInformationState(id);
+  assert.ok(information, 'grounded business-information context must be seeded');
+
+  const instruction = b.businessInformationInstruction(information);
+
+  assert.match(instruction, /CUSTOMER_FACING_CATALOG_PLAN:/u);
+  assert.ok(instruction.includes('Aurora Street 742'));
+
+  for (const service of config.services) {
+    assert.ok(
+      instruction.includes(`"name": "${service.name}"`),
+      `configured service ${service.name} must remain available to the LLM`,
+    );
+  }
+});

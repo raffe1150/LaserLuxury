@@ -300,13 +300,14 @@ function formatConfiguredServiceRow(service: ConfiguredServiceCatalogItem, langu
   const price = service.price !== null
     ? service.currency ? `${service.price} ${service.currency}` : String(service.price) : "";
   if (isRtlCatalogLanguage(language)) {
-    // Keep metadata LTR inside the mixed-direction one-line service row.
-    // Values and currency come from the configured service record, with no
-    // translation or currency inference.
+    // Isolate the complete mixed-script service payload so Meta/plain-text
+    // clients cannot reorder the service name, separator, and metadata.
+    // Keep numeric/currency metadata explicitly LTR inside that row isolate.
+    // Values and currency still come only from the configured service record.
     const details = [duration, price].filter(Boolean).join(', ');
     return details
-      ? `• ${service.name} — \u2066${details}\u2069`
-      : `• ${service.name}`;
+      ? `• \u2068${service.name} — \u2066${details}\u2069\u2069`
+      : `• \u2068${service.name}\u2069`;
   }
   const details = [duration, price].filter(Boolean);
   return details.length

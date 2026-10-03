@@ -112,6 +112,21 @@ for (const [language, question] of informationCases) test(`${language}: configur
 });
 
 if (!baseline) {
+test('generic recommendation clarification explains the information needed instead of asking only a vague goal', () => {
+  const expected = {
+    en: 'To recommend the right service, tell me what you want to achieve, what you need it for, and any important preferences or constraints such as timing or budget.',
+    sv: 'För att kunna rekommendera rätt tjänst, berätta vad du vill uppnå, vad du behöver tjänsten till och om du har några viktiga önskemål eller begränsningar, till exempel tid eller budget.',
+    de: 'Damit ich die passende Leistung empfehlen kann, sagen Sie mir bitte, was Sie erreichen möchten, wofür Sie die Leistung benötigen und ob es wichtige Wünsche oder Einschränkungen gibt, zum Beispiel Zeit oder Budget.',
+    es: 'Para recomendarte el servicio adecuado, dime qué quieres conseguir, para qué lo necesitas y si tienes alguna preferencia o limitación importante, como el tiempo o el presupuesto.',
+    fa: 'برای اینکه خدمت مناسب‌تری پیشنهاد بدهم، بگویید هدفتان چیست، این خدمت را برای چه نیازی می‌خواهید، و آیا ترجیح یا محدودیت مهمی مثل زمان یا بودجه دارید؟',
+    ar: 'لكي أوصي بالخدمة الأنسب، أخبرني ما الهدف الذي تريد تحقيقه، وما الذي تحتاج الخدمة من أجله، وهل لديك أي تفضيلات أو قيود مهمة مثل الوقت أو الميزانية؟',
+  };
+
+  for (const [language, clarification] of Object.entries(expected)) {
+    assert.equal(formatRecommendationClarification(language), clarification, language);
+  }
+});
+
 for (const question of [
   'I am not sure which service suits me. What do you need to know before recommending one?',
   'Jag vet inte vilken tjänst som passar mig. Vad behöver ni veta innan ni rekommenderar en?',

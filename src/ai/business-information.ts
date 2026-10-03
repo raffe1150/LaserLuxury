@@ -43,12 +43,12 @@ export function isBusinessInformationQuestion(text: string): boolean {
 }
 
 export function formatRecommendationClarification(language: string): string {
-  if (language === 'sv') return 'Vad vill du främst ha hjälp med, så kan jag hjälpa dig att välja bland de här verifierade tjänsterna?';
-  if (language === 'de') return 'Wobei möchten Sie vor allem Unterstützung, damit ich Ihnen bei der Auswahl aus diesen bestätigten Leistungen helfen kann?';
-  if (language === 'es') return '¿Qué te gustaría conseguir principalmente para que pueda ayudarte a elegir entre estos servicios verificados?';
-  if (language === 'fa') return 'بیشتر برای چه هدفی کمک می‌خواهید تا از میان این خدمات تأییدشده انتخاب کنیم؟';
-  if (language === 'ar') return 'ما الهدف الأساسي الذي تريد المساعدة فيه لكي أساعدك على الاختيار من هذه الخدمات المؤكدة؟';
-  return 'What would you mainly like help with, so I can help you choose among these verified services?';
+  if (language === 'sv') return 'För att kunna rekommendera rätt tjänst, berätta vad du vill uppnå, vad du behöver tjänsten till och om du har några viktiga önskemål eller begränsningar, till exempel tid eller budget.';
+  if (language === 'de') return 'Damit ich die passende Leistung empfehlen kann, sagen Sie mir bitte, was Sie erreichen möchten, wofür Sie die Leistung benötigen und ob es wichtige Wünsche oder Einschränkungen gibt, zum Beispiel Zeit oder Budget.';
+  if (language === 'es') return 'Para recomendarte el servicio adecuado, dime qué quieres conseguir, para qué lo necesitas y si tienes alguna preferencia o limitación importante, como el tiempo o el presupuesto.';
+  if (language === 'fa') return 'برای اینکه خدمت مناسب‌تری پیشنهاد بدهم، بگویید هدفتان چیست، این خدمت را برای چه نیازی می‌خواهید، و آیا ترجیح یا محدودیت مهمی مثل زمان یا بودجه دارید؟';
+  if (language === 'ar') return 'لكي أوصي بالخدمة الأنسب، أخبرني ما الهدف الذي تريد تحقيقه، وما الذي تحتاج الخدمة من أجله، وهل لديك أي تفضيلات أو قيود مهمة مثل الوقت أو الميزانية؟';
+  return 'To recommend the right service, tell me what you want to achieve, what you need it for, and any important preferences or constraints such as timing or budget.';
 }
 
 const topicLabels: Record<string, Record<BusinessInformationTopic, string>> = {

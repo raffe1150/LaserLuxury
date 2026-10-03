@@ -189,3 +189,39 @@ test('Structured Understanding rejects an OpenAI/router provider mismatch', () =
   assert.equal(configured.provider, null);
   assert.equal(creations, 0);
 });
+
+test('OpenAI contact phase asks one call to exhaustively extract every missing explicit contact field', async () => {
+  const transport = new FakeTransport(JSON.stringify({
+    schemaVersion: 1,
+    language: 'fa',
+    confidence: 0.99,
+    intents: [],
+    name: 'مینا آزمون',
+    nameEvidenceText: 'نام من مینا آزمون است',
+    phone: '0700001105',
+    phoneEvidenceText: 'شماره تلفنم 0700001105 است',
+    ambiguityFields: [],
+  }));
+
+  const provider = new OpenAiUnderstandingProvider({
+    model: 'gpt-5.6-luna',
+    transport,
+  });
+
+  await provider.interpret(
+    input,
+    { signal: new AbortController().signal },
+  );
+
+  const sent = JSON.parse(transport.lastRequest?.contents || '{}');
+
+  assert.deepEqual(sent.contactExtraction, {
+    mode: 'exhaustive_missing_contact_fields',
+    missingFields: ['name', 'phone'],
+  });
+
+  assert.match(
+    transport.lastRequest?.systemInstruction || '',
+    /If both the customer's name and contact phone are explicitly present in the same turn, return BOTH fields/,
+  );
+});

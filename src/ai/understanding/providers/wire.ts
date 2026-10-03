@@ -40,10 +40,22 @@ export const STRUCTURED_UNDERSTANDING_WIRE_SCHEMA = {
     timeStart: { type: 'string' },
     timeEnd: { type: 'string' },
     daypart: { type: 'string', enum: dayparts },
-    name: { type: 'string' },
-    nameEvidenceText: { type: 'string' },
-    phone: { type: 'string' },
-    phoneEvidenceText: { type: 'string' },
+    name: {
+      type: 'string',
+      description: 'Customer name explicitly stated in the current customer turn. During contact extraction, return it whenever it is explicitly present and requested as a missing field.',
+    },
+    nameEvidenceText: {
+      type: 'string',
+      description: 'Shortest exact verbatim phrase from customerTurn proving that the returned value is the customer name.',
+    },
+    phone: {
+      type: 'string',
+      description: 'Customer contact phone explicitly stated in the current customer turn. During contact extraction, return it whenever it is explicitly present and requested as a missing field.',
+    },
+    phoneEvidenceText: {
+      type: 'string',
+      description: 'Shortest exact verbatim phrase from customerTurn proving that the returned value is the customer contact phone.',
+    },
     slotReferenceKind: { type: 'string', enum: slotKinds },
     slotOrdinal: { type: 'integer' },
     slotTime: { type: 'string' },

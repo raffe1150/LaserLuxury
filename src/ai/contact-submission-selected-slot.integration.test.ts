@@ -191,6 +191,109 @@ test('incomplete contact remains awaiting_contact with the same owned selected s
   assert.equal(f.traces.slice(start).some(event => event.label === '[BookingRefinement]' && event.detail?.freshScanStarted), false);
 });
 
+
+
+for (const platformName of ['whatsapp', 'telegram', 'messenger', 'instagram'] as BookingContactChannel[]) {
+  test(`${platformName}: fresh booking after business-information guidance does not inherit previous booking contact`, async (t) => {
+    const f = fixture(t, platformName, false);
+
+    await select(f);
+    await confirm(f);
+
+    const named = await f.turn('Old Customer');
+    assert.equal(named.pending?.status, 'awaiting_contact');
+    assert.equal(named.pending?.customerName, 'Old Customer');
+
+    boundary.seedPending(f.sessionId, {
+      ...named.pending,
+      customerPhone: '0709999999',
+      contactPhoneSource: 'explicit_customer_input',
+    });
+
+    const guidance = await f.turn(
+      'نمی‌دانم کدام خدمت برای من مناسب است. پیش از پیشنهاد یک خدمت چه اطلاعاتی نیاز دارید؟',
+    );
+
+    assert.equal(guidance.pending?.operation, 'new_booking');
+    assert.equal(guidance.pending?.customerName, 'Old Customer');
+    assert.equal(guidance.pending?.customerPhone, '0709999999');
+
+    const next = await f.turn(
+      'سلام، می‌خواهم برای چهارشنبه ۷ اکتبر ۲۰۲۶ وقت رزرو کنم.',
+    );
+
+    assert.equal(next.pending?.operation, 'new_booking');
+    assert.equal(
+      next.pending?.customerName ?? null,
+      null,
+      'fresh booking must not inherit the previous booking customer name',
+    );
+    assert.equal(
+      next.pending?.customerPhone ?? null,
+      null,
+      'fresh booking must not inherit the previous booking customer phone',
+    );
+    assert.notEqual(
+      next.pending?.contactPhoneSource,
+      'explicit_customer_input',
+      'fresh booking must not inherit the previous booking phone source',
+    );
+  });
+}
+
+test('instagram: explicit new booking does not inherit stale customer name from previous pending booking', async (t) => {
+  const f = fixture(t, 'instagram', false);
+
+  await select(f);
+  await confirm(f);
+
+  const named = await f.turn('Old Customer');
+  assert.equal(named.pending?.status, 'awaiting_contact');
+  assert.equal(named.pending?.customerName, 'Old Customer');
+  assert.equal(named.pending?.customerPhone ?? null, null);
+
+  const next = await f.turn(
+    'سلام، می‌خواهم برای چهارشنبه ۷ اکتبر ۲۰۲۶ وقت رزرو کنم.',
+  );
+
+  assert.equal(next.pending?.operation, 'new_booking');
+  assert.equal(
+    next.pending?.customerName ?? null,
+    null,
+    'a new booking must not inherit the previous pending customer name',
+  );
+});
+
+test('instagram: explicit new booking does not inherit stale customer phone from previous pending booking', async (t) => {
+  const f = fixture(t, 'instagram', false);
+
+  await select(f);
+  const confirmed = await confirm(f);
+
+  boundary.seedPending(f.sessionId, {
+    ...confirmed.pending,
+    customerName: null,
+    customerPhone: '0709999999',
+    contactPhoneSource: 'explicit_customer_input',
+  });
+
+  const next = await f.turn(
+    'سلام، می‌خواهم برای چهارشنبه ۷ اکتبر ۲۰۲۶ وقت رزرو کنم.',
+  );
+
+  assert.equal(next.pending?.operation, 'new_booking');
+  assert.equal(
+    next.pending?.customerPhone ?? null,
+    null,
+    'a new booking must not inherit the previous pending customer phone',
+  );
+  assert.notEqual(
+    next.pending?.contactPhoneSource,
+    'explicit_customer_input',
+    'the previous booking phone source must not leak into the new booking',
+  );
+});
+
 test('name submission with a verified sender phone cannot create a booking without prior confirmation', async (t) => {
   const f = fixture(t);
   await select(f);

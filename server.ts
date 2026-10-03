@@ -16922,17 +16922,54 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
     ["awaiting_slot_confirmation", "awaiting_contact", "failed_recoverable"].includes(getBookingPhase(pending)) &&
     (isPositiveBookingConfirmation(text) || pendingSlotConfirmationAcceptedAtEntry)
   );
+  const explicitDatedFreshBookingCreation = Boolean(
+    !normalizedRequest.customerCorrection &&
+    normalizedRequest.intent === "new_booking" &&
+    isExplicitDatedBookingCreationText(text, normalizedRequest)
+  );
+
   const entryExplicitNewBookingRequest =
     deterministicTransition?.reason !== "slot_confirmation_accepted" &&
     !continuesOwnedBooking &&
     !isRescheduleIntent(text) && !isCancellationIntent(text) &&
-    (!authoritativeSelectedSlot || isExplicitNewBookingPivotText(text)) &&
+    (
+      !authoritativeSelectedSlot ||
+      isExplicitNewBookingPivotText(text) ||
+      explicitDatedFreshBookingCreation
+    ) &&
     (
       normalizedRequest.intent === "new_booking" ||
       isExplicitNewBookingPivotText(text) ||
-      isExplicitDatedBookingCreationText(text, normalizedRequest)
+      explicitDatedFreshBookingCreation
     );
   const explicitlyReplacesCompletedBooking = isExplicitNewBookingPivotText(text);
+
+  // Contact belongs to one booking operation, not to the channel identity.
+  // A fresh booking must never inherit the previous booking's customer name,
+  // explicit phone, or phone-source metadata. Channel-derived identity (for
+  // example a verified WhatsApp sender phone) is resolved again later from the
+  // current channel, rather than carried across the booking boundary.
+  if (
+    entryExplicitNewBookingRequest &&
+    pending?.operation === "new_booking" &&
+    (pending.customerName || pending.customerPhone || pending.contactPhoneSource)
+  ) {
+    console.warn("[BookingOperationBoundary]", {
+      event: "fresh_booking_contact_reset",
+      sessionKey: safeLogFingerprint(sessionId),
+      channel: platformName,
+      previousNamePresent: Boolean(pending.customerName),
+      previousPhonePresent: Boolean(pending.customerPhone),
+      previousPhoneSource: pending.contactPhoneSource || null,
+    });
+
+    pending.customerName = null;
+    pending.customerPhone = null;
+    pending.contactPhoneSource = null;
+
+    await savePendingBooking(sessionId, platformName, pending);
+  }
+
   if (explicitlyReplacesCompletedBooking) {
     delete completedBookingSupportTurns[sessionId];
   }

@@ -24,12 +24,21 @@ class ReminderDatabase {
   from(table: string) {
     assert.equal(table, "appointments");
     return {
-      update: (values: Partial<Appointment>) => ({
-        eq: async (column: keyof Appointment, value: unknown) => {
-          if (this.row[column] === value) Object.assign(this.row, values);
-          return { error: null };
-        },
-      }),
+      update: (values: Partial<Appointment>) => {
+        const filters: Array<[keyof Appointment, unknown]> = [];
+        const query = {
+          eq: (column: keyof Appointment, value: unknown) => {
+            filters.push([column, value]);
+            return query;
+          },
+          select: async () => {
+            assert.deepEqual(filters, [["id", this.row.id], ["business_id", this.row.business_id]]);
+            if (filters.every(([column, value]) => this.row[column] === value)) Object.assign(this.row, values);
+            return { data: [{ id: this.row.id }], error: null };
+          },
+        };
+        return query;
+      },
     };
   }
 }

@@ -26,7 +26,7 @@ assert.equal(
     { ...recentInbound, created_at: new Date(now - 24 * 60 * 60 * 1000).toISOString() },
   ], customerId, now),
   false,
-  "the service window is closed at 24 hours",
+  "OdinLink conservatively expires at 24 hours; Meta does not specify millisecond equality semantics",
 );
 assert.equal(boundary.whatsappServiceWindowOpen([], customerId, now), false);
 assert.equal(

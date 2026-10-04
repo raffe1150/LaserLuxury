@@ -54,6 +54,7 @@ import {
   transcribeWithConfiguredProvider,
 } from "./src/ai/providers/router";
 import crypto from "crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
 import fs from "fs";
 import { google } from "googleapis";
 import { createClient } from "@supabase/supabase-js";
@@ -1097,14 +1098,55 @@ async function isFirstAssistantReplyInConversationWindow(
   }
 }
 
+// Carry only the current webhook's timestamp through existing persistence calls,
+// including serialized booking turns. Never keep timestamp state by customer.
+const metaInboundEventTime = new AsyncLocalStorage<{
+  platform: "whatsapp" | "messenger" | "instagram";
+  customerId: string;
+  businessId: string | null;
+  providerEventAt: string | null;
+}>();
+
+function withMetaInboundEventTime<T>(
+  platform: "whatsapp" | "messenger" | "instagram",
+  customerId: string,
+  timestamp: unknown,
+  work: () => T,
+): T {
+  const numericTimestamp = (typeof timestamp === "number" ||
+    (typeof timestamp === "string" && timestamp.trim())) ? Number(timestamp) : NaN;
+  const eventMs = platform === "whatsapp" ? numericTimestamp * 1000 : numericTimestamp;
+  // Missing, malformed and future values must never fall back to persistence time.
+  const providerEventAt = Number.isSafeInteger(eventMs) && eventMs > 0 && eventMs <= Date.now()
+    ? new Date(eventMs).toISOString() : null;
+  return metaInboundEventTime.run({
+    platform, customerId: normalizePlatformUserId(platform, customerId), businessId: null, providerEventAt,
+  }, work);
+}
+
+function bindMetaInboundEventBusiness(businessId: unknown): void {
+  const inbound = metaInboundEventTime.getStore();
+  if (inbound) inbound.businessId = String(businessId || "").trim() || null;
+}
+
 async function postProcessMessage(chatId: string, platform: string, userMessage: string, agentResponse: string, tgToken?: string, aiConfigKey?: string, businessId?: string | null) {
   if (priority1hTestDependencies?.postProcess) return priority1hTestDependencies.postProcess();
   if (!supabase) return;
   try {
     const canonicalPlatform = normalizePlatformName(platform);
-    const canonicalUserId = canonicalPlatform === "whatsapp"
+    let canonicalUserId = canonicalPlatform === "whatsapp"
       ? canonicalWhatsAppProviderCustomerId(chatId)
       : normalizePlatformUserId(canonicalPlatform, chatId.toString());
+    const inbound = metaInboundEventTime.getStore();
+    const matchesInbound = inbound?.platform === canonicalPlatform && inbound.businessId &&
+      inbound.businessId === String(businessId || "").trim() && (
+      canonicalUserId === inbound.customerId ||
+      (canonicalPlatform !== "whatsapp" && businessId && chatId ===
+        getScopedChannelSessionId(inbound.platform, inbound.customerId, { businessRecordId: businessId }))
+    );
+    // Legacy Messenger/Instagram paths pass the scoped session ID. Accept only
+    // the exact current event's customer and exact resolved business scope.
+    if (matchesInbound) canonicalUserId = inbound.customerId;
     if (!canonicalUserId) {
       console.error(`[MessagePersistence] skipped: invalid customer identity for platform=${canonicalPlatform}`);
       return;
@@ -1117,7 +1159,9 @@ async function postProcessMessage(chatId: string, platform: string, userMessage:
     sender: "user",
     message: userMessage,
     business_id: businessId || null,
-    is_read: false
+    is_read: false,
+    ...(["whatsapp", "messenger", "instagram"].includes(canonicalPlatform)
+      ? { provider_event_at: matchesInbound ? inbound.providerEventAt : null } : {})
   },
   {
     user_id: canonicalUserId,
@@ -11584,6 +11628,7 @@ async function sendCustomerMessage(
   message: string,
   businessConfig: any,
   outboundContext: MetaOutboundContext,
+  reminderDelivery: boolean = false,
 ): Promise<boolean> {
   const channel = normalizePlatformName(platform);
   const recipient = channel === "whatsapp"
@@ -11595,13 +11640,14 @@ async function sendCustomerMessage(
   }
 
   if (channel === "whatsapp") return await sendWhatsAppMessage(recipient, message, businessConfig, outboundContext);
-  if (channel === "messenger") return await sendMessengerMessage(recipient, message, businessConfig, outboundContext);
+  if (channel === "messenger") return await sendMessengerMessage(recipient, message, businessConfig, outboundContext, reminderDelivery);
   if (channel === "instagram") return await sendInstagramMessage(
     recipient,
     message,
     getBusinessInstagramToken(businessConfig),
     getScopedChannelSessionId("instagram", recipient, businessConfig),
     outboundContext,
+    reminderDelivery,
   );
 
   if (channel === "telegram") {
@@ -25398,19 +25444,43 @@ function hasOpenWhatsAppCustomerServiceWindow(
   rows: any[],
   customerId: string,
   nowMs: number = Date.now(),
+  useReminderPolicy: boolean = false,
 ): boolean {
-  const normalizedCustomerId = normalizePlatformUserId("whatsapp", customerId);
+  return hasOpenMetaCustomerMessagingWindow(rows, "whatsapp", customerId, nowMs, useReminderPolicy);
+}
+
+function hasOpenMetaCustomerMessagingWindow(
+  rows: any[],
+  platform: string,
+  customerId: string,
+  nowMs: number = Date.now(),
+  useReminderPolicy: boolean = true,
+): boolean {
+  const normalizedCustomerId = normalizePlatformUserId(platform, customerId);
   const latestInboundAt = (rows || []).reduce((latest: number, row: any) => {
     const sender = String(row?.sender || "").trim().toLowerCase();
     if (sender !== "user" && sender !== "customer") return latest;
-    if (normalizePlatformName(String(row?.platform || "")) !== "whatsapp") return latest;
-    if (normalizePlatformUserId("whatsapp", String(row?.user_id || "")) !== normalizedCustomerId) return latest;
-    const occurredAt = new Date(String(row?.created_at || "")).getTime();
+    if (normalizePlatformName(String(row?.platform || "")) !== platform) return latest;
+    if (normalizePlatformUserId(platform, String(row?.user_id || "")) !== normalizedCustomerId) return latest;
+    let timestamp = useReminderPolicy ? row?.provider_event_at : row?.created_at;
+    if (useReminderPolicy && row?.provider_event_at == null) {
+      // Only the migration marks pre-existing rows. New inserts have no marker,
+      // even if created_at is backdated or a webhook timestamp is unavailable.
+      const cutoverMs = Date.parse(String(row?.reminder_provider_time_cutover_at || ""));
+      const createdMs = Date.parse(String(row?.created_at || ""));
+      const transitionAgeMs = nowMs - cutoverMs;
+      if (!Number.isFinite(cutoverMs) || !Number.isFinite(createdMs) ||
+        transitionAgeMs < 0 || transitionAgeMs >= 24 * 60 * 60 * 1000 ||
+        createdMs >= cutoverMs) return latest;
+      timestamp = row.created_at;
+    }
+    const occurredAt = new Date(String(timestamp || "")).getTime();
     return Number.isFinite(occurredAt) ? Math.max(latest, occurredAt) : latest;
   }, Number.NEGATIVE_INFINITY);
   const inboundAgeMs = nowMs - latestInboundAt;
   return Number.isFinite(latestInboundAt) &&
     inboundAgeMs >= 0 &&
+    // OdinLink expires at equality; provider docs do not specify millisecond equality.
     inboundAgeMs < 24 * 60 * 60 * 1000;
 }
 
@@ -26568,29 +26638,142 @@ function formatReminderMessage(appointment: any, businessConfig: any, reminderTy
   return `Hej ${name || ""}! En vänlig påminnelse från ${businessName}: du har tid för ${service} imorgon, ${dateText} kl ${timeText}. Varmt välkommen! 😊`.trim();
 }
 
+type ReminderDeliveryCategory =
+  | "accepted"
+  | "provider_rejected"
+  | "whatsapp_template_required"
+  | "channel_policy_window_closed"
+  | "unsupported_proactive_delivery_path"
+  | "messaging_window_lookup_failed"
+  | "channel_configuration_missing"
+  | "business_scope_mismatch"
+  | "invalid_recipient"
+  | "delivery_failed";
+
+type ReminderDeliveryResult = { sent: boolean; category: ReminderDeliveryCategory; reason?: string };
+
 async function sendAppointmentReminder(
   appointment: any,
   reminderType: "24h" | "2h",
   suppliedBusinessConfig?: any
-) {
-  const businessConfig = suppliedBusinessConfig || await loadBusinessConfigById(appointment.business_id);
-  const platform = String(appointment.platform || "").toLowerCase();
+): Promise<ReminderDeliveryResult> {
+  let businessConfig = suppliedBusinessConfig || await loadBusinessConfigById(appointment.business_id);
+  const businessId = String(appointment.business_id || "").trim();
+  const platform = normalizePlatformName(String(appointment.platform || ""));
   const rawUserId = String(appointment.user_id || "");
-  const recipient = normalizePlatformUserId(platform, rawUserId);
-  const message = formatReminderMessage(appointment, businessConfig, reminderType);
+  const recipient = platform === "whatsapp"
+    ? canonicalWhatsAppProviderCustomerId(rawUserId)
+    : normalizePlatformUserId(platform, rawUserId);
+  const finish = (category: ReminderDeliveryCategory, reason?: string): ReminderDeliveryResult => {
+    const sent = category === "accepted";
+    console.log("[ReminderDelivery]", {
+      appointmentId: appointment.id, businessId, channel: platform, reminderType,
+      accepted: sent, category, ...(reason ? { reason } : {}),
+      ...(category === "whatsapp_template_required" || (category === "channel_policy_window_closed" && platform === "messenger")
+        ? { actionRequired: "approved_utility_template_integration_required" }
+        : category === "channel_policy_window_closed" ? { actionRequired: "customer_inbound_required" }
+        : reason === "messenger_reminder_wire_type_unverified"
+          ? { actionRequired: "verify_messenger_reminder_wire_type" } : {}),
+    });
+    return { sent, category, ...(reason ? { reason } : {}) };
+  };
 
-  if (!recipient) {
-    console.log(`[Reminder] Skipped appointment ${appointment.id}: missing recipient`);
-    return false;
+  if (!businessId || String(getBusinessIdFromConfig(businessConfig) || "").trim() !== businessId) {
+    return finish("business_scope_mismatch");
+  }
+  if (!recipient) return finish("invalid_recipient");
+  if (!["whatsapp", "messenger", "instagram", "telegram"].includes(platform)) {
+    return finish("unsupported_proactive_delivery_path");
+  }
+  let customerInboundRows: any[] = [];
+  const windowOpen = () => platform === "whatsapp"
+    ? hasOpenWhatsAppCustomerServiceWindow(customerInboundRows, recipient, Date.now(), true)
+    : hasOpenMetaCustomerMessagingWindow(customerInboundRows, platform, recipient);
+  const windowClosed = () => platform === "whatsapp"
+    ? finish("whatsapp_template_required", "whatsapp_template_missing")
+    : finish("channel_policy_window_closed", "unsupported_proactive_delivery_path");
+
+  if (platform !== "telegram") {
+    const historyUserIds = [...new Set([
+      recipient,
+      getScopedChannelSessionId(platform as "whatsapp" | "messenger" | "instagram", recipient, businessConfig),
+    ])];
+    // Historical session IDs are accepted only by exact tuple membership. Map
+    // validated rows in memory for the existing window helper; never parse scoped
+    // prefixes or alter the canonical format of newly persisted inbound rows.
+    const reminderHistoryRows = (rows: any[]) => rows.filter(row =>
+      String(row.business_id || "") === businessId && row.platform === platform &&
+      ["user", "customer"].includes(row.sender) && historyUserIds.includes(String(row.user_id || "")),
+    ).map(row => ({ ...row, user_id: recipient }));
+    // Provider time wins on each row. Only migration-marked pre-existing rows
+    // may use created_at during the bounded cutover. No ad-entry extension is inferred.
+    try {
+      if (!supabase) return finish("messaging_window_lookup_failed");
+      const historyQuery = (columns: string) => supabase.from("chat_history")
+        .select(columns)
+        .eq("business_id", businessId)
+        .eq("platform", platform)
+        .in("user_id", historyUserIds)
+        .in("sender", ["user", "customer"]);
+      const { data, error } = await historyQuery("business_id,user_id,platform,sender,provider_event_at")
+        .not("provider_event_at", "is", null)
+        .order("provider_event_at", { ascending: false, nullsFirst: false })
+        .limit(1);
+      if (error || !Array.isArray(data)) return finish("messaging_window_lookup_failed");
+      customerInboundRows = reminderHistoryRows(data);
+      if (!windowOpen()) {
+        const nowMs = Date.now();
+        const { data: legacy, error: legacyError } = await historyQuery(
+          "business_id,user_id,platform,sender,provider_event_at,created_at,reminder_provider_time_cutover_at",
+        )
+          .is("provider_event_at", null)
+          .gt("reminder_provider_time_cutover_at", new Date(nowMs - 24 * 60 * 60 * 1000).toISOString())
+          .lte("reminder_provider_time_cutover_at", new Date(nowMs).toISOString())
+          .order("created_at", { ascending: false })
+          .limit(1);
+        if (legacyError || !Array.isArray(legacy)) return finish("messaging_window_lookup_failed");
+        customerInboundRows.push(...reminderHistoryRows(legacy));
+      }
+    } catch {
+      return finish("messaging_window_lookup_failed");
+    }
+    if (!windowOpen()) {
+      // This repository has no approved, language-specific reminder template
+      // configuration or notification permission tokens. Never infer one from
+      // an arbitrary config field, or use HUMAN_AGENT for automated reminders.
+      return windowClosed();
+    }
+  }
+
+  if (platform === "messenger") {
+    // Meta documents the proactive Updates category, but the current wire enum
+    // is not verified by the available API reference or local integration types.
+    return finish("unsupported_proactive_delivery_path", "messenger_reminder_wire_type_unverified");
   }
 
   try {
-    const sent = await sendCustomerMessage(platform, recipient, message, businessConfig, "proactive");
-    if (!sent) console.error(`[Reminder] Send failed for appointment ${appointment.id} through ${platform}`);
-    return sent;
-  } catch (err) {
-    console.error(`[Reminder] Send crashed for appointment ${appointment.id}:`, err);
-    return false;
+    businessConfig = await hydrateBusinessChannelConfig(businessConfig, platform as ChannelProvider);
+    // normalizeBusinessConfig and hydration explicitly populate these canonical
+    // tenant-owned fields. Do not use inherited aliases or legacy ENV fallbacks.
+    // The Telegram sender itself retains its existing behavior.
+    const credentialsPresent = !businessConfig.channelConnectionInactive && (
+      platform === "whatsapp" ? Boolean(
+        cleanMetaToken(businessConfig.whatsappAccessToken) &&
+        String(businessConfig.whatsappPhoneNumberId || "").trim()
+      ) : platform === "messenger" ? Boolean(
+        cleanMetaToken(businessConfig.messengerPageAccessToken) &&
+        String(businessConfig.messengerPageId || "").trim()
+      ) : platform === "instagram" ? Boolean(cleanInstagramToken(businessConfig.instagramAccessToken))
+        : Boolean(String(businessConfig.telegramToken || "").trim())
+    );
+    if (!credentialsPresent) return finish("channel_configuration_missing");
+    // Credential lookup can take time; recheck eligibility immediately before send.
+    if (platform !== "telegram" && !windowOpen()) return windowClosed();
+    const message = formatReminderMessage(appointment, businessConfig, reminderType);
+    const sent = await sendCustomerMessage(platform, recipient, message, businessConfig, "proactive", true);
+    return finish(sent ? "accepted" : "provider_rejected");
+  } catch {
+    return finish("delivery_failed");
   }
 }
 
@@ -26679,7 +26862,8 @@ async function processAppointmentReminderCandidate(
   appointment: any,
   reminderType: "24h" | "2h",
   sentColumn: "reminder_24_sent" | "reminder_2_sent"
-): Promise<{ sent: boolean; category: ReminderCalendarVerificationCategory | "delivery_failed" | "flag_update_failed" }> {
+): Promise<{ sent: boolean; category: ReminderCalendarVerificationCategory | ReminderDeliveryCategory | "flag_update_failed";
+  deliveryCategory?: ReminderDeliveryCategory; reason?: string }> {
   const loadConfig = priority1hTestDependencies?.loadBusinessConfigById || loadBusinessConfigById;
   let businessConfig: any;
   try {
@@ -26687,6 +26871,8 @@ async function processAppointmentReminderCandidate(
   } catch {
     console.error("[ReminderCalendarVerification]", {
       appointmentId: appointment?.id || null,
+      businessId: appointment?.business_id || null,
+      channel: normalizePlatformName(String(appointment?.platform || "")),
       reminderType,
       category: "business_scope_mismatch"
     });
@@ -26698,26 +26884,37 @@ async function processAppointmentReminderCandidate(
     console.error("[ReminderCalendarVerification]", {
       appointmentId: appointment?.id || null,
       businessId: appointment?.business_id || null,
+      channel: normalizePlatformName(String(appointment?.platform || "")),
       reminderType,
       category: verification.category
     });
     return { sent: false, category: verification.category };
   }
 
-  const sendReminder = priority1hTestDependencies?.sendReminder || sendAppointmentReminder;
-  const sent = await sendReminder(appointment, reminderType, businessConfig);
-  if (!sent) return { sent: false, category: "delivery_failed" };
+  // Keep the existing boolean test seam for strict Calendar-verification tests.
+  const delivery: ReminderDeliveryResult = priority1hTestDependencies?.sendReminder
+    ? await priority1hTestDependencies.sendReminder(appointment, reminderType, businessConfig)
+      ? { sent: true, category: "accepted" } : { sent: false, category: "delivery_failed" }
+    : await sendAppointmentReminder(appointment, reminderType, businessConfig);
+  if (!delivery.sent) return delivery;
 
-  const { error: updateError } = await supabase
-    .from("appointments")
-    .update({ [sentColumn]: true })
-    .eq("id", appointment.id);
-  if (updateError) {
-    console.error(`[Reminder] Failed to mark ${reminderType} sent:`, JSON.stringify(updateError));
-    return { sent: true, category: "flag_update_failed" };
+  try {
+    const { data: updated, error: updateError } = await supabase
+      .from("appointments")
+      .update({ [sentColumn]: true })
+      .eq("id", appointment.id)
+      .eq("business_id", appointment.business_id)
+      .select("id");
+    if (updateError || updated?.length !== 1) throw new Error("reminder_flag_update_failed");
+  } catch {
+    console.error("[ReminderDelivery]", {
+      appointmentId: appointment.id, businessId: appointment.business_id,
+      channel: normalizePlatformName(appointment.platform), reminderType,
+      accepted: true, category: "flag_update_failed",
+    });
+    return { sent: true, category: "flag_update_failed", deliveryCategory: "accepted" };
   }
-  console.log(`[Reminder] ${reminderType} sent for appointment ${appointment.id}`);
-  return { sent: true, category: "verified" };
+  return { sent: true, category: "verified", deliveryCategory: "accepted" };
 }
 
 function setupDailyReminders() {
@@ -26868,6 +27065,7 @@ async function sendInstagramMessage(
   accessToken: string | undefined,
   sessionId: string | undefined,
   outboundContext: MetaOutboundContext,
+  reminderDelivery: boolean = false,
 ) {
   const token = cleanInstagramToken(accessToken);
   const safeText = prepareInstagramOutboundText(recipientId, text, sessionId, outboundContext);
@@ -26892,7 +27090,9 @@ async function sendInstagramMessage(
 
     const result = await response.json().catch(() => ({}));
 
-    if (response.ok) {
+    const reminderAccepted = !result?.error && typeof result?.message_id === "string" &&
+      Boolean(result.message_id.trim()) && result?.recipient_id === recipientId;
+    if (response.ok && (!reminderDelivery || reminderAccepted)) {
       console.log("[ChannelSend]", { channel: "instagram", success: true, httpStatus: response.status });
       return true;
     }
@@ -27199,8 +27399,8 @@ async function sendWhatsAppMessage(
     const result = await response.json().catch(() => ({}));
 
     const providerMessageId = String(result?.messages?.[0]?.id || "").trim();
-    const providerMessageIdValid = /^wamid\./u.test(providerMessageId);
-    if (response.ok && (outboundContext !== "proactive" || providerMessageIdValid)) {
+    const providerMessageIdValid = /^wamid\.\S+$/u.test(providerMessageId);
+    if (response.ok && (outboundContext !== "proactive" || (!result?.error && providerMessageIdValid))) {
       console.log("[ChannelSend]", { channel: "whatsapp", success: true, httpStatus: response.status });
       return true;
     }
@@ -27233,7 +27433,8 @@ async function processWhatsAppMessage(message: any, metadata: any, config: any, 
     businessId: String(getBusinessIdFromConfig(config) || ""),
     platform: "whatsapp",
     messageId,
-    handler: () => processWhatsAppMessageClaimed(message, metadata, config, platform)
+    handler: () => withMetaInboundEventTime("whatsapp", message.from, message.timestamp,
+      () => processWhatsAppMessageClaimed(message, metadata, config, platform))
   });
 }
 
@@ -27351,6 +27552,7 @@ async function processWhatsAppMessageClaimed(message: any, metadata: any, config
   }
 
   chatId = getScopedChannelSessionId("whatsapp", from, businessConfig, phoneNumberId);
+  bindMetaInboundEventBusiness(getBusinessIdFromConfig(businessConfig));
   resetSessionIfBusinessConfigChanged(chatId, businessConfig);
   const preTranscriptionVoiceLanguage = isVoiceMessage
     ? resolveWhatsAppVoicePreTranscriptionLanguage(chatId, businessConfig)
@@ -27897,7 +28099,9 @@ async function sendMessengerMessage(
   text: string,
   businessConfig: any,
   outboundContext: MetaOutboundContext,
+  reminderDelivery: boolean = false,
 ) {
+  if (reminderDelivery) return false; // Unverified reminder wire type: fail closed.
   const token = getBusinessMessengerToken(businessConfig);
   const safeText = prepareMessengerOutboundText(recipientId, text, businessConfig, outboundContext);
 
@@ -27921,7 +28125,9 @@ async function sendMessengerMessage(
 
     const result = await response.json().catch(() => ({}));
 
-    if (response.ok) {
+    const reminderAccepted = !result?.error && typeof result?.message_id === "string" &&
+      Boolean(result.message_id.trim()) && result?.recipient_id === recipientId;
+    if (response.ok && (!reminderDelivery || reminderAccepted)) {
       console.log("Messenger reply sent.");
       return true;
     }
@@ -28602,7 +28808,8 @@ async function processMessengerUpdate(webhookEvent: any, config: any, platform: 
     businessId: String(getBusinessIdFromConfig(config) || ""),
     platform: "messenger",
     messageId,
-    handler: () => processMessengerUpdateClaimed(webhookEvent, config, platform)
+    handler: () => withMetaInboundEventTime("messenger", webhookEvent.sender?.id, webhookEvent.timestamp,
+      () => processMessengerUpdateClaimed(webhookEvent, config, platform))
   });
 }
 
@@ -28686,6 +28893,7 @@ async function processMessengerUpdateClaimed(webhookEvent: any, config: any, pla
   }
 
   chatId = getScopedChannelSessionId("messenger", senderId, businessConfig, recipientId);
+  bindMetaInboundEventBusiness(getBusinessIdFromConfig(businessConfig));
   resetSessionIfBusinessConfigChanged(chatId, businessConfig);
   userLanguage = await prepareConversationLanguageForTurn(
     chatId,
@@ -29228,7 +29436,8 @@ async function processInstagramUpdate(webhook_event: any, config: any, platform:
     businessId: String(getBusinessIdFromConfig(config) || ""),
     platform: "instagram",
     messageId,
-    handler: () => processInstagramUpdateClaimed(webhook_event, config, platform)
+    handler: () => withMetaInboundEventTime("instagram", webhook_event.sender?.id, webhook_event.timestamp,
+      () => processInstagramUpdateClaimed(webhook_event, config, platform))
   });
 }
 
@@ -29328,6 +29537,7 @@ async function processInstagramUpdateClaimed(webhook_event: any, config: any, pl
   }
 
   chatId = getScopedChannelSessionId("instagram", senderId, businessConfig, recipientId);
+  bindMetaInboundEventBusiness(getBusinessIdFromConfig(businessConfig));
   resetSessionIfBusinessConfigChanged(chatId, businessConfig);
   userLanguage = await prepareConversationLanguageForTurn(
     chatId,
@@ -34309,6 +34519,13 @@ export const priority1hUnifiedEngineTestBoundary = {
   async persistCustomerExchange(userId: string, platform: string, customerText: string, replyText: string, businessId?: string) {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
     return postProcessMessage(userId, platform, customerText, replyText, undefined, undefined, businessId);
+  },
+  withMetaInboundEventTime<T>(platform: "whatsapp" | "messenger" | "instagram", customerId: string, timestamp: unknown, businessId: string, work: () => T) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    return withMetaInboundEventTime(platform, customerId, timestamp, () => {
+      bindMetaInboundEventBusiness(businessId);
+      return work();
+    });
   },
   recordDeliveredAssistantResponse(params: {
     businessId: number | string | null | undefined;

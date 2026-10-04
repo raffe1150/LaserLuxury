@@ -161,69 +161,86 @@ function explicitUnsupportedServiceMention(clause: string, facts: BookingReplyFa
   return new RegExp(`^(?:${pattern.split('{service}').join(service)})$`, 'u').test(normalize(clause));
 }
 
+export type BookingValidationReason =
+  | 'language_mismatch' | 'policy_or_price' | 'mutation_claim' | 'relative_date'
+  | 'unknown_number' | 'unverified_success' | 'unsupported_missing_explicit_negation'
+  | 'unsupported_non_neutral_extra_mention' | 'required_next_action_missing'
+  | 'availability_grounding' | 'unknown_catalog_or_entity_claim'
+  | 'slot_or_datetime_grounding' | 'other_grounding_rejection';
+export type BookingReplyValidationResult = { valid: true } | { valid: false; reason: BookingValidationReason };
+
 export function validateGroundedBookingReply(reply: string, facts: BookingReplyFacts, languageMatches: (text: string) => boolean): boolean {
-  if (!reply.trim() || reply.length > 1800 || /https?:|<[^>]+>/iu.test(reply)) return false;
+  return validateGroundedBookingReplyDetailed(reply, facts, languageMatches).valid;
+}
+
+// Report only the first failed rule in the existing validation order. Never
+// include reply text, booking facts, customer details or conversation history.
+export function validateGroundedBookingReplyDetailed(reply: string, facts: BookingReplyFacts, languageMatches: (text: string) => boolean): BookingReplyValidationResult {
+  if (!reply.trim() || reply.length > 1800 || /https?:|<[^>]+>/iu.test(reply)) return { valid: false, reason: 'other_grounding_rejection' };
   const exactFacts = [facts.requestedService, facts.service, facts.name, facts.phone, facts.dateLabel, facts.timeLabel, ...(facts.services || []), ...(facts.slots || [])].filter(Boolean) as string[];
   let prose = reply;
   for (const fact of exactFacts.sort((a, b) => b.length - a.length)) prose = prose.split(fact).join(' ');
-  if (!languageMatches(prose) || POLICY_OR_PRICE.test(prose) || MUTATION.test(prose) || RELATIVE_DATE.test(prose)) return false;
+  if (!languageMatches(prose)) return { valid: false, reason: 'language_mismatch' };
+  if (POLICY_OR_PRICE.test(prose)) return { valid: false, reason: 'policy_or_price' };
+  if (MUTATION.test(prose)) return { valid: false, reason: 'mutation_claim' };
+  if (RELATIVE_DATE.test(prose)) return { valid: false, reason: 'relative_date' };
   // Unknown numbers include invented prices, dates, clock times and contact data.
   const allowedNumbers = new Set((JSON.stringify(facts).match(/\d+/gu) || []));
-  if ((reply.match(/\d+/gu) || []).some(number => !allowedNumbers.has(number))) return false;
+  if ((reply.match(/\d+/gu) || []).some(number => !allowedNumbers.has(number))) return { valid: false, reason: 'unknown_number' };
   const success = containsUnverifiedBookingSuccessClaim(reply) || /\b(?:booked|confirmed|scheduled|bokad|bekräftad|gebucht|bestätigt|reservad[ao]|confirmad[ao])\b|(?:رزرو شد|رزرو شده|تم الحجز|الحجز مؤكد)/iu.test(prose);
-  if (success && !(facts.kind === 'confirmed' && facts.verified)) return false;
-  if (/fully booked|fullbok|ausgebucht/iu.test(prose)) return false;
-  if (!facts.closedDate && /cerrad|geschlossen|closed|stängt|تعطیل|مغلق/iu.test(prose)) return false;
+  if (success && !(facts.kind === 'confirmed' && facts.verified)) return { valid: false, reason: 'unverified_success' };
+  if (/fully booked|fullbok|ausgebucht/iu.test(prose)) return { valid: false, reason: 'availability_grounding' };
+  if (!facts.closedDate && /cerrad|geschlossen|closed|stängt|تعطیل|مغلق/iu.test(prose)) return { valid: false, reason: 'availability_grounding' };
   const actions = ACTIONS[facts.language];
-  if (!actions) return false;
+  if (!actions) return { valid: false, reason: 'other_grounding_rejection' };
   const needs = facts.kind === 'service_date' ? ['service', 'date'] : facts.kind === 'unsupported_service' || facts.kind === 'missing_service' || facts.kind === 'ambiguous_service' ? ['service']
     : facts.kind === 'date' || (facts.kind === 'availability' && !facts.slots?.length) ? ['date']
     : facts.kind === 'time' || facts.kind === 'choose_slot' || facts.kind === 'availability' ? ['time']
     : facts.kind === 'confirm_slot' ? ['confirm'] : facts.kind === 'missing_contact' ? facts.missing || [] : [];
-  if (needs.some(action => !actions[action]?.test(prose))) return false;
-  if (['missing_contact', 'confirm_slot'].includes(facts.kind) && !NEXT_REQUEST[facts.language]?.test(prose)) return false;
+  if (needs.some(action => !actions[action]?.test(prose))) return { valid: false, reason: 'required_next_action_missing' };
+  if (['missing_contact', 'confirm_slot'].includes(facts.kind) && !NEXT_REQUEST[facts.language]?.test(prose)) return { valid: false, reason: 'required_next_action_missing' };
   if (facts.kind === 'confirmed') {
-    if (!facts.verified || !success || NEGATIVE[facts.language]?.test(prose)) return false;
-    if ([facts.service, facts.name, facts.phone, facts.dateLabel, facts.timeLabel].filter(Boolean).some(fact => !reply.includes(fact!))) return false;
+    if (!facts.verified || !success || NEGATIVE[facts.language]?.test(prose)) return { valid: false, reason: 'unverified_success' };
+    if ([facts.service, facts.name, facts.phone, facts.dateLabel, facts.timeLabel].filter(Boolean).some(fact => !reply.includes(fact!))) return { valid: false, reason: 'other_grounding_rejection' };
   }
   if (facts.kind === 'unsupported_service') {
-    if (!facts.requestedService || !reply.includes(facts.requestedService)) return false;
+    if (!facts.requestedService || !reply.includes(facts.requestedService)) return { valid: false, reason: 'unsupported_missing_explicit_negation' };
     const statements = bookingClauses(reply).filter(sentence => sentence.includes(facts.requestedService!));
     const explicitlyUnsupported = (sentence: string) => explicitUnsupportedServiceMention(sentence, facts);
-    if (!statements.some(explicitlyUnsupported)) return false;
-    if (statements.some(sentence => !explicitlyUnsupported(sentence) && !neutralUnsupportedServiceMention(sentence, facts))) return false;
+    if (!statements.some(explicitlyUnsupported)) return { valid: false, reason: 'unsupported_missing_explicit_negation' };
+    if (statements.some(sentence => !explicitlyUnsupported(sentence) && !neutralUnsupportedServiceMention(sentence, facts))) return { valid: false, reason: 'unsupported_non_neutral_extra_mention' };
   }
-  if (facts.kind === 'availability' && !facts.slots?.length && facts.constraint?.kind !== 'whole_day' && /whole day|all day|any time|entire day|hela dagen|ganzen tag|todo el día|تمام روز|طوال اليوم/iu.test(prose)) return false;
-  if (facts.kind === 'availability' && !facts.slots?.length && !bookingClauses(prose).some(sentence => AVAILABILITY.test(sentence) && NEGATIVE[facts.language]?.test(sentence))) return false;
+  if (facts.kind === 'availability' && !facts.slots?.length && facts.constraint?.kind !== 'whole_day' && /whole day|all day|any time|entire day|hela dagen|ganzen tag|todo el día|تمام روز|طوال اليوم/iu.test(prose)) return { valid: false, reason: 'availability_grounding' };
+  if (facts.kind === 'availability' && !facts.slots?.length && !bookingClauses(prose).some(sentence => AVAILABILITY.test(sentence) && NEGATIVE[facts.language]?.test(sentence))) return { valid: false, reason: 'availability_grounding' };
   // Validate complete values, not just their constituent digits.
   const serializedFacts = JSON.stringify(facts);
-  for (const value of reply.match(/\d{4}-\d{2}-\d{2}|\d{1,2}:\d{2}/gu) || []) if (!serializedFacts.includes(value)) return false;
-  if (/\b(?:january|february|march|april|may|june|july|august|september|october|november|december|januari|februari|mars|maj|juni|juli|augusti|oktober|dezember|enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)\b/iu.test(prose)) return false;
+  for (const value of reply.match(/\d{4}-\d{2}-\d{2}|\d{1,2}:\d{2}/gu) || []) if (!serializedFacts.includes(value)) return { valid: false, reason: 'slot_or_datetime_grounding' };
+  if (/\b(?:january|february|march|april|may|june|july|august|september|october|november|december|januari|februari|mars|maj|juni|juli|augusti|oktober|dezember|enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)\b/iu.test(prose)) return { valid: false, reason: 'slot_or_datetime_grounding' };
   for (const pair of reply.match(/\d{4}-\d{2}-\d{2}\s+\d{1,2}:\d{2}/gu) || []) {
-    if (!facts.slots?.includes(pair)) return false;
+    if (!facts.slots?.includes(pair)) return { valid: false, reason: 'slot_or_datetime_grounding' };
   }
   // Removing complete authorized labels leaves no independently assembled
   // offer date/time. Checking digits or whitespace pairs alone would allow
   // "DATE at TIME" to recombine values belonging to different offered slots.
   if (facts.kind === 'confirmed' || (facts.slots?.length && ['availability', 'confirm_slot'].includes(facts.kind))) {
     for (const clause of bookingClauses(prose)) {
-      if (/\d{4}-\d{2}-\d{2}/u.test(clause)) return false;
+      if (/\d{4}-\d{2}-\d{2}/u.test(clause)) return { valid: false, reason: 'slot_or_datetime_grounding' };
       for (const time of clause.match(/\d{1,2}:\d{2}/gu) || []) {
-        if (facts.kind === 'confirmed' || !NEGATIVE[facts.language]?.test(clause) || ![facts.requestedTime, facts.unavailableTime].includes(time)) return false;
+        if (facts.kind === 'confirmed' || !NEGATIVE[facts.language]?.test(clause) || ![facts.requestedTime, facts.unavailableTime].includes(time)) return { valid: false, reason: 'slot_or_datetime_grounding' };
       }
     }
   }
-  if (facts.kind === 'ambiguous_service' && (facts.services || []).some(service => !reply.includes(service))) return false;
-  if (facts.kind === 'availability' && facts.slots?.length && !facts.slots.some(slot => reply.includes(slot))) return false;
+  if (facts.kind === 'ambiguous_service' && (facts.services || []).some(service => !reply.includes(service))) return { valid: false, reason: 'unknown_catalog_or_entity_claim' };
+  if (facts.kind === 'availability' && facts.slots?.length && !facts.slots.some(slot => reply.includes(slot))) return { valid: false, reason: 'slot_or_datetime_grounding' };
   // Each availability assertion must be negative when there are no verified
   // offers. Service catalogs are allowed only after their exact names are removed.
   if ((facts.kind === 'availability' && !facts.slots?.length) || (facts.kind === 'confirm_slot' && !facts.slots?.length) || ['unsupported_service', 'missing_service', 'service_date', 'ambiguous_service', 'date', 'time', 'missing_contact'].includes(facts.kind)) {
     for (const originalClause of bookingClauses(reply)) {
       const sentence = exactFacts.reduce((text, fact) => text.split(fact).join(' '), originalClause);
       if (AVAILABILITY.test(sentence) && !NEGATIVE[facts.language]?.test(sentence)) {
-        if (!['unsupported_service', 'missing_service', 'service_date', 'ambiguous_service', 'date'].includes(facts.kind) || !(facts.services || [facts.service]).filter(Boolean).some(fact => originalClause.includes(fact!))) return false;
+        if (!['unsupported_service', 'missing_service', 'service_date', 'ambiguous_service', 'date'].includes(facts.kind) || !(facts.services || [facts.service]).filter(Boolean).some(fact => originalClause.includes(fact!))) return { valid: false, reason: 'availability_grounding' };
         // Only catalog availability, never appointment/clock availability.
-        if (/slot|appointment|time|tid(?:er)?|termin|zeit|hora|cita|موعد|وقت|زمان|ساعت/iu.test(sentence) || !safeCatalogClause(sentence, facts.language)) return false;
+        if (/slot|appointment|time|tid(?:er)?|termin|zeit|hora|cita|موعد|وقت|زمان|ساعت/iu.test(sentence) || !safeCatalogClause(sentence, facts.language)) return { valid: false, reason: 'availability_grounding' };
       }
     }
   }
@@ -231,19 +248,19 @@ export function validateGroundedBookingReply(reply: string, facts: BookingReplyF
     for (const time of sentence.match(/\d{1,2}:\d{2}/gu) || []) {
       const offered = facts.slots?.some(slot => slot.endsWith(time)) || facts.timeLabel === time;
       const negativeRequest = NEGATIVE[facts.language]?.test(sentence) && [facts.requestedTime, facts.unavailableTime].includes(time);
-      if (!offered && !negativeRequest && !['date', 'time'].includes(facts.kind)) return false;
+      if (!offered && !negativeRequest && !['date', 'time'].includes(facts.kind)) return { valid: false, reason: 'slot_or_datetime_grounding' };
     }
     if (['unsupported_service', 'missing_service', 'service_date', 'ambiguous_service'].includes(facts.kind)) {
       let connective = sentence;
       for (const fact of exactFacts) connective = connective.split(fact).join(' ');
-      if (/\b(?:choose|select|prefer|book|välj|välja|boka|wählen|buchen|elegir|reservar)\b|(?:انتخاب|اختيار|اختر)/iu.test(connective) && !NEGATIVE[facts.language]?.test(connective) && !safeCatalogClause(connective, facts.language)) return false;
+      if (/\b(?:choose|select|prefer|book|välj|välja|boka|wählen|buchen|elegir|reservar)\b|(?:انتخاب|اختيار|اختر)/iu.test(connective) && !NEGATIVE[facts.language]?.test(connective) && !safeCatalogClause(connective, facts.language)) return { valid: false, reason: 'unknown_catalog_or_entity_claim' };
     }
   }
-  if (facts.kind === 'availability' && !facts.slots?.length && /\b(?:can book|can reserve|will book|will reserve|can schedule|kan boka|kann buchen|puedo reservar)\b|(?:می.?توانم رزرو|يمكنني الحجز)/iu.test(prose)) return false;
+  if (facts.kind === 'availability' && !facts.slots?.length && /\b(?:can book|can reserve|will book|will reserve|can schedule|kan boka|kann buchen|puedo reservar)\b|(?:می.?توانم رزرو|يمكنني الحجز)/iu.test(prose)) return { valid: false, reason: 'availability_grounding' };
   // Reject unrelated offering language after exact configured entities are removed.
-  if (/\b(?:we (?:offer|provide|have)|also offer|wir bieten|ofrecemos|erbjuder också)\s+\p{L}/iu.test(prose)) return false;
-  if (/\b(?:massage|haircut|manicure|pedicure|dental|klippning|haarschnitt|corte de pelo|masaje)\b|(?:کوتاهی|ماساژ|قص الشعر|تدليك)/iu.test(prose)) return false;
-  return true;
+  if (/\b(?:we (?:offer|provide|have)|also offer|wir bieten|ofrecemos|erbjuder också)\s+\p{L}/iu.test(prose)) return { valid: false, reason: 'unknown_catalog_or_entity_claim' };
+  if (/\b(?:massage|haircut|manicure|pedicure|dental|klippning|haarschnitt|corte de pelo|masaje)\b|(?:کوتاهی|ماساژ|قص الشعر|تدليك)/iu.test(prose)) return { valid: false, reason: 'unknown_catalog_or_entity_claim' };
+  return { valid: true };
 }
 
 export type BookingCompositionOptions = {
@@ -251,14 +268,14 @@ export type BookingCompositionOptions = {
   toneConfig?: unknown; generate?: (request: UnifiedAiGenerationRequest) => Promise<UnifiedAiGenerationResponse>;
   languageMatches: (text: string) => boolean; timeoutMs?: number;
 };
-export async function composeGroundedBookingReply(options: BookingCompositionOptions): Promise<{ text: string; source: 'openai' | 'deterministic'; repeated: boolean; fallbackReason?: string }> {
+export async function composeGroundedBookingReply(options: BookingCompositionOptions): Promise<{ text: string; source: 'openai' | 'deterministic'; repeated: boolean; fallbackReason?: string; validationReason?: BookingValidationReason }> {
   const { facts, fallback, scope } = options;
   const previous = previousOutcome(scope);
   const repeated = previous?.key === bookingOutcomeKey(facts);
   const recent = buildRecentConversationHistory(options.history, 10)
     .filter(message => ['user', 'assistant'].includes(message?.role) && typeof message.content === 'string')
     .map(message => ({ role: message.role, content: message.content.slice(0, 1200) }));
-  const recover = (fallbackReason: string) => ({ fallbackReason, text: repeatAwareFallback(fallback, facts, repeated ? previous!.count : 0), source: 'deterministic' as const, repeated });
+  const recover = (fallbackReason: string, validationReason?: BookingValidationReason) => ({ fallbackReason, ...(validationReason ? { validationReason } : {}), text: repeatAwareFallback(fallback, facts, repeated ? previous!.count : 0), source: 'deterministic' as const, repeated });
   if (!options.generate) return recover('generation_not_configured');
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -290,7 +307,8 @@ export async function composeGroundedBookingReply(options: BookingCompositionOpt
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) || Object.keys(parsed).length !== 1 || typeof parsed.reply !== 'string') return recover('invalid_response_shape');
     const candidate = parsed.reply.trim();
     if ((previous && normalize(candidate) === normalize(previous.reply)) || recent.filter(message => message.role === 'assistant').slice(-3).some(message => normalize(candidate) === normalize(message.content))) return recover('repeated_reply');
-    if (!validateGroundedBookingReply(candidate, facts, options.languageMatches)) return recover('grounding_or_language_rejected');
+    const validation = validateGroundedBookingReplyDetailed(candidate, facts, options.languageMatches);
+    if (validation.valid === false) return recover('grounding_or_language_rejected', validation.reason);
     return { text: candidate, source: 'openai', repeated };
   } catch { return recover(controller.signal.aborted ? 'timeout' : 'provider_or_parse_error'); }
   finally { if (timer) clearTimeout(timer); }

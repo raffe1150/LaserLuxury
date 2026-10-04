@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { composeGroundedBookingReply, recordDeliveredBookingPresentation, resetBookingPresentationMemory, validateGroundedBookingReply, runBookingPresentationScope, registerBookingPresentation, getBookingPresentationFacts, type BookingReplyFacts } from './grounded-booking-composition';
+import { composeGroundedBookingReply, recordDeliveredBookingPresentation, resetBookingPresentationMemory, validateGroundedBookingReply, validateGroundedBookingReplyDetailed, runBookingPresentationScope, registerBookingPresentation, getBookingPresentationFacts, type BookingReplyFacts, type BookingValidationReason } from './grounded-booking-composition';
 process.env.NODE_ENV = 'test';
 const { priority1hUnifiedEngineTestBoundary: boundary } = await import('../../server');
 
@@ -41,6 +41,11 @@ const negativeServiceOffering = {
   ar: ['لا نقدم Haircut.', 'لا نوفر Haircut.'],
 };
 let checks = 0;
+function rejectsWith(reply: string, facts: BookingReplyFacts, matches: (text: string) => boolean, reason: BookingValidationReason) {
+  assert.equal(validateGroundedBookingReply(reply, facts, matches), false);
+  assert.deepEqual(validateGroundedBookingReplyDetailed(reply, facts, matches), { valid: false, reason });
+  checks++;
+}
 for (const [language, [unsupported, unavailable]] of Object.entries(replies)) {
   const facts: BookingReplyFacts = { kind: 'unsupported_service', language, requestedService: 'Haircut', services: ['Video Consultation', 'Golden video'] };
   const matches = (text: string) => boundary.bookingPresentationLanguageMatches(text, language);
@@ -66,10 +71,14 @@ for (const [language, [unsupported, unavailable]] of Object.entries(replies)) {
   assert.ok(repeated.text.includes('Haircut')); checks++;
   const mentions = unsupportedMentions[language as keyof typeof unsupportedMentions];
   const acknowledged = `${mentions.acknowledgement} ${unsupported}`;
+  assert.deepEqual(validateGroundedBookingReplyDetailed(acknowledged, facts, matches), { valid: true }); checks++;
+  rejectsWith(`${mentions.acknowledgement} ${mentions.choice}`, facts, matches, 'unsupported_missing_explicit_negation');
   assert.equal(validateGroundedBookingReply(acknowledged, facts, matches), true, `${language}: neutral acknowledgement plus explicit unsupported statement`); checks++;
   assert.equal(validateGroundedBookingReply(`${mentions.acknowledgement} ${mentions.choice}`, facts, matches), false, `${language}: acknowledgement is not an explicit unsupported statement`); checks++;
   assert.equal(validateGroundedBookingReply(`${mentions.acknowledgement} ${negativeCatalogMembership[language as keyof typeof negativeCatalogMembership]} ${mentions.choice}`, facts, matches), true, `${language}: explicit catalog-membership negation remains valid`); checks++;
   for (const unrelated of unrelatedServiceNegations[language as keyof typeof unrelatedServiceNegations]) {
+    rejectsWith(`${unrelated} ${mentions.choice}`, facts, matches, 'unsupported_missing_explicit_negation');
+    rejectsWith(`${unsupported} ${unrelated}`, facts, matches, 'unsupported_non_neutral_extra_mention');
     assert.equal(validateGroundedBookingReply(`${unrelated} ${mentions.choice}`, facts, matches), false, `${language}: negation of an acknowledgement/request cannot establish unsupported service`); checks++;
   }
   for (const negative of negativeServiceOffering[language as keyof typeof negativeServiceOffering]) {
@@ -79,6 +88,8 @@ for (const [language, [unsupported, unavailable]] of Object.entries(replies)) {
     }
   }
   for (const positive of [mentions.available, mentions.bookable, mentions.offered]) {
+    rejectsWith(`${positive} ${mentions.choice}`, facts, matches, 'unsupported_missing_explicit_negation');
+    rejectsWith(`${acknowledged} ${positive}`, facts, matches, 'unsupported_non_neutral_extra_mention');
     assert.equal(validateGroundedBookingReply(`${positive} ${mentions.choice}`, facts, matches), false, `${language}: unsupported positive claim`); checks++;
     assert.equal(validateGroundedBookingReply(`${acknowledged} ${positive}`, facts, matches), false, `${language}: a negative statement cannot excuse a contradictory claim`); checks++;
   }
@@ -93,8 +104,17 @@ for (const [language, [unsupported, unavailable]] of Object.entries(replies)) {
   assert.equal(naturalRepeat.source, 'openai', `${language}: grounded natural repetition must not fall back`);
   assert.equal(naturalRepeat.repeated, true);
   assert.equal(naturalRepeat.fallbackReason, undefined);
+  assert.equal(Object.hasOwn(naturalRepeat, 'validationReason'), false);
   assert.equal(naturalRepeat.text, acknowledged);
   assert.notEqual(naturalRepeat.text, accepted.text); checks++;
+  const rejectedRepeat = await composeGroundedBookingReply({ scope: language, facts, history: [], latestText: 'Haircut',
+    fallback: 'fallback', languageMatches: matches, generate: async () => response(`${acknowledged} ${mentions.bookable}`),
+  });
+  assert.equal(rejectedRepeat.source, 'deterministic');
+  assert.equal(rejectedRepeat.repeated, true);
+  assert.equal(rejectedRepeat.fallbackReason, 'grounding_or_language_rejected');
+  assert.equal(rejectedRepeat.validationReason, 'unsupported_non_neutral_extra_mention');
+  assert.equal(rejectedRepeat.text, repeated.text, 'diagnostic metadata must not change repeat fallback wording'); checks++;
 }
 const en = (text: string) => boundary.bookingPresentationLanguageMatches(text, 'en');
 const unavailableFacts: BookingReplyFacts = { kind: 'availability', language: 'en', slots: [], constraint: { startDate: '2026-09-02', endDate: '2026-09-02' } };
@@ -130,6 +150,20 @@ for (const candidate of [
   'Which service would you like?',
   'Haircut is not bookable.',
 ]) { assert.equal(validateGroundedBookingReply(candidate, unsupportedFacts, en), false, candidate); checks++; }
+// Codes report the first failing rule; other simultaneous failures are not evaluated.
+rejectsWith('Haircut is available.', unsupportedFacts, en, 'required_next_action_missing');
+rejectsWith(replies.sv[0], unsupportedFacts, en, 'language_mismatch');
+rejectsWith('Haircut is not bookable. The price is 300 SEK. Which service would you like?', unsupportedFacts, en, 'policy_or_price');
+rejectsWith('Haircut is not bookable. Your booking is cancelled. Which service would you like?', unsupportedFacts, en, 'mutation_claim');
+rejectsWith('Haircut is not bookable tomorrow. Which service would you like?', unsupportedFacts, en, 'relative_date');
+rejectsWith('Haircut is not bookable. Please call 987654321. Which service would you like?', unsupportedFacts, en, 'unknown_number');
+rejectsWith('Haircut is not bookable. Your appointment is confirmed. Which service would you like?', unsupportedFacts, en, 'unverified_success');
+rejectsWith('No slots are available, but there is an available slot. Please give me another date.', unavailableFacts, en, 'availability_grounding');
+rejectsWith('Haircut is not bookable. You can choose Acupuncture. Which service would you like?', unsupportedFacts, en, 'unknown_catalog_or_entity_claim');
+rejectsWith('', unsupportedFacts, en, 'other_grounding_rejection');
+let languageCalls = 0;
+rejectsWith('Haircut is not bookable. The price is 300 SEK. Which service would you like?', unsupportedFacts, () => { languageCalls++; return false; }, 'language_mismatch');
+assert.equal(languageCalls, 2, 'each validator invocation calls the language callback once and stops at its rejection'); checks++;
 const base = { scope: 'failure', facts: unavailableFacts, history: [], latestText: 'book it', fallback: 'No slots are available. Another date?', languageMatches: en };
 for (const generate of [
   async () => { throw Error('provider failure'); },
@@ -149,6 +183,7 @@ assert.equal(validateGroundedBookingReply('Which service would you like: Golden 
 const slots: BookingReplyFacts = { kind: 'availability', language: 'en', slots: ['2026-09-02 09:00', '2026-09-02 10:30'] };
 assert.equal(validateGroundedBookingReply('Available: 2026-09-02 09:00. Which time would you like?', slots, en), true); checks++;
 assert.equal(validateGroundedBookingReply('Available: 2026-09-02 09:30. Which time would you like?', slots, en), false); checks++;
+rejectsWith('Available: 2026-09-02 09:30. Which time would you like?', slots, en, 'slot_or_datetime_grounding');
 assert.equal(validateGroundedBookingReply('Available: 2026-09-02 09:00 and 2026-09-03 09:00. Which time would you like?', { ...slots, slots: ['2026-09-02 09:00', '2026-09-03 10:30'] }, en), false); checks++;
 for (const separator of [' at ', ', ', ' — ']) {
   assert.equal(validateGroundedBookingReply(`Available: 2026-09-02 09:00. Another slot is available on 2026-09-03${separator}09:00. Which time would you like?`, { ...slots, slots: ['2026-09-02 09:00', '2026-09-03 10:30'] }, en), false); checks++;
@@ -175,5 +210,34 @@ const scopes = await Promise.all(['Haircut', 'Massage'].map(requestedService => 
   return getBookingPresentationFacts('same fallback')?.requestedService;
 })));
 assert.deepEqual(scopes, ['Haircut', 'Massage'], 'parallel turns cannot exchange formatter facts'); checks++;
-resetBookingPresentationMemory(); boundary.reset();
+// Exercise the Messenger diagnostic path and the exact production log allowlist.
+boundary.reset();
+const diagnostics: Array<Record<string, unknown>> = [];
+const loggedDiagnostics: Array<Record<string, unknown>> = [];
+const savedInfo = console.info;
+let generationCount = 0;
+console.info = (...args: any[]) => { if (args[0] === '[BookingPresentation]') loggedDiagnostics.push(args[1]); };
+try {
+  boundary.configure({
+    postProcess: async () => undefined,
+    bookingPresentationDiagnostic: event => diagnostics.push(event),
+    bookingPresentationGenerate: async () => response(++generationCount === 1 ? replies.en[0] : `${replies.en[0]} I can book Haircut.`),
+  });
+  const turn = (text: string) => boundary.turn({ sessionId: 'validation-diagnostics-messenger', platformName: 'messenger',
+    recipientUserId: 'private-recipient', now: new Date('2026-09-01T09:00:00+02:00'), text,
+    businessConfig: { id: '7', language: 'en', timezone: 'Europe/Stockholm', services: [{ name: 'Video Consultation', duration: 30 }, { name: 'Golden video', duration: 30 }] },
+  });
+  const first = await turn('I want to book Haircut.');
+  const second = await turn('Haircut');
+  assert.equal(first.pending?.status, 'awaiting_service');
+  assert.equal(second.pending?.status, 'awaiting_service');
+  assert.equal(diagnostics[0].source, 'openai');
+  assert.equal(Object.hasOwn(diagnostics[0], 'validationReason'), false);
+  assert.deepEqual(diagnostics[1], { kind: 'unsupported_service', source: 'deterministic', repeated: true,
+    fallbackReason: 'grounding_or_language_rejected', validationReason: 'unsupported_non_neutral_extra_mention' });
+  assert.deepEqual(loggedDiagnostics, diagnostics.map(event => ({ ...event, channel: 'messenger' })));
+  assert.deepEqual(Object.keys(loggedDiagnostics[1]).sort(), ['channel', 'fallbackReason', 'kind', 'repeated', 'source', 'validationReason']);
+  assert.doesNotMatch(JSON.stringify(loggedDiagnostics), /Haircut|private-recipient|Video Consultation|Golden video/);
+  checks++;
+} finally { console.info = savedInfo; resetBookingPresentationMemory(); boundary.reset(); }
 console.log(`Grounded booking composition: ${checks} semantic/grounding checks passed (six languages)`);

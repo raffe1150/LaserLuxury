@@ -7,6 +7,7 @@ import {
   resetBookingPresentationMemory,
   runBookingPresentationScope,
   type BookingReplyFacts,
+  type BookingValidationReason,
 } from './src/ai/grounded-booking-composition';
 import type { UnifiedAiGenerationRequest, UnifiedAiGenerationResponse } from './src/ai/providers/provider';
 import { containsWebOperationSuccess } from "./src/ai/web-response-integrity";
@@ -1222,7 +1223,7 @@ type BusinessGroundingVerificationRequest = {
 
 type Priority1hTestDependencies = {
   bookingPresentationGenerate?: (request: UnifiedAiGenerationRequest) => Promise<UnifiedAiGenerationResponse>;
-  bookingPresentationDiagnostic?: (event: { kind: string; source: string; repeated: boolean; fallbackReason?: string }) => void;
+  bookingPresentationDiagnostic?: (event: { kind: string; source: string; repeated: boolean; fallbackReason?: string; validationReason?: BookingValidationReason }) => void;
   geminiGenerate?: (params: any) => Promise<any>;
   semanticLanguageResolver?: (
     text: string,
@@ -15694,10 +15695,11 @@ async function composeBookingPresentationForTurn(params: {
       candidates: params.facts.services || [], catalogServices: getConfiguredBookingServiceNames(params.businessConfig),
     })),
   });
-  priority1hTestDependencies?.bookingPresentationDiagnostic?.({ kind: params.facts.kind, source: result.source, repeated: result.repeated, fallbackReason: result.fallbackReason });
+  const validationDiagnostic = result.validationReason ? { validationReason: result.validationReason } : {};
+  priority1hTestDependencies?.bookingPresentationDiagnostic?.({ kind: params.facts.kind, source: result.source, repeated: result.repeated, fallbackReason: result.fallbackReason, ...validationDiagnostic });
   stagedBookingPresentations.set(params.sessionId, { scope, facts: structuredClone(params.facts), reply: result.text, at: Date.now() });
   if (stagedBookingPresentations.size > 10_000) stagedBookingPresentations.delete(stagedBookingPresentations.keys().next().value!);
-  console.info('[BookingPresentation]', { kind: params.facts.kind, source: result.source, repeated: result.repeated, fallbackReason: result.fallbackReason, channel: params.platformName });
+  console.info('[BookingPresentation]', { kind: params.facts.kind, source: result.source, repeated: result.repeated, fallbackReason: result.fallbackReason, channel: params.platformName, ...validationDiagnostic });
   return result.text;
 }
 

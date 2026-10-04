@@ -13,6 +13,7 @@ import {
 import type { UnifiedAiGenerationRequest, UnifiedAiGenerationResponse } from './src/ai/providers/provider';
 import { containsWebOperationSuccess } from "./src/ai/web-response-integrity";
 import { CalendarReadError, requireCalendarEvents } from "./src/calendar/read-contract";
+import { sendWhatsAppAppointmentTemplate } from "./src/runtime/whatsapp-reminder-template";
 import {
   buildConfiguredServiceCatalogPlan,
   businessInformationSubject,
@@ -14696,6 +14697,8 @@ function normalizeBusinessConfig(row: any, fallbackConfig: any = activeConfig) {
     whatsappAccessToken: row.whatsapp_access_token,
     whatsappPhoneNumberId: row.whatsapp_phone_number_id,
     whatsappBusinessAccountId: row.whatsapp_business_account_id,
+    // Explicitly override activeConfig: templates belong to this tenant row only.
+    whatsappReminderTemplates: row.whatsapp_reminder_templates ?? null,
     whatsappEnabled: row.whatsapp_enabled,
     messengerPageId: row.messenger_page_id || row.facebook_page_id || row.page_id,
     messengerPageAccessToken: row.messenger_page_access_token || row.facebook_page_access_token || row.page_access_token,
@@ -26669,7 +26672,9 @@ async function sendAppointmentReminder(
     console.log("[ReminderDelivery]", {
       appointmentId: appointment.id, businessId, channel: platform, reminderType,
       accepted: sent, category, ...(reason ? { reason } : {}),
-      ...(category === "whatsapp_template_required" || (category === "channel_policy_window_closed" && platform === "messenger")
+      ...(category === "whatsapp_template_required"
+        ? { actionRequired: "configure_and_verify_tenant_whatsapp_utility_template" }
+        : category === "channel_policy_window_closed" && platform === "messenger"
         ? { actionRequired: "approved_utility_template_integration_required" }
         : category === "channel_policy_window_closed" ? { actionRequired: "customer_inbound_required" }
         : reason === "messenger_reminder_wire_type_unverified"
@@ -26737,10 +26742,8 @@ async function sendAppointmentReminder(
     } catch {
       return finish("messaging_window_lookup_failed");
     }
-    if (!windowOpen()) {
-      // This repository has no approved, language-specific reminder template
-      // configuration or notification permission tokens. Never infer one from
-      // an arbitrary config field, or use HUMAN_AGENT for automated reminders.
+    if (!windowOpen() && platform !== "whatsapp") {
+      // No verified automated Messenger path or Instagram extension is available.
       return windowClosed();
     }
   }
@@ -26768,7 +26771,23 @@ async function sendAppointmentReminder(
     );
     if (!credentialsPresent) return finish("channel_configuration_missing");
     // Credential lookup can take time; recheck eligibility immediately before send.
-    if (platform !== "telegram" && !windowOpen()) return windowClosed();
+    if (platform !== "telegram" && !windowOpen()) {
+      if (platform !== "whatsapp") return windowClosed();
+      const language = normalizeSupportedConversationLanguage(appointment.language);
+      const result = await sendWhatsAppAppointmentTemplate({
+        configuration: businessConfig.whatsappReminderTemplates,
+        businessId, recipient, reminderType, language,
+        wabaId: String(businessConfig.whatsappBusinessAccountId || "").trim(),
+        phoneNumberId: String(businessConfig.whatsappPhoneNumberId || "").trim(),
+        token: cleanMetaToken(businessConfig.whatsappAccessToken),
+        customerName: String(appointment.customer_name || ""),
+        service: language ? localizeServiceName(appointment.service || "", language) : "",
+        businessName: String(businessConfig.businessName || businessConfig.business_name || ""),
+        startTime: appointment.start_time,
+        timezone: String(businessConfig.timezone || "Europe/Stockholm"),
+      });
+      return finish(result.category, result.reason);
+    }
     const message = formatReminderMessage(appointment, businessConfig, reminderType);
     const sent = await sendCustomerMessage(platform, recipient, message, businessConfig, "proactive", true);
     return finish(sent ? "accepted" : "provider_rejected");

@@ -1,5 +1,10 @@
 # Appointment reminder delivery safety
 
+This document records the safety checkpoint now committed as `98313d4`.
+The subsequent local WhatsApp Utility-template feature and its latest validation
+are documented in [reminder-utility-template-readiness.md](reminder-utility-template-readiness.md).
+Statements below about missing WhatsApp template integration describe that checkpoint.
+
 Audited on 2026-10-04 in the production-hotfix worktree. This change is local,
 uncommitted, and undeployed.
 

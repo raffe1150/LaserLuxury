@@ -12,6 +12,7 @@ const config = {
   businessRecordId: "7", business_id: "7", businessName: "Business 7",
   googleCalendarId: "calendar-7", calendarProvider: "google",
   whatsappAccessToken: "tenant-7-wa-token", whatsappPhoneNumberId: "tenant-7-wa-phone",
+  whatsappBusinessAccountId: "tenant-7-waba",
   messengerPageAccessToken: "tenant-7-ms-token", messengerPageId: "tenant-7-page",
   instagramAccessToken: "tenant-7-ig-token", telegramToken: "tenant-7-tg-token",
 };
@@ -102,7 +103,7 @@ async function run(channel: string, options: any = {}) {
     user_id: channel === "whatsapp" ? "46701234567" : "customer-7",
     customer_name: "Sensitive Customer", service: "Consultation", language: "de",
     start_time: "2026-10-05T12:00:00.000Z", end_time: "2026-10-05T12:30:00.000Z",
-    reminder_24_sent: false, reminder_2_sent: false,
+    reminder_24_sent: false, reminder_2_sent: false, ...options.appointment,
   };
   const history = options.history ?? [{
     business_id: "7", platform: channel, user_id: row.user_id, sender: "user",
@@ -131,8 +132,18 @@ async function run(channel: string, options: any = {}) {
     },
   });
   globalThis.fetch = async (input, init) => {
-    requests.push({ url: String(input), body: JSON.parse(String(init?.body)), headers: init?.headers });
+    requests.push({ url: String(input), body: init?.body ? JSON.parse(String(init.body)) : null, headers: init?.headers });
     if (options.transportThrows) throw new Error("private transport failure");
+    if (init?.method === "GET") {
+      assert.equal((init.headers as any).Authorization, "Bearer tenant-7-wa-token");
+      const url = new URL(String(input));
+      assert.ok(url.pathname.startsWith("/v25.0/tenant-7-waba/"), "lookup uses only the current tenant WABA");
+      const body = url.pathname.endsWith("/phone_numbers")
+        ? options.phonesBody ?? { data: [{ id: "tenant-7-wa-phone" }] }
+        : options.templatesBody ?? { data: [approvedTemplate] };
+      return new Response(JSON.stringify(body), { status: options.lookupStatus ?? 200 });
+    }
+    if (options.templateTransportThrows) throw new Error("private transport failure");
     const body = options.body ?? (channel === "whatsapp"
       ? { messages: [{ id: "wamid.reminder-policy-test" }] }
       : { recipient_id: row.user_id, message_id: "mid.reminder-policy-test", ok: true });
@@ -148,7 +159,7 @@ async function run(channel: string, options: any = {}) {
     assert.ok(!JSON.stringify(logs).includes(row.customer_name));
     assert.ok(!JSON.stringify(logs).includes("tenant-7-wa-token"));
     assert.ok(!JSON.stringify(logs).includes("private transport failure"));
-    const diagnostic = logs.find(args => args[0] === "[ReminderDelivery]")?.[1];
+    const diagnostic = logs.find(args => args[0] === "[ReminderDelivery]" || args[0] === "[ReminderCalendarVerification]")?.[1];
     assert.equal(diagnostic?.appointmentId, row.id);
     assert.equal(diagnostic?.businessId, row.business_id);
     assert.equal(diagnostic?.channel, channel);
@@ -617,6 +628,122 @@ try {
   globalThis.fetch = originalFetch;
   boundary.reset();
 }
+
+
+// Code configuration is not approval: Meta must currently return APPROVED/UTILITY.
+const templateConfig = {
+  business_id: "7", waba_id: "tenant-7-waba", phone_number_id: "tenant-7-wa-phone",
+  reminder_type: "24h", booking_language: "de", name: "configured_reminder", language_code: "de",
+  template_id: "template-7-de", body_parameters: ["customer_name", "service", "date", "time", "business_name"],
+};
+const approvedTemplate = {
+  id: "template-7-de", name: "configured_reminder", language: "de", status: "APPROVED", category: "UTILITY",
+  components: [{ type: "BODY", text: "Hallo {{1}}, {{2}} am {{3}} um {{4}} bei {{5}}." }],
+};
+const configured = (entry: any = templateConfig) => ({ whatsappReminderTemplates: [entry] });
+for (const type of ["24h", "2h"]) {
+  const entry = { ...templateConfig, reminder_type: type };
+  const accepted = await run("whatsapp", { type, ageHours: 25, config: configured(entry) });
+  assert.equal(accepted.result.deliveryCategory, "accepted");
+  assert.equal(accepted.db.updates, 1);
+  const sends = accepted.requests.filter(r => r.body);
+  assert.equal(sends.length, 1);
+  assert.match(sends[0].url, /tenant-7-wa-phone\/messages$/);
+  assert.deepEqual(sends[0].body, {
+    messaging_product: "whatsapp", recipient_type: "individual", to: "46701234567", type: "template",
+    template: { name: entry.name, language: { code: "de" }, components: [{ type: "body", parameters: [
+      { type: "text", text: "Sensitive Customer" }, { type: "text", text: "Beratung" },
+      { type: "text", text: "Montag, 5. Oktober" }, { type: "text", text: "14:00" },
+      { type: "text", text: "Business 7" },
+    ] }] },
+  });
+  assert.ok(accepted.requests.every(r => r.url.startsWith("https://graph.facebook.com/")));
+  for (const options of [
+    { status: 400 }, { templateTransportThrows: true }, { body: {} }, { body: { messages: [{ id: "invalid" }] } },
+    { body: { messages: [{ id: "wamid." }] } },
+    { body: { messages: [{ id: "wamid.error" }], error: { code: 100 } } },
+  ]) {
+    const rejected = await run("whatsapp", { type, ageHours: 25, config: configured(entry), ...options });
+    assert.equal(rejected.result.category, "provider_rejected");
+    assert.equal(rejected.db.updates, 0);
+  }
+}
+for (const [options, reason] of [
+  [{ config: { whatsappReminderTemplates: {} } }, "whatsapp_template_misconfigured"],
+  [{ config: configured({ ...templateConfig, reminder_type: "2h" }) }, "whatsapp_template_missing"],
+  [{ config: { ...configured(), businessRecordId: "8", business_id: "8" } }, "business_scope_mismatch"],
+  [{ config: configured({ ...templateConfig, business_id: "8" }) }, "whatsapp_template_misconfigured"],
+  [{ config: configured({ ...templateConfig, waba_id: "tenant-8-waba" }) }, "whatsapp_template_misconfigured"],
+  [{ config: configured({ ...templateConfig, phone_number_id: "tenant-8-phone" }) }, "whatsapp_template_misconfigured"],
+  [{ config: configured({ ...templateConfig, booking_language: "en", language_code: "en_US" }) }, "whatsapp_template_language_unavailable"],
+  [{ config: configured({ ...templateConfig, language_code: "en_US" }) }, "whatsapp_template_misconfigured"],
+  [{ config: configured({ ...templateConfig, body_parameters: ["llm_reply"] }) }, "whatsapp_template_misconfigured"],
+  [{ config: configured({ ...templateConfig, body_parameters: ["date", "time"] }) }, "whatsapp_template_misconfigured"],
+  [{ config: configured({ ...templateConfig, template_id: "" }) }, "whatsapp_template_misconfigured"],
+  [{ config: { whatsappReminderTemplates: [templateConfig, templateConfig] } }, "whatsapp_template_misconfigured"],
+  [{ config: configured(), appointment: { language: null } }, "whatsapp_template_language_missing"],
+  [{ config: configured(), appointment: { language: "fr" } }, "whatsapp_template_language_missing"],
+  [{ config: configured(), appointment: { customer_name: null } }, "whatsapp_template_facts_missing"],
+  [{ config: configured(), lookupStatus: 403 }, "whatsapp_template_verification_failed"],
+  [{ config: configured(), phonesBody: { data: [{ id: "tenant-8-phone" }] } }, "whatsapp_template_account_mismatch"],
+  [{ config: configured(), templatesBody: { data: {} } }, "whatsapp_template_verification_failed"],
+  [{ config: configured(), templatesBody: { data: [approvedTemplate, approvedTemplate] } }, "whatsapp_template_not_approved"],
+  [{ config: configured(), templatesBody: { data: [] } }, "whatsapp_template_not_approved"],
+  ...["PENDING", "REJECTED", "PAUSED", "DISABLED"].map(status =>
+    [{ config: configured(), templatesBody: { data: [{ ...approvedTemplate, status }] } }, "whatsapp_template_not_approved"]),
+  [{ config: configured(), templatesBody: { data: [{ ...approvedTemplate, category: "MARKETING" }] } }, "whatsapp_template_not_utility"],
+  ...[{ id: "another-template" }, { language: "en_US" }, { name: "another_name" }].map(overrides =>
+    [{ config: configured(), templatesBody: { data: [{ ...approvedTemplate, ...overrides }] } }, "whatsapp_template_not_approved"]),
+  ...[
+    [{ type: "BODY", text: "Hello {{1}}" }],
+    [{ type: "BODY", text: "{{1}} {{2}} {{3}} {{4}} {{6}}" }],
+    [{ type: "BODY", text: "{{customer}}" }],
+    [...approvedTemplate.components, { type: "HEADER", format: "IMAGE" }],
+    [...approvedTemplate.components, { type: "BUTTONS", buttons: [] }],
+    [...approvedTemplate.components, null],
+  ].map(components => [{ config: configured(), templatesBody: { data: [{ ...approvedTemplate, components }] } },
+    "whatsapp_template_contract_mismatch"]),
+] as Array<[any, string]>) {
+  const blocked = await run("whatsapp", { ageHours: 25, ...options });
+  assert.equal(blocked.result.category, reason === "business_scope_mismatch" ? reason : "whatsapp_template_required");
+  if (reason !== "business_scope_mismatch") assert.equal(blocked.result.reason, reason);
+  assert.equal(blocked.db.updates, 0);
+  assert.equal(blocked.requests.filter(r => r.body).length, 0);
+}
+// Only configured and provider-approved variants are selected; locale is not guessed.
+for (const [language, code] of [["en", "en_US"], ["sv", "sv"], ["fa", "fa"], ["ar", "ar"], ["es", "es"]]) {
+  const entry = { ...templateConfig, booking_language: language, language_code: code };
+  const accepted = await run("whatsapp", { ageHours: 25, config: configured(entry), appointment: { language },
+    templatesBody: { data: [{ ...approvedTemplate, language: code }] } });
+  assert.equal(accepted.result.deliveryCategory, "accepted");
+  assert.equal(accepted.requests.at(-1)?.body.template.language.code, code);
+}
+const withoutName = { ...templateConfig, body_parameters: ["service", "date", "time"] };
+const unnamed = await run("whatsapp", { ageHours: 25, config: configured(withoutName), appointment: { customer_name: null },
+  templatesBody: { data: [{ ...approvedTemplate, components: [
+    { type: "HEADER", format: "TEXT", text: "Erinnerung" },
+    { type: "BODY", text: "{{1}} {{2}} {{3}}" }, { type: "FOOTER", text: "Bis bald" },
+  ] }] } });
+assert.equal(unnamed.result.deliveryCategory, "accepted", "no invented name when template does not require it");
+const expiredDuringHydration = await run("whatsapp", { ageMs: 24 * hour - 1, nowAfterHydration: now + 1, config: configured() });
+assert.equal(expiredDuringHydration.requests.at(-1)?.body.type, "template", "window is rechecked before free-form send");
+for (const failure of ["updateError", "updateThrows", "updateNoRows"]) {
+  const result = await run("whatsapp", { ageHours: 25, config: configured(), [failure]: true });
+  assert.equal(result.result.category, "flag_update_failed");
+  assert.equal(result.result.sent, true);
+  assert.equal(result.db.updates, 0);
+}
+const ordinary = await run("whatsapp", { config: configured() });
+assert.equal(ordinary.requests.length, 1, "open window preserves text; no template approval reads");
+assert.equal(ordinary.requests[0].body.type, "text");
+for (const channel of ["messenger", "instagram", "telegram"]) {
+  const result = await run(channel, { ageHours: 25, config: configured() });
+  assert.equal(result.requests.length, channel === "telegram" ? 1 : 0, "no WhatsApp or other channel fallback");
+}
+// Tenant row normalization must erase any unrelated active-config template.
+boundary.promptAuditConfig({ whatsappReminderTemplates: [templateConfig] });
+assert.equal(boundary.promptAuditNormalize({ id: "8" }).whatsappReminderTemplates, null);
+boundary.reset();
 
 mock.timers.reset();
 console.log(`reminder delivery policy integration tests passed (${scenarios} scenarios)`);

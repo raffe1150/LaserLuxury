@@ -1,5 +1,6 @@
 import {
   bookingCompositionLanguageMatches,
+  bookingReplyLanguageEvidence,
   composeGroundedBookingReply,
   getBookingPresentationFacts,
   registerBookingPresentation,
@@ -7664,7 +7665,7 @@ function formatThanksReply(language: string = "en", name?: string, toneConfig?: 
   return name ? `You're welcome, ${name}! Have a lovely day 😊` : "You're welcome! Have a lovely day 😊";
 }
 
-const stagedBookingPresentations = new Map<string, { scope: string; facts: BookingReplyFacts; reply: string; at: number }>();
+const stagedBookingPresentations = new Map<string, { scope: string; facts: BookingReplyFacts; reply: string; fallback: string; at: number }>();
 
 function appendLocalHistory(chatId: string, userMessage: string, botMessage: string) {
   const staged = stagedBookingPresentations.get(chatId);
@@ -13335,7 +13336,62 @@ function enforceFinalConversationConcision(reply: string, maxWords: number = 45)
   return candidate;
 }
 
-function guardCustomerFacingReply(sessionId: string, reply: string, fallbackLanguage?: string, toneConfig?: unknown, presentationFacts?: BookingReplyFacts): string {
+// The composer and final booking guard must evaluate the same fact-free prose.
+// Strong opposing language/structure is a veto even when own-language markers exist.
+function customerReplyLanguageIsIncompatible(prose: string, language: string, structureProse = prose): boolean {
+  const hasEnglishStructure = /\b(to confirm|can i ask|please send|please choose|i need|i can'?t find|what mobile|what day|what time|which time|of course|your appointment|your booking|would you like|sorry|couldn'?t|is available|is booked|try again)\b/i.test(structureProse);
+  const hasSwedishStructure = /\b(för att|kan jag|ditt namn|din bokning|mobilnummer|vill du|tyvärr|är ledig|är bokad)\b/i.test(structureProse);
+  const hasPersianStructure = /[\u0600-\u06FF]/u.test(structureProse) &&
+    /(برای|لطفاً|می.?خواهید|وقت|رزرو|نام|شماره|متأسفانه)/u.test(structureProse);
+  const fallbackReplyLanguage = isMeaningfulLanguageMessage(prose)
+    ? detectUserLanguage(prose)
+    : null;
+
+  const strongReplyLanguage = isMeaningfulLanguageMessage(prose)
+    ? detectStrongLatestLanguage(prose) ||
+      (
+        fallbackReplyLanguage &&
+        hasStrongLanguageEvidence(fallbackReplyLanguage, prose)
+          ? fallbackReplyLanguage
+          : null
+      )
+    : null;
+  const hasOppositeArabicScriptLanguageEvidence =
+    language === "fa"
+      ? hasStrongLanguageEvidence("ar", prose)
+      : language === "ar"
+        ? hasStrongLanguageEvidence("fa", prose)
+        : false;
+
+  const strongLanguageMismatch =
+    Boolean(
+      strongReplyLanguage &&
+      strongReplyLanguage !== language &&
+      !(
+        ["fa", "ar"].includes(language) &&
+        ["fa", "ar"].includes(strongReplyLanguage) &&
+        !hasOppositeArabicScriptLanguageEvidence
+      )
+    );
+
+  return (
+    strongLanguageMismatch ||
+    hasOppositeArabicScriptLanguageEvidence ||
+    (language === "sv" && hasEnglishStructure) ||
+    (language === "fa" && (hasEnglishStructure || hasSwedishStructure)) ||
+    (language === "en" && (hasSwedishStructure || hasPersianStructure)) ||
+    (["de", "es", "ar"].includes(language) && hasEnglishStructure)
+  );
+}
+
+function bookingPresentationLanguageMatches(prose: string, language: string): boolean {
+  return !customerReplyLanguageIsIncompatible(prose, language) &&
+    bookingCompositionLanguageMatches(prose, language, probe => serviceClarificationPresentationMatchesLanguage(probe, {
+      status: 'missing', language, requestedService: null, candidates: [], catalogServices: [],
+    }));
+}
+
+function guardCustomerFacingReply(sessionId: string, reply: string, fallbackLanguage?: string, toneConfig?: unknown, presentationFacts?: BookingReplyFacts, presentationFallback?: string): string {
   const raw = suppressBookingCtaDuringSupportTurn(
     sessionId,
     String(reply || "").trim()
@@ -13348,6 +13404,14 @@ function guardCustomerFacingReply(sessionId: string, reply: string, fallbackLang
     chatLanguages[sessionId] ||
     "en";
   if (!raw) return getErrorMessageByLanguage(language);
+
+  // Adapter/send-only paths may not pass presentation metadata explicitly. Only
+  // reuse the exact staged reply for this session, language and presentation TTL.
+  const staged = stagedBookingPresentations.get(sessionId);
+  const currentPresentation = staged && staged.reply === raw && staged.facts.language === language &&
+    Date.now() - staged.at < 30 * 60_000 ? staged : undefined;
+  presentationFacts ||= currentPresentation?.facts;
+  presentationFallback ||= currentPresentation?.fallback;
 
   const recentCompleted = getRecentCompletedBooking(sessionId);
   const completedSupport = completedBookingSupportTurns[sessionId];
@@ -13398,8 +13462,7 @@ function guardCustomerFacingReply(sessionId: string, reply: string, fallbackLang
       ? recentCompleted.bookingOperation
       : null;
   const replyWithoutPresentationEntities = presentationFacts
-    ? [presentationFacts.requestedService, presentationFacts.service, ...(presentationFacts.services || [])].filter(Boolean)
-      .reduce((value, fact) => value.split(String(fact)).join(' '), raw)
+    ? bookingReplyLanguageEvidence(raw, presentationFacts)
     : raw;
   const replyForLanguageDetection = verifiedBookingFacts
     ? [
@@ -13410,13 +13473,9 @@ function guardCustomerFacingReply(sessionId: string, reply: string, fallbackLang
         (value, verifiedFact) => verifiedFact
           ? value.split(String(verifiedFact)).join(" ")
           : value,
-        raw,
+        replyWithoutPresentationEntities,
       )
     : replyWithoutPresentationEntities;
-  const hasEnglishStructure = /\b(to confirm|can i ask|please send|please choose|i need|i can'?t find|what mobile|what day|what time|which time|of course|your appointment|your booking|would you like|sorry|couldn'?t|is available|is booked|try again)\b/i.test(replyForLanguageDetection);
-  const hasSwedishStructure = /\b(för att|kan jag|ditt namn|din bokning|mobilnummer|vill du|tyvärr|är ledig|är bokad)\b/i.test(replyForLanguageDetection);
-  const hasPersianStructure = /[\u0600-\u06FF]/u.test(replyForLanguageDetection) &&
-    /(برای|لطفاً|می.?خواهید|وقت|رزرو|نام|شماره|متأسفانه)/u.test(replyForLanguageDetection);
   const activeBusinessInformation = getActiveBusinessInformation(sessionId);
   const activeBusinessSupport = getActiveRecentCompletedBusinessSupport(sessionId);
   const replyLanguageBusinessConfig =
@@ -13429,19 +13488,6 @@ function guardCustomerFacingReply(sessionId: string, reply: string, fallbackLang
       )
     : replyForLanguageDetection;
 
-  const fallbackReplyLanguage = isMeaningfulLanguageMessage(replyForLanguageClassification)
-    ? detectUserLanguage(replyForLanguageClassification)
-    : null;
-
-  const strongReplyLanguage = isMeaningfulLanguageMessage(replyForLanguageClassification)
-    ? detectStrongLatestLanguage(replyForLanguageClassification) ||
-      (
-        fallbackReplyLanguage &&
-        hasStrongLanguageEvidence(fallbackReplyLanguage, replyForLanguageClassification)
-          ? fallbackReplyLanguage
-          : null
-      )
-    : null;
   const verifiedCompletionPresentationMatchesLanguage = Boolean(
     verifiedBookingFacts && (
       (language === "en" && /^(?:Yes, the booking is verified\.|Exactly\. The booking is verified)/u.test(raw)) ||
@@ -13452,41 +13498,20 @@ function guardCustomerFacingReply(sessionId: string, reply: string, fallbackLang
       (language === "ar" && /^(?:نعم، الحجز مؤكد\.|بالضبط\. الحجز مؤكد)/u.test(raw))
     )
   );
-  const hasOppositeArabicScriptLanguageEvidence =
-    language === "fa"
-      ? hasStrongLanguageEvidence("ar", replyForLanguageClassification)
-      : language === "ar"
-        ? hasStrongLanguageEvidence("fa", replyForLanguageClassification)
-        : false;
+  const incompatible = !verifiedCompletionPresentationMatchesLanguage &&
+    customerReplyLanguageIsIncompatible(replyForLanguageClassification, language, replyForLanguageDetection);
 
-  const strongLanguageMismatch =
-    Boolean(
-      strongReplyLanguage &&
-      strongReplyLanguage !== language &&
-      !(
-        ["fa", "ar"].includes(language) &&
-        ["fa", "ar"].includes(strongReplyLanguage) &&
-        !hasOppositeArabicScriptLanguageEvidence
-      )
-    );
-
-  const incompatible =
-    !verifiedCompletionPresentationMatchesLanguage && (
-      strongLanguageMismatch ||
-      hasOppositeArabicScriptLanguageEvidence ||
-      (language === "sv" && hasEnglishStructure) ||
-      (language === "fa" && (hasEnglishStructure || hasSwedishStructure)) ||
-      (language === "en" && (hasSwedishStructure || hasPersianStructure)) ||
-      (["de", "es", "ar"].includes(language) && hasEnglishStructure)
-    );
-
-  if (presentationFacts && bookingCompositionLanguageMatches(replyForLanguageClassification, language, () => !incompatible)) return raw;
-  if (!incompatible) return raw;
+  if (presentationFacts) {
+    if (bookingPresentationLanguageMatches(replyWithoutPresentationEntities, language)) return raw;
+  } else if (!incompatible) return raw;
   console.warn("[CustomerReplyGuard]", {
     language,
     mixedLanguageBlocked: true,
     stateType: conversationFlowLanguages[sessionId]?.flowType || "none"
   });
+  // This fallback was rendered from the same deterministic booking inputs
+  // before composition. Preserve its exact facts and next action on rejection.
+  if (presentationFacts && presentationFallback) return presentationFallback;
   const reschedule = rescheduleContexts[sessionId];
   if (reschedule?.selectedNewStartTime) {
     return formatRescheduleConfirmation(language, reschedule.selectedNewStartTime);
@@ -15690,14 +15715,11 @@ async function composeBookingPresentationForTurn(params: {
   const result = await composeGroundedBookingReply({
     scope, facts: params.facts, fallback: params.fallback, history: params.history,
     latestText: params.text, toneConfig: params.businessConfig?.toneConfig, generate,
-    languageMatches: (reply) => bookingCompositionLanguageMatches(reply, params.facts.language, probe => serviceClarificationPresentationMatchesLanguage(probe, {
-      status: 'missing', language: params.facts.language, requestedService: params.facts.requestedService || null,
-      candidates: params.facts.services || [], catalogServices: getConfiguredBookingServiceNames(params.businessConfig),
-    })),
+    languageMatches: (prose) => bookingPresentationLanguageMatches(prose, params.facts.language),
   });
   const validationDiagnostic = result.validationReason ? { validationReason: result.validationReason } : {};
   priority1hTestDependencies?.bookingPresentationDiagnostic?.({ kind: params.facts.kind, source: result.source, repeated: result.repeated, fallbackReason: result.fallbackReason, ...validationDiagnostic });
-  stagedBookingPresentations.set(params.sessionId, { scope, facts: structuredClone(params.facts), reply: result.text, at: Date.now() });
+  stagedBookingPresentations.set(params.sessionId, { scope, facts: structuredClone(params.facts), reply: result.text, fallback: params.fallback, at: Date.now() });
   if (stagedBookingPresentations.size > 10_000) stagedBookingPresentations.delete(stagedBookingPresentations.keys().next().value!);
   console.info('[BookingPresentation]', { kind: params.facts.kind, source: result.source, repeated: result.repeated, fallbackReason: result.fallbackReason, channel: params.platformName, ...validationDiagnostic });
   return result.text;
@@ -17009,7 +17031,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
       sessionId, platformName, recipientUserId, businessConfig, history: (chatSessions[sessionId]?.length || 0) >= history.length ? chatSessions[sessionId] || [] : history,
       text, fallback: reply, facts,
     }) : reply;
-    const guardedReply = guardCustomerFacingReply(sessionId, composed, replyLanguage, businessConfig?.toneConfig, facts);
+    const guardedReply = guardCustomerFacingReply(sessionId, composed, replyLanguage, businessConfig?.toneConfig, facts, reply);
     emitBookingLanguageTrace({
       stage: "final_reply_guard",
       sessionId,
@@ -33715,7 +33737,8 @@ export const priority1hUnifiedEngineTestBoundary = {
   },
   bookingPresentationLanguageMatches(reply: string, language: string, services: string[] = []) {
     if (process.env.NODE_ENV !== 'test') throw new Error('Test-only');
-    return bookingCompositionLanguageMatches(reply, language, probe => serviceClarificationPresentationMatchesLanguage(probe, { status: 'missing', language, requestedService: null, candidates: services, catalogServices: services }));
+    const prose = bookingReplyLanguageEvidence(reply, { kind: 'missing_service', language, services });
+    return bookingPresentationLanguageMatches(prose, language);
   },
   geminiToolNames(sessionId: string) {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
@@ -33732,9 +33755,9 @@ export const priority1hUnifiedEngineTestBoundary = {
     const support = getActiveRecentCompletedBusinessSupport(sessionId);
     return support ? structuredClone(buildBusinessGroundingSnapshot(support)) : null;
   },
-  guardReply(sessionId: string, reply: string, language: string = "sv", toneConfig?: unknown) {
+  guardReply(sessionId: string, reply: string, language: string = "sv", toneConfig?: unknown, presentation?: { facts: BookingReplyFacts; fallback: string }) {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
-    return guardCustomerFacingReply(sessionId, reply, language, toneConfig);
+    return guardCustomerFacingReply(sessionId, reply, language, toneConfig, presentation?.facts, presentation?.fallback);
   },
   enforceConversationConcision(reply: string, maxWords: number = 45) {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");

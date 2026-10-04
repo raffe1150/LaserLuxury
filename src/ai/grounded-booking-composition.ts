@@ -169,6 +169,12 @@ export type BookingValidationReason =
   | 'slot_or_datetime_grounding' | 'other_grounding_rejection';
 export type BookingReplyValidationResult = { valid: true } | { valid: false; reason: BookingValidationReason };
 
+export function bookingReplyLanguageEvidence(reply: string, facts: BookingReplyFacts): string {
+  const exactFacts = [facts.requestedService, facts.service, facts.name, facts.phone, facts.dateLabel, facts.timeLabel, ...(facts.services || []), ...(facts.slots || [])].filter(Boolean) as string[];
+  return exactFacts.sort((a, b) => b.length - a.length)
+    .reduce((prose, fact) => prose.split(fact).join(' '), reply);
+}
+
 export function validateGroundedBookingReply(reply: string, facts: BookingReplyFacts, languageMatches: (text: string) => boolean): boolean {
   return validateGroundedBookingReplyDetailed(reply, facts, languageMatches).valid;
 }
@@ -178,8 +184,8 @@ export function validateGroundedBookingReply(reply: string, facts: BookingReplyF
 export function validateGroundedBookingReplyDetailed(reply: string, facts: BookingReplyFacts, languageMatches: (text: string) => boolean): BookingReplyValidationResult {
   if (!reply.trim() || reply.length > 1800 || /https?:|<[^>]+>/iu.test(reply)) return { valid: false, reason: 'other_grounding_rejection' };
   const exactFacts = [facts.requestedService, facts.service, facts.name, facts.phone, facts.dateLabel, facts.timeLabel, ...(facts.services || []), ...(facts.slots || [])].filter(Boolean) as string[];
-  let prose = reply;
-  for (const fact of exactFacts.sort((a, b) => b.length - a.length)) prose = prose.split(fact).join(' ');
+  exactFacts.sort((a, b) => b.length - a.length);
+  const prose = bookingReplyLanguageEvidence(reply, facts);
   if (!languageMatches(prose)) return { valid: false, reason: 'language_mismatch' };
   if (POLICY_OR_PRICE.test(prose)) return { valid: false, reason: 'policy_or_price' };
   if (MUTATION.test(prose)) return { valid: false, reason: 'mutation_claim' };

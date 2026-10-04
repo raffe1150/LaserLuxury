@@ -127,6 +127,40 @@ function bookingClauses(text: string): string[] {
   return text.split(/[.!?؟;؛\n]+|\b(?:but|however|aber|jedoch|pero|men|dock)\b|(?<![\p{L}\p{M}])(?:اما|ولی|لكن|بل)(?![\p{L}\p{M}])|\b(?:and|och|und|y)\s+(?=(?:it|there|we|i|you|is|are|det|den|vi|jag|du|är|es|wir|ich|sie|ist|sind|hay)\b)/iu).filter(Boolean);
 }
 
+// Only neutral request/acknowledgement vocabulary may introduce an extra
+// unsupported-service mention. Keep this separate from catalog/entity guards:
+// "I can book SERVICE" must not become safe just because another clause negates it.
+const UNSUPPORTED_ACKNOWLEDGEMENT_WORDS: Record<string, string> = {
+  en: 'i understand hear that you re youre are still asking looking for seeking wanting want need would like your repeated request again a an the service',
+  sv: 'jag förstår hör att du fortfarande söker efter vill ha önskar ditt upprepade önskemål igen en ett tjänst',
+  de: 'ich verstehe höre dass sie weiterhin immer noch suchen möchten wünschen ihren wiederholten wunsch nach einem einer leistung service',
+  es: 'entiendo comprendo que sigues todavía aún buscando quieres necesitas tu solicitud repetida de un una servicio',
+  fa: 'می دانم متوجه هستم که شما هنوز دنبال می گردید خواهید درخواست تکراری خدمت سرویس',
+  ar: 'أنا أفهم أسمع أنك ما زلت لا تزال تريد طلبك المتكرر بشأن البحث عن رغبتك خدمة الخدمة',
+};
+function neutralUnsupportedServiceMention(clause: string, facts: BookingReplyFacts): boolean {
+  const words = new Set(normalize(UNSUPPORTED_ACKNOWLEDGEMENT_WORDS[facts.language] || '').split(' '));
+  return normalize(clause.split(facts.requestedService!).join(' ')).split(' ').filter(Boolean).every(word => words.has(word));
+}
+// Match complete negative propositions about the exact service, not a negative
+// word near "booking"/"service" in an acknowledgement or customer request.
+// Keep the grammar bounded: uncertainty, unrelated predicates and extra claims
+// cannot satisfy this requirement merely by containing the same status words.
+const UNSUPPORTED_SERVICE_ASSERTIONS: Record<string, string> = {
+  en: String.raw`(?:(?:unfortunately|sorry) )?(?:{service} (?:is (?:still |currently )?not|isn t|isnt) (?:(?:a |an )?(?:bookable|reservable|schedulable|available|offered|provided|supported)(?: service)?|(?:one of|among|part of) (?:our|the configured|the business|the bookable) services)|{service} is (?:unavailable|unsupported)|(?:we|i|this business) (?:do not|don t|dont|does not|doesn t|cannot|can t|cant) (?:offer|provide|book|reserve|schedule) {service})(?: (?:here|currently|with us))*`,
+  sv: String.raw`(?:(?:tyvärr|beklagar) )?(?:{service} är (?:fortfarande )?inte (?:(?:en )?(?:bokningsbar|tillgänglig|reserverbar)(?: tjänst)?|(?:en av|bland) (?:våra|de konfigurerade|företagets) tjänster)|{service} (?:erbjuds|tillhandahålls) inte|vi (?:erbjuder|tillhandahåller) inte {service}|vi kan inte (?:boka|reservera|schemalägga) {service})(?: (?:här|hos oss|för närvarande))*`,
+  de: String.raw`(?:(?:leider|entschuldigung) )?(?:{service} ist (?:hier )?(?:weiterhin )?(?:nicht (?:buchbar|reservierbar|verfügbar|planbar)|keine unserer leistungen|nicht eine unserer leistungen|nicht eine der konfigurierten leistungen)|{service} wird nicht angeboten|wir bieten {service} (?:hier )?nicht an|wir können {service} nicht (?:buchen|reservieren|planen))(?: (?:hier|bei uns|derzeit))*`,
+  es: String.raw`(?:(?:lamentablemente|desafortunadamente|lo siento) )?(?:{service} no (?:es|está) (?:(?:un servicio )?(?:reservable|disponible|programable)|(?:uno|una) de (?:nuestros|los configurados) servicios)|{service} no se puede (?:reservar|programar|agendar)|(?:nosotros )?no (?:ofrecemos|proporcionamos|podemos reservar|podemos programar) {service})(?: (?:aquí|actualmente|con nosotros))*`,
+  fa: String.raw`(?:متأسفانه )?(?:{service} (?:اینجا )?(?:قابل رزرو|در دسترس) (?:نیست|نمی باشد)|{service} (?:جزو|یکی از) خدمات (?:ما|قابل رزرو ما) نیست|(?:ما )?{service} (?:را )?(?:ارائه نمی دهیم|رزرو نمی کنیم)|(?:ما )?نمی توانیم {service} (?:را )?رزرو کنیم)(?: اینجا)?`,
+  ar: String.raw`(?:للأسف )?(?:{service} (?:ليس|ليست) (?:(?:خدمة )?(?:قابل للحجز|قابلة للحجز|متاح|متاحة)(?: للحجز)?|من (?:خدماتنا|الخدمات المتاحة|الخدمات القابلة للحجز))|{service} غير (?:متاح|متاحة|قابل للحجز|قابلة للحجز)|(?:نحن )?لا (?:نقدم|نوفر|يمكننا حجز) {service})(?: (?:هنا|لدينا|حاليا))*`,
+};
+function explicitUnsupportedServiceMention(clause: string, facts: BookingReplyFacts): boolean {
+  const pattern = UNSUPPORTED_SERVICE_ASSERTIONS[facts.language];
+  const service = normalize(facts.requestedService || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  if (!pattern || !service) return false;
+  return new RegExp(`^(?:${pattern.split('{service}').join(service)})$`, 'u').test(normalize(clause));
+}
+
 export function validateGroundedBookingReply(reply: string, facts: BookingReplyFacts, languageMatches: (text: string) => boolean): boolean {
   if (!reply.trim() || reply.length > 1800 || /https?:|<[^>]+>/iu.test(reply)) return false;
   const exactFacts = [facts.requestedService, facts.service, facts.name, facts.phone, facts.dateLabel, facts.timeLabel, ...(facts.services || []), ...(facts.slots || [])].filter(Boolean) as string[];
@@ -155,7 +189,9 @@ export function validateGroundedBookingReply(reply: string, facts: BookingReplyF
   if (facts.kind === 'unsupported_service') {
     if (!facts.requestedService || !reply.includes(facts.requestedService)) return false;
     const statements = bookingClauses(reply).filter(sentence => sentence.includes(facts.requestedService!));
-    if (!statements.length || statements.some(sentence => !NEGATIVE[facts.language]?.test(sentence))) return false;
+    const explicitlyUnsupported = (sentence: string) => explicitUnsupportedServiceMention(sentence, facts);
+    if (!statements.some(explicitlyUnsupported)) return false;
+    if (statements.some(sentence => !explicitlyUnsupported(sentence) && !neutralUnsupportedServiceMention(sentence, facts))) return false;
   }
   if (facts.kind === 'availability' && !facts.slots?.length && facts.constraint?.kind !== 'whole_day' && /whole day|all day|any time|entire day|hela dagen|ganzen tag|todo el día|تمام روز|طوال اليوم/iu.test(prose)) return false;
   if (facts.kind === 'availability' && !facts.slots?.length && !bookingClauses(prose).some(sentence => AVAILABILITY.test(sentence) && NEGATIVE[facts.language]?.test(sentence))) return false;

@@ -12,6 +12,34 @@ const replies = {
   ar: ['Haircut ليست خدمة قابلة للحجز هنا. أي خدمة تريد اختيارها: Video Consultation أم Golden video؟', 'لم أجد موعدًا متاحًا للفترة المطلوبة. أرسل تاريخًا آخر.'],
 };
 const response = (reply: string) => ({ text: JSON.stringify({ reply }), functionCalls: [] });
+const unsupportedMentions = {
+  en: { acknowledgement: "I understand you're still looking for a Haircut.", available: 'Haircut is available.', bookable: 'I can book Haircut.', offered: 'We offer Haircut.', choice: 'Which service would you like to choose?' },
+  sv: { acknowledgement: 'Jag förstår att du fortfarande vill ha Haircut.', available: 'Haircut är tillgänglig.', bookable: 'Vi kan boka Haircut.', offered: 'Vi erbjuder Haircut.', choice: 'Vilken tjänst vill du välja?' },
+  de: { acknowledgement: 'Ich verstehe, dass Sie weiterhin Haircut möchten.', available: 'Haircut ist verfügbar.', bookable: 'Wir können Haircut buchen.', offered: 'Wir bieten Haircut an.', choice: 'Welche Leistung möchten Sie wählen?' },
+  es: { acknowledgement: 'Entiendo que sigues buscando Haircut.', available: 'Haircut está disponible.', bookable: 'Puedo reservar Haircut.', offered: 'Ofrecemos Haircut.', choice: '¿Qué servicio quieres elegir?' },
+  fa: { acknowledgement: 'می‌دانم که هنوز Haircut می‌خواهید.', available: 'Haircut قابل رزرو است.', bookable: 'می‌توانم Haircut رزرو کنم.', offered: 'ما Haircut ارائه می‌دهیم.', choice: 'کدام سرویس را می‌خواهید انتخاب کنید؟' },
+  ar: { acknowledgement: 'أفهم طلبك المتكرر بشأن Haircut.', available: 'Haircut متاح للحجز.', bookable: 'يمكنني حجز Haircut.', offered: 'نقدم Haircut.', choice: 'أي خدمة تريد اختيارها؟' },
+};
+const negativeCatalogMembership = {
+  en: 'Haircut is not one of our services.', sv: 'Haircut är inte en av våra tjänster.', de: 'Haircut ist keine unserer Leistungen.',
+  es: 'Haircut no es uno de nuestros servicios.', fa: 'Haircut جزو خدمات ما نیست.', ar: 'Haircut ليست من خدماتنا.',
+};
+const unrelatedServiceNegations = {
+  en: ["I'm not ignoring your Haircut booking request.", "I don't want to misunderstand your Haircut service request.", "I'm not confused about whether Haircut is available."],
+  sv: ['Jag ignorerar inte din Haircut bokningsförfrågan.', 'Jag vill inte missförstå din förfrågan om tjänsten Haircut.'],
+  de: ['Ich ignoriere Ihre Haircut Buchungsanfrage nicht.', 'Ich möchte Ihre Anfrage zur Leistung Haircut nicht missverstehen.'],
+  es: ['No estoy ignorando tu solicitud de reserva de Haircut.', 'No quiero malinterpretar tu solicitud del servicio Haircut.'],
+  fa: ['درخواست رزرو Haircut شما را نادیده نمی‌گیرم.', 'نمی‌خواهم درخواست سرویس Haircut شما را اشتباه بفهمم.'],
+  ar: ['لا أتجاهل طلب حجز Haircut.', 'لا أريد أن أسيء فهم طلب خدمة Haircut.'],
+};
+const negativeServiceOffering = {
+  en: ['We do not offer Haircut.', "We don't provide Haircut."],
+  sv: ['Vi erbjuder inte Haircut.', 'Vi tillhandahåller inte Haircut.'],
+  de: ['Haircut wird nicht angeboten.', 'Wir können Haircut nicht buchen.'],
+  es: ['No ofrecemos Haircut.', 'No proporcionamos Haircut.'],
+  fa: ['ما Haircut را ارائه نمی‌دهیم.', 'ما نمی‌توانیم Haircut رزرو کنیم.'],
+  ar: ['لا نقدم Haircut.', 'لا نوفر Haircut.'],
+};
 let checks = 0;
 for (const [language, [unsupported, unavailable]] of Object.entries(replies)) {
   const facts: BookingReplyFacts = { kind: 'unsupported_service', language, requestedService: 'Haircut', services: ['Video Consultation', 'Golden video'] };
@@ -36,10 +64,44 @@ for (const [language, [unsupported, unavailable]] of Object.entries(replies)) {
   assert.equal(repeated.repeated, true);
   assert.notEqual(repeated.text, unsupported);
   assert.ok(repeated.text.includes('Haircut')); checks++;
+  const mentions = unsupportedMentions[language as keyof typeof unsupportedMentions];
+  const acknowledged = `${mentions.acknowledgement} ${unsupported}`;
+  assert.equal(validateGroundedBookingReply(acknowledged, facts, matches), true, `${language}: neutral acknowledgement plus explicit unsupported statement`); checks++;
+  assert.equal(validateGroundedBookingReply(`${mentions.acknowledgement} ${mentions.choice}`, facts, matches), false, `${language}: acknowledgement is not an explicit unsupported statement`); checks++;
+  assert.equal(validateGroundedBookingReply(`${mentions.acknowledgement} ${negativeCatalogMembership[language as keyof typeof negativeCatalogMembership]} ${mentions.choice}`, facts, matches), true, `${language}: explicit catalog-membership negation remains valid`); checks++;
+  for (const unrelated of unrelatedServiceNegations[language as keyof typeof unrelatedServiceNegations]) {
+    assert.equal(validateGroundedBookingReply(`${unrelated} ${mentions.choice}`, facts, matches), false, `${language}: negation of an acknowledgement/request cannot establish unsupported service`); checks++;
+  }
+  for (const negative of negativeServiceOffering[language as keyof typeof negativeServiceOffering]) {
+    assert.equal(validateGroundedBookingReply(`${mentions.acknowledgement} ${negative} ${mentions.choice}`, facts, matches), true, `${language}: actual negative service offering remains valid`); checks++;
+    for (const positive of [mentions.available, mentions.bookable, mentions.offered]) {
+      assert.equal(validateGroundedBookingReply(`${negative} ${positive} ${mentions.choice}`, facts, matches), false, `${language}: negative offering cannot authorize a contradictory claim`); checks++;
+    }
+  }
+  for (const positive of [mentions.available, mentions.bookable, mentions.offered]) {
+    assert.equal(validateGroundedBookingReply(`${positive} ${mentions.choice}`, facts, matches), false, `${language}: unsupported positive claim`); checks++;
+    assert.equal(validateGroundedBookingReply(`${acknowledged} ${positive}`, facts, matches), false, `${language}: a negative statement cannot excuse a contradictory claim`); checks++;
+  }
+  assert.equal(validateGroundedBookingReply(`${acknowledged} ${mentions.available.replace('Haircut', 'Acupuncture')}`, facts, matches), false, `${language}: unknown-service guard remains active`); checks++;
+  const naturalRepeat = await composeGroundedBookingReply({ scope: language, facts,
+    history: [{ role: 'user', content: 'Haircut' }, { role: 'assistant', content: accepted.text }], latestText: 'Haircut',
+    fallback: 'fallback', languageMatches: matches, generate: async request => {
+      assert.equal(JSON.parse(request.systemInstruction!.match(/^PRESENTATION_MEMORY=(.*)$/m)![1]).repeatedOutcome, true);
+      return response(acknowledged);
+    },
+  });
+  assert.equal(naturalRepeat.source, 'openai', `${language}: grounded natural repetition must not fall back`);
+  assert.equal(naturalRepeat.repeated, true);
+  assert.equal(naturalRepeat.fallbackReason, undefined);
+  assert.equal(naturalRepeat.text, acknowledged);
+  assert.notEqual(naturalRepeat.text, accepted.text); checks++;
 }
 const en = (text: string) => boundary.bookingPresentationLanguageMatches(text, 'en');
 const unavailableFacts: BookingReplyFacts = { kind: 'availability', language: 'en', slots: [], constraint: { startDate: '2026-09-02', endDate: '2026-09-02' } };
 const unsupportedFacts: BookingReplyFacts = { kind: 'unsupported_service', language: 'en', requestedService: 'Haircut', services: ['Video Consultation'] };
+assert.equal(validateGroundedBookingReply("I'm not ignoring your request for Haircut. Which service would you like?", unsupportedFacts, en), false, 'unrelated negation is not an unsupported-service fact'); checks++;
+assert.equal(validateGroundedBookingReply('أفهم أنك لا تزال تريد Haircut. أي خدمة تريد اختيارها؟', { ...unsupportedFacts, language: 'ar' }, text => boundary.bookingPresentationLanguageMatches(text, 'ar')), false, 'Arabic still-want acknowledgement is not an unsupported-service negation'); checks++;
+assert.equal(validateGroundedBookingReply('أفهم أنك لا تزال تريد خدمة Haircut. أي خدمة تريد اختيارها؟', { ...unsupportedFacts, language: 'ar' }, text => boundary.bookingPresentationLanguageMatches(text, 'ar')), false, 'Arabic service request with still-want wording also needs an unsupported-service statement'); checks++;
 for (const candidate of [
   'No slots are available. Your appointment is confirmed. Please give me another date.',
   'No slots are available. There is a free slot at 15:00. Please give me another date.',

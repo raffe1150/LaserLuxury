@@ -11161,7 +11161,12 @@ async function lookupPendingBookingLead(
     let summary: any = null;
     try { summary = row.ai_summary ? JSON.parse(row.ai_summary) : null; } catch { /* May be an ordinary lead summary. */ }
     if (row.business_id == null) {
-      if (summary?.type !== "pending_booking" || !summary.business_id) {
+      // Legacy/ordinary lead rows without a pending-booking payload are not
+      // authoritative booking state. Ignore them rather than failing the
+      // conversation. A row that does claim to be a pending booking must
+      // still prove its tenant scope before it can be restored or updated.
+      if (summary?.type !== "pending_booking") continue;
+      if (!summary.business_id) {
         throw new PendingBookingLeadIntegrityError("pending_lead_scope_unverifiable");
       }
       if (String(summary.business_id) !== businessId) continue;

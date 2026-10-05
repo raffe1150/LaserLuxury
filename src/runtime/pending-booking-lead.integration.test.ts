@@ -173,11 +173,27 @@ test('legacy row from another business is never recovered or updated', async () 
   assert.deepEqual(store.rows[0], foreign);
   assert.equal(store.rows.length, 2);
 });
-test('legacy row without provable business scope fails safely without an insert', async () => {
-  store.rows = [lead(1, { business_id: null, ai_summary: null })];
+test('legacy pending-booking row without provable business scope fails safely without an insert', async () => {
+  store.rows = [lead(1, { business_id: null }, { business_id: undefined })];
   await assert.rejects(restore, /pending_lead_scope_unverifiable/);
   await assert.rejects(persist, /pending_lead_scope_unverifiable/);
   assert.equal(writes().length, 0);
+});
+
+test('legacy null-business empty shell is ignored and cannot block a new scoped pending booking', async () => {
+  const shell = lead(1, { business_id: null, ai_summary: null });
+  store.rows = [shell];
+  assert.equal(await restore(), null);
+  assert.equal(errors.length, 0);
+
+  await persist();
+
+  assert.equal(store.rows.length, 2);
+  assert.deepEqual(store.rows[0], shell);
+  assert.equal(store.rows[1].business_id, '3');
+  assert.equal(store.rows[1].platform, platform);
+  assert.equal(store.rows[1].user_id, session);
+  assert.ok(store.rows[1].ai_summary);
 });
 test('foreign expired memory cannot clear the durable row', async () => {
   store.rows = [lead()];

@@ -57,6 +57,9 @@ import crypto from "crypto";
 import fs from "fs";
 import { google } from "googleapis";
 import { createClient } from "@supabase/supabase-js";
+import { getBackendSupabaseConfiguration } from "./src/auth/backend-supabase";
+import { createTelegramSetupHandler } from "./src/channels/telegram-setup";
+import { createSalonListHandler, createSalonCreateHandler } from "./src/business/salons-api";
 import { ConfiguredEmbeddingProvider } from "./src/ai/providers/embeddings";
 import {
   InMemoryKnowledgeStorage,
@@ -251,7 +254,6 @@ const DASHBOARD_BUSINESS_COLUMNS = [
   'whatsapp_phone_number_id',
   'whatsapp_business_account_id',
 ].join(',');
-const DASHBOARD_SALON_COLUMNS = 'id,salon_name,business_id,status';
 
 function logOperatorApiFailure(
   category: string,
@@ -422,16 +424,15 @@ async function markChannelCredentialFailure(config: any, httpStatus: number, pro
     console.error('[ChannelConnection]', { category: 'credential_health_update_failed' });
   }
 }
-if (process.env.SUPABASE_URL && (process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY)) {
-  // Prefer SERVICE_ROLE for server-side writes. This is needed when RLS blocks inserts
-  // into tables such as appointments. Falls back to ANON only if service role is missing.
-  const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
-  supabase = createClient(process.env.SUPABASE_URL, supabaseKey as string, {
+if (process.env.NODE_ENV === 'test' && !process.env.SUPABASE_URL
+    && !process.env.SUPABASE_SERVICE_ROLE_KEY && !process.env.SUPABASE_ANON_KEY) {
+  console.warn('Supabase not configured for isolated tests.');
+} else {
+  const { url, serviceRoleKey } = getBackendSupabaseConfiguration();
+  supabase = createClient(url, serviceRoleKey, {
     auth: { persistSession: false, autoRefreshToken: false }
   });
-  console.log(`Supabase client initialized with ${process.env.SUPABASE_SERVICE_ROLE_KEY ? "SERVICE_ROLE" : "ANON"} key.`);
-} else {
-  console.warn("Supabase not configured: missing SUPABASE_URL and key.");
+  console.log('[BackendSupabase] Privileged client configured; user sessions disabled.');
 }
 
 const p2StructuredUnderstandingProviderRuntime =
@@ -14524,12 +14525,12 @@ function formatTelegramConfigurationError(language: string): string {
   return "This bot’s booking configuration is temporarily unavailable. Please try again later.";
 }
 
-function normalizeBusinessConfig(row: any) {
+function normalizeBusinessConfig(row: any, fallbackConfig: any = activeConfig) {
   const adminNotificationChannel = String(row?.admin_notification_channel ?? row?.adminNotificationChannel ?? "telegram").trim().toLowerCase() || "telegram";
   const adminWhatsAppNumber = String(row?.admin_whatsapp_number ?? row?.adminWhatsAppNumber ?? "").trim();
   const adminTelegramChatId = String(row?.admin_telegram_chat_id ?? row?.adminTelegramChatId ?? "").trim();
   return {
-    ...activeConfig,
+    ...fallbackConfig,
     businessRecordId: row.id,
     business_id: row.id,
     id: row.id,
@@ -30375,30 +30376,25 @@ async function startServer() {
     "/api/setup-telegram",
     requireAuth,
     requireBodyBusinessPermission('settings.manage'),
-    async (req, res) => {
-    try {
-      const config = req.body;
-      activeConfig = config;
-      fs.writeFileSync(path.join(process.cwd(), "agent-config.json"), JSON.stringify(config, null, 2));
-      
-      if (config.telegramToken) {
-        logTelegramTokenSource(
-          config.telegramToken,
-          "api_setup_telegram.request_config",
-          getBusinessIdFromConfig(config)
+    createTelegramSetupHandler({
+      client: supabase,
+      buildConfig: (row) => hydrateBusinessCalendarConfig(normalizeBusinessConfig(row, {})),
+      normalizeToken: normalizeTelegramBotToken,
+      saveConfig: (config) => {
+        fs.writeFileSync(path.join(process.cwd(), "agent-config.json"), JSON.stringify(config, null, 2));
+        activeConfig = config;
+      },
+      startPolling: (config) => {
+        void startTelegramPolling(config, 'api_setup_telegram').catch(() =>
+          console.error('[OperatorAPI]', {
+            category: 'setup_telegram_polling_failed',
+            businessId: String(config.businessRecordId),
+          })
         );
-        const resolvedConfig =
-          await loadFreshBusinessConfigByTelegramToken(config.telegramToken);
-        if (resolvedConfig.telegramBusinessResolved) {
-          startTelegramPolling(resolvedConfig, "api_setup_telegram");
-        }
-      }
-      res.json({ success: true, message: "Configuration saved and webhook registered." });
-    } catch (error: any) {
-      logOperatorApiFailure('setup_telegram_failed', req, req.body?.businessId);
-      res.status(500).json({ error: 'authorization_failed' });
-    }
-  });
+      },
+      onFailure: logOperatorApiFailure,
+    }),
+  );
 
   app.post("/api/chat", processWebChat);
 
@@ -30458,75 +30454,14 @@ async function startServer() {
 
 
   // API: دریافت لیست سالن‌ها/شعبه‌ها از دیتابیس
-  app.get('/api/salons', requireAuth, async (req, res) => {
-    try {
-      if (!supabase) {
-        return res.status(500).json({ success: false, message: 'Supabase is not configured.' });
-      }
-
-      const userId = (req as AuthenticatedRequest).auth!.userId;
-      const { data: memberships, error: membershipError } = await getAuthorizationClient()
-        .from('business_memberships')
-        .select('business_id')
-        .eq('user_id', userId)
-        .eq('status', 'active');
-      if (membershipError) {
-        return res.status(500).json({ error: 'authorization_failed' });
-      }
-      const businessIds = (memberships || []).map((row) => row.business_id);
-      if (businessIds.length === 0) return res.status(200).json([]);
-
-      const { data, error } = await supabase
-        .from('salons')
-        .select(DASHBOARD_SALON_COLUMNS)
-        .in('business_id', businessIds)
-       
-
-      if (error) throw error;
-
-      res.status(200).json(data || []);
-    } catch (err: any) {
-      logOperatorApiFailure('salon_list_failed', req);
-      res.status(500).json({ success: false, message: 'Could not load salons.' });
-    }
-  });
-
-  // API: ثبت سالن/شعبه جدید در دیتابیس
-  app.post(
-    '/api/salons',
-    requireAuth,
-    requireBodyBusinessPermission('settings.manage'),
-    async (req, res) => {
-    try {
-      if (!supabase) {
-        return res.status(500).json({ success: false, message: 'Supabase is not configured.' });
-      }
-
-      const { salonName, businessId, status } = req.body;
-
-      if (!salonName || !businessId) {
-        return res.status(400).json({ success: false, message: 'salonName and businessId are required.' });
-      }
-
-      const { data, error } = await supabase
-        .from('salons')
-        .insert([
-          {
-            salon_name: salonName,
-            business_id: businessId,
-            status: status || 'active',
-          },
-        ])
-        .select(DASHBOARD_SALON_COLUMNS);
-
-      if (error) throw error;
-
-      res.status(200).json({ success: true, data });
-    } catch (err: any) {
-      logOperatorApiFailure('salon_create_failed', req, req.body?.businessId);
-      res.status(500).json({ success: false, message: 'Could not create salon.' });
-    }
-  });
+  const salonDependencies = {
+    client: supabase,
+    getAuthorizationClient,
+    onFailure: logOperatorApiFailure,
+  };
+  app.get('/api/salons', requireAuth, createSalonListHandler(salonDependencies));
+  app.post('/api/salons', requireAuth, requireBodyBusinessPermission('settings.manage'),
+    createSalonCreateHandler(salonDependencies));
 
   // API: دریافت تنظیمات بیزینس از دیتابیس
 app.get('/api/businesses', requireAuth, async (req, res) => {

@@ -25038,6 +25038,39 @@ async function resolveConversationLanguageForTurn(
   const strongDeterministic =
     detectStrongLatestLanguage(text, businessConfig);
 
+  const pending = pendingBookings[chatId];
+  const bookingLanguage =
+    normalizeSupportedConversationLanguage(pending?.language) || previous;
+  const languageEvidence = removeConfiguredEntitiesFromLanguageEvidence(
+    text,
+    pending?.businessConfig || businessConfig,
+  );
+
+  // Booking answers inherit the established language before a semantic result
+  // can mutate active state. Keep language requests and independently evidenced
+  // full-message switches eligible; catalog names are never language evidence.
+  if (
+    pending && bookingLanguage &&
+    !messageMentionsAnySupportedLanguage(languageEvidence) &&
+    (
+      (pending.status === "awaiting_time_selection" &&
+        selectOwnedOfferedSlot(text, pending)) ||
+      isPendingSlotConfirmation(text, pending) ||
+      (pending.status === "awaiting_contact" &&
+        (extractNameOnly(text) || extractPhoneOnly(text))) ||
+      (!isBusinessInformationQuestion(languageEvidence) &&
+        !shouldAllowLatestLanguageOverride(
+          chatId,
+          bookingLanguage,
+          detectStrongLatestLanguage(languageEvidence) || "",
+          languageEvidence,
+        ))
+    )
+  ) {
+    chatLanguages[chatId] = bookingLanguage;
+    return bookingLanguage;
+  }
+
   // A message can be written in one language while requesting replies
   // in another. A language-name mention only triggers semantic analysis;
   // it does not itself count as a switch.

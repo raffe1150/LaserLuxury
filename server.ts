@@ -10309,7 +10309,7 @@ function extractNameOnly(text?: string, allowStandaloneName = true): string | nu
 
   const patterns: RegExp[] = [
     /(?:mitt\s+namn\s+är|jag\s+heter)\s+([A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,}(?:\s+[A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,})?)/i,
-    /(?:my\s+name\s+is|name\s+is)\s+([A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,}(?:\s+[A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,})?)/i,
+    /(?:my\s+name\s+is|name\s+is)\s+([A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,}(?:\s+(?!and\b)[A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,})?)/i,
     /(?:med\s+namnet|under\s+namnet|bokad\s+i\s+namnet|namnet)\s+([A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,}(?:\s+[A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,})?)/i,
     /(?:with\s+the\s+name|under\s+the\s+name)\s+([A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,}(?:\s+[A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,})?)/i,
     /(?:mein\s+name\s+ist|ich\s+hei(?:ß|ss)e)\s+([A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,}(?:\s+[A-Za-zÅÄÖåäöÉéÜüÖöÄä'-]{2,})?)/i,
@@ -10329,7 +10329,7 @@ function extractNameOnly(text?: string, allowStandaloneName = true): string | nu
     if (confirmation) {
       const suffix = raw.slice((match.index || 0) + match[0].length).trim();
       const validSuffix = /^[.!؟،,]*$/u.test(suffix) || /^(?:است|هست)[.!؟،,]*$/u.test(suffix) ||
-        (/^(?:(?:است|هست)\s+)?[،,]?\s*(?:and|och|und|y|و)\s+(?:my\s+)?(?:phone|mobile|telefon|teléfono|شماره|رقم)/iu.test(suffix) && Boolean(findExplicitContactPhone(suffix)));
+        (/^(?:(?:است|هست)\s+)?[،,]?\s*(?:and|och|und|y|و)\s+(?:my\s+)?(?:phone|mobile|number|telefon|teléfono|شماره|رقم)/iu.test(suffix) && Boolean(findExplicitContactPhone(suffix)));
       if (isInvalidCustomerNameToken(cleaned) ||
           /\b(?:please|book|booking|appointment|confirm|cancel|change|tomorrow|today|quiero|reservar|reserva|boka|avboka|bitte|buchen)\b/iu.test(match[1]) ||
           !validSuffix) return null;
@@ -10367,6 +10367,10 @@ function extractNaturalPendingCustomerName(text?: string): string | null {
   // lead and candidate anchored prevents ordinary sentences from donating words.
   const acknowledgement = String.raw`(?:(?:ja|yes|sí|si)(?:\s*,?\s*(?:tack|thanks?|thank\s+you|gracias))?|tack|thanks?|thank\s+you|gracias)\s*[,;:!.-]+\s*`;
   const patterns = [
+    {
+      expression: new RegExp(String.raw`^(?:${acknowledgement})?(.+?)\s+is\s+my\s+name[.!?]*$`, "iu"),
+      requireTwoTokens: false,
+    },
     {
       // These copulas are ambiguous in ordinary conversation, so require a full
       // two-token, properly capitalized person name as stronger evidence.
@@ -10416,7 +10420,7 @@ function extractPendingBookingCustomerName(text: string | undefined, pending: an
   // selection and unrelated earlier turns must never donate a customer name.
   const collectingName = ["awaiting_contact", "failed_recoverable"].includes(String(pending?.status || "")) &&
     !String(pending?.customerName || "").trim();
-  const existing = extractNameOnly(text, collectingName);
+  const existing = extractNameOnly(text, false);
   if (existing) return existing;
   if (isPositiveBookingConfirmation(raw)) return null;
 
@@ -10426,9 +10430,10 @@ function extractPendingBookingCustomerName(text: string | undefined, pending: an
     operation.phase !== "awaiting_contact" ||
     operation.expectedInput !== "contact" ||
     String(pending?.customerName || "").trim()
-  ) return null;
+  ) return extractNameOnly(text, collectingName);
 
-  return extractNaturalPendingCustomerName(text);
+  // Resolve self-identification before the bare-name fallback can retain "I'm".
+  return extractNaturalPendingCustomerName(text) || extractNameOnly(text, collectingName);
 }
 
 function normalizeBookingService(text?: string, fallback?: string): string {

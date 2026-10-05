@@ -122,7 +122,7 @@ import {
   selectTelegramDeliveryMode,
   type TelegramReplyPreference,
 } from "./src/ai/channel-reliability";
-import { applyNormalizedRequestToPending, availabilityFieldsFromConstraint, buildSlotFingerprintSource, classifySpanishManana, formatPersianSpokenPhone, getBookingDateConflict, getBookingWeekdayReference, getDateInTimeZone, getZonedSlotParts, isCurrentConversationTurn, isReadOnlyAvailabilityInquiry, isServiceGuidanceRequest, normalizeConversationText, parseBookingDate, parseNamedBookingDateRange, parseTimeConstraint, preparePersianTextForTts, registerConversationTurn, resolveRelativeBookingDateSemantic, slotMinutesSatisfyConstraint, toPersistedBookingRequest, zonedLocalIso, type NormalizedBookingRequest, type NormalizedTimeConstraint } from "./src/ai/booking-intelligence";
+import { applyNormalizedRequestToPending, availabilityFieldsFromConstraint, buildSlotFingerprintSource, classifySpanishManana, formatPersianSpokenPhone, getBookingDateConflict, getBookingWeekdayReference, hasBookingCorrectionCue, getDateInTimeZone, getZonedSlotParts, isCurrentConversationTurn, isReadOnlyAvailabilityInquiry, isServiceGuidanceRequest, normalizeConversationText, parseBookingDate, parseNamedBookingDateRange, parseTimeConstraint, preparePersianTextForTts, registerConversationTurn, resolveRelativeBookingDateSemantic, slotMinutesSatisfyConstraint, toPersistedBookingRequest, zonedLocalIso, type NormalizedBookingRequest, type NormalizedTimeConstraint } from "./src/ai/booking-intelligence";
 import { beginBookingFinalization, getBookingInvariantFailures, getBookingPhase, getMissingBookingContact, isPositiveBookingConfirmation, recoverBookingFinalization, recoverBookingTransaction, type BookingFailureStage } from "./src/ai/booking-state-machine";
 import { enumerateCandidateMinutes, isBlockingCalendarEvent, isCanonicalSlotFree } from "./src/ai/canonical-availability";
 import {
@@ -11199,6 +11199,7 @@ async function savePendingBooking(chatId: string, platform: string, pending: any
   if (pending.status === "awaiting_slot_selection") {
     pending.status = "awaiting_time_selection";
   }
+  pending.expectedInput = resolveAuthoritativeOperation({ pending }).expectedInput;
   const configuredPendingService = getEligibleConfiguredBookingServices(
     pending.businessConfig,
   ).find((service) => service.name === String(pending.service || "").trim());
@@ -16434,7 +16435,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
         /\b(?:ändrat\s+mig|i\s+stället)\b/iu.test(text)) ||
       (normalizedRequest.customerCorrection &&
         (normalizedRequest.date || normalizedRequest.timeConstraint) &&
-        /\b(?:meant|instead|menade|istället|manzuram)\b|(?<![\p{L}\p{M}])(?:منظورم|به جاش)(?![\p{L}\p{M}])/iu.test(text)))
+        hasBookingCorrectionCue(text)))
   );
   const retainAuthoritativeSelectedSlot = authoritativeSelectedSlot && !explicitSelectedSlotCorrection;
   if (retainAuthoritativeSelectedSlot) {
@@ -16902,6 +16903,25 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
           : null
       )
     : null;
+  // Generic parser labels and ambiguous catalog fragments cannot replace an
+  // already selected catalog service on a date/time continuation.
+  const activeServiceResolution = pending?.serviceResolution === "authoritative"
+    ? resolveAuthoritativeBookingService(text, businessConfig, false)
+    : null;
+  const retainsEstablishedService = Boolean(
+    pending?.serviceResolution === "authoritative" &&
+    (Boolean(normalizedRequest.date || normalizedRequest.timeConstraint) ||
+      !normalizedRequest.customerCorrection?.replacesService) &&
+    activeServiceResolution?.status === "ambiguous" &&
+    activeServiceResolution.candidates.some(service => service.name === pending.service)
+  );
+  if (activeServiceResolution?.status === "resolved" && activeServiceResolution.source === "evidence") {
+    normalizedRequest = { ...normalizedRequest, service: {
+      raw: text, normalized: activeServiceResolution.service.name, confidence: "high",
+    } };
+  } else if (retainsEstablishedService) {
+    normalizedRequest = { ...normalizedRequest, service: undefined };
+  }
   const pendingNormalizedRequest = getPendingNormalizedBookingRequest(pending, normalizedRequest);
   if (
     !pendingSlotConfirmationAtEntry &&
@@ -16963,6 +16983,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
       isExplicitNewBookingPivotText(text) ||
       explicitDatedFreshBookingCreation
     );
+  const explicitPendingBookingPivot = isExplicitNewBookingPivotText(text) || explicitDatedFreshBookingCreation;
   const explicitlyReplacesCompletedBooking = isExplicitNewBookingPivotText(text);
 
   // Contact belongs to one booking operation, not to the channel identity.
@@ -16972,6 +16993,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
   // current channel, rather than carried across the booking boundary.
   if (
     entryExplicitNewBookingRequest &&
+    explicitPendingBookingPivot &&
     pending?.operation === "new_booking" &&
     (pending.customerName || pending.customerPhone || pending.contactPhoneSource)
   ) {
@@ -19427,7 +19449,10 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
       pending &&
       !entryOwnedSlotSelection &&
       !continuesOwnedBooking &&
-      (explicitNewBookingRequested || isNewBookingRequestText(text))
+      (explicitNewBookingRequested || isNewBookingRequestText(text)) &&
+      // Date/service continuations may look like a booking request. Only a
+      // clear new-operation pivot replaces an active new booking.
+      (pending.operation !== "new_booking" || explicitPendingBookingPivot)
     ) {
       console.log("[UnifiedBooking]", { event: "stale_pending_cleared", platform: platformName, sessionKey: safeLogFingerprint(sessionId) });
       await clearPendingBooking(sessionId);
@@ -20858,7 +20883,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
         // A name matching a catalog word must not replace that service and slot.
         !(contactNameSubmittedAtEntry && deterministicTransition?.reason === "contact_submission_to_verified_engine") &&
         (
-          turnServiceResolution.status === "ambiguous" ||
+          (turnServiceResolution.status === "ambiguous" && !retainsEstablishedService) ||
           turnServiceResolution.status === "unsupported" ||
           (turnServiceResolution.status === "resolved" && turnServiceResolution.source === "evidence")
         );
@@ -21066,12 +21091,25 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
       const cachedOfferCountBefore = Array.isArray(pending?.offeredSlots)
         ? pending.offeredSlots.length
         : 0;
+      // Reusing offers skips the normal availability save. Contact supplied
+      // alongside a repeated date still belongs to this booking operation.
+      const persistCachedOfferContact = async () => {
+        if (currentTurnBookingContact.name || currentTurnBookingContact.phone) {
+          Object.assign(pending, {
+            customerName: currentTurnBookingContact.name,
+            customerPhone: currentTurnBookingContact.phone,
+            contactPhoneSource: currentTurnBookingContact.phoneSource,
+          });
+          await savePendingBooking(sessionId, platformName, pending);
+        }
+      };
       if (
         availabilityConstraintKey &&
         pending?.lastAvailabilityConstraintKey === availabilityConstraintKey &&
         !pendingSelectionRejected &&
         !isSlotListRepeatRequest(text)
       ) {
+        await persistCachedOfferContact();
         await replyAndRecord(
           (cachedOfferCountBefore > 0 ? formatChooseStoredSlotClarification : formatNoAvailabilityRecovery)(
             getFlowReplyLanguage(pending.language, language, text)
@@ -24633,6 +24671,11 @@ function shouldAllowLatestLanguageOverride(chatId: string, previous: string | un
 
   const pending = pendingBookings[chatId];
   if (pending) {
+    // A recognized answer to the requested date is not independent language
+    // evidence. Shared Arabic/Persian script and catalog fragments are weak cues.
+    if (pending.operation === "new_booking" &&
+        parseBookingDate(text, pending.businessConfig?.timezone || "Europe/Stockholm") &&
+        !hasStrongLanguageEvidence(detected, text)) return false;
     const configuredService = findConfiguredBookingService(text, pending.businessConfig);
     if (configuredService) {
       const lowerText = text.toLowerCase();

@@ -189,6 +189,7 @@ export function normalizePendingBookingState(input: unknown): BookingStateNormal
 
   state.bookingStateVersion = CURRENT_BOOKING_STATE_VERSION;
   state.operation = operation;
+  state.expectedInput = expectedInputForPhase(phase);
   return {
     state,
     phase,

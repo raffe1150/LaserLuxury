@@ -365,6 +365,13 @@ export function parseNamedBookingDateRange(
   return valid(startDate) && valid(endDate) ? { startDate, endDate } : null;
 }
 
+export function hasBookingCorrectionCue(text: string): boolean {
+  const raw = normalizeConversationText(text);
+  return /\bactually\s*[,،]?\s*(?:make\s+it|change|move|switch|correct)\b/iu.test(raw) ||
+    /\b(?:no|not|meant|instead|nej|inte|menade|istället|na|manzuram|nicht|meinte|stattdessen|refería|quería\s+decir|en\s+realidad)\b/iu.test(raw) ||
+    /(?<![\p{L}\p{M}])(?:نه|منظورم|به جاش|ليس|أقصد|قصدت)(?![\p{L}\p{M}])/u.test(raw);
+}
+
 export function parseTimeConstraint(text: string): NormalizedTimeConstraint | undefined {
   const raw = normalizeTranscribedText(text)
     .toLowerCase()
@@ -372,6 +379,14 @@ export function parseTimeConstraint(text: string): NormalizedTimeConstraint | un
     .replace(/ظهر/gu, '12:00');
 
   if (!raw || /\[(?:unclear|نامفهوم)\]/iu.test(raw)) return undefined;
+
+  // Only an explicit rejected-clock/replacement pair chooses the second clock.
+  // Multiple clocks without this structure remain subject to existing parsing.
+  const replacement = normalizeConversationText(text).toLowerCase().match(/(?:^|[^\p{L}\p{M}])(?:not|inte|nicht|no|نه|ليس)\s+([01]?\d|2[0-3]):([0-5]\d)\s*[,،]\s*([01]?\d|2[0-3]):([0-5]\d)(?!\d)/u);
+  if (replacement) return {
+    kind: 'exact', startMinutes: Number(replacement[3]) * 60 + Number(replacement[4]),
+    startInclusive: true, endInclusive: true, confidence: 'high',
+  };
 
   // A rejected clock value must not be reinterpreted as a new requested time.
   const rejectedExplicitTime = new RegExp(
@@ -639,8 +654,30 @@ function detectWeekdayExplicitDateConflict(
   };
 }
 
+function normalizeRelativeDateSpelling(text: string): string {
+  // Only fuzz long, distinctive tomorrow words. Short words such as German
+  // "morgen" are deliberately exact: fuzzy matching would also accept names.
+  return text.replace(/\b[a-z]+\b/g, word => {
+    const target = /^tom[a-z]*ow$/.test(word) ? 'tomorrow'
+      : /^imo[a-z]+$/.test(word) ? 'imorgon' : null;
+    if (!target) return word;
+    const limit = target === 'tomorrow' ? 2 : 1;
+    if (Math.abs(word.length - target.length) > limit) return word;
+    let row = Array.from({ length: target.length + 1 }, (_, index) => index);
+    for (let i = 0; i < word.length; i++) {
+      const next = [i + 1];
+      for (let j = 0; j < target.length; j++) {
+        next.push(Math.min(next[j] + 1, row[j + 1] + 1,
+          row[j] + (word[i] === target[j] ? 0 : 1)));
+      }
+      row = next;
+    }
+    return row[target.length] <= limit ? target : word;
+  });
+}
+
 function parseBookingDateCandidate(text: string, timezone: string, now = new Date()): NormalizedBookingRequest['date'] | undefined {
-  const raw = normalizeConversationText(text).toLowerCase();
+  const raw = normalizeRelativeDateSpelling(normalizeConversationText(text).toLowerCase());
   const spanishManana = classifySpanishManana(raw);
   const today = zonedDateParts(now, timezone);
   const isoMatch = raw.match(/\b(20\d{2}-\d{2}-\d{2})\b/);
@@ -793,7 +830,7 @@ export function normalizeBookingRequest(input: ConversationInput): NormalizedBoo
     : undefined);
   const service = inferService(normalizedText);
   // Persian "نه" must be a word: "نهایی" means finalize, not a correction.
-  const correction = /\b(?:no|not|meant|instead|nej|menade|istället|na|manzuram)\b/iu.test(normalizedText) || /(?<![\p{L}\p{M}])(?:نه|منظورم|به جاش)(?![\p{L}\p{M}])/u.test(normalizedText);
+  const correction = hasBookingCorrectionCue(normalizedText);
   const unclearCritical = /\[(?:unclear|نامفهوم)\]/iu.test(normalizedText) && /(?:time|date|day|at|klockan|saat|sate|ساعت|روز|تاریخ)/iu.test(normalizedText);
   const ambiguousTime = (/\b(?:at|klockan|saat|sate)\s+(?:[1-9]|1[0-2])\b/iu.test(normalizedText) && !timeConstraint) || unclearCritical;
   const requiresClarification = ambiguousTime || Boolean(dateConflict);

@@ -10,6 +10,8 @@ import crypto from "crypto";
 import fs from "fs";
 import { google } from "googleapis";
 import { createClient } from "@supabase/supabase-js";
+import { getBackendSupabaseConfiguration } from "./src/auth/backend-supabase";
+import { createTelegramSetupHandler } from "./src/channels/telegram-setup";
 import {
   InMemoryKnowledgeStorage,
   KnowledgeService,
@@ -210,16 +212,15 @@ function safeLogFingerprint(value: unknown): string | null {
   if (!normalized) return null;
   return crypto.createHash("sha256").update(normalized).digest("hex").slice(0, 12);
 }
-if (process.env.SUPABASE_URL && (process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY)) {
-  // Prefer SERVICE_ROLE for server-side writes. This is needed when RLS blocks inserts
-  // into tables such as appointments. Falls back to ANON only if service role is missing.
-  const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
-  supabase = createClient(process.env.SUPABASE_URL, supabaseKey as string, {
+if (process.env.NODE_ENV === 'test' && !process.env.SUPABASE_URL
+    && !process.env.SUPABASE_SERVICE_ROLE_KEY && !process.env.SUPABASE_ANON_KEY) {
+  console.warn('Supabase not configured for isolated tests.');
+} else {
+  const { url, serviceRoleKey } = getBackendSupabaseConfiguration();
+  supabase = createClient(url, serviceRoleKey, {
     auth: { persistSession: false, autoRefreshToken: false }
   });
-  console.log(`Supabase client initialized with ${process.env.SUPABASE_SERVICE_ROLE_KEY ? "SERVICE_ROLE" : "ANON"} key.`);
-} else {
-  console.warn("Supabase not configured: missing SUPABASE_URL and key.");
+  console.log('[BackendSupabase] Privileged client configured; user sessions disabled.');
 }
 
 const knowledgeService = new KnowledgeService(
@@ -11604,18 +11605,18 @@ function formatTelegramConfigurationError(language: string): string {
   return "This bot’s booking configuration is temporarily unavailable. Please try again later.";
 }
 
-function normalizeBusinessConfig(row: any) {
+function normalizeBusinessConfig(row: any, fallbackConfig: any = activeConfig) {
   const adminNotificationChannel = String(row?.admin_notification_channel ?? row?.adminNotificationChannel ?? "telegram").trim().toLowerCase() || "telegram";
   const adminWhatsAppNumber = String(row?.admin_whatsapp_number ?? row?.adminWhatsAppNumber ?? "").trim();
   const adminTelegramChatId = String(row?.admin_telegram_chat_id ?? row?.adminTelegramChatId ?? "").trim();
   return {
-    ...activeConfig,
+    ...fallbackConfig,
     businessRecordId: row.id,
     business_id: row.id,
     id: row.id,
     businessName: row.business_name,
     business_name: row.business_name,
-    language: row.language || activeConfig.language || "en",
+    language: row.language || fallbackConfig.language || "en",
     telegramToken: normalizeTelegramBotToken(
       row.telegram_bot_token ?? row.telegramToken
     ),
@@ -25724,30 +25725,25 @@ async function startServer() {
     "/api/setup-telegram",
     requireAuth,
     requireBodyBusinessPermission('settings.manage'),
-    async (req, res) => {
-    try {
-      const config = req.body;
-      activeConfig = config;
-      fs.writeFileSync(path.join(process.cwd(), "agent-config.json"), JSON.stringify(config, null, 2));
-      
-      if (config.telegramToken) {
-        logTelegramTokenSource(
-          config.telegramToken,
-          "api_setup_telegram.request_config",
-          getBusinessIdFromConfig(config)
+    createTelegramSetupHandler({
+      client: supabase,
+      buildConfig: (row) => hydrateBusinessCalendarConfig(normalizeBusinessConfig(row, {})),
+      normalizeToken: normalizeTelegramBotToken,
+      saveConfig: (config) => {
+        fs.writeFileSync(path.join(process.cwd(), "agent-config.json"), JSON.stringify(config, null, 2));
+        activeConfig = config;
+      },
+      startPolling: (config) => {
+        void startTelegramPolling(config, 'api_setup_telegram').catch(() =>
+          console.error('[OperatorAPI]', {
+            category: 'setup_telegram_polling_failed',
+            businessId: String(config.businessRecordId),
+          })
         );
-        const resolvedConfig =
-          await loadFreshBusinessConfigByTelegramToken(config.telegramToken);
-        if (resolvedConfig.telegramBusinessResolved) {
-          startTelegramPolling(resolvedConfig, "api_setup_telegram");
-        }
-      }
-      res.json({ success: true, message: "Configuration saved and webhook registered." });
-    } catch (error: any) {
-      logOperatorApiFailure('setup_telegram_failed', req, req.body?.businessId);
-      res.status(500).json({ error: 'authorization_failed' });
-    }
-  });
+      },
+      onFailure: logOperatorApiFailure,
+    }),
+  );
 
   app.post("/api/telegram-webhook", async (req, res) => {
     res.status(200).send("OK");

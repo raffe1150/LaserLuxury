@@ -1,4 +1,5 @@
 import { createClient, type SupabaseClient, type User } from '@supabase/supabase-js';
+import { getBackendSupabaseConfiguration } from './backend-supabase';
 
 let verificationClient: SupabaseClient | null = null;
 let authorizationClient: SupabaseClient | null = null;
@@ -21,9 +22,10 @@ export function getAuthVerificationClient(): SupabaseClient {
 
 export function getAuthorizationClient(): SupabaseClient {
   if (authorizationClient) return authorizationClient;
+  const { url, serviceRoleKey } = getBackendSupabaseConfiguration();
   authorizationClient = createClient(
-    requiredEnvironment('SUPABASE_URL'),
-    requiredEnvironment('SUPABASE_SERVICE_ROLE_KEY'),
+    url,
+    serviceRoleKey,
     { auth: { persistSession: false, autoRefreshToken: false } },
   );
   return authorizationClient;

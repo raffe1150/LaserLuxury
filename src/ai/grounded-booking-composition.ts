@@ -278,6 +278,11 @@ export async function composeGroundedBookingReply(options: BookingCompositionOpt
   const { facts, fallback, scope } = options;
   const previous = previousOutcome(scope);
   const repeated = previous?.key === bookingOutcomeKey(facts);
+  // Verified completion already has an authoritative localized confirmation.
+  // Preserve its structured fields verbatim instead of composing new prose.
+  if (facts.kind === 'confirmed' && facts.verified === true) {
+    return { text: fallback, source: 'deterministic', repeated };
+  }
   const recent = buildRecentConversationHistory(options.history, 10)
     .filter(message => ['user', 'assistant'].includes(message?.role) && typeof message.content === 'string')
     .map(message => ({ role: message.role, content: message.content.slice(0, 1200) }));

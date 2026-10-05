@@ -620,8 +620,7 @@ export function renderDeterministicBookingConfirmation(
   const tone = normalizeBusinessToneConfig(toneConfig);
   const lang = normalizedLanguage(language);
   const localized = presentations[lang].confirmation;
-  const shortest = tone.responseLength === 'short' || tone.tonePreset === 'concise';
-  if (shortest) return finishPresentation(localized.short(facts), '', tone, lang, Object.values(facts));
+  // Keep every labeled fact, including phone, even for short or concise tone.
   const stableFacts = JSON.stringify(facts);
   const template = selectVariant(naturalToneLexicons[lang].confirmation[tone.tonePreset], 'confirmation', lang, tone, stableFacts);
   const factsBlock = localized.balanced(facts);

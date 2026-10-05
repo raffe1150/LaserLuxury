@@ -605,28 +605,22 @@ assert.equal(hallucinatedCounters.databaseInsert, 0);
 assert.equal(hallucinatedResult.pending?.status, 'awaiting_time_selection');
 assert.equal(hallucinatedResult.pending?.dateTime ?? null, null);
 
-// Verify the natural completion is composed only from the verified operation,
-// frozen in the durable outbox, and replayed without a second model call.
-const confirmationLeads: Record<string, string> = {
-  en: 'Your booking is confirmed', sv: 'Din bokning är bekräftad', de: 'Ihre Buchung ist bestätigt',
-  es: 'Tu reserva está confirmada', fa: 'رزرو شما تأیید شده است', ar: 'الحجز مؤكد',
-};
+// Verified completion keeps the deterministic structured confirmation in the
+// durable outbox and replays it without any final model call or duplicate write.
 for (const language of ['en', 'sv', 'de', 'es', 'fa', 'ar']) {
-  let composedConfirmation = ''; let confirmationCalls = 0;
+  let confirmationCalls = 0;
   const composedCounters = fixture(undefined, async (request: any) => {
     const facts = JSON.parse(request.systemInstruction.match(/^AUTHORITATIVE_BOOKING_FACTS=(.*)$/m)[1]);
     if (facts.kind !== 'confirmed') return { text: '{}', functionCalls: [] }; // exercise ordinary fallback separately
     confirmationCalls++;
-    assert.equal(facts.verified, true);
-    assert.equal(facts.name, 'Alex Testsson');
-    assert.equal(facts.phone, '0701234567');
-    assert.ok(facts.service, "composition uses the engine's resolved service identity");
-    composedConfirmation = `${confirmationLeads[language]}: ${facts.service}, ${facts.dateLabel}, ${facts.timeLabel}, ${facts.name}, ${facts.phone}.`;
-    return { text: JSON.stringify({ reply: composedConfirmation }), functionCalls: [] };
+    return { text: JSON.stringify({ reply: 'This final prose must never be generated.' }), functionCalls: [] };
   });
   const sessionId = `composed-confirmation-${language}`;
   seedCanonicalAlternatives(sessionId);
   const selected = await turn(sessionId, 'Friday the 21st at 15:30 for the Video Consultation.');
+  const structuredConfirmation = boundary.formatBookingConfirmation(
+    language, 'Alex Testsson', selected.pending!.service, selected.pending!.dateTime, '0701234567',
+  );
   boundary.seedPending(sessionId, { ...selected.pending, status: 'awaiting_contact', language,
     customerName: 'Alex Testsson', customerPhone: '0701234567', contactPhoneSource: 'explicit_customer_message' });
   boundary.seedFlowLanguage(sessionId, language);
@@ -635,16 +629,17 @@ for (const language of ['en', 'sv', 'de', 'es', 'fa', 'ar']) {
     text: confirmationText, businessConfig, now, ...(language === 'en' ? { sendResult: false } : {}) });
   assert.equal(composedCounters.calendarCreate, 1, language);
   assert.equal(composedCounters.databaseInsert, 1, language);
-  assert.equal(confirmationCalls, 1, language);
+  assert.equal(confirmationCalls, 0, language);
   const outbox = boundary.bookingOutboxForSession(sessionId);
-  assert.equal(outbox?.response_text, composedConfirmation, `${language}: guarded natural confirmation frozen before delivery`);
+  assert.equal(outbox?.response_text, structuredConfirmation, `${language}: deterministic confirmation frozen before delivery`);
   if (language === 'en') {
     assert.equal(outbox?.status, 'failed');
     const replay = await turn(sessionId, 'Yes');
-    assert.equal(replay.replies[0], composedConfirmation);
-    assert.equal(confirmationCalls, 1, 'outbox retry does not compose or book again');
+    assert.equal(replay.replies[0], structuredConfirmation);
+    assert.equal(confirmationCalls, 0, 'outbox retry does not compose or book again');
     assert.equal(composedCounters.calendarCreate, 1);
-  } else assert.equal(result.replies[0], composedConfirmation, language);
+    assert.equal(composedCounters.databaseInsert, 1);
+  } else assert.equal(result.replies[0], structuredConfirmation, language);
 }
 
 boundary.reset();

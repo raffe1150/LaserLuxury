@@ -15,8 +15,11 @@ const toneConfig = {
   tonePreset: 'professional', responseLength: 'balanced', formality: 'formal',
   emojiUsage: 'none', customToneInstructions: '',
 };
+const testBusinessId = (id: string) =>
+  String(1000 + [...id].reduce((sum, ch) => (sum * 31 + ch.charCodeAt(0)) % 900000000, 0));
+
 const business = (id: string) => ({
-  id, businessRecordId: id, business_id: id, businessName: `Clinic ${id}`,
+  id, businessRecordId: testBusinessId(id), business_id: testBusinessId(id), businessName: `Clinic ${id}`,
   timezone: 'Europe/Stockholm', calendarProvider: 'custom',
   defaultBookingService: 'Consultation', toneConfig,
 });
@@ -79,7 +82,7 @@ const configure = (extra: Record<string, unknown> = {}) => {
       lastRecordedAppointment = structuredClone(params);
       return {
         id: ++databaseWrites,
-        business_id: String(params.businessConfig?.id || params.businessId || ''),
+        business_id: String(params.businessConfig?.businessRecordId || params.businessId || ''),
         platform: params.platform,
         user_id: String(params.userId),
         service: params.service,
@@ -97,7 +100,7 @@ const seedSelection = (sessionId: string, platform: typeof platforms[number], la
   const end = '2026-10-13T13:30:00+02:00';
   boundary.seedPending(sessionId, {
     bookingStateVersion: CURRENT_BOOKING_STATE_VERSION,
-    businessConfig: config, businessId: config.id, platform, userId: sessionId, sessionId,
+    businessConfig: config, businessId: config.businessRecordId, platform, userId: sessionId, sessionId,
     operation: 'new_booking', status: 'awaiting_time_selection', expectedInput: 'slot_selection',
     service: 'Consultation', language, selectedDate: '2026-10-13', durationMinutes: 30,
     normalizedBookingRequest: {
@@ -107,7 +110,7 @@ const seedSelection = (sessionId: string, platform: typeof platforms[number], la
     availabilityConstraint: { startDate: '2026-10-13', endDate: '2026-10-13', kind: 'day', rejectedTimes: [] },
     offeredSlots: [`Tuesday at 13:00 (ISO: ${start})`],
     ownedOfferedSlots: [{
-      start, end, durationMinutes: 30, service: 'Consultation', businessId: config.id,
+      start, end, durationMinutes: 30, service: 'Consultation', businessId: config.businessRecordId,
       platform, userId: sessionId, generatedAt: Date.now(),
       searchStartDate: '2026-10-13', searchEndDate: '2026-10-13',
     }],

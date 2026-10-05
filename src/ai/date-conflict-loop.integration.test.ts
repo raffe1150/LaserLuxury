@@ -18,10 +18,13 @@ const adapter = {
 };
 
 const now = new Date('2026-08-25T12:00:00+02:00');
+const testBusinessId = (id: string) =>
+  String(1000 + [...id].reduce((sum, ch) => (sum * 31 + ch.charCodeAt(0)) % 900000000, 0));
+
 const business = (id: string) => ({
   id,
-  businessRecordId: id,
-  business_id: id,
+  businessRecordId: testBusinessId(id),
+  business_id: testBusinessId(id),
   businessName: `Clinic ${id}`,
   timezone: 'Europe/Stockholm',
   calendarProvider: 'custom',
@@ -161,7 +164,7 @@ try {
   const existingFacts = {
     bookingStateVersion: CURRENT_BOOKING_STATE_VERSION,
     businessConfig: business('facts-business'),
-    businessId: 'facts-business',
+    businessId: business('facts-business').businessRecordId,
     platform: 'telegram',
     userId: factsSession,
     sessionId: factsSession,

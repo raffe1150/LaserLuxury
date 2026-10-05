@@ -14,7 +14,7 @@ const { priority1hUnifiedEngineTestBoundary: boundary } = await import('../../se
 const now = new Date('2026-09-06T12:00:00+02:00');
 const tomorrow = '2026-09-07';
 const businessConfig = {
-  id: 'arabic-instagram-routing', businessRecordId: 'arabic-instagram-routing',
+  id: 'arabic-instagram-routing', businessRecordId: '101',
   businessName: 'Booking Studio', language: 'sv', timezone: 'Europe/Stockholm',
   calendarProvider: 'custom', googleCalendarId: 'routing-calendar',
   services: [

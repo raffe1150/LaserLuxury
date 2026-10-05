@@ -236,10 +236,13 @@ async function runTests() {
   assert.match(server, /business_memberships[\s\S]*\.eq\('user_id', userId\)[\s\S]*\.eq\('status', 'active'\)/);
   const safeColumns = server.match(/const DASHBOARD_BUSINESS_COLUMNS = \[([\s\S]*?)\]\.join/)?.[1] || '';
   assert.doesNotMatch(safeColumns, /access_token|verify_token|app_secret|bot_token/i);
-  const salonColumns = server.match(/const DASHBOARD_SALON_COLUMNS = '([^']+)'/)?.[1] || '';
+  const salonApi = readFileSync(new URL('../business/salons-api.ts', import.meta.url), 'utf8');
+  const salonColumns = salonApi.match(/const DASHBOARD_SALON_COLUMNS = '([^']+)'/)?.[1] || '';
   assert.equal(salonColumns, 'id,salon_name,business_id,status');
   assert.doesNotMatch(salonColumns, /access_token|verify_token|app_secret|bot_token|credential/i);
-  assert.match(server, /from\('salons'\)[\s\S]*?\.select\(DASHBOARD_SALON_COLUMNS\)/);
+  assert.match(salonApi, /from\('salons'\)[\s\S]*?\.select\(DASHBOARD_SALON_COLUMNS\)/);
+  assert.match(server, /app\.get\('\/api\/salons', requireAuth, createSalonListHandler\(salonDependencies\)\)/);
+  assert.match(server, /app\.post\('\/api\/salons', requireAuth, requireBodyBusinessPermission\('settings\.manage'\),\s*createSalonCreateHandler\(salonDependencies\)\)/);
   const knowledgeRoutes = server.match(/const knowledgeTemporarilyUnavailable[\s\S]*?app\.get\("\/webhook\/instagram"/)?.[0] || '';
   assert.match(knowledgeRoutes, /status\(503\)\.json\(\{ error: 'feature_temporarily_unavailable' \}\)/);
   assert.match(knowledgeRoutes, /app\.get\('\/knowledge', requireAuth, knowledgeTemporarilyUnavailable\)/);

@@ -1,3 +1,4 @@
+import { createSalonListHandler, createSalonCreateHandler } from './src/business/salons-api';
 import { isBusinessInformationQuestion, businessInformationTopics, businessInformationSubject, formatConfiguredServiceOverview } from './src/ai/business-information';
 import "dotenv/config";
 import { extractExplicitArabicCustomerName } from './src/ai/arabic-customer-name';
@@ -184,7 +185,6 @@ const DASHBOARD_BUSINESS_COLUMNS = [
   'whatsapp_phone_number_id',
   'whatsapp_business_account_id',
 ].join(',');
-const DASHBOARD_SALON_COLUMNS = 'id,salon_name,business_id,status';
 
 function logOperatorApiFailure(
   category: string,
@@ -26028,75 +26028,14 @@ Never translate unless requested.
 
 
   // API: دریافت لیست سالن‌ها/شعبه‌ها از دیتابیس
-  app.get('/api/salons', requireAuth, async (req, res) => {
-    try {
-      if (!supabase) {
-        return res.status(500).json({ success: false, message: 'Supabase is not configured.' });
-      }
-
-      const userId = (req as AuthenticatedRequest).auth!.userId;
-      const { data: memberships, error: membershipError } = await getAuthorizationClient()
-        .from('business_memberships')
-        .select('business_id')
-        .eq('user_id', userId)
-        .eq('status', 'active');
-      if (membershipError) {
-        return res.status(500).json({ error: 'authorization_failed' });
-      }
-      const businessIds = (memberships || []).map((row) => row.business_id);
-      if (businessIds.length === 0) return res.status(200).json([]);
-
-      const { data, error } = await supabase
-        .from('salons')
-        .select(DASHBOARD_SALON_COLUMNS)
-        .in('business_id', businessIds)
-       
-
-      if (error) throw error;
-
-      res.status(200).json(data || []);
-    } catch (err: any) {
-      logOperatorApiFailure('salon_list_failed', req);
-      res.status(500).json({ success: false, message: 'Could not load salons.' });
-    }
-  });
-
-  // API: ثبت سالن/شعبه جدید در دیتابیس
-  app.post(
-    '/api/salons',
-    requireAuth,
-    requireBodyBusinessPermission('settings.manage'),
-    async (req, res) => {
-    try {
-      if (!supabase) {
-        return res.status(500).json({ success: false, message: 'Supabase is not configured.' });
-      }
-
-      const { salonName, businessId, status } = req.body;
-
-      if (!salonName || !businessId) {
-        return res.status(400).json({ success: false, message: 'salonName and businessId are required.' });
-      }
-
-      const { data, error } = await supabase
-        .from('salons')
-        .insert([
-          {
-            salon_name: salonName,
-            business_id: businessId,
-            status: status || 'active',
-          },
-        ])
-        .select(DASHBOARD_SALON_COLUMNS);
-
-      if (error) throw error;
-
-      res.status(200).json({ success: true, data });
-    } catch (err: any) {
-      logOperatorApiFailure('salon_create_failed', req, req.body?.businessId);
-      res.status(500).json({ success: false, message: 'Could not create salon.' });
-    }
-  });
+  const salonDependencies = {
+    client: supabase,
+    getAuthorizationClient,
+    onFailure: logOperatorApiFailure,
+  };
+  app.get('/api/salons', requireAuth, createSalonListHandler(salonDependencies));
+  app.post('/api/salons', requireAuth, requireBodyBusinessPermission('settings.manage'),
+    createSalonCreateHandler(salonDependencies));
 
   // API: دریافت تنظیمات بیزینس از دیتابیس
 app.get('/api/businesses', requireAuth, async (req, res) => {

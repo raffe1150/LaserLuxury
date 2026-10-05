@@ -1,3 +1,4 @@
+import { PendingLeadStore as FakePendingStore } from '../../tests/helpers/pending-lead-store';
 import assert from 'node:assert/strict';
 
 process.env.NODE_ENV = 'test';
@@ -27,43 +28,6 @@ const businessConfig = {
   ),
 };
 
-type LeadRow = { user_id: string; platform: string; ai_summary: string | null };
-class LeadQuery {
-  private filters: Array<(row: LeadRow) => boolean> = [];
-  private columns = '*';
-  constructor(private rows: LeadRow[], private values?: Partial<LeadRow>) {}
-  eq(column: keyof LeadRow, value: unknown) { this.filters.push(row => row[column] === value); return this; }
-  select(columns: string) { this.columns = columns; return this; }
-  private execute() {
-    const row = this.rows.find(item => this.filters.every(filter => filter(item))) || null;
-    if (row && this.values) Object.assign(row, this.values);
-    if (!row) return { data: null, error: null };
-    if (this.columns === 'user_id') return { data: { user_id: row.user_id }, error: null };
-    if (this.columns === 'ai_summary') return { data: { ai_summary: row.ai_summary }, error: null };
-    return { data: structuredClone(row), error: null };
-  }
-  async maybeSingle() { return this.execute(); }
-  then(resolve: (value: any) => unknown, reject: (reason?: unknown) => unknown) {
-    return Promise.resolve(this.execute()).then(resolve, reject);
-  }
-}
-class FakePendingStore {
-  rows: LeadRow[] = [];
-  from(table: string) {
-    assert.equal(table, 'appointments_leads');
-    return {
-      select: (columns: string) => new LeadQuery(this.rows).select(columns),
-      update: (values: Partial<LeadRow>) => new LeadQuery(this.rows, values),
-      insert: async (values: Array<Partial<LeadRow>>) => {
-        for (const value of values) this.rows.push({
-          user_id: String(value.user_id || ''), platform: String(value.platform || 'telegram'),
-          ai_summary: value.ai_summary == null ? null : String(value.ai_summary),
-        });
-        return { data: null, error: null };
-      },
-    };
-  }
-}
 
 
 const scenarios = [

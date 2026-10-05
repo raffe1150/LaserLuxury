@@ -11109,6 +11109,87 @@ function getPendingOwnedUserId(
   );
 }
 
+type PendingBookingLeadRow = {
+  id: number | string;
+  user_id: string;
+  platform: string;
+  business_id: number | string | null;
+  ai_summary: string | null;
+};
+
+class PendingBookingLeadIntegrityError extends Error {
+  constructor(readonly category: string) {
+    super(category);
+  }
+}
+
+function logPendingBookingLeadFailure(operation: string, platform: string, error: any) {
+  console.error("[PendingBookingLead]", {
+    operation,
+    channel: normalizePlatformName(platform),
+    category: error instanceof PendingBookingLeadIntegrityError ? error.category : "query_failure",
+    code: String(error?.code || "storage_error"),
+  });
+}
+
+async function lookupPendingBookingLead(
+  chatId: string,
+  platform: string,
+  businessId: string,
+): Promise<PendingBookingLeadRow | null> {
+  const channel = normalizePlatformName(platform);
+  const numericBusinessId = /^[1-9][0-9]{0,18}$/.test(businessId) ? BigInt(businessId) : null;
+  if (
+    !chatId || numericBusinessId === null ||
+    numericBusinessId > 9223372036854775807n ||
+    numericBusinessId.toString() !== businessId || channel === "unknown"
+  ) {
+    throw new PendingBookingLeadIntegrityError("pending_lead_scope_missing");
+  }
+  const { data, error } = await supabase!
+    .from("appointments_leads")
+    .select("id,user_id,platform,business_id,ai_summary")
+    .eq("user_id", chatId)
+    .eq("platform", channel)
+    // Older pending saves stored the business only inside ai_summary. Keep that
+    // exact-session compatibility, but verify its ownership before returning it.
+    .or(`business_id.eq.${numericBusinessId.toString()},business_id.is.null`);
+  if (error) throw error;
+
+  const matches: PendingBookingLeadRow[] = [];
+  for (const row of (data || []) as PendingBookingLeadRow[]) {
+    let summary: any = null;
+    try { summary = row.ai_summary ? JSON.parse(row.ai_summary) : null; } catch { /* May be an ordinary lead summary. */ }
+    if (row.business_id == null) {
+      if (summary?.type !== "pending_booking" || !summary.business_id) {
+        throw new PendingBookingLeadIntegrityError("pending_lead_scope_unverifiable");
+      }
+      if (String(summary.business_id) !== businessId) continue;
+    }
+    if (summary?.type === "pending_booking" && (
+      String(summary.business_id || "") !== businessId ||
+      normalizePlatformName(summary.platform) !== channel ||
+      normalizePlatformUserId(channel, String(summary.userId || "")) !== getPendingOwnedUserId(null, channel, chatId)
+    )) {
+      throw new PendingBookingLeadIntegrityError("pending_lead_owner_mismatch");
+    }
+    if (row.id == null) throw new PendingBookingLeadIntegrityError("pending_lead_identity_missing");
+    matches.push(row);
+  }
+  // Lead creation timestamps and booking updatedAt are not an authority rule.
+  // Even a stale duplicate must remain visible rather than being picked/cleared.
+  if (matches.length > 1) throw new PendingBookingLeadIntegrityError("ambiguous_pending_lead");
+  return matches[0] || null;
+}
+
+function pendingBookingLeadUpdate(row: PendingBookingLeadRow, values: Record<string, unknown>) {
+  const query = supabase!.from("appointments_leads").update(values)
+    .eq("id", row.id).eq("user_id", row.user_id).eq("platform", row.platform);
+  return row.business_id == null
+    ? query.is("business_id", null).eq("ai_summary", row.ai_summary!)
+    : query.eq("business_id", row.business_id);
+}
+
 async function savePendingBooking(chatId: string, platform: string, pending: any) {
   if (pending.status === "awaiting_slot_selection") {
     pending.status = "awaiting_time_selection";
@@ -11187,20 +11268,15 @@ async function savePendingBooking(chatId: string, platform: string, pending: any
     };
     const updateData: any = {
       user_id: chatId,
-      platform,
+      platform: pending.platform,
+      business_id: pending.businessId,
       ai_summary: JSON.stringify(minimal)
     };
-    const { data: existing, error: selectError } = await supabase
-      .from("appointments_leads")
-      .select("user_id")
-      .eq("user_id", chatId)
-      .maybeSingle();
+    const existing = await lookupPendingBookingLead(chatId, platform, pending.businessId);
 
-    if (selectError) console.error("Pending booking lead lookup error:", JSON.stringify(selectError));
-
-    if (existing?.user_id) {
-      const { error } = await supabase.from("appointments_leads").update(updateData).eq("user_id", chatId);
-      if (error) console.error("Pending booking lead update error:", JSON.stringify(error));
+    if (existing) {
+      const { error } = await pendingBookingLeadUpdate(existing, updateData);
+      if (error) throw error;
       if (!error) emitBookingLanguageTrace({
         stage: "pending_persisted",
         sessionId: chatId,
@@ -11209,7 +11285,7 @@ async function savePendingBooking(chatId: string, platform: string, pending: any
       });
     } else {
       const { error } = await supabase.from("appointments_leads").insert([updateData]);
-      if (error) console.error("Pending booking lead insert error:", JSON.stringify(error));
+      if (error) throw error;
       if (!error) emitBookingLanguageTrace({
         stage: "pending_persisted",
         sessionId: chatId,
@@ -11218,7 +11294,11 @@ async function savePendingBooking(chatId: string, platform: string, pending: any
       });
     }
   } catch (err) {
-    console.error("savePendingBooking crashed:", err);
+    logPendingBookingLeadFailure("save_pending", platform, err);
+    if (err instanceof PendingBookingLeadIntegrityError) {
+      delete pendingBookings[chatId];
+      throw err;
+    }
   }
 }
 
@@ -11229,13 +11309,31 @@ async function loadPendingBooking(
   options: { throwOnReadFailure?: boolean } = {},
 ) {
   if (pendingBookings[chatId]) {
+    const inMemory = pendingBookings[chatId];
+    const expectedBusinessId = String(getBusinessIdFromConfig(businessConfig) || "");
+    const expectedUserId = getPendingOwnedUserId(inMemory, platform, chatId);
+    if (
+      String(inMemory.businessId || getBusinessIdFromConfig(inMemory.businessConfig) || "") !== expectedBusinessId ||
+      normalizePlatformName(inMemory.platform || platform) !== normalizePlatformName(platform) ||
+      normalizePlatformUserId(platform, String(inMemory.userId || chatId)) !== expectedUserId
+    ) {
+      console.warn("[BookingFlow]", {
+        platform: normalizePlatformName(platform),
+        businessScopePresent: Boolean(expectedBusinessId),
+        operation: "load_pending",
+        stateType: inMemory.operation || "new_booking",
+        ownershipMatch: false,
+        staleStateReason: "owner_mismatch"
+      });
+      delete pendingBookings[chatId];
+      return null;
+    }
     if (isPendingBookingExpired(pendingBookings[chatId])) {
       console.log("[DeterministicBooking]", { event: "expired_memory_state_cleared", sessionKey: safeLogFingerprint(chatId) });
       await clearPendingBooking(chatId);
       clearConversationFlowLanguage(chatId);
       return null;
     }
-    const inMemory = pendingBookings[chatId];
     const normalized = normalizePendingBookingState(inMemory);
     if (!normalized.state) {
       console.warn("[BookingStateReset]", {
@@ -11262,38 +11360,13 @@ async function loadPendingBooking(
     if (inMemory.status === "awaiting_slot_selection") {
       inMemory.status = "awaiting_time_selection";
     }
-    const expectedBusinessId = String(getBusinessIdFromConfig(businessConfig) || "");
-    const expectedUserId = getPendingOwnedUserId(inMemory, platform, chatId);
-    if (
-      String(inMemory.businessId || getBusinessIdFromConfig(inMemory.businessConfig) || "") !== expectedBusinessId ||
-      normalizePlatformName(inMemory.platform || platform) !== normalizePlatformName(platform) ||
-      normalizePlatformUserId(platform, String(inMemory.userId || chatId)) !== expectedUserId
-    ) {
-      console.warn("[BookingFlow]", {
-        platform: normalizePlatformName(platform),
-        businessScopePresent: Boolean(expectedBusinessId),
-        operation: "load_pending",
-        stateType: inMemory.operation || "new_booking",
-        ownershipMatch: false,
-        staleStateReason: "owner_mismatch"
-      });
-      await clearPendingBooking(chatId);
-      return null;
-    }
     return pendingBookings[chatId];
   }
   if (!supabase) return null;
   try {
-    const { data, error } = await supabase
-      .from("appointments_leads")
-      .select("ai_summary")
-      .eq("user_id", chatId)
-      .maybeSingle();
-    if (error) {
-      console.error("Pending booking load error:", JSON.stringify(error));
-      if (options.throwOnReadFailure) throw error;
-      return null;
-    }
+    const data = await lookupPendingBookingLead(
+      chatId, platform, String(getBusinessIdFromConfig(businessConfig) || ""),
+    );
     if (!data?.ai_summary) return null;
     const parsed = JSON.parse(data.ai_summary);
     if (parsed?.type !== "pending_booking") return null;
@@ -11359,7 +11432,7 @@ async function loadPendingBooking(
         currentStateVersion: CURRENT_BOOKING_STATE_VERSION,
         resetReason: normalized.resetReason,
       });
-      await clearPendingBooking(chatId);
+      await clearPendingBooking(chatId, data);
       return null;
     }
     Object.assign(pending, normalized.state);
@@ -11390,7 +11463,7 @@ async function loadPendingBooking(
         ownershipMatch: false,
         staleStateReason: "owner_mismatch"
       });
-      await clearPendingBooking(chatId);
+      delete pendingBookings[chatId];
       return null;
     }
     if (
@@ -11403,7 +11476,7 @@ async function loadPendingBooking(
     ) return null;
     if (isPendingBookingExpired(pending)) {
       console.log("[DeterministicBooking]", { event: "expired_database_state_cleared", sessionKey: safeLogFingerprint(chatId) });
-      await clearPendingBooking(chatId);
+      await clearPendingBooking(chatId, data);
       clearConversationFlowLanguage(chatId);
       return null;
     }
@@ -11411,8 +11484,8 @@ async function loadPendingBooking(
     console.log("[DeterministicBooking]", { event: "database_state_restored", sessionKey: safeLogFingerprint(chatId) });
     return pending;
   } catch (err) {
-    console.error("loadPendingBooking crashed:", err);
-    if (options.throwOnReadFailure) throw err;
+    logPendingBookingLeadFailure("load_pending", platform, err);
+    if (options.throwOnReadFailure || err instanceof PendingBookingLeadIntegrityError) throw err;
     return null;
   }
 }
@@ -11476,17 +11549,21 @@ function writeBookingContinuationState(fields: Partial<{
   });
 }
 
-async function clearPendingBooking(chatId: string) {
+async function clearPendingBooking(chatId: string, storedRow?: PendingBookingLeadRow) {
+  const pending = pendingBookings[chatId];
   delete pendingBookings[chatId];
   if (!supabase) return;
+  const platform = storedRow?.platform || pending?.platform;
+  const businessId = String(storedRow?.business_id || pending?.businessId || getBusinessIdFromConfig(pending?.businessConfig) || "");
+  if (!storedRow && (!platform || !businessId)) return;
   try {
-    const { error } = await supabase
-      .from("appointments_leads")
-      .update({ ai_summary: null })
-      .eq("user_id", chatId);
-    if (error) console.error("Pending booking clear error:", JSON.stringify(error));
+    const row = storedRow || await lookupPendingBookingLead(chatId, platform, businessId);
+    if (!row) return;
+    const { error } = await pendingBookingLeadUpdate(row, { ai_summary: null });
+    if (error) throw error;
   } catch (err) {
-    console.error("clearPendingBooking crashed:", err);
+    logPendingBookingLeadFailure("clear_pending", platform, err);
+    if (err instanceof PendingBookingLeadIntegrityError) throw err;
   }
 }
 

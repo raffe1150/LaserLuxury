@@ -1,3 +1,4 @@
+import { PendingLeadStore as PendingStore } from '../../tests/helpers/pending-lead-store';
 import assert from 'node:assert/strict';
 import { CURRENT_BOOKING_STATE_VERSION } from './booking-operation-state';
 
@@ -35,25 +36,6 @@ const pending = (language: 'ar' | 'en') => ({
   dateTime: null, selectedSlotEnd: null, createdAt: Date.now(), updatedAt: Date.now(),
 });
 
-class PendingStore {
-  row: { user_id: string; ai_summary: string } | null = null;
-  from(table: string) {
-    assert.equal(table, 'appointments_leads');
-    return {
-      select: (_columns: string) => ({ eq: (_key: string, _value: string) => ({
-        maybeSingle: async () => ({ data: this.row, error: null }),
-      }) }),
-      update: (value: { ai_summary: string }) => ({ eq: async () => {
-        if (this.row) this.row.ai_summary = value.ai_summary;
-        return { error: null };
-      } }),
-      insert: async (values: Array<{ user_id: string; ai_summary: string }>) => {
-        this.row = { user_id: values[0].user_id, ai_summary: values[0].ai_summary };
-        return { error: null };
-      },
-    };
-  }
-}
 
 const store = new PendingStore();
 const configure = () => {

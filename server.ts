@@ -124,7 +124,7 @@ import {
   selectTelegramDeliveryMode,
   type TelegramReplyPreference,
 } from "./src/ai/channel-reliability";
-import { applyNormalizedRequestToPending, availabilityFieldsFromConstraint, buildSlotFingerprintSource, classifySpanishManana, formatPersianSpokenPhone, getBookingDateConflict, getBookingWeekdayReference, hasBookingCorrectionCue, getDateInTimeZone, getZonedSlotParts, isCurrentConversationTurn, isReadOnlyAvailabilityInquiry, isServiceGuidanceRequest, normalizeConversationText, parseBookingDate, parseNamedBookingDateRange, parseTimeConstraint, preparePersianTextForTts, registerConversationTurn, resolveRelativeBookingDateSemantic, slotMinutesSatisfyConstraint, toPersistedBookingRequest, zonedLocalIso, type NormalizedBookingRequest, type NormalizedTimeConstraint } from "./src/ai/booking-intelligence";
+import { applyNormalizedRequestToPending, availabilityFieldsFromConstraint, buildSlotFingerprintSource, classifySpanishManana, formatPersianSpokenPhone, getBookingDateConflict, getBookingWeekdayReference, hasBookingCorrectionCue, getDateInTimeZone, getZonedSlotParts, isCurrentConversationTurn, isReadOnlyAvailabilityInquiry, isServiceGuidanceRequest, isWholeDayAvailabilityRequest, normalizeConversationText, parseBookingDate, parseNamedBookingDateRange, parseTimeConstraint, preparePersianTextForTts, registerConversationTurn, resolveRelativeBookingDateSemantic, slotMinutesSatisfyConstraint, toPersistedBookingRequest, zonedLocalIso, type NormalizedBookingRequest, type NormalizedTimeConstraint } from "./src/ai/booking-intelligence";
 import { beginBookingFinalization, getBookingInvariantFailures, getBookingPhase, getMissingBookingContact, isPositiveBookingConfirmation, recoverBookingFinalization, recoverBookingTransaction, type BookingFailureStage } from "./src/ai/booking-state-machine";
 import { enumerateCandidateMinutes, isBlockingCalendarEvent, isCanonicalSlotFree } from "./src/ai/canonical-availability";
 import {
@@ -7436,7 +7436,7 @@ function inferServiceFromText(text?: string): string {
   if (raw.includes("helkropp") || raw.includes("hel kropp") || raw.includes("full body") || raw.includes("fullbody") || raw.includes("full-body") || raw.includes("hellkropp") || raw.includes("helkrop")) return "Helkropp laserbehandling";
   if (raw.includes("laser") || raw.includes("لیزر") || raw.includes("ليزر")) return "Laserbehandling";
   if (raw.includes("ansikte")) return "Ansiktsbehandling";
-  if (raw.includes("ben")) return "Benbehandling";
+  if (/\bben(?:en|behandling)?\b/iu.test(raw)) return "Benbehandling";
   if (raw.includes("arm")) return "Armbehandling";
   return "Bokning";
 }
@@ -12445,24 +12445,6 @@ function parseAvailabilityRangeRequest(
   };
 }
 
-function isWholeDayAvailabilityRequest(text?: string): boolean {
-  const raw = normalizeLocalizedDigits(String(text || ""))
-    .trim()
-    .toLowerCase()
-    .replace(/\u200c/g, " ")
-    .replace(/[،,!?؟;؛.]+/g, " ")
-    .replace(/\s+/g, " ");
-  if (!raw) return false;
-  return (
-    /\b(?:any\s+time|anytime|any\s+time\s+that\s+day|all\s+day|whole\s+day|only\s+(?:on\s+)?(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)|do\s+you\s+have\s+any\s+time)\b/i.test(raw) ||
-    /\b(?:vilken\s+tid\s+som\s+helst|n[aå]gon\s+tid|hela\s+dagen|bara\s+(?:p[aå]\s+)?(?:m[aå]ndag|tisdag|onsdag|torsdag|fredag|l[oö]rdag|s[oö]ndag)|har\s+du\s+(?:inte\s+)?(?:n[aå]gon\s+)?tid)\b/i.test(raw) ||
-    /\b(?:irgendeine\s+uhrzeit|jederzeit|den\s+ganzen\s+tag|nur\s+(?:am\s+)?(?:montag|dienstag|mittwoch|donnerstag|freitag|samstag|sonntag))\b/i.test(raw) ||
-    /\b(?:cualquier\s+hora|a\s+cualquier\s+hora|todo\s+el\s+d[ií]a|solo\s+(?:el\s+)?(?:lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo))\b/i.test(raw) ||
-    /\b(?:har\s+saati|har\s+vaght|tamame?\s+rooz|faghat\s+(?:shanbe|yekshanbe|doshanbe|seshanbe|chaharshanbe|panjshanbe|jomeh?))\b/i.test(raw) ||
-    /(?:هر\s*(?:ساعت|وقتی)|تمام\s*روز|فقط\s*(?:شنبه|یک\s*شنبه|دو\s*شنبه|سه\s*شنبه|چهار\s*شنبه|پنج\s*شنبه|جمعه)|أي\s*وقت|طوال\s*اليوم|فقط\s*(?:الأحد|الاحد|الاثنين|الإثنين|الثلاثاء|الأربعاء|الاربعاء|الخميس|الجمعة|السبت))/u.test(raw)
-  );
-}
-
 function isAvailabilityPivotFromFailedLookup(text?: string): boolean {
   if (!resolveExplicitBookingDate(text)) return false;
   const raw = normalizeConfirmationReply(text);
@@ -12624,7 +12606,7 @@ function deriveCanonicalAvailabilityConstraint(
     explicitDate ||
     (inheritPreviousDate ? previous?.startDate : undefined);
   const endDate =
-    (retainsRepeatedBareWeekday ? previous?.endDate : sharedDate?.value) ||
+    (retainsRepeatedBareWeekday ? previous?.endDate : sharedDate?.endValue || sharedDate?.value) ||
     range?.endDate ||
     explicitDate ||
     (inheritPreviousDate ? previous?.endDate : undefined);
@@ -12653,6 +12635,9 @@ function deriveCanonicalAvailabilityConstraint(
   // The latest turn's normalized time constraint is authoritative. It must be
   // applied before any merged prior constraint or text fallback can reconstruct
   // an incompatible range/daypart/boundary from pending state.
+  if (authoritativeTime?.kind === "none") {
+    return { ...common, kind: startDate === endDate ? "whole_day" : "date_range", rejectedTimes: [] };
+  }
   if (authoritativeTime) {
     return {
       ...common,
@@ -16121,9 +16106,15 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
     text = contactText;
   }
   const entryPendingLanguage = pending?.language || null;
+  const explicitAvailabilityRequest = isWholeDayAvailabilityRequest(text);
+  const refinesPendingAvailability = Boolean(
+    pending?.operation === "new_booking" && explicitAvailabilityRequest &&
+    !isExplicitNewBookingPivotText(text)
+  );
   // Answer the latest informational question before merging booking entities or
   // consuming awaiting_service. Keep pending slots/holds intact for a later turn.
   if (isBusinessInformationQuestion(text) &&
+    !explicitAvailabilityRequest &&
     !hasRecentCompletedBookingDetailSemantics(text) &&
     !isExistingAppointmentLookupIntent(text) &&
     getBookingPhase(pending) !== "finalizing") {
@@ -16506,6 +16497,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
     authoritativeSelectedSlot &&
     (isRescheduleIntent(text) ||
       isPendingSelectionRejectionRequest(text, pending) ||
+      isWholeDayAvailabilityRequest(text) ||
       /\b(?:change|move|correct|switch|shift)\s+(?:(?:my|the|this|our)\s+)?(?:booking|appointment|date|day|time)\b/iu.test(text) ||
       (normalizedRequest.timeConstraint?.kind === "exact" &&
         /^\s*\d{1,2}:\d{2}(?:\s+uhr)?[.!]?\s*$/iu.test(text)) ||
@@ -16740,6 +16732,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
   if (
     pending &&
     normalizedRequest.intent === "new_booking" &&
+    !refinesPendingAvailability &&
     entryStrongLanguage &&
     pending.language &&
     pending.language !== entryStrongLanguage &&
@@ -17042,6 +17035,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
     (isPositiveBookingConfirmation(text) || pendingSlotConfirmationAcceptedAtEntry)
   );
   const explicitDatedFreshBookingCreation = Boolean(
+    !refinesPendingAvailability &&
     !normalizedRequest.customerCorrection &&
     normalizedRequest.intent === "new_booking" &&
     isExplicitDatedBookingCreationText(text, normalizedRequest)
@@ -21287,6 +21281,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
         availabilityMaxTime: constraint.maxTime || null,
         availabilityConstraint: constraint,
         normalizedBookingRequest: toPersistedBookingRequest(availabilityNormalizedRequest),
+        requestedTime: constraint.exactTime || null,
         lastAvailabilityConstraintKey: null,
         dateTime: null,
         selectedSlotEnd: null,

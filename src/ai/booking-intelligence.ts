@@ -1,3 +1,4 @@
+import { businessInformationTopics, isBusinessInformationQuestion } from './business-information';
 import { applyBookingTransition, mergeBookingRequest } from './booking-state-machine';
 
 export type SupportedLanguage = 'fa' | 'sv' | 'en' | 'de' | 'es' | 'ar';
@@ -365,6 +366,33 @@ export function parseNamedBookingDateRange(
   return valid(startDate) && valid(endDate) ? { startDate, endDate } : null;
 }
 
+export function isWholeDayAvailabilityRequest(text?: string): boolean {
+  const raw = normalizeConversationText(String(text || ""))
+    .trim()
+    .toLowerCase()
+    .replace(/\u200c/g, " ")
+    .replace(/[،,!?؟;؛.]+/g, " ")
+    .replace(/\s+/g, " ");
+  if (!raw) return false;
+  // Flexibility in a contact, policy or opening-hours question is not a request
+  // to change booking availability. Spanish availability uses "horarios" too.
+  if (isBusinessInformationQuestion(String(text || "")) && (
+    businessInformationTopics(raw).some(topic => topic !== 'hours') ||
+    !isReadOnlyAvailabilityInquiry(String(text || ""))
+  )) return false;
+  // Negated flexibility is not permission to discard an active restriction.
+  if (/\b(?:not|cannot|can't|inte|nicht|no puedo)\s+(?:(?:do|be|available|accept)\s+)?(?:any|all day|whenever|hela dagen|jederzeit|cualquier)\b/iu.test(raw) ||
+    /(?:نمی|نمي|نمی توانم|لا).{0,24}(?:هر|أي|اي|طوال)/u.test(raw)) return false;
+  return (
+    /\b(?:any\s+(?:available\s+)?(?:time|times|slot|slots)|anytime|whenever|available\s+(?:times|slots)|what\s+times\s+(?:do\s+you\s+have|are\s+available)|any\s+time\s+that\s+day|all\s+day|whole\s+day|only\s+(?:on\s+)?(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)|do\s+you\s+have\s+any\s+time)\b/i.test(raw) ||
+    /\b(?:vilken\s+tid\s+som\s+helst|lediga\s+tider|n[aå]gon\s+tid|hela\s+dagen|bara\s+(?:p[aå]\s+)?(?:m[aå]ndag|tisdag|onsdag|torsdag|fredag|l[oö]rdag|s[oö]ndag)|har\s+du\s+(?:inte\s+)?(?:n[aå]gon\s+)?tid)\b/i.test(raw) ||
+    /\b(?:irgendeine\s+uhrzeit|(?:freie[nr]?|verf[üu]gbare[nr]?)\s+(?:termine|zeiten)|jederzeit|den\s+ganzen\s+tag|nur\s+(?:am\s+)?(?:montag|dienstag|mittwoch|donnerstag|freitag|samstag|sonntag))\b/i.test(raw) ||
+    /\b(?:cualquier\s+hora|(?:horarios|horas)\s+disponibles|a\s+cualquier\s+hora|todo\s+el\s+d[ií]a|solo\s+(?:el\s+)?(?:lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo))\b/i.test(raw) ||
+    /\b(?:har\s+saati|har\s+vaght|tamame?\s+rooz|faghat\s+(?:shanbe|yekshanbe|doshanbe|seshanbe|chaharshanbe|panjshanbe|jomeh?))\b/i.test(raw) ||
+    /(?:هر\s*(?:ساعت|وقتی)|(?:وقت|زمان)(?:\s*های)?\s*(?:خالی|آزاد)|تمام\s*روز|فقط\s*(?:شنبه|یک\s*شنبه|دو\s*شنبه|سه\s*شنبه|چهار\s*شنبه|پنج\s*شنبه|جمعه)|(?:أي|اي)\s*(?:وقت|موعد)|(?:الأوقات|الاوقات|المواعيد)\s*(?:المتاحة|المتوفرة)|طوال\s*اليوم|فقط\s*(?:الأحد|الاحد|الاثنين|الإثنين|الثلاثاء|الأربعاء|الاربعاء|الخميس|الجمعة|السبت))/u.test(raw)
+  );
+}
+
 export function hasBookingCorrectionCue(text: string): boolean {
   const raw = normalizeConversationText(text);
   return /\bactually\s*[,،]?\s*(?:make\s+it|change|move|switch|correct)\b/iu.test(raw) ||
@@ -373,8 +401,12 @@ export function hasBookingCorrectionCue(text: string): boolean {
 }
 
 export function parseTimeConstraint(text: string): NormalizedTimeConstraint | undefined {
+  // Preserve the legacy daypart parser on ordinary turns. During explicit
+  // broadening, restated dayparts must reach normalization before `none` wins.
+  const broadensAvailability = isWholeDayAvailabilityRequest(text);
   const raw = normalizeTranscribedText(text)
     .toLowerCase()
+    .replace(/بعد\s*(?:از|ال)\s*ظهر/gu, match => broadensAvailability ? 'afternoon' : match)
     .replace(/\bnoon\b/giu, '12:00')
     .replace(/ظهر/gu, '12:00');
 
@@ -513,7 +545,7 @@ export function parseTimeConstraint(text: string): NormalizedTimeConstraint | un
   if (
     contextualExact &&
     (
-      /\b(?:slot|time|appointment|take|choose|want|prefer|book|works|perfect|fine|tid|tiden|väljer|valjer|vill ha|passar|perfekt|utmärkt|utmarkt|boka|termin|hora|cita)\b/iu.test(raw) ||
+      /\b(?:how about|what about|slot|time|appointment|take|choose|want|prefer|book|works|perfect|fine|tid|tiden|väljer|valjer|vill ha|passar|perfekt|utmärkt|utmarkt|boka|termin|hora|cita)\b/iu.test(raw) ||
       /(?:وقت|زمان|ساعت|رزرو|موعد)/u.test(raw)
     )
   ) {
@@ -527,8 +559,13 @@ export function parseTimeConstraint(text: string): NormalizedTimeConstraint | un
   }
 
   const daypartText = raw.replace(/\bi\s+morgon\b/giu, ' ');
-  if (/\b(?:morning|morgon(?:en)?)\b/iu.test(daypartText) || /صبح/u.test(raw)) {
+  if (/\b(?:morning|morgon(?:en)?)\b/iu.test(daypartText) || /صبح/u.test(raw) ||
+    (broadensAvailability && (/\b(?:förmiddag|formiddag|vormittag|sobh)\b/iu.test(daypartText) || classifySpanishManana(raw).morningDaypart || /الصباح/u.test(raw)))) {
     return { kind: 'morning', startMinutes: 9 * 60, endMinutes: 12 * 60, startInclusive: true, endInclusive: false, confidence: 'high' };
+  }
+
+  if (broadensAvailability && (/\b(?:nachmittag|bad az zohr|badezohr)\b/iu.test(raw) || /بعد\s*الظهر/u.test(normalizeConversationText(text)))) {
+    return { kind: 'afternoon', startMinutes: 12 * 60, endMinutes: 18 * 60, startInclusive: true, endInclusive: false, confidence: 'high' };
   }
 
   if (/\b(?:afternoon|eftermiddag(?:en)?|tarde)\b/iu.test(raw) || /بعدازظهر/u.test(raw)) {
@@ -819,10 +856,13 @@ export function normalizeBookingRequest(input: ConversationInput): NormalizedBoo
     : detectWeekdayExplicitDateConflict(normalizedText.toLowerCase(), parsedDate);
   const date = dateConflict ? undefined : parsedDate;
   const parsedTimeConstraint = parseTimeConstraint(normalizedText);
-  // An explicit named date range is also an authoritative replacement of a
-  // previously selected date/time. Persist `none` so state merging cannot retain
-  // an old exact clock merely because this turn has no narrower time preference.
-  const timeConstraint = parsedTimeConstraint || (namedDateRange
+  const rejectedClockBroadening = isWholeDayAvailabilityRequest(normalizedText) &&
+    parsedTimeConstraint?.kind === 'exact' &&
+    /(?:^|[^\p{L}\p{M}])(?:not|inte|nicht|no|نه|ليس)\s+(?:at\s+)?\d{1,2}:\d{2}/iu.test(normalizedText);
+  // Explicit flexibility and named date ranges replace prior time preferences.
+  // Persist `none` to distinguish removal from omission during state merging;
+  // a newly stated boundary, clock or daypart still wins.
+  const timeConstraint = (rejectedClockBroadening ? undefined : parsedTimeConstraint) || (namedDateRange || isWholeDayAvailabilityRequest(normalizedText)
     ? {
         kind: 'none' as const,
         confidence: 'high' as const,
@@ -914,6 +954,7 @@ export function buildSlotFingerprintSource(input: {
 }
 
 export function availabilityFieldsFromConstraint(constraint: NormalizedTimeConstraint): Record<string, any> {
+  if (constraint.kind === 'none') return { kind: 'whole_day' };
   const clock = (minutes?: number) => minutes === undefined ? undefined : `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`;
   if (constraint.kind === 'exact') return { kind: 'exact_time', exactTime: clock(constraint.startMinutes) };
   if (constraint.kind === 'between') return { kind: 'time_window', minTime: clock(constraint.startMinutes), maxTime: clock(constraint.endMinutes) };

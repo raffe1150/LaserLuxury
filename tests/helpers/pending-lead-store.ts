@@ -12,6 +12,7 @@ export type LeadRow = {
 // Exercise the installed PostgREST client, including its cardinality handling.
 // Every request is intercepted here; no database or external service is contacted.
 export class PendingLeadStore {
+  constructor(private readonly otherRequest?: (url: URL, init?: RequestInit) => Promise<Response>) {}
   rows: LeadRow[] = [];
   requests: Array<{ method: string; url: URL; body: any }> = [];
   readError: { code: string; message: string; details?: string } | null = null;
@@ -23,6 +24,7 @@ export class PendingLeadStore {
       assert.equal(url.hostname, 'pending-lead.invalid');
       const method = init?.method || 'GET';
       if (url.pathname !== '/rest/v1/appointments_leads') {
+        if (this.otherRequest) return this.otherRequest(url, init);
         assert.equal(method, 'GET', 'only lead writes are allowed in this fixture');
         assert.ok(['/rest/v1/appointments', '/rest/v1/chat_history'].includes(url.pathname));
         return new Response('[]', { status: 200 });
@@ -56,9 +58,9 @@ export class PendingLeadStore {
       if (limit) selected = selected.slice(0, Number(limit));
       if (method === 'PATCH') {
         selected.forEach(row => Object.assign(row, body));
-        return new Response(null, { status: 204 });
+        if (!url.searchParams.has('select')) return new Response(null, { status: 204 });
       }
-      assert.equal(method, 'GET');
+      assert.ok(method === 'GET' || method === 'PATCH');
       const columns = url.searchParams.get('select');
       const data = selected.map(row => columns && columns !== '*'
         ? Object.fromEntries(columns.split(',').map(key => [key, row[key as keyof LeadRow]]))

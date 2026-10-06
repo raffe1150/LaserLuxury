@@ -11230,10 +11230,22 @@ async function lookupPendingBookingLead(
       throw new PendingBookingLeadIntegrityError("pending_lead_owner_mismatch");
     }
     if (row.id == null) throw new PendingBookingLeadIntegrityError("pending_lead_identity_missing");
+    const pendingCreatedAt = summary?.createdAt || summary?.created_at;
+    if (
+      channel === "messenger" && row.business_id == null &&
+      summary?.type === "pending_booking" &&
+      (typeof pendingCreatedAt === "number" || typeof pendingCreatedAt === "string") &&
+      Number.isFinite(Number(pendingCreatedAt)) && Number(pendingCreatedAt) > 0 &&
+      isPendingBookingExpired(summary)
+    ) {
+      // Ownership is verified above. Retired legacy Messenger state is not an
+      // active booking candidate; leave its durable row untouched.
+      continue;
+    }
     matches.push(row);
   }
-  // Lead creation timestamps and booking updatedAt are not an authority rule.
-  // Even a stale duplicate must remain visible rather than being picked/cleared.
+  // Do not rank candidates by row timestamps or booking updatedAt. Outside the
+  // proven legacy Messenger expiry above, stale duplicates remain ambiguous.
   if (matches.length > 1) throw new PendingBookingLeadIntegrityError("ambiguous_pending_lead");
   return matches[0] || null;
 }
@@ -34627,6 +34639,10 @@ export const priority1hUnifiedEngineTestBoundary = {
   async persistCustomerExchange(userId: string, platform: string, customerText: string, replyText: string, businessId?: string) {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
     return postProcessMessage(userId, platform, customerText, replyText, undefined, undefined, businessId);
+  },
+  async messengerInbound(event: any, config: any) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    return processMessengerUpdate(event, config);
   },
   withMetaInboundEventTime<T>(platform: "whatsapp" | "messenger" | "instagram", customerId: string, timestamp: unknown, businessId: string, work: () => T) {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");

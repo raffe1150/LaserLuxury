@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { mock } from "node:test";
+import { encryptCredential } from "../channels/connections/credential-crypto";
+
+process.env.CHANNEL_CREDENTIAL_ENCRYPTION_KEY = Buffer.alloc(32, 7).toString("base64");
 
 process.env.NODE_ENV = "test";
 const { priority1hUnifiedEngineTestBoundary: boundary } = await import("../../server");
@@ -20,6 +23,7 @@ const config = {
 class ReminderDatabase {
   queries: Array<{ table: string; filters: Array<[string, unknown]> }> = [];
   updates = 0;
+  credentialHealthUpdates: any[] = [];
   constructor(readonly row: any, readonly history: any[], readonly options: any) {}
   from(table: string) {
     const record = { table, filters: [] as Array<[string, unknown]> };
@@ -77,8 +81,26 @@ class ReminderDatabase {
           )), error: this.options.historyError ? { code: "storage_error" } : null };
         }
         if (table === "channel_connections") {
+          if (values) {
+            assert.deepEqual(record.filters, [["id", "connection-ms-7"]]);
+            this.credentialHealthUpdates.push(values);
+            return { data: [], error: null };
+          }
           assert.ok(record.filters.some(([column, value]) => column === "business_id" && value === 7));
           if (this.options.nowAfterHydration !== undefined) mock.timers.setTime(this.options.nowAfterHydration);
+          if (this.row.platform === "messenger") {
+            assert.deepEqual(record.filters, [["business_id", 7], ["provider", "messenger"],
+              ["status", "connected"], ["reconnect_required", false]]);
+            const connection = this.options.messengerConnection === null ? null : {
+              id: "connection-ms-7", business_id: 7, provider: "messenger",
+              provider_account_id: "tenant-7-page", status: "connected", reconnect_required: false,
+              connected_at: "2026-09-22T00:00:00Z", token_expires_at: null,
+              granted_scopes: ["pages_messaging"], source: "self_service",
+              credential_ciphertext: encryptCredential({ accessToken: "tenant-7-ms-token", tokenType: "page" }),
+              ...this.options.messengerConnection,
+            };
+            return { data: connection, error: this.options.connectionError ? { code: "storage_error" } : null };
+          }
           return { data: single ? null : [], error: null };
         }
         assert.equal(table, "appointments");
@@ -112,6 +134,7 @@ async function run(channel: string, options: any = {}) {
   }];
   const db = new ReminderDatabase(row, history, options);
   const requests: Array<{ url: string; body: any; headers: any }> = [];
+  const pageLookups: string[] = [];
   const logs: any[] = [];
   const originalFetch = globalThis.fetch;
   const originalLog = console.log;
@@ -132,6 +155,15 @@ async function run(channel: string, options: any = {}) {
     },
   });
   globalThis.fetch = async (input, init) => {
+    if (channel === "messenger" && init?.method === "GET") {
+      pageLookups.push(String(input));
+      assert.equal(String(input), "https://graph.facebook.com/v25.0/me?fields=id");
+      assert.equal((init.headers as any).Authorization, "Bearer tenant-7-ms-token");
+      if (options.transportThrows || options.pageLookupThrows) throw new Error("private transport failure");
+      if (options.nowAfterPageLookup !== undefined) mock.timers.setTime(options.nowAfterPageLookup);
+      return new Response(options.pageLookupRaw ?? JSON.stringify(options.pageBody ?? { id: "tenant-7-page" }),
+        { status: options.pageStatus ?? 200 });
+    }
     requests.push({ url: String(input), body: init?.body ? JSON.parse(String(init.body)) : null, headers: init?.headers });
     if (options.transportThrows) throw new Error("private transport failure");
     if (init?.method === "GET") {
@@ -144,10 +176,10 @@ async function run(channel: string, options: any = {}) {
       return new Response(JSON.stringify(body), { status: options.lookupStatus ?? 200 });
     }
     if (options.templateTransportThrows) throw new Error("private transport failure");
-    const body = options.body ?? (channel === "whatsapp"
+    const body = "body" in options ? options.body : (channel === "whatsapp"
       ? { messages: [{ id: "wamid.reminder-policy-test" }] }
       : { recipient_id: row.user_id, message_id: "mid.reminder-policy-test", ok: true });
-    return new Response(JSON.stringify(body), { status: options.status ?? 200 });
+    return new Response(options.sendRaw ?? JSON.stringify(body), { status: options.status ?? 200 });
   };
   console.log = (...args) => { logs.push(args); };
   console.error = (...args) => { logs.push(args); };
@@ -158,13 +190,14 @@ async function run(channel: string, options: any = {}) {
     assert.equal(row.reminder_24_sent || row.reminder_2_sent, db.updates > 0);
     assert.ok(!JSON.stringify(logs).includes(row.customer_name));
     assert.ok(!JSON.stringify(logs).includes("tenant-7-wa-token"));
+    assert.ok(!JSON.stringify(logs).includes("tenant-7-ms-token"));
     assert.ok(!JSON.stringify(logs).includes("private transport failure"));
     const diagnostic = logs.find(args => args[0] === "[ReminderDelivery]" || args[0] === "[ReminderCalendarVerification]")?.[1];
     assert.equal(diagnostic?.appointmentId, row.id);
     assert.equal(diagnostic?.businessId, row.business_id);
     assert.equal(diagnostic?.channel, channel);
     assert.equal(diagnostic?.reminderType, type);
-    return { result, row, requests, logs, db };
+    return { result, row, requests, pageLookups, logs, db };
   } finally {
     globalThis.fetch = originalFetch;
     console.log = originalLog;
@@ -183,7 +216,7 @@ for (const type of ["24h", "2h"]) {
   assert.equal(closed.result.reason, "whatsapp_template_missing");
 }
 
-for (const channel of ["whatsapp", "instagram", "telegram"]) {
+for (const channel of ["whatsapp", "messenger", "instagram", "telegram"]) {
   for (const type of ["24h", "2h"]) {
     const accepted = await run(channel, { type });
     assert.equal(accepted.result.sent, true, `${channel} valid reminder is accepted`);
@@ -198,6 +231,14 @@ for (const channel of ["whatsapp", "instagram", "telegram"]) {
       assert.equal(body.to, accepted.row.user_id);
       assert.match(body.text.body, /Hallo Sensitive Customer/);
       assert.match(url, /tenant-7-wa-phone\/messages$/);
+    } else if (channel === "messenger") {
+      assert.equal(accepted.pageLookups.length, 1);
+      assert.equal(url, "https://graph.facebook.com/v25.0/tenant-7-page/messages");
+      assert.equal((accepted.requests[0].headers as any).Authorization, "Bearer tenant-7-ms-token");
+      assert.equal(body.messaging_type, "UPDATE");
+      assert.equal(body.recipient.id, accepted.row.user_id);
+      assert.match(body.message.text, /Hallo Sensitive Customer/);
+      assert.equal(body.tag, undefined);
     } else if (channel === "instagram") {
       assert.equal(body.tag, undefined);
       assert.equal(body.human_agent, undefined);
@@ -238,19 +279,14 @@ for (const channel of ["whatsapp", "messenger", "instagram"]) {
     }
   }
   const latest = await run(channel, { ageMs: 24 * hour - 1 });
-  assert.equal(latest.result.sent, channel !== "messenger", "just inside ordinary window: verified paths only");
-  if (channel === "messenger") {
-    assert.equal(latest.result.category, "unsupported_proactive_delivery_path");
-    assert.equal(latest.result.reason, "messenger_reminder_wire_type_unverified");
-    assert.equal(latest.requests.length, 0);
-  }
+  assert.equal(latest.result.sent, true, "just inside the verified standard window");
   const customer = await run(channel, { history: [{
     business_id: "7", platform: channel,
     user_id: channel === "whatsapp" ? "46701234567" : "customer-7", sender: "customer",
     created_at: new Date(now - 1000).toISOString(),
     provider_event_at: new Date(now - 1000).toISOString(),
   }] });
-  assert.equal(customer.result.sent, channel !== "messenger");
+  assert.equal(customer.result.sent, true);
   for (const overrides of [
     { business_id: "8" }, { user_id: "other-customer" }, { platform: "telegram" },
     { sender: "bot" }, { sender: "human" }, { provider_event_at: "invalid" },
@@ -280,21 +316,96 @@ for (const channel of ["whatsapp", "messenger", "instagram"]) {
     assert.equal(unacknowledged.result.sent, false, "HTTP success alone cannot mark a Meta reminder sent");
     assert.equal(unacknowledged.db.updates, 0);
     if (channel === "messenger") {
-      assert.equal(unacknowledged.requests.length, 0, "unverified wire type is blocked before provider response matters");
-      assert.equal(unacknowledged.result.reason, "messenger_reminder_wire_type_unverified");
+      assert.equal(unacknowledged.requests.length, 1);
+      assert.equal(unacknowledged.result.category, "provider_rejected");
     }
   }
 }
 
-// Unverified provider behavior: an eligible window does not prove a Messenger
-// reminder wire type. Neither HTTP success nor a configured Page may override it.
+// Messenger reminders require current tenant/Page credentials and provider evidence.
+// Every case runs both scheduler reminder types through the real sender contract.
 for (const type of ["24h", "2h"]) {
-  const blocked = await run("messenger", { type });
-  assert.equal(blocked.result.sent, false);
-  assert.equal(blocked.result.category, "unsupported_proactive_delivery_path");
-  assert.equal(blocked.result.reason, "messenger_reminder_wire_type_unverified");
-  assert.equal(blocked.requests.length, 0);
-  assert.equal(blocked.db.updates, 0);
+  for (const options of [
+    { messengerConnection: null },
+    { messengerConnection: { status: "disconnected" } },
+    { messengerConnection: { reconnect_required: true } },
+    { messengerConnection: { granted_scopes: [] } },
+    { messengerConnection: { provider_account_id: "" } },
+    { messengerConnection: { connected_at: null } },
+    { messengerConnection: { connected_at: new Date(now + 1).toISOString() } },
+    { messengerConnection: { token_expires_at: "invalid" } },
+    { messengerConnection: { token_expires_at: new Date(now).toISOString() } },
+    { messengerConnection: { credential_ciphertext: encryptCredential({ accessToken: "tenant-7-ms-token", tokenType: "bearer" }) } },
+    { config: { channelConnectionInactive: true } },
+  ]) {
+    const blocked = await run("messenger", { ...options, type });
+    assert.equal(blocked.result.category, "channel_configuration_missing");
+    assert.equal(blocked.requests.length, 0);
+    assert.equal(blocked.pageLookups.length, 0);
+    assert.equal(blocked.db.updates, 0);
+  }
+  for (const messengerConnection of [{ business_id: 8 }, { provider: "instagram" }]) {
+    const blocked = await run("messenger", { messengerConnection, type });
+    assert.equal(blocked.result.category, "business_scope_mismatch");
+    assert.equal(blocked.requests.length + blocked.pageLookups.length, 0);
+  }
+  for (const options of [
+    { pageBody: { id: "another-tenant-page" } }, { pageBody: {} },
+    { pageBody: { id: "tenant-7-page", error: { code: 100 } } },
+    { pageStatus: 403 }, { pageLookupRaw: "invalid-json" }, { pageLookupThrows: true },
+  ]) {
+    const blocked = await run("messenger", { ...options, type });
+    assert.equal(blocked.result.sent, false);
+    assert.equal(blocked.result.category, "provider_rejected");
+    assert.equal(blocked.pageLookups.length, 1);
+    assert.equal(blocked.requests.length, 0, "wrong or unproven Page never sends or changes channel");
+    assert.equal(blocked.db.updates, 0);
+    if (options.pageStatus === 403) assert.deepEqual(blocked.db.credentialHealthUpdates,
+      [{ status: "reconnect_required", reconnect_required: true }]);
+  }
+  for (const options of [
+    { history: [] },
+    { history: [{ business_id: "7", platform: "messenger", user_id: "customer-7", sender: "user",
+      provider_event_at: null, created_at: new Date(now - 1).toISOString(),
+      reminder_provider_time_cutover_at: new Date(now).toISOString() }] },
+    { messengerConnection: { connected_at: new Date(now - 1000).toISOString() } },
+    { nowAfterHydration: now + 24 * hour },
+  ]) {
+    const blocked = await run("messenger", { ...options, type });
+    assert.equal(blocked.result.category, "channel_policy_window_closed");
+    assert.equal(blocked.requests.length + blocked.pageLookups.length, 0,
+      "legacy local time, pre-connection history or expired evidence cannot authorize Messenger");
+  }
+  for (const options of [
+    { nowAfterPageLookup: now + 23 * hour },
+    { messengerConnection: { token_expires_at: new Date(now + 1).toISOString() }, nowAfterPageLookup: now + 1 },
+  ]) {
+    const expired = await run("messenger", { ...options, type });
+    assert.equal(expired.pageLookups.length, 1);
+    assert.equal(expired.requests.length, 0, "window and known token expiry are checked again after Page verification");
+    assert.equal(expired.db.updates, 0);
+  }
+  for (const options of [
+    { status: 400, body: { error: { code: 100 } } }, { sendRaw: "invalid-json" },
+    ...[null, {}, { recipient_id: "customer-7" },
+      { recipient_id: "other-customer", message_id: "mid.test" },
+      ...[null, 123, [], "", " "].map(message_id => ({ recipient_id: "customer-7", message_id })),
+      { recipient_id: "customer-7", message_id: "mid.test", error: { code: 100 } },
+    ].map(body => ({ body })),
+  ]) {
+    const failed = await run("messenger", { ...options, type });
+    assert.equal(failed.result.sent, false);
+    assert.equal(failed.result.category, "provider_rejected");
+    assert.equal(failed.requests.length, 1, "failure is returned by Messenger; no fallback request");
+    assert.equal(failed.db.updates, 0, "invalid acknowledgement never sets either sent flag");
+  }
+  const hydrated = await run("messenger", { type, config: {
+    messengerPageId: "stale-page", messengerPageAccessToken: "stale-token",
+    instagramAccessToken: "other-ig-token", whatsappAccessToken: "other-wa-token",
+  } });
+  assert.equal(hydrated.result.sent, true, "active tenant connection overrides stale config aliases");
+  assert.equal(hydrated.requests[0].url, "https://graph.facebook.com/v25.0/tenant-7-page/messages");
+  assert.equal(hydrated.logs.some(args => args[0] === "[ChannelSend]" && args[1]?.providerMessageId === "mid.reminder-policy-test"), true);
 }
 
 // Documented windows start at the provider event, not local database persistence.
@@ -308,7 +419,7 @@ for (const channel of ["whatsapp", "messenger", "instagram"]) {
     created_at: new Date(now - 25 * hour).toISOString(),
     provider_event_at: new Date(now - hour).toISOString(),
   }] });
-  assert.equal(actualRecent.result.sent, channel !== "messenger", "eligibility uses actual event, not created_at");
+  assert.equal(actualRecent.result.sent, true, "eligibility uses actual event, not created_at");
   const legacy = await run(channel, { history: [{
     business_id: "7", platform: channel,
     user_id: channel === "whatsapp" ? "46701234567" : "customer-7", sender: "user",
@@ -320,7 +431,8 @@ for (const channel of ["whatsapp", "messenger", "instagram"]) {
 
 // Temporary rollout compatibility, not a documented provider timestamp rule.
 // The migration supplies one database cutover marker only on pre-existing rows.
-for (const channel of ["whatsapp", "messenger", "instagram"]) {
+// Messenger's newly enabled path requires provider time and cannot use this transition.
+for (const channel of ["whatsapp", "instagram"]) {
   const cutover = now;
   const legacy = {
     business_id: "7", platform: channel,
@@ -330,18 +442,12 @@ for (const channel of ["whatsapp", "messenger", "instagram"]) {
     reminder_provider_time_cutover_at: new Date(cutover).toISOString(),
   };
   const expectEligible = (result: Awaited<ReturnType<typeof run>>) => {
-    assert.equal(result.result.sent, channel !== "messenger");
-    if (channel === "messenger") {
-      assert.equal(result.result.category, "unsupported_proactive_delivery_path");
-      assert.equal(result.result.reason, "messenger_reminder_wire_type_unverified");
-      assert.equal(result.requests.length, 0);
-    } else {
-      assert.equal(result.result.deliveryCategory, "accepted");
-      assert.equal(result.requests.length, 1);
-      assert.match(result.requests[0].url, channel === "whatsapp"
-        ? /graph.facebook.com.*tenant-7-wa-phone/ : /graph.instagram.com/,
-      "reminder stays on its booking channel");
-    }
+    assert.equal(result.result.sent, true);
+    assert.equal(result.result.deliveryCategory, "accepted");
+    assert.equal(result.requests.length, 1);
+    assert.match(result.requests[0].url, channel === "whatsapp"
+      ? /graph.facebook.com.*tenant-7-wa-phone/ : /graph.instagram.com/,
+    "reminder stays on its booking channel");
   };
   const expectBlocked = (result: Awaited<ReturnType<typeof run>>) => {
     assert.equal(result.requests.length, 0, "blocked reminder never reroutes to another channel");
@@ -387,10 +493,8 @@ for (const channel of ["whatsapp", "messenger", "instagram"]) {
   ] }));
   // A backdated new row still has no migration marker and cannot use created_at.
   expectBlocked(await run(channel, { history: [{ ...legacy, reminder_provider_time_cutover_at: null }] }));
-  if (channel !== "messenger") {
-    expectBlocked(await run(channel, { history: [legacy], nowMs: cutover + 23 * hour,
-      nowAfterHydration: cutover + 24 * hour }));
-  }
+  expectBlocked(await run(channel, { history: [legacy], nowMs: cutover + 23 * hour,
+    nowAfterHydration: cutover + 24 * hour }));
 }
 
 // Reminder identity compatibility is an exact allowlist, not a scoped-ID parser.
@@ -406,20 +510,15 @@ for (const channel of ["whatsapp", "messenger", "instagram"] as const) {
     reminder_provider_time_cutover_at: new Date(now).toISOString(),
   };
   const expectEligible = (result: Awaited<ReturnType<typeof run>>) => {
-    assert.equal(result.result.sent, channel !== "messenger");
-    if (channel === "messenger") {
-      assert.equal(result.result.reason, "messenger_reminder_wire_type_unverified");
-      assert.equal(result.requests.length, 0);
-    } else {
-      assert.equal(result.result.deliveryCategory, "accepted");
-      assert.equal(result.requests.length, 1);
-      const request = result.requests[0];
-      assert.equal(channel === "whatsapp" ? request.body.to : request.body.recipient.id, customerId,
-        "history compatibility never changes the canonical provider recipient");
-      assert.match(request.url, channel === "whatsapp"
-        ? /graph.facebook.com.*tenant-7-wa-phone/ : /graph.instagram.com/,
+    assert.equal(result.result.sent, true);
+    assert.equal(result.result.deliveryCategory, "accepted");
+    assert.equal(result.requests.length, 1);
+    const request = result.requests[0];
+    assert.equal(channel === "whatsapp" ? request.body.to : request.body.recipient.id, customerId,
+      "history compatibility never changes the canonical provider recipient");
+    assert.match(request.url, channel === "whatsapp" ? /graph.facebook.com.*tenant-7-wa-phone/
+      : channel === "messenger" ? /graph.facebook.com.*tenant-7-page/ : /graph.instagram.com/,
       "reminder is sent only on its booking channel");
-    }
   };
   const expectBlocked = (result: Awaited<ReturnType<typeof run>>) => {
     assert.equal(result.requests.length, 0, "invalid history cannot send or reroute a reminder");
@@ -430,7 +529,9 @@ for (const channel of ["whatsapp", "messenger", "instagram"] as const) {
   for (const identity of [customerId, scopedId]) {
     for (const type of ["24h", "2h"]) {
       expectEligible(await run(channel, { type, history: [{ ...base, user_id: identity }] }));
-      expectEligible(await run(channel, { type, history: [{ ...base, user_id: identity, provider_event_at: null }] }));
+      const legacy = await run(channel, { type, history: [{ ...base, user_id: identity, provider_event_at: null }] });
+      if (channel === "messenger") expectBlocked(legacy);
+      else expectEligible(legacy);
     }
     for (const providerEventAt of [new Date(now - 25 * hour).toISOString(),
       new Date(now - 24 * hour).toISOString(), new Date(now + 1).toISOString(), "invalid"]) {
@@ -508,9 +609,9 @@ try {
     ["messenger", { channelConnectionInactive: true }],
     ["instagram", { channelConnectionInactive: true }],
   ] as const) {
-    const missingCredentials = await run(channel, { config: missingConfig });
-    assert.equal(missingCredentials.result.category, channel === "messenger"
-      ? "unsupported_proactive_delivery_path" : "channel_configuration_missing");
+    const missingCredentials = await run(channel, { config: missingConfig,
+      ...(channel === "messenger" ? { messengerConnection: null } : {}) });
+    assert.equal(missingCredentials.result.category, "channel_configuration_missing");
     assert.equal(missingCredentials.requests.length, 0);
     assert.equal(missingCredentials.db.updates, 0);
   }
@@ -566,7 +667,7 @@ for (const channel of ["whatsapp", "messenger", "instagram"] as const) {
   const recent = await persistProviderEvent(channel, recentTimestamp);
   assert.equal(recent.provider_event_at, new Date(recentMs).toISOString());
   const eligible = await run(channel, { history: [{ ...recent, created_at: new Date(now).toISOString() }] });
-  assert.equal(eligible.result.sent, channel !== "messenger");
+  assert.equal(eligible.result.sent, true);
   for (const timestamp of [undefined, null, "", "invalid", 0, -1, NaN, true,
     channel === "whatsapp" ? (now + hour) / 1000 : now + hour]) {
     const unknown = await persistProviderEvent(channel, timestamp);

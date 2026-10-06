@@ -11624,6 +11624,14 @@ async function clearPendingBooking(chatId: string, storedRow?: PendingBookingLea
   }
 }
 
+type MessengerReminderAuthorization = {
+  businessId: string;
+  pageId: string;
+  recipientId: string;
+  accessToken: string;
+  windowOpen: () => boolean;
+};
+
 async function sendCustomerMessage(
   platform: string,
   recipientId: string,
@@ -11631,6 +11639,7 @@ async function sendCustomerMessage(
   businessConfig: any,
   outboundContext: MetaOutboundContext,
   reminderDelivery: boolean = false,
+  messengerReminderAuthorization?: MessengerReminderAuthorization,
 ): Promise<boolean> {
   const channel = normalizePlatformName(platform);
   const recipient = channel === "whatsapp"
@@ -11642,7 +11651,9 @@ async function sendCustomerMessage(
   }
 
   if (channel === "whatsapp") return await sendWhatsAppMessage(recipient, message, businessConfig, outboundContext);
-  if (channel === "messenger") return await sendMessengerMessage(recipient, message, businessConfig, outboundContext, reminderDelivery);
+  if (channel === "messenger") return await sendMessengerMessage(
+    recipient, message, businessConfig, outboundContext, reminderDelivery, messengerReminderAuthorization,
+  );
   if (channel === "instagram") return await sendInstagramMessage(
     recipient,
     message,
@@ -26678,8 +26689,7 @@ async function sendAppointmentReminder(
         : category === "channel_policy_window_closed" && platform === "messenger"
         ? { actionRequired: "approved_utility_template_integration_required" }
         : category === "channel_policy_window_closed" ? { actionRequired: "customer_inbound_required" }
-        : reason === "messenger_reminder_wire_type_unverified"
-          ? { actionRequired: "verify_messenger_reminder_wire_type" } : {}),
+        : {}),
     });
     return { sent, category, ...(reason ? { reason } : {}) };
   };
@@ -26692,9 +26702,16 @@ async function sendAppointmentReminder(
     return finish("unsupported_proactive_delivery_path");
   }
   let customerInboundRows: any[] = [];
+  let messengerConnectedAtMs = Number.NEGATIVE_INFINITY;
+  let messengerReminderAuthorization: MessengerReminderAuthorization | undefined;
   const windowOpen = () => platform === "whatsapp"
     ? hasOpenWhatsAppCustomerServiceWindow(customerInboundRows, recipient, Date.now(), true)
-    : hasOpenMetaCustomerMessagingWindow(customerInboundRows, platform, recipient);
+    : hasOpenMetaCustomerMessagingWindow(platform === "messenger"
+      // A reminder needs provider time from the current Page connection epoch.
+      // Never enable this new path using the legacy created_at transition.
+      ? customerInboundRows.filter(row => row.provider_event_at != null &&
+          Date.parse(row.provider_event_at) >= messengerConnectedAtMs)
+      : customerInboundRows, platform, recipient);
   const windowClosed = () => platform === "whatsapp"
     ? finish("whatsapp_template_required", "whatsapp_template_missing")
     : finish("channel_policy_window_closed", "unsupported_proactive_delivery_path");
@@ -26727,7 +26744,7 @@ async function sendAppointmentReminder(
         .limit(1);
       if (error || !Array.isArray(data)) return finish("messaging_window_lookup_failed");
       customerInboundRows = reminderHistoryRows(data);
-      if (!windowOpen()) {
+      if (!windowOpen() && platform !== "messenger") {
         const nowMs = Date.now();
         const { data: legacy, error: legacyError } = await historyQuery(
           "business_id,user_id,platform,sender,provider_event_at,created_at,reminder_provider_time_cutover_at",
@@ -26744,19 +26761,38 @@ async function sendAppointmentReminder(
       return finish("messaging_window_lookup_failed");
     }
     if (!windowOpen() && platform !== "whatsapp") {
-      // No verified automated Messenger path or Instagram extension is available.
+      // No outside-window Messenger integration or Instagram extension is available.
       return windowClosed();
     }
   }
 
-  if (platform === "messenger") {
-    // Meta documents the proactive Updates category, but the current wire enum
-    // is not verified by the available API reference or local integration types.
-    return finish("unsupported_proactive_delivery_path", "messenger_reminder_wire_type_unverified");
-  }
-
   try {
-    businessConfig = await hydrateBusinessChannelConfig(businessConfig, platform as ChannelProvider);
+    if (platform === "messenger") {
+      // The new reminder path requires an explicit active tenant-owned Page
+      // connection. Ordinary conversation/legacy credential behavior is unchanged.
+      const connection = await resolveConnectionForBusiness(supabase!, Number(businessId), "messenger");
+      if (!connection) return finish("channel_configuration_missing", "messenger_connection_required");
+      if (String(connection.businessId) !== businessId || connection.provider !== "messenger") {
+        return finish("business_scope_mismatch", "messenger_connection_scope_mismatch");
+      }
+      messengerConnectedAtMs = Date.parse(connection.connectedAt || "");
+      const expiresAtMs = connection.tokenExpiresAt == null ? null : Date.parse(connection.tokenExpiresAt);
+      if (businessConfig.channelConnectionInactive || connection.status !== "connected" || connection.reconnectRequired ||
+        !connection.providerAccountId.trim() || connection.credential.tokenType !== "page" ||
+        !connection.grantedScopes.includes("pages_messaging") || !Number.isFinite(messengerConnectedAtMs) ||
+        messengerConnectedAtMs > Date.now() ||
+        (expiresAtMs !== null && (!Number.isFinite(expiresAtMs) || expiresAtMs <= Date.now()))) {
+        return finish("channel_configuration_missing", "messenger_connection_unverified");
+      }
+      businessConfig = applyChannelConnectionToConfig(businessConfig, connection);
+      messengerReminderAuthorization = {
+        businessId, pageId: connection.providerAccountId, recipientId: recipient,
+        accessToken: cleanMetaToken(connection.credential.accessToken),
+        windowOpen: () => windowOpen() && (expiresAtMs === null || expiresAtMs > Date.now()),
+      };
+    } else {
+      businessConfig = await hydrateBusinessChannelConfig(businessConfig, platform as ChannelProvider);
+    }
     // normalizeBusinessConfig and hydration explicitly populate these canonical
     // tenant-owned fields. Do not use inherited aliases or legacy ENV fallbacks.
     // The Telegram sender itself retains its existing behavior.
@@ -26790,7 +26826,9 @@ async function sendAppointmentReminder(
       return finish(result.category, result.reason);
     }
     const message = formatReminderMessage(appointment, businessConfig, reminderType);
-    const sent = await sendCustomerMessage(platform, recipient, message, businessConfig, "proactive", true);
+    const sent = await sendCustomerMessage(
+      platform, recipient, message, businessConfig, "proactive", true, messengerReminderAuthorization,
+    );
     return finish(sent ? "accepted" : "provider_rejected");
   } catch {
     return finish("delivery_failed");
@@ -28120,9 +28158,17 @@ async function sendMessengerMessage(
   businessConfig: any,
   outboundContext: MetaOutboundContext,
   reminderDelivery: boolean = false,
+  reminderAuthorization?: MessengerReminderAuthorization,
 ) {
-  if (reminderDelivery) return false; // Unverified reminder wire type: fail closed.
-  const token = getBusinessMessengerToken(businessConfig);
+  const token = reminderDelivery ? cleanMetaToken(businessConfig?.messengerPageAccessToken)
+    : getBusinessMessengerToken(businessConfig);
+  const pageId = String(businessConfig?.messengerPageId || "").trim();
+  const reminderAuthorized = () => Boolean(reminderAuthorization && outboundContext === "proactive" &&
+    !businessConfig?.channelConnectionInactive && token && pageId &&
+    reminderAuthorization.businessId === String(getBusinessIdFromConfig(businessConfig) || "") &&
+    reminderAuthorization.pageId === pageId && reminderAuthorization.recipientId === recipientId &&
+    reminderAuthorization.accessToken === token && reminderAuthorization.windowOpen());
+  if (reminderDelivery && !reminderAuthorized()) return false;
   const safeText = prepareMessengerOutboundText(recipientId, text, businessConfig, outboundContext);
 
   if (!token) {
@@ -28132,14 +28178,35 @@ async function sendMessengerMessage(
 
   const payload = {
     recipient: { id: recipientId },
-    messaging_type: "RESPONSE",
+    // Meta's generated Page API contract v25.0.0 defines UPDATE for /messages.
+    // Proactive reminders use it only within the proven standard window.
+    messaging_type: reminderDelivery ? "UPDATE" : "RESPONSE",
     message: { text: safeText }
   };
 
   try {
-    const response = await timeBusinessInformationDelivery(outboundContext === "conversation" ? getScopedChannelSessionId("messenger", recipientId, businessConfig, getBusinessMessengerPageId(businessConfig)) : "", () => fetch(`https://graph.facebook.com/v25.0/me/messages?access_token=${encodeURIComponent(token)}`, {
+    if (reminderDelivery) {
+      // /me with a Page token proves that the credential actually belongs to
+      // this tenant's resolved Page; possession of a configured ID is not proof.
+      const identityResponse = await fetch("https://graph.facebook.com/v25.0/me?fields=id", {
+        method: "GET", redirect: "error", headers: { Authorization: `Bearer ${token}` },
+      });
+      const identity = await identityResponse.json().catch(() => null);
+      if (!identityResponse.ok || identity?.error || identity?.id !== pageId) {
+        console.error("[ChannelSend]", { channel: "messenger", success: false, category: "messenger_page_binding_failed" });
+        await markChannelCredentialFailure(businessConfig, identityResponse.status, identity?.error?.code);
+        return false;
+      }
+      // Identity lookup may outlast the conversation window. Recheck before POST.
+      if (!reminderAuthorized()) return false;
+    }
+    const endpoint = reminderDelivery
+      ? `https://graph.facebook.com/v25.0/${encodeURIComponent(pageId)}/messages`
+      : `https://graph.facebook.com/v25.0/me/messages?access_token=${encodeURIComponent(token)}`;
+    const response = await timeBusinessInformationDelivery(outboundContext === "conversation" ? getScopedChannelSessionId("messenger", recipientId, businessConfig, getBusinessMessengerPageId(businessConfig)) : "", () => fetch(endpoint, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      ...(reminderDelivery ? { redirect: "error" as const } : {}),
+      headers: { "Content-Type": "application/json", ...(reminderDelivery ? { Authorization: `Bearer ${token}` } : {}) },
       body: JSON.stringify(payload)
     }));
 
@@ -28148,6 +28215,9 @@ async function sendMessengerMessage(
     const reminderAccepted = !result?.error && typeof result?.message_id === "string" &&
       Boolean(result.message_id.trim()) && result?.recipient_id === recipientId;
     if (response.ok && (!reminderDelivery || reminderAccepted)) {
+      if (reminderDelivery) console.log("[ChannelSend]", {
+        channel: "messenger", reminderDelivery: true, success: true, providerMessageId: result.message_id,
+      });
       console.log("Messenger reply sent.");
       return true;
     }
@@ -34288,6 +34358,10 @@ export const priority1hUnifiedEngineTestBoundary = {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
     return processAppointmentReminderCandidate(appointment, reminderType, sentColumn);
   },
+  scheduleReminders() {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    return setupDailyReminders();
+  },
   formatReminder(appointment: any, businessConfig: any, reminderType: "24h" | "2h") {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
     return formatReminderMessage(appointment, businessConfig, reminderType);
@@ -34533,9 +34607,10 @@ export const priority1hUnifiedEngineTestBoundary = {
     text: string,
     businessConfig: any,
     outboundContext: MetaOutboundContext,
+    reminderDelivery: boolean = false,
   ) {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
-    return sendCustomerMessage(platform, recipientId, text, businessConfig, outboundContext);
+    return sendCustomerMessage(platform, recipientId, text, businessConfig, outboundContext, reminderDelivery);
   },
   whatsappServiceWindowOpen(rows: any[], customerId: string, nowMs: number) {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");

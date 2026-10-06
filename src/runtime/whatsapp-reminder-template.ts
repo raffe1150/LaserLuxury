@@ -1,13 +1,13 @@
 // Narrow appointment-only contract. Configuration selects existing Meta assets;
 // it never asserts approval, creates templates, or supplies generated prose.
-type Fact = "customer_name" | "service" | "date" | "time" | "business_name";
+import { hasCompatibleAppointmentTemplateBody, isRuntimeReminderMapping,
+  type AppointmentTemplateFact as Fact } from '../channels/whatsapp/appointment-template-contract';
 type TemplateMapping = {
   business_id: string; waba_id: string; phone_number_id: string;
   reminder_type: "24h" | "2h"; booking_language: string;
   template_id: string; name: string; language_code: string; body_parameters: Fact[];
 };
 type Result = { sent: boolean; category: "accepted" | "provider_rejected" | "whatsapp_template_required"; reason?: string };
-const facts = new Set<Fact>(["customer_name", "service", "date", "time", "business_name"]);
 
 export async function sendWhatsAppAppointmentTemplate(input: {
   configuration: unknown; businessId: string; wabaId: string; phoneNumberId: string; token: string;
@@ -26,15 +26,7 @@ export async function sendWhatsAppAppointmentTemplate(input: {
   if (!candidates.length) return blocked("whatsapp_template_language_unavailable");
   if (candidates.length !== 1) return blocked("whatsapp_template_misconfigured");
   const mapping: TemplateMapping = candidates[0];
-  if (mapping.business_id !== input.businessId || !input.wabaId || mapping.waba_id !== input.wabaId ||
-      !input.phoneNumberId || mapping.phone_number_id !== input.phoneNumberId ||
-      typeof mapping.template_id !== "string" || !mapping.template_id.trim() ||
-      typeof mapping.name !== "string" || !/^[a-z0-9_]+$/u.test(mapping.name) ||
-      typeof mapping.language_code !== "string" || !/^[a-z]{2,3}(?:_[A-Z]{2})?$/u.test(mapping.language_code) ||
-      mapping.language_code.split("_")[0] !== input.language ||
-      !Array.isArray(mapping.body_parameters) || !mapping.body_parameters.length ||
-      mapping.body_parameters.length > 20 || !mapping.body_parameters.every(key => facts.has(key)) ||
-      !["service", "date", "time"].every(key => mapping.body_parameters.includes(key as Fact))) {
+  if (!isRuntimeReminderMapping(mapping, input, input.language)) {
     return blocked("whatsapp_template_misconfigured");
   }
 
@@ -87,17 +79,7 @@ export async function sendWhatsAppAppointmentTemplate(input: {
 
   // Support only positional BODY text with optional static text header/footer.
   // Dynamic headers/buttons/named parameters require a separate explicit contract.
-  const components = template.components;
-  const bodies = Array.isArray(components) ? components.filter((part: any) => part?.type === "BODY") : [];
-  if (bodies.length !== 1 || typeof bodies[0].text !== "string" ||
-      (template.parameter_format != null && template.parameter_format !== "POSITIONAL") ||
-      components.some((part: any) => !part || part.type !== "BODY" && !(
-        ["HEADER", "FOOTER"].includes(part.type) && typeof part.text === "string" &&
-        !part.text.includes("{{") && (part.type !== "HEADER" || part.format === "TEXT")
-      ))) return blocked("whatsapp_template_contract_mismatch");
-  const placeholders = [...bodies[0].text.matchAll(/\{\{(.*?)\}\}/gu)].map(match => match[1]);
-  const keys = [...new Set(placeholders)].sort((a, b) => Number(a) - Number(b));
-  if (keys.length !== mapping.body_parameters.length || keys.some((key, index) => key !== String(index + 1))) {
+  if (!hasCompatibleAppointmentTemplateBody(template, mapping.body_parameters.length)) {
     return blocked("whatsapp_template_contract_mismatch");
   }
   const payload = {

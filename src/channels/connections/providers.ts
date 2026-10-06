@@ -1,5 +1,7 @@
 import crypto from 'node:crypto';
 import type { ChannelProvider, StoredCredential } from './contracts';
+import type { TenantProvisioningAuthorization } from './provisioning-readiness';
+import { inspectWhatsAppProvisioning, type WhatsAppProvisioningPreflight } from './whatsapp-provisioning-preflight';
 
 const graphVersion = () => String(process.env.META_GRAPH_API_VERSION || 'v26.0').replace(/^\/?/, '');
 
@@ -10,7 +12,27 @@ type ProviderConnectionResult = {
   tokenExpiresAt?: string | null;
   grantedScopes: string[];
   metadata: Record<string, unknown>;
+  preflight?: WhatsAppProvisioningPreflight;
 };
+
+export class WhatsAppPreflightError extends Error {
+  constructor(readonly preflight: WhatsAppProvisioningPreflight) {
+    super('whatsapp_provisioning_preflight_failed');
+  }
+}
+
+type WhatsAppAuthorizationContext = Omit<TenantProvisioningAuthorization, 'accessToken' | 'appId'>;
+
+async function whatsappPreflight(
+  authorization: WhatsAppAuthorizationContext, wabaId: string, phoneNumberId: string, token: string,
+) {
+  const preflight = await inspectWhatsAppProvisioning({
+    authorization: { ...authorization, appId: requiredEnv('META_APP_ID'), accessToken: token },
+    wabaId, phoneNumberId, graphVersion: graphVersion(),
+  });
+  if (!preflight.provisioning_ready) throw new WhatsAppPreflightError(preflight);
+  return preflight;
+}
 
 async function providerJson(url: string, init?: RequestInit): Promise<any> {
   const response = await fetch(url, init);
@@ -226,6 +248,7 @@ export function whatsappLaunchConfiguration(state: string) {
 }
 
 export async function completeWhatsApp(input: {
+  authorization: WhatsAppAuthorizationContext;
   code: string;
   wabaId: string;
   phoneNumberId: string;
@@ -237,30 +260,42 @@ export async function completeWhatsApp(input: {
   tokenUrl.searchParams.set('code', input.code);
   const tokenResult = await providerJson(tokenUrl.toString());
   const token = String(tokenResult.access_token || '');
-  const pin = String(crypto.randomInt(0, 1_000_000)).padStart(6, '0');
-  await providerJson(`https://graph.facebook.com/${graphVersion()}/${encodeURIComponent(input.phoneNumberId)}/register`, {
-    method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ messaging_product: 'whatsapp', pin }),
-  });
-  await providerJson(`https://graph.facebook.com/${graphVersion()}/${encodeURIComponent(input.wabaId)}/subscribed_apps`, {
-    method: 'POST', headers: { Authorization: `Bearer ${token}` },
-  });
-  const number = await providerJson(`https://graph.facebook.com/${graphVersion()}/${encodeURIComponent(input.phoneNumberId)}?fields=id,display_phone_number,verified_name&access_token=${encodeURIComponent(token)}`);
+  const preflight = await whatsappPreflight(input.authorization, input.wabaId, input.phoneNumberId, token);
+  // The existing provisioning boundary is reached only with verified tenant,
+  // account membership and effective management access. Never reset a connected
+  // number's PIN merely because onboarding was repeated.
+  let pin: string | undefined;
+  if (preflight.phone.status !== 'CONNECTED') {
+    pin = String(crypto.randomInt(0, 1_000_000)).padStart(6, '0');
+    await providerJson(`https://graph.facebook.com/${graphVersion()}/${encodeURIComponent(input.phoneNumberId)}/register`, {
+      method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messaging_product: 'whatsapp', pin }),
+    });
+  }
+  if (preflight.waba.app_subscription_present !== true) {
+    await providerJson(`https://graph.facebook.com/${graphVersion()}/${encodeURIComponent(input.wabaId)}/subscribed_apps`, {
+      method: 'POST', headers: { Authorization: `Bearer ${token}` },
+    });
+  }
   return {
     providerAccountId: input.phoneNumberId,
     providerConnectionId: input.wabaId,
-    credential: { accessToken: token, tokenType: 'business', twoStepPin: pin },
+    credential: { accessToken: token, tokenType: 'business', ...(pin ? { twoStepPin: pin } : {}) },
     tokenExpiresAt: expiresAt(tokenResult.expires_in),
-    grantedScopes: PROVIDER_SCOPES.whatsapp,
+    grantedScopes: preflight.authorization.effective_scopes,
+    preflight,
     metadata: {
-      display_name: number.verified_name || number.display_phone_number || 'WhatsApp Business',
+      display_name: preflight.asset.verified_name || preflight.asset.display_phone_number || 'WhatsApp Business',
       waba_id: input.wabaId,
       phone_number_id: input.phoneNumberId,
+      authorizing_odinlink_user_id: input.authorization.authorizingUserId,
+      whatsapp_provisioning_app_id: preflight.authorization.app_id,
     },
   };
 }
 
 export async function completeManualWhatsApp(input: {
+  authorization: WhatsAppAuthorizationContext;
   wabaId: string;
   phoneNumberId: string;
   accessToken: string;
@@ -269,30 +304,8 @@ export async function completeManualWhatsApp(input: {
   const wabaId = String(input.wabaId || '').trim();
   const phoneNumberId = String(input.phoneNumberId || '').trim();
 
-  const number = await providerJson(
-    `https://graph.facebook.com/${graphVersion()}/${encodeURIComponent(phoneNumberId)}?fields=id,display_phone_number,verified_name&access_token=${encodeURIComponent(token)}`,
-  );
-
-  if (String(number?.id || '') !== phoneNumberId) {
-    throw new Error('whatsapp_phone_number_mismatch');
-  }
-
-  const phonesUrl = new URL(
-    `https://graph.facebook.com/${graphVersion()}/${encodeURIComponent(wabaId)}/phone_numbers`,
-  );
-  phonesUrl.searchParams.set('fields', 'id');
-  phonesUrl.searchParams.set('limit', '100');
-  phonesUrl.searchParams.set('access_token', token);
-
-  const phones = await providerJson(phonesUrl.toString());
-  const belongsToWaba = (Array.isArray(phones?.data) ? phones.data : [])
-    .some((item: any) => String(item?.id || '') === phoneNumberId);
-
-  if (!belongsToWaba) {
-    throw new Error('whatsapp_waba_phone_mismatch');
-  }
-
-  await providerJson(
+  const preflight = await whatsappPreflight(input.authorization, wabaId, phoneNumberId, token);
+  if (preflight.waba.app_subscription_present !== true) await providerJson(
     `https://graph.facebook.com/${graphVersion()}/${encodeURIComponent(wabaId)}/subscribed_apps`,
     {
       method: 'POST',
@@ -311,11 +324,14 @@ export async function completeManualWhatsApp(input: {
       tokenType: 'business',
     },
     tokenExpiresAt: null,
-    grantedScopes: PROVIDER_SCOPES.whatsapp,
+    grantedScopes: preflight.authorization.effective_scopes,
+    preflight,
     metadata: {
-      display_name: number.verified_name || number.display_phone_number || 'WhatsApp Business',
+      display_name: preflight.asset.verified_name || preflight.asset.display_phone_number || 'WhatsApp Business',
       waba_id: wabaId,
       phone_number_id: phoneNumberId,
+      authorizing_odinlink_user_id: input.authorization.authorizingUserId,
+      whatsapp_provisioning_app_id: preflight.authorization.app_id,
       connection_method: 'manual',
     },
   };

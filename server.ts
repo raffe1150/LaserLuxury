@@ -198,6 +198,7 @@ import {
 } from "./src/health/integration-health";
 import type { IntegrationKey } from "./src/types/dashboard";
 import { createChannelConnectionsRouter } from "./src/channels/connections/api-router";
+import { createWhatsAppProvisioningRuntime } from "./src/channels/whatsapp/provisioning-runtime";
 import { createCalendarConnectionsRouter } from "./src/integrations/calendar-connections/api-router";
 import {
   persistCalendarOAuthTokens,
@@ -30501,12 +30502,21 @@ async function startServer() {
       resolveBusinessId: (request) => request.body?.businessId ?? request.body?.business_id,
     });
 
+  const whatsappProvisioning = supabase && process.env.WHATSAPP_TEMPLATE_PROVISIONING_ENABLED === 'true'
+    ? createWhatsAppProvisioningRuntime(supabase) : null;
+  if (whatsappProvisioning) {
+    cron.schedule('* * * * *', () => {
+      void whatsappProvisioning.reconcileDue().catch(() => logWebhookFailure('whatsapp_template_reconciliation', 'whatsapp'));
+    });
+  }
   if (supabase) {
     app.use('/api/meta', createMetaComplianceRouter(supabase));
     app.use('/api/channel-connections', createChannelConnectionsRouter({
       client: supabase,
       requireAuth,
       requireBusinessPermission: (permission) => requireBusinessPermission(permission),
+      whatsappTemplateProvisioner: whatsappProvisioning?.provision,
+      whatsappProvisioningStatus: whatsappProvisioning?.status,
     }));
 
     app.use('/api/calendar-connections', createCalendarConnectionsRouter({
@@ -30618,6 +30628,10 @@ async function startServer() {
         }
       }
     } else if (body.object === 'whatsapp_business_account') {
+      if (whatsappProvisioning) {
+        try { await whatsappProvisioning.handleVerifiedWebhook(body); }
+        catch { res.sendStatus(503); return; } // Meta may retry; periodic reads are also a fallback.
+      }
       res.status(200).send('EVENT_RECEIVED');
 
       if (body.entry) {

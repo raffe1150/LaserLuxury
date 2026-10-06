@@ -1,6 +1,7 @@
 import express, { type NextFunction, type Request, type RequestHandler, type Response } from 'express';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { AuthenticatedRequest } from '../../auth/types';
+import type { WhatsAppTemplateProvisioner, WhatsAppTemplateProvisioningState } from '../whatsapp/template-provisioning';
 import { encryptCredential, credentialKeyId } from './credential-crypto';
 import { isChannelProvider, type ChannelProvider } from './contracts';
 import {
@@ -21,6 +22,7 @@ import {
   verifyProviderCredential,
   refreshInstagramCredential,
   whatsappLaunchConfiguration,
+  WhatsAppPreflightError,
 } from './providers';
 import {
   AUTHORIZATION_COOKIE,
@@ -38,6 +40,8 @@ type RouterOptions = {
   client: SupabaseClient;
   requireAuth: RequestHandler;
   requireBusinessPermission: (permission: 'settings.manage') => RequestHandler;
+  whatsappTemplateProvisioner?: WhatsAppTemplateProvisioner;
+  whatsappProvisioningStatus?: (businessId: number) => Promise<WhatsAppTemplateProvisioningState | null>;
 };
 
 const callbackProviders = new Set<ChannelProvider>(['instagram', 'messenger']);
@@ -117,6 +121,12 @@ export async function consumeAuthorizationSession(
 export function createChannelConnectionsRouter(options: RouterOptions): express.Router {
   const router = express.Router();
   const manage = options.requireBusinessPermission('settings.manage');
+
+  router.get('/:businessId/whatsapp/provisioning', options.requireAuth, manage, asyncRoute(async (request, response) => {
+    const businessId = (request as AuthenticatedRequest).businessAccess!.businessId;
+    if (!options.whatsappProvisioningStatus) { response.json({ success: true, enabled: false, data: null }); return; }
+    response.json({ success: true, enabled: true, data: await options.whatsappProvisioningStatus(businessId) });
+  }));
 
   router.get('/:businessId', options.requireAuth, manage, asyncRoute(async (request, response) => {
     const businessId = (request as AuthenticatedRequest).businessAccess!.businessId;
@@ -234,14 +244,29 @@ export function createChannelConnectionsRouter(options: RouterOptions): express.
       response.status(403).json({ error: 'authorization_owner_mismatch' });
       return;
     }
-    const completed = await completeWhatsApp({ code, wabaId, phoneNumberId, redirectUri: session.redirect_uri });
+    let completed: Awaited<ReturnType<typeof completeWhatsApp>>;
+    try {
+      completed = await completeWhatsApp({ code, wabaId, phoneNumberId, redirectUri: session.redirect_uri,
+        authorization: { businessId: authenticated.businessAccess!.businessId, authorizingUserId: authenticated.auth!.userId } });
+    } catch (error) {
+      if (!(error instanceof WhatsAppPreflightError)) throw error;
+      response.setHeader('Set-Cookie', clearAuthorizationCookie());
+      response.status(409).json({ error: 'whatsapp_setup_needs_attention', readiness: error.preflight });
+      return;
+    }
     const connection = await saveConnection(options.client, {
       businessId: authenticated.businessAccess!.businessId,
       provider: 'whatsapp',
       ...completed,
     });
+    const provisioning = options.whatsappTemplateProvisioner && completed.preflight ? await options.whatsappTemplateProvisioner({
+      authorization: { businessId: authenticated.businessAccess!.businessId, authorizingUserId: authenticated.auth!.userId,
+        appId: completed.preflight.authorization.app_id!, accessToken: completed.credential.accessToken },
+      wabaId, phoneNumberId,
+    }, completed.preflight) : undefined;
     response.setHeader('Set-Cookie', clearAuthorizationCookie());
-    response.json({ success: true, data: publicConnection(connection) });
+    response.json({ success: true, data: publicConnection(connection), readiness: provisioning?.readiness || completed.preflight,
+      ...(provisioning ? { provisioning } : {}) });
   }));
 
   router.post('/:businessId/instagram/manual', options.requireAuth, manage, asyncRoute(async (request, response) => {
@@ -288,21 +313,32 @@ export function createChannelConnectionsRouter(options: RouterOptions): express.
       return;
     }
 
-    const completed = await completeManualWhatsApp({
-      phoneNumberId,
-      wabaId,
-      accessToken,
-    });
+    let completed: Awaited<ReturnType<typeof completeManualWhatsApp>>;
+    try {
+      completed = await completeManualWhatsApp({ phoneNumberId, wabaId, accessToken,
+        authorization: { businessId, authorizingUserId: authenticated.auth!.userId } });
+    } catch (error) {
+      if (!(error instanceof WhatsAppPreflightError)) throw error;
+      response.status(409).json({ error: 'whatsapp_setup_needs_attention', readiness: error.preflight });
+      return;
+    }
 
     const connection = await saveConnection(options.client, {
       businessId,
       provider: 'whatsapp',
       ...completed,
     });
+    const provisioning = options.whatsappTemplateProvisioner && completed.preflight ? await options.whatsappTemplateProvisioner({
+      authorization: { businessId, authorizingUserId: authenticated.auth!.userId,
+        appId: completed.preflight.authorization.app_id!, accessToken: completed.credential.accessToken },
+      wabaId, phoneNumberId,
+    }, completed.preflight) : undefined;
 
     response.json({
       success: true,
       data: publicConnection(connection),
+      readiness: provisioning?.readiness || completed.preflight,
+      ...(provisioning ? { provisioning } : {}),
     });
   }));
 

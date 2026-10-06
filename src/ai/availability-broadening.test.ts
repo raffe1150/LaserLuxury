@@ -8,6 +8,20 @@ const request = (text: string) => normalizeBookingRequest({ businessId: '7', cha
 
 const broadeningMessages = [
   ['en', 'Could you check if you have any available times for me tomorrow?'],
+  ['en', 'Do you have any other times available tomorrow?'],
+  ['en', 'Do you have any other times tomorrow?'],
+  ['en', 'Any other times available tomorrow?'],
+  ['en', 'What other times do you have tomorrow?'],
+  ['en', 'Are there any other slots tomorrow?'],
+  ['en', 'Anything else available tomorrow?'],
+  ['en', 'Show me some other times tomorrow.'],
+  ['en', 'Do you have another slot tomorrow?'],
+  ['en', 'Can you check different times tomorrow?'],
+  ['sv', 'Har ni några andra tider i morgon?'],
+  ['de', 'Haben Sie andere Termine morgen?'],
+  ['es', '¿Tienen otros horarios disponibles mañana?'],
+  ['fa', 'آیا وقت دیگری برای فردا دارید؟'],
+  ['ar', 'هل لديكم مواعيد أخرى غداً؟'],
   ['sv', 'Vilka lediga tider har ni i morgon?'],
   ['de', 'Welche freien Termine haben Sie morgen?'],
   ['es', '¿Qué horarios disponibles tienen mañana?'],
@@ -49,6 +63,11 @@ for (const [text, kind] of [
   ['any time after 15:00', 'after'], ['any time before 15:00', 'before'],
   ['any time tomorrow afternoon', 'afternoon'], ['any time between 15:00 and 17:00', 'between'],
   ['How about 14:00 tomorrow?', 'exact'],
+  ['Is 18:00 available?', 'exact'],
+  ['Other times after 15:00 tomorrow please', 'after'],
+  ['Any other times before 15:00 tomorrow?', 'before'],
+  ['Show me other times tomorrow afternoon', 'afternoon'],
+  ['Any other times between 15:00 and 17:00 tomorrow?', 'between'],
   ['Vilken tid som helst i morgon efter 15:00', 'after'],
   ['Jederzeit morgen nach 15:00', 'after'],
   ['Cualquier hora mañana después de las 15:00', 'after'],
@@ -64,6 +83,15 @@ for (const [text, kind] of [
 }
 
 for (const text of ['Please check again.', 'tomorrow?', 'Is that available?', 'Thanks for your help.',
+  'Which one should I choose?', 'Can you show those times again?',
+  'Do you have something else tomorrow?', 'Another question about tomorrow',
+  'Do you offer other services tomorrow?', 'Is parking available at other times tomorrow?',
+  'Do you have any other payment options?', 'I chose a different time tomorrow.',
+  'I do not want any other times tomorrow.', 'Do not show any other times tomorrow.',
+  'I do not want anything else available tomorrow.', 'No quiero otros horarios disponibles mañana.', 'No other times work for me.',
+  'I cannot do other times tomorrow.', 'Inga andra tider fungerar för mig.',
+  'Keine anderen Termine bitte.', 'No quiero otros horarios mañana.',
+  'وقت دیگری نمی خواهم', 'لا أريد مواعيد أخرى غداً',
   'Can I contact you any time tomorrow?', 'Is parking available all day?',
   'I cannot do any time tomorrow.', 'Not any time tomorrow.', 'I am not available all day tomorrow.']) {
   test(`ambiguous or negated follow-up does not clear: ${text}`, () => {

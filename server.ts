@@ -13103,6 +13103,9 @@ function findOwnedOfferedSlot(pending: any, startIso?: string | null): OwnedOffe
 }
 
 function selectOwnedOfferedSlot(text: string, pending: any): OwnedOfferedSlot | null {
+  // Explicit alternative enumeration must reach constraint replacement before
+  // ordinal selection (Swedish "andra tider" means other times, not slot two).
+  if (isWholeDayAvailabilityRequest(text)) return null;
   // A date in an unrelated sentence must not override the date of an owned
   // slot selection (for example, a customer selecting 14:00 then mentioning
   // something that happened today). Keep explicit date corrections in scope.

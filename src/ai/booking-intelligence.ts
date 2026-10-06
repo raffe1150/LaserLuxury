@@ -366,6 +366,27 @@ export function parseNamedBookingDateRange(
   return valid(startDate) && valid(endDate) ? { startDate, endDate } : null;
 }
 
+// Alternative enumeration is an explicit replacement of the previous time
+// restriction. Match a request cue and a time/slot noun, rather than treating
+// "other", "different" or "else" alone as permission to reset booking state.
+function isAlternativeAvailabilityRequest(raw: string): boolean {
+  return (
+    (/\b(?:other|another|different|alternative)\s+(?:available\s+)?(?:times?|slots?)\b/iu.test(raw) &&
+      /\b(?:do\s+you\s+have|have\s+you\s+got|are\s+there|is\s+there|what|which|show|check|find|offer)\b|^(?:please\s+)?any\b/iu.test(raw)) ||
+    /\b(?:anything|something)\s+else\s+(?:available|free)\b/iu.test(raw) ||
+    (/\b(?:andra|annan)\s+(?:lediga\s+)?(?:tider|tid)\b/iu.test(raw) &&
+      /\b(?:har\s+(?:ni|du)|finns\s+det|vilka|vilken|visa|kolla)\b|^(?:n[aå]gra|n[aå]gon)\b/iu.test(raw)) ||
+    (/\bandere[nrs]?\s+(?:freie[nr]?\s+|verf[üu]gbare[nr]?\s+)?(?:zeiten|zeit|termine|termin|uhrzeiten|uhrzeit)\b/iu.test(raw) &&
+      /\b(?:haben\s+(?:sie|du)|hast\s+du|gibt\s+es|welche|zeig(?:en)?|pr[üu]fen)\b/iu.test(raw)) ||
+    (/\b(?:otros?|otras?|diferentes?)\s+(?:horarios?|horas?|turnos?|citas?)\b/iu.test(raw) &&
+      /\b(?:tienen|tienes|hay|qu[eé]|cu[aá]les|muestra(?:me)?|mu[eé]stra(?:me)?|buscar)\b/iu.test(raw)) ||
+    (/(?:وقت|زمان|ساعت|نوبت)(?:\s*های)?\s*(?:دیگر|دیگری|دیگه|متفاوت)/u.test(raw) &&
+      /(?:آیا|چه|دارید|داری|هست|نشان|بررسی)/u.test(raw)) ||
+    (/(?:مواعيد|أوقات|اوقات|وقت|موعد)\s*(?:أخرى|اخرى|آخر|اخر|مختلفة)/u.test(raw) &&
+      /(?:هل|أي|اي|ما|لديكم|عندكم|اعرض|أرني|ارني)/u.test(raw))
+  );
+}
+
 export function isWholeDayAvailabilityRequest(text?: string): boolean {
   const raw = normalizeConversationText(String(text || ""))
     .trim()
@@ -381,9 +402,14 @@ export function isWholeDayAvailabilityRequest(text?: string): boolean {
     !isReadOnlyAvailabilityInquiry(String(text || ""))
   )) return false;
   // Negated flexibility is not permission to discard an active restriction.
+  const negated = /\b(?:(?:do not|don't|cannot|can't)\s+(?:want|need|accept|do|have|show|check|find|offer)|no)\s+(?:any\s+)?(?:(?:other|another|different|alternative)\s+(?:available\s+)?(?:times?|slots?)|(?:anything|something)\s+else\s+(?:available|free))\b/iu.test(raw) ||
+    /\b(?:inga\s+andra|inte\s+(?:ha|visa|boka)\s+(?:n[aå]gra\s+)?andra|keine[nr]?\s+andere[nr]?|no\s+(?:quiero|tengo|puedo)\s+(?:otros|otras))\b/iu.test(raw) ||
+    /(?:دیگر\S*.{0,24}نمی\s*خواهم|لا\s*(?:أريد|اريد|توجد|يوجد).{0,24}(?:أخرى|اخرى|آخر|اخر))/u.test(raw);
+  if (negated) return false;
   if (/\b(?:not|cannot|can't|inte|nicht|no puedo)\s+(?:(?:do|be|available|accept)\s+)?(?:any|all day|whenever|hela dagen|jederzeit|cualquier)\b/iu.test(raw) ||
     /(?:نمی|نمي|نمی توانم|لا).{0,24}(?:هر|أي|اي|طوال)/u.test(raw)) return false;
   return (
+    isAlternativeAvailabilityRequest(raw) ||
     /\b(?:any\s+(?:available\s+)?(?:time|times|slot|slots)|anytime|whenever|available\s+(?:times|slots)|what\s+times\s+(?:do\s+you\s+have|are\s+available)|any\s+time\s+that\s+day|all\s+day|whole\s+day|only\s+(?:on\s+)?(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)|do\s+you\s+have\s+any\s+time)\b/i.test(raw) ||
     /\b(?:vilken\s+tid\s+som\s+helst|lediga\s+tider|n[aå]gon\s+tid|hela\s+dagen|bara\s+(?:p[aå]\s+)?(?:m[aå]ndag|tisdag|onsdag|torsdag|fredag|l[oö]rdag|s[oö]ndag)|har\s+du\s+(?:inte\s+)?(?:n[aå]gon\s+)?tid)\b/i.test(raw) ||
     /\b(?:irgendeine\s+uhrzeit|(?:freie[nr]?|verf[üu]gbare[nr]?)\s+(?:termine|zeiten)|jederzeit|den\s+ganzen\s+tag|nur\s+(?:am\s+)?(?:montag|dienstag|mittwoch|donnerstag|freitag|samstag|sonntag))\b/i.test(raw) ||
@@ -546,6 +572,7 @@ export function parseTimeConstraint(text: string): NormalizedTimeConstraint | un
     contextualExact &&
     (
       /\b(?:how about|what about|slot|time|appointment|take|choose|want|prefer|book|works|perfect|fine|tid|tiden|väljer|valjer|vill ha|passar|perfekt|utmärkt|utmarkt|boka|termin|hora|cita)\b/iu.test(raw) ||
+      /\b(?:is|would)\s+\d{1,2}:\d{2}\s+(?:be\s+)?available\b/iu.test(raw) ||
       /(?:وقت|زمان|ساعت|رزرو|موعد)/u.test(raw)
     )
   ) {

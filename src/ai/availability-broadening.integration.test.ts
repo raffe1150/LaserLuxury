@@ -28,6 +28,7 @@ function fixture(t: any, platformName: typeof channels[number] = 'instagram', st
   const traces: Array<{ label: string; detail: any }> = [];
   t.mock.method(console, 'log', (label: string, detail: any) => traces.push({ label, detail }));
   let blocked = true;
+  let alternatives = false;
   let scans = 0;
   let mutations = 0;
   let scanFails = false;
@@ -35,7 +36,8 @@ function fixture(t: any, platformName: typeof channels[number] = 'instagram', st
     ...(store ? { supabaseClient: store } : {}),
     availabilityDiagnostic: (detail: any) => { traces.push({ label: 'availability-diagnostic', detail }); },
     calendarAdapter: { getCalendarId: () => 'cal-7',
-      getEvents: async () => { scans++; if (scanFails) throw new Error('Synthetic calendar read failure'); return blocked ? [{ summary: 'Busy',
+      getEvents: async () => { scans++; if (scanFails) throw new Error('Synthetic calendar read failure'); return alternatives ? [{ summary: 'Busy requested clocks',
+        start: { dateTime: '2026-10-07T13:00:00+02:00' }, end: { dateTime: '2026-10-07T14:30:00+02:00' } }] : blocked ? [{ summary: 'Busy',
         start: { dateTime: '2026-10-07T00:00:00+02:00' }, end: { dateTime: '2026-10-08T00:00:00+02:00' } }] : []; },
       checkSlots: async () => { throw new Error('Legacy availability must not run'); },
       insertAppointment: async () => { mutations++; throw new Error('Availability must not mutate'); },
@@ -50,12 +52,13 @@ function fixture(t: any, platformName: typeof channels[number] = 'instagram', st
   const contacts = (pending: any) => boundary.seedPending(sessionId, { ...pending,
     customerName: 'Ada Test', customerPhone: '0701234567', contactPhoneSource: 'explicit_customer_message',
   });
-  return { turn, traces, contacts, sessionId, platformName, release: () => { blocked = false; },
+  return { turn, traces, contacts, sessionId, platformName, release: () => { blocked = false; alternatives = false; },
+    offerAlternatives: () => { blocked = false; alternatives = true; },
     failScan: () => { scanFails = true; },
     scans: () => scans, mutations: () => mutations };
 }
 
-function assertWholeDay(result: any, f: ReturnType<typeof fixture>, scanCount: number) {
+function assertWholeDay(result: any, f: ReturnType<typeof fixture>, scanCount: number, freeCandidateCount = 35) {
   const p = result.pending;
   assert.equal(result.handled, true);
   assert.equal(p?.availabilityConstraint?.kind, 'whole_day', JSON.stringify({ constraint: p?.availabilityConstraint,
@@ -85,7 +88,7 @@ function assertWholeDay(result: any, f: ReturnType<typeof fixture>, scanCount: n
   const diagnostic = f.traces.find(e => e.label === 'availability-diagnostic')?.detail;
   assert.equal(diagnostic?.candidateSlotCount, 35);
   assert.equal(diagnostic?.rejectedByConstraint, 0);
-  assert.equal(diagnostic?.freeCandidateCount, 35);
+  assert.equal(diagnostic?.freeCandidateCount, freeCandidateCount);
   assert.ok(f.scans() > scanCount, 'fresh calendar scan');
   assert.equal(f.mutations(), 0);
   assert.ok(f.traces.some(e => e.label === '[BookingNormalizedState]' && e.detail.stateReplaced));
@@ -289,3 +292,123 @@ test('confirmed selected slot survives unrelated information; explicit broadenin
   f.traces.length = 0;
   assertWholeDay(await f.turn('Could you check if you have any available times for me tomorrow?'), f, scans);
 });
+
+const alternativeMessages = [
+  ['en', 'Do you have any other times available tomorrow?'],
+  ['en', 'Do you have any other times tomorrow?'],
+  ['en', 'Any other times available tomorrow?'],
+  ['en', 'What other times do you have tomorrow?'],
+  ['en', 'Are there any other slots tomorrow?'],
+  ['en', 'Anything else available tomorrow?'],
+  ['en', 'Show me some other times tomorrow.'],
+  ['en', 'Do you have another slot tomorrow?'],
+  ['en', 'Can you check different times tomorrow?'],
+  ['sv', 'Har ni några andra tider i morgon?'],
+  ['de', 'Haben Sie andere Termine morgen?'],
+  ['es', '¿Tienen otros horarios disponibles mañana?'],
+  ['fa', 'آیا وقت دیگری برای فردا دارید؟'],
+  ['ar', 'هل لديكم مواعيد أخرى غداً؟'],
+] as const;
+
+for (const channel of channels) {
+  for (const [language, message] of alternativeMessages) {
+    test(`${channel}/${language}: cached alternatives broaden: ${message}`, async t => {
+      const f = fixture(t, channel);
+      f.offerAlternatives();
+      const first = await f.turn('I want to book a Video Consultation for tomorrow around 13:00.');
+      assert.equal(first.pending.availabilityConstraint.exactTime, '13:00');
+      assert.ok(first.pending.ownedOfferedSlots.length > 0);
+      const second = await f.turn('How about 14:00 tomorrow?');
+      assert.equal(second.pending.availabilityConstraint.exactTime, '14:00');
+      assert.ok(second.pending.ownedOfferedSlots.length > 0);
+      const oldKey = second.pending.lastAvailabilityConstraintKey;
+      const oldOffers = second.pending.ownedOfferedSlots;
+      f.contacts(second.pending);
+      const scans = f.scans();
+      f.traces.length = 0;
+      // The calendar changes after the narrow offers: only a fresh read can
+      // offer the newly free 14:00 slot under an unrestricted constraint.
+      f.release();
+      const result = await f.turn(message);
+      assertWholeDay(result, f, scans);
+      assert.equal(result.pending.userId, second.pending.userId);
+      assert.notEqual(result.pending.lastAvailabilityConstraintKey, oldKey);
+      assert.notDeepEqual(result.pending.ownedOfferedSlots, oldOffers);
+      assert.ok(result.pending.ownedOfferedSlots.some((slot: any) => new Date(slot.start).toLocaleTimeString('sv-SE', { timeZone: 'Europe/Stockholm', hour: '2-digit', minute: '2-digit' }) === '14:00'),
+        JSON.stringify(result.pending.ownedOfferedSlots));
+      assert.ok(result.replies.every((reply: string) => !reply.includes('Which proposed time would you like')));
+    });
+  }
+}
+
+for (const channel of channels) {
+  for (const message of ['Which one should I choose?', 'Can you show those times again?',
+    'Do you have something else tomorrow?', 'Do you have any other payment options?']) {
+    test(`${channel}: alternative-enumeration ambiguity preserves offers: ${message}`, async t => {
+      const f = fixture(t, channel);
+      f.offerAlternatives();
+      const initial = await f.turn('Video Consultation tomorrow at 14:00');
+      f.contacts(initial.pending);
+      const scans = f.scans();
+      const result = await f.turn(message);
+      assert.equal(result.pending.availabilityConstraint.exactTime, '14:00');
+      assert.equal(result.pending.normalizedBookingRequest.timeConstraint.kind, 'exact');
+      assert.equal(result.pending.requestedTime, '14:00');
+      assert.equal(result.pending.dateTime, initial.pending.dateTime);
+      assert.deepEqual(result.pending.ownedOfferedSlots, initial.pending.ownedOfferedSlots);
+      assert.equal(result.pending.lastAvailabilityConstraintKey, initial.pending.lastAvailabilityConstraintKey);
+      assert.equal(result.pending.service, 'Video Consultation');
+      assert.equal(result.pending.customerName, 'Ada Test');
+      assert.equal(result.pending.customerPhone, '0701234567');
+      // Re-listing may revalidate the same narrow offers on the calendar;
+      // it must not widen the constraint or invalidate the offer fingerprint.
+      if (!message.includes('show those')) assert.equal(f.scans(), scans);
+      assert.equal(f.mutations(), 0);
+      if (message.includes('show those')) assert.match(result.replies.join(' '), /14:30|14:45|15:00/);
+    });
+  }
+  test(`${channel}: exact availability question stays narrow after cached alternatives`, async t => {
+    const f = fixture(t, channel);
+    f.offerAlternatives();
+    await f.turn('Video Consultation tomorrow at 14:00');
+    const result = await f.turn('Is 18:00 available?');
+    assert.equal(result.pending.availabilityConstraint.exactTime, '18:00');
+    assert.equal(result.pending.requestedTime, '18:00');
+    assert.equal(result.pending.service, 'Video Consultation');
+    assert.equal(result.pending.selectedDate, '2026-10-07');
+  });
+  test(`${channel}: other times with a restated boundary keeps only the new boundary`, async t => {
+    const f = fixture(t, channel);
+    f.offerAlternatives();
+    const initial = await f.turn('Video Consultation tomorrow at 14:00');
+    f.contacts(initial.pending);
+    const scans = f.scans();
+    const result = await f.turn('Do you have any other times after 15:00 tomorrow?');
+    assert.equal(result.pending.normalizedBookingRequest.timeConstraint.kind, 'after');
+    assert.equal(result.pending.availabilityConstraint.exactTime, undefined);
+    assert.equal(result.pending.availabilityConstraint.timeBoundary.time, '15:00');
+    assert.equal(result.pending.requestedTime, null);
+    assert.equal(result.pending.customerName, 'Ada Test');
+    assert.equal(result.pending.service, 'Video Consultation');
+    assert.ok(f.scans() > scans);
+  });
+}
+
+for (const channel of channels) {
+  test(`${channel}: fresh other-times scan excludes both still-unavailable requested clocks`, async t => {
+    const f = fixture(t, channel);
+    f.offerAlternatives();
+    await f.turn('I want to book a Video Consultation for tomorrow around 13:00.');
+    const narrow = await f.turn('How about 14:00 tomorrow?');
+    f.contacts(narrow.pending);
+    const scans = f.scans();
+    f.traces.length = 0;
+    const result = await f.turn('Do you have any other times available tomorrow?');
+    assertWholeDay(result, f, scans, 28);
+    assert.notEqual(result.pending.lastAvailabilityConstraintKey, narrow.pending.lastAvailabilityConstraintKey);
+    for (const slot of result.pending.ownedOfferedSlots) {
+      assert.ok(new Date(slot.end).getTime() <= new Date('2026-10-07T13:00:00+02:00').getTime() ||
+        new Date(slot.start).getTime() >= new Date('2026-10-07T14:30:00+02:00').getTime());
+    }
+  });
+}

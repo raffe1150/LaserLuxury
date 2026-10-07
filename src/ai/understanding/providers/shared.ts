@@ -14,6 +14,8 @@ For contact extraction, make an explicit decision for every contact field requir
 
 For every returned customer name or phone, also return the shortest exact verbatim phrase from customerTurn that proves its semantic role. The evidence phrase must include enough surrounding language to show that the value is explicitly being communicated as the customer's name or contact phone. Do not classify unrelated numbers, test identifiers, reference numbers, dates, times, booking IDs, diagnostic markers, or quoted third-party data as a phone number. Never fabricate or normalize the evidence phrase; copy it exactly from customerTurn.
 
+For serviceText, copy only the service wording stated in the current customer turn, retaining meaningful service qualifiers. Exclude surrounding booking verbs, date/time phrases, and polite request fillers. Do not replace it with a configured label or service ID; deterministic tenant catalog resolution happens after interpretation.
+
 You interpret language and meaning only. Never decide or claim availability, Calendar or database truth, booking/cancellation/reschedule success, ownership, authorization, idempotency, tool execution, or mutation permission.
 `.trim();
 

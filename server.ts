@@ -1,4 +1,8 @@
 import {
+  hasQualifiedServiceConcept, groundedSemanticServicePhrase, serviceIntentConcept,
+  serviceIntentMatchScore, SERVICE_AUTO_MATCH_CONFIDENCE, stripServiceTemporalSuffix,
+} from './src/ai/service-intent';
+import {
   bookingCompositionLanguageMatches,
   bookingReplyLanguageEvidence,
   composeGroundedBookingReply,
@@ -10492,18 +10496,13 @@ function normalizeBookingService(text?: string, fallback?: string): string {
 
 function findConfiguredBookingService(
   requestedService: string,
-  businessConfig: any
+  businessConfig: any,
+  literalOnly = false,
 ): string | null {
   const requested = String(requestedService || "").trim();
   if (!requested) return null;
 
-  const configuredNames = (Array.isArray(businessConfig?.services)
-    ? businessConfig.services
-    : [])
-    .map((item: any) =>
-      String(item?.name || item?.service || item?.title || "").trim()
-    )
-    .filter(Boolean);
+  const configuredNames = getEligibleConfiguredBookingServices(businessConfig).map(service => service.name);
   const requestedLower = requested.toLowerCase();
 
   const directMatches = configuredNames.filter((name: string) => {
@@ -10520,10 +10519,16 @@ function findConfiguredBookingService(
       containsServicePhrase(requestedLower, configuredLower);
   });
   if (directMatches.length === 1) return directMatches[0];
-  if (directMatches.length > 1) return null;
+  if (directMatches.length > 1 || literalOnly) return null;
+
+  const intentMatches = configuredNames.filter((name: string) => serviceIntentMatchScore(requested, name) >= SERVICE_AUTO_MATCH_CONFIDENCE);
+  if (intentMatches.length === 1) return intentMatches[0];
+  if (intentMatches.length > 1 || serviceIntentConcept(requested) || hasQualifiedServiceConcept(requested)) return null;
 
   const requestedCanonical = normalizeBookingService(requested, "Bokning");
   if (requestedCanonical === "Bokning") return null;
+  const concrete = extractConcreteRequestedService(requested);
+  if (concrete && !/^(?:konsultation|consultation|consulting|consult|consulta|beratung|moshavereh?|مشاوره|استشارة|laser|لیزر|ليزر)$/iu.test(concrete)) return null;
 
   const canonicalMatches = configuredNames.filter((name: string) =>
     normalizeBookingService(name, "Bokning") === requestedCanonical
@@ -10549,8 +10554,12 @@ function getEligibleConfiguredBookingServices(businessConfig: any): ConfiguredBo
   const services: ConfiguredBookingService[] = [];
   for (const item of Array.isArray(businessConfig?.services) ? businessConfig.services : []) {
     if (!item || item.active === false || item.bookable === false) continue;
+    const configuredTenant = String(getBusinessIdFromConfig(businessConfig) || "");
+    const rowTenant = String(item.business_id || item.businessId || "");
+    if (rowTenant && rowTenant !== configuredTenant) continue;
     const name = String(item?.name || item?.service || item?.title || "").trim();
-    const key = name.toLocaleLowerCase();
+    const id = String(item?.id || item?.serviceId || item?.service_id || "").trim() || null;
+    const key = JSON.stringify([name.toLocaleLowerCase(), id]);
     if (!name || seen.has(key)) continue;
     seen.add(key);
     const aliases = [
@@ -10559,7 +10568,7 @@ function getEligibleConfiguredBookingServices(businessConfig: any): ConfiguredBo
       ...(Array.isArray(item?.service_aliases) ? item.service_aliases : []),
     ].map((alias: unknown) => String(alias || "").trim()).filter(Boolean);
     services.push({
-      id: String(item?.id || item?.serviceId || item?.service_id || "").trim() || null,
+      id,
       name,
       aliases,
       raw: item,
@@ -10626,6 +10635,7 @@ function resolveAuthoritativeBookingService(
   text: string,
   businessConfig: any,
   requireExplicitSelection = false,
+  semanticPhrase: string | null = null,
 ): BookingServiceResolution {
   const eligible = getEligibleConfiguredBookingServices(businessConfig);
   const explicitDefault = String(
@@ -10634,7 +10644,7 @@ function resolveAuthoritativeBookingService(
   const directName = findConfiguredBookingService(text, {
     ...businessConfig,
     services: eligible.map((service) => service.raw),
-  });
+  }, true);
   if (directName) {
     return {
       status: "resolved",
@@ -10659,10 +10669,32 @@ function resolveAuthoritativeBookingService(
   const concrete = extractedConcrete && !isDateOnlyServiceExtraction(extractedConcrete)
     ? extractedConcrete
     : null;
-  const evidence = concrete || (inferServiceFromText(text) !== "Bokning" ? text : null);
+  // Preserve explicit qualifiers. A semantic span may refine a literal
+  // capture only by removing ordinary request fillers, never service modifiers.
+  const semanticRefinesConcrete = Boolean(concrete && semanticPhrase && concrete.toLowerCase().startsWith(semanticPhrase.toLowerCase()) &&
+    /^(?:\s+(?:for me|please|tack|för mig|bitte|für mich|para mí|por favor))*$/iu.test(concrete.slice(semanticPhrase.length)));
+  const terseEvidence = stripServiceTemporalSuffix(text).replace(/[.!?؟]+$/u, '').trim();
+  const terseMatches = eligible.some(service => [service.name, ...service.aliases].some(label =>
+    serviceIntentMatchScore(terseEvidence, label) >= SERVICE_AUTO_MATCH_CONFIDENCE
+  ));
+  const evidence = semanticRefinesConcrete ? semanticPhrase! : concrete || semanticPhrase || (terseMatches ? terseEvidence : null) || (inferServiceFromText(text) !== "Bokning" ? text : null);
+  if (evidence) {
+    const scored = eligible.map(service => ({
+      service,
+      score: Math.max(...[service.name, ...service.aliases].map(label => serviceIntentMatchScore(evidence, label))),
+    }));
+    const exact = scored.filter(item => item.score === 1).map(item => item.service);
+    const high = exact.length ? exact : scored.filter(item => item.score >= SERVICE_AUTO_MATCH_CONFIDENCE).map(item => item.service);
+    if (high.length === 1) return { status: "resolved", service: high[0], source: "evidence" };
+    if (high.length > 1) return { status: "ambiguous", requestedService: evidence, candidates: high.slice(0, 5) };
+    // A qualified semantic concept must not fall back to generic consultation
+    // or a shared word (e.g. "video editing") and silently change the service.
+    if (serviceIntentConcept(evidence)) return { status: "unsupported", requestedService: evidence, candidates: [] };
+  }
   if (evidence) {
     const candidates = getRelevantConfiguredServiceCandidates(evidence, businessConfig);
-    if (candidates.length === 1) return { status: "resolved", service: candidates[0], source: "evidence" };
+    const genericConcept = /^(?:konsultation|consultation|consulting|consult|consulta|beratung|moshavereh?|مشاوره|استشارة|laser|لیزر|ليزر)$/iu.test(evidence.trim());
+    if (candidates.length === 1 && genericConcept) return { status: "resolved", service: candidates[0], source: "evidence" };
     if (candidates.length > 1) {
       return { status: "ambiguous", requestedService: concrete || evidence, candidates };
     }
@@ -10703,7 +10735,8 @@ function extractAwaitingServiceLabel(text: string): string | null {
 }
 
 function extractConcreteRequestedService(text?: string): string | null {
-  const raw = String(text || "").replace(/\s+/g, " ").trim();
+  const original = String(text || "").replace(/\s+/g, " ").trim();
+  const raw = stripServiceTemporalSuffix(original);
   if (!raw) return null;
 
   const isSpanishDateOnlyContinuation = (value: string): boolean => {
@@ -10788,7 +10821,7 @@ function extractConcreteRequestedService(text?: string): string | null {
   if (genericSpanishRequest && isSpanishDateOnlyContinuation(genericSpanishRequest[1])) return null;
 
   const token = String.raw`[\p{L}\p{M}][\p{L}\p{M}'’\-]*`;
-  const candidate = String.raw`${token}(?:\s+${token}){0,4}?`;
+  const candidate = String.raw`${token}(?:\s+${token}){0,11}?`;
   // A dated request still carries explicit service evidence. Keep the date in
   // the original turn; only delimit the service capture here.
   const dateStart = String.raw`(?:[0-9۰-۹٠-٩]|monday|tuesday|wednesday|thursday|friday|saturday|sunday|måndag|tisdag|onsdag|torsdag|fredag|lördag|söndag|montag|dienstag|mittwoch|donnerstag|freitag|samstag|sonntag|lunes|martes|miércoles|jueves|viernes|sábado|domingo|شنبه|یکشنبه|دوشنبه|سه\s+شنبه|چهارشنبه|پنجشنبه|جمعه|الأحد|الاحد|الاثنين|الثلاثاء|الأربعاء|الخميس|الجمعة|السبت)`;
@@ -10802,6 +10835,9 @@ function extractConcreteRequestedService(text?: string): string | null {
     return /^(?:وقت|نوبت|رزرو|سرویس|خدمت)$/u.test(service) ? null : service;
   }
   const patterns = [
+    // Persian places the booking verb after the temporal suffix. It is safe to
+    // capture the remaining phrase only when that verb was explicit originally.
+    ...(raw !== original && /(?:رزرو|بوک)/u.test(original) ? [new RegExp(String.raw`(?:می[\s‌]*خواهم|می[\s‌]*خوام|می[\s‌]*خواستم)\s+(${candidate})$`, "iu")] : []),
     new RegExp(String.raw`\b(?:book|schedule|reserve|boka|reservera|reservar|agendar)\s+(?:(?:an?|en|ett|un|una|el|la)\s+)?(${candidate})${dateTail}`, "iu"),
     new RegExp(String.raw`\bich\s+(?:möchte|moechte|will)\s+(?:gern(?:e)?\s+)?(?:eine[nmrs]?\s+)?(${candidate})${dateTail}`, "iu"),
     new RegExp(String.raw`(?:می[\s‌]*خواهم|می[\s‌]*خوام|می[\s‌]*خواستم)\s+(${candidate})${dateTail}`, "iu"),
@@ -16298,6 +16334,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
     ...(params.now === undefined ? {} : { now: params.now })
   }, structuredUnderstandingShadowOptions);
   let controlledUnderstandingCandidates: ControlledUnderstandingCandidates = Object.freeze({});
+  let semanticServicePhrase: string | null = null;
   if (
     controlledAdoptionEligible &&
     structuredProviderInput &&
@@ -16308,6 +16345,10 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
       bookingCorrelationId,
     );
     if (providerUnderstanding) {
+      if (!providerUnderstanding.ambiguities.some(item => item.field === "service")) {
+        const service = providerUnderstanding.entities.service;
+        semanticServicePhrase = service ? groundedSemanticServicePhrase(text, service.value.statedValue, service.confidence) : null;
+      }
       const hasExplicitGroundedContactEvidence = (
         candidate: string,
         evidence: readonly { start: number; end: number; explicit: boolean }[] | undefined,
@@ -16980,7 +17021,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
   // Generic parser labels and ambiguous catalog fragments cannot replace an
   // already selected catalog service on a date/time continuation.
   const activeServiceResolution = pending?.serviceResolution === "authoritative"
-    ? resolveAuthoritativeBookingService(text, businessConfig, false)
+    ? resolveAuthoritativeBookingService(text, businessConfig, false, semanticServicePhrase)
     : null;
   const retainsEstablishedService = Boolean(
     pending?.serviceResolution === "authoritative" &&
@@ -17376,7 +17417,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
       });
       delete availabilitySearchContexts[sessionId];
     }
-    const serviceResolution = resolveAuthoritativeBookingService(text, businessConfig);
+    const serviceResolution = resolveAuthoritativeBookingService(text, businessConfig, false, semanticServicePhrase);
     if (serviceResolution.status === "resolved" && serviceResolution.source === "evidence") {
       const selectedConfiguredService = serviceResolution.service.name;
       pending.service = selectedConfiguredService;
@@ -17458,7 +17499,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
 
   const concreteRequestedService = extractConcreteRequestedService(text);
   const initialServiceResolution = !pending && concreteRequestedService
-    ? resolveAuthoritativeBookingService(text, businessConfig)
+    ? resolveAuthoritativeBookingService(text, businessConfig, false, semanticServicePhrase)
     : null;
   if (
     !pending &&
@@ -20950,7 +20991,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
         (isExplicitNewBookingPivotText(text) || isExplicitDatedBookingCreationText(text, normalizedRequest))
       );
       const turnServiceResolution = resolveAuthoritativeBookingService(
-        text, businessConfig, freshBookingAfterCompletion,
+        text, businessConfig, freshBookingAfterCompletion, semanticServicePhrase,
       );
       const turnHasServiceEvidence =
         !continuesOwnedBooking &&
@@ -33945,6 +33986,10 @@ export const priority1hUnifiedEngineTestBoundary = {
   resolveConfiguredService(service: string, businessConfig: any) {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
     return findConfiguredBookingService(service, businessConfig);
+  },
+  resolveAuthoritativeService(text: string, businessConfig: any) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Test-only");
+    return resolveAuthoritativeBookingService(text, businessConfig);
   },
   extractConcreteRequestedService(text: string) {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");

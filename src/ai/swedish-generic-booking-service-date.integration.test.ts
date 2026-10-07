@@ -77,7 +77,7 @@ try {
   );
   assert.equal(
     boundary.extractConcreteRequestedService('Jag vill boka en tid hårbehandling i morgon.'),
-    'tid hårbehandling i morgon',
+    'tid hårbehandling',
   );
 
   const parity: Record<MetaChannel, any> = {} as Record<MetaChannel, any>;

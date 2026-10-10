@@ -1,4 +1,8 @@
 import assert from "node:assert/strict";
+import { mock } from 'node:test';
+
+// Keep scheduling dates, pending TTLs and implicit Date reads on a controlled fixture clock.
+mock.timers.enable({ apis: ['Date'], now: new Date('2026-09-06T12:00:00+02:00') });
 
 process.env.NODE_ENV = "test";
 
@@ -223,6 +227,7 @@ try {
     "diagnostic observation must not change canonical candidate results or ranking",
   );
 } finally {
+  mock.timers.reset();
   boundary.reset();
 }
 

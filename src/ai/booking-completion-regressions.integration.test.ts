@@ -292,7 +292,8 @@ try {
     'Alex Testsson, 0701234567.',
   ]) {
     const parsed = boundary.resolveBookingContactPhrase({ text });
-    assert.equal(parsed.name, 'Alex Testsson', text);
+    // Confirmation alone must not turn a bare name into trusted self-identification.
+    assert.equal(parsed.name, text.startsWith('Ja, tack.') ? null : 'Alex Testsson', text);
     assert.equal(parsed.phone, '0701234567', text);
   }
 
@@ -387,11 +388,27 @@ try {
   for (const liveCase of liveWhatsAppCases) {
     const counters = fixture();
     seedSelectedSlot('wa_7:46700000000', 'whatsapp', '46700000000', liveCase.status);
-    const result = await boundary.turn({
+    const incomplete = await boundary.turn({
       sessionId: 'wa_7:46700000000',
       platformName: 'whatsapp',
       recipientUserId: '46700000000',
       text: liveCase.text,
+      businessConfig,
+      now: turnNow,
+    });
+
+    assert.equal(incomplete.pending?.customerName ?? null, null, liveCase.label);
+    assert.equal(incomplete.pending?.customerPhone, '0701234567', liveCase.label);
+    assert.equal(incomplete.pending?.status, 'awaiting_contact', liveCase.label);
+    assert.equal(counters.calendarCreate, 0, 'bare post-confirmation name cannot authorize a booking');
+    assert.equal(counters.databaseInsert, 0, liveCase.label);
+    assert.match(incomplete.replies.join(' '), /namn/iu, liveCase.label);
+
+    const result = await boundary.turn({
+      sessionId: 'wa_7:46700000000',
+      platformName: 'whatsapp',
+      recipientUserId: '46700000000',
+      text: 'Ja, jag heter Alex Testsson och mitt telefonnummer är 0701234567.',
       businessConfig,
       now: turnNow,
     });

@@ -1,15 +1,18 @@
+import DashboardFeedback, { useDashboardFeedback, type DashboardSaved, type DashboardFeedbackMemory } from './DashboardFeedback';
 import { FormEvent, useEffect, useState } from 'react';
 import { api, type KnowledgeSource } from '../../services/api';
 import { useDashboardI18n } from '../../i18n/dashboard';
 
 interface KnowledgePanelProps {
   businessId: string;
-  onSaved: (message: string, refresh?: boolean) => void;
+  onSaved: DashboardSaved;
+  feedbackMemory?: DashboardFeedbackMemory;
 }
 
 export default function KnowledgePanel({
   businessId,
   onSaved,
+  feedbackMemory,
 }: KnowledgePanelProps) {
   const { t, formatDate } = useDashboardI18n();
 
@@ -18,8 +21,10 @@ export default function KnowledgePanel({
   const [content, setContent] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const { feedback, reportFeedback, clearFeedback } = useDashboardFeedback(onSaved, feedbackMemory, businessId);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [error, setError] = useState('');
+  const [localError, setLocalError] = useState(false);
 
   const load = async () => {
     setLoading(true);
@@ -29,6 +34,7 @@ export default function KnowledgePanel({
       const result = await api.getKnowledgeSources(businessId);
       setSources(result);
     } catch (err) {
+      setLocalError(!(err instanceof Error));
       setError(
         err instanceof Error
           ? err.message
@@ -52,6 +58,7 @@ export default function KnowledgePanel({
       .catch((err) => {
         if (!active) return;
 
+        setLocalError(!(err instanceof Error));
         setError(
           err instanceof Error
             ? err.message
@@ -75,6 +82,7 @@ export default function KnowledgePanel({
 
     if (!normalizedTitle || !normalizedContent || saving) return;
 
+    clearFeedback();
     setSaving(true);
     setError('');
 
@@ -90,15 +98,16 @@ export default function KnowledgePanel({
       setSources((current) => [created, ...current]);
       setTitle('');
       setContent('');
-      onSaved('Knowledge added');
+      reportFeedback('Knowledge added');
     } catch (err) {
+      setLocalError(!(err instanceof Error));
       const message =
         err instanceof Error
           ? err.message
           : 'Could not add Knowledge';
 
       setError(message);
-      onSaved(message);
+      reportFeedback(message, false, 'error');
     } finally {
       setSaving(false);
     }
@@ -108,11 +117,13 @@ export default function KnowledgePanel({
     if (deletingId) return;
 
     const confirmed = window.confirm(
-      `Delete "${source.title}" from Knowledge?`,
+      // Insert source text verbatim; generic interpolation formats numeric values.
+      t('Delete "{title}" from Knowledge?').replace('{title}', () => source.title),
     );
 
     if (!confirmed) return;
 
+    clearFeedback();
     setDeletingId(source.id);
     setError('');
 
@@ -123,15 +134,16 @@ export default function KnowledgePanel({
         current.filter((item) => item.id !== source.id),
       );
 
-      onSaved('Knowledge deleted');
+      reportFeedback('Knowledge deleted');
     } catch (err) {
+      setLocalError(!(err instanceof Error));
       const message =
         err instanceof Error
           ? err.message
           : 'Could not delete Knowledge';
 
       setError(message);
-      onSaved(message);
+      reportFeedback(message, false, 'error');
     } finally {
       setDeletingId(null);
     }
@@ -144,17 +156,16 @@ export default function KnowledgePanel({
     >
       <div className="knowledge-panel-heading">
         <div>
-          <div className="mission-eyebrow">AI KNOWLEDGE</div>
-          <h2>{t('Knowledge')}</h2>
+          <h2>{t('Business answers')}</h2>
           <p>
             {t(
-              'Add business information the AI can use when answering customer questions.',
+              'Add information OdinLink can use when answering customer questions.',
             )}
           </p>
         </div>
 
         <div className="knowledge-source-count">
-          {sources.length}
+          {loading || error ? '—' : sources.length}
           <span>{t('sources')}</span>
         </div>
       </div>
@@ -184,9 +195,11 @@ export default function KnowledgePanel({
 
             <input
               className="form-input"
+              dir="auto" translate="no"
               value={title}
               onChange={(event) => setTitle(event.target.value)}
               placeholder={t('Example: Cancellation policy')}
+              aria-describedby={error ? 'knowledge-error' : undefined}
               maxLength={200}
               disabled={saving}
             />
@@ -197,11 +210,13 @@ export default function KnowledgePanel({
 
             <textarea
               className="form-input"
+              dir="auto" translate="no"
               value={content}
               onChange={(event) => setContent(event.target.value)}
               placeholder={t(
                 'Write the information the assistant should know...',
               )}
+              aria-describedby={error ? 'knowledge-error' : undefined}
               maxLength={100000}
               rows={8}
               disabled={saving}
@@ -209,12 +224,13 @@ export default function KnowledgePanel({
           </label>
 
           <div className="knowledge-form-footer">
-            <span>
+            <span dir="ltr">
               {content.length.toLocaleString()} / 100,000
             </span>
 
             <button
               className="btn btn-primary"
+              translate="no"
               type="submit"
               disabled={
                 saving ||
@@ -240,6 +256,7 @@ export default function KnowledgePanel({
 
             <button
               className="btn knowledge-refresh-button"
+              translate="no"
               type="button"
               onClick={load}
               disabled={loading}
@@ -248,19 +265,20 @@ export default function KnowledgePanel({
             </button>
           </div>
 
+          {!error && <DashboardFeedback feedback={feedback} saving={saving || Boolean(deletingId)} busyLabel={deletingId ? 'Deleting...' : 'Adding...'} />}
           {error && (
-            <div className="knowledge-error">
-              {error}
+            <div id="knowledge-error" className="knowledge-error" role="alert">
+              <strong>{t('Needs attention')}</strong><p translate="no">{localError ? t(error) : error}</p>
             </div>
           )}
 
           {loading && sources.length === 0 && (
-            <div className="knowledge-empty">
+            <div className="knowledge-empty" role="status">
               {t('Loading Knowledge...')}
             </div>
           )}
 
-          {!loading && sources.length === 0 && (
+          {!loading && !error && sources.length === 0 && (
             <div className="knowledge-empty">
               <strong>{t('No Knowledge added yet')}</strong>
               <span>
@@ -291,7 +309,7 @@ export default function KnowledgePanel({
                   </div>
 
                   <div className="knowledge-source-main">
-                    <div className="knowledge-source-title">
+                    <div className="knowledge-source-title" dir="auto" translate="no">
                       {source.title}
                     </div>
 
@@ -314,6 +332,8 @@ export default function KnowledgePanel({
 
                   <button
                     className="btn btn-danger knowledge-delete-button"
+                    translate="no"
+                    aria-label={t('Delete') + ': ' + source.title}
                     type="button"
                     disabled={Boolean(deletingId)}
                     onClick={() => deleteKnowledge(source)}
@@ -329,14 +349,6 @@ export default function KnowledgePanel({
         </div>
       </div>
 
-      <div className="knowledge-future-note">
-        <strong>{t('Coming next')}</strong>
-        <span>
-          {t(
-            'PDF, DOCX, TXT and website URL sources will be added here without changing your existing Knowledge.',
-          )}
-        </span>
-      </div>
     </section>
   );
 }

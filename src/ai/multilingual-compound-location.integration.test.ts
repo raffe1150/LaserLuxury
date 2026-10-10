@@ -30,7 +30,12 @@ afterEach(() => {
   b.reset();
 });
 
-function claim(text: string, source: string, quote: string, supported = true) {
+type GroundingAssessment = NonNullable<Awaited<ReturnType<NonNullable<
+  Parameters<typeof b.configure>[0]['assessBusinessSupportGrounding']
+>>>>;
+type GroundingClaim = GroundingAssessment['claims'][number];
+
+function claim(text: string, source: GroundingClaim['evidence'][number]['source'], quote: string, supported = true): GroundingClaim {
   return { claim: text, candidateQuote: text, claimKind: 'OTHER' as const, requiresBusinessEvidence: true,
     supported, evidence: [{ source, quote }] };
 }
@@ -61,7 +66,7 @@ async function enter(t: any, language: string, question: string, withLocation = 
   const sessionId = `location-role-${language}`;
   const result = await b.turn({ sessionId, platformName: 'whatsapp', recipientUserId: '46700000001',
     text: question, businessConfig: fixture.business });
-  assert.equal(result.handled, withLocation && isSimpleCatalogLocationQuestion(question));
+  assert.equal(result.handled, false, 'compound service/location requests continue through shared grounding');
   if (result.handled) assert.ok(result.replies.join('\n').includes('Aurora Street 742'));
   // Keep the separate full-candidate grounding regressions below: richer
   // queries/provider candidates still use those exact quote/evidence gates.

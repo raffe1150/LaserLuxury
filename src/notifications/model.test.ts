@@ -65,7 +65,7 @@ const component = readFileSync(new URL('../components/dashboard/NotificationCent
 assert.match(component, /onUnreadCountChange\?\.\(0\)/, 'business/filter reload clears the badge immediately');
 assert.match(component, /requestId !== requestGeneration\.current/, 'stale notification responses are ignored');
 assert.match(component, /Your operational workflows are unaffected/);
-assert.match(component, /You're all caught up/);
-assert.match(component, /No issues need your attention right now/);
+assert.match(component, /No unread notifications/);
+assert.match(component, /Read issues may still need attention/);
 
 console.log('Actionable notification model tests passed.');

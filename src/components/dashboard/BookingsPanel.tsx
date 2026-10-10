@@ -37,6 +37,51 @@ export default function BookingsPanel({ businessId, timezone = 'UTC' }: Bookings
   const [error, setError] = useState<string | null>(null);
   const [retry, setRetry] = useState(0);
   const requestGeneration = useRef(0);
+  const workspaceRef = useRef<HTMLElement>(null);
+  const detailRef = useRef<HTMLElement>(null);
+  const [singlePane, setSinglePane] = useState(true);
+  const [detailOpen, setDetailOpen] = useState(false);
+  const selectedRef = useRef(selectedId);
+  selectedRef.current = selectedId;
+
+  useEffect(() => {
+    let previousSingle: boolean | undefined;
+    // A readable 440px list + 280px detail + separators need 760px of workspace.
+    const observer = new ResizeObserver(([entry]) => {
+      if (!entry.contentRect.width) return; // Hidden mounted workspaces keep their mode.
+      const compact = entry.contentRect.width < 760;
+      if (previousSingle === false && compact && selectedRef.current) {
+        const listHadFocus = workspaceRef.current?.querySelector('.booking-results')?.contains(document.activeElement);
+        setDetailOpen(true);
+        if (listHadFocus) requestAnimationFrame(() => detailRef.current?.querySelector<HTMLElement>('button')?.focus({ preventScroll: true }));
+      }
+      previousSingle = compact;
+      setSinglePane(compact);
+    });
+    observer.observe(workspaceRef.current!);
+    return () => observer.disconnect();
+  }, []);
+
+  const openDetail = (id: string) => {
+    setSelectedId(id);
+    if (singlePane) {
+      setDetailOpen(true);
+      requestAnimationFrame(() => {
+        detailRef.current?.querySelector<HTMLElement>('button')?.focus({ preventScroll: true });
+        detailRef.current?.scrollIntoView({ block: 'nearest', behavior: 'instant' });
+      });
+    }
+  };
+  const closeDetail = () => {
+    const row = workspaceRef.current?.querySelector<HTMLElement>('.booking-compact-row.active');
+    setDetailOpen(false);
+    if (!singlePane) setSelectedId(undefined);
+    requestAnimationFrame(() => {
+      row?.focus({ preventScroll: true });
+      row?.scrollIntoView({ block: 'nearest', behavior: 'instant' });
+    });
+  };
+
 
   useEffect(() => {
     const timeout = window.setTimeout(() => setSearch(query.trim()), 300);
@@ -51,6 +96,7 @@ export default function BookingsPanel({ businessId, timezone = 'UTC' }: Bookings
     setCursor(null);
     setTotal(0);
     setSelectedId(undefined);
+    setDetailOpen(false);
     setError(null);
     setLoading(true);
 
@@ -108,69 +154,70 @@ export default function BookingsPanel({ businessId, timezone = 'UTC' }: Bookings
   };
 
   return (
-    <section id="bookings" className="card dashboard-section booking-workspace">
-      <div className="booking-summary" aria-label="Booking summary">
-        <SummaryMetric label={t('Today')} value={formatNumber(summary.today)} />
-        <SummaryMetric label={t('Upcoming')} value={formatNumber(summary.upcoming)} active={view === 'upcoming'} onClick={() => setView('upcoming')} />
-        <SummaryMetric label={t('Pending')} value={formatNumber(summary.pending)} tone={summary.pending ? 'attention' : undefined} active={view === 'pending'} onClick={() => setView('pending')} />
-        <SummaryMetric label={t('Cancelled')} value={formatNumber(summary.cancelled)} active={view === 'cancelled'} onClick={() => setView('cancelled')} />
+    <section ref={workspaceRef} id="bookings" translate="no" className={`card dashboard-section booking-workspace${singlePane ? ' booking-single-pane' : ''}`}>
+      <div className="booking-summary" aria-label={t("Booking summary")}>
+        <SummaryMetric label={t('Today')} value={loading || (error && bookings.length === 0) ? '—' : formatNumber(summary.today)} />
+        <SummaryMetric label={t('Upcoming')} value={loading || (error && bookings.length === 0) ? '—' : formatNumber(summary.upcoming)} active={view === 'upcoming'} onClick={() => setView('upcoming')} />
+        <SummaryMetric label={t('Pending')} value={loading || (error && bookings.length === 0) ? '—' : formatNumber(summary.pending)} tone={summary.pending ? 'attention' : undefined} active={view === 'pending'} onClick={() => setView('pending')} />
+        <SummaryMetric label={t('Cancelled')} value={loading || (error && bookings.length === 0) ? '—' : formatNumber(summary.cancelled)} active={view === 'cancelled'} onClick={() => setView('cancelled')} />
       </div>
 
       <div className="booking-toolbar">
-        <div className="booking-view-tabs" aria-label="Filter bookings">
+        <div className="booking-view-tabs" aria-label={t("Filter bookings")}>
           {views.map((item) => <button key={item.id} type="button" className={view === item.id ? 'active' : ''} aria-pressed={view === item.id} onClick={() => setView(item.id)}>{t(item.label)}</button>)}
         </div>
-        <input className="form-input booking-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search customer, service, date or channel…" aria-label="Search bookings" />
+        <input className="form-input booking-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t("Search customer, service, date or channel…")} aria-label={t("Search bookings")} />
       </div>
 
       <div className={`booking-workspace-layout${selected ? ' has-selection' : ''}`}>
-        <div className="booking-results" aria-busy={loading}>
-          {loading && <BookingSkeleton />}
-          {!loading && error && bookings.length === 0 && <BookingState title="Bookings unavailable" copy={error} action={() => setRetry((value) => value + 1)} />}
+        <div className="booking-results" role="region" tabIndex={0} aria-label={t("Bookings")} aria-busy={loading} hidden={singlePane && detailOpen && Boolean(selected)}>
+          {loading && <BookingSkeleton label={t("Loading bookings")} />}
+          {!loading && error && bookings.length === 0 && <BookingState title={t("Bookings unavailable")} copy={error} action={() => setRetry((value) => value + 1)} />}
           {!loading && !error && bookings.length === 0 && <BookingState title={t(emptyTitle(view))} copy={t(search ? 'Try a different search.' : emptyCopy(view))} />}
           {!loading && groups.map((group) => <section className="booking-date-group" key={group.key}>
             <div className="booking-date-head"><strong>{t(group.label)}</strong><span>{formatNumber(group.items.length)}</span></div>
-            {group.items.map((booking) => <button className={`booking-compact-row${booking.id === selectedId ? ' active' : ''}`} key={booking.id} type="button" onClick={() => setSelectedId(booking.id)}>
-              <time><strong>{formatTime(booking.startsAt, timezone, locale)}</strong><span>{formatShortDate(booking.startsAt, timezone, locale)}</span></time>
-              <span className="booking-channel"><ChannelIcon channel={booking.channel} /></span>
-              <span className="booking-row-copy"><strong translate="no">{booking.customerName}</strong><small translate={booking.serviceName ? 'no' : undefined}>{booking.serviceName || 'Service not specified'}</small></span>
-              <span className={`booking-status ${booking.status}`}>{t(bookingStatusLabel(booking.status))}</span>
+            {group.items.map((booking) => <button className={`booking-compact-row${booking.id === selectedId ? ' active' : ''}`} key={booking.id} type="button" aria-pressed={booking.id === selectedId} onClick={() => openDetail(booking.id)}>
+              <time dir="ltr"><strong>{formatTime(booking.startsAt, timezone, locale)}</strong><span>{formatShortDate(booking.startsAt, timezone, locale)}</span></time>
+              <span className="booking-channel" aria-label={formatChannel(booking.channel)}><ChannelIcon channel={booking.channel} /><span>{formatChannel(booking.channel)}</span></span>
+              <span className="booking-row-copy"><strong translate="no" dir="auto">{booking.customerName}</strong><small dir="auto">{booking.serviceName || t('Service not specified')}</small></span>
+              <span className={`booking-status ${booking.status}`} translate="no">{t(bookingStatusLabel(booking.status))}</span>
             </button>)}
           </section>)}
           {cursor !== null && <button className="booking-load-more" type="button" onClick={() => void loadMore()} disabled={loadingMore}>{loadingMore ? t('Loading…') : t('Load more ({loaded} of {total})', { loaded: bookings.length, total })}</button>}
-          {error && bookings.length > 0 && <div className="booking-inline-error">{error} <button type="button" onClick={() => void loadMore()}>Retry</button></div>}
+          {error && bookings.length > 0 && <div className="booking-inline-error" role="alert">{error} <button type="button" onClick={() => void loadMore()}>{t("Retry")}</button></div>}
         </div>
 
-        {selected && <aside className="booking-detail" aria-label="Booking details">
-          <div className="booking-detail-head"><div><span>Booking details</span><strong translate="no">{selected.customerName}</strong></div><button type="button" onClick={() => setSelectedId(undefined)} aria-label="Close booking details">×</button></div>
+        {selected && <aside ref={detailRef} className="booking-detail" tabIndex={0} aria-label={t("Booking details")} hidden={singlePane && !detailOpen}>
+          <div className="booking-detail-head"><div><span>{t("Booking details")}</span><h3 translate="no" dir="auto">{selected.customerName}</h3></div><button className="booking-detail-back" type="button" onClick={closeDetail} aria-label={t(singlePane ? "Back to bookings" : "Close booking details")}>{singlePane ? <><span aria-hidden="true">←</span>{t("Bookings")}</> : '×'}</button></div>
           <dl>
-            <Detail label={t('Status')}><span className={`booking-status ${selected.status}`}>{t(bookingStatusLabel(selected.status))}</span></Detail>
-            <Detail label="Date"><span>{formatLongDate(selected.startsAt, timezone, locale)}</span></Detail>
-            <Detail label="Time"><span>{formatTimeRange(selected, timezone, locale)}</span></Detail>
-            <Detail label="Service"><span translate={selected.serviceName ? 'no' : undefined}>{selected.serviceName || 'Not specified'}</span></Detail>
-            <Detail label="Channel"><span className="booking-detail-channel"><ChannelIcon channel={selected.channel} />{formatChannel(selected.channel)}</span></Detail>
-            {selected.createdAt && <Detail label="Booked"><span>{formatLongDate(selected.createdAt, timezone, locale)}</span></Detail>}
+            <Detail label={t('Status')}><span className={`booking-status ${selected.status}`} translate="no">{t(bookingStatusLabel(selected.status))}</span></Detail>
+            <Detail label={t("Date")}><span dir="ltr">{formatLongDate(selected.startsAt, timezone, locale)}</span></Detail>
+            <Detail label={t("Time")}><span dir="ltr">{formatTimeRange(selected, timezone, locale)}</span></Detail>
+            <Detail label={t("Service")}><span dir="auto">{selected.serviceName || t('Not specified')}</span></Detail>
+            <Detail label={t("Channel")}><span className="booking-detail-channel"><ChannelIcon channel={selected.channel} />{formatChannel(selected.channel)}</span></Detail>
+            {selected.createdAt && <Detail label={t("Booked")}><span dir="ltr">{formatLongDate(selected.createdAt, timezone, locale)}</span></Detail>}
           </dl>
         </aside>}
       </div>
-      {summary.scanTruncated && <div className="booking-coverage-note">Summary covers the latest 2,000 appointment records.</div>}
+      {summary.scanTruncated && <div className="booking-coverage-note">{t("Summary covers the latest 2,000 appointment records.")}</div>}
     </section>
   );
 }
 
 function SummaryMetric({ label, value, tone, active, onClick }: { label: string; value: string; tone?: string; active?: boolean; onClick?: () => void }) {
-  const content = <><span>{label}</span><strong>{value}</strong></>;
+  const content = <><span>{label}</span><strong dir="ltr">{value}</strong></>;
   return onClick
-    ? <button type="button" className={`${tone || ''}${active ? ' active' : ''}`} onClick={onClick}>{content}</button>
+    ? <button type="button" className={`${tone || ''}${active ? ' active' : ''}`} aria-pressed={Boolean(active)} onClick={onClick}>{content}</button>
     : <div className={tone || ''}>{content}</div>;
 }
 
 function BookingState({ title, copy, action }: { title: string; copy: string; action?: () => void }) {
-  return <div className="booking-state"><strong>{title}</strong><span>{copy}</span>{action && <button type="button" onClick={action}>Retry</button>}</div>;
+  const { t } = useDashboardI18n();
+  return <div className="booking-state" role={action ? 'alert' : undefined}><h3>{title}</h3><span>{copy}</span>{action && <button type="button" onClick={action}>{t("Retry")}</button>}</div>;
 }
 
-function BookingSkeleton() {
-  return <div className="booking-skeleton" aria-label="Loading bookings">{Array.from({ length: 6 }, (_, index) => <div key={index}><i /><span /></div>)}</div>;
+function BookingSkeleton({ label }: { label: string }) {
+  return <div className="booking-skeleton" aria-label={label} role="status"><span className="dashboard-state-label">{label}</span>{Array.from({ length: 6 }, (_, index) => <div key={index}><i /><span /></div>)}</div>;
 }
 
 function Detail({ label, children }: { label: string; children: ReactNode }) {

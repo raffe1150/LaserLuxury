@@ -1,4 +1,5 @@
-import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
+import DashboardFeedback, { useDashboardFeedback, type DashboardSaved, type DashboardFeedbackMemory } from './DashboardFeedback';
+import { FormEvent, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { api } from '../../services/api';
 import type {
   Business,
@@ -7,9 +8,6 @@ import type {
   UsageInfo,
 } from '../../types/dashboard';
 import { ChannelIcon, StatusDot } from './Icons';
-import GeneratePromptModal, {
-  type GeneratePromptFormData,
-} from './GeneratePromptModal';
 import { useDashboardI18n } from '../../i18n/dashboard';
 import {
   CUSTOM_TONE_INSTRUCTIONS_MAX_LENGTH,
@@ -26,12 +24,16 @@ import {
 } from './tone-save';
 
 interface BusinessSettingsProps {
+  feedbackMemory?: DashboardFeedbackMemory;
   business: Business;
-  onSaved: (message: string, refresh?: boolean) => void;
+  onSaved: DashboardSaved;
 }
 
 interface BusinessToneControlsProps extends BusinessSettingsProps {
   onBusinessUpdated?: (business: Business) => void;
+  businessAnswers?: ReactNode;
+  customInstructions?: ReactNode;
+  requestedSection?: 'ai-tone' | 'knowledge' | 'prompt-editor';
 }
 
 type WorkingDayKey =
@@ -126,7 +128,7 @@ function normalizeDashboardWorkingHours(
   return result;
 }
 
-export function BusinessSettings({ business, onSaved }: BusinessSettingsProps) {
+export function BusinessSettings({ business, onSaved, feedbackMemory }: BusinessSettingsProps) {
   const { t } = useDashboardI18n();
   const [name, setName] = useState(business.name || '');
   const [industry, setIndustry] = useState(business.industry || '');
@@ -144,6 +146,7 @@ export function BusinessSettings({ business, onSaved }: BusinessSettingsProps) {
     )
   );
   const [saving, setSaving] = useState(false);
+  const { feedback, reportFeedback, clearFeedback } = useDashboardFeedback(onSaved, feedbackMemory, business.id);
 
   useEffect(() => {
     setName(business.name || '');
@@ -173,6 +176,7 @@ export function BusinessSettings({ business, onSaved }: BusinessSettingsProps) {
 
   const save = async (event: FormEvent) => {
     event.preventDefault();
+    clearFeedback();
     setSaving(true);
     try {
       await api.updateBusiness(business.id, {
@@ -183,9 +187,9 @@ export function BusinessSettings({ business, onSaved }: BusinessSettingsProps) {
         services,
         workingHours,
       });
-      onSaved('Business settings saved', true);
+      reportFeedback('Business settings saved', true);
     } catch (error) {
-      onSaved(error instanceof Error ? error.message : 'Could not save business settings');
+      reportFeedback(error instanceof Error ? error.message : 'Could not save business settings', false, 'error');
     } finally {
       setSaving(false);
     }
@@ -196,11 +200,11 @@ export function BusinessSettings({ business, onSaved }: BusinessSettingsProps) {
       id="business-settings"
       className="dashboard-section business-settings-target"
     >
-      <form onSubmit={save} className="business-settings-target-form">
+      <form id="business-settings-form" onSubmit={save} onChangeCapture={() => { if (feedback?.kind === 'success') clearFeedback(); }} className="business-settings-target-form">
 
         <div className="business-settings-target-heading">
           <div>
-            <h2>Business Settings</h2>
+            <h2 id="settings-business-title" tabIndex={-1}>Business Settings</h2>
             <p>
               Manage your business information, language, timezone,
               and working hours.
@@ -229,7 +233,7 @@ export function BusinessSettings({ business, onSaved }: BusinessSettingsProps) {
           <div className="business-settings-info-grid">
 
             <div className="business-settings-field">
-              <label>Business Name</label>
+              <label htmlFor="business-name">Business Name</label>
               <div className="business-settings-input-shell">
                 <span
                   className="business-settings-field-icon"
@@ -243,7 +247,7 @@ export function BusinessSettings({ business, onSaved }: BusinessSettingsProps) {
                   </svg>
                 </span>
 
-                <input
+                <input id="business-name" dir="auto"
                   className="form-input"
                   value={name}
                   onChange={(event) => setName(event.target.value)}
@@ -252,9 +256,9 @@ export function BusinessSettings({ business, onSaved }: BusinessSettingsProps) {
             </div>
 
             <div className="business-settings-field">
-              <label>Business Type</label>
+              <label htmlFor="business-industry">Business Type</label>
 
-              <input
+              <input id="business-industry" dir="auto"
                 className="form-input"
                 value={industry}
                 onChange={(event) => setIndustry(event.target.value)}
@@ -263,7 +267,7 @@ export function BusinessSettings({ business, onSaved }: BusinessSettingsProps) {
             </div>
 
             <div className="business-settings-field">
-              <label>{t('Default assistant language')}</label>
+              <label htmlFor="business-language">{t('Default assistant language')}</label>
 
               <div className="business-settings-input-shell">
                 <span
@@ -278,7 +282,7 @@ export function BusinessSettings({ business, onSaved }: BusinessSettingsProps) {
                   </svg>
                 </span>
 
-                <select
+                <select id="business-language"
                   className="form-input"
                   value={language}
                   onChange={(event) =>
@@ -299,7 +303,7 @@ export function BusinessSettings({ business, onSaved }: BusinessSettingsProps) {
             </div>
 
             <div className="business-settings-field">
-              <label>Timezone</label>
+              <label htmlFor="business-timezone">Timezone</label>
 
               <div className="business-settings-input-shell">
                 <span
@@ -312,7 +316,7 @@ export function BusinessSettings({ business, onSaved }: BusinessSettingsProps) {
                   </svg>
                 </span>
 
-                <input
+                <input id="business-timezone" dir="ltr"
                   className="form-input mono"
                   value={timezone}
                   onChange={(event) =>
@@ -387,8 +391,8 @@ export function BusinessSettings({ business, onSaved }: BusinessSettingsProps) {
                   key={index}
                 >
                   <div className="business-service-field service-name">
-                    <label>Service Name</label>
-                    <input
+                    <label htmlFor={`service-${index}-name`}>Service Name</label>
+                    <input id={`service-${index}-name`} dir="auto"
                       className="form-input"
                       value={service.name}
                       placeholder="e.g. Consultation"
@@ -407,9 +411,9 @@ export function BusinessSettings({ business, onSaved }: BusinessSettingsProps) {
                   </div>
 
                   <div className="business-service-field service-duration">
-                    <label>Duration</label>
+                    <label htmlFor={`service-${index}-duration`}>Duration</label>
                     <div className="business-service-number-shell">
-                      <input
+                      <input id={`service-${index}-duration`} dir="ltr"
                         className="form-input"
                         type="number"
                         min="1"
@@ -436,8 +440,8 @@ export function BusinessSettings({ business, onSaved }: BusinessSettingsProps) {
                   </div>
 
                   <div className="business-service-field service-price">
-                    <label>Price</label>
-                    <input
+                    <label htmlFor={`service-${index}-price`}>Price</label>
+                    <input id={`service-${index}-price`} dir="ltr"
                       className="form-input"
                       type="number"
                       min="0"
@@ -460,8 +464,8 @@ export function BusinessSettings({ business, onSaved }: BusinessSettingsProps) {
                   </div>
 
                   <div className="business-service-field service-currency">
-                    <label>Currency</label>
-                    <input
+                    <label htmlFor={`service-${index}-currency`}>Currency</label>
+                    <input id={`service-${index}-currency`} dir="ltr"
                       className="form-input"
                       value={service.currency}
                       maxLength={3}
@@ -481,13 +485,15 @@ export function BusinessSettings({ business, onSaved }: BusinessSettingsProps) {
                   </div>
 
                   <div className="business-service-field service-active">
-                    <label>Active</label>
+                    <label htmlFor={`service-${index}-active`}>Active</label>
                     <button
                       type="button"
                       className={`business-service-toggle ${
                         service.active ? 'is-enabled' : ''
                       }`}
+                      id={`service-${index}-active`}
                       aria-pressed={service.active}
+                      aria-label={t('Active') + ': ' + service.name}
                       title={
                         service.active
                           ? 'Service is active'
@@ -513,7 +519,7 @@ export function BusinessSettings({ business, onSaved }: BusinessSettingsProps) {
                       type="button"
                       className="business-service-delete"
                       title="Delete service"
-                      aria-label={`Delete ${service.name || 'service'}`}
+                      aria-label={t('Delete') + ': ' + (service.name || t('Service'))}
                       onClick={() =>
                         setServices((current) =>
                           current.filter(
@@ -614,7 +620,7 @@ export function BusinessSettings({ business, onSaved }: BusinessSettingsProps) {
                   </div>
 
                   <label className="working-hours-open-control">
-                    <input
+                    <input aria-label={t(label) + ': ' + t(isOpen ? 'Open' : 'Closed')}
                       type="checkbox"
                       checked={isOpen}
                       onChange={(event) => {
@@ -661,7 +667,7 @@ export function BusinessSettings({ business, onSaved }: BusinessSettingsProps) {
                             className="working-hours-target-interval"
                           >
 
-                            <input
+                            <input id={`hours-${key}-${index}-start`} aria-label={t(label) + ' · ' + t('Start') + ' ' + (index + 1)} dir="ltr"
                               type="time"
                               className="form-input working-hours-time-input"
                               value={interval.start}
@@ -696,7 +702,7 @@ export function BusinessSettings({ business, onSaved }: BusinessSettingsProps) {
                               to
                             </span>
 
-                            <input
+                            <input id={`hours-${key}-${index}-end`} aria-label={t(label) + ' · ' + t('End') + ' ' + (index + 1)} dir="ltr"
                               type="time"
                               className="form-input working-hours-time-input"
                               value={interval.end}
@@ -732,6 +738,7 @@ export function BusinessSettings({ business, onSaved }: BusinessSettingsProps) {
                                 <button
                                   type="button"
                                   className="working-hours-add-break"
+                                  aria-label={t('＋ Add break') + ' · ' + t(label)}
                                   onClick={() => {
                                     setWorkingHours((current) => {
                                       const first =
@@ -773,6 +780,7 @@ export function BusinessSettings({ business, onSaved }: BusinessSettingsProps) {
                                 type="button"
                                 className="working-hours-remove-slot"
                                 title="Remove time slot"
+                                aria-label={t('Remove time slot') + ' · ' + t(label) + ' ' + (index + 1)}
                                 onClick={() => {
                                   setWorkingHours((current) => {
                                     const next: WorkingHoursState = {
@@ -844,6 +852,7 @@ export function BusinessSettings({ business, onSaved }: BusinessSettingsProps) {
                       type="button"
                       className="working-hours-copy-action"
                       title="Apply this day's hours to weekdays"
+                      aria-label={t("Apply this day's hours to weekdays") + ' · ' + t(label)}
                       onClick={() => {
                         setWorkingHours((current) => {
                           const copied =
@@ -888,6 +897,7 @@ export function BusinessSettings({ business, onSaved }: BusinessSettingsProps) {
                       type="button"
                       className="working-hours-delete-action"
                       title="Mark day as closed"
+                      aria-label={t('Mark day as closed') + ' · ' + t(label)}
                       onClick={() => {
                         setWorkingHours((current) => {
                           const next: WorkingHoursState = {
@@ -920,6 +930,7 @@ export function BusinessSettings({ business, onSaved }: BusinessSettingsProps) {
 
           </div>
 
+          <div className="business-save-footer"><p>{t('Business information, services and working hours are saved together.')}</p><button className="btn btn-primary" type="submit" disabled={saving}>{saving ? t('Saving...') : t('Save Changes')}</button></div>
           <div className="working-hours-target-footer">
             <span>ⓘ</span>
             All times are in{' '}
@@ -928,6 +939,7 @@ export function BusinessSettings({ business, onSaved }: BusinessSettingsProps) {
 
         </div>
 
+        <DashboardFeedback feedback={feedback} saving={saving} />
       </form>
     </section>
   );
@@ -939,7 +951,7 @@ const tonePresetDescriptions: Record<BusinessToneConfig['tonePreset'], string> =
   warm: 'Calm, empathetic, and welcoming.',
   casual: 'Relaxed and natural, while staying respectful.',
   concise: 'Direct and focused on the next useful step.',
-  custom: 'Use your own style guidance within safe boundaries.',
+  custom: 'Use your own style guidance.',
 };
 
 const titleCaseOption = (value: string) => value.charAt(0).toUpperCase() + value.slice(1);
@@ -948,13 +960,20 @@ export function BusinessToneControls({
   business,
   onSaved,
   onBusinessUpdated,
+  businessAnswers,
+  customInstructions,
+  requestedSection,
 }: BusinessToneControlsProps) {
   const { t } = useDashboardI18n();
   const [tone, setTone] = useState<BusinessToneConfig>(() => normalizeBusinessToneConfig(business.toneConfig));
   const [saving, setSaving] = useState(false);
-  const callbacksRef = useRef({ t, onSaved, onBusinessUpdated });
+  const advancedRef = useRef<HTMLDetailsElement>(null);
+  const saveRef = useRef<HTMLButtonElement>(null);
+  const [saveError, setSaveError] = useState('');
+  const { feedback, reportFeedback, clearFeedback } = useDashboardFeedback(onSaved);
+  const callbacksRef = useRef({ t, onSaved: reportFeedback, onBusinessUpdated });
   const coordinatorRef = useRef<ToneSaveCoordinator | null>(null);
-  callbacksRef.current = { t, onSaved, onBusinessUpdated };
+  callbacksRef.current = { t, onSaved: reportFeedback, onBusinessUpdated };
 
   if (!coordinatorRef.current) {
     coordinatorRef.current = createToneSaveCoordinator({
@@ -964,117 +983,149 @@ export function BusinessToneControls({
         setTone(normalizeBusinessToneConfig(updatedBusiness.toneConfig));
         callbacksRef.current.onBusinessUpdated?.(updatedBusiness);
       },
-      onSuccess: () => callbacksRef.current.onSaved(callbacksRef.current.t('AI tone saved.')),
-      onFailure: () => callbacksRef.current.onSaved(callbacksRef.current.t("Couldn't save AI tone. Please try again.")),
+      onSuccess: () => {
+        setSaveError('');
+        callbacksRef.current.onSaved(callbacksRef.current.t('AI tone saved.'));
+      },
+      onFailure: () => {
+        const message = callbacksRef.current.t("Couldn't save AI tone. Please try again.");
+        setSaveError(message);
+        callbacksRef.current.onSaved(message, false, 'error');
+      },
       onDiagnostic: (error) => console.error('AI tone save failed:', error),
     });
   }
 
   useEffect(() => {
     coordinatorRef.current?.selectBusiness(business.id);
+    setSaveError('');
     setTone(normalizeBusinessToneConfig(business.toneConfig));
   }, [business.id, business.toneConfig]);
 
+  useEffect(() => { clearFeedback(); }, [business.id]);
+
   useEffect(() => () => coordinatorRef.current?.dispose(), []);
 
+  // Legacy prompt targets open the native disclosure before the shell focuses it.
+  useLayoutEffect(() => {
+    if (requestedSection === 'prompt-editor' && advancedRef.current) advancedRef.current.open = true;
+  }, [requestedSection]);
+
+  const editCustomStyle = () => {
+    if (advancedRef.current) advancedRef.current.open = true;
+    document.getElementById('custom-tone-instructions')?.focus();
+  };
+
   const update = <Key extends keyof BusinessToneConfig>(key: Key, value: BusinessToneConfig[Key]) => {
+    if (feedback?.kind === 'success') clearFeedback();
     setTone((current) => ({ ...current, [key]: value }));
   };
 
   const save = async (event: FormEvent) => {
     event.preventDefault();
+    clearFeedback();
+    setSaveError('');
     await coordinatorRef.current?.save(business.id, tone);
   };
 
   return (
-    <section id="ai-tone" className="card dashboard-section tone-controls">
-      <form onSubmit={save}>
-        <div className="card-header">
-          <div>
-            <div className="card-title">{t('AI Tone')}</div>
-            <div className="card-desc">{t('Choose how the assistant communicates. Business rules and factual behavior stay controlled by higher-priority instructions.')}</div>
-          </div>
-        </div>
-
-        <fieldset disabled={saving}>
-          <legend>{t('Tone preset')}</legend>
-          <div className="tone-preset-grid">
-            {TONE_PRESETS.map((preset) => (
-              <button
-                key={preset}
-                type="button"
-                className={tone.tonePreset === preset ? 'tone-option selected' : 'tone-option'}
-                aria-pressed={tone.tonePreset === preset}
-                onClick={() => update('tonePreset', preset)}
-              >
-                <strong>{t(titleCaseOption(preset))}</strong>
-                <span>{t(tonePresetDescriptions[preset])}</span>
-              </button>
-            ))}
-          </div>
-        </fieldset>
-
-        <div className="tone-control-grid">
-          <ToneChoice
-            label={t('Response length')}
-            value={tone.responseLength}
-            options={RESPONSE_LENGTHS}
-            onChange={(value) => update('responseLength', value)}
-            t={t}
-            disabled={saving}
-          />
-          <ToneChoice
-            label={t('Formality')}
-            value={tone.formality}
-            options={FORMALITY_LEVELS}
-            onChange={(value) => update('formality', value)}
-            t={t}
-            disabled={saving}
-          />
-          <ToneChoice
-            label={t('Emoji usage')}
-            value={tone.emojiUsage}
-            options={EMOJI_USAGES}
-            onChange={(value) => update('emojiUsage', value)}
-            t={t}
-            disabled={saving}
-          />
-        </div>
-
-        {tone.tonePreset === 'custom' && (
-          <div className="form-group tone-custom-guidance">
-            <label className="form-label" htmlFor="custom-tone-instructions">{t('Custom tone instructions')}</label>
-            <textarea
-              id="custom-tone-instructions"
-              className="form-input"
-              dir="auto"
-              translate="no"
-              rows={4}
-              maxLength={CUSTOM_TONE_INSTRUCTIONS_MAX_LENGTH}
-              disabled={saving}
-              value={tone.customToneInstructions}
-              onChange={(event) => update('customToneInstructions', event.target.value)}
-              placeholder={t('Sound calm, confident and welcoming. Avoid salesy language.')}
-            />
-            <div className="tone-custom-meta">
-              <span>{t('Style guidance only. Do not add prices, hours, services, policies, or business facts here.')}</span>
-              <bdi dir="ltr">{tone.customToneInstructions.length} / {CUSTOM_TONE_INSTRUCTIONS_MAX_LENGTH}</bdi>
+    <div className="ai-assistant-setup">
+      <header className="assistant-page-heading"><h1>{t('AI Assistant')}</h1></header>
+      <section id="ai-tone" className="card dashboard-section tone-controls" aria-labelledby="assistant-style-title">
+        <form id="ai-style-form" onSubmit={save} aria-describedby={saveError ? 'ai-style-error' : undefined}>
+          <div className="card-header">
+            <div>
+              <h2 id="assistant-style-title" className="card-title">{t('How should OdinLink speak?')}</h2>
+              <div className="card-desc">{t('Style changes how OdinLink communicates. Your business information and booking rules still apply.')}</div>
             </div>
           </div>
-        )}
+          <fieldset disabled={saving} aria-describedby={saveError ? 'ai-style-error' : undefined}>
+            <legend>{t('Tone preset')}</legend>
+            <div className="tone-preset-grid">
+              {TONE_PRESETS.map((preset) => (
+                <button key={preset} type="button" className={tone.tonePreset === preset ? 'tone-option selected' : 'tone-option'} aria-pressed={tone.tonePreset === preset} onClick={() => update('tonePreset', preset)}>
+                  <strong>{t(titleCaseOption(preset))}{tone.tonePreset === preset && <span className="tone-selected-mark" aria-hidden="true">✓</span>}</strong>
+                  <span>{t(tonePresetDescriptions[preset])}</span>
+                </button>
+              ))}
+            </div>
+          </fieldset>
+          {tone.tonePreset === 'custom' && (
+            <div className="tone-custom-summary">
+              <p>{t(tone.customToneInstructions ? 'Your custom style is selected.' : 'Add your custom style guidance in Advanced.')}</p>
+              <button className="btn btn-ghost" type="button" onClick={editCustomStyle}>{t('Edit custom style')}</button>
+            </div>
+          )}
+          {saveError && <p id="ai-style-error" className="dashboard-inline-error" role="alert">{saveError}</p>}
+          {!saveError && <DashboardFeedback feedback={feedback} saving={saving} />}
+          <div className="save-row">
+            <button ref={saveRef} className="btn btn-primary" type="submit" disabled={saving}>{saving ? t('Saving...') : t('Save style')}</button>
+          </div>
+        </form>
+      </section>
+      {businessAnswers}
+      <details id="ai-advanced" className="ai-advanced" ref={advancedRef}>
+        <summary>{t('Advanced')}<span className="advanced-summary-help">{t('Optional style adjustments and custom instructions.')}</span></summary>
+        <div className="ai-advanced-content">
+          <section id="tone-adjustments" className="card tone-controls" aria-labelledby="tone-adjustments-title">
+            <h3 id="tone-adjustments-title" className="card-title">{t('Tone adjustments')}</h3>
+            <div className="tone-control-grid">
+              <ToneChoice
+                label={t('Response length')}
+                value={tone.responseLength}
+                options={RESPONSE_LENGTHS}
+                onChange={(value) => update('responseLength', value)}
+                t={t}
+                disabled={saving}
+              />
+              <ToneChoice
+                label={t('Formality')}
+                value={tone.formality}
+                options={FORMALITY_LEVELS}
+                onChange={(value) => update('formality', value)}
+                t={t}
+                disabled={saving}
+              />
+              <ToneChoice
+                label={t('Emoji usage')}
+                value={tone.emojiUsage}
+                options={EMOJI_USAGES}
+                onChange={(value) => update('emojiUsage', value)}
+                t={t}
+                disabled={saving}
+              />
+            </div>
 
-        <div className="tone-precedence-note">
-          <span aria-hidden="true">ⓘ</span>
-          {t('Tone changes expression only. Booking logic, availability, safety, tools, policies, and facts always take priority.')}
-        </div>
+            <div className="form-group tone-custom-guidance">
+              <label className="form-label" htmlFor="custom-tone-instructions">{t('Custom tone guidance')}</label>
+              <textarea
+                id="custom-tone-instructions"
+                className="form-input"
+                dir="auto"
+                translate="no"
+                rows={4}
+                form="ai-style-form"
+                aria-describedby={`custom-tone-help${saveError ? ' ai-style-error' : ''}`}
+                maxLength={CUSTOM_TONE_INSTRUCTIONS_MAX_LENGTH}
+                disabled={saving}
+                value={tone.customToneInstructions}
+                onChange={(event) => update('customToneInstructions', event.target.value)}
+                placeholder={t('Sound calm, confident and welcoming. Avoid salesy language.')}
+              />
+              <div id="custom-tone-help" className="tone-custom-meta">
+                <span>{t('Used when Custom is selected. Add business facts in Business answers.')}</span>
+                <bdi dir="ltr">{tone.customToneInstructions.length} / {CUSTOM_TONE_INSTRUCTIONS_MAX_LENGTH}</bdi>
+              </div>
+            </div>
 
-        <div className="save-row">
-          <button className="btn btn-primary" type="submit" disabled={saving}>
-            {saving ? t('Saving...') : t('Save AI Tone')}
-          </button>
+            <p className="card-desc">{t('Save style also saves these adjustments.')}</p>
+            <button className="btn btn-primary" type="submit" form="ai-style-form" disabled={saving}>{saving ? t('Saving...') : t('Save style')}</button>
+            <button className="btn btn-ghost" type="button" onClick={() => saveRef.current?.focus()}>{t('Back to assistant style')}</button>
+          </section>
+          {customInstructions}
         </div>
-      </form>
-    </section>
+      </details>
+    </div>
   );
 }
 
@@ -1107,72 +1158,69 @@ function ToneChoice<Option extends string>({
   );
 }
 
-export function SystemPromptEditor({ business, onSaved }: BusinessSettingsProps) {
+export function SystemPromptEditor({ business, onSaved, feedbackMemory }: BusinessSettingsProps) {
   const { t } = useDashboardI18n();
   const [prompt, setPrompt] = useState(business.systemPrompt || '');
-  const [modalOpen, setModalOpen] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState('');
+  const { feedback, reportFeedback, clearFeedback } = useDashboardFeedback(onSaved, feedbackMemory, business.id);
 
   useEffect(() => {
     setPrompt(business.systemPrompt || '');
+    setSaveError('');
   }, [business.id, business.systemPrompt]);
 
   const save = async () => {
+    clearFeedback();
+    setSaveError('');
     setSaving(true);
     try {
       await api.updateBusiness(business.id, { systemPrompt: prompt });
-      onSaved('Prompt saved', true);
+      setSaveError('');
+      reportFeedback('Prompt saved', true);
     } catch (error) {
-      onSaved(error instanceof Error ? error.message : 'Could not save prompt');
+      const message = error instanceof Error ? error.message : 'Could not save prompt';
+      setSaveError(message);
+      reportFeedback(message, false, 'error');
     } finally {
       setSaving(false);
     }
-  };
-
-  const handleGeneratePrompt = (data: GeneratePromptFormData) => {
-    console.log('Generate prompt data:', data);
-    setModalOpen(false);
   };
 
   return (
     <section id="prompt-editor" className="card dashboard-section">
       <div className="card-header">
         <div>
-          <div className="card-title">System Prompt Editor</div>
-          <div className="card-desc">Controls how the AI assistant responds for this business.</div>
+          <h3 className="card-title">{t('Custom instructions')}</h3>
+          <div className="card-desc">{t('Optional instructions for this business. Save them separately from style changes.')}</div>
         </div>
       </div>
       <div className="form-group form-full">
-        <label className="form-label">Custom AI System Prompt</label>
+        <label className="form-label" htmlFor="custom-assistant-instructions">{t('Instructions')}</label>
         <div className="prompt-toolbar">
-          <button className="ai-gen-btn" type="button" onClick={() => setModalOpen(true)}>
-            Generate with AI
-          </button>
-          <span className="prompt-char-count">{prompt.length} / 10000</span>
+          <span id="custom-instructions-count" dir="ltr" className="prompt-char-count">{prompt.length} / 10000</span>
         </div>
         <textarea
+          id="custom-assistant-instructions"
+          aria-describedby={`custom-instructions-count custom-instructions-help${saveError ? ' custom-instructions-error' : ''}`}
           className="form-input"
           dir="auto"
           translate="no"
           maxLength={10000}
           rows={6}
           value={prompt}
-          onChange={(event) => setPrompt(event.target.value)}
+          onChange={(event) => { if (feedback?.kind === 'success') clearFeedback(); setPrompt(event.target.value); }}
           placeholder={t('Describe this business, booking rules, tone and escalation policy.')}
         />
-        <div className="form-hint">This prompt is saved for the selected business only.</div>
+        <div id="custom-instructions-help" className="form-hint">{t('These instructions are saved for the selected business only.')}</div>
+        {saveError && <p id="custom-instructions-error" className="dashboard-inline-error" role="alert">{saveError}</p>}
       </div>
+      {!saveError && <DashboardFeedback feedback={feedback} saving={saving} />}
       <div className="save-row">
         <button className="btn btn-primary" type="button" onClick={save} disabled={saving}>
-          {saving ? 'Saving...' : 'Save Prompt'}
+          {saving ? t('Saving...') : t('Save instructions')}
         </button>
       </div>
-      <GeneratePromptModal
-        open={modalOpen}
-        initialBusinessName={business.name}
-        onClose={() => setModalOpen(false)}
-        onGenerate={handleGeneratePrompt}
-      />
     </section>
   );
 }
@@ -1187,7 +1235,7 @@ export function ChannelSettings({
   business: Business;
   health: IntegrationHealth[];
   onTest: (integration: string) => void;
-  onSaved: (message: string, refresh?: boolean) => void;
+  onSaved: DashboardSaved;
 }) {
   const { t } = useDashboardI18n();
   const [values, setValues] = useState(() => getChannelValues(business));

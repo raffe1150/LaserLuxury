@@ -95,6 +95,7 @@ test('invalid business id fails closed without calling storage search', async ()
     async list() { return []; },
     async create(source) { return source; },
     async delete() { return false; },
+    async replaceChunks() { throw new Error("Unexpected Knowledge mutation in fail-closed search fixture"); },
     async search() {
       searchCalls += 1;
       return [];

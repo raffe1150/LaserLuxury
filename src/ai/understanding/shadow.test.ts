@@ -14,6 +14,7 @@ import {
   type StructuredUnderstandingShadowTelemetry,
 } from './shadow';
 import { understandBookingTurn } from './understand-booking-turn';
+import { decodeCanonicalStructuredUnderstanding } from './validation';
 
 const messages = {
   en: 'Yes, book a consultation on Monday at 10:15.',
@@ -156,6 +157,7 @@ await success.observer.waitForIdle();
 assert.equal(successProvider.calls, 1);
 assert.equal(typeof successProvider.lastSignal?.addEventListener, 'function');
 assert.equal(success.events[0]?.outcome, 'success');
+assert.equal(success.events[0]?.failureCategory, undefined);
 
 // D: confirmation conflict is telemetry only.
 const disagreementProvider = new FakeProvider(fixture('en', {
@@ -274,5 +276,48 @@ for (const filename of ['comparison.ts', 'shadow.ts', 'understand-booking-turn.t
   const source = readFileSync(`${directory}/${filename}`, 'utf8');
   assert.doesNotMatch(source, /providers\/gemini|GeminiUnderstanding|GoogleGenAI/);
 }
+
+// Decoder branches retain their separate payloads; classification remains
+// telemetry-only even when a sink throws or a malformed result is returned.
+const decodedSuccess = decodeCanonicalStructuredUnderstanding(fixture('en'));
+assert.equal(decodedSuccess.ok, true);
+assert.equal('issues' in decodedSuccess, false);
+if (decodedSuccess.ok === true) assert.equal(decodedSuccess.value.schemaVersion, 1);
+
+let decoderCase = 0;
+for (const [output, issue, category] of [
+  [null, { path: '$', code: 'invalid_type' }, 'malformed_response'],
+  [[], { path: '$', code: 'invalid_type' }, 'malformed_response'],
+  ['invalid output', { path: '$', code: 'invalid_type' }, 'malformed_response'],
+  [{}, { path: '$.schemaVersion', code: 'missing_field' }, 'schema_validation_failed'],
+  [fixture('en', { schemaVersion: 2 }), { path: '$.schemaVersion', code: 'invalid_value' }, 'schema_validation_failed'],
+] as const) {
+  const decodedFailure = decodeCanonicalStructuredUnderstanding(output);
+  assert.equal(decodedFailure.ok, false);
+  assert.equal('value' in decodedFailure, false);
+  if (decodedFailure.ok === false) assert.deepEqual(decodedFailure.issues, [issue]);
+  const harness = createHarness(new FakeProvider(output));
+  const inputBefore = structuredClone(disabledInput);
+  const options = shadowOptions(harness.observer, disabledInput.text, `boundary-${decoderCase++}`);
+  const liveResult = understandBookingTurn(disabledInput, options);
+  assert.deepEqual(liveResult, disabledLegacy);
+  await harness.observer.waitForIdle();
+  assert.deepEqual(liveResult, disabledLegacy);
+  assert.deepEqual(disabledInput, inputBefore);
+  assert.equal(harness.events.length, 1);
+  assert.equal(harness.events[0].outcome, 'failure');
+  assert.equal(harness.events[0].failureCategory, category);
+  assert.deepEqual(harness.events[0].fields, []);
+  assert.equal(harness.events[0].mode, 'shadow_only');
+}
+
+const sinkFailure = createStructuredUnderstandingShadowObserver({
+  provider: new FakeProvider({}), providerName: 'test-provider', model: 'test-model',
+  timeoutMs: 50, maxConcurrency: 1,
+  emit: () => { throw new Error('synthetic telemetry failure'); },
+});
+const sinkFailureResult = understandBookingTurn(disabledInput, shadowOptions(sinkFailure, disabledInput.text, 'boundary-sink-failure'));
+await sinkFailure.waitForIdle();
+assert.deepEqual(sinkFailureResult, disabledLegacy);
 
 console.log('Structured understanding shadow/comparison tests passed');

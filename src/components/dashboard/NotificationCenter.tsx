@@ -3,6 +3,7 @@ import { groupNotificationsByRecency } from '../../notifications/model';
 import { api } from '../../services/api';
 import type { NotificationFilter, NotificationItem } from '../../types/dashboard';
 import { useDashboardI18n } from '../../i18n/dashboard';
+import { dashboardNavigationForTarget, type NavigateDashboard } from './dashboard-navigation';
 
 const PAGE_SIZE = 25;
 const FILTERS: Array<{ id: NotificationFilter; label: string }> = [
@@ -16,11 +17,13 @@ export default function NotificationCenter({
   timezone = 'UTC',
   onUnreadCountChange,
   refreshKey = 0,
+  onWorkspaceNavigate,
 }: {
   businessId: string;
   timezone?: string;
   onUnreadCountChange?: (count: number) => void;
   refreshKey?: number;
+  onWorkspaceNavigate: NavigateDashboard;
 }) {
   const { locale, formatNumber } = useDashboardI18n();
   const [filter, setFilter] = useState<NotificationFilter>('all');
@@ -99,8 +102,8 @@ export default function NotificationCenter({
   const openAction = async (item: NotificationItem) => {
     await markRead(item);
     if (!item.actionTarget) return;
-    const dashboardTarget = item.actionTarget === '#activity' ? '#bookings' : item.actionTarget;
-    document.querySelector<HTMLAnchorElement>(`.sidebar-nav a[href="${dashboardTarget}"]`)?.click();
+    const destination = dashboardNavigationForTarget(item.actionTarget);
+    if (destination) onWorkspaceNavigate(destination);
   };
 
   const loadMore = async () => {
@@ -129,7 +132,7 @@ export default function NotificationCenter({
     <section id="notification-center" className="card dashboard-section notification-center">
       <div className="notification-toolbar">
         <div>
-          <div className="card-title">Notifications</div>
+          <h3 id="settings-issues-title" className="card-title" tabIndex={-1}>Issues</h3>
           <div className="card-desc">{formatNumber(unreadCount)} unread · Operational issues that may need your attention.</div>
         </div>
         {unreadCount > 0 && <button className="notification-mark-all" type="button" onClick={() => void markAllRead()}>Mark all as read</button>}
@@ -139,9 +142,9 @@ export default function NotificationCenter({
       </div>
 
       <div className="notification-feed" aria-busy={loading}>
-        {loading && <div className="notification-skeleton" aria-label="Loading notifications">{Array.from({ length: 4 }, (_, index) => <div key={index}><i /><span /></div>)}</div>}
+        {loading && <div className="notification-skeleton" aria-label="Loading notifications" role="status"><span className="dashboard-state-label">Loading notifications</span>{Array.from({ length: 4 }, (_, index) => <div key={index}><i /><span /></div>)}</div>}
         {!loading && error && items.length === 0 && <NotificationState title="Notifications unavailable" copy="Your operational workflows are unaffected. Try loading notifications again." action={() => setRetry((value) => value + 1)} />}
-        {!loading && !error && items.length === 0 && <NotificationState title="You're all caught up" copy="No issues need your attention right now." />}
+        {!loading && !error && items.length === 0 && <NotificationState title={filter === 'unread' ? 'No unread notifications' : filter === 'attention' ? 'No issues need attention' : 'No notifications yet'} copy={filter === 'unread' ? 'Read issues may still need attention. Check Attention for unresolved issues.' : filter === 'attention' ? 'There are no active issues in this view.' : 'New business activity and connection issues will appear here.'} />}
         {!loading && groups.map((group) => <section className="notification-date-group" key={group.key}>
           <div className="notification-date-label">{group.label}</div>
           {group.items.map((item) => <article className={`notification-row ${item.severity}${item.read ? ' read' : ' unread'}`} key={item.id}>
@@ -159,14 +162,14 @@ export default function NotificationCenter({
           </article>)}
         </section>)}
         {cursor !== null && <button className="notification-load-more" type="button" disabled={loadingMore} onClick={() => void loadMore()}>{loadingMore ? 'Loading…' : 'Load more'}</button>}
-        {error && items.length > 0 && <div className="notification-inline-error">{error}</div>}
+        {error && items.length > 0 && <div className="notification-inline-error" role="alert">{error}</div>}
       </div>
     </section>
   );
 }
 
 function NotificationState({ title, copy, action }: { title: string; copy: string; action?: () => void }) {
-  return <div className="notification-state"><strong>{title}</strong><span>{copy}</span>{action && <button type="button" onClick={action}>Retry</button>}</div>;
+  return <div className="notification-state" role={action ? 'alert' : undefined}><strong>{title}</strong><span>{copy}</span>{action && <button type="button" onClick={action}>Retry</button>}</div>;
 }
 
 function formatCategory(category: NotificationItem['category']) {

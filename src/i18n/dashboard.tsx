@@ -30,6 +30,9 @@ const sv: Record<string, string> = {
   'Integration health': 'Integrationshälsa', 'Automatic, cached connection checks for this business': 'Automatiska, cachade anslutningskontroller för verksamheten', 'Health unavailable': 'Hälsa är inte tillgänglig', 'Check now': 'Kontrollera nu', 'Checking…': 'Kontrollerar…', 'All systems operational': 'Alla system fungerar', 'Notifications unavailable': 'Aviseringar är inte tillgängliga', 'You’re all caught up': 'Allt är klart', "You're all caught up": 'Allt är klart', 'No issues need your attention right now.': 'Inga problem kräver din uppmärksamhet just nu.', 'Mark all as read': 'Markera alla som lästa', 'Filter notifications': 'Filtrera aviseringar', 'Loading notifications': 'Läser in aviseringar', 'Mark read': 'Markera som läst', 'Open Health': 'Öppna hälsa', 'View bookings': 'Visa bokningar',
   Upcoming: 'Kommande', Pending: 'Väntande', History: 'Historik', 'Search bookings…': 'Sök bokningar…', 'Booking details': 'Bokningsdetaljer', Date: 'Datum', Time: 'Tid', Status: 'Status', Booked: 'Bokad', 'Close booking details': 'Stäng bokningsdetaljer', 'Loading bookings': 'Läser in bokningar', 'Bookings unavailable': 'Bokningar är inte tillgängliga', 'Try a different search.': 'Prova en annan sökning.',
   'Services & Pricing': 'Tjänster och priser', 'Add Service': 'Lägg till tjänst', 'No services added yet.': 'Inga tjänster har lagts till.', 'Service Name': 'Tjänstenamn', Duration: 'Varaktighet', Price: 'Pris', Currency: 'Valuta', Active: 'Aktiv', Delete: 'Ta bort', 'Working Hours': 'Öppettider', 'Set when your business is open for bookings.': 'Ange när verksamheten är öppen för bokningar.', Monday: 'Måndag', Tuesday: 'Tisdag', Wednesday: 'Onsdag', Thursday: 'Torsdag', Friday: 'Fredag', Saturday: 'Lördag', Sunday: 'Söndag', Closed: 'Stängt', Open: 'Öppet', 'System Prompt Editor': 'Systempromptredigerare', 'Controls how the AI assistant responds for this business.': 'Styr hur AI-assistenten svarar för verksamheten.', 'Custom AI System Prompt': 'Anpassad AI-systemprompt', 'This prompt is saved for the selected business only.': 'Prompten sparas endast för vald verksamhet.', Test: 'Testa', 'Setup notes': 'Installationsanteckningar', Save: 'Spara', Cancel: 'Avbryt', 'Add Business': 'Lägg till verksamhet', 'Create Business': 'Skapa verksamhet', Creating: 'Skapar', 'Creating...': 'Skapar...', 'Delete Business': 'Ta bort verksamhet', Selected: 'Vald', Select: 'Välj',
+  "AI Assistant": "AI-assistent", "Account": "Konto", "Manage Businesses": "Hantera verksamheter", "Create business": "Skapa verksamhet", "Settings": "Inställningar", "Connections": "Anslutningar", "Connection health": "Anslutningsstatus", "Notification settings": "Aviseringsinställningar", "Back to {destination}": "Tillbaka till {destination}",
+  "Reports": "Rapporter", "Open Inbox": "Öppna inkorgen", "Open Bookings": "Öppna bokningar", "View reports": "Visa rapporter", "Home actions": "Hemåtgärder", "Conversations with customer activity today": "Konversationer med kundaktivitet idag",
+  "How should OdinLink speak?": "Hur ska OdinLink prata?", "Style changes how OdinLink communicates. Your business information and booking rules still apply.": "Stilen ändrar hur OdinLink kommunicerar. Din verksamhetsinformation och dina bokningsregler gäller fortfarande.", "Use your own style guidance.": "Använd dina egna riktlinjer för stil.", "Your custom style is selected.": "Din anpassade stil är vald.", "Add your custom style guidance in Advanced.": "Lägg till egna stilriktlinjer under Avancerat.", "Edit custom style": "Redigera anpassad stil", "Save style": "Spara stil", "Advanced": "Avancerat", "Tone adjustments": "Tonjusteringar", "Custom tone guidance": "Egna stilriktlinjer", "Used when Custom is selected. Add business facts in Business answers.": "Används när Anpassad är vald. Lägg till verksamhetsfakta under Verksamhetssvar.", "Save style also saves these adjustments.": "Spara stil sparar även dessa justeringar.", "Back to assistant style": "Tillbaka till assistentens stil", "Custom instructions": "Egna instruktioner", "Optional instructions for this business. Save them separately from style changes.": "Valfria instruktioner för verksamheten. Spara dem separat från stiländringar.", "Instructions": "Instruktioner", "These instructions are saved for the selected business only.": "Dessa instruktioner sparas endast för den valda verksamheten.", "Business answers": "Verksamhetssvar", "Add information OdinLink can use when answering customer questions.": "Lägg till information som OdinLink kan använda när kunder ställer frågor.",
 };
 
 const es: Record<string, string> = {
@@ -41,6 +44,9 @@ const es: Record<string, string> = {
   'Integration health': 'Estado de integraciones', 'Health unavailable': 'Estado no disponible', 'Check now': 'Comprobar ahora', 'Checking…': 'Comprobando…', 'All systems operational': 'Todos los sistemas operativos', 'Notifications unavailable': 'Notificaciones no disponibles', 'You’re all caught up': 'Todo está al día', "You're all caught up": 'Todo está al día', 'No issues need your attention right now.': 'No hay problemas que requieran tu atención.', 'Mark all as read': 'Marcar todo como leído', 'Filter notifications': 'Filtrar notificaciones', 'Mark read': 'Marcar como leída', 'Open Health': 'Abrir estado', 'View bookings': 'Ver reservas',
   Upcoming: 'Próximas', Pending: 'Pendientes', History: 'Historial', 'Search bookings…': 'Buscar reservas…', 'Booking details': 'Detalles de la reserva', Date: 'Fecha', Time: 'Hora', Status: 'Estado', Booked: 'Reservada', 'Loading bookings': 'Cargando reservas', 'Bookings unavailable': 'Reservas no disponibles',
   'Services & Pricing': 'Servicios y precios', 'Add Service': 'Añadir servicio', 'No services added yet.': 'Aún no hay servicios.', 'Service Name': 'Nombre del servicio', Duration: 'Duración', Price: 'Precio', Currency: 'Moneda', Active: 'Activo', Delete: 'Eliminar', 'Working Hours': 'Horario', Monday: 'Lunes', Tuesday: 'Martes', Wednesday: 'Miércoles', Thursday: 'Jueves', Friday: 'Viernes', Saturday: 'Sábado', Sunday: 'Domingo', Closed: 'Cerrado', Open: 'Abierto', 'System Prompt Editor': 'Editor de instrucciones del sistema', 'Custom AI System Prompt': 'Instrucciones de sistema personalizadas', Test: 'Probar', 'Setup notes': 'Notas de configuración', Save: 'Guardar', Cancel: 'Cancelar', 'Add Business': 'Añadir negocio', 'Create Business': 'Crear negocio', 'Delete Business': 'Eliminar negocio', Selected: 'Seleccionado', Select: 'Seleccionar',
+  "AI Assistant": "Asistente de IA", "Account": "Cuenta", "Manage Businesses": "Gestionar negocios", "Create business": "Crear negocio", "Settings": "Configuración", "Connections": "Conexiones", "Connection health": "Estado de conexiones", "Notification settings": "Configuración de avisos", "Back to {destination}": "Volver a {destination}",
+  "Reports": "Informes", "Open Inbox": "Abrir bandeja de entrada", "Open Bookings": "Abrir reservas", "View reports": "Ver informes", "Home actions": "Acciones de inicio", "Conversations with customer activity today": "Conversaciones con actividad de clientes hoy",
+  "How should OdinLink speak?": "¿Cómo debe hablar OdinLink?", "Style changes how OdinLink communicates. Your business information and booking rules still apply.": "El estilo cambia cómo se comunica OdinLink. La información de tu negocio y las reglas de reserva siguen vigentes.", "Use your own style guidance.": "Usa tus propias indicaciones de estilo.", "Your custom style is selected.": "Tu estilo personalizado está seleccionado.", "Add your custom style guidance in Advanced.": "Añade tus indicaciones de estilo en Avanzado.", "Edit custom style": "Editar estilo personalizado", "Save style": "Guardar estilo", "Advanced": "Avanzado", "Tone adjustments": "Ajustes de tono", "Custom tone guidance": "Indicaciones de estilo personalizadas", "Used when Custom is selected. Add business facts in Business answers.": "Se usa cuando Personalizado está seleccionado. Añade datos del negocio en Respuestas del negocio.", "Save style also saves these adjustments.": "Guardar estilo también guarda estos ajustes.", "Back to assistant style": "Volver al estilo del asistente", "Custom instructions": "Instrucciones personalizadas", "Optional instructions for this business. Save them separately from style changes.": "Instrucciones opcionales para este negocio. Guárdalas por separado de los cambios de estilo.", "Instructions": "Instrucciones", "These instructions are saved for the selected business only.": "Estas instrucciones se guardan solo para el negocio seleccionado.", "Business answers": "Respuestas del negocio", "Add information OdinLink can use when answering customer questions.": "Añade información que OdinLink puede usar al responder preguntas de clientes.",
 };
 
 const de: Record<string, string> = {
@@ -52,6 +58,9 @@ const de: Record<string, string> = {
   'Integration health': 'Integrationsstatus', 'Health unavailable': 'Status nicht verfügbar', 'Check now': 'Jetzt prüfen', 'Checking…': 'Wird geprüft…', 'All systems operational': 'Alle Systeme betriebsbereit', 'Notifications unavailable': 'Benachrichtigungen nicht verfügbar', 'You’re all caught up': 'Alles erledigt', "You're all caught up": 'Alles erledigt', 'Mark all as read': 'Alle als gelesen markieren', 'Filter notifications': 'Benachrichtigungen filtern', 'Mark read': 'Als gelesen markieren', 'Open Health': 'Systemstatus öffnen', 'View bookings': 'Buchungen anzeigen',
   Upcoming: 'Bevorstehend', Pending: 'Ausstehend', History: 'Verlauf', 'Search bookings…': 'Buchungen suchen…', 'Booking details': 'Buchungsdetails', Date: 'Datum', Time: 'Uhrzeit', Status: 'Status', Booked: 'Gebucht', 'Loading bookings': 'Buchungen werden geladen', 'Bookings unavailable': 'Buchungen nicht verfügbar',
   'Services & Pricing': 'Services und Preise', 'Add Service': 'Service hinzufügen', 'No services added yet.': 'Noch keine Services hinzugefügt.', 'Service Name': 'Servicename', Duration: 'Dauer', Price: 'Preis', Currency: 'Währung', Active: 'Aktiv', Delete: 'Löschen', 'Working Hours': 'Öffnungszeiten', Monday: 'Montag', Tuesday: 'Dienstag', Wednesday: 'Mittwoch', Thursday: 'Donnerstag', Friday: 'Freitag', Saturday: 'Samstag', Sunday: 'Sonntag', Closed: 'Geschlossen', Open: 'Geöffnet', 'System Prompt Editor': 'System-Prompt-Editor', 'Custom AI System Prompt': 'Benutzerdefinierter System-Prompt', Test: 'Testen', 'Setup notes': 'Einrichtungshinweise', Save: 'Speichern', Cancel: 'Abbrechen', 'Add Business': 'Unternehmen hinzufügen', 'Create Business': 'Unternehmen erstellen', 'Delete Business': 'Unternehmen löschen', Selected: 'Ausgewählt', Select: 'Auswählen',
+  "AI Assistant": "KI-Assistent", "Account": "Konto", "Manage Businesses": "Unternehmen verwalten", "Create business": "Unternehmen erstellen", "Settings": "Einstellungen", "Connections": "Verbindungen", "Connection health": "Verbindungsstatus", "Notification settings": "Benachrichtigungseinstellungen", "Back to {destination}": "Zurück zu {destination}",
+  "Reports": "Berichte", "Open Inbox": "Posteingang öffnen", "Open Bookings": "Buchungen öffnen", "View reports": "Berichte anzeigen", "Home actions": "Startseitenaktionen", "Conversations with customer activity today": "Gespräche mit Kundenaktivität heute",
+  "How should OdinLink speak?": "Wie soll OdinLink sprechen?", "Style changes how OdinLink communicates. Your business information and booking rules still apply.": "Der Stil verändert, wie OdinLink kommuniziert. Deine Unternehmensinformationen und Buchungsregeln gelten weiterhin.", "Use your own style guidance.": "Verwende deine eigenen Stilvorgaben.", "Your custom style is selected.": "Dein eigener Stil ist ausgewählt.", "Add your custom style guidance in Advanced.": "Füge deine Stilvorgaben unter Erweitert hinzu.", "Edit custom style": "Eigenen Stil bearbeiten", "Save style": "Stil speichern", "Advanced": "Erweitert", "Tone adjustments": "Tonanpassungen", "Custom tone guidance": "Eigene Stilvorgaben", "Used when Custom is selected. Add business facts in Business answers.": "Wird verwendet, wenn Individuell ausgewählt ist. Unternehmensfakten gehören in Unternehmensantworten.", "Save style also saves these adjustments.": "Stil speichern speichert auch diese Anpassungen.", "Back to assistant style": "Zurück zum Assistentenstil", "Custom instructions": "Eigene Anweisungen", "Optional instructions for this business. Save them separately from style changes.": "Optionale Anweisungen für dieses Unternehmen. Speichere sie getrennt von Stiländerungen.", "Instructions": "Anweisungen", "These instructions are saved for the selected business only.": "Diese Anweisungen werden nur für das ausgewählte Unternehmen gespeichert.", "Business answers": "Unternehmensantworten", "Add information OdinLink can use when answering customer questions.": "Füge Informationen hinzu, die OdinLink für Antworten auf Kundenfragen verwenden kann.",
 };
 
 const fa: Record<string, string> = {
@@ -63,6 +72,9 @@ const fa: Record<string, string> = {
   'Integration health': 'سلامت اتصال‌ها', 'Health unavailable': 'وضعیت سلامت در دسترس نیست', 'Check now': 'اکنون بررسی کن', 'Checking…': 'در حال بررسی…', 'All systems operational': 'همه سامانه‌ها فعال‌اند', 'Notifications unavailable': 'اعلان‌ها در دسترس نیستند', 'You’re all caught up': 'همه‌چیز رسیدگی شده', "You're all caught up": 'همه‌چیز رسیدگی شده', 'Mark all as read': 'همه را خوانده علامت بزن', 'Filter notifications': 'فیلتر اعلان‌ها', 'Mark read': 'خوانده شد', 'Open Health': 'باز کردن سلامت', 'View bookings': 'نمایش رزروها',
   Upcoming: 'آینده', Pending: 'در انتظار', History: 'گذشته', 'Search bookings…': 'جستجوی رزروها…', 'Booking details': 'جزئیات رزرو', Date: 'تاریخ', Time: 'زمان', Status: 'وضعیت', Booked: 'رزرو شده', 'Loading bookings': 'در حال بارگذاری رزروها', 'Bookings unavailable': 'رزروها در دسترس نیستند',
   'Services & Pricing': 'خدمات و قیمت‌ها', 'Add Service': 'افزودن خدمت', 'No services added yet.': 'هنوز خدمتی اضافه نشده است.', 'Service Name': 'نام خدمت', Duration: 'مدت', Price: 'قیمت', Currency: 'ارز', Active: 'فعال', Delete: 'حذف', 'Working Hours': 'ساعات کاری', Monday: 'دوشنبه', Tuesday: 'سه‌شنبه', Wednesday: 'چهارشنبه', Thursday: 'پنجشنبه', Friday: 'جمعه', Saturday: 'شنبه', Sunday: 'یکشنبه', Closed: 'بسته', Open: 'باز', 'System Prompt Editor': 'ویرایشگر پرامپت سیستم', 'Custom AI System Prompt': 'پرامپت سفارشی سیستم', Test: 'آزمایش', 'Setup notes': 'راهنمای راه‌اندازی', Save: 'ذخیره', Cancel: 'لغو', 'Add Business': 'افزودن کسب‌وکار', 'Create Business': 'ساخت کسب‌وکار', 'Delete Business': 'حذف کسب‌وکار', Selected: 'انتخاب‌شده', Select: 'انتخاب',
+  "AI Assistant": "دستیار هوش مصنوعی", "Account": "حساب", "Manage Businesses": "مدیریت کسب‌وکارها", "Create business": "ایجاد کسب‌وکار", "Settings": "تنظیمات", "Connections": "اتصال‌ها", "Connection health": "وضعیت اتصال‌ها", "Notification settings": "تنظیمات اعلان‌ها", "Back to {destination}": "بازگشت به {destination}",
+  "Reports": "گزارش‌ها", "Open Inbox": "باز کردن صندوق ورودی", "Open Bookings": "باز کردن رزروها", "View reports": "مشاهده گزارش‌ها", "Home actions": "اقدام‌های صفحه اصلی", "Conversations with customer activity today": "گفتگوهای دارای فعالیت مشتری امروز",
+  "How should OdinLink speak?": "اودین‌لینک چگونه صحبت کند؟", "Style changes how OdinLink communicates. Your business information and booking rules still apply.": "سبک، شیوه ارتباط اودین‌لینک را تغییر می‌دهد. اطلاعات کسب‌وکار و قوانین رزرو شما همچنان برقرار هستند.", "Use your own style guidance.": "از راهنمای سبک خود استفاده کنید.", "Your custom style is selected.": "سبک سفارشی شما انتخاب شده است.", "Add your custom style guidance in Advanced.": "راهنمای سبک خود را در بخش پیشرفته اضافه کنید.", "Edit custom style": "ویرایش سبک سفارشی", "Save style": "ذخیره سبک", "Advanced": "پیشرفته", "Tone adjustments": "تنظیمات لحن", "Custom tone guidance": "راهنمای لحن سفارشی", "Used when Custom is selected. Add business facts in Business answers.": "هنگام انتخاب سفارشی استفاده می‌شود. اطلاعات کسب‌وکار را در پاسخ‌های کسب‌وکار اضافه کنید.", "Save style also saves these adjustments.": "ذخیره سبک، این تنظیمات را هم ذخیره می‌کند.", "Back to assistant style": "بازگشت به سبک دستیار", "Custom instructions": "دستورالعمل‌های سفارشی", "Optional instructions for this business. Save them separately from style changes.": "دستورالعمل‌های اختیاری برای این کسب‌وکار. آن‌ها را جدا از تغییرات سبک ذخیره کنید.", "Instructions": "دستورالعمل‌ها", "These instructions are saved for the selected business only.": "این دستورالعمل‌ها فقط برای کسب‌وکار انتخاب‌شده ذخیره می‌شوند.", "Business answers": "پاسخ‌های کسب‌وکار", "Add information OdinLink can use when answering customer questions.": "اطلاعاتی اضافه کنید که اودین‌لینک بتواند هنگام پاسخ به پرسش‌های مشتریان استفاده کند.",
 };
 
 const ar: Record<string, string> = {
@@ -74,6 +86,9 @@ const ar: Record<string, string> = {
   'Integration health': 'حالة التكاملات', 'Health unavailable': 'الحالة غير متاحة', 'Check now': 'تحقق الآن', 'Checking…': 'جارٍ التحقق…', 'All systems operational': 'جميع الأنظمة تعمل', 'Notifications unavailable': 'الإشعارات غير متاحة', 'You’re all caught up': 'تمت متابعة كل شيء', "You're all caught up": 'تمت متابعة كل شيء', 'Mark all as read': 'تحديد الكل كمقروء', 'Filter notifications': 'تصفية الإشعارات', 'Mark read': 'تحديد كمقروء', 'Open Health': 'فتح الحالة', 'View bookings': 'عرض الحجوزات',
   Upcoming: 'قادمة', Pending: 'معلّقة', History: 'السجل', 'Search bookings…': 'بحث في الحجوزات…', 'Booking details': 'تفاصيل الحجز', Date: 'التاريخ', Time: 'الوقت', Status: 'الحالة', Booked: 'محجوز', 'Loading bookings': 'جارٍ تحميل الحجوزات', 'Bookings unavailable': 'الحجوزات غير متاحة',
   'Services & Pricing': 'الخدمات والأسعار', 'Add Service': 'إضافة خدمة', 'No services added yet.': 'لم تتم إضافة خدمات بعد.', 'Service Name': 'اسم الخدمة', Duration: 'المدة', Price: 'السعر', Currency: 'العملة', Active: 'نشط', Delete: 'حذف', 'Working Hours': 'ساعات العمل', Monday: 'الاثنين', Tuesday: 'الثلاثاء', Wednesday: 'الأربعاء', Thursday: 'الخميس', Friday: 'الجمعة', Saturday: 'السبت', Sunday: 'الأحد', Closed: 'مغلق', Open: 'مفتوح', 'System Prompt Editor': 'محرر تعليمات النظام', 'Custom AI System Prompt': 'تعليمات نظام مخصصة', Test: 'اختبار', 'Setup notes': 'ملاحظات الإعداد', Save: 'حفظ', Cancel: 'إلغاء', 'Add Business': 'إضافة نشاط', 'Create Business': 'إنشاء نشاط', 'Delete Business': 'حذف نشاط', Selected: 'محدد', Select: 'اختيار',
+  "AI Assistant": "مساعد الذكاء الاصطناعي", "Account": "الحساب", "Manage Businesses": "إدارة الأنشطة", "Create business": "إنشاء نشاط", "Settings": "الإعدادات", "Connections": "الاتصالات", "Connection health": "حالة الاتصالات", "Notification settings": "إعدادات الإشعارات", "Back to {destination}": "العودة إلى {destination}",
+  "Reports": "التقارير", "Open Inbox": "فتح صندوق الوارد", "Open Bookings": "فتح الحجوزات", "View reports": "عرض التقارير", "Home actions": "إجراءات الصفحة الرئيسية", "Conversations with customer activity today": "محادثات شهدت نشاط العملاء اليوم",
+  "How should OdinLink speak?": "كيف ينبغي أن يتحدث OdinLink؟", "Style changes how OdinLink communicates. Your business information and booking rules still apply.": "يغيّر الأسلوب طريقة تواصل OdinLink. تظل معلومات نشاطك التجاري وقواعد الحجز سارية.", "Use your own style guidance.": "استخدم إرشادات أسلوبك الخاصة.", "Your custom style is selected.": "تم اختيار أسلوبك المخصص.", "Add your custom style guidance in Advanced.": "أضف إرشادات أسلوبك في القسم المتقدم.", "Edit custom style": "تعديل الأسلوب المخصص", "Save style": "حفظ الأسلوب", "Advanced": "متقدم", "Tone adjustments": "تعديلات النبرة", "Custom tone guidance": "إرشادات النبرة المخصصة", "Used when Custom is selected. Add business facts in Business answers.": "تُستخدم عند اختيار مخصص. أضف حقائق النشاط التجاري في إجابات النشاط التجاري.", "Save style also saves these adjustments.": "يحفظ زر حفظ الأسلوب هذه التعديلات أيضًا.", "Back to assistant style": "العودة إلى أسلوب المساعد", "Custom instructions": "تعليمات مخصصة", "Optional instructions for this business. Save them separately from style changes.": "تعليمات اختيارية لهذا النشاط التجاري. احفظها بشكل منفصل عن تغييرات الأسلوب.", "Instructions": "التعليمات", "These instructions are saved for the selected business only.": "تُحفظ هذه التعليمات للنشاط التجاري المحدد فقط.", "Business answers": "إجابات النشاط التجاري", "Add information OdinLink can use when answering customer questions.": "أضف معلومات يمكن لـ OdinLink استخدامها عند الإجابة عن أسئلة العملاء.",
 };
 
 function addTranslations(
@@ -93,6 +108,20 @@ function addTranslations(
     ar[source] = values.ar[index];
   });
 }
+
+
+// Visual Phase 4: truthful loaded-result context and operational Inbox labels.
+addTranslations([
+  '{count} conversations loaded · {range}', '{count} unread in loaded results',
+  'Activity', 'Recent', '3 months', 'Reply', 'Reply via {channel}…', 'Messages', 'System',
+  'Filter conversations by activity range',
+], {
+  sv: ['{count} konversationer inlästa · {range}', '{count} olästa i inlästa resultat', 'Aktivitet', 'Senaste', '3 månader', 'Svara', 'Svara via {channel}…', 'Meddelanden', 'System', 'Filtrera konversationer efter aktivitetsperiod'],
+  es: ['{count} conversaciones cargadas · {range}', '{count} sin leer en los resultados cargados', 'Actividad', 'Recientes', '3 meses', 'Responder', 'Responder por {channel}…', 'Mensajes', 'Sistema', 'Filtrar conversaciones por período de actividad'],
+  de: ['{count} Unterhaltungen geladen · {range}', '{count} ungelesen in geladenen Ergebnissen', 'Aktivität', 'Zuletzt', '3 Monate', 'Antworten', 'Über {channel} antworten…', 'Nachrichten', 'System', 'Unterhaltungen nach Aktivitätszeitraum filtern'],
+  fa: ['{count} گفتگو بارگذاری شده · {range}', '{count} خوانده‌نشده در نتایج بارگذاری‌شده', 'فعالیت', 'اخیر', '۳ ماه', 'پاسخ', 'پاسخ از طریق {channel}…', 'پیام‌ها', 'سیستم', 'فیلتر گفتگوها بر اساس بازهٔ فعالیت'],
+  ar: ['{count} محادثات محمّلة · {range}', '{count} غير مقروءة في النتائج المحمّلة', 'النشاط', 'الأخيرة', '٣ أشهر', 'الرد', 'الرد عبر {channel}…', 'الرسائل', 'النظام', 'تصفية المحادثات حسب فترة النشاط'],
+});
 
 addTranslations([
   'Default assistant language',
@@ -491,7 +520,148 @@ addTranslations(['Concise'], {
   sv: ['Kortfattad'], es: ['Conciso'], de: ['Prägnant'], fa: ['مختصر'], ar: ['موجز'],
 });
 
+addTranslations([
+  'Business', 'Settings setup', 'Open {destination}', 'Business information, services, working hours and cancellation policy.',
+  'Connect your channels and calendar, and check their status.', 'Review issues and choose where business alerts are sent.',
+  'Issues', 'Business alerts', 'Cancellation policy', 'Add the Telegram Admin Chat ID under Connections first', 'Change this value under Connections → Telegram.',
+], {
+  sv: ['Verksamhet', 'Inställningsområden', 'Öppna {destination}', 'Verksamhetsinformation, tjänster, öppettider och avbokningspolicy.', 'Anslut kanaler och kalender och kontrollera deras status.', 'Granska problem och välj vart verksamhetsaviseringar skickas.', 'Problem', 'Verksamhetsaviseringar', 'Avbokningspolicy', 'Lägg först till Telegram Admin Chat ID under Anslutningar', 'Ändra detta under Anslutningar → Telegram.'],
+  es: ['Negocio', 'Áreas de configuración', 'Abrir {destination}', 'Información del negocio, servicios, horarios y política de cancelación.', 'Conecta tus canales y calendario y comprueba su estado.', 'Revisa problemas y elige dónde recibir las alertas del negocio.', 'Problemas', 'Alertas del negocio', 'Política de cancelación', 'Añade primero el Telegram Admin Chat ID en Conexiones', 'Cambia este valor en Conexiones → Telegram.'],
+  de: ['Unternehmen', 'Einstellungsbereiche', '{destination} öffnen', 'Unternehmensdaten, Dienstleistungen, Öffnungszeiten und Stornierungsrichtlinie.', 'Verbinde Kanäle und Kalender und prüfe ihren Status.', 'Prüfe Probleme und wähle das Ziel für Unternehmensbenachrichtigungen.', 'Probleme', 'Unternehmensbenachrichtigungen', 'Stornierungsrichtlinie', 'Füge zuerst die Telegram Admin Chat ID unter Verbindungen hinzu', 'Ändere diesen Wert unter Verbindungen → Telegram.'],
+  fa: ['کسب‌وکار', 'بخش‌های تنظیمات', 'باز کردن {destination}', 'اطلاعات کسب‌وکار، خدمات، ساعات کاری و سیاست لغو.', 'کانال‌ها و تقویم را متصل کنید و وضعیت آن‌ها را بررسی کنید.', 'مشکلات را بررسی کنید و مقصد هشدارهای کسب‌وکار را انتخاب کنید.', 'مشکلات', 'هشدارهای کسب‌وکار', 'سیاست لغو', 'ابتدا شناسه گفتگوی مدیر تلگرام را در اتصالات اضافه کنید', 'این مقدار را در اتصالات ← تلگرام تغییر دهید.'],
+  ar: ['النشاط التجاري', 'أقسام الإعدادات', 'فتح {destination}', 'معلومات النشاط والخدمات وساعات العمل وسياسة الإلغاء.', 'اربط قنواتك وتقويمك وتحقق من حالتها.', 'راجع المشكلات واختر وجهة تنبيهات النشاط.', 'المشكلات', 'تنبيهات النشاط', 'سياسة الإلغاء', 'أضف معرّف محادثة مسؤول تلغرام ضمن الاتصالات أولاً', 'غيّر هذه القيمة ضمن الاتصالات ← تلغرام.'],
+});
+
+addTranslations([
+  'Estimated booking value is not available by service.',
+  'Data for this period could not be verified. Unavailable values are shown as —, not zero.',
+], {
+  sv: ['Uppskattat bokningsvärde är inte tillgängligt per tjänst.', 'Uppgifterna för perioden kunde inte verifieras. Otillgängliga värden visas som —, inte noll.'],
+  es: ['El valor estimado de las reservas no está disponible por servicio.', 'No se pudieron verificar los datos de este periodo. Los valores no disponibles se muestran como —, no como cero.'],
+  de: ['Der geschätzte Buchungswert ist nicht nach Dienstleistung verfügbar.', 'Die Daten für diesen Zeitraum konnten nicht bestätigt werden. Nicht verfügbare Werte erscheinen als —, nicht als null.'],
+  fa: ['ارزش تخمینی رزرو به تفکیک خدمات در دسترس نیست.', 'داده‌های این دوره قابل تأیید نبودند. مقادیر ناموجود با — نمایش داده می‌شوند، نه صفر.'],
+  ar: ['قيمة الحجوزات التقديرية غير متاحة لكل خدمة.', 'تعذر التحقق من بيانات هذه الفترة. تظهر القيم غير المتاحة بالشكل — وليس صفراً.'],
+});
+
+addTranslations(['Loading your business overview.'], {
+  sv: ['Läser in din verksamhetsöversikt.'], es: ['Cargando el resumen de tu negocio.'],
+  de: ['Deine Unternehmensübersicht wird geladen.'], fa: ['نمای کلی کسب‌وکار شما در حال بارگذاری است.'],
+  ar: ['جارٍ تحميل نظرة عامة على نشاطك.'],
+});
+
+addTranslations(['Channels', 'Services'], {
+  sv: ['Kanaler', 'Tjänster'], es: ['Canales', 'Servicios'], de: ['Kanäle', 'Dienstleistungen'],
+  fa: ['کانال‌ها', 'خدمات'], ar: ['القنوات', 'الخدمات'],
+});
+
+addTranslations(['Scroll horizontally to see all columns.'], {
+  sv: ['Rulla i sidled för att se alla kolumner.'],
+  es: ['Desplázate horizontalmente para ver todas las columnas.'],
+  de: ['Scrolle seitlich, um alle Spalten zu sehen.'],
+  fa: ['برای دیدن همه ستون‌ها به صورت افقی پیمایش کنید.'],
+  ar: ['مرّر أفقياً لرؤية جميع الأعمدة.'],
+});
+
+addTranslations(['Save instructions', 'Save alert destination'], {
+  sv: ['Spara instruktioner', 'Spara aviseringsmottagare'],
+  es: ['Guardar instrucciones', 'Guardar destino de alertas'],
+  de: ['Anweisungen speichern', 'Benachrichtigungsziel speichern'],
+  fa: ['ذخیره دستورالعمل‌ها', 'ذخیره مقصد هشدارها'],
+  ar: ['حفظ التعليمات', 'حفظ وجهة التنبيهات'],
+});
+
+addTranslations(['Start', 'End'], {
+  sv: ['Start', 'Slut'], es: ['Inicio', 'Fin'], de: ['Beginn', 'Ende'],
+  fa: ['شروع', 'پایان'], ar: ['البداية', 'النهاية'],
+});
+
+addTranslations(['Optional style adjustments and custom instructions.', 'Business information, services and working hours are saved together.'], {
+  sv: ['Valfria stiljusteringar och egna instruktioner.', 'Verksamhetsinformation, tjänster och öppettider sparas tillsammans.'],
+  es: ['Ajustes de estilo e instrucciones personalizadas opcionales.', 'La información del negocio, los servicios y los horarios se guardan juntos.'],
+  de: ['Optionale Stilanpassungen und eigene Anweisungen.', 'Unternehmensdaten, Dienstleistungen und Öffnungszeiten werden zusammen gespeichert.'],
+  fa: ['تنظیمات اختیاری سبک و دستورالعمل‌های سفارشی.', 'اطلاعات کسب‌وکار، خدمات و ساعات کاری با هم ذخیره می‌شوند.'],
+  ar: ['تعديلات اختيارية للأسلوب وتعليمات مخصصة.', 'تُحفظ معلومات النشاط والخدمات وساعات العمل معاً.'],
+});
+
 de.Service = 'Dienstleistung';
+
+// State/feedback language; business and customer content remains excluded from translation.
+addTranslations(['Done', 'Close message', 'Loading your business workspace.'], {
+  sv: ['Klart', 'Stäng meddelandet', 'Laddar din företagsvy.'],
+  de: ['Erledigt', 'Meldung schließen', 'Ihr Unternehmensbereich wird geladen.'],
+  es: ['Listo', 'Cerrar mensaje', 'Cargando el espacio de tu negocio.'],
+  fa: ['انجام شد', 'بستن پیام', 'در حال بارگیری فضای کسب‌وکار شما.'],
+  ar: ['تم', 'إغلاق الرسالة', 'جارٍ تحميل مساحة نشاطك التجاري.'],
+});
+
+addTranslations(['Knowledge added', 'Knowledge deleted', 'Loading Knowledge...'], {
+  sv: ['Informationen lades till', 'Informationen togs bort', 'Laddar företagsinformationen…'],
+  de: ['Information hinzugefügt', 'Information gelöscht', 'Unternehmenswissen wird geladen…'],
+  es: ['Información añadida', 'Información eliminada', 'Cargando información del negocio…'],
+  fa: ['اطلاعات اضافه شد', 'اطلاعات حذف شد', 'در حال بارگیری اطلاعات کسب‌وکار…'],
+  ar: ['تمت إضافة المعلومات', 'تم حذف المعلومات', 'جارٍ تحميل معلومات النشاط…'],
+});
+
+addTranslations(['No unread notifications', 'No issues need attention', 'No notifications yet', 'Read issues may still need attention. Check Attention for unresolved issues.', 'There are no active issues in this view.', 'New business activity and connection issues will appear here.'], {
+ sv: ['Inga olästa aviseringar', 'Inga problem kräver åtgärd', 'Inga aviseringar ännu', 'Lästa problem kan fortfarande kräva åtgärd. Se Åtgärder för olösta problem.', 'Det finns inga aktiva problem i den här vyn.', 'Ny företagsaktivitet och anslutningsproblem visas här.'],
+ de: ['Keine ungelesenen Benachrichtigungen', 'Keine Probleme erfordern Ihre Aufmerksamkeit', 'Noch keine Benachrichtigungen', 'Gelesene Probleme können weiterhin Aufmerksamkeit erfordern. Prüfen Sie ungelöste Probleme unter Aufmerksamkeit.', 'In dieser Ansicht gibt es keine aktiven Probleme.', 'Neue Unternehmensaktivitäten und Verbindungsprobleme erscheinen hier.'],
+ es: ['No hay notificaciones sin leer', 'No hay problemas que requieran atención', 'Todavía no hay notificaciones', 'Los problemas leídos pueden seguir requiriendo atención. Consulta Atención para ver los problemas sin resolver.', 'No hay problemas activos en esta vista.', 'Aquí aparecerán nuevas actividades del negocio y problemas de conexión.'],
+ fa: ['اعلان خوانده‌نشده‌ای نیست', 'مشکلی نیاز به توجه ندارد', 'هنوز اعلانی نیست', 'مشکلات خوانده‌شده ممکن است همچنان نیاز به توجه داشته باشند. مشکلات حل‌نشده را در بخش توجه بررسی کنید.', 'در این نما مشکل فعالی وجود ندارد.', 'فعالیت‌های جدید کسب‌وکار و مشکلات اتصال اینجا نمایش داده می‌شوند.'],
+ ar: ['لا توجد إشعارات غير مقروءة', 'لا توجد مشكلات تحتاج إلى اهتمام', 'لا توجد إشعارات بعد', 'قد تظل المشكلات المقروءة بحاجة إلى اهتمام. راجع قسم الاهتمام للمشكلات التي لم تُحل.', 'لا توجد مشكلات نشطة في هذا العرض.', 'ستظهر هنا أنشطة العمل الجديدة ومشكلات الاتصال.'],
+});
+
+addTranslations(['Connection status unavailable', 'Saved connections could not be checked. Current connection status is unknown.'], {
+ sv: ['Anslutningsstatus är inte tillgänglig', 'Sparade anslutningar kunde inte kontrolleras. Den aktuella anslutningsstatusen är okänd.'],
+ de: ['Verbindungsstatus nicht verfügbar', 'Gespeicherte Verbindungen konnten nicht geprüft werden. Der aktuelle Verbindungsstatus ist unbekannt.'],
+ es: ['Estado de conexión no disponible', 'No se pudieron comprobar las conexiones guardadas. Se desconoce su estado actual.'],
+ fa: ['وضعیت اتصال در دسترس نیست', 'اتصال‌های ذخیره‌شده قابل بررسی نبودند. وضعیت فعلی اتصال مشخص نیست.'],
+ ar: ['حالة الاتصال غير متاحة', 'تعذر فحص الاتصالات المحفوظة. حالة الاتصال الحالية غير معروفة.'],
+});
+
+addTranslations(['Adding...', 'Deleting...', 'Unavailable'], {
+ sv: ['Lägger till…', 'Tar bort…', 'Inte tillgänglig'],
+ de: ['Wird hinzugefügt…', 'Wird gelöscht…', 'Nicht verfügbar'],
+ es: ['Añadiendo…', 'Eliminando…', 'No disponible'],
+ fa: ['در حال افزودن…', 'در حال حذف…', 'در دسترس نیست'],
+ ar: ['جارٍ الإضافة…', 'جارٍ الحذف…', 'غير متاح'],
+});
+
+// RC-02: Knowledge interface copy; source titles/content remain business-owned.
+addTranslations([
+  'sources', 'Add knowledge',
+  'Use manual text for policies, FAQs, procedures and other business information.',
+  'Manual text', 'Title', 'Content', 'Example: Cancellation policy',
+  'Write the information the assistant should know...',
+], {
+  sv: ['källor', 'Lägg till information', 'Använd manuell text för policyer, vanliga frågor, rutiner och annan verksamhetsinformation.', 'Manuell text', 'Rubrik', 'Innehåll', 'Exempel: Avbokningspolicy', 'Ange informationen som assistenten behöver känna till...'],
+  de: ['Quellen', 'Information hinzufügen', 'Nutze manuelle Texte für Richtlinien, häufige Fragen, Abläufe und weitere Unternehmensinformationen.', 'Manueller Text', 'Titel', 'Inhalt', 'Beispiel: Stornierungsrichtlinie', 'Gib die Informationen ein, die der Assistent kennen sollte...'],
+  es: ['fuentes', 'Añadir información', 'Usa texto manual para políticas, preguntas frecuentes, procedimientos y otra información del negocio.', 'Texto manual', 'Título', 'Contenido', 'Ej.: Política de cancelación', 'Escribe la información que el asistente debe conocer...'],
+  fa: ['منابع', 'افزودن اطلاعات', 'برای سیاست‌ها، پرسش‌های متداول، رویه‌ها و سایر اطلاعات کسب‌وکار، متن را دستی وارد کنید.', 'متن دستی', 'عنوان', 'محتوا', 'مثال: سیاست لغو', 'اطلاعاتی را که دستیار باید بداند بنویسید...'],
+  ar: ['مصادر', 'إضافة معلومات', 'أدخل نصًا يدويًا للسياسات والأسئلة الشائعة والإجراءات ومعلومات النشاط الأخرى.', 'نص يدوي', 'العنوان', 'المحتوى', 'مثال: سياسة الإلغاء', 'اكتب المعلومات التي ينبغي أن يعرفها المساعد...'],
+});
+
+// RC-02b: remaining Knowledge UI, including its native confirmation template.
+addTranslations([
+  'Knowledge library', 'Information currently available to this business AI.',
+  'Loading...', 'Refresh', 'No Knowledge added yet',
+  'Add your first business policy, FAQ or procedure using the form.',
+  'Delete "{title}" from Knowledge?',
+], {
+  sv: ['Informationsbibliotek', 'Information som för närvarande är tillgänglig för företagets AI.', 'Laddar...', 'Uppdatera', 'Ingen information har lagts till än', 'Lägg till företagets första policy, vanliga frågor eller rutin med hjälp av formuläret.', 'Ta bort "{title}" från informationsbiblioteket?'],
+  de: ['Wissensbibliothek', 'Informationen, die der KI deines Unternehmens derzeit zur Verfügung stehen.', 'Wird geladen...', 'Aktualisieren', 'Noch keine Informationen hinzugefügt', 'Füge über das Formular die erste Richtlinie, häufige Fragen oder einen Ablauf deines Unternehmens hinzu.', '"{title}" aus der Wissensbibliothek löschen?'],
+  es: ['Biblioteca de información', 'Información disponible actualmente para la IA de tu negocio.', 'Cargando...', 'Actualizar', 'Aún no se ha añadido información', 'Usa el formulario para añadir la primera política, preguntas frecuentes o procedimiento de tu negocio.', '¿Eliminar "{title}" de la biblioteca de información?'],
+  fa: ['کتابخانه اطلاعات', 'اطلاعاتی که در حال حاضر در اختیار هوش مصنوعی کسب‌وکار شماست.', 'در حال بارگیری...', 'بازخوانی', 'هنوز اطلاعاتی اضافه نشده است', 'با استفاده از فرم، اولین سیاست، پرسش‌های متداول یا رویه کسب‌وکارتان را اضافه کنید.', 'آیا "{title}" از کتابخانه اطلاعات حذف شود؟'],
+  ar: ['مكتبة المعلومات', 'المعلومات المتاحة حاليًا للذكاء الاصطناعي الخاص بنشاطك التجاري.', 'جارٍ التحميل...', 'تحديث', 'لم تُضف أي معلومات بعد', 'استخدم النموذج لإضافة أول سياسة أو أسئلة شائعة أو إجراء لنشاطك التجاري.', 'هل تريد حذف "{title}" من مكتبة المعلومات؟'],
+});
+
+// Locally authored Knowledge errors; backend/provider Error.message stays raw.
+addTranslations(['Could not load Knowledge sources', 'Could not add Knowledge', 'Could not delete Knowledge'], {
+  sv: ['Kunde inte läsa in informationskällorna', 'Kunde inte lägga till informationen', 'Kunde inte ta bort informationen'],
+  de: ['Die Informationsquellen konnten nicht geladen werden', 'Die Informationen konnten nicht hinzugefügt werden', 'Die Informationen konnten nicht gelöscht werden'],
+  es: ['No se pudieron cargar las fuentes de información', 'No se pudo añadir la información', 'No se pudo eliminar la información'],
+  fa: ['بارگیری منابع اطلاعات ممکن نشد', 'افزودن اطلاعات ممکن نشد', 'حذف اطلاعات ممکن نشد'],
+  ar: ['تعذر تحميل مصادر المعلومات', 'تعذرت إضافة المعلومات', 'تعذر حذف المعلومات'],
+});
 
 export const DASHBOARD_TRANSLATION_KEYS = Object.freeze(Object.keys(sv).sort());
 const en = Object.fromEntries(DASHBOARD_TRANSLATION_KEYS.map((key) => [key, key]));

@@ -100,7 +100,7 @@ const activePendingAfterCompletedOperation = (
     updatedAt: createdAt,
   });
 };
-const turn = (sessionId: string, platformName: string, text: string) => boundary.turn({
+const turn = (sessionId: string, platformName: Parameters<typeof boundary.turn>[0]['platformName'], text: string) => boundary.turn({
   sessionId, platformName, recipientUserId: sessionId, text, businessConfig, now,
 });
 

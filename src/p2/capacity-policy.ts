@@ -96,7 +96,7 @@ export function assertAuthoritativeCapacityOne(params: {
 }): Extract<CapacityPolicyDecision, { supported: true }> {
   const decision = evaluateAuthoritativeCapacityPolicy(params);
 
-  if (!decision.supported) {
+  if (decision.supported === false) {
     throw new UnsupportedAuthoritativeCapacityError(decision);
   }
 

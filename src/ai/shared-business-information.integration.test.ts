@@ -49,9 +49,9 @@ for (const channel of ['instagram', 'whatsapp', 'messenger', 'telegram'] as cons
   test(`${channel}: informational evidence escapes awaiting-service without changing pending state`, async () => {
     setup(); const id = `info-${channel}`;
     await turn(id, channel, 'Hallo, ich möchte für morgen einen Termin buchen.');
-    for (const t of info.turns) {
+    for (const [turnIndex, t] of info.turns.entries()) {
       const result = await turn(id, channel, t.customer);
-      assert.equal(result.handled, false, `turn ${t.turn}: ${result.replies.join(' ')}`);
+      assert.equal(result.handled, false, `turn ${turnIndex + 1}: ${result.replies.join(' ')}`);
       assert.equal(result.pending?.status, 'awaiting_service');
       assert.deepEqual(b.geminiToolNames(id), ['logSystemAnalysis']);
       assert.equal(b.resolveConversationLanguage(id, t.customer, config), 'de');

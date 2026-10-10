@@ -3,13 +3,15 @@ import type { IntegrationHealth, IntegrationKey } from '../../types/dashboard';
 import { api } from '../../services/api';
 import { ChannelIcon } from './Icons';
 import { useDashboardI18n } from '../../i18n/dashboard';
+import type { NavigateDashboard } from './dashboard-navigation';
 
 interface HealthStatusProps {
   businessId: string;
   onHealthChanged?: () => void;
+  onWorkspaceNavigate: NavigateDashboard;
 }
 
-export default function HealthStatus({ businessId, onHealthChanged }: HealthStatusProps) {
+export default function HealthStatus({ businessId, onHealthChanged, onWorkspaceNavigate }: HealthStatusProps) {
   const { t } = useDashboardI18n();
   const [health, setHealth] = useState<IntegrationHealth[]>([]);
   const [loading, setLoading] = useState(true);
@@ -82,18 +84,18 @@ export default function HealthStatus({ businessId, onHealthChanged }: HealthStat
   return (
     <section id="health" className="insight-card dashboard-section automatic-health">
       <div className="health-overview-head">
-        <div><div className="chart-title">Integration health</div><div className="chart-sub">Automatic, cached connection checks for this business</div></div>
-        <div className={`health-overall ${summary.tone}`}><i aria-hidden="true" /><span>{summary.label}</span></div>
+        <div><h2 id="connection-health-title" className="chart-title" tabIndex={-1}>Connection health</h2><div className="chart-sub">Automatic, cached connection checks for this business</div></div>
+        {!error && <div className={`health-overall ${summary.tone}`}><i aria-hidden="true" /><span translate="no">{summary.label}</span></div>}
       </div>
 
       {loading && <HealthSkeleton />}
-      {!loading && error && <div className="health-load-state"><strong>Health unavailable</strong><span>{error}</span><button type="button" onClick={() => setRetry((value) => value + 1)}>Retry</button></div>}
+      {!loading && error && <div className="health-load-state" role="alert"><strong>Health unavailable</strong><span>{error}</span><button type="button" onClick={() => setRetry((value) => value + 1)}>Retry</button></div>}
       {!loading && !error && <div className="automatic-health-list">
         {health.map((item) => <div className={`automatic-health-row ${statusTone(item.status)}`} key={item.key}>
           <div className="automatic-health-identity"><ChannelIcon channel={item.key} /><div><strong>{item.label}</strong><span>{t(item.detail)}</span></div></div>
-          <div className="automatic-health-state"><span className="health-status-label"><i aria-hidden="true" />{t(statusLabel(item.status))}</span><small>{checkedLabel(item, t)}</small></div>
+          <div className="automatic-health-state"><span className="health-status-label" translate="no"><i aria-hidden="true" />{t(statusLabel(item.status))}</span><small translate="no">{checkedLabel(item, t)}</small></div>
           <div className="automatic-health-actions">
-            {(item.action === 'complete_setup' || item.action === 'reconnect') && <button className="health-action primary" type="button" onClick={openChannelSettings}>{item.action === 'reconnect' ? 'Reconnect' : 'Set up'}</button>}
+            {(item.action === 'complete_setup' || item.action === 'reconnect') && <button className="health-action primary" type="button" onClick={() => onWorkspaceNavigate({ primary: 'settings', secondary: 'connections' })}>{item.action === 'reconnect' ? 'Reconnect' : 'Set up'}</button>}
             {item.status !== 'setup_required' && <button className="health-action" type="button" disabled={item.refreshInProgress} onClick={() => void refreshOne(item.key, true)}>{item.refreshInProgress ? 'Checking…' : 'Check now'}</button>}
           </div>
         </div>)}
@@ -103,7 +105,7 @@ export default function HealthStatus({ businessId, onHealthChanged }: HealthStat
 }
 
 function HealthSkeleton() {
-  return <div className="health-skeleton" aria-label="Loading integration health">{Array.from({ length: 5 }, (_, index) => <div key={index}><i /><span /></div>)}</div>;
+  return <div className="health-skeleton" aria-label="Loading integration health" role="status"><span className="dashboard-state-label">Loading integration health</span>{Array.from({ length: 5 }, (_, index) => <div key={index}><i /><span /></div>)}</div>;
 }
 
 type Translate = (source: string, values?: Readonly<Record<string, string | number>>) => string;
@@ -142,8 +144,4 @@ function checkedLabel(item: IntegrationHealth, t: Translate) {
     : (item.stale ? 'Last checked {minutes} min ago' : 'Checked {minutes} min ago');
   const checked = t(key, { minutes });
   return item.refreshInProgress ? `${checked} · ${t('refreshing')}` : checked;
-}
-
-function openChannelSettings() {
-  document.getElementById('channel-settings')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }

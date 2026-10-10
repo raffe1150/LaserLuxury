@@ -155,8 +155,8 @@ await refreshIntegrationHealth({
 });
 assert.equal(getIntegrationHealthSnapshot(7, configured, checkedAt).find((item) => item.key === 'telegram')?.reasonCode, 'timeout');
 
-const markup = renderToStaticMarkup(createElement(HealthStatus, { businessId: '7' }));
-assert.match(markup, /Integration health/);
+const markup = renderToStaticMarkup(createElement(HealthStatus, { businessId: '7', onWorkspaceNavigate: () => undefined }));
+assert.match(markup, /id="connection-health-title"[^>]*>Connection health<\/h2>/);
 assert.match(markup, /Loading integration health/);
 assert.match(markup, /Loading health/);
 

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { normalizeBookingRequest, toPersistedBookingRequest } from './booking-intelligence';
 import {
+  type BookingFailureStage,
   applyBookingTransition,
   beginBookingFinalization,
   decideBookingTransition,
@@ -184,7 +185,10 @@ assert.equal(manyTransition.reason, 'multiple_slots_need_selection');
 assert.equal(manyTransition.replyKind, 'choose_slot');
 assert.equal(manyTransition.selectedSlot, undefined);
 
-const contact = pending('Friday at 19');
+const contact: ReturnType<typeof pending> & {
+  lastFailureStage?: BookingFailureStage;
+  lastRollbackSucceeded?: boolean | null;
+} = pending('Friday at 19');
 contact.status = 'awaiting_contact';
 contact.ownedOfferedSlots = [slot(19)];
 contact.dateTime = slot(19).start;
@@ -293,7 +297,7 @@ assert.match(
   /calendarEvents:\s*snapshot\.calendarEvents,\s*pendingEvents:\s*snapshot\.pendingEvents/
 );
 
-assert.match(server, /const pendingSlotConfirmationAtEntry = isPendingSlotConfirmation\(text, pending\)/);
+assert.match(server, /const pendingSlotConfirmationAtEntry = !currentSchedulingReplacesSelection && \([\s\S]*?isPendingSlotConfirmation\(text, pending, normalizedRequest\)/);
 assert.match(server, /!pendingSlotConfirmationAtEntry &&[\s\S]{0,80}!entryOwnedSlotSelection/);
 assert.match(server, /const continuesOwnedBooking = Boolean\([\s\S]{0,500}entryPendingOwnedSlot/);
 assert.match(server, /!continuesOwnedBooking &&[\s\S]{0,120}isExplicitNewBookingPivotText\(text\)/);

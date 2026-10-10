@@ -151,7 +151,7 @@ const matrixConfirmations = {
   es: 'Sí, complete la reserva, por favor.', de: 'Ja, bitte schließen Sie die Buchung ab.',
   fa: 'بله، لطفاً رزرو را نهایی کنید.', ar: 'نعم، يرجى إتمام الحجز.',
 };
-for (const platformName of ['instagram', 'whatsapp', 'messenger', 'telegram']) {
+for (const platformName of ['instagram', 'whatsapp', 'messenger', 'telegram'] as const) {
   for (const [language, text] of Object.entries(matrixConfirmations)) {
     const counts = fixture(platformName);
     const sessionId = `matrix-confirm-${platformName}-${language}`;

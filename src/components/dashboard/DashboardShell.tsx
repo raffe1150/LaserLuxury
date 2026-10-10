@@ -1,73 +1,25 @@
-import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type FocusEvent, type ReactNode } from 'react';
+import { PRIMARY_DESTINATIONS, dashboardFocusTarget, type DashboardNavigation, type NavigateDashboard } from './dashboard-navigation';
 import type { Business } from '../../types/dashboard';
 import { DASHBOARD_LOCALE_OPTIONS, useDashboardI18n } from '../../i18n/dashboard';
 
 interface DashboardShellProps {
   title: string;
+  contentReady?: boolean;
   businesses?: Business[];
   selectedBusinessId?: string;
   businessName?: string;
   onNavigate: (path: '/' | '/login' | '/dashboard') => void;
   onBusinessChange?: (businessId: string) => void;
   onSignOut?: () => void | Promise<void>;
-  initialActiveSection?: DashboardSectionId;
+  navigation: DashboardNavigation;
+  onWorkspaceNavigate: NavigateDashboard;
+  onAddBusiness: () => void;
   notificationUnreadCount?: number;
   children: ReactNode;
 }
 
-const NAV_ITEMS = [
-  { id: 'overview', label: 'Dashboard', group: 'Overview' },
-  { id: 'analytics', label: 'Analytics' },
-  { id: 'health', label: 'Health' },
-  { id: 'conversations', label: 'Conversations', group: 'Management' },
-  { id: 'bookings', label: 'Bookings' },
-  { id: 'businesses', label: 'Businesses' },
-  { id: 'business-settings', label: 'Business Settings' },
-  { id: 'knowledge', label: 'Knowledge' },
-  { id: 'ai-tone', label: 'AI Tone' },
-  { id: 'prompt-editor', label: 'Prompt Editor' },
-  { id: 'channel-settings', label: 'Channel Settings' },
-  { id: 'usage-statistics', label: 'Usage' },
-  { id: 'notification-center', label: 'Notifications' },
-] as const;
-
-const MOBILE_NAV_ITEMS = [
-  { id: 'overview', label: 'Home', icon: 'home' },
-  { id: 'analytics', label: 'Analytics', icon: 'analytics' },
-  { id: 'conversations', label: 'Inbox', icon: 'inbox' },
-  { id: 'bookings', label: 'Bookings', icon: 'calendar' },
-  { id: 'businesses', label: 'More', icon: 'more' },
-] as const;
-
-export type DashboardSectionId = (typeof NAV_ITEMS)[number]['id'];
-type MobileSectionId = (typeof MOBILE_NAV_ITEMS)[number]['id'];
-
 export const SCROLL_TO_TOP_THRESHOLD = 500;
-
-export function resolveActiveDashboardSection(
-  sectionPositions: ReadonlyArray<{ id: DashboardSectionId; top: number }>,
-  activationLine: number,
-): DashboardSectionId {
-  let active: DashboardSectionId = 'overview';
-  let activeTop = Number.NEGATIVE_INFINITY;
-
-  for (const section of sectionPositions) {
-    if (section.top <= activationLine && section.top > activeTop) {
-      active = section.id;
-      activeTop = section.top;
-    }
-  }
-
-  return active;
-}
-
-export function getMobileActiveSection(activeSection: DashboardSectionId): MobileSectionId {
-  if (activeSection === 'overview' || activeSection === 'analytics' || activeSection === 'conversations') {
-    return activeSection;
-  }
-  if (activeSection === 'bookings') return 'bookings';
-  return 'businesses';
-}
 
 export function shouldShowScrollToTop(scrollTop: number): boolean {
   return scrollTop >= SCROLL_TO_TOP_THRESHOLD;
@@ -80,43 +32,13 @@ export function scrollDashboardToTop(
   scroller.scrollTo({ top: 0, behavior: reducedMotion ? 'auto' : 'smooth' });
 }
 
-export function getDashboardSectionScrollTop(
-  sectionId: DashboardSectionId,
-  currentScrollTop: number,
-  contentTop: number,
-  sectionTop: number,
-  scrollMarginTop: number,
-): number {
-  if (sectionId === 'overview') return 0;
-  return Math.max(0, currentScrollTop + sectionTop - contentTop - scrollMarginTop);
-}
-
-export function scrollDashboardToSection(
-  scroller: { scrollTop: number; scrollTo(options: ScrollToOptions): void },
-  sectionId: DashboardSectionId,
-  contentTop: number,
-  sectionTop: number,
-  scrollMarginTop: number,
-) {
-  scroller.scrollTo({
-    top: getDashboardSectionScrollTop(
-      sectionId,
-      scroller.scrollTop,
-      contentTop,
-      sectionTop,
-      scrollMarginTop,
-    ),
-    behavior: 'auto',
-  });
-}
-
 export function resetDashboardContentScroll(
   scroller: { scrollTo(options: ScrollToOptions): void },
 ) {
   scroller.scrollTo({ top: 0, behavior: 'auto' });
 }
 
-function MobileNavIcon({ icon }: { icon: (typeof MOBILE_NAV_ITEMS)[number]['icon'] }) {
+function MobileNavIcon({ icon }: { icon: (typeof PRIMARY_DESTINATIONS)[number]['icon'] }) {
   if (icon === 'home') {
     return (
       <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -145,111 +67,140 @@ function MobileNavIcon({ icon }: { icon: (typeof MOBILE_NAV_ITEMS)[number]['icon
     );
   }
 
-  if (icon === 'analytics') {
+  if (icon === 'assistant') {
     return (
       <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-        <path d="M4 19V9M10 19V5M16 19v-7M22 19H2" />
+        <path d="m4 20 12-12 4 4-12 12M16 3v3M21 7h-3M5 5v4M3 7h4" />
       </svg>
     );
   }
 
   return (
     <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <circle cx="5" cy="12" r="1.5" />
-      <circle cx="12" cy="12" r="1.5" />
-      <circle cx="19" cy="12" r="1.5" />
+      <path d="M4 7h16M4 17h16" />
+      <circle cx="9" cy="7" r="3" /><circle cx="15" cy="17" r="3" />
     </svg>
   );
 }
 
 export default function DashboardShell({
   title,
+  contentReady = true,
   businesses = [],
   selectedBusinessId,
   businessName,
   onNavigate,
   onBusinessChange,
   onSignOut,
-  initialActiveSection = 'overview',
+  navigation,
+  onWorkspaceNavigate,
+  onAddBusiness,
   notificationUnreadCount = 0,
   children,
 }: DashboardShellProps) {
   const { locale, setLocale, t } = useDashboardI18n();
-  const [activeSection, setActiveSection] = useState<DashboardSectionId>(initialActiveSection);
   const [showScrollToTop, setShowScrollToTop] = useState(false);
   const contentRef = useRef<HTMLDivElement>(null);
-  const previousBusinessIdRef = useRef(selectedBusinessId);
+  const accountRef = useRef<HTMLDetailsElement>(null);
+  const previousWorkspace = useRef({ navigation, selectedBusinessId });
+  const lastWorkspaceFocusTarget = useRef<string | null>(null);
+
+  const revealFocusedFormControl = (event: FocusEvent<HTMLDivElement>) => {
+    const control = event.target;
+    if (!(control instanceof HTMLElement) || !control.matches('input, textarea, select, button') ||
+        !control.closest('#workspace-ai-assistant, #workspace-settings') ||
+        control.closest('dialog, [role="dialog"]')) return;
+    // Native textarea focus can reveal only the caret. Reveal the whole field
+    // after that scroll, using the content scroller's safe-area padding.
+    window.requestAnimationFrame(() => {
+      const content = contentRef.current;
+      if (document.activeElement !== control || !content?.contains(control) || control.closest('[hidden]')) return;
+      const bounds = control.getBoundingClientRect();
+      const viewport = content.getBoundingClientRect();
+      const dashboard = content.closest('.dashboard-page');
+      const nav = dashboard?.querySelector('.mobile-bottom-nav');
+      const floating = dashboard?.querySelector('.scroll-to-top');
+      const floatingBounds = floating?.getBoundingClientRect();
+      const bottom = Math.min(viewport.bottom, window.innerHeight,
+        nav?.getClientRects().length ? nav.getBoundingClientRect().top : window.innerHeight,
+        floatingBounds && bounds.left < floatingBounds.right && bounds.right > floatingBounds.left
+          ? floatingBounds.top : window.innerHeight);
+      if (control instanceof HTMLTextAreaElement || bounds.top < Math.max(0, viewport.top) + 5 || bounds.bottom > bottom - 5) {
+        control.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'instant' });
+      }
+    });
+  };
+
+  const closeAccount = () => {
+    const account = accountRef.current;
+    if (!account?.open) return;
+    account.open = false;
+    account.querySelector('summary')?.focus();
+  };
 
   useEffect(() => {
     if (window.location.hash) {
       window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
     }
-
     const content = contentRef.current;
     if (!content) return;
+    const updateScrollButton = () => setShowScrollToTop(shouldShowScrollToTop(content.scrollTop));
+    content.addEventListener('scroll', updateScrollButton, { passive: true });
+    return () => content.removeEventListener('scroll', updateScrollButton);
+  }, []);
 
-    const updateNavigationState = () => {
-      const contentTop = content.getBoundingClientRect().top;
-      const activationLine = contentTop + Math.min(170, window.innerHeight * 0.24);
-      const sectionPositions = NAV_ITEMS.flatMap((item) => {
-        const section = document.getElementById(item.id);
-        return section ? [{ id: item.id, top: section.getBoundingClientRect().top }] : [];
-      });
+  useLayoutEffect(() => {
+    const content = contentRef.current;
+    if (!content) return;
+    resetDashboardContentScroll(content);
+    setShowScrollToTop(false);
+    const previous = previousWorkspace.current;
+    if (previous.selectedBusinessId !== selectedBusinessId && accountRef.current) accountRef.current.open = false;
+    // A business mutation can reload the workspace after the dialog closes.
+    // Wait for its visible content instead of focusing a soon-to-be-removed node.
+    if (!contentReady) return;
+    const workspaceChanged = previous.navigation !== navigation || previous.selectedBusinessId !== selectedBusinessId;
+    const targetId = workspaceChanged
+      ? dashboardFocusTarget(navigation, previous.selectedBusinessId === selectedBusinessId ? previous.navigation : undefined)
+      : lastWorkspaceFocusTarget.current || dashboardFocusTarget(navigation);
+    previousWorkspace.current = { navigation, selectedBusinessId };
+    const target = document.getElementById(targetId);
+    if (!target || target.closest('[hidden]')) return;
+    lastWorkspaceFocusTarget.current = targetId;
+    // Keep native controls in the tab order when restoring focus.
+    if (target.tabIndex < 0) target.tabIndex = -1;
+    target.focus({ preventScroll: true });
+    // Returning from Reports restores its trigger, including below-the-fold Home layouts.
+    if (target.id === 'home-reports-trigger') target.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'instant' });
+  }, [navigation, selectedBusinessId, contentReady]);
 
-      setActiveSection(resolveActiveDashboardSection(sectionPositions, activationLine));
-      setShowScrollToTop(shouldShowScrollToTop(content.scrollTop));
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') closeAccount();
     };
-
-    updateNavigationState();
-    content.addEventListener('scroll', updateNavigationState, { passive: true });
-    window.addEventListener('resize', updateNavigationState);
-
+    const onPointerDown = (event: PointerEvent) => {
+      if (event.target instanceof Element && event.target.closest('.dashboard-business-dialog')) return;
+      const account = accountRef.current;
+      if (account?.open && event.target instanceof Node && !account.contains(event.target)) account.open = false;
+    };
+    document.addEventListener('keydown', onKeyDown);
+    document.addEventListener('pointerdown', onPointerDown);
     return () => {
-      content.removeEventListener('scroll', updateNavigationState);
-      window.removeEventListener('resize', updateNavigationState);
+      document.removeEventListener('keydown', onKeyDown);
+      document.removeEventListener('pointerdown', onPointerDown);
     };
   }, []);
 
-  useEffect(() => {
-    if (previousBusinessIdRef.current !== selectedBusinessId) {
-      const content = contentRef.current;
-      if (content && content.scrollTop !== 0) {
-        resetDashboardContentScroll(content);
-      }
-      setActiveSection('overview');
-      previousBusinessIdRef.current = selectedBusinessId;
-    }
-  }, [selectedBusinessId]);
-
-  const handleSectionClick = (event: MouseEvent<HTMLAnchorElement>, sectionId: DashboardSectionId) => {
-    event.preventDefault();
-
-    const content = contentRef.current;
-    const section = document.getElementById(sectionId);
-    if (!content || !section) return;
-
-    setActiveSection(sectionId);
-    const scrollMarginTop = Number.parseFloat(window.getComputedStyle(section).scrollMarginTop) || 0;
-    scrollDashboardToSection(
-      content,
-      sectionId,
-      content.getBoundingClientRect().top,
-      section.getBoundingClientRect().top,
-      scrollMarginTop,
-    );
-    window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
+  const openWorkspace = (destination: DashboardNavigation) => {
+    closeAccount();
+    onWorkspaceNavigate(destination);
   };
 
   const handleBusinessSelection = (businessId: string) => {
-    const content = contentRef.current;
-    if (content && content.scrollTop !== 0) {
-      resetDashboardContentScroll(content);
-    }
-    setActiveSection('overview');
+    closeAccount();
+    onWorkspaceNavigate({ primary: 'home' });
     onBusinessChange?.(businessId);
   };
-
-  const mobileActiveSection = getMobileActiveSection(activeSection);
 
   const handleScrollToTop = () => {
     const content = contentRef.current;
@@ -280,30 +231,15 @@ export default function DashboardShell({
         </button>
 
         <nav className="sidebar-nav" aria-label={t('Dashboard sections')}>
-          {NAV_ITEMS.map((item, index) => (
-            <div key={item.id}>
-              {'group' in item && item.group && (
-                <div
-                  className="nav-group-label"
-                  style={index > 0 ? { marginTop: 8 } : undefined}
-                >
-                  {t(item.group)}
-                </div>
-              )}
-              <a
-                className={activeSection === item.id ? 'nav-item active' : 'nav-item'}
-                href={`#${item.id}`}
-                aria-current={activeSection === item.id ? 'page' : undefined}
-                onClick={(event) => handleSectionClick(event, item.id)}
-              >
-                <span>{t(item.label)}</span>
-                {item.id === 'notification-center' && notificationUnreadCount > 0 && (
-                  <span className="nav-badge" aria-label={t('{count} unread notifications', { count: notificationUnreadCount })}>
-                    {notificationUnreadCount > 99 ? '99+' : notificationUnreadCount}
-                  </span>
-                )}
-              </a>
-            </div>
+          {PRIMARY_DESTINATIONS.map((item) => (
+            <a key={item.id}
+              className={navigation.primary === item.id ? 'nav-item active' : 'nav-item'}
+              href={`#workspace-${item.id}`}
+              aria-current={navigation.primary === item.id ? 'page' : undefined}
+              onClick={(event) => { event.preventDefault(); openWorkspace({ primary: item.id }); }}
+            >
+              <span>{t(item.label)}</span>
+            </a>
           ))}
         </nav>
 
@@ -328,7 +264,7 @@ export default function DashboardShell({
             <span>Odinlink</span>
           </button>
 
-          <span className="topbar-title">{t(title)}</span>
+          <span className="topbar-title" translate="no">{t(title)}</span>
 
           <div className="topbar-search">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9">
@@ -352,29 +288,28 @@ export default function DashboardShell({
             </select>
           </div>
 
-          <div className="topbar-right">
-            <label className="dashboard-language-control">
-              <span>{t('Dashboard language')}</span>
-              <select
-                aria-label={t('Dashboard language')}
-                value={locale}
-                onChange={(event) => setLocale(event.target.value as typeof locale)}
-              >
-                {DASHBOARD_LOCALE_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value} lang={option.value}>{option.label}</option>
-                ))}
-              </select>
-            </label>
-            <button className="topbar-btn ghost" type="button" onClick={() => void onSignOut?.()}>
-              {t('Sign out')}
-            </button>
-            <button className="topbar-btn ghost" type="button" onClick={() => onNavigate('/')}>
-              {t('Landing')}
-            </button>
-          </div>
+          <details className="dashboard-account" ref={accountRef}>
+            <summary className="topbar-btn ghost" aria-controls="dashboard-account-panel">{t('Account')}</summary>
+            <div id="dashboard-account-panel" className="dashboard-account-panel">
+              <button className="btn btn-ghost" type="button" onClick={() => openWorkspace({ primary: 'settings', secondary: 'businesses' })}>{t('Manage Businesses')}</button>
+              <button className="btn btn-ghost" type="button" onClick={onAddBusiness}>{t('Add Business')}</button>
+              <button className="btn btn-ghost" type="button" onClick={() => openWorkspace({ primary: 'settings', secondary: 'notification-center' })}>
+                {t('Notifications')}
+                {notificationUnreadCount > 0 && <span className="nav-badge" aria-label={t('{count} unread notifications', { count: notificationUnreadCount })}>{notificationUnreadCount > 99 ? '99+' : notificationUnreadCount}</span>}
+              </button>
+              <label className="dashboard-language-control">
+                <span>{t('Dashboard language')}</span>
+                <select aria-label={t('Dashboard language')} value={locale} onChange={(event) => setLocale(event.target.value as typeof locale)}>
+                  {DASHBOARD_LOCALE_OPTIONS.map((option) => <option key={option.value} value={option.value} lang={option.value}>{option.label}</option>)}
+                </select>
+              </label>
+              <button className="btn btn-ghost" type="button" onClick={() => { closeAccount(); void onSignOut?.(); }}>{t('Sign out')}</button>
+              <button className="btn btn-ghost" type="button" onClick={() => { closeAccount(); onNavigate('/'); }}>{t('Landing')}</button>
+            </div>
+          </details>
         </div>
 
-        <div className="content" ref={contentRef}>{children}</div>
+        <div className="content" ref={contentRef} onFocusCapture={revealFocusedFormControl}>{children}</div>
 
         {showScrollToTop && (
           <button className="scroll-to-top" type="button" aria-label={t('Back to top')} onClick={handleScrollToTop}>
@@ -386,13 +321,13 @@ export default function DashboardShell({
       </div>
 
       <nav className="mobile-bottom-nav" aria-label={t('Mobile dashboard navigation')}>
-        {MOBILE_NAV_ITEMS.map((item) => (
+        {PRIMARY_DESTINATIONS.map((item) => (
           <a
             key={item.id}
-            href={`#${item.id}`}
-            className={mobileActiveSection === item.id ? 'mobile-nav-item active' : 'mobile-nav-item'}
-            aria-current={mobileActiveSection === item.id ? 'page' : undefined}
-            onClick={(event) => handleSectionClick(event, item.id)}
+            href={`#workspace-${item.id}`}
+            className={navigation.primary === item.id ? 'mobile-nav-item active' : 'mobile-nav-item'}
+            aria-current={navigation.primary === item.id ? 'page' : undefined}
+            onClick={(event) => { event.preventDefault(); openWorkspace({ primary: item.id }); }}
           >
             <MobileNavIcon icon={item.icon} />
             <span>{t(item.label)}</span>

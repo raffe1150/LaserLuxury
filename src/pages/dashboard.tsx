@@ -1,18 +1,21 @@
-import { FormEvent, useEffect, useRef, useState } from 'react';
+import DashboardFeedback, { useDashboardFeedback, type DashboardSaved, type DashboardFeedbackValue, type DashboardFeedbackMemory } from '../components/dashboard/DashboardFeedback';
+import { FormEvent, useEffect, useRef, useState, type ReactNode } from 'react';
 import BookingsPanel from '../components/dashboard/BookingsPanel';
 import ConversationsPanel from '../components/dashboard/ConversationsPanel';
 import KnowledgePanel from '../components/dashboard/KnowledgePanel';
 import DashboardShell from '../components/dashboard/DashboardShell';
+import BusinessDialog from '../components/dashboard/BusinessDialog';
+import { dashboardDestinationTitle, initialDashboardNavigation, isDashboardPanelVisible, SETTINGS_AREAS, settingsAreaForNavigation, PRIMARY_DESTINATIONS, type DashboardNavigation, type DashboardPrimary, type NavigateDashboard } from '../components/dashboard/dashboard-navigation';
 import NotificationCenter from '../components/dashboard/NotificationCenter';
 import {
   BusinessSettings,
   BusinessToneControls,
   SystemPromptEditor,
-  UsageStatistics,
 } from '../components/dashboard/DashboardSections';
 import IntegrationCenter from '../components/dashboard/IntegrationCenter';
 import HealthStatus from '../components/dashboard/HealthStatus';
 import AnalyticsPage from '../components/dashboard/analytics/AnalyticsPage';
+import CurrencyValue from '../components/dashboard/CurrencyValue';
 import { api, loadDashboardData } from '../services/api';
 import { useAuth } from '../auth/AuthProvider';
 import dashboardCss from '../styles/dashboard.css?raw';
@@ -37,21 +40,28 @@ export default function Dashboard(props: DashboardProps) {
 
 function DashboardContent({ onNavigate }: DashboardProps) {
   const { signOut } = useAuth();
-  const { locale, direction } = useDashboardI18n();
+  const { locale, direction, t } = useDashboardI18n();
   const pageRef = useRef<HTMLDivElement>(null);
   const [selectedBusinessId, setSelectedBusinessId] = useState<string>(() => {
     return localStorage.getItem('odinlink_selected_business') || '';
   });
+  const [navigation, setNavigation] = useState<DashboardNavigation>(() => initialDashboardNavigation(window.location.search));
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [toast, setToast] = useState<string | null>(null);
+  const [toast, setToast] = useState<(DashboardFeedbackValue & { businessId?: string }) | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [addBusinessOpen, setAddBusinessOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Business | null>(null);
   const [notificationUnreadCount, setNotificationUnreadCount] = useState(0);
   const [notificationRefreshKey, setNotificationRefreshKey] = useState(0);
   const notificationRefreshTimer = useRef<number | null>(null);
+  const businessFeedback = useRef<DashboardFeedbackMemory["current"]>(null);
+  const instructionsFeedback = useRef<DashboardFeedbackMemory["current"]>(null);
+  const knowledgeFeedback = useRef<DashboardFeedbackMemory["current"]>(null);
+  const cancellationFeedback = useRef<DashboardFeedbackMemory["current"]>(null);
+  const alertsFeedback = useRef<DashboardFeedbackMemory["current"]>(null);
+  const connectionsFeedback = useRef<DashboardFeedbackMemory["current"]>(null);
 
   useEffect(() => {
     const style = document.createElement('style');
@@ -135,6 +145,9 @@ function DashboardContent({ onNavigate }: DashboardProps) {
   }, [selectedBusiness?.id]);
 
   const handleBusinessChange = (businessId: string) => {
+    setToast(null);
+    setNavigation({ primary: 'home' });
+    setDeleteTarget(null);
     setNotificationUnreadCount(0);
     setSelectedBusinessId(businessId);
     localStorage.setItem('odinlink_selected_business', businessId);
@@ -153,8 +166,8 @@ function DashboardContent({ onNavigate }: DashboardProps) {
     if (notificationRefreshTimer.current !== null) window.clearTimeout(notificationRefreshTimer.current);
   }, []);
 
-  const handleSaved = (message: string, refresh = false) => {
-    setToast(message);
+  const handleSaved: DashboardSaved = (message, refresh = false, feedback) => {
+    if (!feedback?.local) setToast({ message, kind: feedback?.kind || 'info' });
     if (refresh) setRefreshKey((value) => value + 1);
   };
 
@@ -172,7 +185,7 @@ function DashboardContent({ onNavigate }: DashboardProps) {
   };
 
   useEffect(() => {
-    if (!toast) return;
+    if (!toast || toast.kind === 'error') return;
     const timeoutId = window.setTimeout(() => setToast(null), 3500);
     return () => window.clearTimeout(timeoutId);
   }, [toast]);
@@ -181,7 +194,7 @@ function DashboardContent({ onNavigate }: DashboardProps) {
     if (!selectedBusiness) return;
 
     const integrationKey = integration as IntegrationKey;
-    setToast('Testing connection...');
+    setToast({ message: 'Testing connection...', kind: 'info', businessId: selectedBusiness.id });
 
     try {
       const result = await api.refreshIntegrationHealth(
@@ -191,7 +204,7 @@ function DashboardContent({ onNavigate }: DashboardProps) {
       );
 
       setData((current) => {
-        if (!current) return current;
+        if (!current || current.selectedBusiness?.id !== selectedBusiness.id) return current;
 
         return {
           ...current,
@@ -201,7 +214,7 @@ function DashboardContent({ onNavigate }: DashboardProps) {
         };
       });
 
-      setToast(result.data.status === 'connected' || result.data.status === 'synced' ? null : result.data.detail);
+      setToast(result.data.status === 'connected' || result.data.status === 'synced' ? null : { message: result.data.detail, kind: result.data.status === 'error' ? 'error' : 'info', businessId: selectedBusiness.id });
       return result.data;
     } catch (err) {
       const message = getReadableApiError(
@@ -209,7 +222,7 @@ function DashboardContent({ onNavigate }: DashboardProps) {
       );
 
       setData((current) => {
-        if (!current) return current;
+        if (!current || current.selectedBusiness?.id !== selectedBusiness.id) return current;
 
         return {
           ...current,
@@ -225,7 +238,7 @@ function DashboardContent({ onNavigate }: DashboardProps) {
         };
       });
 
-      setToast(message);
+      setToast({ message, kind: 'error', businessId: selectedBusiness.id });
       return {
         key: integrationKey,
         label: integrationKey,
@@ -241,39 +254,45 @@ function DashboardContent({ onNavigate }: DashboardProps) {
   };
 
   const createBusiness = async (payload: Partial<Business>) => {
-    setToast('Creating business...');
+    setToast({ message: 'Creating business...', kind: 'info' });
     try {
       const created = await api.createBusiness(payload);
+      setNavigation({ primary: 'home' });
       setSelectedBusinessId(created.id);
       localStorage.setItem('odinlink_selected_business', created.id);
       setAddBusinessOpen(false);
       setRefreshKey((value) => value + 1);
-      setToast('Business created');
+      setToast({ message: 'Business created', kind: 'success' });
     } catch (err) {
-      setToast(err instanceof Error ? err.message : 'Could not create business');
+      setToast({ message: err instanceof Error ? err.message : 'Could not create business', kind: 'error' });
     }
   };
 
   const deleteBusiness = async (business: Business) => {
-    setToast('Deleting business...');
+    setToast({ message: 'Deleting business...', kind: 'info' });
     try {
       await api.deleteBusiness(business.id);
       if (business.id === selectedBusinessId) {
+        setNavigation({ primary: 'home' });
         localStorage.removeItem('odinlink_selected_business');
         setSelectedBusinessId('');
       }
       setDeleteTarget(null);
       setRefreshKey((value) => value + 1);
-      setToast('Business deleted');
+      setToast({ message: 'Business deleted', kind: 'success' });
     } catch (err) {
-      setToast(err instanceof Error ? err.message : 'Could not delete business');
+      setToast({ message: err instanceof Error ? err.message : 'Could not delete business', kind: 'error' });
     }
   };
 
   return (
     <div className="dashboard-page" ref={pageRef} dir={direction} lang={locale} data-dashboard-locale={locale}>
       <DashboardShell
-        title="Dashboard"
+        title={dashboardDestinationTitle(navigation)}
+        contentReady={!loading && !error}
+        navigation={navigation}
+        onWorkspaceNavigate={setNavigation}
+        onAddBusiness={() => { setToast(null); setAddBusinessOpen(true); }}
         businesses={data?.businesses || []}
         selectedBusinessId={selectedBusiness?.id || selectedBusinessId}
         businessName={selectedBusiness?.name}
@@ -286,135 +305,185 @@ function DashboardContent({ onNavigate }: DashboardProps) {
         }}
       >
         {loading && (
-          <StateCard title="Loading dashboard" copy="Loading businesses and scoped dashboard data from backend APIs." />
+          <StateCard home={navigation.primary === 'home'} title="Loading dashboard" copy={navigation.primary === 'home' ? 'Loading your business overview.' : 'Loading your business workspace.'} />
         )}
 
-        {!loading && error && <StateCard tone="error" title="Could not load dashboard" copy={error} />}
+        {!loading && error && <StateCard home={navigation.primary === 'home'} tone="error" title="Could not load dashboard" copy={error} />}
 
         {!loading && !error && data && !selectedBusiness && (
-          <StateCard title="No business selected" copy="Create or select a business to load dashboard data." />
+          <div>
+            <StateCard title="No business selected" copy="Create or select a business to load dashboard data." />
+            <button className="btn btn-primary" type="button" onClick={() => { setToast(null); setAddBusinessOpen(true); }}>{t('Create business')}</button>
+          </div>
         )}
 
         {!loading && !error && data && selectedBusiness && (
           <>
-            <MissionControl
-              business={selectedBusiness}
-              data={data}
-            />
-
-            <AnalyticsPage businessId={selectedBusiness.id} />
-
-            <section className="mission-section">
-              <div className="mission-section-head">
-                <div>
-                  <div className="mission-eyebrow">ODINLINK INBOX</div>
-                  <h2>Customer conversations</h2>
-                  <p>Review recent conversations, their current status and the latest customer activity.</p>
-                </div>
+            <Workspace primary="home" navigation={navigation}>
+              <div hidden={navigation.primary === 'home' && navigation.secondary === 'reports'}>
+                <MissionControl
+                  business={selectedBusiness}
+                  data={data}
+                  onWorkspaceNavigate={setNavigation}
+                />
               </div>
-
-              <ConversationsPanel
-                key={selectedBusiness.id}
-                businessId={selectedBusiness.id}
-              />
-            </section>
-
-            <section className="mission-section">
-              <div className="mission-section-head">
-                <div>
-                  <div className="mission-eyebrow">BOOKING WORKSPACE</div>
-                  <h2>Bookings</h2>
-                  <p>Review upcoming, pending and historical appointments for the business.</p>
+              <WorkspacePanel primary="home" secondary="reports" navigation={navigation}>
+                <div className="reports-workspace">
+                  <AnalyticsPage businessId={selectedBusiness.id} title={t('Reports')} backAction={
+                    <button className="btn btn-ghost reports-back" type="button" onClick={() => setNavigation({ primary: 'home' })}>
+                      {t('Back to {destination}', { destination: t('Home') })}
+                    </button>
+                  } />
                 </div>
-              </div>
-              <BookingsPanel
-                key={selectedBusiness.id}
-                businessId={selectedBusiness.id}
-                timezone={selectedBusiness.timezone}
-              />
-            </section>
+              </WorkspacePanel>
+            </Workspace>
 
-            <section className="mission-section mission-admin-section">
-              <div className="mission-section-head">
-                <div>
-                  <div className="mission-eyebrow">CONTROL CENTER</div>
-                  <h2>Business setup and operations</h2>
-                  <p>Manage channels, automation, usage and business settings.</p>
+            <Workspace primary="inbox" navigation={navigation}>
+
+              <section className="mission-section">
+                <div className="mission-section-head">
+                  <div>
+                    <div className="mission-eyebrow">ODINLINK INBOX</div>
+                    <h2>Customer conversations</h2>
+                    <p>Review recent conversations, their current status and the latest customer activity.</p>
+                  </div>
                 </div>
-              </div>
 
-              <HealthStatus key={selectedBusiness.id} businessId={selectedBusiness.id} onHealthChanged={scheduleNotificationRefresh} />
-              <NotificationCenter
-                key={selectedBusiness.id}
-                businessId={selectedBusiness.id}
-                timezone={selectedBusiness.timezone}
-                onUnreadCountChange={setNotificationUnreadCount}
-                refreshKey={notificationRefreshKey}
-              />
-              <UsageStatistics usage={data.usage} />
-              <BusinessesCard
-                businesses={data.businesses}
-                selectedBusinessId={selectedBusiness.id}
-                onCreate={() => setAddBusinessOpen(true)}
-                onDelete={setDeleteTarget}
-                onSelect={handleBusinessChange}
-              />
-              <BusinessSettings business={selectedBusiness} onSaved={handleSaved} />
+                <ConversationsPanel
+                  active={navigation.primary === 'inbox'}
+                  key={selectedBusiness.id}
+                  businessId={selectedBusiness.id}
+                />
+              </section>
+            </Workspace>
 
-              <KnowledgePanel
-                key={`knowledge-${selectedBusiness.id}`}
-                businessId={selectedBusiness.id}
-                onSaved={handleSaved}
-              />
+            <Workspace primary="bookings" navigation={navigation}>
+              <section className="mission-section">
+                <div className="mission-section-head">
+                  <div>
+                    <div className="mission-eyebrow">BOOKING WORKSPACE</div>
+                    <h2>Bookings</h2>
+                    <p>Review upcoming, pending and historical appointments for the business.</p>
+                  </div>
+                </div>
+                <BookingsPanel
+                  key={selectedBusiness.id}
+                  businessId={selectedBusiness.id}
+                  timezone={selectedBusiness.timezone}
+                />
+              </section>
 
-              <CancellationSettings business={selectedBusiness} onSaved={handleSaved} />
-              <AdminNotificationSettings business={selectedBusiness} onSaved={handleSaved} />
+            </Workspace>
+
+            <Workspace primary="ai-assistant" navigation={navigation}>
               <BusinessToneControls
                 key={selectedBusiness.id}
                 business={selectedBusiness}
                 onSaved={handleSaved}
                 onBusinessUpdated={handleBusinessUpdated}
+                requestedSection={navigation.primary === 'ai-assistant' ? navigation.secondary : undefined}
+                businessAnswers={<KnowledgePanel key={`knowledge-${selectedBusiness.id}`} businessId={selectedBusiness.id} onSaved={handleSaved} feedbackMemory={knowledgeFeedback} />}
+                customInstructions={<SystemPromptEditor business={selectedBusiness} onSaved={handleSaved} feedbackMemory={instructionsFeedback} />}
               />
-              <SystemPromptEditor business={selectedBusiness} onSaved={handleSaved} />
-              <IntegrationCenter
-                business={selectedBusiness}
-                health={data.health}
-                onSaved={handleSaved}
-                onTest={testIntegration}
-              />
-            </section>
+            </Workspace>
+
+            <Workspace primary="settings" navigation={navigation}>
+              <SettingsNavigation navigation={navigation} onNavigate={setNavigation} />
+              <div hidden={settingsAreaForNavigation(navigation) !== 'business'}>
+                <BusinessSettings key={`business-${selectedBusiness.id}`} business={selectedBusiness} onSaved={handleSaved} feedbackMemory={businessFeedback} />
+                <CancellationSettings key={`cancellation-${selectedBusiness.id}`} business={selectedBusiness} onSaved={handleSaved} feedbackMemory={cancellationFeedback} />
+              </div>
+              <div hidden={settingsAreaForNavigation(navigation) !== 'connections'}>
+                <nav className="settings-secondary-nav" aria-label={t('Connections')}>
+                  <button className="btn btn-ghost" type="button" aria-pressed={navigation.primary === 'settings' && navigation.secondary === 'connections'} onClick={() => setNavigation({ primary: 'settings', secondary: 'connections' })}>{t('Connections')}</button>
+                  <button className="btn btn-ghost" type="button" aria-pressed={navigation.primary === 'settings' && navigation.secondary === 'connection-health'} onClick={() => setNavigation({ primary: 'settings', secondary: 'connection-health' })}>{t('Connection health')}</button>
+                </nav>
+                <WorkspacePanel navigation={navigation} primary="settings" secondary="connections">
+                  <IntegrationCenter key={selectedBusiness.id} business={selectedBusiness} health={data.health} onSaved={handleSaved} feedbackMemory={connectionsFeedback} onTest={testIntegration} />
+                </WorkspacePanel>
+                <WorkspacePanel navigation={navigation} primary="settings" secondary="connection-health">
+                  <HealthStatus key={selectedBusiness.id} businessId={selectedBusiness.id} onHealthChanged={scheduleNotificationRefresh} onWorkspaceNavigate={setNavigation} />
+                </WorkspacePanel>
+              </div>
+              <div hidden={settingsAreaForNavigation(navigation) !== 'notifications'}>
+                <h2 id="settings-notifications-title" tabIndex={-1}>{t('Notifications')}</h2>
+                <nav className="settings-secondary-nav" aria-label={t('Notifications')}>
+                  <button className="btn btn-ghost" type="button" aria-pressed={navigation.primary === 'settings' && navigation.secondary === 'notification-center'} onClick={() => setNavigation({ primary: 'settings', secondary: 'notification-center' })}>{t('Issues')}</button>
+                  <button className="btn btn-ghost" type="button" aria-pressed={navigation.primary === 'settings' && navigation.secondary === 'admin-notifications'} onClick={() => setNavigation({ primary: 'settings', secondary: 'admin-notifications' })}>{t('Business alerts')}</button>
+                </nav>
+                <WorkspacePanel navigation={navigation} primary="settings" secondary="notification-center">
+                  <NotificationCenter key={selectedBusiness.id} businessId={selectedBusiness.id} timezone={selectedBusiness.timezone} onUnreadCountChange={setNotificationUnreadCount} refreshKey={notificationRefreshKey} onWorkspaceNavigate={setNavigation} />
+                </WorkspacePanel>
+                <WorkspacePanel navigation={navigation} primary="settings" secondary="admin-notifications">
+                  <AdminNotificationSettings key={selectedBusiness.id} business={selectedBusiness} onSaved={handleSaved} feedbackMemory={alertsFeedback} />
+                </WorkspacePanel>
+              </div>
+              <WorkspacePanel navigation={navigation} primary="settings" secondary="businesses">
+                <BusinessesCard businesses={data.businesses} selectedBusinessId={selectedBusiness.id} onCreate={() => { setToast(null); setAddBusinessOpen(true); }} onDelete={(business) => { setToast(null); setDeleteTarget(business); }} onSelect={handleBusinessChange} />
+              </WorkspacePanel>
+            </Workspace>
           </>
         )}
       </DashboardShell>
 
       {addBusinessOpen && (
-        <AddBusinessModal onClose={() => setAddBusinessOpen(false)} onCreate={createBusiness} />
+        <AddBusinessModal feedback={toast?.kind === 'error' ? toast : null} onClose={() => { setAddBusinessOpen(false); setToast(null); }} onCreate={createBusiness} />
       )}
 
       {deleteTarget && (
         <DeleteBusinessDialog
           business={deleteTarget}
-          onCancel={() => setDeleteTarget(null)}
+          feedback={toast?.kind === 'error' ? toast : null}
+          onCancel={() => { setDeleteTarget(null); setToast(null); }}
           onConfirm={() => deleteBusiness(deleteTarget)}
         />
       )}
 
-      {toast && (
-        <button className="toast show" type="button" onClick={() => setToast(null)}>
-          <span>{toast}</span>
-        </button>
+      {toast && (!toast.businessId || toast.businessId === selectedBusinessId) && !addBusinessOpen && !deleteTarget && (
+        <div className={`toast show dashboard-toast ${toast.kind}`}>
+          <div role={toast.kind === 'error' ? 'alert' : 'status'} aria-atomic="true" translate="no"><span aria-hidden="true" className="dashboard-toast-symbol">{toast.kind === 'success' ? '✓' : toast.kind === 'error' ? '!' : 'i'}</span><span>{t(toast.message)}</span></div>
+          <button type="button" aria-label={t('Close message')} onClick={() => setToast(null)}>×</button>
+        </div>
       )}
     </div>
   );
 }
 
+function Workspace({ primary, navigation, children }: { primary: DashboardPrimary; navigation: DashboardNavigation; children: ReactNode }) {
+  const { t } = useDashboardI18n();
+  return <section id={`workspace-${primary}`} className="dashboard-workspace" tabIndex={-1} aria-label={t(PRIMARY_DESTINATIONS.find((item) => item.id === primary)!.label)} hidden={!isDashboardPanelVisible(navigation, primary)}>{children}</section>;
+}
+
+function WorkspacePanel({ primary, secondary, navigation, children }: { primary: DashboardPrimary; secondary: string; navigation: DashboardNavigation; children: ReactNode }) {
+  return <div className="dashboard-workspace-panel" hidden={!isDashboardPanelVisible(navigation, primary, secondary)}>{children}</div>;
+}
+
+function SettingsNavigation({ navigation, onNavigate }: { navigation: DashboardNavigation; onNavigate: NavigateDashboard }) {
+  const { t } = useDashboardI18n();
+  const hasSecondary = navigation.primary === 'settings' && Boolean(navigation.secondary);
+  return <div className="workspace-navigation">
+    <div hidden={hasSecondary}>
+      <h2>{t('Settings')}</h2>
+      <nav className="settings-index" aria-label={t('Settings setup')}>
+        {SETTINGS_AREAS.map((area) => <div className="card settings-index-item" key={area.id}>
+          <h3>{t(area.label)}</h3>
+          <p>{t(area.description)}</p>
+          <button id={`settings-${area.id}-trigger`} className="btn btn-ghost" type="button" onClick={() => onNavigate({ primary: 'settings', secondary: area.secondary })}>{t('Open {destination}', { destination: t(area.label) })}</button>
+        </div>)}
+      </nav>
+    </div>
+    <button hidden={!hasSecondary} className="btn btn-ghost" type="button" onClick={() => onNavigate({ primary: 'settings' })}>{t('Back to {destination}', { destination: t('Settings') })}</button>
+  </div>;
+}
 
 function CancellationSettings({
   business,
   onSaved,
+  feedbackMemory,
 }: {
   business: Business;
-  onSaved: (message: string, refresh?: boolean) => void;
+  onSaved: DashboardSaved;
+  feedbackMemory?: DashboardFeedbackMemory;
 }) {
   const [allowCancellation, setAllowCancellation] = useState(false);
   const [deadlinePreset, setDeadlinePreset] = useState<'0' | '360' | '720' | '1440' | 'custom'>('0');
@@ -425,10 +494,13 @@ function CancellationSettings({
   const [currency, setCurrency] = useState('SEK');
   const [loadingSettings, setLoadingSettings] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [loadError, setLoadError] = useState('');
+  const { feedback, reportFeedback, clearFeedback } = useDashboardFeedback(onSaved, feedbackMemory, business.id);
 
   useEffect(() => {
     let active = true;
     setLoadingSettings(true);
+    setLoadError('');
     api.getCancellationSettings(business.id)
       .then((result) => {
         if (!active) return;
@@ -453,7 +525,11 @@ function CancellationSettings({
         setCurrency(String(settings.cancellationFeeCurrency || 'SEK').toUpperCase());
       })
       .catch((error) => {
-        if (active) onSaved(error instanceof Error ? error.message : 'Could not load cancellation settings');
+        if (active) {
+          const message = error instanceof Error ? error.message : 'Could not load cancellation settings';
+          setLoadError(message);
+          onSaved(message, false, { kind: 'error', local: true });
+        }
       })
       .finally(() => {
         if (active) setLoadingSettings(false);
@@ -464,22 +540,23 @@ function CancellationSettings({
 
   const save = async (event: FormEvent) => {
     event.preventDefault();
+    clearFeedback();
     let deadlineMinutes = deadlinePreset === 'custom'
       ? Number(customDeadlineValue) * (customDeadlineUnit === 'days' ? 1440 : 60)
       : Number(deadlinePreset);
     const amount = Number(feeAmount || 0);
 
     if (!Number.isFinite(deadlineMinutes) || deadlineMinutes < 0) {
-      onSaved('Enter a valid cancellation deadline');
+      reportFeedback('Enter a valid cancellation deadline', false, 'error');
       return;
     }
     deadlineMinutes = Math.round(deadlineMinutes);
     if (deadlinePreset === 'custom' && deadlineMinutes <= 0) {
-      onSaved('Custom deadline must be greater than zero');
+      reportFeedback('Custom deadline must be greater than zero', false, 'error');
       return;
     }
     if (feeEnabled && (!Number.isFinite(amount) || amount <= 0)) {
-      onSaved('Enter the late-cancellation fee amount');
+      reportFeedback('Enter the late-cancellation fee amount', false, 'error');
       return;
     }
 
@@ -492,9 +569,9 @@ function CancellationSettings({
           cancellationFeeAmount: feeEnabled ? amount : 0,
           cancellationFeeCurrency: currency.trim().toUpperCase() || 'SEK',
       });
-      onSaved('Cancellation policy saved', true);
+      reportFeedback('Cancellation policy saved', true);
     } catch (error) {
-      onSaved(error instanceof Error ? error.message : 'Could not save cancellation policy');
+      reportFeedback(error instanceof Error ? error.message : 'Could not save cancellation policy', false, 'error');
     } finally {
       setSaving(false);
     }
@@ -504,22 +581,24 @@ function CancellationSettings({
     <section id="cancellation-settings" className="card dashboard-section cancellation-settings-card">
       <div className="card-header cancellation-card-header">
         <div>
-          <div className="card-title">Customer Cancellations</div>
+          <h2 id="cancellation-title" className="card-title" tabIndex={-1}>Cancellation policy</h2>
           <div className="card-desc">Let customers cancel a selected appointment in chat, with final confirmation and an optional late-cancellation fee.</div>
         </div>
-        <label className="toggle-wrap">
+        {!loadingSettings && !loadError && <label className="toggle-wrap">
           <span className="enabled-label">{allowCancellation ? 'Enabled' : 'Disabled'}</span>
           <span className="toggle">
-            <input type="checkbox" checked={allowCancellation} onChange={(event) => setAllowCancellation(event.target.checked)} />
+            <input type="checkbox" aria-label="Cancellation policy" disabled={loadingSettings || Boolean(loadError)} checked={allowCancellation} onChange={(event) => setAllowCancellation(event.target.checked)} />
             <span className="toggle-slider" />
           </span>
-        </label>
+        </label>}
       </div>
 
       {loadingSettings ? (
-        <div className="admin-notification-loading">Loading cancellation settings...</div>
+        <div className="admin-notification-loading" role="status">Loading cancellation settings...</div>
+      ) : loadError ? (
+        <div className="settings-load-error" role="alert"><strong>Could not load cancellation settings</strong><p>{loadError}</p></div>
       ) : (
-        <form onSubmit={save}>
+        <form onSubmit={save} onChangeCapture={() => { if (feedback?.kind === 'success') clearFeedback(); }}>
           <div className={allowCancellation ? 'cancellation-policy-body' : 'cancellation-policy-body disabled'}>
             <div className="form-group">
               <label className="form-label" htmlFor="cancellation-deadline">Free cancellation deadline</label>
@@ -576,6 +655,7 @@ function CancellationSettings({
             </div>
           </div>
 
+          <DashboardFeedback feedback={feedback} saving={saving} />
           <div className="save-row">
             <button className="btn btn-primary" type="submit" disabled={saving}>
               {saving ? 'Saving...' : 'Save Cancellation Policy'}
@@ -590,19 +670,24 @@ function CancellationSettings({
 function AdminNotificationSettings({
   business,
   onSaved,
+  feedbackMemory,
 }: {
   business: Business;
-  onSaved: (message: string, refresh?: boolean) => void;
+  onSaved: DashboardSaved;
+  feedbackMemory?: DashboardFeedbackMemory;
 }) {
   const [channel, setChannel] = useState<'telegram' | 'whatsapp'>('telegram');
   const [whatsappNumber, setWhatsappNumber] = useState('');
   const [telegramChatId, setTelegramChatId] = useState('');
   const [loadingSettings, setLoadingSettings] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [loadError, setLoadError] = useState('');
+  const { feedback, reportFeedback, clearFeedback } = useDashboardFeedback(onSaved, feedbackMemory, business.id);
 
   useEffect(() => {
     let active = true;
     setLoadingSettings(true);
+    setLoadError('');
 
     api.getAdminNotificationSettings(business.id)
       .then((result) => {
@@ -613,7 +698,11 @@ function AdminNotificationSettings({
         setTelegramChatId(String(settings.telegramChatId || ''));
       })
       .catch((error) => {
-        if (active) onSaved(error instanceof Error ? error.message : 'Could not load notification settings');
+        if (active) {
+          const message = error instanceof Error ? error.message : 'Could not load notification settings';
+          setLoadError(message);
+          onSaved(message, false, { kind: 'error', local: true });
+        }
       })
       .finally(() => {
         if (active) setLoadingSettings(false);
@@ -626,15 +715,16 @@ function AdminNotificationSettings({
 
   const save = async (event: FormEvent) => {
     event.preventDefault();
+    clearFeedback();
     const cleanWhatsApp = whatsappNumber.replace(/\D/g, '');
 
     if (channel === 'whatsapp' && cleanWhatsApp.length < 8) {
-      onSaved('Enter the admin WhatsApp number with country code, for example 46701234567');
+      reportFeedback('Enter the admin WhatsApp number with country code, for example 46701234567', false, 'error');
       return;
     }
 
     if (channel === 'telegram' && !telegramChatId.trim()) {
-      onSaved('Add the Telegram Admin Chat ID under Channel Settings first');
+      reportFeedback('Add the Telegram Admin Chat ID under Connections first', false, 'error');
       return;
     }
 
@@ -645,9 +735,9 @@ function AdminNotificationSettings({
           adminWhatsAppNumber: cleanWhatsApp,
       });
       setWhatsappNumber(cleanWhatsApp);
-      onSaved('Admin notification settings saved', true);
+      reportFeedback('Admin notification settings saved', true);
     } catch (error) {
-      onSaved(error instanceof Error ? error.message : 'Could not save notification settings');
+      reportFeedback(error instanceof Error ? error.message : 'Could not save notification settings', false, 'error');
     } finally {
       setSaving(false);
     }
@@ -657,16 +747,18 @@ function AdminNotificationSettings({
     <section id="admin-notifications" className="card dashboard-section admin-notification-card">
       <div className="card-header">
         <div>
-          <div className="card-title">Admin Notifications</div>
+          <h2 id="business-alerts-title" className="card-title" tabIndex={-1}>Business alerts</h2>
           <div className="card-desc">Choose where the business receives new booking and reschedule alerts.</div>
         </div>
       </div>
 
       {loadingSettings ? (
-        <div className="admin-notification-loading">Loading notification settings...</div>
+        <div className="admin-notification-loading" role="status">Loading notification settings...</div>
+      ) : loadError ? (
+        <div className="settings-load-error" role="alert"><strong>Could not load notification settings</strong><p>{loadError}</p></div>
       ) : (
-        <form onSubmit={save}>
-          <div className="admin-notification-options" role="radiogroup" aria-label="Admin notification channel">
+        <form onSubmit={save} onChangeCapture={() => { if (feedback?.kind === 'success') clearFeedback(); }}>
+          <div className="admin-notification-options" role="radiogroup" aria-label="Business alerts">
             <label className={channel === 'telegram' ? 'admin-channel-option selected' : 'admin-channel-option'}>
               <input
                 type="radio"
@@ -675,7 +767,7 @@ function AdminNotificationSettings({
                 checked={channel === 'telegram'}
                 onChange={() => setChannel('telegram')}
               />
-              <span className="admin-channel-icon">✈</span>
+              <span className="admin-channel-icon" aria-hidden="true">✈</span>
               <span>
                 <strong>Telegram</strong>
                 <small>Send booking alerts to the configured Admin Chat ID.</small>
@@ -690,7 +782,7 @@ function AdminNotificationSettings({
                 checked={channel === 'whatsapp'}
                 onChange={() => setChannel('whatsapp')}
               />
-              <span className="admin-channel-icon">☏</span>
+              <span className="admin-channel-icon" aria-hidden="true">☏</span>
               <span>
                 <strong>WhatsApp</strong>
                 <small>Send booking alerts to the business owner's WhatsApp.</small>
@@ -701,8 +793,8 @@ function AdminNotificationSettings({
           {channel === 'telegram' ? (
             <div className="admin-notification-summary">
               <span>Telegram Admin Chat ID</span>
-              <strong>{telegramChatId || 'Not configured'}</strong>
-              <small>Change this value under Channel Settings → Telegram.</small>
+              <strong>{telegramChatId ? <bdi dir="ltr" translate="no">{telegramChatId}</bdi> : 'Not configured'}</strong>
+              <small>Change this value under Connections → Telegram.</small>
             </div>
           ) : (
             <div className="form-group admin-whatsapp-field">
@@ -711,17 +803,20 @@ function AdminNotificationSettings({
                 id="admin-whatsapp-number"
                 className="form-input mono"
                 inputMode="tel"
+                dir="ltr"
+                aria-describedby="alert-number-help"
                 value={whatsappNumber}
                 onChange={(event) => setWhatsappNumber(event.target.value)}
                 placeholder="46701234567"
               />
-              <div className="form-hint">Use country code without +, spaces or dashes.</div>
+              <div id="alert-number-help" className="form-hint">Use country code without +, spaces or dashes.</div>
             </div>
           )}
 
+          <DashboardFeedback feedback={feedback} saving={saving} />
           <div className="save-row">
             <button className="btn btn-primary" type="submit" disabled={saving}>
-              {saving ? 'Saving...' : 'Save Notification Channel'}
+              {saving ? 'Saving...' : 'Save alert destination'}
             </button>
           </div>
         </form>
@@ -748,9 +843,11 @@ function getReadableApiError(rawMessage: string) {
 function MissionControl({
   business,
   data,
+  onWorkspaceNavigate,
 }: {
   business: Business;
   data: DashboardData;
+  onWorkspaceNavigate: NavigateDashboard;
 }) {
   const { locale, t } = useDashboardI18n();
   const summary = data.dashboardSummary.status === 'available'
@@ -794,23 +891,12 @@ function MissionControl({
                 <span />
                 Today’s overview
               </div>
-              <span className="mission-monitoring-copy">{metricScope}</span>
+              <span className="mission-monitoring-copy" translate="no">{summary ? <bdi dir="ltr">{metricScope}</bdi> : t(metricScope)}</span>
             </div>
-            <button
-              className={`mission-status-indicator ${statusClass}`}
-              type="button"
-              title={t(operationalStatus.detail)}
-              aria-label={`${t(operationalStatus.title)}. ${t(operationalStatus.detail)}`}
-              onClick={() => document.getElementById(actionTarget)?.scrollIntoView({ behavior: 'smooth' })}
-            >
-              <i aria-hidden="true" />
-              <span>{t(operationalStatus.title)}</span>
-              <b aria-hidden="true">→</b>
-            </button>
           </div>
 
           <p className="mission-greeting">{greeting} <span aria-hidden="true">👋</span></p>
-          <h1>{displayBusinessName}</h1>
+          <h1 dir="auto" translate="no">{displayBusinessName}</h1>
 
           <div className="hero-results-block">
             <div className="hero-results-label">TODAY’S RESULTS</div>
@@ -819,7 +905,7 @@ function MissionControl({
                 icon="customers"
                 value={conversationValue}
                 label={metricLabel('Conversations today', conversationsMetric, t)}
-                detail={countMetricDetail(conversationsMetric, 'Canonical conversation starts', t)}
+                detail={countMetricDetail(conversationsMetric, 'Conversations with customer activity today', t)}
               />
               <HeroResult
                 icon="bookings"
@@ -835,6 +921,27 @@ function MissionControl({
                 accent
               />
             </div>
+          </div>
+          <div className="home-operational-footer">
+            <div className="home-operational-status" translate="no">
+              <button
+                className={`mission-status-indicator ${statusClass}`}
+                type="button"
+                title={t(operationalStatus.detail)}
+                aria-label={`${t(operationalStatus.title)}. ${t(operationalStatus.detail)}`}
+                onClick={() => onWorkspaceNavigate({ primary: 'settings', secondary: actionTarget === 'notification-center' ? 'notification-center' : 'connection-health' })}
+              >
+                <i aria-hidden="true" />
+                <span>{t(operationalStatus.title)}</span>
+                <b aria-hidden="true">→</b>
+              </button>
+              <p>{t(operationalStatus.detail)}</p>
+            </div>
+            <nav className="home-workspace-actions" aria-label={t('Home actions')}>
+              <button className="btn btn-ghost" type="button" onClick={() => onWorkspaceNavigate({ primary: 'inbox' })}>{t('Open Inbox')}</button>
+              <button className="btn btn-ghost" type="button" onClick={() => onWorkspaceNavigate({ primary: 'bookings' })}>{t('Open Bookings')}</button>
+              <button id="home-reports-trigger" className="btn btn-ghost" type="button" onClick={() => onWorkspaceNavigate({ primary: 'home', secondary: 'reports' })}>{t('View reports')}</button>
+            </nav>
           </div>
         </div>
       </div>
@@ -881,9 +988,9 @@ function HeroResult({
         )}
       </div>
       <div className="hero-result-copy">
-        <strong>{value}</strong>
-        <span>{label}</span>
-        <small>{detail}</small>
+        <span translate="no">{label}</span>
+        <strong translate="no" dir="ltr">{accent ? <CurrencyValue formattedValue={value} /> : value}</strong>
+        <small translate="no">{detail}</small>
       </div>
     </div>
   );
@@ -1045,10 +1152,13 @@ function BusinessesCard({
 function AddBusinessModal({
   onClose,
   onCreate,
+  feedback,
 }: {
   onClose: () => void;
+  feedback: DashboardFeedbackValue | null;
   onCreate: (payload: Partial<Business>) => Promise<void>;
 }) {
+  const { t } = useDashboardI18n();
   const [name, setName] = useState('');
   const [industry, setIndustry] = useState('');
   const [timezone, setTimezone] = useState('Europe/Stockholm');
@@ -1072,27 +1182,26 @@ function AddBusinessModal({
   };
 
   return (
-    <div className="ai-modal-overlay show" role="dialog" aria-modal="true">
-      <form className="ai-modal" onSubmit={submit}>
-        <button className="ai-modal-close" type="button" onClick={onClose}>×</button>
-        <div className="ai-modal-title">Add Business</div>
-        <div className="ai-modal-desc">Create a new tenant. Its settings, channels and stats will be scoped separately.</div>
+    <BusinessDialog titleId="add-business-title" descriptionId="add-business-description" busy={saving} onClose={onClose}>
+      <form onSubmit={submit}>
+        <h2 id="add-business-title" className="ai-modal-title">{t('Add Business')}</h2>
+        <div id="add-business-description" className="ai-modal-desc">{t('Create a new tenant. Its settings, channels and stats will be scoped separately.')}</div>
         <div className="form-grid-2">
           <div className="form-group form-full">
-            <label className="form-label">Business Name</label>
-            <input className="form-input" value={name} onChange={(event) => setName(event.target.value)} required />
+            <label className="form-label" htmlFor="add-business-name">{t('Business Name')}</label>
+            <input id="add-business-name" data-dialog-initial-focus className="form-input" dir="auto" value={name} onChange={(event) => setName(event.target.value)} required />
           </div>
           <div className="form-group">
-            <label className="form-label">Business Type</label>
-            <input className="form-input" value={industry} onChange={(event) => setIndustry(event.target.value)} placeholder="Service business" />
+            <label className="form-label" htmlFor="add-business-industry">{t('Business Type')}</label>
+            <input id="add-business-industry" className="form-input" dir="auto" value={industry} onChange={(event) => setIndustry(event.target.value)} placeholder={t('Service business')} />
           </div>
           <div className="form-group">
-            <label className="form-label">Timezone</label>
-            <input className="form-input mono" value={timezone} onChange={(event) => setTimezone(event.target.value)} />
+            <label className="form-label" htmlFor="add-business-timezone">{t('Timezone')}</label>
+            <input id="add-business-timezone" className="form-input mono" dir="ltr" value={timezone} onChange={(event) => setTimezone(event.target.value)} />
           </div>
           <div className="form-group form-full">
-            <label className="form-label">Language</label>
-            <select className="form-input" value={language} onChange={(event) => setLanguage(event.target.value as Business['language'])}>
+            <label className="form-label" htmlFor="add-business-language">{t('Language')}</label>
+            <select id="add-business-language" className="form-input" value={language} onChange={(event) => setLanguage(event.target.value as Business['language'])}>
               <option value="en">English</option>
               <option value="sv">Svenska</option>
               <option value="de">Deutsch</option>
@@ -1102,14 +1211,15 @@ function AddBusinessModal({
             </select>
           </div>
         </div>
+        <DashboardFeedback feedback={feedback} />
         <div className="save-row">
-          <button className="btn btn-ghost" type="button" onClick={onClose}>Cancel</button>
+          <button className="btn btn-ghost" type="button" onClick={onClose} disabled={saving}>{t('Cancel')}</button>
           <button className="btn btn-primary" type="submit" disabled={saving || !name.trim()}>
-            {saving ? 'Creating...' : 'Create Business'}
+            {t(saving ? 'Creating...' : 'Create Business')}
           </button>
         </div>
       </form>
-    </div>
+    </BusinessDialog>
   );
 }
 
@@ -1117,32 +1227,41 @@ function DeleteBusinessDialog({
   business,
   onCancel,
   onConfirm,
+  feedback,
 }: {
   business: Business;
+  feedback: DashboardFeedbackValue | null;
   onCancel: () => void;
-  onConfirm: () => void;
+  onConfirm: () => Promise<void>;
 }) {
+  const { t } = useDashboardI18n();
+  const [deleting, setDeleting] = useState(false);
+  const confirm = async () => {
+    if (deleting) return;
+    setDeleting(true);
+    try { await onConfirm(); } finally { setDeleting(false); }
+  };
   return (
-    <div className="ai-modal-overlay show" role="dialog" aria-modal="true">
-      <div className="ai-modal">
-        <button className="ai-modal-close" type="button" onClick={onCancel}>×</button>
-        <div className="ai-modal-title">Delete Business</div>
-        <div className="ai-modal-desc">
-          This will delete <strong>{business.name}</strong> and its tenant-scoped settings from the backend.
+    <BusinessDialog titleId="delete-business-title" descriptionId="delete-business-description" busy={deleting} onClose={onCancel}>
+      <div>
+        <h2 id="delete-business-title" className="ai-modal-title">{t('Delete Business')}</h2>
+        <div id="delete-business-description" className="ai-modal-desc">
+          {t('This will delete')} <strong translate="no" dir="auto">{business.name}</strong> {t('and its tenant-scoped settings from the backend.')}
         </div>
+        <DashboardFeedback feedback={feedback} />
         <div className="save-row">
-          <button className="btn btn-ghost" type="button" onClick={onCancel}>Cancel</button>
-          <button className="btn btn-danger" type="button" onClick={onConfirm}>Delete Business</button>
+          <button className="btn btn-ghost" data-dialog-initial-focus type="button" onClick={onCancel} disabled={deleting}>{t('Cancel')}</button>
+          <button className="btn btn-danger" type="button" onClick={() => void confirm()} disabled={deleting}>{t('Delete Business')}</button>
         </div>
       </div>
-    </div>
+    </BusinessDialog>
   );
 }
 
-function StateCard({ title, copy, tone }: { title: string; copy: string; tone?: 'error' }) {
+function StateCard({ title, copy, tone, home = false }: { title: string; copy: string; tone?: 'error'; home?: boolean }) {
   return (
-    <div className={`card dashboard-section state-card ${tone || ''}`}>
-      <div className="card-title">{title}</div>
+    <div className={`card dashboard-section state-card ${tone || ''} ${home ? 'home-dashboard-state' : ''}`} role={tone === 'error' ? 'alert' : title === 'Loading dashboard' ? 'status' : undefined}>
+      {home ? <h1 className="card-title">{title}</h1> : <div className="card-title">{title}</div>}
       <div className="card-desc">{copy}</div>
     </div>
   );

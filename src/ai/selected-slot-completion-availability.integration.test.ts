@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { fixtureChannelSessionId } from '../../tests/fixtures/channel-session';
 import { isPositiveBookingConfirmation } from './booking-state-machine';
 process.env.NODE_ENV = 'test';
 const log = console.log;
@@ -34,7 +35,7 @@ try {
         checkSlots: () => { throw Error('legacy availability path'); },
       }, postProcess: async () => undefined, incrementUsage: async () => ({ allowed: true }) } as any);
       const recipientUserId = '46701234567';
-      const sessionId = boundary.channelSessionId(platformName, recipientUserId, businessConfig);
+      const sessionId = fixtureChannelSessionId(boundary, platformName, recipientUserId, businessConfig);
       const turn = (text: string) => boundary.turn({ sessionId, platformName, recipientUserId, businessConfig, text, now });
       const rejected = await turn("I'd like to book wedding photography for Monday, 14 September 2026.");
       assert.equal(rejected.pending?.status, 'awaiting_service');

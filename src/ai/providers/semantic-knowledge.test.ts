@@ -230,7 +230,11 @@ for (const compound of [false, true]) {
       compound ? "I recommend our Premium treatment." : "Intro Facial costs 650 SEK.", "en");
     assert.match(reply, /Intro Facial/); assert.match(reply, /650 SEK/);
     assert.doesNotMatch(reply, /Premium|999/);
-    if (compound) assert.match(reply, /\?$/);
+    if (compound) {
+      assert.match(reply, /To recommend the right service/);
+      assert.match(reply, /tell me what you want to achieve/);
+      assert.match(reply, /preferences or constraints/);
+    }
     assert.equal(sdk.googleCalls(), 0);
   });
 }

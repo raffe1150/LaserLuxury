@@ -89,7 +89,7 @@ const markup = renderToStaticMarkup(createElement(DashboardI18nProvider, null,
     onSaved: () => undefined,
   }),
 ));
-assert.match(markup, /Integration Center/);
+assert.match(markup, /id="settings-connections-title"[^>]*>Connections<\/h2>/);
 for (const provider of INTEGRATION_PROVIDERS) assert.match(markup, new RegExp(provider.title));
 assert.match(markup, />Connect</);
 assert.doesNotMatch(markup, /Access Token|Bot Token|Phone Number ID/, 'normal dashboard cards never expose manual channel credentials');

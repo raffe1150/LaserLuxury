@@ -1,4 +1,8 @@
 import assert from "node:assert/strict";
+import { mock } from 'node:test';
+
+// Keep scheduling dates, pending TTLs and implicit Date reads on a controlled fixture clock.
+mock.timers.enable({ apis: ['Date'], now: new Date('2026-08-10T12:00:00+02:00') });
 
 process.env.NODE_ENV = "test";
 const { priority1hUnifiedEngineTestBoundary: boundary } = await import("../../server");
@@ -17,6 +21,7 @@ const businessConfig = {
 };
 let events: any[] = [];
 const adapter = {
+  insertAppointment: async () => { throw new Error("Unexpected calendar mutation in read-only earliest-range fixture"); },
   getEvents: async () => structuredClone(events),
   checkSlots: () => ({ available_slots_string: "" }),
 };
@@ -186,6 +191,7 @@ try {
   assert.equal(replacedByEarliest.pending.availabilityConstraint.endDate, "2026-08-21");
   assert.equal(localStart(replacedByEarliest.pending.ownedOfferedSlots[0]), "2026-08-17T09:00");
 } finally {
+  mock.timers.reset();
   boundary.reset();
 }
 

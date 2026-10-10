@@ -206,6 +206,6 @@ test('compliance migration is backend-only with durable idempotent intake', () =
   assert.match(sql, /grant select, insert, update on table public\.meta_compliance_requests to service_role/i);
   const server = readFileSync(new URL('../../../server.ts', import.meta.url), 'utf8');
   assert.match(server, /app\.use\('\/api\/meta', createMetaComplianceRouter\(supabase\)\)/);
-  assert.match(server, /if \(!secret\) return res\.sendStatus\(503\)/);
+  assert.match(server, /if \(usableSecrets\.length === 0\) return res\.sendStatus\(503\)/);
   assert.match(server, /req\.path === '\/webhook\/instagram'/);
 });

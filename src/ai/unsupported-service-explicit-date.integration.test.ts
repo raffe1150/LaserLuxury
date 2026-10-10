@@ -17,7 +17,7 @@ const cases = [
   ['ar', 'أريد حجز تصوير الزفاف في الثلاثاء، ٢٢ سبتمبر ٢٠٢٦.', 'تصوير الزفاف', '2026-09-22'],
 ];
 try {
-  for (const platformName of ['instagram', 'whatsapp']) for (const [language, text, service, date] of cases) {
+  for (const platformName of ['instagram', 'whatsapp'] as const) for (const [language, text, service, date] of cases) {
     for (const stale of ['none', 'unresolved', 'availability']) {
       boundary.reset();
       let reads = 0;
@@ -61,7 +61,7 @@ try {
     }
   }
   // A time accompanying an unsupported service survives the same recovery path.
-  for (const platformName of ['instagram', 'whatsapp']) {
+  for (const platformName of ['instagram', 'whatsapp'] as const) {
     boundary.reset();
     let reads = 0;
     boundary.configure({ calendarAdapter: {

@@ -1,5 +1,5 @@
 import fs from "fs";
-let cfg = {};
+let cfg: { adminTelegramChatId?: string } = {};
 try {
   cfg = JSON.parse(fs.readFileSync("agent-config.json", "utf8"));
 } catch(e){}

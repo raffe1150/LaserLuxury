@@ -9,7 +9,7 @@ import {
   resolveAuthoritativeOperation,
 } from './booking-operation-state';
 import { applyBookingTransition, beginBookingFinalization, isPositiveBookingConfirmation } from './booking-state-machine';
-import { isInvalidCustomerNameToken, resolveAuthoritativeContact } from './channel-contact';
+import { isInvalidCustomerNameToken, resolveAuthoritativeContact, type ContactPhoneSource } from './channel-contact';
 import { resolveTelegramReplyPreference, selectTelegramDeliveryMode } from './channel-reliability';
 
 const start = '2026-08-07T14:00:00+02:00';
@@ -19,7 +19,7 @@ const request = (text: string) => normalizeBookingRequest({
   businessId: '7', channel: 'shared', conversationKey: 'owner-1', inputMode: 'text', text,
   timezone: 'Europe/Stockholm', now: new Date('2026-08-03T08:00:00Z'),
 });
-const pending = (overrides: Record<string, any> = {}) => ({
+const initialPending = (overrides: Record<string, any> = {}) => ({
   bookingStateVersion: CURRENT_BOOKING_STATE_VERSION,
   operation: 'new_booking', status: 'awaiting_contact', service: 'Konsultation',
   durationMinutes: 30, dateTime: start, selectedSlotEnd: end,
@@ -27,6 +27,12 @@ const pending = (overrides: Record<string, any> = {}) => ({
   normalizedBookingRequest: toPersistedBookingRequest(request('Friday at 14')),
   ...overrides,
 });
+
+const pending: (...args: Parameters<typeof initialPending>) => ReturnType<typeof initialPending> & {
+  customerName?: string;
+  customerPhone?: string;
+  contactPhoneSource?: ContactPhoneSource;
+} = initialPending;
 
 function whatsapp_combined_contact_finalizes_without_technical_fallback() {
   const state = pending({ customerPhone: '+46701234567', contactPhoneSource: 'verified_sender_metadata' });

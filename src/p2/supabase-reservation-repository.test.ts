@@ -272,12 +272,10 @@ test("idempotent retry returns existing reservation", async () => {
 
   assert.equal(result.outcome, "existing");
 
-  if (result.outcome !== "conflict") {
-    assert.equal(result.row.id, "reservation-1");
-    assert.equal(result.row.units, 1);
-    assert.equal(
-      result.row.exclusive_capacity_one,
-      true,
-    );
-  }
+  assert.equal(result.row.id, "reservation-1");
+  assert.equal(result.row.units, 1);
+  assert.equal(
+    result.row.exclusive_capacity_one,
+    true,
+  );
 });

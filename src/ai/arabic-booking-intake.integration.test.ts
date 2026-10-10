@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { fixtureChannelSessionId } from '../../tests/fixtures/channel-session';
 import { resolveAuthoritativeContact } from './channel-contact';
 import { beginBookingFinalization, getMissingBookingContact } from './booking-state-machine';
 process.env.NODE_ENV = 'test';
@@ -122,7 +123,7 @@ try {
       activeChannel = channel;
       const counters = fixture();
       const userId = channel === 'whatsapp' ? '46700001106' : 'arabic-intake';
-      const sessionId = boundary.channelSessionId(channel, userId, businessConfig);
+      const sessionId = fixtureChannelSessionId(boundary, channel, userId, businessConfig);
       const turn = (text: string) => boundary.turn({ sessionId, platformName: channel, recipientUserId: userId, businessConfig, text, now });
       await turn('مرحباً، أريد حجز موعد بتاريخ الاثنين، 14 سبتمبر 2026.');
       await turn('test');

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { fixtureChannelSessionId } from '../../tests/fixtures/channel-session';
 import { beginBookingFinalization, getMissingBookingContact } from './booking-state-machine';
 process.env.NODE_ENV = 'test';
 // No fixture may reach an external persistence or AI endpoint.
@@ -106,7 +107,7 @@ try {
     activeChannel = channel;
     const counters = fixture();
     const userId = channel === 'whatsapp' ? '46700001101' : 'customer-intake-1';
-    const sessionId = boundary.channelSessionId(channel, userId, businessConfig);
+    const sessionId = fixtureChannelSessionId(boundary, channel, userId, businessConfig);
     const turn = (text: string) => boundary.turn({ sessionId, platformName: channel, recipientUserId: userId, businessConfig, text, now });
     await turn("Hello, I'd like to book an appointment for Monday, 14 September 2026.");
     await turn("I'd like to book wedding photography for Monday, 14 September 2026.");
@@ -129,10 +130,10 @@ try {
     assert.equal(counters.calendarCreate, 1, channel);
     assert.equal(counters.databaseInsert, 1, channel);
     assert.equal(counters.createdName, 'Ada Lovelace');
-    assert.equal(counters.createdPhone, channel === 'whatsapp' ? '+46700001101' : '0700001101');
+    assert.equal(counters.createdPhone, '0700001101', 'explicit customer contact outranks the sender fallback');
     assert.match(completed.replies.join(' '), /Ada Lovelace/);
     assert.match(completed.replies.join(' '), /test/);
-    assert.match(completed.replies.join(' '), /14 September.*13:15/);
+    assert.match(completed.replies.join(' '), /14 September[\s\S]*13:15/);
     await turn('Yes, please complete the booking.');
     assert.equal(counters.calendarCreate, 1, 'Repeated confirmation cannot duplicate a booking');
   }
@@ -141,7 +142,7 @@ try {
       activeChannel = channel;
       const counters = fixture();
       const userId = channel === 'whatsapp' ? '46700001101' : 'customer-known-fields';
-      const sessionId = boundary.channelSessionId(channel, userId, businessConfig);
+      const sessionId = fixtureChannelSessionId(boundary, channel, userId, businessConfig);
       const turn = (text: string) => boundary.turn({ sessionId, platformName: channel, recipientUserId: userId, businessConfig, text, now });
       await turn("I'd like to book an appointment for Monday, 14 September 2026.");
       if (known === 'earlier-text') {

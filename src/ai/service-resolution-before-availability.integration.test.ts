@@ -137,10 +137,10 @@ try {
 
   configure();
   const laserServices = [
-    { id: 'face', name: 'Laser Face', durationMinutes: 30 },
-    { id: 'legs', name: 'Laser Legs', durationMinutes: 60 },
-    { id: 'consult', name: 'Laser Consultation', durationMinutes: 45 },
-    { id: 'other', name: 'Unrelated Facial', durationMinutes: 40 },
+    { id: 'face', name: 'Laser Face', durationMinutes: 30, active: true },
+    { id: 'legs', name: 'Laser Legs', durationMinutes: 60, active: true },
+    { id: 'consult', name: 'Laser Consultation', durationMinutes: 45, active: true },
+    { id: 'other', name: 'Unrelated Facial', durationMinutes: 40, active: true },
   ];
   const ambiguous = await turn(
     'ambiguous-service',

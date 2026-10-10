@@ -1,3 +1,4 @@
+import DashboardFeedback, { useDashboardFeedback, type DashboardSaved, type DashboardFeedbackMemory } from './DashboardFeedback';
 import { useEffect, useMemo, useState } from 'react';
 import {
   api,
@@ -26,7 +27,8 @@ export interface IntegrationCenterProps {
   business: Business;
   health: IntegrationHealth[];
   onTest: (integration: IntegrationKey) => Promise<IntegrationHealth | void>;
-  onSaved: (message: string, refresh?: boolean) => void;
+  onSaved: DashboardSaved;
+  feedbackMemory?: DashboardFeedbackMemory;
 }
 
 type DetailMode = 'manage' | 'wizard' | 'advanced';
@@ -105,8 +107,9 @@ async function launchWhatsAppSignup(configuration: ChannelAuthorizationStart): P
   });
 }
 
-export function IntegrationCenter({ business, health, onTest, onSaved }: IntegrationCenterProps) {
+export function IntegrationCenter({ business, health, onTest, onSaved, feedbackMemory }: IntegrationCenterProps) {
   const { t, formatDate } = useDashboardI18n();
+  const { feedback, reportFeedback, clearFeedback } = useDashboardFeedback(onSaved, feedbackMemory, business.id);
   const [values, setValues] = useState<IntegrationValues>(() => getInitialIntegrationValues(business));
   const [selectedKey, setSelectedKey] = useState<IntegrationKey | null>(null);
   const [mode, setMode] = useState<DetailMode>('manage');
@@ -124,18 +127,25 @@ export function IntegrationCenter({ business, health, onTest, onSaved }: Integra
   const [pendingWhatsAppStart, setPendingWhatsAppStart] = useState<ChannelAuthorizationStart | null>(null);
   const [whatsappSdkReady, setWhatsAppSdkReady] = useState(false);
 
+  const [channelLoadState, setChannelLoadState] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [calendarLoadState, setCalendarLoadState] = useState<'loading' | 'ready' | 'error'>('loading');
+
   const refreshChannelConnections = async () => {
-    try { setChannelConnections(await api.getChannelConnections(business.id)); }
-    catch { setChannelConnections([]); }
+    setChannelLoadState('loading');
+    try { setChannelConnections(await api.getChannelConnections(business.id)); setChannelLoadState('ready'); }
+    catch { setChannelConnections([]); setChannelLoadState('error'); }
   };
 
   const refreshCalendarConnection = async () => {
+    setCalendarLoadState('loading');
     try {
       setCalendarConnection(
         await api.getCalendarConnection(business.id),
       );
+      setCalendarLoadState('ready');
     } catch {
       setCalendarConnection(null);
+      setCalendarLoadState('error');
     }
   };
 
@@ -169,10 +179,10 @@ export function IntegrationCenter({ business, health, onTest, onSaved }: Integra
     if (result === 'connected') {
       if (integration === 'google_calendar') {
         void refreshCalendarConnection();
-        onSaved('Google Calendar connected.', false);
+        reportFeedback('Google Calendar connected.', false);
       } else {
         void refreshChannelConnections();
-        onSaved('Channel connected.', false);
+        reportFeedback('Channel connected.', false);
       }
     } else if (result) {
       setValidationMessage(
@@ -225,7 +235,7 @@ export function IntegrationCenter({ business, health, onTest, onSaved }: Integra
     try {
       await api.disconnectCalendar(business.id);
       await refreshCalendarConnection();
-      onSaved('Google Calendar disconnected.', false);
+      reportFeedback('Google Calendar disconnected.', false);
     } catch {
       setValidationMessage(
         t(
@@ -261,7 +271,7 @@ export function IntegrationCenter({ business, health, onTest, onSaved }: Integra
         setPendingWhatsAppStart(null);
         setWhatsAppSdkReady(false);
         await refreshChannelConnections();
-        onSaved('WhatsApp connected.', false);
+        reportFeedback('WhatsApp connected.', false);
       } else if (start.authorizationUrl) {
         window.location.assign(start.authorizationUrl);
       }
@@ -282,7 +292,7 @@ export function IntegrationCenter({ business, health, onTest, onSaved }: Integra
     try {
       await api.disconnectChannel(business.id, provider);
       await refreshChannelConnections();
-      onSaved('Channel disconnected.', false);
+      reportFeedback('Channel disconnected.', false);
     } catch {
       setValidationMessage(t("We couldn't disconnect this channel. Please try again."));
     } finally {
@@ -310,6 +320,7 @@ export function IntegrationCenter({ business, health, onTest, onSaved }: Integra
   };
 
   const updateValue = (field: IntegrationFieldDefinition, value: string) => {
+    clearFeedback();
     setValues((current) => ({ ...current, [field.key]: value }));
     setValidationMessage('');
   };
@@ -342,6 +353,7 @@ export function IntegrationCenter({ business, health, onTest, onSaved }: Integra
       return false;
     }
 
+    clearFeedback();
     setSavingKey(provider.key);
     setValidationMessage('');
     try {
@@ -359,7 +371,7 @@ export function IntegrationCenter({ business, health, onTest, onSaved }: Integra
           instagramAccessToken: '',
         }));
 
-        onSaved('Instagram connected.', false);
+        reportFeedback('Instagram connected.', false);
         return true;
       }
 
@@ -377,7 +389,7 @@ export function IntegrationCenter({ business, health, onTest, onSaved }: Integra
           whatsappAccessToken: '',
         }));
 
-        onSaved('WhatsApp connected.', false);
+        reportFeedback('WhatsApp connected.', false);
         return true;
       }
 
@@ -400,7 +412,7 @@ export function IntegrationCenter({ business, health, onTest, onSaved }: Integra
         for (const field of provider.fields) if (field.secret) next[field.key] = '';
         return next;
       });
-      onSaved('Configuration saved. Test the connection to finish.', true);
+      reportFeedback('Configuration saved. Test the connection to finish.', true, 'info');
       return true;
     } catch {
       setValidationMessage(t("We couldn't save this connection. Check the fields and try again."));
@@ -414,10 +426,13 @@ export function IntegrationCenter({ business, health, onTest, onSaved }: Integra
     <section id="channel-settings" className="card dashboard-section integration-center">
       <div className="card-header integration-center-heading">
         <div>
-          <div className="card-title">{t('Integration Center')}</div>
+          <h2 id="settings-connections-title" className="card-title" tabIndex={-1}>{t('Connections')}</h2>
           <div className="card-desc">{t('Connect the tools your business uses. OdinLink verifies every connection before showing it as connected.')}</div>
         </div>
       </div>
+
+      {!selectedProvider && <DashboardFeedback feedback={feedback} saving={Boolean(savingKey)} />}
+      {(channelLoadState === 'error' || calendarLoadState === 'error') && <div className="settings-load-error" role="alert"><strong>{t('Connection status unavailable')}</strong><p>{t('Saved connections could not be checked. Current connection status is unknown.')}</p></div>}
 
       {!selectedProvider ? (
         <div className="integration-card-grid" aria-label={t('Available integrations')}>
@@ -432,6 +447,7 @@ export function IntegrationCenter({ business, health, onTest, onSaved }: Integra
 
             const selfService =
               calendarSelfService || channelSelfService;
+            const loadState = calendarSelfService ? calendarLoadState : channelLoadState;
 
             const connection = calendarSelfService
               ? calendarConnection
@@ -461,9 +477,9 @@ export function IntegrationCenter({ business, health, onTest, onSaved }: Integra
                   <div><h3>{provider.title}</h3><p>{t(provider.description)}</p>{unsaved && <span className="integration-unsaved-note">{t('Unsaved changes')}</span>}</div>
                 </div>
                 <div className="integration-card-footer">
-                  <span className={`integration-state ${selfService ? (connected ? 'connected' : needsReconnect ? 'attention' : 'disconnected') : state.tone}`} role="status">
-                    <StatusDot status={selfService ? (connected ? 'connected' : needsReconnect ? 'attention' : 'disconnected') : state.tone} />
-                    {selfService ? t(connected ? 'Connected' : needsReconnect ? 'Needs Reconnection' : 'Disconnected') : t(state.label)}
+                  <span className={`integration-state ${selfService ? (loadState === 'loading' ? 'checking' : loadState === 'error' ? 'unknown' : connected ? 'connected' : needsReconnect ? 'attention' : 'disconnected') : state.tone}`} role="status" translate="no">
+                    <StatusDot status={selfService ? (loadState === 'loading' ? 'checking' : loadState === 'error' ? 'unknown' : connected ? 'connected' : needsReconnect ? 'attention' : 'disconnected') : state.tone} />
+                    {selfService ? t(loadState === 'loading' ? 'Loading…' : loadState === 'error' ? 'Unavailable' : connected ? 'Connected' : needsReconnect ? 'Needs Reconnection' : 'Disconnected') : t(state.label)}
                   </span>
                   {selfService ? <div className="integration-card-actions">
                     {calendarSelfService ? (
@@ -561,7 +577,7 @@ export function IntegrationCenter({ business, health, onTest, onSaved }: Integra
         </div>
       ) : (
         <div className="integration-detail">
-          <button className="integration-back" type="button" onClick={() => setSelectedKey(null)}>← {t('All integrations')}</button>
+          <button className="integration-back" type="button" onClick={() => setSelectedKey(null)}><span className="integration-back-arrow" aria-hidden="true">←</span> {t('All integrations')}</button>
           <div className="integration-detail-heading">
             <div className="integration-card-icon"><ChannelIcon channel={selectedProvider.key} /></div>
             <div><h3>{selectedProvider.title}</h3><p>{t(selectedProvider.description)}</p></div>
@@ -613,6 +629,7 @@ export function IntegrationCenter({ business, health, onTest, onSaved }: Integra
               onGuided={() => { setMode('wizard'); setWizardStep(0); }}
             />
           )}
+          <DashboardFeedback feedback={feedback} saving={Boolean(savingKey)} />
         </div>
       )}
     </section>
@@ -634,7 +651,7 @@ function ManageIntegration({ provider, health, checking, savedAwaitingVerificati
   return (
     <div className="integration-manage-panel">
       <div className={`integration-status-panel ${state.tone}`}>
-        <div><span className={`integration-state ${state.tone}`} role="status"><StatusDot status={state.tone} />{t(state.label)}</span><p>{t(savedAwaitingVerification ? 'Configuration saved, but this connection has not been verified yet.' : health?.detail || 'Complete setup to use this integration.')}</p></div>
+        <div><span className={`integration-state ${state.tone}`} role="status" translate="no"><StatusDot status={state.tone} />{t(state.label)}</span><p>{t(savedAwaitingVerification ? 'Configuration saved, but this connection has not been verified yet.' : health?.detail || 'Complete setup to use this integration.')}</p></div>
         <div className="integration-last-check">{health?.lastCheckedAt ? `${t('Last verified')}: ${formatDate(health.lastCheckedAt, { dateStyle: 'medium', timeStyle: 'short' })}` : t('Not verified yet')}</div>
       </div>
       <div className="integration-manage-actions">
@@ -703,7 +720,7 @@ export function SetupWizard({ provider, values, health, step, saving, checking, 
         <div className="wizard-step wizard-verify-step">
           <span className="wizard-eyebrow">{t('Verify connection')}</span><h4>{t('Test the connection')}</h4>
           <p>{t('OdinLink will contact the provider and verify the saved configuration before showing Connected.')}</p>
-          <span className={`integration-state ${state.tone}`} role="status"><StatusDot status={state.tone} />{t(state.label)}</span>
+          <span className={`integration-state ${state.tone}`} role="status" translate="no"><StatusDot status={state.tone} />{t(state.label)}</span>
           {state.tone === 'error' && <p className="wizard-safe-error">{t("We couldn't verify this connection. Check that the IDs and access token belong to the same provider account.")}</p>}
           <button className="btn btn-primary" type="button" onClick={onTest} disabled={checking}>{checking ? t('Checking…') : t('Test connection')}</button>
         </div>
@@ -786,8 +803,8 @@ function IntegrationField({ field, value, t, onChange }: {
   return (
     <div className="integration-field">
       <label className="form-label" htmlFor={id}>{t(field.label)}{field.optional ? ` · ${t('Optional')}` : ''}</label>
-      <input id={id} className="form-input mono" type={field.secret ? 'password' : 'text'} value={value} autoComplete="off" placeholder={field.secret ? '••••••••••••••••' : ''} onChange={(event) => onChange(event.target.value)} />
-      {field.secret && <div className="form-hint secret-note">{t('Leave blank to keep the existing credential.')}</div>}
+      <input id={id} className="form-input mono" type={field.secret ? 'password' : 'text'} value={value} dir="ltr" aria-describedby={field.secret ? `${id}-retention` : undefined} autoComplete="off" placeholder={field.secret ? '••••••••••••••••' : ''} onChange={(event) => onChange(event.target.value)} />
+      {field.secret && <div id={`${id}-retention`} className="form-hint secret-note">{t('Leave blank to keep the existing credential.')}</div>}
       <details className="integration-field-help"><summary>{t('Where do I find this?')}</summary><p>{t(field.help)}</p></details>
     </div>
   );

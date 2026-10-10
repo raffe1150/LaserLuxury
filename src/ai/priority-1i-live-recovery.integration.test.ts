@@ -1,4 +1,8 @@
 import assert from 'node:assert/strict';
+import { mock } from 'node:test';
+
+// Keep scheduling dates, pending TTLs and implicit Date reads on a controlled fixture clock.
+mock.timers.enable({ apis: ['Date'], now: new Date('2026-08-11T12:00:00+02:00') });
 
 process.env.NODE_ENV = 'test';
 const { priority1hUnifiedEngineTestBoundary: boundary } = await import('../../server');
@@ -232,3 +236,5 @@ for (const [index, negative] of ['Nej', 'Na', 'نه'].entries()) {
 }
 
 console.log('Priority 1I live-recovery real-engine integration transcripts passed');
+
+mock.timers.reset();

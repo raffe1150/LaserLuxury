@@ -30,6 +30,11 @@ function runTests() {
   }
   assert.ok(DASHBOARD_TRANSLATION_KEYS.length > 450, 'the canonical set covers the full dashboard, not only navigation');
 
+  assert.equal(translateDashboardText('en', '{count} conversations loaded · {range}', { count: '16', range: 'Recent' }), '16 conversations loaded · Recent');
+  assert.equal(translateDashboardText('de', 'Reply via {channel}…', { channel: 'Instagram' }), 'Über Instagram antworten…');
+  for (const locale of DASHBOARD_LOCALES) {
+    assert.ok(!translateDashboardText(locale, '{count} unread in loaded results', { count: 5 }).includes('{count}'));
+  }
   assert.equal(resolveDashboardLocale('sv', ['de-DE']), 'sv', 'an explicit persisted locale wins');
   assert.equal(resolveDashboardLocale(null, ['fa-IR', 'en-US']), 'fa', 'browser locale seeds the preference once');
   assert.equal(resolveDashboardLocale('pt', ['pt-BR']), 'en', 'unsupported locales fall back safely');
@@ -145,7 +150,62 @@ function runTests() {
   const dashboardStyles = readFileSync(new URL('../styles/dashboard.css', import.meta.url), 'utf8');
   assert.match(dashboardStyles, /\.mono,[\s\S]*?unicode-bidi:isolate;direction:ltr/, 'technical values stay LTR and isolated in RTL layouts');
 
+  for (const locale of DASHBOARD_LOCALES) {
+    for (const label of ['AI Assistant', 'Account', 'Manage Businesses', 'Create business', 'Connections', 'Connection health', 'Back to {destination}', 'Reports', 'Open Inbox', 'Open Bookings', 'View reports', 'Home actions', 'Conversations with customer activity today', 'How should OdinLink speak?', 'Style changes how OdinLink communicates. Your business information and booking rules still apply.', 'Business answers', 'Advanced', 'Tone adjustments', 'Custom tone guidance', 'Edit custom style', 'Save style', 'Custom instructions', 'Instructions', 'Back to assistant style', 'Used when Custom is selected. Add business facts in Business answers.', 'Add information OdinLink can use when answering customer questions.']) {
+      const translated = translateDashboardText(locale, label, { destination: 'Home' });
+      assert.ok(translated.length > 0);
+      if (locale !== 'en') assert.notEqual(translated, label.replace('{destination}', 'Home'));
+    }
+  }
+
   console.log('Dashboard localization tests passed.');
 }
 
 runTests();
+
+for(const locale of DASHBOARD_LOCALES){
+  for(const label of ['Business','Settings setup','Issues','Business alerts','Cancellation policy']){
+    assert.ok(translateDashboardText(locale,label));
+    if(locale!=='en')assert.notEqual(translateDashboardText(locale,label),label);
+  }
+  assert.doesNotMatch(translateDashboardText(locale,'Open {destination}',{destination:translateDashboardText(locale,'Business')}),/\{destination\}/);
+}
+
+for(const locale of ['sv','de','es','fa','ar'] as const)for(const key of ['Save instructions','Save alert destination','Optional style adjustments and custom instructions.','Business information, services and working hours are saved together.'])assert.notEqual(translateDashboardText(locale,key),key,`Phase 5 copy is translated: ${locale}/${key}`);
+
+// RC-02: these Knowledge labels previously fell outside the canonical key set.
+const knowledgeInterfaceKeys = [
+  'sources', 'Add knowledge',
+  'Use manual text for policies, FAQs, procedures and other business information.',
+  'Manual text', 'Title', 'Content', 'Example: Cancellation policy',
+  'Write the information the assistant should know...',
+] as const;
+for (const key of knowledgeInterfaceKeys) {
+  assert.ok(DASHBOARD_TRANSLATION_KEYS.includes(key), `Knowledge key is canonical: ${key}`);
+  assert.equal(translateDashboardText('en', key), key, 'English remains the source text');
+  for (const locale of ['sv', 'de', 'es', 'fa', 'ar'] as const) {
+    const translated = translateDashboardText(locale, key);
+    assert.notEqual(translated, key, `${locale}/${key} has no English fallback`);
+    assert.ok(translated.trim().length > 0);
+    assert.equal(dashboardDirection(locale), locale === 'fa' || locale === 'ar' ? 'rtl' : 'ltr');
+  }
+}
+
+// RC-02b: every literal Knowledge UI label, including shared feedback, resolves.
+const knowledgePanelSource = readFileSync(new URL('../components/dashboard/KnowledgePanel.tsx', import.meta.url), 'utf8');
+const knowledgeRemainingKeys = ['Knowledge library', 'Information currently available to this business AI.', 'Loading...', 'Refresh', 'No Knowledge added yet', 'Add your first business policy, FAQ or procedure using the form.', 'Delete "{title}" from Knowledge?'];
+const knowledgeVisibleKeys = [...new Set([
+  ...Array.from(knowledgePanelSource.matchAll(/\bt\(\s*'([^']+)'/g), match => match[1]),
+  ...knowledgeRemainingKeys, 'Knowledge added', 'Knowledge deleted', 'Done', 'Needs attention', 'Adding...', 'Deleting...',
+  'Could not load Knowledge sources', 'Could not add Knowledge', 'Could not delete Knowledge',
+])];
+for (const key of knowledgeVisibleKeys) {
+  assert.equal(translateDashboardText('en', key), key);
+  for (const locale of ['sv', 'de', 'es', 'fa', 'ar'] as const) {
+    assert.ok(DASHBOARD_TRANSLATION_KEYS.includes(key), `Knowledge UI key is canonical: ${key}`);
+    assert.notEqual(translateDashboardText(locale, key), key, `${locale}: no Knowledge UI fallback for ${key}`);
+  }
+}
+for (const title of ['1234567', '  {title} "$&" سیاست ١٣  ', 'Customer\nsource']) {
+  assert.equal(translateDashboardText('en', 'Delete "{title}" from Knowledge?').replace('{title}', () => title), `Delete "${title}" from Knowledge?`, 'confirmation preserves raw titles and English bytes');
+}

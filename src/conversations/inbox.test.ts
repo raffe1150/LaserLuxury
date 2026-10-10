@@ -225,6 +225,9 @@ assert.match(panelMarkup, /Active/);
 assert.match(panelMarkup, /Booked/);
 assert.match(panelMarkup, /Loading conversations/);
 assert.match(panelMarkup, /conversations loaded · Recent/);
+assert.match(panelMarkup, /conversation-filter-label[^>]*>Channel/);
+assert.match(panelMarkup, /conversation-filter-label[^>]*>Activity/);
+assert.match(panelMarkup, /conversation-filter-label[^>]*>Status/);
 
 const panelSource = readFileSync(new URL('../components/dashboard/ConversationsPanel.tsx', import.meta.url), 'utf8');
 const dashboardSource = readFileSync(new URL('../pages/dashboard.tsx', import.meta.url), 'utf8');
@@ -238,7 +241,7 @@ assert.match(panelSource, /requestId !== threadRequest\.current/);
 assert.match(panelSource, /status: activeStatus/);
 assert.match(panelSource, /activeStatus, activeRange/);
 assert.match(panelSource, /No conversations found/);
-assert.match(panelSource, /conversations loaded · \{activeRangeLabel\}/);
+assert.match(panelSource, /\{count\} conversations loaded · \{range\}/);
 assert.doesNotMatch(panelSource, /\{total\} conversations<\/span>/);
 assert.match(panelSource, /Inbox unavailable/);
 assert.match(panelSource, /Thread unavailable/);
@@ -253,4 +256,10 @@ assert.match(serverSource, /normalizeConversationStatusFilter\(req\.query\.statu
 assert.match(serverSource, /conversationMatchesStatusFilter\(conversation\.status, statusFilter\)/);
 assert.match(apiSource, /query\.set\('status', options\.status\)/);
 
+assert.match(panelSource, /htmlFor=\{`conversation-reply-\$\{businessId\}`\}/);
+assert.match(panelSource, /maxLength=\{4000\}/);
+assert.match(panelSource, /event.key === 'Enter' && !event.shiftKey/);
+assert.match(panelSource, /aria-pressed=\{conversation.id === selectedId\}/);
+assert.match(panelSource, /role="region" aria-label=\{t\("Messages"\)\}/);
+assert.match(panelSource, /dir="auto" translate="no">\{message.text\}/);
 console.log('Conversations inbox pagination, tenant isolation, filtering, and UX-state tests passed.');

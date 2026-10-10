@@ -8,6 +8,7 @@ import { resolveAnalyticsWindow } from '../../../analytics/queries/windows';
 import {
   AnalyticsDashboardView,
   AnalyticsError,
+  AnalyticsHeader,
   AnalyticsLoading,
 } from './AnalyticsPage';
 import {
@@ -182,6 +183,19 @@ async function runTests(): Promise<void> {
     api.getBusinessAnalyticsSummary = originalSummary;
   }
 
+  const customHeader = renderToStaticMarkup(<AnalyticsHeader title="Reports" preset="custom"
+    customStartDate="2026-08-01" customEndDate="2026-08-23"
+    onPresetChange={() => undefined} onCustomStartDateChange={() => undefined} onCustomEndDateChange={() => undefined}
+    backAction={<button type="button">Back to Home</button>} />);
+  assert.match(customHeader, /<h1 id="analytics-title">Reports<\/h1>/);
+  assert.match(customHeader, /Back to Home/);
+  assert.match(customHeader, /<label><span>Custom start date<\/span><input type="date" dir="ltr" value="2026-08-01"/);
+  assert.match(customHeader, /<label><span>Custom end date<\/span><input type="date" dir="ltr" value="2026-08-23"/);
+  assert.match(customHeader, /2026-08-01 – 2026-08-23/);
+  const mixedValue = structuredClone(data);
+  mixedValue.revenue.estimatedRevenueFromKnownPrices = [{currency: 'EUR', amount: 50}, {currency: 'SEK', amount: 100}];
+  assert.match(render(mixedValue), /<bdi class="currency-bucket" dir="auto">€50<\/bdi> \+ <bdi class="currency-bucket" dir="auto">SEK\u00a0100<\/bdi>/,
+    'Partial coverage preserves both currency buckets, formatting and order');
   const markup = render(data);
   for (const label of [
     'New conversations', 'Completed bookings', 'Estimated booking value',
@@ -217,15 +231,20 @@ async function runTests(): Promise<void> {
   assert.match(channelMarkup, /Where bookings come from/);
   assert.match(channelMarkup, /Channel[\s\S]*Conversations[\s\S]*Completed[\s\S]*Conversion[\s\S]*Needs attention/);
   assert.match(channelMarkup, /Telegram/);
-  assert.match(channelMarkup, /Telegram[\s\S]*?<strong role="cell">—<\/strong>/);
+  assert.match(channelMarkup, /class="analytics-table-scroll" role="region" tabindex="0" aria-label="Channel performance"/);
+  assert.equal((channelMarkup.match(/role="columnheader"/g) || []).length, 5);
+  assert.match(channelMarkup, /Scroll horizontally to see all columns/);
+  assert.match(channelMarkup, /Telegram[\s\S]*?<strong role="cell" dir="ltr" translate="no">—<\/strong>/);
   const completeChannelMarkup = renderToStaticMarkup(<AnalyticsDashboardView data={complete} initialTab="channels" />);
-  assert.match(completeChannelMarkup, /Telegram[\s\S]*?<strong role="cell">1<\/strong>/);
+  assert.match(completeChannelMarkup, /Telegram[\s\S]*?<strong role="cell" dir="ltr" translate="no">1<\/strong>/);
   const serviceMarkup = renderToStaticMarkup(<AnalyticsDashboardView data={data} initialTab="services" />);
   assert.match(serviceMarkup, /What customers book/);
   assert.match(serviceMarkup, /Service[\s\S]*Demand[\s\S]*Started[\s\S]*Completed[\s\S]*Conversion/);
   assert.match(serviceMarkup, /Consultation/);
-  assert.match(serviceMarkup, /Consultation[\s\S]*?<strong role="cell">—<\/strong>[\s\S]*?<strong role="cell">—<\/strong>/);
-  assert.match(serviceMarkup, /does not currently attribute known-price estimates by service/);
+  assert.match(serviceMarkup, /class="analytics-table-scroll" role="region" tabindex="0" aria-label="Service performance"/);
+  assert.equal((serviceMarkup.match(/role="columnheader"/g) || []).length, 5);
+  assert.match(serviceMarkup, /Consultation[\s\S]*?<strong role="cell" dir="ltr" translate="no">—<\/strong>[\s\S]*?<strong role="cell" dir="ltr" translate="no">—<\/strong>/);
+  assert.match(serviceMarkup, /Estimated booking value is not available by service/);
 
   const backendRate = structuredClone(data);
   backendRate.funnel.bookingConversionRate = 0.37;
@@ -253,7 +272,7 @@ async function runTests(): Promise<void> {
   unavailable.dataQuality.status = 'unavailable';
   unavailable.revenue.coverage = 'unavailable';
   assert.match(render(unavailable), /Data unavailable/);
-  assert.match(render(unavailable), /No zero-value performance claim is being made/);
+  assert.match(render(unavailable), /Unavailable values are shown as —, not zero/);
 
   const empty = analyticsFixture({
     events: [], appointments: [], services: [], eventsTruncated: false,

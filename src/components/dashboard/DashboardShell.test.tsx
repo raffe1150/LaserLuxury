@@ -1,131 +1,62 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { renderToStaticMarkup } from 'react-dom/server';
-import DashboardShell, {
-  getMobileActiveSection,
-  getDashboardSectionScrollTop,
-  resetDashboardContentScroll,
-  resolveActiveDashboardSection,
-  SCROLL_TO_TOP_THRESHOLD,
-  scrollDashboardToTop,
-  scrollDashboardToSection,
-  shouldShowScrollToTop,
-  type DashboardSectionId,
-} from './DashboardShell';
+import DashboardShell, { SCROLL_TO_TOP_THRESHOLD, scrollDashboardToTop, shouldShowScrollToTop } from './DashboardShell';
+import { PRIMARY_DESTINATIONS, type DashboardNavigation } from './dashboard-navigation';
 
-function renderShell(activeSection: DashboardSectionId, notificationUnreadCount = 0): string {
-  return renderToStaticMarkup(
-    <DashboardShell
-      title="Dashboard"
-      initialActiveSection={activeSection}
-      notificationUnreadCount={notificationUnreadCount}
-      onNavigate={() => undefined}
-    >
-      <section id="overview">Dashboard</section>
-    </DashboardShell>,
-  );
+function renderShell(navigation: DashboardNavigation, unread = 0) {
+  return renderToStaticMarkup(<DashboardShell title="Dashboard" navigation={navigation} notificationUnreadCount={unread}
+    businesses={[{ id: '7', name: 'Seven' }, { id: '8', name: 'Eight' }]} selectedBusinessId="8"
+    onWorkspaceNavigate={() => undefined} onAddBusiness={() => undefined} onNavigate={() => undefined} onSignOut={() => undefined}>
+    <section id="workspace-home">Home</section>
+  </DashboardShell>);
 }
 
-function assertOnlyDesktopSectionIsCurrent(markup: string, sectionId: DashboardSectionId) {
-  assert.match(markup, new RegExp(`href="#${sectionId}" aria-current="page"`));
-
-  const currentItems = markup.match(/aria-current="page"/g) || [];
-  assert.equal(currentItems.length, 2, 'one desktop and one mobile item should be current');
+for (const destination of PRIMARY_DESTINATIONS) {
+  const markup = renderShell({ primary: destination.id });
+  const desktop = markup.match(/<nav class="sidebar-nav"[\s\S]*?<\/nav>/)![0];
+  const mobile = markup.match(/<nav class="mobile-bottom-nav"[\s\S]*?<\/nav>/)![0];
+  for (const nav of [desktop, mobile]) {
+    assert.equal((nav.match(/<a /g) || []).length, 5);
+    for (const item of PRIMARY_DESTINATIONS) assert.match(nav, new RegExp(`href="#workspace-${item.id}"`));
+    assert.equal((nav.match(/aria-current="page"/g) || []).length, 1);
+    assert.match(nav, new RegExp(`href="#workspace-${destination.id}"[^>]*aria-current="page"`));
+  }
+  assert.match(markup, /<option value="8"[^>]*selected=""/);
+  assert.match(markup, />Account<\/summary>/);
+  assert.match(markup, /Manage Businesses/);
+  assert.match(markup, /Add Business/);
+  assert.match(markup, /Sign out/);
+  assert.match(markup, /aria-label="Dashboard language"/);
+  assert.doesNotMatch(markup, /Usage|Usage Statistics|Plan|Billing|credits/i);
 }
-
-function runTests() {
-  const dashboardCss = readFileSync(new URL('../../styles/dashboard.css', import.meta.url), 'utf8');
-  const shellSource = readFileSync(new URL('./DashboardShell.tsx', import.meta.url), 'utf8');
-  const mainRule = dashboardCss.match(/\/\* ── MAIN ── \*\/\s*\.main\{([\s\S]*?)\}/)?.[1] || '';
-  const desktopTopbarRule = dashboardCss.match(/\/\* TOP BAR \*\/\s*\.topbar\{([\s\S]*?)\}/)?.[1] || '';
-  const contentRule = dashboardCss.match(/\/\* CONTENT \*\/\s*\.content\{([\s\S]*?)\}/)?.[1] || '';
-  const pageRule = dashboardCss.match(/\.dashboard-page\{([\s\S]*?)\}/)?.[1] || '';
-  assert.match(mainRule, /display:grid/);
-  assert.match(mainRule, /grid-template-rows:auto minmax\(0,1fr\)/);
-  assert.match(desktopTopbarRule, /position:relative/);
-  assert.doesNotMatch(desktopTopbarRule, /position:sticky/);
-  assert.match(desktopTopbarRule, /z-index:20/);
-  assert.match(desktopTopbarRule, /background:rgba\(6,10,7,\.94\)/);
-  assert.match(contentRule, /min-height:0/);
-  assert.match(contentRule, /overflow-y:auto/);
-  assert.match(pageRule, /height:100dvh/);
-  assert.ok(
-    shellSource.indexOf('<div className="topbar">') < shellSource.indexOf('<div className="content"'),
-    'the non-scrolling topbar row must precede the content scroll row',
-  );
-  assert.match(shellSource, /const content = contentRef\.current/);
-  assert.match(shellSource, /className="content" ref=\{contentRef\}/);
-  assert.match(shellSource, /scrollDashboardToSection\(/);
-  assert.doesNotMatch(
-    shellSource.match(/const updateNavigationState = \(\) => \{([\s\S]*?)\n    \};/)?.[1] || '',
-    /\.scrollTo\(|\.scrollIntoView\(/,
-    'scroll-spy may update active state but must never change scroll position',
-  );
-
-  const usageMarkup = renderShell('usage-statistics');
-  assertOnlyDesktopSectionIsCurrent(usageMarkup, 'usage-statistics');
-  assert.doesNotMatch(usageMarkup, /href="#notification-center" aria-current="page"/);
-  assert.match(usageMarkup, /href="#businesses"[^>]*aria-current="page"/);
-
-  const notificationsMarkup = renderShell('notification-center');
-  assertOnlyDesktopSectionIsCurrent(notificationsMarkup, 'notification-center');
-  assert.doesNotMatch(notificationsMarkup, /href="#usage-statistics" aria-current="page"/);
-
-  assert.notEqual(usageMarkup, notificationsMarkup, 'changing sections must update aria-current');
-  const notificationsWithBadge = renderShell('notification-center', 7);
-  assert.match(notificationsWithBadge, /aria-label="7 unread notifications"/);
-  assert.match(notificationsWithBadge, />7<\/span>/);
-  assert.doesNotMatch(notificationsMarkup, /unread notifications/);
-  assert.equal(getMobileActiveSection('usage-statistics'), 'businesses');
-  assert.equal(getMobileActiveSection('notification-center'), 'businesses');
-  assert.doesNotMatch(notificationsMarkup, /href="#activity"|>Activity<\/span>/);
-
-  assert.equal(
-    resolveActiveDashboardSection([
-      { id: 'notification-center', top: 120 },
-      { id: 'usage-statistics', top: 180 },
-    ], 220),
-    'usage-statistics',
-    'the geometrically current section must win regardless of navigation-array order',
-  );
-  assert.equal(
-    resolveActiveDashboardSection([
-      { id: 'notification-center', top: 180 },
-      { id: 'usage-statistics', top: 320 },
-    ], 220),
-    'notification-center',
-  );
-
-  assert.doesNotMatch(usageMarkup, /aria-label="Back to top"/);
-  assert.equal(shouldShowScrollToTop(SCROLL_TO_TOP_THRESHOLD - 1), false);
-  assert.equal(shouldShowScrollToTop(SCROLL_TO_TOP_THRESHOLD), true);
-
-  const scrollCalls: ScrollToOptions[] = [];
-  const scroller = { scrollTo: (options: ScrollToOptions) => scrollCalls.push(options) };
-  scrollDashboardToTop(scroller, false);
-  scrollDashboardToTop(scroller, true);
-  assert.deepEqual(scrollCalls, [
-    { top: 0, behavior: 'smooth' },
-    { top: 0, behavior: 'auto' },
-  ]);
-
-  assert.equal(getDashboardSectionScrollTop('overview', 4200, 64, -3000, 24), 0);
-  assert.equal(getDashboardSectionScrollTop('conversations', 5480, 64, -4268, 24), 1124);
-
-  const explicitNavigationCalls: ScrollToOptions[] = [];
-  const explicitNavigationScroller = {
-    scrollTop: 5480,
-    scrollTo: (options: ScrollToOptions) => explicitNavigationCalls.push(options),
-  };
-  scrollDashboardToSection(explicitNavigationScroller, 'conversations', 64, -4268, 24);
-  resetDashboardContentScroll(explicitNavigationScroller);
-  assert.deepEqual(explicitNavigationCalls, [
-    { top: 1124, behavior: 'auto' },
-    { top: 0, behavior: 'auto' },
-  ]);
-  assert.match(shellSource, /onChange=\{\(event\) => handleBusinessSelection\(event\.target\.value\)\}/);
-
-  console.log('Dashboard shell navigation and scroll tests passed.');
-}
-
-runTests();
+const settingsMarkup = renderShell({ primary: 'settings', secondary: 'notification-center' }, 7);
+assert.match(settingsMarkup, /aria-label="7 unread notifications"/);
+assert.match(settingsMarkup, /href="#workspace-settings" aria-current="page"/);
+assert.doesNotMatch(settingsMarkup, /href="#usage-statistics"|href="#health"/);
+const shell = readFileSync(new URL('./DashboardShell.tsx', import.meta.url), 'utf8');
+const focusRevealStart = shell.indexOf('  const revealFocusedFormControl =');
+const focusRevealEnd = shell.indexOf('\n  const closeAccount', focusRevealStart);
+assert.ok(focusRevealStart > 0 && focusRevealEnd > focusRevealStart);
+const focusReveal = shell.slice(focusRevealStart, focusRevealEnd);
+assert.match(focusReveal, /closest\('#workspace-ai-assistant, #workspace-settings'\)/);
+assert.match(focusReveal, /behavior: 'instant'/);
+assert.doesNotMatch(focusReveal, /\.focus\(|preventDefault|api\./, 'reveal cannot change focus order or write data');
+assert.doesNotMatch(shell.slice(0, focusRevealStart) + shell.slice(focusRevealEnd),
+  /getBoundingClientRect|resolveActiveDashboardSection|setActiveSection/, 'navigation remains independent of scroll geometry');
+assert.match(shell, /target\.closest\('\[hidden\]'\)/);
+assert.match(shell, /className="topbar-title" translate="no"/,'React owns the translated dynamic title; the legacy DOM translator must not overwrite it');
+assert.match(shell, /onChange=\{\(event\) => handleBusinessSelection\(event\.target\.value\)\}/);
+assert.ok(shell.indexOf('<div className="topbar">') < shell.indexOf('<div className="content"'));
+const css = readFileSync(new URL('../../styles/dashboard.css', import.meta.url), 'utf8');
+assert.match(css, /\.dashboard-page \[hidden\]\{display:none !important;/);
+assert.match(css, /grid-template-areas:"brand account" "title account" "business business"/);
+assert.match(css, /grid-template-columns:repeat\(5,minmax\(0,1fr\)\)/);
+assert.equal(shouldShowScrollToTop(SCROLL_TO_TOP_THRESHOLD - 1), false);
+assert.equal(shouldShowScrollToTop(SCROLL_TO_TOP_THRESHOLD), true);
+const calls: ScrollToOptions[] = [];
+const scroller = { scrollTo: (options: ScrollToOptions) => calls.push(options) };
+scrollDashboardToTop(scroller, false);
+scrollDashboardToTop(scroller, true);
+assert.deepEqual(calls, [{ top: 0, behavior: 'smooth' }, { top: 0, behavior: 'auto' }]);
+console.log('Five-destination shell and account tests passed.');

@@ -1,16 +1,16 @@
 import assert from 'node:assert/strict';
-import { parseTimeConstraint } from './booking-intelligence';
+import { parseTimeConstraint, type NormalizedTimeConstraint } from './booking-intelligence';
 
-const after = (startMinutes: number) => ({
+const after = (startMinutes: number): NormalizedTimeConstraint => ({
   kind: 'after', startMinutes, startInclusive: false, endInclusive: false, confidence: 'high',
 });
-const before = (endMinutes: number) => ({
+const before = (endMinutes: number): NormalizedTimeConstraint => ({
   kind: 'before', endMinutes, endInclusive: false, confidence: 'high',
 });
-const between = (startMinutes: number, endMinutes: number) => ({
+const between = (startMinutes: number, endMinutes: number): NormalizedTimeConstraint => ({
   kind: 'between', startMinutes, endMinutes, startInclusive: true, endInclusive: true, confidence: 'high',
 });
-const exact = (startMinutes: number) => ({
+const exact = (startMinutes: number): NormalizedTimeConstraint => ({
   kind: 'exact', startMinutes, startInclusive: true, endInclusive: true, confidence: 'high',
 });
 

@@ -3,7 +3,8 @@ import { DEFAULT_BUSINESS_TONE_CONFIG } from '../../ai/tone-controls';
 import type { Business } from '../../types/dashboard';
 import { createToneSaveCoordinator } from './tone-save';
 
-const tone = { ...DEFAULT_BUSINESS_TONE_CONFIG, tonePreset: 'friendly' as const };
+const originalTone = {...DEFAULT_BUSINESS_TONE_CONFIG,tonePreset:'custom' as const,responseLength:'short' as const,formality:'casual' as const,emojiUsage:'light' as const,customToneInstructions:'Saved custom guidance — آرام'};
+const tone = {...originalTone,tonePreset:'friendly' as const};
 const business = (id: string): Business => ({ id, name: `Business ${id}`, toneConfig: tone });
 const deferred = <T>() => {
   let resolve!: (value: T) => void;
@@ -15,12 +16,13 @@ const deferred = <T>() => {
 async function run() {
   const request = deferred<Business>();
   let persistCalls = 0;
+  let persistedTone: unknown;
   const savingStates: boolean[] = [];
   const persisted: Business[] = [];
   const notices: string[] = [];
   const diagnostics: unknown[] = [];
   const coordinator = createToneSaveCoordinator({
-    persist: async () => { persistCalls += 1; return request.promise; },
+    persist: async (_id, nextTone) => { persistCalls += 1; persistedTone = nextTone; return request.promise; },
     onSavingChange: (value) => savingStates.push(value),
     onPersisted: (value) => persisted.push(value),
     onSuccess: () => notices.push('AI tone saved.'),
@@ -31,6 +33,7 @@ async function run() {
   coordinator.selectBusiness('7');
   const firstSave = coordinator.save('7', tone);
   assert.equal(await coordinator.save('7', tone), 'duplicate');
+  assert.deepEqual(persistedTone,{...originalTone,tonePreset:'friendly'},'a preset-only save passes all five fields unchanged apart from preset');
   assert.equal(persistCalls, 1, 'duplicate submission does not issue another request');
   request.resolve(business('7'));
   assert.equal(await firstSave, 'saved');

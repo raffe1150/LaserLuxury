@@ -44,26 +44,26 @@ if (!content.includes('let currentKeyIndex = 0;')) {
 }
 
 // Replace generateContentWithFallback signature
-const oldSig = \`async function generateContentWithFallback(ai: GoogleGenAI, options: { messages: any[], tools?: any[], systemInstruction?: string, model?: string }, retries = 3, retryDelay = 2000): Promise<any> {\`;
-const newSig = \`async function generateContentWithFallback(aiInstance: GoogleGenAI, options: { messages: any[], tools?: any[], systemInstruction?: string, model?: string, apiKey?: string }, retries = 3, retryDelay = 2000): Promise<any> {
+const oldSig = `async function generateContentWithFallback(ai: GoogleGenAI, options: { messages: any[], tools?: any[], systemInstruction?: string, model?: string }, retries = 3, retryDelay = 2000): Promise<any> {`;
+const newSig = `async function generateContentWithFallback(aiInstance: GoogleGenAI, options: { messages: any[], tools?: any[], systemInstruction?: string, model?: string, apiKey?: string }, retries = 3, retryDelay = 2000): Promise<any> {
   const allKeys = getApiKeys(options.apiKey);
   let activeAi = aiInstance;
-\`;
+`;
 
 if (content.includes(oldSig)) {
     content = content.replace(oldSig, newSig);
 }
 
 // Replace generateContent loop
-const oldGen = \`let response;
+const oldGen = `let response;
   try {
      response = await ai.models.generateContent(params);
   } catch(e: any) {
      console.warn("API Error in generateContentWithFallback:", String(e.message || e));
      throw e;
-  }\`;
+  }`;
 
-const newGen = \`let response;
+const newGen = `let response;
   while (true) {
       try {
          response = await activeAi.models.generateContent(params);
@@ -82,17 +82,17 @@ const newGen = \`let response;
          }
          throw e; // Give up if no other keys or different error
       }
-  }\`;
+  }`;
 
 if (content.includes(oldGen)) {
     content = content.replace(oldGen, newGen);
 }
 
 // Update invocations to include apiKey in options
-content = content.replace(/generateContentWithFallback\\(ai, \\{/g, "generateContentWithFallback(activeAi, { apiKey: typeof apiKey !== 'undefined' ? apiKey : (typeof config !== 'undefined' ? config.apiKey : undefined),");
+content = content.replace(/generateContentWithFallback\(ai, \{/g, "generateContentWithFallback(activeAi, { apiKey: typeof apiKey !== 'undefined' ? apiKey : (typeof config !== 'undefined' ? config.apiKey : undefined),");
 // But wait, the first argument is 'ai', so we need to either change it or leave it as ai.
 // Wait! I replaced it with `activeAi` in the invocation? No! In the invocation it's `ai`, so I should leave it as `ai`.
-content = content.replace(/generateContentWithFallback\\(activeAi, /g, 'generateContentWithFallback(ai, '); // rollback if messed up
-content = content.replace(/generateContentWithFallback\\(ai, \\{/g, "generateContentWithFallback(ai, { apiKey: typeof apiKey !== 'undefined' ? apiKey : (typeof config !== 'undefined' ? config.apiKey : undefined),");
+content = content.replace(/generateContentWithFallback\(activeAi, /g, 'generateContentWithFallback(ai, '); // rollback if messed up
+content = content.replace(/generateContentWithFallback\(ai, \{/g, "generateContentWithFallback(ai, { apiKey: typeof apiKey !== 'undefined' ? apiKey : (typeof config !== 'undefined' ? config.apiKey : undefined),");
 
 fs.writeFileSync("server.ts", content);

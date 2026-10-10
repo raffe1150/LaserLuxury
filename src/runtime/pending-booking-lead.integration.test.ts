@@ -243,6 +243,7 @@ test('a cleared lead shell is valid absence and is reused by the next booking', 
 });
 test('normal booking intake survives a process restart and continues the same state', async () => {
   boundary.configure({ supabaseClient: store, calendarAdapter: { getEvents: async () => [],
+    insertAppointment: async () => { throw new Error("Unexpected calendar mutation while resuming booking intake"); },
     checkSlots: () => ({ available_slots_string: '' }) }, postProcess: async () => undefined });
   const turn = (text: string) => boundary.turn({ sessionId: session, platformName: platform,
     recipientUserId: 'customer-a', text, businessConfig: config, now: new Date('2026-10-05T12:00:00+02:00') });

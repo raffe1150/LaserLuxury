@@ -69,6 +69,9 @@ const markup = renderToStaticMarkup(createElement(BookingsPanel, { businessId: '
 assert.match(markup, /Booking summary/);
 assert.match(markup, /Search bookings/);
 assert.match(markup, /Loading bookings/);
+assert.doesNotMatch(markup, /<strong dir="ltr">0<\/strong>/, 'loading summary is unknown, not confirmed zero');
+assert.equal((markup.match(/<strong dir="ltr">—<\/strong>/g) || []).length, 4);
+assert.equal((markup.match(/aria-pressed="(?:true|false)"/g) || []).length, 8, 'five views and three clickable summary values');
 assert.doesNotMatch(markup, /today-confirmed|internal|appointment id/i);
 
 const panelSource = readFileSync(new URL('../components/dashboard/BookingsPanel.tsx', import.meta.url), 'utf8');
@@ -99,4 +102,10 @@ assert.match(serverSource, /\.limit\(pagedResponseRequested \? 2001 : limit\)/);
 assert.match(serverSource, /return 'unknown'/);
 assert.match(serverSource, /if \(!pagedResponseRequested\)[\s\S]*?json\(bookings\)/);
 
+assert.match(panelSource, /new ResizeObserver/);
+assert.match(panelSource, /entry.contentRect.width < 760/);
+assert.match(panelSource, /hidden=\{singlePane && detailOpen && Boolean\(selected\)\}/);
+assert.match(panelSource, /hidden=\{singlePane && !detailOpen\}/);
+assert.match(panelSource, /aria-pressed=\{booking.id === selectedId\}/);
+assert.doesNotMatch(panelSource, /id: 'today'/, 'Today remains a summary, not a view');
 console.log('Bookings workspace filtering, grouping, pagination, privacy, and UX-state tests passed.');

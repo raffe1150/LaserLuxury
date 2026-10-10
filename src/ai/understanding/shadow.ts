@@ -160,7 +160,7 @@ export function createStructuredUnderstandingShadowObserver(
     try {
       const output = await boundedInterpret(options.provider, observation.providerInput, options.timeoutMs);
       const decoded = decodeCanonicalStructuredUnderstanding(output);
-      if (!decoded.ok) {
+      if (decoded.ok === false) {
         const category = decoded.issues.some((issue) => issue.code === 'invalid_type' && issue.path === '$')
           ? 'malformed_response'
           : 'schema_validation_failed';

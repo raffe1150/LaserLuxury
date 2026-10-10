@@ -46,6 +46,10 @@ type RouterOptions = {
 
 const callbackProviders = new Set<ChannelProvider>(['instagram', 'messenger']);
 
+function isAuthorizationProvider(value: unknown): value is 'instagram' | 'messenger' | 'whatsapp' {
+  return value === 'instagram' || value === 'messenger' || value === 'whatsapp';
+}
+
 function asyncRoute(handler: (request: Request, response: Response, next: NextFunction) => Promise<void>) {
   return (request: Request, response: Response, next: NextFunction) => {
     void handler(request, response, next).catch(next);
@@ -179,7 +183,7 @@ export function createChannelConnectionsRouter(options: RouterOptions): express.
 
   router.post('/:businessId/:provider/authorize', options.requireAuth, manage, asyncRoute(async (request, response) => {
     const provider = request.params.provider;
-    if (!isChannelProvider(provider)) {
+    if (!isAuthorizationProvider(provider)) {
       response.status(400).json({ error: 'unsupported_provider' });
       return;
     }

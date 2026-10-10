@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { buildRecentConversationHistory } from './conversation-context-window';
 import {
   classifyMessagingIntent,
   detectExplicitLanguageSwitch,
@@ -64,15 +65,18 @@ assert.ok(whatsappStatePlan >= 0 && whatsappIntent > whatsappStatePlan);
 assert.match(server, /loadPendingBooking\(chatId, "whatsapp", businessConfig, \{[\s\S]{0,100}throwOnReadFailure: true/);
 assert.match(server, /if \(!clearlyNonBookingTurn && !whatsappUnifiedAttempted\)[\s\S]{0,500}handleUnifiedBookingEngine\(/);
 assert.match(server, /whatsappIntent === "language_repair"[\s\S]{0,200}formatLanguageRepairAcknowledgement/);
-assert.match(server, /shouldReturnWhatsAppAmbiguousClarification\(chatId, whatsappIntent\)[\s\S]{0,200}formatAmbiguousBookingIntentClarification/);
+assert.match(server, /shouldReturnWhatsAppAmbiguousClarification\(chatId, whatsappIntent, textMessage\)[\s\S]{0,200}formatAmbiguousBookingIntentClarification/);
 assert.match(server, /const telegramReplyPreferences:/);
 assert.match(server, /updateTelegramReplyPreference\([\s\S]{0,300}resolveTelegramReplyPreference/);
 assert.match(server, /send:\s*async \(reply\) => \(await sendTelegramPreferredReply/);
 assert.match(server, /lastAvailabilityConstraintKey === availabilityConstraintKey/);
 assert.match(server, /isSlotListRepeatRequest\(text\)/);
 assert.match(server, /offeredSlots: slots,[\s\S]{0,500}lastAvailabilityConstraintKey: availabilityConstraintKey/);
-assert.match(server, /enumerateCandidateMinutes\([\s\S]{0,300}boundaryKind: afterMinutes !== null \? "exclusive_lower" : options\.timeBoundary\?\.kind/);
-assert.match(server, /const messages = history\.slice\(-20\)/);
+assert.match(server, /enumerateCandidateMinutes\([\s\S]{0,400}boundaryKind: afterMinutes !== null\s*\? "exclusive_lower"\s*: options\.timeBoundary\?\.kind === "approximate"\s*\? undefined\s*: options\.timeBoundary\?\.kind/);
+assert.match(server, /const messages = buildRecentConversationHistory\(history\)/);
+const history = Array.from({ length: 25 }, (_, index) => ({ role: 'user', content: `turn-${index}` }));
+assert.deepEqual(buildRecentConversationHistory(history), history.slice(-20));
+assert.equal(history.length, 25, 'context selection must not mutate the stored conversation');
 assert.match(server, /parseNormalizedTimeRange\(raw\)/);
 assert.doesNotMatch(server, /if \(voice\) \{\s*let sentAudio/);
 assert.match(server, /runWithInboundMessageClaim\([\s\S]{0,300}platform: "telegram"/);

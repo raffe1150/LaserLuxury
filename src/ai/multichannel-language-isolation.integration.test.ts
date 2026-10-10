@@ -135,7 +135,9 @@ for (const platform of platforms) {
   await new Promise((resolve) => setTimeout(resolve, 20));
   releaseOlderRead();
   const [completedOlderTurn, completedNewerTurn] = await Promise.all([olderPersianTurn, newerSwedishTurn]);
-  assert.deepEqual(completedOlderTurn.replies, [], `${platform}: reply from superseded Persian turn is suppressed`);
+  assert.ok(completedOlderTurn.replies.length > 0, `${platform}: the active operation completes before the queued continuation`);
+  assert.match(completedOlderTurn.replies.join(' '), /[\u0600-\u06ff]/u);
+  assert.doesNotMatch(completedOlderTurn.replies.join(' '), /Jag hittade|Vilken/iu);
   assert.equal(completedNewerTurn.pending?.language, 'sv', `${platform}: newer Swedish turn owns final flow state`);
   assert.equal(boundary.conversationState(overlappingSession).language, 'sv', `${platform}: newer Swedish turn owns persisted conversation language`);
   assert.match(completedNewerTurn.replies[0], /Jag hittade lediga tider|Vilken/u);

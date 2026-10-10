@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict';
+import { mock } from 'node:test';
 import { CURRENT_BOOKING_STATE_VERSION } from './booking-operation-state';
+
+// Keep scheduling dates, pending TTLs and implicit Date reads on a controlled fixture clock.
+mock.timers.enable({ apis: ['Date'], now: new Date('2026-08-16T12:00:00+02:00') });
 
 process.env.NODE_ENV = 'test';
 const { priority1hUnifiedEngineTestBoundary: boundary } = await import('../../server');
@@ -1399,3 +1403,5 @@ for (const platformName of ['telegram', 'instagram'] as const) {
   });
   assert.ok(sameCanonicalOwner.ownedSlots.some((slot: any) => localMinute(slot.start) === 11 * 60));
 }
+
+mock.timers.reset();

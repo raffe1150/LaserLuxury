@@ -455,7 +455,7 @@ for (const withPhone of [true, false]) {
 }
 
 
-test('evidence-grounded Persian phone can be adopted when deterministic parsing misses it', async (t) => {
+test('explicit Persian phone is deterministically preserved without model adoption', async (t) => {
   const message = 'نام من مینا آزمون و شماره تلفنم 0700001105 است.';
   const evidenceText = 'شماره تلفنم 0700001105';
   const evidenceStart = message.indexOf(evidenceText);
@@ -481,7 +481,7 @@ test('evidence-grounded Persian phone can be adopted when deterministic parsing 
   assert.equal(
     f.adoptionDecisions.some((decision) =>
       decision.field === 'phone' &&
-      decision.disposition === 'provider_adopted'
+      decision.disposition === 'legacy_preserved'
     ),
     true,
   );

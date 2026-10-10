@@ -11,8 +11,8 @@ const api = readFileSync(
   'utf8',
 );
 
-const shell = readFileSync(
-  new URL('./DashboardShell.tsx', import.meta.url),
+const navigation = readFileSync(
+  new URL('./dashboard-navigation.ts', import.meta.url),
   'utf8',
 );
 
@@ -22,8 +22,8 @@ const dashboard = readFileSync(
 );
 
 assert.match(
-  shell,
-  /\{\s*id:\s*'knowledge',\s*label:\s*'Knowledge'\s*\}/,
+  navigation,
+  /case 'ai-tone': case 'knowledge': case 'prompt-editor':/,
 );
 
 assert.match(
@@ -71,4 +71,13 @@ assert.match(
   /deleteKnowledgeSource:[\s\S]*?method:\s*'DELETE'/,
 );
 
+assert.match(panel,/Business answers/);
+assert.match(panel,/Add information OdinLink can use when answering customer questions/);
+assert.match(panel,/window\.confirm/);
+assert.match(panel,/if \(active\) setSources\(result\)/);
+assert.doesNotMatch(panel,/systemPrompt|updateBusiness/);
+assert.match(dashboard,/businessAnswers=\{<KnowledgePanel/);
 console.log('Knowledge dashboard wiring tests passed.');
+
+assert.match(panel, /t\('Delete "\{title\}" from Knowledge\?'\)\.replace\('\{title\}', \(\) => source\.title\)/, 'native confirmation translates only UI; source title remains verbatim');
+assert.doesNotMatch(panel, /`Delete "\$\{source\.title\}" from Knowledge\?`/, 'confirmation is no longer a hardcoded English template');

@@ -75,7 +75,16 @@ for (const [language, question, location, fields] of cases) {
       }
       for (const currency of ['SEK', 'EUR', 'USD']) assert.ok(delivered.includes(currency));
       assert.doesNotMatch(delivered, /دقيقة|دقیقه|\u2067| · /u);
-      assert.equal([...delivered.matchAll(/[\u2066\u2067]/gu)].length, [...delivered.matchAll(/\u2069/gu)].length);
+      let isolateDepth = 0;
+      for (const character of delivered) {
+        if (/[\u2066\u2067\u2068]/u.test(character)) isolateDepth++;
+        if (character === '\u2069') {
+          assert.ok(isolateDepth > 0, 'PDI must close an existing LRI, RLI or FSI');
+          isolateDepth--;
+        }
+        if (character === '\n') assert.equal(isolateDepth, 0, 'isolation must close within each paragraph');
+      }
+      assert.equal(isolateDepth, 0, 'all directional isolates must have an explicit PDI');
     });
   }
 }

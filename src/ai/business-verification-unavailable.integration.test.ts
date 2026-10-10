@@ -35,7 +35,12 @@ afterEach(() => {
   Object.assign(process.env, previousEnv);
   b.reset();
 });
-function claim(text: string, source: string, quote: string) {
+type GroundingAssessment = NonNullable<Awaited<ReturnType<NonNullable<
+  Parameters<typeof b.configure>[0]['assessBusinessSupportGrounding']
+>>>>;
+type GroundingClaim = GroundingAssessment['claims'][number];
+
+function claim(text: string, source: GroundingClaim['evidence'][number]['source'], quote: string): GroundingClaim {
   return { claim: text, candidateQuote: text, claimKind: 'OTHER', requiresBusinessEvidence: true,
     supported: true, evidence: [{ source, quote }] };
 }

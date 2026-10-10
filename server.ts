@@ -181,6 +181,7 @@ import {
   parseConversationId,
   toConversationMessage,
   type ConversationActivityRange,
+  type ConversationSourceRow,
 } from "./src/conversations/inbox";
 import {
   bookingMatchesView,
@@ -1936,6 +1937,7 @@ type OwnedOfferedSlot = {
   end: string;
   durationMinutes: number;
   service: string;
+  serviceId?: string | null;
   businessId: string;
   platform: string;
   userId: string;
@@ -2317,6 +2319,7 @@ async function createCanonicalOfferedSlots(params: {
   };
 }): Promise<{ displaySlots: string[]; ownedSlots: OwnedOfferedSlot[] }> {
   const timezone = String(params.businessConfig?.timezone || "Europe/Stockholm");
+  const catalogService = findCatalogServiceByIdentity(params.businessConfig, params.service);
   const snapshot = params.snapshot || await loadCanonicalAvailabilitySnapshot(params);
   const filteredEvents = snapshot.calendarEvents;
   const pendingEvents = snapshot.pendingEvents;
@@ -2419,6 +2422,7 @@ async function createCanonicalOfferedSlots(params: {
         slot: {
           start: validation.normalizedIso, end: validation.endIso, durationMinutes: params.durationMinutes,
           service: params.service, businessId: params.owner.businessId,
+          ...(catalogService ? { serviceId: catalogService.id } : {}),
           platform: normalizePlatformName(params.owner.platform), userId: normalizePlatformUserId(params.owner.platform, params.owner.userId),
           generatedAt, searchStartDate: params.startDate, searchEndDate: params.endDate
         }
@@ -2439,15 +2443,7 @@ async function createCanonicalOfferedSlots(params: {
   const displaySlots = ranked.map((candidate) => candidate.label);
   const ownedSlots = ranked.map((candidate) => candidate.slot);
 
-  const configuredService = (Array.isArray(params.businessConfig?.services)
-    ? params.businessConfig.services
-    : []
-  ).find((candidate: any) =>
-    normalizeBookingService(
-      String(candidate?.name || candidate?.service || candidate?.title || ""),
-      "Bokning"
-    ) === normalizeBookingService(params.service, "Bokning")
-  );
+  const configuredService = catalogService?.raw;
   const availabilityDiagnostic = {
     diagnosticMarker: "canonical_availability_snapshot_v1",
     platform: normalizePlatformName(params.owner.platform),
@@ -2598,7 +2594,11 @@ function getDailySlots(
           minMinutes: minimumMinutes,
           maxMinutes: maximumMinutes,
           boundaryMinutes: afterMinutes ?? boundaryMinutes,
-          boundaryKind: afterMinutes !== null ? "exclusive_lower" : options.timeBoundary?.kind,
+          boundaryKind: afterMinutes !== null
+            ? "exclusive_lower"
+            : options.timeBoundary?.kind === "approximate"
+              ? undefined
+              : options.timeBoundary?.kind,
           excludedMinutes,
         },
       )) {
@@ -4969,7 +4969,7 @@ const chatSessions: Record<string, any[]> = {};
 const chatLanguages: Record<string, string> = {};
 type ConversationFlowLanguageContext = {
   language: string;
-  flowType: "appointment" | "booking" | "reschedule" | "cancellation" | "availability" | "service_info";
+  flowType: "appointment" | "booking" | "booking_support" | "reschedule" | "cancellation" | "availability" | "service_info";
   createdAt: number;
   updatedAt: number;
 };
@@ -6285,6 +6285,23 @@ function isResolvedServiceSelection(text?: string): boolean {
   if (isServiceGuidanceRequest(raw)) return false;
   return /\b(?:låter bra|passar(?: mig)?|jag väljer|jag tar|sounds good|works for me|i choose|i'll take|ich nehme|passt mir|elijo|me quedo con|khube|monasebe)\b/iu.test(raw) ||
     /(?:خوبه|مناسبه|انتخاب می.?کنم|موافق|أختار|مناسب لي)/u.test(raw);
+}
+
+// Reopening the choice is distinct from asking for facts about an accepted
+// service. Only first-person uncertainty at a clause boundary releases its availability.
+function reopensBookingServiceChoice(text: string): boolean {
+  const raw = normalizeConversationText(text).toLowerCase().trim();
+  if (!raw || isResolvedServiceSelection(raw)) return false;
+  const uncertainty = [
+    /(?:^|[.!?]\s*|[,،]\s*(?:(?:but|men|aber|pero|اما|لكن)\s+)?)\b(?:i(?: am|['’]m)?\s+(?:not sure|unsure)|i\s+(?:still\s+)?(?:don't|do not)\s+know)\b.{0,60}\b(?:which|what)\b.{0,30}\b(?:service|treatment)\b/iu,
+    /(?:^|[.!?]\s*|[,،]\s*(?:(?:but|men|aber|pero|اما|لكن)\s+)?)\b(?:jag\s+(?:vet\s+(?:fortfarande\s+)?inte|är\s+osäker)|jag\s+(?:behöver|vill)\s+först\s+(?:veta|förstå))\b.{0,60}\b(?:vilken|vilka|vad)\b.{0,30}\b(?:tjänst|tjänster|behandling)\b/iu,
+    /(?:^|[.!?]\s*|[,،]\s*(?:(?:but|men|aber|pero|اما|لكن)\s+)?)\bich\s+(?:weiß\s+(?:noch\s+)?nicht|weiss\s+(?:noch\s+)?nicht|bin\s+(?:nicht sicher|unsicher))\b.{0,60}\b(?:welche|welcher|was)\b.{0,30}\b(?:behandlung|dienstleistung)\b/iu,
+    /(?:^|[.!?]\s*|[,،]\s*(?:(?:but|men|aber|pero|اما|لكن)\s+)?)\b(?:no\s+s[eé]|no\s+estoy\s+segur[oa])(?=\s|[,.;]).{0,60}\b(?:qu[eé]|cu[aá]l)(?=\s).{0,30}\b(?:servicio|tratamiento)\b/iu,
+    /(?:^|[.!?]\s*|[,،]\s*(?:(?:but|men|aber|pero|اما|لكن)\s+)?)(?:نمی.?دانم|نمی.?دونم|مطمئن نیستم).{0,60}(?:کدام|کدوم|چه).{0,30}(?:خدمت|سرویس|درمان)/u,
+    /(?:^|[.!?]\s*|[,،]\s*(?:(?:but|men|aber|pero|اما|لكن)\s+)?)(?:لا أعرف|لست متأكد).{0,60}(?:أي|ما).{0,30}(?:خدمة|علاج)/u,
+  ].some(pattern => pattern.test(raw));
+  const anotherService = /^(?:maybe|perhaps)\s+(?:an?\s+)?(?:another|different)\s+(?:service|treatment)\b|^kanske\s+(?:en\s+)?annan\s+(?:tjänst|behandling)\b|^vielleicht\s+(?:eine\s+)?andere\s+(?:behandlung|dienstleistung)\b|^(?:quiz[aá]|tal vez)\s+otr[oa]\s+(?:servicio|tratamiento)\b|^شاید\s+(?:یک\s+)?(?:خدمت|سرویس|درمان)\s+دیگر|^ربما\s+(?:خدمة|علاج)\s+(?:أخرى|آخر)/iu.test(raw);
+  return uncertainty || anotherService;
 }
 
 function formatAppointmentNameReply(appointment: any, language: string): string {
@@ -10208,7 +10225,7 @@ function findExplicitContactPhone(raw: string, allowCompactContact = false): Reg
     const after = raw.slice(Number(match.index) + match[0].length).trim();
     // A phone-only reply or an immediately labeled phone field is deliberate
     // contact input. A long numeric token elsewhere in prose is not.
-    const labeled = /(?:\b(?:phone(?:\s+number)?|mobile(?:\s+number)?|mobil(?:nummer)?|handy(?:nummer)?|telefon(?:nummer|numret)?|(?:my|mitt|min|meine?|mi)\s+(?:nummer|number|n[uú]mero)|tel[eé]fono|m[oó]vil|celular|shomare|shomaram)\b|(?:رقم\s*(?:هاتفي|الهاتف|الجوال)|هاتفي|المحمول|شماره\s*(?:تلفن|موبایل|موبایلم)|موبایلم|تلفن))\s*(?:(?:is|ist|är|es|هو|هي|است)\s*)?[:=：]?\s*$/iu.test(before);
+    const labeled = /(?:\b(?:phone(?:\s+number)?|mobile(?:\s+number)?|mobil(?:nummer)?|handy(?:nummer)?|telefon(?:nummer|numret)?|(?:my|mitt|min|meine?|mi)\s+(?:nummer|number|n[uú]mero)|tel[eé]fono|m[oó]vil|celular|shomare|shomaram)\b|(?:رقم\s*(?:هاتفي|الهاتف|الجوال)|هاتفي|المحمول|شماره\s*(?:تلفن(?:م|\s+من)?|موبایل|موبایلم)|موبایلم|تلفنم?))\s*(?:(?:is|ist|är|es|هو|هي|است)\s*)?[:=：]?\s*$/iu.test(before);
     if (labeled || (!before && /^[.!?؟]*$/u.test(after))) return match;
     // Preserve the existing compact name + phone contact form, bounded to a
     // short name and recognizable local/international phone syntax.
@@ -10340,6 +10357,25 @@ function extractNameOnly(text?: string, allowStandaloneName = true): string | nu
     const contactPayload = raw.replace(/^(?:yes|yeah|yep|sure|ja|japp|absolut|sí|si|claro|نعم|أجل|اجل|موافق|بله|آره|اره|باشه|baleh?|are|bashe)(?:\s+(?:please|tack|gärna|لطفا))?[\s،,;:!.-]*/iu, '');
     if (!/^(?:my\s+name\s+is|name\s+is|jag\s+heter|mitt\s+namn\s+är|mein\s+name\s+ist|ich\s+hei(?:ß|ss)e|me\s+llamo|mi\s+nombre\s+es|(?:نام|اسم)\s+من|esme?\s+man|esmam|namam|name\s+man|(?:(?:أنا|انا)\s+)?(?:اسمي|إسمي|اسمی|إسمی|الاسم))\s+/iu.test(contactPayload) &&
         !extractExplicitEnglishBookingName(raw)) return null;
+
+    // A localized self-introduction may end at its own explicit phone field.
+    // Keep this whole-payload boundary separate from standalone-name inference.
+    const nameWord = "[A-Za-zÅÄÖåäöÉéÜüÁáÍíÓóÚúÑñÇçŞşĞğ'-]{2,}";
+    const localizedContactPatterns = [
+      `(?:jag\\s+heter|mitt\\s+namn\\s+är)\\s+(${nameWord}(?:\\s+${nameWord}){0,2})\\s+och\\s+mitt\\s+(?:telefonnummer|mobilnummer)\\s+är`,
+      `(?:mein\\s+name\\s+ist|ich\\s+hei(?:ß|ss)e)\\s+(${nameWord}(?:\\s+${nameWord}){0,2})\\s+und\\s+meine\\s+telefonnummer\\s+ist`,
+      `(?:mi\\s+nombre\\s+es|me\\s+llamo)\\s+(${nameWord}(?:\\s+${nameWord}){0,2})\\s+y\\s+mi\\s+(?:número\\s+de\\s+teléfono|teléfono)\\s+es`,
+    ];
+    for (const pattern of localizedContactPatterns) {
+      const match = contactPayload.match(new RegExp(`^${pattern}\\s*[:=：]?\\s*(.+?)[.!?]*$`, 'iu'));
+      if (!match) continue;
+      const phoneMatch = findExplicitContactPhone(normalizeLocalizedDigits(contactPayload));
+      if (!phoneMatch || normalizeLocalizedDigits(match[2]).trim() !== phoneMatch[0].trim()) continue;
+      const words = match[1].split(/\s+/u);
+      if (words.some(word => !cleanCustomerNameCandidate(word) || isInvalidCustomerNameToken(word)) ||
+          /\b(?:please|book|booking|appointment|confirm|cancel|change|tomorrow|today|quiero|reservar|reserva|boka|avboka|bitte|buchen|or|oder|eller|o)\b/iu.test(match[1])) continue;
+      return words.join(' ');
+    }
   }
 
   // A contact answer may include an unrelated follow-up sentence. Validate the
@@ -10504,21 +10540,36 @@ function findConfiguredBookingService(
 
   const configuredNames = getEligibleConfiguredBookingServices(businessConfig).map(service => service.name);
   const requestedLower = requested.toLowerCase();
+  // A complete catalog label outranks overlapping component labels.
+  const exactMatches = configuredNames.filter(name => name.toLowerCase() === requestedLower);
+  if (exactMatches.length === 1) return exactMatches[0];
+  if (exactMatches.length > 1) return null;
 
+  // Match complete words: "test" must not match the surname "Testsson".
+  const containsServicePhrase = (value: string, phrase: string): boolean => {
+    const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(`(?<![\\p{L}\\p{M}\\p{N}_])${escaped}(?![\\p{L}\\p{M}\\p{N}_])`, "u").test(value);
+  };
   const directMatches = configuredNames.filter((name: string) => {
     const configuredLower = name.toLowerCase();
-    // Match complete words in either direction: a catalog service such as
-    // "test" must not turn the contact surname "Testsson" into a service change.
-    // Unicode boundaries also cover Persian/Arabic names and accented letters.
-    const containsServicePhrase = (value: string, phrase: string): boolean => {
-      const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      return new RegExp(`(?<![\\p{L}\\p{M}\\p{N}_])${escaped}(?![\\p{L}\\p{M}\\p{N}_])`, "u").test(value);
-    };
     return configuredLower === requestedLower ||
       containsServicePhrase(configuredLower, requestedLower) ||
       containsServicePhrase(requestedLower, configuredLower);
   });
   if (directMatches.length === 1) return directMatches[0];
+  if (directMatches.length > 1) {
+    // A fully mentioned combined catalog label owns its component words. A
+    // separate mention outside that label still represents an ambiguous choice.
+    const completeTargets = directMatches.filter(name => {
+      const label = name.toLowerCase();
+      if (!containsServicePhrase(requestedLower, label)) return false;
+      const remainder = requestedLower.replace(label, " ");
+      return directMatches.every(other => other === name ||
+        (containsServicePhrase(label, other.toLowerCase()) &&
+          !containsServicePhrase(remainder, other.toLowerCase())));
+    });
+    if (completeTargets.length === 1) return completeTargets[0];
+  }
   if (directMatches.length > 1 || literalOnly) return null;
 
   const intentMatches = configuredNames.filter((name: string) => serviceIntentMatchScore(requested, name) >= SERVICE_AUTO_MATCH_CONFIDENCE);
@@ -10584,6 +10635,33 @@ function normalizeServiceMatchText(value: string): string {
     .toLocaleLowerCase()
     .replace(/[^\p{L}\p{N}]+/gu, " ")
     .trim();
+}
+
+// Catalog identity is local to the supplied business's eligible catalog. A
+// known ID never falls through to a weaker label inside this lookup.
+function findCatalogServiceByIdentity(
+  businessConfig: any,
+  name: string,
+  id?: string | null,
+): ConfiguredBookingService | null {
+  const eligible = getEligibleConfiguredBookingServices(businessConfig);
+  const matches = id
+    ? eligible.filter(service => service.id === String(id))
+    : eligible.filter(service => service.name.toLocaleLowerCase() === String(name || "").trim().toLocaleLowerCase());
+  return matches.length === 1 ? matches[0] : null;
+}
+
+function sameCatalogService(a: ConfiguredBookingService, b: ConfiguredBookingService): boolean {
+  return a.id || b.id
+    ? Boolean(a.id && b.id && a.id === b.id)
+    : a.name.toLocaleLowerCase() === b.name.toLocaleLowerCase();
+}
+
+async function resolveCatalogServiceDuration(service: ConfiguredBookingService, businessConfig: any): Promise<number | null> {
+  // Use the resolved row directly; do not rediscover a variant via substring
+  // matching or allow a generic/default duration to override its metadata.
+  return parseConfiguredDuration(service.raw?.durationMinutes ?? service.raw?.duration_minutes ?? service.raw?.duration) ||
+    resolveServiceDurationMinutes(service.name, null, businessConfig);
 }
 
 function getRelevantConfiguredServiceCandidates(
@@ -10704,6 +10782,45 @@ function resolveAuthoritativeBookingService(
   if (eligible.length === 1 && !requireExplicitSelection) return { status: "resolved", service: eligible[0], source: "single_service" };
 
   return { status: "missing", candidates: eligible.slice(0, 5) };
+}
+
+// A business default is service authority, not evidence that the customer
+// selected it. This bounded choice grammar is used only while resuming a
+// no-catalog booking; qualifiers and unrelated prose must remain unmatched.
+function positivelyChoosesNoCatalogDefault(text: string, businessConfig: any): boolean {
+  if (Array.isArray(businessConfig?.services) && businessConfig.services.length > 0) return false;
+  const defaultLabel = String(businessConfig?.defaultBookingService || businessConfig?.default_booking_service || "").trim();
+  if (!defaultLabel) return false;
+  const original = normalizeConversationText(text).trim();
+  if (/[?؟"“”«»]/u.test(original) || /'[^']+'/u.test(original)) return false;
+  const raw = stripServiceTemporalSuffix(original).replace(/[.!]+$/u, "").trim();
+  const patterns = [
+    /^(?:i (?:want|would like) to |please )?(?:book|reserve|schedule)\s+(?:an?\s+)?(.+?)(?:,?\s+please)?$/iu,
+    /^(?:i choose|i'll take|i will take)\s+(.+)$/iu,
+    /^(.+?)\s+(?:sounds good|works for me)$/iu,
+    /^(?:jag vill(?: gärna)? )?boka\s+(?:en\s+)?(.+?)(?:,?\s+tack)?$/iu,
+    /^(?:jag väljer|jag tar)\s+(.+)$/iu,
+    /^(?:en\s+)?(.+?)\s+låter bra(?:,?\s+tack)?(?:[.!]\s*jag vill(?: gärna)? boka(?: in)? en tid för att få hjälp att välja rätt tjänst)?$/iu,
+    /^(?:ich (?:möchte|will)\s+)?(?:eine?n?\s+)?(.+?)\s+buchen(?:,?\s+bitte)?$/iu,
+    /^(?:ich nehme|ich wähle)\s+(.+)$/iu,
+    /^(?:quiero\s+)?reservar\s+(?:una?\s+)?(.+?)(?:,?\s+por favor)?$/iu,
+    /^(?:elijo|me quedo con)\s+(.+)$/iu,
+    /^می[‌ ]?خواهم\s+(.+?)\s+رزرو کنم$/u,
+    /^(.+?)\s+(?:را\s+)?رزرو کنید$/u,
+    /^(.+?)\s+را\s+انتخاب می[‌ ]?کنم$/u,
+    /^(?:أريد حجز|احجز|أختار)\s+(.+)$/u,
+    /^(.+?)(?:,?\s+(?:please|tack|bitte|por favor|لطفاً|لطفا|من فضلك))?$/iu,
+  ];
+  // Reuse only the existing complete generic-consultation vocabulary; never
+  // normalize a qualified/different service down to the default.
+  const genericConsultation = /^(?:konsultation|consultation|consulting|consult|consulta|beratung|moshavereh?|مشاوره|استشارة)$/iu;
+  return patterns.some(pattern => {
+    const choice = raw.match(pattern)?.[1]?.trim();
+    return Boolean(choice && (
+      normalizeConversationText(choice).toLocaleLowerCase() === normalizeConversationText(defaultLabel).toLocaleLowerCase() ||
+      (genericConsultation.test(choice) && genericConsultation.test(defaultLabel))
+    ));
+  });
 }
 
 function resolveConfiguredBookingService(
@@ -11299,12 +11416,17 @@ async function savePendingBooking(chatId: string, platform: string, pending: any
     pending.status = "awaiting_time_selection";
   }
   pending.expectedInput = resolveAuthoritativeOperation({ pending }).expectedInput;
-  const configuredPendingService = getEligibleConfiguredBookingServices(
-    pending.businessConfig,
-  ).find((service) => service.name === String(pending.service || "").trim());
+  const configuredPendingService = findCatalogServiceByIdentity(
+    pending.businessConfig, pending.service, pending.serviceId,
+  );
   if (configuredPendingService) {
+    pending.service = configuredPendingService.name;
     pending.serviceId = configuredPendingService.id;
     pending.serviceResolution = "authoritative";
+    if (pending.normalizedBookingRequest) pending.normalizedBookingRequest = {
+      ...pending.normalizedBookingRequest,
+      service: { normalized: configuredPendingService.name, confidence: "high" },
+    };
   } else if (
     pending.service &&
     pending.service !== "Bokning" &&
@@ -12650,6 +12772,15 @@ function deriveCanonicalAvailabilityConstraint(
   const todayInBusinessTimezone = getDateInTimeZone(now, timezone);
   if (startDate < todayInBusinessTimezone || endDate < todayInBusinessTimezone) return null;
 
+  // Rejected clocks belong to one search day, not to the time restriction being
+  // rebuilt. Preserve them while refining/broadening that day; a different day
+  // or date range starts with only the rejections expressed in the new turn.
+  const continuesSameSearchDay = Boolean(
+    previous &&
+    previous.startDate === previous.endDate &&
+    startDate === endDate &&
+    startDate === previous.startDate
+  );
   const common = {
     startDate,
     endDate,
@@ -12658,7 +12789,7 @@ function deriveCanonicalAvailabilityConstraint(
       : "inherited" as const,
     ...(dateComponent.weekday ? { weekday: dateComponent.weekday } : {}),
     rejectedTimes: Array.from(new Set([
-      ...(refersToSameDay && !timeFollowUp.explicitTime
+      ...(continuesSameSearchDay
         ? previous?.rejectedTimes || []
         : []),
       ...timeFollowUp.rejectedTimes,
@@ -12672,7 +12803,7 @@ function deriveCanonicalAvailabilityConstraint(
   // applied before any merged prior constraint or text fallback can reconstruct
   // an incompatible range/daypart/boundary from pending state.
   if (authoritativeTime?.kind === "none") {
-    return { ...common, kind: startDate === endDate ? "whole_day" : "date_range", rejectedTimes: [] };
+    return { ...common, kind: startDate === endDate ? "whole_day" : "date_range" };
   }
   if (authoritativeTime) {
     return {
@@ -12682,7 +12813,7 @@ function deriveCanonicalAvailabilityConstraint(
   }
 
   // A date/weekday-only follow-up inside an active availability flow is a fresh
-  // whole-day request. It must not inherit a rejected exact time or old bounds.
+  // whole-day request. It clears old bounds, while same-day rejections survive.
   if (
     broadensToWholeDay ||
     (
@@ -12693,7 +12824,7 @@ function deriveCanonicalAvailabilityConstraint(
       !daypart && !retainedTime
     )
   ) {
-    return { ...common, kind: startDate === endDate ? "whole_day" : "date_range", rejectedTimes: [] };
+    return { ...common, kind: startDate === endDate ? "whole_day" : "date_range" };
   }
   if (timeWindow) {
     return {
@@ -12745,7 +12876,7 @@ function deriveCanonicalAvailabilityConstraint(
     };
   }
   return range
-    ? { ...common, kind: startDate === endDate ? "whole_day" : "date_range", rejectedTimes: [] }
+    ? { ...common, kind: startDate === endDate ? "whole_day" : "date_range" }
     : null;
 }
 
@@ -13066,7 +13197,7 @@ function isRescheduleDateCorrection(text?: string): boolean {
   return /\b(nej|inte|menar|rättelse|istället|no|not|mean|instead)\b/i.test(raw);
 }
 
-function inferBookingDurationFromContext(text: string, history: any[]): number {
+function inferBookingDurationFromContext(text: string, history?: any[]): number {
   const combined = [
     ...(history || []).slice(-10).map((item: any) =>
       typeof item?.content === "string" ? item.content : ""
@@ -13304,6 +13435,45 @@ function isSpanishSelectedSlotConfirmation(
   ) return false;
 
   return true;
+}
+
+// Current scheduling proof is actionable only with a booking/availability cue
+// or a date/time-only refinement. A clock/date embedded in contact, references
+// or unrelated prose does not surrender an owned selection.
+function hasAuthoritativeSelectedSlotSchedulingIntent(
+  text: string,
+  request: NormalizedBookingRequest,
+): boolean {
+  const hasSchedulingProof = request.date?.confidence === "high" ||
+    (request.timeConstraint?.confidence === "high" && request.timeConstraint.kind !== "none") ||
+    Boolean(request.dateConflict);
+  if (!hasSchedulingProof) return false;
+  if (
+    isReadOnlyAvailabilityInquiry(text) ||
+    isEarliestAvailabilityRequest(text) ||
+    isExplicitNewBookingPivotText(text) ||
+    hasExplicitEntityBearingBookingConfirmation(text)
+  ) return true;
+
+  const raw = normalizeConversationText(text).toLowerCase();
+  // Explicit authorization with entities must retain those entities for the
+  // confirmation check (including Spanish "Sí, reserva las 09:15").
+  if (
+    /^(?:(?:yes|yeah|ja|sí|si)(?:,?\s+(?:please|bitte|tack|por favor))?[,!]?\s+)?(?:please\s+)?(?:book|reserve|schedule|boka|reservera|buche|buchen|reserviere|reserva|reservar|res[eé]rvala|quiero\s+reservar(?:la)?|confirma)\b/iu.test(raw) ||
+    /^(?:(?:بله|نعم)[،,]?\s+)?(?:(?:لطفا|لطفاً|من فضلك)\s+)?(?:رزرو\s+(?:کن|کنید)|احجز|أحجز)/u.test(raw)
+  ) return true;
+
+  // Reuse the existing date-only vocabulary after removing time grammar; do
+  // not classify arbitrary prose merely because its parser found a weekday.
+  const dateOrTimeOnly = raw
+    .replace(/\b(?:after|before|from|until|between|and|around|earlier|later|efter|före|innan|från|mellan|och|kring|nach|vor|ab|bis|zwischen|und|gegen|después|despues|antes|desde|hasta|entre|y|de|las|a|at|kl|klockan|uhr)\b/giu, " ")
+    .replace(/(?<![\p{L}\p{M}])(?:بعد از|قبل از|ساعت|بعد|قبل|الساعة|حوالي|بین|و)(?![\p{L}\p{M}])/gu, " ")
+    .replace(/\d{1,2}[:.]\d{2}/gu, " ")
+    .replace(/[.!?،,]+/gu, " ")
+    .replace(/\s+/gu, " ").trim();
+  return isDateOnlyServiceExtraction(dateOrTimeOnly) ||
+    (request.timeConstraint?.confidence === "high" &&
+      /^(?:\d{1,2}\s*)*$/u.test(dateOrTimeOnly));
 }
 
 function isPendingSlotConfirmation(
@@ -16136,6 +16306,55 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
     pending = null;
   }
   let completedBookingAtEntry = Boolean(!pending && recentCompletedBookingAtEntry?.bookingOperation?.ok);
+  let catalogOfferContextInvalidated = false;
+  // Reconcile before slot selection/confirmation can consume an old offer.
+  // No-catalog defaults retain their independent RC-03g policy.
+  if (pending?.operation === "new_booking" && pending.service && pending.service !== "Bokning" &&
+      ((Array.isArray(businessConfig?.services) && businessConfig.services.length > 0) ||
+        Boolean(findCatalogServiceByIdentity(pending.businessConfig, pending.service, pending.serviceId))) &&
+      getBookingPhase(pending) !== "finalizing") {
+    const previousTarget = findCatalogServiceByIdentity(pending.businessConfig, pending.service, pending.serviceId);
+    const byId = findCatalogServiceByIdentity(businessConfig, pending.service, pending.serviceId);
+    const byLabel = byId ? null : resolveAuthoritativeBookingService(String(pending.service), businessConfig, true);
+    const currentTarget = byId || (byLabel?.status === "resolved" && byLabel.source === "evidence" ? byLabel.service : null);
+    const duration = currentTarget ? await resolveCatalogServiceDuration(currentTarget, businessConfig) : null;
+    const previousId = pending.serviceId || previousTarget?.id || null;
+    const slots: OwnedOfferedSlot[] = Array.isArray(pending.ownedOfferedSlots) ? pending.ownedOfferedSlots : [];
+    catalogOfferContextInvalidated = !currentTarget ||
+      Boolean(previousId && previousId !== currentTarget.id) ||
+      Boolean(previousTarget && !sameCatalogService(previousTarget, currentTarget)) ||
+      Boolean(Number(pending.durationMinutes) > 0 && Number(pending.durationMinutes) !== duration) ||
+      slots.some(slot => {
+        const slotTarget = findCatalogServiceByIdentity(pending.businessConfig, slot.service, slot.serviceId);
+        return !bookingSlotOwnerMatches(slot, currentBookingSlotOwner) ||
+          Number(slot.durationMinutes) !== duration ||
+          Boolean(slot.serviceId && slot.serviceId !== currentTarget.id) ||
+          (slotTarget ? !sameCatalogService(slotTarget, currentTarget) : slot.service !== pending.service);
+      });
+    if (catalogOfferContextInvalidated) {
+      delete availabilitySearchContexts[sessionId];
+      Object.assign(pending, {
+        offeredSlots: [], ownedOfferedSlots: [], dateTime: null, selectedSlotEnd: null,
+        lastAvailabilityConstraintKey: null, operationIdentity: null,
+        status: currentTarget ? "awaiting_time_selection" : "awaiting_service",
+        expectedInput: currentTarget ? "slot_selection" : "service",
+      });
+    } else {
+      // A rename with the same verified ID does not change the slot geometry or
+      // its TTL. Keep the offer's display identity aligned with that target.
+      pending.ownedOfferedSlots = slots.map(slot => slot.service === currentTarget.name
+        ? slot : { ...slot, service: currentTarget.name });
+    }
+    Object.assign(pending, {
+      businessConfig, service: currentTarget?.name || "Bokning", serviceId: currentTarget?.id || null,
+      serviceResolution: currentTarget ? "authoritative" : "unresolved", durationMinutes: duration,
+    });
+    if (currentTarget && pending.normalizedBookingRequest) pending.normalizedBookingRequest = {
+      ...pending.normalizedBookingRequest,
+      service: { normalized: currentTarget.name, confidence: "high" },
+    };
+    if (catalogOfferContextInvalidated) await savePendingBooking(sessionId, platformName, pending);
+  }
   const contactText = stripCustomerNameDiagnosticSuffix(text);
   if (contactText !== text &&
       ["awaiting_confirmation", "awaiting_slot_confirmation", "awaiting_contact", "failed_recoverable"].includes(String(pending?.status || ""))) {
@@ -16150,11 +16369,79 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
     pending?.operation === "new_booking" && explicitAvailabilityRequest &&
     !isExplicitNewBookingPivotText(text)
   );
+  const suspendServiceChoice = async (guidanceLanguage: string) => {
+    const releasedSelectedSlot = Boolean(pending?.dateTime);
+    delete availabilitySearchContexts[sessionId];
+    pending = {
+      businessConfig,
+      platform: platformName,
+      service: "Bokning",
+      selectedDate: null,
+      availabilityStartDate: null,
+      availabilityEndDate: null,
+      availabilityConstraint: null,
+      offeredSlots: [],
+      ownedOfferedSlots: [],
+      dateTime: null,
+      selectedSlotEnd: null,
+      durationMinutes: null,
+      language: pending?.language || guidanceLanguage,
+      operation: "new_booking",
+      customerName: pending?.customerName || null,
+      customerPhone: pending?.customerPhone || getWhatsAppConversationPhone(
+        platformName,
+        recipientUserId,
+        sessionId
+      ),
+      contactPhoneSource: pending?.contactPhoneSource || null,
+      status: "awaiting_service"
+    };
+    await savePendingBooking(sessionId, platformName, pending);
+    console.log("[BookingTurnOwnership]", {
+      correlationId: bookingCorrelationId,
+      businessId: currentBookingSlotOwner.businessId,
+      channel: platformName,
+      pendingStatus: "released_for_service_guidance",
+      normalizedIntent: "general_question",
+      action: "suspend_booking_for_service_guidance",
+      pendingPreserved: true,
+      releasedSelectedSlot
+    });
+  };
+  const reopensPendingServiceChoice = Boolean(
+    pending?.operation === "new_booking" &&
+    getBookingPhase(pending) !== "finalizing" &&
+    reopensBookingServiceChoice(text)
+  );
+  if (reopensPendingServiceChoice) {
+    await suspendServiceChoice(entryPendingLanguage || getConversationLanguage(sessionId, text, businessConfig));
+    // Keep the existing grounded information path when this is also a question;
+    // otherwise yield service guidance without running availability.
+    if (!isBusinessInformationQuestion(text)) return false;
+  }
+  const correctedServiceAtEntry = pending?.operation === "new_booking" &&
+    getBookingPhase(pending) !== "finalizing" && hasBookingCorrectionCue(text)
+    ? resolveAuthoritativeBookingService(text, businessConfig)
+    : null;
+  const changesPendingService = Boolean(
+    correctedServiceAtEntry && (
+      (correctedServiceAtEntry.status === "resolved" && correctedServiceAtEntry.source === "evidence" &&
+        correctedServiceAtEntry.service.name !== pending?.service) ||
+      ((correctedServiceAtEntry.status === "ambiguous" || correctedServiceAtEntry.status === "unsupported") &&
+        extractConcreteRequestedService(text))
+    )
+  );
+  if (changesPendingService && correctedServiceAtEntry && correctedServiceAtEntry.status !== "resolved") {
+    // A named but unresolved replacement is not a continuation of the old
+    // selected service. Release it before owned-slot continuation can win.
+    await suspendServiceChoice(entryPendingLanguage || getConversationLanguage(sessionId, text, businessConfig));
+  }
   // Answer the latest informational question before merging booking entities or
   // consuming awaiting_service. Keep pending slots/holds intact for a later turn.
   if (isBusinessInformationQuestion(text) &&
+    !changesPendingService &&
+    (!hasRecentCompletedBookingDetailSemantics(text) || reopensPendingServiceChoice) &&
     !explicitAvailabilityRequest &&
-    !hasRecentCompletedBookingDetailSemantics(text) &&
     !isExistingAppointmentLookupIntent(text) &&
     getBookingPhase(pending) !== "finalizing") {
     const recentCompletion = getRecentCompletedBooking(sessionId);
@@ -16529,17 +16816,23 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
   }
 
   // An owned, selected slot is the authority for later confirmation and contact
-  // turns. A date or time mentioned in another part of the message is not a
-  // replacement unless the customer actually asks to change the booking.
+  // turns. Incidental dates/times do not replace it, but authoritative fresh
+  // scheduling proof must reach confirmation validation and availability.
   const authoritativeSelectedSlot = Boolean(
     pending?.operation === "new_booking" &&
     ["awaiting_confirmation", "awaiting_contact", "failed_recoverable"].includes(String(pending?.status || "")) &&
     pending?.dateTime && pending?.selectedSlotEnd &&
     findOwnedOfferedSlot(pending, pending.dateTime)
   );
+  const authoritativeCurrentSchedulingIntent = authoritativeSelectedSlot &&
+    hasAuthoritativeSelectedSlotSchedulingIntent(text, normalizedRequest);
+  const selectedSlotParts = authoritativeSelectedSlot
+    ? getZonedSlotParts(String(pending.dateTime), String(businessConfig?.timezone || "Europe/Stockholm"))
+    : null;
   const explicitSelectedSlotCorrection = Boolean(
     authoritativeSelectedSlot &&
-    (isRescheduleIntent(text) ||
+    (authoritativeCurrentSchedulingIntent ||
+      isRescheduleIntent(text) ||
       isPendingSelectionRejectionRequest(text, pending) ||
       isWholeDayAvailabilityRequest(text) ||
       /\b(?:change|move|correct|switch|shift)\s+(?:(?:my|the|this|our)\s+)?(?:booking|appointment|date|day|time)\b/iu.test(text) ||
@@ -16550,6 +16843,19 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
       (normalizedRequest.customerCorrection &&
         (normalizedRequest.date || normalizedRequest.timeConstraint) &&
         hasBookingCorrectionCue(text)))
+  );
+  const currentSchedulingReplacesSelection = Boolean(
+    explicitSelectedSlotCorrection &&
+    (
+      normalizedRequest.dateConflict ||
+      normalizedRequest.date?.kind === "date_range" ||
+      isReadOnlyAvailabilityInquiry(text) ||
+      isEarliestAvailabilityRequest(text) ||
+      (normalizedRequest.date?.value && normalizedRequest.date.value !== selectedSlotParts?.date) ||
+      (normalizedRequest.timeConstraint && normalizedRequest.timeConstraint.kind !== "none" &&
+        (normalizedRequest.timeConstraint.kind !== "exact" ||
+          normalizedRequest.timeConstraint.startMinutes !== selectedSlotParts?.minutes))
+    )
   );
   const retainAuthoritativeSelectedSlot = authoritativeSelectedSlot && !explicitSelectedSlotCorrection;
   if (retainAuthoritativeSelectedSlot) {
@@ -16983,12 +17289,13 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
       dateLocked: Boolean(pending.selectedDate || pending.availabilityStartDate)
     });
   }
-  const pendingSlotConfirmationAtEntry =
+  const pendingSlotConfirmationAtEntry = !currentSchedulingReplacesSelection && (
     isPendingSlotConfirmation(text, pending, normalizedRequest) ||
     (retainAuthoritativeSelectedSlot &&
       isPendingSlotConfirmation(text.split(/[.!?؟。]+\s*/u)[0], pending, normalizedRequest)) ||
-    contactSubmissionWhileAwaitingConfirmation;
+    contactSubmissionWhileAwaitingConfirmation);
   const controlledPendingConfirmationAtEntry = Boolean(
+    !currentSchedulingReplacesSelection &&
     controlledUnderstandingCandidates.confirmation &&
     pending?.operation === "new_booking" &&
     pending?.dateTime &&
@@ -17107,7 +17414,10 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
   // explicit phone, or phone-source metadata. Channel-derived identity (for
   // example a verified WhatsApp sender phone) is resolved again later from the
   // current channel, rather than carried across the booking boundary.
+  const resumesExplicitDefaultChoice = pending?.operation === "new_booking" && pending.status === "awaiting_service" &&
+    positivelyChoosesNoCatalogDefault(text, businessConfig);
   if (
+    !resumesExplicitDefaultChoice &&
     entryExplicitNewBookingRequest &&
     explicitPendingBookingPivot &&
     pending?.operation === "new_booking" &&
@@ -17380,6 +17690,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
 
   const configuredServiceNames = getConfiguredBookingServiceNames(businessConfig);
   let resumedAwaitingServiceDuration: number | null = null;
+  let resumedNoCatalogDefault = false;
   if (pending?.status === "awaiting_service") {
     const serviceResolutionLanguage = entryPendingLanguage || pending.language || language;
     pending.language = serviceResolutionLanguage;
@@ -17418,16 +17729,21 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
       delete availabilitySearchContexts[sessionId];
     }
     const serviceResolution = resolveAuthoritativeBookingService(text, businessConfig, false, semanticServicePhrase);
-    if (serviceResolution.status === "resolved" && serviceResolution.source === "evidence") {
+    const choseExplicitDefault = serviceResolution.status === "resolved" &&
+      serviceResolution.source === "explicit_default" && resumesExplicitDefaultChoice;
+    if (serviceResolution.status === "resolved" && (serviceResolution.source === "evidence" || choseExplicitDefault)) {
+      if (choseExplicitDefault) {
+        Object.assign(pending, {
+          offeredSlots: [], ownedOfferedSlots: [], dateTime: null, selectedSlotEnd: null,
+          lastAvailabilityConstraintKey: null, operationIdentity: null, requestedService: null,
+        });
+        delete availabilitySearchContexts[sessionId];
+      }
       const selectedConfiguredService = serviceResolution.service.name;
       pending.service = selectedConfiguredService;
       pending.serviceId = serviceResolution.service.id;
       pending.serviceResolution = "authoritative";
-      pending.durationMinutes = await resolveServiceDurationMinutes(
-        selectedConfiguredService,
-        null,
-        businessConfig
-      );
+      pending.durationMinutes = await resolveCatalogServiceDuration(serviceResolution.service, businessConfig);
       pending.status = "awaiting_date_or_time";
       pending.expectedInput = "date_or_constraint";
       const sameTurnRequestedTime = inferRequestedTimeFromText(text);
@@ -17451,6 +17767,12 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
       };
       if (retainedNormalizedRequest.date?.value || pending.availabilityStartDate || pending.selectedDate) {
         resumedAwaitingServiceDuration = Number(pending.durationMinutes || 0) || null;
+        pending.normalizedBookingRequest = toPersistedBookingRequest(retainedNormalizedRequest);
+        authoritativeNormalizedRequest = retainedNormalizedRequest;
+      } else if (choseExplicitDefault) {
+        // Resume the existing fresh default-service search below, never the
+        // old offers/date that service-choice reopening deliberately cleared.
+        resumedNoCatalogDefault = true;
         pending.normalizedBookingRequest = toPersistedBookingRequest(retainedNormalizedRequest);
         authoritativeNormalizedRequest = retainedNormalizedRequest;
       } else {
@@ -17616,47 +17938,11 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
   // explicit service selection resume availability without replaying old offers.
   if (
     normalizedRequest.intent === "general_question" &&
-    isServiceGuidanceRequest(text) &&
+    isServiceGuidanceRequest(text.replace(/"[^"]*"/gu, " ")) &&
     !isResolvedServiceSelection(text) &&
     (pending?.operation === "new_booking" || isBookingGoalWithUnresolvedService(text))
   ) {
-    const releasedSelectedSlot = Boolean(pending?.dateTime);
-    delete availabilitySearchContexts[sessionId];
-    pending = {
-      businessConfig,
-      platform: platformName,
-      service: "Bokning",
-      selectedDate: null,
-      availabilityStartDate: null,
-      availabilityEndDate: null,
-      availabilityConstraint: null,
-      offeredSlots: [],
-      ownedOfferedSlots: [],
-      dateTime: null,
-      selectedSlotEnd: null,
-      durationMinutes: null,
-      language: pending?.language || language,
-      operation: "new_booking",
-      customerName: pending?.customerName || null,
-      customerPhone: pending?.customerPhone || getWhatsAppConversationPhone(
-        platformName,
-        recipientUserId,
-        sessionId
-      ),
-      contactPhoneSource: pending?.contactPhoneSource || null,
-      status: "awaiting_service"
-    };
-    await savePendingBooking(sessionId, platformName, pending);
-    console.log("[BookingTurnOwnership]", {
-      correlationId: bookingCorrelationId,
-      businessId: currentBookingSlotOwner.businessId,
-      channel: platformName,
-      pendingStatus: "released_for_service_guidance",
-      normalizedIntent: normalizedRequest.intent,
-      action: "suspend_booking_for_service_guidance",
-      pendingPreserved: true,
-      releasedSelectedSlot
-    });
+    await suspendServiceChoice(language);
 
     return false;
   }
@@ -19563,6 +19849,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
 
     if (
       pending &&
+      !resumesExplicitDefaultChoice &&
       !entryOwnedSlotSelection &&
       !continuesOwnedBooking &&
       (explicitNewBookingRequested || isNewBookingRequestText(text)) &&
@@ -20955,6 +21242,9 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
       outsideOriginalRange = true;
     }
 
+    if (catalogOfferContextInvalidated) {
+      latestAvailabilityConstraint = latestAvailabilityConstraint || previousAvailabilityConstraint;
+    }
     const serviceGateApplies = Boolean(
       !getRescheduleContext(sessionId) &&
       (
@@ -20967,9 +21257,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
     );
     if (serviceGateApplies) {
       const eligibleServices = getEligibleConfiguredBookingServices(businessConfig);
-      const existingService = eligibleServices.find((service) =>
-        service.name === String(pending?.service || "").trim()
-      ) || (
+      const existingService = findCatalogServiceByIdentity(businessConfig, pending?.service, pending?.serviceId) || (
         pending?.service &&
         pending.service !== "Bokning" &&
         (
@@ -21074,7 +21362,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
         pending.service !== serviceResolution.service.name
       );
       const preserveLegacyResolvedPath = Boolean(
-        !pending && (
+        resumedNoCatalogDefault || !pending && (
           serviceResolution.source === "explicit_default" ||
           isGenericBookingRequestWithoutDate(text)
         )
@@ -21087,11 +21375,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
           delete availabilitySearchContexts[sessionId];
           latestAvailabilityConstraint = latestAvailabilityConstraint || previousAvailabilityConstraint;
         }
-        const durationMinutes = await resolveServiceDurationMinutes(
-          serviceResolution.service.name,
-          null,
-          businessConfig,
-        );
+        const durationMinutes = await resolveCatalogServiceDuration(serviceResolution.service, businessConfig);
         pending = {
           ...(pending || {}),
           businessConfig,
@@ -21192,11 +21476,12 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
               getDefaultBookingServiceForBusiness(businessConfig) ||
               "Bokning"
           );
-      const fingerprintResolvedDuration = await resolveServiceDurationMinutes(
-        fingerprintService,
-        null,
-        businessConfig
-      );
+      const fingerprintCatalogService = findCatalogServiceByIdentity(businessConfig, fingerprintService, pending?.serviceId);
+      const fingerprintResolvedDuration = resumesExplicitDefaultChoice
+        ? pending.durationMinutes
+        : fingerprintCatalogService
+          ? await resolveCatalogServiceDuration(fingerprintCatalogService, businessConfig)
+          : await resolveServiceDurationMinutes(fingerprintService, null, businessConfig);
       const fingerprintDuration =
         Number(fingerprintResolvedDuration || 0) ||
         storedAvailability?.durationMinutes ||
@@ -21272,7 +21557,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
         await clearPendingBooking(sessionId);
         pending = null;
       }
-      const inferredService = resolveConfiguredBookingService(
+      const inferredService = fingerprintCatalogService?.name || resolveConfiguredBookingService(
         fingerprintService,
         businessConfig,
         storedAvailability?.service ||
@@ -21548,7 +21833,10 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
 
       let availabilitySelectionIncludesAuthorization = false;
       if (slots.length > 0) {
-        const exactIso = constraint.exactTime
+        // A prior selected minute may remain a search constraint, but cannot
+        // select a newly changed catalog target without fresh scheduling proof.
+        const exactIso = constraint.exactTime && (!catalogOfferContextInvalidated ||
+          hasAuthoritativeSelectedSlotSchedulingIntent(text, normalizedRequest))
           ? findOfferedSlotIso(slots, constraint.exactTime)
           : null;
         const exactOwnedSlot = exactIso
@@ -21832,13 +22120,14 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
       ? normalizeBookingService(inferServiceFromText(text), "Bokning")
       : null;
     if (
+      resumedNoCatalogDefault ||
       (!pending && isGenericBookingRequestWithoutDate(text)) ||
       (pending?.status === "awaiting_service" && resolvedSuspendedService)
     ) {
       const adapter = getCalendarAdapter(businessConfig);
       const startDate = stockholmDateString(new Date());
       const endDate = addDaysToStockholmDate(startDate, 7);
-      const service = resolvedSuspendedService || resolveConfiguredBookingService(
+      const service = (resumedNoCatalogDefault ? pending.service : resolvedSuspendedService) || resolveConfiguredBookingService(
         `${history.slice(-8).map((m: any) => typeof m.content === "string" ? m.content : "").join(" ")} ${text || ""}`,
         businessConfig,
         "Bokning"
@@ -21846,11 +22135,9 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
       const finalService = service !== "Bokning"
         ? service
         : (getDefaultBookingServiceForBusiness(businessConfig) || "Bokning");
-      const resolvedConfiguredDuration = await resolveServiceDurationMinutes(
-        finalService,
-        null,
-        businessConfig
-      );
+      const resolvedConfiguredDuration = resumedNoCatalogDefault
+        ? pending.durationMinutes
+        : await resolveServiceDurationMinutes(finalService, null, businessConfig);
       const durationMinutes =
         Number(resolvedConfiguredDuration || 0) ||
         getDefaultBookingDurationForService(finalService) ||
@@ -21873,6 +22160,8 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
       if (slots.length > 0) {
         const firstIso = parseSlotIso(slots[0]);
         await savePendingBooking(sessionId, platformName, {
+          ...(resumedNoCatalogDefault ? pending : {}),
+          ...(resumedNoCatalogDefault ? { expectedInput: "slot_selection" } : {}),
           businessConfig,
           platform: platformName,
           service: finalService,
@@ -21882,13 +22171,14 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
           normalizedBookingRequest: toPersistedBookingRequest(authoritativeNormalizedRequest),
           dateTime: null,
           durationMinutes,
-          language: detectStrongLatestLanguage(text, businessConfig) || language,
+          language: resumedNoCatalogDefault ? pending.language : detectStrongLatestLanguage(text, businessConfig) || language,
           operation: "new_booking",
-          customerPhone: getWhatsAppConversationPhone(platformName, recipientUserId, sessionId),
+          customerPhone: resumedNoCatalogDefault ? pending.customerPhone : getWhatsAppConversationPhone(platformName, recipientUserId, sessionId),
           status: "awaiting_time_selection"
         });
       }
 
+      if (resumedNoCatalogDefault && slots.length === 0) await savePendingBooking(sessionId, platformName, pending);
       await replyAndRecord(formatSwedishTimeSlots(slots, undefined, language, deterministicToneConfig));
       return true;
     }
@@ -26571,7 +26861,7 @@ export function createTestBridgeRouter(): express.Router {
     res.setHeader("Cache-Control", "no-store");
     if (!isTestBridgeEnabled()) return testBridgeUnavailable(req, res);
     const authentication = authenticateTestBridgeRequest(req.header("authorization"));
-    if (!authentication.authorized) {
+    if (authentication.authorized === false) {
       if (authentication.category === "authentication_configuration_error") {
         console.error("[TestBridge]", {
           event: "test_bridge_auth_configuration_error",
@@ -27713,30 +28003,30 @@ async function processWhatsAppMessageClaimed(message: any, metadata: any, config
     });
   }
 
+  const sendWhatsAppConversationReply = async (
+    reply: string,
+    source: string,
+  ): Promise<boolean> => {
+    const sent = await sendWhatsAppMessage(from, reply, businessConfig, "conversation");
+
+    if (sent) {
+      recordDeliveredAssistantResponse({
+        businessId: getBusinessIdFromConfig(businessConfig),
+        channel: "whatsapp",
+        sessionId: chatId,
+        source,
+        sourceEventId: `${String(message?.id || "").trim()}:${source}`,
+        deliveryType: "text",
+        language: getStoredFlowLanguage(chatId) || userLanguage || undefined,
+      });
+    }
+
+    return sent;
+  };
+
   try {
     if (!chatSessions[chatId as any]) chatSessions[chatId as any] = [];
     const history = chatSessions[chatId as any];
-
-    const sendWhatsAppConversationReply = async (
-      reply: string,
-      source: string,
-    ): Promise<boolean> => {
-      const sent = await sendWhatsAppMessage(from, reply, businessConfig, "conversation");
-
-      if (sent) {
-        recordDeliveredAssistantResponse({
-          businessId: getBusinessIdFromConfig(businessConfig),
-          channel: "whatsapp",
-          sessionId: chatId,
-          source,
-          sourceEventId: `${String(message?.id || "").trim()}:${source}`,
-          deliveryType: "text",
-          language: getStoredFlowLanguage(chatId) || userLanguage || undefined,
-        });
-      }
-
-      return sent;
-    };
 
     const usage = await checkAndIncrementDailyUsage({
       businessId: getBusinessIdFromConfig(businessConfig),
@@ -31263,8 +31553,12 @@ app.get('/api/businesses/:businessId/conversations', requireAuth, requireBusines
       messageRows = data || [];
     }
 
+    type UnreadConversationRow = Pick<
+      ConversationSourceRow,
+      'id' | 'business_id' | 'user_id' | 'platform' | 'sender' | 'is_read'
+    >;
     const unreadRows = activityCutoff
-      ? await collectConversationSourcePages(async (from, to) => {
+      ? await collectConversationSourcePages<UnreadConversationRow>(async (from, to) => {
         const { data, error } = await supabase
           .from('chat_history')
           .select('id,business_id,user_id,platform,sender,is_read')
@@ -33116,7 +33410,7 @@ app.put('/api/businesses/:id', requireAuth, requireBusinessPermission('settings.
     }
 
     const body = req.body || {};
-    const payload: Record<string, unknown> = {};
+    const payload: Record<string, unknown> & { telegram_bot_token?: string } = {};
 
     const has = (key: string) =>
       Object.prototype.hasOwnProperty.call(body, key);

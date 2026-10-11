@@ -27,6 +27,9 @@ export async function runHomeReportsChecks({page,load,primary,open,before,out,me
     }
     return state;
   };
+  if(process.argv.includes('--regressions-only')) profiles=[];
+  if(process.argv.includes('--home-premium')) {await homePremium({page,load,primary,open,noWrites,measure});return;}
+  if(process.argv.includes('--polish-regressions')) {await homeOperations({page,load,primary,open,noWrites,capture});return;}
   for(const [width,height] of before?profiles.filter(([w,h])=>representative.has(w+'x'+h)):profiles){
     await page.setViewportSize({width,height});await load();await open('home');
     const home=await page.locator('.hero-result-copy strong').allTextContents();assert.deepEqual(home,['24','7','8,400 SEK + 160 EUR']);
@@ -90,6 +93,7 @@ export async function runHomeReportsChecks({page,load,primary,open,before,out,me
     await measure('reports-long-service','en');await capture(`${width}-reports-long-service`);
   }
   if(!before){
+    await homeOperations({page,load,primary,open,noWrites,capture});
     const tabCopy={en:['Overview','Channels','Services'],sv:['Översikt','Kanaler','Tjänster'],de:['Übersicht','Kanäle','Dienstleistungen'],es:['Resumen','Canales','Servicios'],fa:['نمای کلی','کانال‌ها','خدمات'],ar:['نظرة عامة','القنوات','الخدمات']};
     await load();await open('reports');const localeRequests=await counts();
     for(const locale of ['sv','de','es','fa','ar','en']){
@@ -102,4 +106,65 @@ export async function runHomeReportsChecks({page,load,primary,open,before,out,me
     await page.evaluate(()=>window.delayNextAnalytics=true);await page.locator('.analytics-range button').nth(1).click();await page.locator('.analytics-loading').waitFor();await capture('375-reports-loading');
     await page.locator('.dashboard-account summary').click();const selector=page.locator('.topbar-search select');await selector.selectOption('8');await page.locator('#overview').waitFor();await page.evaluate(()=>window.pendingAnalytics[0].resolve());await open('reports');assert.deepEqual(await page.locator('.analytics-kpi-card strong').allTextContents(),['5','2','€50 + SEK\u00a0800'],'late old tenant response cannot replace new business');await noWrites();
   }
+}
+
+async function homeOperations({page,load,primary,open,noWrites,capture}) {
+ await page.setViewportSize({width:1440,height:1000});await load();
+ await page.locator('.home-booking-list li').first().waitFor();
+ assert.equal(await page.locator('.hero-result-item').count(),3,'only the three existing truthful metrics');
+ assert.equal(await page.locator('.home-attention .home-issue').count(),3);
+ assert.equal(await page.locator('.home-channel').count(),5);
+ assert.equal(await page.locator('.home-booking-list li').count(),3);
+ assert.doesNotMatch(await page.locator('#overview').innerText(),/\d+%|time saved|growth|sparkline/i,'Home invents no trend or time-saved metric');
+ const calls=await page.evaluate(()=>window.fixtureCalls.length);await primary('settings');await primary('home');
+ assert.equal(await page.evaluate(()=>window.fixtureCalls.length),calls,'Home reuses mounted workspace data without another request');
+ for(const fixture of ['home-preview-loading','home-preview-error','home-preview-empty','home-preview-partial','home-preview-partial-empty']) {
+  await load('en',fixture);const cards=page.locator('.home-operations');await cards.waitFor();
+  if(fixture.endsWith('loading')) {await cards.getByText('Loading your overview…',{exact:true}).first().waitFor();assert.equal(await cards.locator('li').count(),0);}
+  if(fixture.endsWith('error')) {await cards.locator('.unavailable').first().waitFor();assert.equal(await cards.locator('li').count(),0);assert.equal(await cards.getByText('No upcoming bookings',{exact:true}).count(),0,'failed preview cannot look empty');}
+  if(fixture==='home-preview-partial-empty') {await cards.getByText('No upcoming bookings in loaded results.',{exact:true}).waitFor();assert.equal(await cards.getByText('No upcoming bookings',{exact:true}).count(),0,'partial empty is never a complete zero claim');}
+  if(fixture==='home-preview-empty') {await cards.getByText('No upcoming bookings',{exact:true}).waitFor();assert.equal(await cards.locator('.home-issue').count(),0);assert.equal(await cards.locator('.home-channel.connected').count(),5);assert.equal(await cards.getByText('Connect a channel',{exact:true}).count(),0,'configured business gets no generic setup checklist');}
+  if(fixture.endsWith('partial')) {await cards.getByText('Showing loaded results. Open the workspace for full details.',{exact:true}).first().waitFor();assert.ok(await cards.locator('.home-preview-hint').count()>=2);assert.ok((await cards.innerText()).includes('Last known status'),'cached health is explicit');}
+  await capture(fixture);await noWrites();
+ }
+ await load('en','tenant-workspaces');await page.locator('.home-booking-list li').first().waitFor();assert.match(await page.locator('.home-booking-list').innerText(),/Tenant 7/);
+ await page.locator('.topbar-search select').selectOption('8');await page.locator('#overview').waitFor();await page.locator('.home-booking-list').getByText('Tenant 8 customer 0',{exact:true}).waitFor();
+ assert.doesNotMatch(await page.locator('.home-booking-list').innerText(),/Tenant 7/,'Home preview never exposes previous business');
+ await page.locator('.topbar-search select').selectOption('7');await page.locator('#overview').waitFor();await page.locator('.home-booking-list').getByText('Tenant 7 customer 0',{exact:true}).waitFor();
+ await noWrites();
+}
+
+// Home-only finishing pass: test actual geometry/data/actions rather than color tokens.
+async function homePremium({page,load,primary,open,noWrites,measure}) {
+ for(const [width,height,locale] of [[1440,1000,'en'],[834,1194,'sv'],[1024,600,'es'],[720,500,'en'],[390,844,'en'],[320,568,'en'],[375,850,'de'],[320,568,'de'],[390,844,'fa'],[320,568,'fa'],[430,932,'ar'],[320,568,'ar']]) {
+  await page.setViewportSize({width,height});await load(locale);await page.locator('.home-booking-list li').first().waitFor();
+  assert.equal(await page.locator('.hero-result-item').count(),3,'only existing three metrics');
+  const geometry=await page.locator('.hero-result-item').evaluateAll(es=>es.map(e=>{const icon=e.querySelector('.hero-result-icon').getBoundingClientRect(),label=e.querySelector('.hero-result-copy > span'),range=document.createRange();range.selectNodeContents(label);const rtl=getComputedStyle(e).direction==='rtl';return {clear:icon.width===0||[...range.getClientRects()].every(r=>rtl?r.left>=icon.right-1:r.right<=icon.left+1),overflow:e.scrollWidth>e.clientWidth+1,value:e.querySelector('strong').textContent,icon:{left:icon.left,right:icon.right,top:icon.top,bottom:icon.bottom},lines:[...range.getClientRects()].map(r=>({left:r.left,right:r.right,top:r.top,bottom:r.bottom})),padding:getComputedStyle(label).paddingInlineEnd,wrap:getComputedStyle(label).overflowWrap};}));
+  assert.ok(geometry.every(g=>g.clear),'translated KPI labels clear their icons: '+locale+' '+width+' '+JSON.stringify(geometry));
+  assert.ok(geometry.every(g=>!g.overflow),'metric cards contain long labels/currencies');
+  if(locale==='en')assert.deepEqual(geometry.map(g=>g.value),['24','7','8,400 SEK + 160 EUR'],'canonical KPI values unchanged');
+  const action=page.locator('.home-business-heading .btn');await action.focus();
+  const focus=await action.evaluate(e=>{const r=e.getBoundingClientRect(),s=getComputedStyle(e),nav=document.querySelector('.mobile-bottom-nav');return {height:r.height,bottom:r.bottom,limit:nav.getClientRects().length?nav.getBoundingClientRect().top:innerHeight,outline:s.outlineStyle,width:parseFloat(s.outlineWidth)};});
+  assert.ok(focus.height>=44&&focus.bottom<=focus.limit+1,'primary Home action is reachable above navigation');assert.notEqual(focus.outline,'none');assert.ok(focus.width>=2);
+  await measure('home-premium',locale);await noWrites();
+ }
+ await page.setViewportSize({width:1440,height:1000});await load();
+ const beforeCalls=await page.evaluate(()=>window.fixtureCalls.length);await page.locator('.home-business-heading .btn').click();assert.equal(await page.locator('#conversations').isVisible(),true);
+ await primary('home');await page.locator('.home-workspace-actions .btn').first().click();assert.equal(await page.locator('#bookings').isVisible(),true);
+ await primary('home');await page.locator('#home-reports-trigger').click();assert.equal(await page.locator('#analytics-title').isVisible(),true);await page.locator('.reports-back').click();
+ assert.equal(await page.locator('#home-reports-trigger').evaluate(e=>e===document.activeElement),true,'Reports returns focus to the existing Home action');
+ await page.locator('.mission-status-indicator').click();assert.equal(await page.locator('#notification-center').isVisible(),true);
+ await primary('home');await page.locator('.home-attention header .btn').click();assert.equal(await page.locator('#notification-center').isVisible(),true);
+ await primary('home');await page.locator('.home-connections-heading .btn').click();assert.equal(await page.locator('#health').isVisible(),true);
+ await primary('home');await page.locator('.home-upcoming header .btn').click();assert.equal(await page.locator('#bookings').isVisible(),true);await primary('home');
+ assert.equal(await page.evaluate(()=>window.fixtureCalls.length),beforeCalls,'Home actions reuse mounted data');
+ for(const fixture of ['home-empty','home-unavailable','home-partial','home-loading','home-error'])for(const [width,height] of [[320,568],[390,844],[1440,1000]]){
+  await page.setViewportSize({width,height});await load('en',fixture);const values=await page.locator('.hero-result-copy strong').allTextContents();
+  if(fixture==='home-empty')assert.deepEqual(values,['0','0','0']);
+  if(fixture==='home-unavailable')assert.deepEqual(values,['—','—','—']);
+  if(['home-loading','home-error'].includes(fixture))assert.deepEqual(values,[],'loading/error is never a fabricated zero');
+  if(fixture==='home-partial')assert.match(await page.locator('#overview').innerText(),/Partial|partial|loaded/i,'quality disclosure stays visible');
+  await measure('premium-'+fixture,'en');await noWrites();
+ }
+ console.log('Home premium: 12 locale/profile layouts; existing KPI values, 7 action routes, focus return, icon clearance, zero/loading/error/unavailable/partial and no extra requests passed.');
 }

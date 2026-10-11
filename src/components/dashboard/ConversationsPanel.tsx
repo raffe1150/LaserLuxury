@@ -30,6 +30,7 @@ const statusTabs: Array<{ id: ConversationStatusFilter; label: string }> = [
 
 export default function ConversationsPanel({ businessId, active = true }: ConversationsPanelProps) {
   const { locale, formatNumber, t } = useDashboardI18n();
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [search, setSearch] = useState('');
   const [activeChannel, setActiveChannel] = useState('all');
@@ -74,15 +75,25 @@ export default function ConversationsPanel({ businessId, active = true }: Conver
     // 300px list + 440px thread + divider room. Measure this workspace because
     // the existing tablet sidebar consumes part of the viewport width. Short workspaces
     // also use the existing list/thread mode so the header and composer can fit.
-    const observer = new ResizeObserver(([entry]) => {
-      const width = entry.contentRect.width;
+    const content = inboxRef.current?.closest<HTMLElement>('.content');
+    const observer = new ResizeObserver(() => {
+      const inbox = inboxRef.current!;
+      const bounds = inbox.getBoundingClientRect();
+      const width = inbox.clientWidth;
       if (!width) return; // Inactive mounted workspaces have no measurable width.
-      const compact = width < 760 || entry.contentRect.height < 480 || media.matches;
+      // Expanded filters may grow the page. Pane choice still follows the
+      // available viewport space, so opening filters cannot undo short-height mode.
+      const availableHeight = content ? content.clientHeight
+        - (bounds.top - content.getBoundingClientRect().top + content.scrollTop)
+        - parseFloat(getComputedStyle(content).paddingBlockEnd)
+        - parseFloat(getComputedStyle(inbox).marginBlockEnd) : bounds.height;
+      const compact = width < 760 || Math.min(bounds.height, availableHeight) < 480 || media.matches;
       if (previousSingle === false && compact && selectedRef.current) setMobileChatOpen(true);
       previousSingle = compact;
       setSinglePane(compact);
     });
     observer.observe(inboxRef.current!);
+    if (content) observer.observe(content);
     return () => { observer.disconnect(); media.removeEventListener('change', updateMobile); };
   }, []);
 
@@ -275,6 +286,8 @@ export default function ConversationsPanel({ businessId, active = true }: Conver
         <input className="form-input dashboard-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t("Search names or messages…")} aria-label={t("Search conversations")} />
       </div>
 
+      <details className="conversation-filter-disclosure" open={filtersOpen} onToggle={(event) => setFiltersOpen(event.currentTarget.open)}>
+        <summary><span>{t('Filters')}</span><span className="conversation-filter-summary">{t(channelTabs.find((tab) => tab.id === activeChannel)?.label || 'All')} · {t(activeRangeLabel)} · {t(statusTabs.find((tab) => tab.id === activeStatus)?.label || 'All')}</span></summary>
       <div className="conversation-filters">
       <div className="conversation-filter-group"><span className="conversation-filter-label">{t('Channel')}</span><div className="conversation-channel-tabs" aria-label={t('Filter conversations by channel')}>
         {channelTabs.map((tab) => <button className={activeChannel === tab.id ? 'conversation-channel-tab active' : 'conversation-channel-tab'} key={tab.id} type="button" onClick={() => setActiveChannel(tab.id)} aria-pressed={activeChannel === tab.id}>
@@ -295,6 +308,8 @@ export default function ConversationsPanel({ businessId, active = true }: Conver
       </div></div>
 
       </div>
+      </details>
+      {(query || activeChannel !== 'all' || activeRange !== 'recent' || activeStatus !== 'all') && <button className="conversation-reset" type="button" onClick={() => { setQuery(''); setActiveChannel('all'); setActiveRange('recent'); setActiveStatus('all'); }}>{t('Reset filters')}</button>}
 
       <div className="conversation-layout">
         <div ref={listRef} className="conversation-list" role="region" aria-label={t("Customer conversations")} tabIndex={0} aria-busy={listLoading} hidden={singlePane && mobileChatOpen}>
@@ -306,7 +321,7 @@ export default function ConversationsPanel({ businessId, active = true }: Conver
             return <button className={`conversation-item${conversation.id === selectedId ? ' active' : ''}${unread ? ' unread' : ''}`} key={conversation.id} type="button" aria-pressed={conversation.id === selectedId} onClick={() => selectConversation(conversation)}>
               <div className="conversation-avatar"><ChannelIcon channel={conversation.channel} /></div>
               <div className="conversation-main">
-                <div className="conversation-title"><span translate="no" dir="auto">{conversation.customerName}</span><div className="conversation-title-right"><small dir="ltr"><bdi>{formatTime(conversation.updatedAt, locale)}</bdi></small>{unread > 0 && <span className="conversation-unread-badge" aria-label={t("Unread")}>{unread > 99 ? '99+' : formatNumber(unread)}</span>}</div></div>
+                <div className="conversation-title"><span translate="no" dir="auto">{conversation.customerName}</span><div className="conversation-title-right"><small dir="ltr" title={formatTime(conversation.updatedAt, locale)} aria-label={formatTime(conversation.updatedAt, locale)}><bdi>{formatListTime(conversation.updatedAt, locale)}</bdi></small>{unread > 0 && <span className="conversation-unread-badge" aria-label={t("Unread")}>{unread > 99 ? '99+' : formatNumber(unread)}</span>}</div></div>
                 <div className="conversation-preview" dir="auto" translate="no">{conversation.preview}</div>
                 <div className="conversation-meta"><span className={`conversation-status ${getStatusTone(conversation.status)}`} translate="no"><i aria-hidden="true" />{t(getStatusLabel(conversation.status))}</span><span className="conversation-channel-name">{formatChannelName(conversation.channel)}</span></div>
               </div>
@@ -377,4 +392,11 @@ function formatTime(value: string, locale: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return '';
   return new Intl.DateTimeFormat(locale, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(date);
+}
+
+function formatListTime(value: string, locale: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  const today = date.toDateString() === new Date().toDateString();
+  return new Intl.DateTimeFormat(locale, today ? { hour: '2-digit', minute: '2-digit' } : { month: 'short', day: 'numeric' }).format(date);
 }

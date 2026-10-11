@@ -157,6 +157,7 @@ export async function runTabletDialogChecks({page,load,primary,open,before,out,m
     assert.equal(await page.locator('.conversation-reply-input').inputValue(),'Keep this draft during resize','navigation retains draft');
     await noWrites();
     // The existing filtering and send contract is exercised, not replaced by layout code.
+    await page.locator('.conversation-filter-disclosure summary').press('Enter');
     await page.locator('.conversation-channel-tabs').first().locator('button').nth(1).click();
     await page.waitForFunction(()=>window.fixtureCalls.some(c=>c.method==='getConversationPage'&&c.payload.channel==='whatsapp'));
     await page.locator('.conversation-range-tabs').getByRole('button',{name:'30 days',exact:true}).click();
@@ -225,7 +226,7 @@ export async function runTabletDialogChecks({page,load,primary,open,before,out,m
   if(!before) {
     // Phase 7: inspect focused filter buttons, including legacy overflow ancestors.
     for(const locale of ['en','sv','de','es','fa','ar']) for(const width of [320,834]) {
-      await page.setViewportSize({width,height:1194});await load(locale);await primary('inbox');await page.locator('.dashboard-search').focus();
+      await page.setViewportSize({width,height:1194});await load(locale);await primary('inbox');await page.locator('.conversation-filter-disclosure summary').focus();await page.keyboard.press('Enter');
       const count=await page.locator('.conversation-channel-tab').count();
       for(let i=0;i<count;i++) {
         await page.keyboard.press('Tab');await page.waitForTimeout(40);
@@ -236,7 +237,7 @@ export async function runTabletDialogChecks({page,load,primary,open,before,out,m
     }
     // Short workspaces reuse single-pane mode; Back retains filters and the draft.
     for(const locale of ['en','de','fa','ar']) for(const [width,height] of [[834,500],[1024,500],[834,600],[1024,600]]) {
-      await page.setViewportSize({width,height});await load(locale,'long-customer');await primary('inbox');await page.locator('.conversation-item').first().click();await page.locator('.conversation-reply-input:not([disabled])').waitFor();await page.locator('.conversation-reply-input').fill('Short-height draft');
+      await page.setViewportSize({width,height});await load(locale,'long-customer');await primary('inbox');await page.locator('.conversation-filter-disclosure summary').press('Enter');await page.locator('.conversation-item').first().click();await page.locator('.conversation-reply-input:not([disabled])').waitFor();await page.locator('.conversation-reply-input').fill('Short-height draft');
       for(const selector of ['.conversation-reply-input','.conversation-reply-actions button']) {
         const b=await bounds(selector);assert.ok(b.y>=0&&b.bottom<=height+1,'short-height composer fits');assert.deepEqual(b.clips,[],'short-height composer has no clipping ancestor');
       }
@@ -244,8 +245,16 @@ export async function runTabletDialogChecks({page,load,primary,open,before,out,m
       assert.equal(await page.locator('.conversation-detail-head').getAttribute('tabindex'),'0');
       await page.locator('.conversation-mobile-back').click();assert.equal(await page.locator('.conversation-filters').isVisible(),true);await page.locator('.conversation-item').first().click();assert.equal(await page.locator('.conversation-reply-input').inputValue(),'Short-height draft');await noWrites();
     }
-    await page.setViewportSize({width:834,height:1194});await load();await open('health');await page.evaluate(()=>window.delayNextDashboard=true);await page.getByRole('button',{name:'Check now',exact:true}).first().click();await open('notifications');await page.getByRole('button',{name:'Back to Settings',exact:true}).click();
-    await page.waitForFunction(()=>window.pendingDashboard.length===1);await page.evaluate(()=>window.pendingDashboard.shift().resolve());await page.locator('.settings-index').waitFor();assert.equal(await page.evaluate(()=>document.activeElement.id),'settings-notifications-trigger','background refresh retains Back focus');
+    await page.setViewportSize({width:834,height:1194});await load();await open('health');
+    // Control the existing 500ms background refresh so this assertion does not
+    // depend on winning a race against renderer/font overhead on a busy host.
+    await page.clock.install();await page.clock.pauseAt(new Date());
+    await page.evaluate(()=>window.delayNextDashboard=true);await page.getByRole('button',{name:'Check now',exact:true}).first().click();
+    await open('notifications');await page.getByRole('button',{name:'Back to Settings',exact:true}).click();
+    await page.clock.runFor(600);await page.waitForFunction(()=>window.pendingDashboard.length===1);
+    await page.evaluate(()=>window.pendingDashboard.shift().resolve());await page.clock.resume();await page.locator('.settings-index').waitFor();
+    await page.waitForFunction(()=>document.activeElement.id==='settings-notifications-trigger');
+    assert.equal(await page.evaluate(()=>document.activeElement.id),'settings-notifications-trigger','background refresh retains Back focus');
     console.log('PASS Phase 7 focused filters in six locales; short-height/long-name composer, header scrolling and retained drafts');
   }
 }

@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict';
 import {resolve} from 'node:path';
 export async function runInboxBookingsChecks({page,load,primary,before,out,measure,profiles}) {
+ if(process.argv.includes('--polish-regressions')) {await polishGeometry({page,load,primary});return;}
  const capture=async(name)=>{if(out)await page.screenshot({path:resolve(out,name+'.png'),animations:'disabled'});};
  const noWrites=async()=>assert.deepEqual(await page.evaluate(()=>window.fixtureCalls.filter(c=>/^(update|create|delete|send)/.test(c.method))),[]);
  for(const [width,height] of before?profiles.filter(([w,h])=>[375,834,1440].includes(w)||(w===1024&&h===768)):profiles) {
@@ -24,6 +25,7 @@ export async function runInboxBookingsChecks({page,load,primary,before,out,measu
  if(!before)assert.equal(await page.locator('.conversation-reply-input').inputValue(),'A preserved draft');
  if(await page.locator('.conversation-mobile-back').isVisible())await page.locator('.conversation-mobile-back').click();
  await load();await primary('bookings');for(const view of ['pending','cancelled']){await page.locator('.booking-view-tabs button').filter({hasText:new RegExp('^'+view+'$','i')}).click();await page.locator('.booking-compact-row').first().waitFor();await measure('bookings-'+view,'en');await capture('375-bookings-'+view);}
+ if(!before)await polishGeometry({page,load,primary});
  if(!before)await regressions({page,load,primary,capture,noWrites});
 
 }
@@ -36,7 +38,7 @@ async function verifyComposer(page,width,height){
  assert.equal(await page.locator('.conversation-reply-input').getAttribute('maxlength'),'4000');
  assert.ok(await page.locator('.conversation-reply-input').getAttribute('aria-describedby'));
  assert.equal(await page.locator('.conversation-reply-label').getAttribute('for'),await page.locator('.conversation-reply-input').getAttribute('id'));
- assert.equal(await page.locator('#conversations').evaluate(e=>e.classList.contains('conversation-single-pane')),await page.locator('#conversations').evaluate(e=>e.clientWidth<760||innerWidth<=768));
+ assert.equal(await page.locator('#conversations').evaluate(e=>e.classList.contains('conversation-single-pane')),await page.locator('#conversations').evaluate(e=>e.clientWidth<760||e.clientHeight<480||innerWidth<=768));
  if(width===820||width===834)assert.equal(await page.locator('.conversation-list').isVisible(),false);
  assert.equal(await page.locator('body').evaluate(e=>e.classList.contains('mobile-conversation-open')),width<=768);
  assert.equal(await page.locator('.chat-transcript').getAttribute('tabindex'),'0');
@@ -65,7 +67,7 @@ async function regressions({page,load,primary,capture,noWrites}){
  const input=page.locator('.conversation-reply-input');await input.fill('first line');await input.press('Shift+Enter');await input.press('l');assert.equal(await page.evaluate(()=>window.fixtureCalls.filter(c=>c.method==='sendConversationMessage').length),0);await input.press('Enter');await page.waitForFunction(()=>window.fixtureCalls.some(c=>c.method==='sendConversationMessage'));
  assert.deepEqual(await page.evaluate(()=>window.fixtureCalls.find(c=>c.method==='sendConversationMessage')),{method:'sendConversationMessage',id:'7',payload:'first line\nl'});
  await page.evaluate(()=>window.failNextSend=true);await input.fill('  Restored draft  ');await page.locator('.conversation-reply-actions button').click();await page.locator('.conversation-send-error').waitFor();assert.equal(await input.inputValue(),'Restored draft');assert.equal(await page.locator('.conversation-send-error').getAttribute('role'),'alert');await page.locator('.conversation-reply-actions button').click();await page.waitForFunction(()=>window.fixtureCalls.filter(c=>c.method==='sendConversationMessage').length===3);assert.equal(await input.inputValue(),'');
- await load();await primary('inbox');for(const [selector,index,key,expected]of [['.conversation-channel-tabs:not(.conversation-range-tabs):not(.conversation-status-tabs)',2,'channel','instagram'],['.conversation-range-tabs',2,'range','30d'],['.conversation-status-tabs',2,'status','booked']]){
+ await load();await primary('inbox');await page.locator('.conversation-filter-disclosure summary').press('Enter');for(const [selector,index,key,expected]of [['.conversation-channel-tabs:not(.conversation-range-tabs):not(.conversation-status-tabs)',2,'channel','instagram'],['.conversation-range-tabs',2,'range','30d'],['.conversation-status-tabs',2,'status','booked']]){
   await page.locator(selector+' button').nth(index).click();await page.waitForFunction(({key,expected})=>window.fixtureCalls.filter(c=>c.method==='getConversationPage').at(-1)?.payload[key]===expected,{key,expected});assert.equal(await page.locator(selector+' button').nth(index).getAttribute('aria-pressed'),'true');
  }
  await page.locator('.dashboard-search').fill('NoMatches');await page.locator('.conversation-state').getByText('No conversations found',{exact:true}).waitFor();await capture('1440-inbox-filtered-empty');await noWrites();
@@ -92,4 +94,27 @@ async function regressions({page,load,primary,capture,noWrites}){
   await load('en','tenant-workspaces');await page.locator('.topbar-search select').selectOption('7');await page.locator('#overview').waitFor();await page.evaluate(flag=>window[flag]=true,flag);await primary(destination);await page.locator(destination==='inbox'?'.dashboard-search':'.booking-search').fill('deferred');await page.waitForFunction(method=>window.pendingWorkspacePages.some(p=>p.method===method),method);await page.locator('.topbar-search select').selectOption('8');await page.locator('#overview').waitFor();await primary(destination);await page.locator(destination==='inbox'?'.conversation-item':'.booking-compact-row').first().waitFor();await page.evaluate(()=>window.pendingWorkspacePages.splice(0).forEach(p=>p.resolve()));await page.waitForTimeout(60);
   const ids=await page.evaluate(method=>window.fixtureCalls.filter(c=>c.method===method).map(c=>c.id),method);assert.equal(ids.at(-1),'8');const dataText=await page.locator(destination==='inbox'?'.conversation-list':'.booking-results').innerText();assert.ok(dataText.includes('Tenant 8'));assert.ok(!dataText.includes('Tenant 7'),'late previous-business list cannot leak');await noWrites();
  }
+}
+
+async function polishGeometry({page,load,primary}) {
+ for(const width of [320,375,390,430]) {
+  await page.setViewportSize({width,height:844});await load();await primary('inbox');
+  const search=await page.locator('.dashboard-search').boundingBox(),first=await page.locator('.conversation-item').first().boundingBox();
+  assert.ok(await page.locator('.dashboard-search').evaluate(e=>parseFloat(getComputedStyle(e).fontSize)>=16),'mobile search editable text is 16px');
+  assert.ok(search.height>=44&&search.height<=48,'mobile Inbox search remains a control, not a 240px flex spacer');
+  assert.ok(first.y+Math.min(first.height,88)<744,'conversation visible in first viewport above bottom navigation');
+  await primary('bookings');const bookingSearch=await page.locator('.booking-search').boundingBox();
+  assert.ok(await page.locator('.booking-search').evaluate(e=>parseFloat(getComputedStyle(e).fontSize)>=16),'mobile Bookings search editable text is 16px');
+  assert.ok(bookingSearch.height>=44&&bookingSearch.height<=48,'mobile Bookings search stays bounded');
+  const row=await page.locator('.booking-compact-row').first().boundingBox();assert.ok(row.y<744,'bookings list reachable in first viewport');
+ }
+ await page.setViewportSize({width:1440,height:1000});await load();await primary('inbox');await page.locator('.conversation-item').first().click();
+ const list=await page.locator('.conversation-list').boundingBox(),transcript=await page.locator('.chat-transcript').boundingBox();
+ assert.ok(list.width>=300&&list.width<=360,'bounded list gives remaining width to messaging');
+ assert.ok(transcript.height>=400,'ordinary desktop transcript gains meaningful space over 303px release');
+ await page.locator('.conversation-filter-disclosure summary').focus();await page.keyboard.press('Enter');
+ assert.equal(await page.locator('.conversation-filters').isVisible(),true,'all existing filters remain keyboard accessible');
+ await page.locator('.conversation-status-tabs button').nth(2).click();await page.locator('.conversation-reset').click();
+ await page.waitForFunction(()=>window.fixtureCalls.filter(c=>c.method==='getConversationPage').at(-1)?.payload.status==='all');
+ assert.equal(await page.locator('.conversation-reset').count(),0,'reset restores default filter state');
 }

@@ -432,7 +432,7 @@ try {
   await assertNoConfigWrites();
   await page.locator('.topbar-search select').selectOption('7');await visible('overview');await primary('Settings');await openSettingsArea('Business');
   assert.equal(await nameInput.inputValue(),'Business 7');assert.equal(await page.locator('.service-currency input').inputValue(),'SEK');assert.equal(await page.locator('#cancellation-fee-amount').inputValue(),'25');
-  await backSettings();await openSettingsArea('Notifications');await page.getByText('Issue health 7',{exact:true}).waitFor();assert.match(await page.locator('#notification-center').textContent(),/Issue health 7/);assert.doesNotMatch(await page.locator('#notification-center').textContent(),/Issue health 8/);
+  await backSettings();await openSettingsArea('Notifications');await page.locator('#notification-center').getByText('Issue health 7',{exact:true}).waitFor();assert.match(await page.locator('#notification-center').textContent(),/Issue health 7/);assert.doesNotMatch(await page.locator('#notification-center').textContent(),/Issue health 8/);
   await page.getByRole('button',{name:'Business alerts',exact:true}).click();await page.getByText('chat-7',{exact:true}).waitFor();assert.match(await page.locator('#admin-notifications').textContent(),/chat-7/);assert.doesNotMatch(await page.locator('#admin-notifications').textContent(),/chat-8|61412345678/);
   await assertNoConfigWrites();
 
@@ -443,7 +443,7 @@ try {
   await page.locator('#cancellation-fee-currency').waitFor();
   await page.evaluate(()=>window.pendingSettings.forEach(request=>request.resolve()));
   assert.equal(await nameInput.inputValue(),'Business 7');assert.equal(await page.locator('.service-currency input').inputValue(),'SEK');assert.equal(await page.locator('#cancellation-fee-currency').inputValue(),'SEK');assert.equal(await page.locator('#cancellation-fee-amount').inputValue(),'25');
-  await backSettings();await openSettingsArea('Notifications');await page.getByText('Issue health 7',{exact:true}).waitFor();assert.doesNotMatch(await page.locator('#notification-center').textContent(),/Issue health 8/);
+  await backSettings();await openSettingsArea('Notifications');await page.locator('#notification-center').getByText('Issue health 7',{exact:true}).waitFor();assert.doesNotMatch(await page.locator('#notification-center').textContent(),/Issue health 8/);
   await page.getByRole('button',{name:'Business alerts',exact:true}).click();await page.getByText('chat-7',{exact:true}).waitFor();assert.doesNotMatch(await page.locator('#admin-notifications').textContent(),/chat-8/);
   await backSettings();await openSettingsArea('Connections');await page.locator('.integration-card').first().waitFor();
   assert.equal(await page.locator('.integration-card').filter({has:page.getByRole('heading',{name:'WhatsApp Business',exact:true})}).getByRole('status').textContent(),'Disconnected');
@@ -610,11 +610,11 @@ try {
   await page.getByRole('button',{name:'Load more',exact:true}).click();assert.equal(await page.locator('.notification-row').count(),2);
   await page.locator('.notification-filters').getByRole('button',{name:'Attention',exact:true}).click();await page.locator('.notification-row').first().getByRole('button',{name:'Mark read',exact:true}).click();
   assert.equal(await page.locator('.notification-row.read').count(),1,'read issue remains in attention');
-  await page.locator('.notification-filters').getByRole('button',{name:'Unread',exact:true}).click();await page.getByText('Issue activity 7',{exact:true}).waitFor();
+  await page.locator('.notification-filters').getByRole('button',{name:'Unread',exact:true}).click();await page.locator('#notification-center').getByText('Issue activity 7',{exact:true}).waitFor();
   await page.getByRole('button',{name:'Mark all as read',exact:true}).click();await page.getByText("No unread notifications",{exact:true}).waitFor();
-  await page.locator('.notification-filters').getByRole('button',{name:'Attention',exact:true}).click();await page.getByText('Issue health 7',{exact:true}).waitFor();
+  await page.locator('.notification-filters').getByRole('button',{name:'Attention',exact:true}).click();await page.locator('#notification-center').getByText('Issue health 7',{exact:true}).waitFor();
   await page.getByRole('button',{name:'Load more',exact:true}).click();assert.equal(await page.locator('.notification-row.read').count(),2,'read does not resolve active issues');
-  await page.locator('.notification-filters').getByRole('button',{name:'All',exact:true}).click();await page.getByText('Issue health 7',{exact:true}).waitFor();await assertNoConfigWrites();
+  await page.locator('.notification-filters').getByRole('button',{name:'All',exact:true}).click();await page.locator('#notification-center').getByText('Issue health 7',{exact:true}).waitFor();await assertNoConfigWrites();
   await load('?fixture=health');await page.locator('.mission-status-indicator').click();await visible('health');
   await load('?fixture=zero');await page.getByRole('button',{name:'Create business',exact:true}).click();await page.getByRole('dialog').waitFor();
   await page.getByRole('button',{name:'Cancel',exact:true}).click();

@@ -117,7 +117,7 @@ export async function runFocusVisibilityChecks({page,load,primary,open,out,profi
       for(const locale of ['en','fa'])for(const [width,height]of [[320,850],[375,850]]) {
         await prepare(locale,width,height);
         const entries=[];evidence.safeArea.push({locale,width,height,inset:24,entries});
-        assert.equal(await page.locator('.content').evaluate(e=>getComputedStyle(e).scrollPaddingBlockEnd),'180px');
+        assert.equal(await page.locator('.content').evaluate(e=>parseFloat(getComputedStyle(e).scrollPaddingBlockEnd)>=document.querySelector('.mobile-bottom-nav').getBoundingClientRect().height+44+8),true,'scroll clearance accommodates actual navigation and floating control with safe area');
         await walk(28,'Tab',entries,`safe-area/${locale}/${width}`);
       }
     } finally {await cdp.send('Emulation.setSafeAreaInsetsOverride',{insets:{}});await cdp.detach();}

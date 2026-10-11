@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { groupNotificationsByRecency } from '../../notifications/model';
 import { api } from '../../services/api';
 import type { NotificationFilter, NotificationItem } from '../../types/dashboard';
+import { notificationSeverityLabel, type WorkspacePreview } from './HomeOperations';
 import { useDashboardI18n } from '../../i18n/dashboard';
 import { dashboardNavigationForTarget, type NavigateDashboard } from './dashboard-navigation';
 
@@ -18,14 +19,16 @@ export default function NotificationCenter({
   onUnreadCountChange,
   refreshKey = 0,
   onWorkspaceNavigate,
+  onPreviewChange,
 }: {
   businessId: string;
   timezone?: string;
   onUnreadCountChange?: (count: number) => void;
   refreshKey?: number;
   onWorkspaceNavigate: NavigateDashboard;
+  onPreviewChange?: (preview: WorkspacePreview<NotificationItem>) => void;
 }) {
-  const { locale, formatNumber } = useDashboardI18n();
+  const { locale, formatNumber, t } = useDashboardI18n();
   const [filter, setFilter] = useState<NotificationFilter>('all');
   const [items, setItems] = useState<NotificationItem[]>([]);
   const [cursor, setCursor] = useState<number | null>(null);
@@ -64,6 +67,12 @@ export default function NotificationCenter({
 
     return () => controller.abort();
   }, [businessId, filter, retry, refreshKey, onUnreadCountChange]);
+
+  useEffect(() => {
+    if (filter !== 'all') return;
+    onPreviewChange?.({ businessId, items, status: loading ? 'loading'
+      : error && items.length === 0 ? 'unavailable' : error || cursor !== null ? 'partial' : 'available' });
+  }, [businessId, filter, items, loading, error, cursor, onPreviewChange]);
 
   const groups = useMemo(
     () => groupNotificationsByRecency(items, new Date(), timezone),
@@ -150,7 +159,7 @@ export default function NotificationCenter({
           {group.items.map((item) => <article className={`notification-row ${item.severity}${item.read ? ' read' : ' unread'}`} key={item.id}>
             <span className="notification-severity" aria-hidden="true" />
             <div className="notification-row-copy">
-              <div><span className="notification-category">{formatCategory(item.category)}</span>{!item.read && <span className="notification-unread-label">Unread</span>}</div>
+              <div><span className="notification-category">{formatCategory(item.category)}</span><span className={item.read ? "notification-read-label" : "notification-unread-label"} translate="no">{t(item.read ? 'Read' : 'Unread')}</span><span className="notification-severity-label" translate="no">{t(notificationSeverityLabel(item.severity))}</span><span className="notification-resolution-label" translate="no">{t(item.active ? 'Unresolved' : 'Resolved')}</span></div>
               <strong>{item.title}</strong>
               <span>{item.description}</span>
             </div>

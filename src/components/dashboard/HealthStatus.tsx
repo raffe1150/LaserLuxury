@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { IntegrationHealth, IntegrationKey } from '../../types/dashboard';
 import { api } from '../../services/api';
 import { ChannelIcon } from './Icons';
+import type { WorkspacePreview } from './HomeOperations';
 import { useDashboardI18n } from '../../i18n/dashboard';
 import type { NavigateDashboard } from './dashboard-navigation';
 
@@ -9,9 +10,10 @@ interface HealthStatusProps {
   businessId: string;
   onHealthChanged?: () => void;
   onWorkspaceNavigate: NavigateDashboard;
+  onPreviewChange?: (preview: WorkspacePreview<IntegrationHealth>) => void;
 }
 
-export default function HealthStatus({ businessId, onHealthChanged, onWorkspaceNavigate }: HealthStatusProps) {
+export default function HealthStatus({ businessId, onHealthChanged, onWorkspaceNavigate, onPreviewChange }: HealthStatusProps) {
   const { t } = useDashboardI18n();
   const [health, setHealth] = useState<IntegrationHealth[]>([]);
   const [loading, setLoading] = useState(true);
@@ -78,6 +80,11 @@ export default function HealthStatus({ businessId, onHealthChanged, onWorkspaceN
         : item));
     }
   };
+
+  useEffect(() => {
+    onPreviewChange?.({ businessId, items: health, status: loading ? 'loading' : error ? 'unavailable'
+      : health.some((item) => item.stale || item.refreshInProgress || item.status === 'unknown' || item.status === 'checking') ? 'partial' : 'available' });
+  }, [businessId, health, loading, error, onPreviewChange]);
 
   const summary = useMemo(() => summarizeHealth(health, loading, t), [health, loading, t]);
 

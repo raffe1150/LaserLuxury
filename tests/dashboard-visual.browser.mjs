@@ -53,7 +53,7 @@ const fixtureConversations=(id)=>Array.from({length:16},(_,i)=>({id:'conversatio
 const pagination = {nextCursor:null,total:0,hasMore:false};
 const record = (method,id,range,payload) => window.fixtureCalls.push({method,id,...(range?{window:range}:{}),...(payload!==undefined?{payload}:{})});
 export const api = new Proxy({}, {get(_, method) { return async (...args) => {
-  const id = args[0]; if(fixture==='visual-loading' && !['markConversationRead'].includes(method))await new Promise(()=>{});if((fixture==='setup-error'&&['getKnowledgeSources','getCancellationSettings','getAdminNotificationSettings','getIntegrationHealth'].includes(method))||(fixture==='visual-error' && String(method).startsWith('get')))throw new Error('This information is temporarily unavailable. Please try again.'); const notifications=fixture==='visual-empty'?[]:notificationsByBusiness[id]||[]; record(method,id,method==='getBusinessAnalyticsSummary'?args[1]:undefined,method==='sendConversationMessage'?args[2]:['updateBusiness','updateBusinessSettings','createKnowledgeSource','deleteKnowledgeSource','getConversationPage','getBookingPage','getConversationThread'].includes(method)?args[1]:undefined);
+  const id = args[0]; if(fixture==='visual-loading' && !['markConversationRead'].includes(method))await new Promise(()=>{});if((fixture==='setup-error'&&['getKnowledgeSources','getCancellationSettings','getAdminNotificationSettings','getIntegrationHealth'].includes(method))||(fixture==='visual-error' && String(method).startsWith('get')))throw new Error('This information is temporarily unavailable. Please try again.'); if(fixture==='home-preview-loading'&&['getBookingPage','getNotificationPage','getIntegrationHealth'].includes(method))await new Promise(()=>{});if(fixture==='home-preview-error'&&['getBookingPage','getNotificationPage','getIntegrationHealth'].includes(method))throw new Error('Preview unavailable'); const notifications=['visual-empty','home-preview-empty'].includes(fixture)?[]:notificationsByBusiness[id]||[]; record(method,id,method==='getBusinessAnalyticsSummary'?args[1]:undefined,method==='sendConversationMessage'?args[2]:['updateBusiness','updateBusinessSettings','createKnowledgeSource','deleteKnowledgeSource','getConversationPage','getBookingPage','getConversationThread'].includes(method)?args[1]:undefined);
   if(window.failNextKnowledgeMethod===method && ['getKnowledgeSources','createKnowledgeSource','deleteKnowledgeSource'].includes(method)){window.failNextKnowledgeMethod=null;throw window.knowledgeErrorMessage ? new Error(window.knowledgeErrorMessage) : null;}
   if(window.delayedBusinessMethods.includes(method)){
     window.delayedBusinessMethods=window.delayedBusinessMethods.filter(value=>value!==method);
@@ -71,7 +71,7 @@ export const api = new Proxy({}, {get(_, method) { return async (...args) => {
   switch(method) {
     case 'getConversations': case 'getBookings': case 'getChannelConnections': return [];
     case 'getCalendarConnection': return null;
-    case 'getIntegrationHealth': return health;
+    case 'getIntegrationHealth': return fixture==='home-preview-empty'?health.map(item=>({...item,status:'connected',stale:false})):fixture==='home-preview-partial'?health.map(item=>({...item,stale:true})):health;
     case 'refreshIntegrationHealth': {if(window.returnErrorHealth){window.returnErrorHealth=false;return {data:{...health.find(h=>h.key===args[1]),status:'error',detail:'The connection could not be verified.',reasonCode:'check_failed',action:'retry'}};}if(window.failNextHealth){window.failNextHealth=false;throw new Error('The connection could not be verified. Please try again.');}const index=health.findIndex(item=>item.key===args[1]);if(fixture==='held-stale-health')await new Promise(()=>{});health[index]={...health[index],stale:false};return {data:health[index]};}
     case 'getKnowledgeSources': {
       const sources=fixture==='visual-empty'?[]:[...(knowledge[id]||[])];
@@ -83,10 +83,10 @@ export const api = new Proxy({}, {get(_, method) { return async (...args) => {
     case 'getCancellationSettings': return {success:true,data:{...cancellationByBusiness[id]}};
     case 'getAdminNotificationSettings': return {success:true,data:{...alertsByBusiness[id]}};
     case 'updateBusinessSettings': {if(window.failNextSettingsSave){window.failNextSettingsSave=false;throw new Error('Your changes could not be saved. Please try again.');}const value=args[1];if('adminNotificationChannel' in value)alertsByBusiness[id]={...alertsByBusiness[id],channel:value.adminNotificationChannel,whatsappNumber:value.adminWhatsAppNumber};else cancellationByBusiness[id]={...cancellationByBusiness[id],...value};return {success:true};}
-    case 'getNotificationPage': {let items=notifications.filter(n=>args[1].filter==='unread'?!n.read:args[1].filter==='attention'?n.active:true);const paged=fixture==='notification-pages';const start=args[1].cursor?1:0;return {items:(paged?items.slice(start,start+1):items).map(n=>({...n})),pagination:{...pagination,total:items.length,nextCursor:paged&&start===0&&items.length>1?'next':null,hasMore:paged&&start===0&&items.length>1},unreadCount:notifications.filter(n=>!n.read).length};}
+    case 'getNotificationPage': {let items=notifications.filter(n=>args[1].filter==='unread'?!n.read:args[1].filter==='attention'?n.active:true);const paged=['notification-pages','home-preview-partial'].includes(fixture);const start=args[1].cursor?1:0;return {items:(paged?items.slice(start,start+1):items).map(n=>({...n})),pagination:{...pagination,total:items.length,nextCursor:paged&&start===0&&items.length>1?'next':null,hasMore:paged&&start===0&&items.length>1},unreadCount:notifications.filter(n=>!n.read).length};}
     case 'markNotificationRead': notifications.find(n=>n.id===args[1]).read=true; return {success:true,unreadCount:notifications.filter(n=>!n.read).length};
     case 'markAllNotificationsRead': notifications.forEach(n=>n.read=true); return {success:true,unreadCount:0};
-    case 'getBookingPage': {if(fixture==='bookings-loading')await new Promise(()=>{});if(fixture==='bookings-error'||window.failNextBookings){window.failNextBookings=false;throw new Error('Bookings could not be loaded. Please try again.');}const items=fixture==='visual-empty'||fixture==='bookings-empty'?[]:fixtureBookings(id).filter(b=>args[1].view==='pending'?b.status==='pending':args[1].view==='cancelled'?b.status==='cancelled':args[1].view==='past'?b.status==='completed':args[1].view==='upcoming'?['confirmed','pending'].includes(b.status):true);const paged=fixture==='workspace-pages';const start=args[1].cursor||0;const response={items:paged?items.slice(start,start+6):items,pagination:{...pagination,total:items.length,nextCursor:paged&&start+6<items.length?start+6:null},summary:{today:6,upcoming:11,pending:4,cancelled:3,scanTruncated:fixture==='workspace-pages'}};if(window.delayNextBookings){window.delayNextBookings=false;return new Promise(resolve=>window.pendingWorkspacePages.push({method,id,resolve:()=>resolve(response)}));}return response;}
+    case 'getBookingPage': {if(fixture==='bookings-loading')await new Promise(()=>{});if(fixture==='bookings-error'||window.failNextBookings){window.failNextBookings=false;throw new Error('Bookings could not be loaded. Please try again.');}const items=fixture==='visual-empty'||fixture==='bookings-empty'||fixture==='home-preview-empty'||fixture==='home-preview-partial-empty'?[]:fixtureBookings(id).filter(b=>args[1].view==='pending'?b.status==='pending':args[1].view==='cancelled'?b.status==='cancelled':args[1].view==='past'?b.status==='completed':args[1].view==='upcoming'?['confirmed','pending'].includes(b.status):true);const paged=['workspace-pages','home-preview-partial'].includes(fixture);const start=args[1].cursor||0;const response={items:paged?items.slice(start,start+6):items,pagination:{...pagination,total:items.length,nextCursor:paged&&start+6<items.length?start+6:null},summary:{today:6,upcoming:11,pending:4,cancelled:3,scanTruncated:['workspace-pages','home-preview-partial','home-preview-partial-empty'].includes(fixture)}};if(window.delayNextBookings){window.delayNextBookings=false;return new Promise(resolve=>window.pendingWorkspacePages.push({method,id,resolve:()=>resolve(response)}));}return response;}
     case 'getConversationPage': {if(fixture==='inbox-loading')await new Promise(()=>{});if(fixture==='inbox-error')throw new Error('Conversations could not be loaded. Please try again.');const items=fixture==='visual-empty'||fixture==='inbox-empty'||args[1].search==='NoMatches'?[]:fixtureConversations(id);const paged=fixture==='workspace-pages';const start=args[1].cursor||0;const response={items:paged?items.slice(start,start+6):items,pagination:{...pagination,total:items.length,nextCursor:paged&&start+6<items.length?start+6:null}};if(window.delayNextConversations){window.delayNextConversations=false;return new Promise(resolve=>window.pendingWorkspacePages.push({method,id,resolve:()=>resolve(response)}));}return response;}
     case 'getConversationThread': {if(fixture==='thread-loading')await new Promise(()=>{});if(fixture==='thread-error')throw new Error('Messages could not be loaded. Please try again.');const response= {conversationId:args[1],messages:Array.from({length:12},(_,i)=>({id:'message-'+id+'-'+i,author:i%4===0?'human':i%2===0?'ai':'customer',text:['Hello! I would like to book a consultation for next Friday. Do you have any appointments after 3 pm?','Of course. We have appointments available at 15:30 and 16:30. The consultation lasts 60 minutes and costs SEK 1,200. Which time would you prefer?','15:30 sounds good. Is there parking nearby?','Yes, there is free parking behind the studio. Please arrive ten minutes before your appointment. Your booking confirmation will include the address and cancellation information.'][i%4],createdAt:new Date(Date.now()-(12-i)*60000).toISOString()})),pagination};if(fixture==='tenant-threads')response.messages.forEach(message=>message.text='Tenant '+id+' · '+message.text);if(window.delayNextThread){window.delayNextThread=false;return new Promise(resolve=>window.pendingThreads.push({id,resolve:()=>resolve(response)}));}return response;}
     case 'sendConversationMessage': if(window.failNextSend){window.failNextSend=false;throw new Error('Fixture send failed');}return {messageId:'sent-'+Date.now(),createdAt:now};
@@ -176,11 +176,11 @@ const server = await createServer({
 const before = process.argv.includes('--before');
 const out = process.argv[3] && !process.argv[3].startsWith('--') ? resolve(process.argv[3]) : null;
 if(out)mkdirSync(out,{recursive:true});
-const profiles=[[320,850],[375,850],[390,844],[430,932],[768,1024],[820,1180],[834,1194],[1024,1366],[1024,768],[1180,820],[1194,834],[1366,1024],[1280,900],[1366,900],[1440,1000],[1536,1000],[1728,1100]];
+const profiles=[[320,568],[1024,600],[320,850],[375,850],[390,844],[430,932],[768,1024],[820,1180],[834,1194],[1024,1366],[1024,768],[1180,820],[1194,834],[1366,1024],[1280,900],[1366,900],[1440,1000],[1536,1000],[1728,1100]];
 const captures=new Set(['375x850','834x1194','1024x768','1440x1000']);
 const measurements=[];const errors=[];let browser;
 const luminance=rgb=>rgb.map(v=>v/255).map(v=>v<=.04045?v/12.92:((v+.055)/1.055)**2.4).reduce((sum,v,i)=>sum+v*[.2126,.7152,.0722][i],0);
-const contrastAgainstRaised=color=>{const rgb=color.match(/[\d.]+/g).map(Number);assert.equal(rgb.length,3,'meaningful text uses opaque color');const a=luminance(rgb),b=luminance([23,33,25]);return (Math.max(a,b)+.05)/(Math.min(a,b)+.05);};
+const contrastAgainstRaised=(color,raised)=>{const rgb=color.match(/[\d.]+/g).map(Number);assert.equal(rgb.length,3,'meaningful text uses opaque color');const a=luminance(rgb),b=luminance(raised.match(/[a-f0-9]{2}/gi).map(v=>parseInt(v,16)));return (Math.max(a,b)+.05)/(Math.min(a,b)+.05);};
 try {
   await server.listen();
   const url=`http://127.0.0.1:${server.httpServer.address().port}/__navigation-test`;
@@ -216,16 +216,16 @@ try {
       };
       const headings=[...document.querySelectorAll('.content h1,.content h2,.content h3')].filter(visible).map(inspect);
       const currency=[...document.querySelectorAll('.hero-result-item.accent strong,.analytics-kpi-card.gold strong,.analytics-currency-value')].filter(visible).map(inspect);
-      const text=[...document.querySelectorAll('.mission-greeting,.mission-monitoring-copy,.hero-result-copy small,.automatic-health-identity span,.automatic-health-state small,.notification-row-copy>span,.notification-row time,.knowledge-source-meta,.tone-precedence-note,.conversation-title-right small,.conversation-channel-name,.transcript-author,.transcript-message time,.booking-compact-row>time span,.booking-row-copy small,.analytics-kpi-card small,.mobile-nav-item span,.health-load-state>span,.notification-state>span')].filter(visible).map(inspect);
-      const actions=[...document.querySelectorAll('.home-workspace-actions button,.analytics-range button,.analytics-tabs button,.settings-index button,.health-action,.health-load-state button,.notification-state button,.analytics-state button,.analytics-custom-range input,.notification-row-actions button')].filter(visible).map(inspect);
-      return {pageWidth:document.documentElement.scrollWidth,viewport:innerWidth,headings,currency,text,actions,hidden:[...document.querySelectorAll('.dashboard-workspace[hidden]')].map(e=>({id:e.id,rects:e.getClientRects().length})),primary:[...document.querySelectorAll('.sidebar-nav a')].map(e=>e.getAttribute('href')),mobilePrimary:[...document.querySelectorAll('.mobile-nav-item')].map(e=>e.getAttribute('href')),active:document.querySelector('.sidebar-nav [aria-current]')?.getAttribute('href')};
+      const text=[...document.querySelectorAll('.home-preview-hint,.home-preview-state,.home-section-kicker,.home-issue-severity,.home-channel small,.home-booking-list time,.notification-severity-label,.notification-resolution-label,.notification-read-label,.mission-greeting,.mission-monitoring-copy,.hero-result-copy small,.automatic-health-identity span,.automatic-health-state small,.notification-row-copy>span,.notification-row time,.knowledge-source-meta,.tone-precedence-note,.conversation-title-right small,.conversation-channel-name,.transcript-author,.transcript-message time,.booking-compact-row>time span,.booking-row-copy small,.analytics-kpi-card small,.mobile-nav-item span,.health-load-state>span,.notification-state>span')].filter(visible).map(inspect);
+      const actions=[...document.querySelectorAll('.home-workspace-actions button,.home-operation-card button,.home-business-heading button,.analytics-range button,.analytics-tabs button,.settings-index button,.health-action,.health-load-state button,.notification-state button,.analytics-state button,.analytics-custom-range input,.notification-row-actions button')].filter(visible).map(inspect);
+      return {raised:getComputedStyle(document.querySelector('.dashboard-page')).getPropertyValue('--dashboard-surface-raised').trim(),pageWidth:document.documentElement.scrollWidth,viewport:innerWidth,headings,currency,text,actions,hidden:[...document.querySelectorAll('.dashboard-workspace[hidden]')].map(e=>({id:e.id,rects:e.getClientRects().length})),primary:[...document.querySelectorAll('.sidebar-nav a')].map(e=>e.getAttribute('href')),mobilePrimary:[...document.querySelectorAll('.mobile-nav-item')].map(e=>e.getAttribute('href')),active:document.querySelector('.sidebar-nav [aria-current]')?.getAttribute('href')};
     });
     measurements.push({profile:page.viewportSize(),id,locale,...result});
     if(!before){
       assert.ok(result.pageWidth<=result.viewport+1,`${id}/${locale}: page overflow ${result.pageWidth}/${result.viewport}`);
       for(const h of result.headings){assert.deepEqual(h.clips,[],`${id}/${locale}: heading clipped ${h.text}`);assert.ok(h.scroll<=h.client+1,`${id}/${locale}: intrinsic heading overflow ${h.text}`);}
       for(const value of result.currency){assert.deepEqual(value.clips,[],`${id}/${locale}: currency clipped ${value.text}`);assert.ok(value.scroll<=value.client+1,'currency intrinsic overflow');assert.equal(value.direction,'ltr','currency amount/code order remains LTR');assert.equal(value.bidi,'isolate','currency isolation in RTL');}
-      for(const text of result.text){assert.ok(text.size>=12,`${id}: useful text below 12px: ${text.text} (${text.size})`);assert.ok(contrastAgainstRaised(text.color)>=4.5,`${id}: text contrast below 4.5: ${text.text} (${text.color})`);}
+      for(const text of result.text){assert.ok(text.size>=12,`${id}: useful text below 12px: ${text.text} (${text.size})`);assert.ok(contrastAgainstRaised(text.color,result.raised)>=4.5,`${id}: text contrast below 4.5: ${text.text} (${text.color})`);}
       for(const action of result.actions){assert.ok(action.x>=-1&&action.right<=result.viewport+1,`${id}/${locale}: offscreen action ${action.text}`);assert.ok(action.size>=13,`${id}: tiny action`);assert.ok(action.height>=(result.viewport<=1199?44:40),`${id}: short action`);}
       assert.ok(result.hidden.every(h=>h.rects===0),'hidden workspaces have no layout');
       const destinations=['home','inbox','bookings','ai-assistant','settings'].map(id=>'#workspace-'+id);
@@ -235,7 +235,9 @@ try {
     }
     return result;
   };
-  if(process.argv.includes('--rc02b')) {
+  if(process.argv.includes('--benchmark')) {
+    await runBenchmarkRefinementChecks({page,load,primary,open,measure});
+  } else if(process.argv.includes('--rc02b')) {
     const {runRemainingKnowledgeLocalizationChecks} = await import('./dashboard-knowledge-localization.browser.mjs');
     await runRemainingKnowledgeLocalizationChecks({page,load,primary,before,out});
   } else if(process.argv.includes('--rc02')) {
@@ -320,4 +322,56 @@ try {
 } finally {
   if(out)writeFileSync(resolve(out,'measurements.json'),JSON.stringify({before,measurements,errors},null,2));
   await browser?.close();await server.close();
+}
+
+
+// Guard the completed polish candidate, rather than merely improving on release.
+async function runBenchmarkRefinementChecks({page,load,primary,open,measure}) {
+ const rgb=color=>color.match(/[\d.]+/g).slice(0,3).map(Number);
+ const ratio=(a,b)=>{const x=luminance(rgb(a)),y=luminance(rgb(b));return (Math.max(x,y)+.05)/(Math.min(x,y)+.05);};
+ const styles=selector=>page.locator(selector).first().evaluate(e=>{const s=getComputedStyle(e);return {background:s.backgroundColor,image:s.backgroundImage,color:s.color,border:s.borderTopColor,outline:s.outlineStyle,outlineWidth:parseFloat(s.outlineWidth),font:parseFloat(s.fontSize)};});
+ await page.setViewportSize({width:1440,height:1000});await load();
+ const canvas=await styles('.dashboard-page'),hero=await styles('.mission-hero'),metric=await styles('.hero-result-item');
+ await page.locator('.home-booking-list li').first().waitFor();
+ const unused=await page.locator('.home-upcoming').evaluate(e=>e.getBoundingClientRect().bottom-e.querySelector('.home-booking-list').getBoundingClientRect().bottom);assert.ok(unused<=32,'short Home preview does not inherit the taller attention panel height');
+ assert.notEqual(metric.background,canvas.background,'Home metrics are distinct from the canvas');
+ const readingWidth=await page.locator('.home-operational-status p').evaluate(e=>e.getBoundingClientRect().width);assert.ok(readingWidth>0&&readingWidth<=600,'desktop helper copy has a comfortable reading width');
+ assert.equal(hero.image,'none','Home uses hierarchy without a decorative gradient');
+ assert.ok(ratio(metric.color,metric.background)>=4.5,'Home metric text remains readable on its actual surface');
+ assert.ok(ratio(hero.color,canvas.background)>=4.5,'Home header text remains readable on the canvas');
+ await primary('inbox');await page.locator('.conversation-item').first().click();await page.locator('.conversation-reply-input:not([disabled])').waitFor();
+ const workspace=await page.evaluate(()=>({list:document.querySelector('.conversation-list').getBoundingClientRect().width,transcript:document.querySelector('.chat-transcript').getBoundingClientRect().height,selected:document.querySelector('.conversation-item.active').getAttribute('aria-pressed'),unread:document.querySelector('.conversation-item.unread')?.textContent}));
+ assert.ok(Math.abs(workspace.list-320)<=1,'candidate 320px conversation list preserved');
+ assert.ok(workspace.transcript>=451,'candidate 452px transcript preserved');
+ assert.equal(workspace.selected,'true','selection remains semantic');assert.ok(workspace.unread,'unread label/count remains available');
+ const selection=await page.locator('.conversation-item.active').evaluate(e=>({background:getComputedStyle(e).backgroundColor,edge:getComputedStyle(e).boxShadow,panel:getComputedStyle(e.closest('.conversation-inbox')).backgroundColor}));
+ assert.ok(Math.abs(luminance(rgb(selection.background))-luminance(rgb(selection.panel)))<.03,'selection tint recedes into the reading workspace');
+ assert.ok(ratio(selection.edge,selection.background)>=3,'logical-edge selection cue remains distinguishable');
+ assert.ok(selection.edge.includes('3px 0px'),'LTR selection cue stays on the leading edge');
+ const unread=await styles('.conversation-unread-badge');assert.ok(ratio(unread.color,unread.background)>=4.5,'unread count remains readable independent of selection');
+ const composer=await styles('.conversation-reply-input');assert.ok(ratio(composer.border,composer.background)>=3,'reply field remains visibly editable');
+ const authors=await page.locator('.transcript-author').allTextContents();assert.ok(authors.includes('Customer')&&authors.includes('You')&&authors.includes('OdinLink'),'sender identity remains explicit without relying on bubble color');
+
+ for(const kind of ['customer','human','ai']){const bubble=await styles('.transcript-bubble.'+kind);assert.ok(ratio(bubble.color,bubble.background)>=4.5,kind+' message contrast');assert.equal(bubble.image,'none');}
+ const draft=page.locator('.conversation-reply-input');await draft.fill('A draft survives the visual refinement.');await primary('home');await primary('inbox');assert.equal(await draft.inputValue(),'A draft survives the visual refinement.');
+ await page.setViewportSize({width:390,height:844});await page.locator('.conversation-mobile-back').waitFor({state:'visible'});await page.locator('.mobile-bottom-nav').waitFor({state:'hidden'});assert.equal(await draft.inputValue(),'A draft survives the visual refinement.');assert.equal(await page.locator('.mobile-bottom-nav').isVisible(),false,'full-screen chat keeps navigation away from the composer');
+ await draft.focus();const focus=await styles('.conversation-reply-input');assert.notEqual(focus.outline,'none');assert.ok(focus.outlineWidth>=2);
+ await page.locator('.conversation-mobile-back').click();
+ for(const [width,height,locale] of [[320,568,'en'],[375,850,'de'],[390,844,'fa'],[430,932,'ar'],[834,1194,'sv'],[1024,600,'es'],[720,500,'en']]) {
+  await page.setViewportSize({width,height});await load(locale,'long-setup');await primary('inbox');await page.locator('.conversation-item').first().waitFor();
+  const list=await page.evaluate(()=>({search:document.querySelector('.dashboard-search').getBoundingClientRect().height,row:document.querySelector('.conversation-item').getBoundingClientRect().top}));
+  assert.equal(list.search,44,'normal search height at '+width);assert.ok(list.row<height-100,'conversations appear in first screen at '+width);
+  if(['fa','ar'].includes(locale)){await page.locator('.conversation-item').first().click();await page.locator('.conversation-reply-input:not([disabled])').waitFor();await page.locator('.conversation-mobile-back').click();const edge=await page.locator('.conversation-item.active').evaluate(e=>getComputedStyle(e).boxShadow);assert.ok(edge.includes('-3px 0px'),'RTL selection cue stays on the logical leading edge');}
+  await measure('benchmark-inbox',locale);await primary('bookings');assert.equal(await page.locator('.booking-search').evaluate(e=>e.getBoundingClientRect().height),44);await measure('benchmark-bookings',locale);
+  await open('business');await page.locator('.business-settings-input-shell .form-input').first().fill('Studio Odin — تهران العربية Stockholm');
+  const fields=await page.locator('.business-settings-input-shell').evaluateAll(es=>es.map(e=>{const icon=e.querySelector('.business-settings-field-icon').getBoundingClientRect(),input=e.querySelector('.form-input').getBoundingClientRect(),s=getComputedStyle(e);return {overlap:Math.min(icon.right,input.right)-Math.max(icon.left,input.left),height:input.height,columns:s.gridTemplateColumns,direction:s.direction};}));
+  assert.ok(fields.length>=3);for(const f of fields){assert.ok(f.overlap<=.1,'adornment and mixed-direction input remain separate');assert.equal(f.height,44);assert.ok(f.columns.startsWith('38px '),'dedicated adornment track preserved');}
+  const field=await styles('.business-settings-input-shell');assert.ok(ratio(field.border,field.background)>=3,'editable boundary contrast');
+  await measure('benchmark-business',locale);await primary('ai-assistant');
+  const toneText=await page.locator('.tone-option strong').evaluateAll(es=>es.map(e=>{const box=e.closest('button').getBoundingClientRect(),range=document.createRange();range.selectNodeContents(e);return [...range.getClientRects()].every(r=>r.left>=box.left&&r.right<=box.right);}));assert.ok(toneText.every(Boolean),'long translated tone names and checkmarks stay inside their controls');
+  await measure('benchmark-ai',locale);await primary('home');await measure('benchmark-home',locale);
+ }
+ await page.emulateMedia({reducedMotion:'reduce'});await primary('ai-assistant');const motion=await page.locator('.tone-option').first().evaluate(e=>({transition:getComputedStyle(e).transitionDuration,animation:getComputedStyle(e).animationName}));assert.equal(motion.transition,'0s');assert.equal(motion.animation,'none');
+ assert.deepEqual(await page.evaluate(()=>window.fixtureCalls.filter(c=>/^(update|create|delete|send)/.test(c.method))),[],'refinement navigation makes no configuration writes');
+ console.log('Benchmark refinement: candidate geometry, actual-surface contrast, six locales, mixed-direction adornments, draft retention, semantic selection, focus and reduced motion passed.');
 }

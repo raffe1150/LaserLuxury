@@ -1,7 +1,7 @@
 import DashboardFeedback, { useDashboardFeedback, type DashboardSaved, type DashboardFeedbackMemory } from './DashboardFeedback';
 import { FormEvent, useEffect, useState } from 'react';
 import { api, type KnowledgeSource } from '../../services/api';
-import { useDashboardI18n } from '../../i18n/dashboard';
+import { dashboardSourceLabel, useDashboardI18n } from '../../i18n/dashboard';
 
 interface KnowledgePanelProps {
   businessId: string;
@@ -14,7 +14,7 @@ export default function KnowledgePanel({
   onSaved,
   feedbackMemory,
 }: KnowledgePanelProps) {
-  const { t, formatDate } = useDashboardI18n();
+  const { locale, t, formatDate } = useDashboardI18n();
 
   const [sources, setSources] = useState<KnowledgeSource[]>([]);
   const [title, setTitle] = useState('');
@@ -166,7 +166,7 @@ export default function KnowledgePanel({
 
         <div className="knowledge-source-count">
           {loading || error ? '—' : sources.length}
-          <span>{t('sources')}</span>
+          <span translate="no">{loading || error ? t('sources') : dashboardSourceLabel(locale, sources.length)}</span>
         </div>
       </div>
 

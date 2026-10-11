@@ -316,7 +316,7 @@ export function BusinessSettings({ business, onSaved, feedbackMemory }: Business
                   </svg>
                 </span>
 
-                <input id="business-timezone" dir="ltr"
+                <input id="business-timezone" dir="ltr" aria-describedby="business-timezone-help"
                   className="form-input mono"
                   value={timezone}
                   onChange={(event) =>
@@ -325,6 +325,7 @@ export function BusinessSettings({ business, onSaved, feedbackMemory }: Business
                   placeholder="Europe/Stockholm"
                 />
               </div>
+              <small id="business-timezone-help" className="form-hint">{t('Choose the same timezone used by the business calendar so appointment times stay correct.')}</small>
             </div>
 
           </div>
@@ -1065,7 +1066,7 @@ export function BusinessToneControls({
       </section>
       {businessAnswers}
       <details id="ai-advanced" className="ai-advanced" ref={advancedRef}>
-        <summary>{t('Advanced')}<span className="advanced-summary-help">{t('Optional style adjustments and custom instructions.')}</span></summary>
+        <summary>{t('Advanced')}<span className="advanced-summary-help">{t('Optional adjustments and instructions.')}</span></summary>
         <div className="ai-advanced-content">
           <section id="tone-adjustments" className="card tone-controls" aria-labelledby="tone-adjustments-title">
             <h3 id="tone-adjustments-title" className="card-title">{t('Tone adjustments')}</h3>

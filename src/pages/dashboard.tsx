@@ -1,5 +1,6 @@
 import DashboardFeedback, { useDashboardFeedback, type DashboardSaved, type DashboardFeedbackValue, type DashboardFeedbackMemory } from '../components/dashboard/DashboardFeedback';
 import { FormEvent, useEffect, useRef, useState, type ReactNode } from 'react';
+import HomeOperations, { type WorkspacePreview } from '../components/dashboard/HomeOperations';
 import BookingsPanel from '../components/dashboard/BookingsPanel';
 import ConversationsPanel from '../components/dashboard/ConversationsPanel';
 import KnowledgePanel from '../components/dashboard/KnowledgePanel';
@@ -19,7 +20,7 @@ import CurrencyValue from '../components/dashboard/CurrencyValue';
 import { api, loadDashboardData } from '../services/api';
 import { useAuth } from '../auth/AuthProvider';
 import dashboardCss from '../styles/dashboard.css?raw';
-import type { Business, DashboardData, IntegrationKey } from '../types/dashboard';
+import type { Business, Booking, NotificationItem, IntegrationHealth, DashboardData, IntegrationKey } from '../types/dashboard';
 import type {
   DashboardCountMetric,
   DashboardEstimatedValueMetric,
@@ -53,6 +54,9 @@ function DashboardContent({ onNavigate }: DashboardProps) {
   const [refreshKey, setRefreshKey] = useState(0);
   const [addBusinessOpen, setAddBusinessOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Business | null>(null);
+  const [homeBookings, setHomeBookings] = useState<WorkspacePreview<Booking> | null>(null);
+  const [homeNotifications, setHomeNotifications] = useState<WorkspacePreview<NotificationItem> | null>(null);
+  const [homeHealth, setHomeHealth] = useState<WorkspacePreview<IntegrationHealth> | null>(null);
   const [notificationUnreadCount, setNotificationUnreadCount] = useState(0);
   const [notificationRefreshKey, setNotificationRefreshKey] = useState(0);
   const notificationRefreshTimer = useRef<number | null>(null);
@@ -326,6 +330,8 @@ function DashboardContent({ onNavigate }: DashboardProps) {
                   data={data}
                   onWorkspaceNavigate={setNavigation}
                 />
+                <HomeOperations businessId={selectedBusiness.id} timezone={selectedBusiness.timezone}
+                  bookings={homeBookings} notifications={homeNotifications} health={homeHealth} onNavigate={setNavigation} />
               </div>
               <WorkspacePanel primary="home" secondary="reports" navigation={navigation}>
                 <div className="reports-workspace">
@@ -343,9 +349,7 @@ function DashboardContent({ onNavigate }: DashboardProps) {
               <section className="mission-section">
                 <div className="mission-section-head">
                   <div>
-                    <div className="mission-eyebrow">ODINLINK INBOX</div>
-                    <h2>Customer conversations</h2>
-                    <p>Review recent conversations, their current status and the latest customer activity.</p>
+                    <h2>{t('Customer conversations')}</h2>
                   </div>
                 </div>
 
@@ -370,6 +374,7 @@ function DashboardContent({ onNavigate }: DashboardProps) {
                   key={selectedBusiness.id}
                   businessId={selectedBusiness.id}
                   timezone={selectedBusiness.timezone}
+                  onPreviewChange={setHomeBookings}
                 />
               </section>
 
@@ -402,7 +407,7 @@ function DashboardContent({ onNavigate }: DashboardProps) {
                   <IntegrationCenter key={selectedBusiness.id} business={selectedBusiness} health={data.health} onSaved={handleSaved} feedbackMemory={connectionsFeedback} onTest={testIntegration} />
                 </WorkspacePanel>
                 <WorkspacePanel navigation={navigation} primary="settings" secondary="connection-health">
-                  <HealthStatus key={selectedBusiness.id} businessId={selectedBusiness.id} onHealthChanged={scheduleNotificationRefresh} onWorkspaceNavigate={setNavigation} />
+                  <HealthStatus key={selectedBusiness.id} businessId={selectedBusiness.id} onHealthChanged={scheduleNotificationRefresh} onWorkspaceNavigate={setNavigation} onPreviewChange={setHomeHealth} />
                 </WorkspacePanel>
               </div>
               <div hidden={settingsAreaForNavigation(navigation) !== 'notifications'}>
@@ -412,7 +417,7 @@ function DashboardContent({ onNavigate }: DashboardProps) {
                   <button className="btn btn-ghost" type="button" aria-pressed={navigation.primary === 'settings' && navigation.secondary === 'admin-notifications'} onClick={() => setNavigation({ primary: 'settings', secondary: 'admin-notifications' })}>{t('Business alerts')}</button>
                 </nav>
                 <WorkspacePanel navigation={navigation} primary="settings" secondary="notification-center">
-                  <NotificationCenter key={selectedBusiness.id} businessId={selectedBusiness.id} timezone={selectedBusiness.timezone} onUnreadCountChange={setNotificationUnreadCount} refreshKey={notificationRefreshKey} onWorkspaceNavigate={setNavigation} />
+                  <NotificationCenter key={selectedBusiness.id} businessId={selectedBusiness.id} timezone={selectedBusiness.timezone} onUnreadCountChange={setNotificationUnreadCount} refreshKey={notificationRefreshKey} onWorkspaceNavigate={setNavigation} onPreviewChange={setHomeNotifications} />
                 </WorkspacePanel>
                 <WorkspacePanel navigation={navigation} primary="settings" secondary="admin-notifications">
                   <AdminNotificationSettings key={selectedBusiness.id} business={selectedBusiness} onSaved={handleSaved} feedbackMemory={alertsFeedback} />
@@ -885,6 +890,13 @@ function MissionControl({
     <section id="overview" className="mission-control">
       <div className="mission-hero">
         <div className="mission-hero-content">
+          <p className="mission-greeting">{greeting} <span aria-hidden="true">👋</span></p>
+          <div className="home-business-heading"><h1 dir="auto" translate="no">{displayBusinessName}</h1>
+            <button className="btn btn-primary" type="button" onClick={() => onWorkspaceNavigate({ primary: 'inbox' })}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M21 11.5a8.4 8.4 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.4 8.4 0 0 1-3.8-.9L3 21l1.9-5.7a8.4 8.4 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.4 8.4 0 0 1 3.8-.9H13a8.5 8.5 0 0 1 8 8v.5Z" /></svg>
+              {t('Open Inbox')}
+            </button></div>
+
           <div className="mission-hero-topline">
             <div className="mission-live-status">
               <div className="mission-live-badge">
@@ -895,11 +907,7 @@ function MissionControl({
             </div>
           </div>
 
-          <p className="mission-greeting">{greeting} <span aria-hidden="true">👋</span></p>
-          <h1 dir="auto" translate="no">{displayBusinessName}</h1>
-
           <div className="hero-results-block">
-            <div className="hero-results-label">TODAY’S RESULTS</div>
             <div className="hero-result-grid dashboard-primary-kpis">
               <HeroResult
                 icon="customers"
@@ -938,7 +946,6 @@ function MissionControl({
               <p>{t(operationalStatus.detail)}</p>
             </div>
             <nav className="home-workspace-actions" aria-label={t('Home actions')}>
-              <button className="btn btn-ghost" type="button" onClick={() => onWorkspaceNavigate({ primary: 'inbox' })}>{t('Open Inbox')}</button>
               <button className="btn btn-ghost" type="button" onClick={() => onWorkspaceNavigate({ primary: 'bookings' })}>{t('Open Bookings')}</button>
               <button id="home-reports-trigger" className="btn btn-ghost" type="button" onClick={() => onWorkspaceNavigate({ primary: 'home', secondary: 'reports' })}>{t('View reports')}</button>
             </nav>
@@ -963,7 +970,7 @@ function HeroResult({
   accent?: boolean;
 }) {
   return (
-    <div className={accent ? 'hero-result-item accent' : 'hero-result-item'}>
+    <div className={accent ? 'hero-result-item accent' : 'hero-result-item'} data-home-metric={icon}>
       <div className="hero-result-icon" aria-hidden="true">
         {icon === 'customers' && (
           <svg viewBox="0 0 24 24" fill="none">
@@ -982,8 +989,9 @@ function HeroResult({
         )}
         {icon === 'value' && (
           <svg viewBox="0 0 24 24" fill="none">
-            <path d="M4 19V9M10 19V5M16 19v-7M22 19H2" />
-            <path d="m4 7 6-4 6 5 5-4" />
+            <rect x="2" y="5" width="20" height="14" rx="2" />
+            <circle cx="12" cy="12" r="3" />
+            <path d="M6 9v6M18 9v6" />
           </svg>
         )}
       </div>

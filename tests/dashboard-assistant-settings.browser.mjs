@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict';
 import {resolve} from 'node:path';
 export async function runAssistantSettingsChecks({page,load,primary,open,before,out,measure,profiles}) {
+ if(process.argv.includes('--polish-regressions')) {await businessFieldGeometry({page,load,open});await notificationPresentation({page,load,open,measure});return;}
  const capture=async(name,selector)=>{if(!out)return;if(selector)await page.locator(selector).scrollIntoViewIfNeeded();await page.screenshot({path:resolve(out,name+'.png'),animations:'disabled'});};
  const sample=([w,h])=>[375,834,1440].includes(w)||(w===1024&&h===768);
  if(process.argv.includes('--business-load-check')) {
@@ -20,7 +21,8 @@ export async function runAssistantSettingsChecks({page,load,primary,open,before,
   await primary('settings');await page.locator('#settings-connections-trigger').click();await measure('connections','en');if(sample([width,height]))await capture(`${width}x${height}-connections`);
   await page.locator('.integration-card').filter({hasText:'Telegram'}).getByRole('button').first().click();await measure('provider-setup','en');if(!before)for(const button of await page.locator('.wizard-footer .btn').all())await reachable(page,button);if(sample([width,height]))await capture(`${width}x${height}-provider-setup`);
   await open('health');await measure('health','en');if(sample([width,height]))await capture(`${width}x${height}-health`);
-  await open('notifications');await measure('issues','en');if(sample([width,height]))await capture(`${width}x${height}-issues`);
+  await open('notifications');await page.locator('.notification-row').first().waitFor();if(!before){assert.equal(await page.locator('.notification-row.read .notification-read-label').count(),5);assert.equal(await page.locator('.notification-resolution-label').filter({hasText:/^Unresolved$/}).count(),14);assert.equal(await page.locator('.notification-resolution-label').filter({hasText:/^Resolved$/}).count(),4);assert.equal(await page.locator('.notification-severity-label').filter({hasText:/^Critical$/}).count(),5);}
+  await measure('issues','en');if(sample([width,height]))await capture(`${width}x${height}-issues`);
   await page.locator('.settings-secondary-nav:visible button').nth(1).click();await measure('alerts','en');if(sample([width,height]))await capture(`${width}x${height}-alerts`);
   if(!before) {
     for(const id of ['business','ai-assistant']) {
@@ -51,7 +53,7 @@ export async function runAssistantSettingsChecks({page,load,primary,open,before,
  for(const [width,height]of profiles.filter(sample)){
   await page.setViewportSize({width,height});await load('en','visual-empty');await primary('ai-assistant');await measure('knowledge-empty','en');await capture(`${width}x${height}-knowledge-empty`,'#knowledge');
   await load('en','setup-error');await primary('ai-assistant');await page.locator('#knowledge-error').waitFor();await capture(`${width}x${height}-knowledge-error`,'#knowledge');
-  if(!before){assert.equal(await page.locator('.knowledge-empty').count(),0,'failed Knowledge load is not an empty library');assert.equal(await page.locator('.knowledge-source-count').innerText(),'—\nsources');}
+  if(!before){assert.equal(await page.locator('.knowledge-empty').count(),0,'failed Knowledge load is not an empty library');assert.match(await page.locator('.knowledge-source-count').innerText(),/^—\s+sources$/);}
   await open('business');await capture(`${width}x${height}-cancellation-error`,'#cancellation-settings');if(!before){await page.locator('#cancellation-settings .settings-load-error').waitFor();assert.equal(await page.locator('#cancellation-settings form').count(),0);assert.equal(await page.locator('#cancellation-settings input[type="checkbox"]').count(),0);}
   await open('health');await capture(`${width}x${height}-health-error`);if(!before){await page.locator('.health-load-state').waitFor();assert.equal(await page.locator('.health-overall').count(),0,'failed health load cannot look healthy');}
   await open('notifications');await page.locator('.settings-secondary-nav:visible button').nth(1).click();await capture(`${width}x${height}-alerts-error`);if(!before){await page.locator('#admin-notifications .settings-load-error').waitFor();assert.equal(await page.locator('#admin-notifications form').count(),0);}
@@ -60,6 +62,7 @@ export async function runAssistantSettingsChecks({page,load,primary,open,before,
   await page.locator('#ai-advanced summary').click();await page.evaluate(()=>window.failNextBusinessUpdate=true);await page.locator('#prompt-editor .save-row button').click();await page.locator('#custom-instructions-error').waitFor();await capture(`${width}x${height}-instructions-error`,'#prompt-editor');
  }
  if(!before){
+  await businessFieldGeometry({page,load,open});
   await page.setViewportSize({width:834,height:1194});await load();await primary('ai-assistant');const custom=await page.locator('#custom-tone-instructions').inputValue();const prompt=await page.locator('#custom-assistant-instructions').inputValue();
   await page.locator('.tone-preset-grid button').first().click();assert.equal(await page.evaluate(()=>window.fixtureCalls.filter(c=>c.method==='updateBusiness').length),0);
   await page.locator('#ai-tone button[type="submit"]').click();await page.waitForFunction(()=>window.fixtureCalls.some(c=>c.method==='updateBusiness'));
@@ -73,4 +76,40 @@ export async function runAssistantSettingsChecks({page,load,primary,open,before,
 async function reachable(page,control){
  await control.scrollIntoViewIfNeeded();const box=await control.boundingBox();const nav=await page.locator('.mobile-bottom-nav').isVisible()?await page.locator('.mobile-bottom-nav').boundingBox():null;
  assert.ok(box.x>=0&&box.x+box.width<=page.viewportSize().width+1,'control fits horizontally');assert.ok(box.y>=0&&box.y+box.height<=(nav?nav.y:page.viewportSize().height)+1,'save is reachable above bottom navigation');assert.ok(box.height>=44,'44px touch target');
+}
+
+async function businessFieldGeometry({page,load,open}) {
+ for(const locale of ['en','fa','ar'])for(const [width,height]of [[320,568],[375,850],[390,844],[430,932],[834,1194],[1440,1000]]) {
+  await page.setViewportSize({width,height});await load(locale);await open('business');
+  const name=page.locator('.business-settings-input-shell input').first();
+  const entered='استودیو OdinLink / مركز Stockholm — '+('International Business '.repeat(6));await name.fill(entered);
+  assert.equal(await name.inputValue(),entered,'customer-entered mixed text stays verbatim');assert.equal(await name.getAttribute('dir'),'auto');
+  for(const control of await page.locator('.business-settings-input-shell :is(input,select)').all()) {
+   await control.focus();await page.evaluate(()=>new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r))));
+   const geometry=await control.evaluate(e=>{const r=e.getBoundingClientRect(),icon=e.parentElement.querySelector('.business-settings-field-icon').getBoundingClientRect(),s=getComputedStyle(e),shell=getComputedStyle(e.parentElement);return {input:{left:r.left,right:r.right,height:r.height},icon:{left:icon.left,right:icon.right,width:icon.width},padding:[parseFloat(s.paddingLeft),parseFloat(s.paddingRight)],columns:shell.gridTemplateColumns,font:parseFloat(s.fontSize)};});
+   assert.ok(geometry.icon.width>=36,'dedicated nonshrinking adornment column');
+   assert.ok(geometry.input.left>=geometry.icon.right-1||geometry.input.right<=geometry.icon.left+1,'input content clears adornment in either direction');
+   assert.ok(geometry.input.height>=44&&geometry.input.height<=48,'native control has normal touch height');
+   assert.ok(geometry.padding.every(value=>value>=10),'content has internal clearance');
+   if(width<=430)assert.ok(geometry.font>=16,'mobile editable text is 16px');
+   await reachable(page,control);
+  }
+  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),true);
+ }
+ await page.setViewportSize({width:390,height:844});await load();await open('business');await page.evaluate(()=>window.failNextBusinessUpdate=true);
+ await page.locator('#business-settings button[type="submit"]').first().click();await page.locator('#business-settings [role="alert"]').waitFor();
+ const bounds=await page.locator('.business-settings-input-shell').first().evaluate(e=>{const a=e.querySelector('input').getBoundingClientRect(),b=e.querySelector('.business-settings-field-icon').getBoundingClientRect();return a.left>=b.right-1||a.right<=b.left+1;});
+ assert.equal(bounds,true,'save error feedback cannot reintroduce field collision');
+}
+
+async function notificationPresentation({page,load,open,measure}) {
+ for(const locale of ['en','sv','de','es','fa','ar'])for(const width of [320,390,834,1440]) {
+  await page.setViewportSize({width,height:width===320?568:1000});await load(locale);await open('notifications');await page.locator('.notification-row').first().waitFor();
+  assert.equal(await page.locator('.notification-row.read .notification-read-label').count(),5);
+  assert.equal(await page.locator('.notification-resolution-label').count(),18);
+  assert.equal(await page.locator('.notification-severity-label').count(),18);
+  assert.equal(await page.locator('.notification-row').first().locator('.notification-row-actions .primary').isVisible(),true,'issue action keeps visual priority');
+  await measure('polish-notifications',locale);
+  assert.deepEqual(await page.evaluate(()=>window.fixtureCalls.filter(c=>/^(update|create|delete|send|mark)/.test(c.method))),[],'presentation never marks or resolves issues');
+ }
 }

@@ -267,9 +267,8 @@ export default function DashboardShell({
           <span className="topbar-title" translate="no">{t(title)}</span>
 
           <div className="topbar-search">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9">
-              <circle cx="11" cy="11" r="6" />
-              <path d="M20 20L16.65 16.65" />
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" aria-hidden="true">
+              <path d="M4 10h16v10H4zM3 10l2-5h14l2 5M9 20v-6h6v6" />
             </svg>
             <select
               aria-label={t('Selected business')}

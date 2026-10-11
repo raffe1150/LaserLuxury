@@ -5,6 +5,7 @@ import {
   DASHBOARD_LOCALE_STORAGE_KEY,
   DASHBOARD_TRANSLATION_KEYS,
   dashboardDirection,
+  dashboardSourceLabel,
   formatDashboardDate,
   formatDashboardNumber,
   missingDashboardTranslationKeys,
@@ -208,4 +209,27 @@ for (const key of knowledgeVisibleKeys) {
 }
 for (const title of ['1234567', '  {title} "$&" سیاست ١٣  ', 'Customer\nsource']) {
   assert.equal(translateDashboardText('en', 'Delete "{title}" from Knowledge?').replace('{title}', () => title), `Delete "${title}" from Knowledge?`, 'confirmation preserves raw titles and English bytes');
+}
+
+const countLabels = {
+ en:['sources','source','sources','sources','sources'],sv:['källor','källa','källor','källor','källor'],
+ de:['Quellen','Quelle','Quellen','Quellen','Quellen'],es:['fuentes','fuente','fuentes','fuentes','fuentes'],
+ fa:['منبع','منبع','منبع','منبع','منبع'],ar:['مصادر','مصدر','مصدران','مصادر','مصدرًا'],
+};
+for(const locale of DASHBOARD_LOCALES) assert.deepEqual([0,1,2,3,11].map(count=>dashboardSourceLabel(locale,count)),countLabels[locale]);
+assert.equal(dashboardSourceLabel('ar',100),'مصدر','Arabic hundred uses the singular counted noun');
+for(const locale of DASHBOARD_LOCALES)if(locale!=='en')assert.notEqual(translateDashboardText(locale,'Optional adjustments and instructions.'),'Optional adjustments and instructions.');
+for(const locale of DASHBOARD_LOCALES)for(const key of ['Your next steps','View issues','View health','Coming up','Upcoming bookings','Connect a channel','Loading your overview…','This preview is unavailable. Open the workspace to try again.','Showing loaded results. Open the workspace for full details.','No active issues in loaded results.','Last known status','Filters','Reset filters']) {
+ assert.ok(DASHBOARD_TRANSLATION_KEYS.includes(key));if(locale!=='en')assert.notEqual(translateDashboardText(locale,key),key);
+}
+
+for(const locale of DASHBOARD_LOCALES)for(const key of ['Critical','Information','Unresolved','Resolved','Read']) {
+ assert.ok(DASHBOARD_TRANSLATION_KEYS.includes(key));assert.ok(translateDashboardText(locale,key).trim());
+ if(locale!=='en'&&key!=='Information')assert.notEqual(translateDashboardText(locale,key),key);
+}
+
+const homeSource = readFileSync(new URL('../components/dashboard/HomeOperations.tsx', import.meta.url), 'utf8');
+for(const key of [...homeSource.matchAll(/\bt\(\s*'([^']+)'/g)].map(match=>match[1]).concat(['There are no active issues in this view.','No active issues in loaded results.','No upcoming bookings','Connection status unavailable','Service not specified','No upcoming bookings in loaded results.'])) {
+ assert.ok(DASHBOARD_TRANSLATION_KEYS.includes(key),`Home copy is canonical: ${key}`);
+ for(const locale of ['sv','de','es','fa','ar'] as const) assert.notEqual(translateDashboardText(locale,key),key,`${locale}: no Home copy fallback`);
 }

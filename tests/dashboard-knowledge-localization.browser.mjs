@@ -5,12 +5,12 @@ import {resolve} from 'node:path';
 // Independent expected copy; the browser exercises the real panel and shared
 // i18n provider through the existing mock-API / production-CSS fixture.
 export const knowledgeInterfaceCopy = {
-  en: ['sources', 'Add knowledge', 'Use manual text for policies, FAQs, procedures and other business information.', 'Manual text', 'Title', 'Content', 'Example: Cancellation policy', 'Write the information the assistant should know...'],
-  sv: ['källor', 'Lägg till information', 'Använd manuell text för policyer, vanliga frågor, rutiner och annan verksamhetsinformation.', 'Manuell text', 'Rubrik', 'Innehåll', 'Exempel: Avbokningspolicy', 'Ange informationen som assistenten behöver känna till...'],
-  de: ['Quellen', 'Information hinzufügen', 'Nutze manuelle Texte für Richtlinien, häufige Fragen, Abläufe und weitere Unternehmensinformationen.', 'Manueller Text', 'Titel', 'Inhalt', 'Beispiel: Stornierungsrichtlinie', 'Gib die Informationen ein, die der Assistent kennen sollte...'],
-  es: ['fuentes', 'Añadir información', 'Usa texto manual para políticas, preguntas frecuentes, procedimientos y otra información del negocio.', 'Texto manual', 'Título', 'Contenido', 'Ej.: Política de cancelación', 'Escribe la información que el asistente debe conocer...'],
-  fa: ['منابع', 'افزودن اطلاعات', 'برای سیاست‌ها، پرسش‌های متداول، رویه‌ها و سایر اطلاعات کسب‌وکار، متن را دستی وارد کنید.', 'متن دستی', 'عنوان', 'محتوا', 'مثال: سیاست لغو', 'اطلاعاتی را که دستیار باید بداند بنویسید...'],
-  ar: ['مصادر', 'إضافة معلومات', 'أدخل نصًا يدويًا للسياسات والأسئلة الشائعة والإجراءات ومعلومات النشاط الأخرى.', 'نص يدوي', 'العنوان', 'المحتوى', 'مثال: سياسة الإلغاء', 'اكتب المعلومات التي ينبغي أن يعرفها المساعد...'],
+  en: ['source', 'Add knowledge', 'Use manual text for policies, FAQs, procedures and other business information.', 'Manual text', 'Title', 'Content', 'Example: Cancellation policy', 'Write the information the assistant should know...'],
+  sv: ['källa', 'Lägg till information', 'Använd manuell text för policyer, vanliga frågor, rutiner och annan verksamhetsinformation.', 'Manuell text', 'Rubrik', 'Innehåll', 'Exempel: Avbokningspolicy', 'Ange informationen som assistenten behöver känna till...'],
+  de: ['Quelle', 'Information hinzufügen', 'Nutze manuelle Texte für Richtlinien, häufige Fragen, Abläufe und weitere Unternehmensinformationen.', 'Manueller Text', 'Titel', 'Inhalt', 'Beispiel: Stornierungsrichtlinie', 'Gib die Informationen ein, die der Assistent kennen sollte...'],
+  es: ['fuente', 'Añadir información', 'Usa texto manual para políticas, preguntas frecuentes, procedimientos y otra información del negocio.', 'Texto manual', 'Título', 'Contenido', 'Ej.: Política de cancelación', 'Escribe la información que el asistente debe conocer...'],
+  fa: ['منبع', 'افزودن اطلاعات', 'برای سیاست‌ها، پرسش‌های متداول، رویه‌ها و سایر اطلاعات کسب‌وکار، متن را دستی وارد کنید.', 'متن دستی', 'عنوان', 'محتوا', 'مثال: سیاست لغو', 'اطلاعاتی را که دستیار باید بداند بنویسید...'],
+  ar: ['مصدر', 'إضافة معلومات', 'أدخل نصًا يدويًا للسياسات والأسئلة الشائعة والإجراءات ومعلومات النشاط الأخرى.', 'نص يدوي', 'العنوان', 'المحتوى', 'مثال: سياسة الإلغاء', 'اكتب المعلومات التي ينبغي أن يعرفها المساعد...'],
 };
 
 export async function runKnowledgeLocalizationChecks({page,load,primary,before,out}) {
@@ -76,18 +76,15 @@ export async function runKnowledgeLocalizationChecks({page,load,primary,before,o
     }
     if(before)return;
 
-    // Isolate the small translated-count width defect without changing data.
-    await page.setViewportSize({width:834,height:1194});await load('de');await primary('ai-assistant');
-    await page.locator('.knowledge-source-row').first().waitFor();
-    const countBounds=()=>page.locator('.knowledge-source-count').evaluate(e=>({
-      badge:e.getBoundingClientRect().width,client:e.querySelector('span').clientWidth,
-      scroll:e.querySelector('span').scrollWidth,text:e.querySelector('span').textContent,
-    }));
-    const oldWidth=await page.addStyleTag({content:'.dashboard-page .knowledge-source-count { flex-shrink: 1; min-inline-size: 78px; }'});
-    const oldCount=await countBounds();await oldWidth.evaluate(e=>e.remove());const newCount=await countBounds();
-    evidence.widthCorrection.push({before:oldCount,after:newCount});save();
-    assert.ok(oldCount.scroll>oldCount.client+1,'old width reproduces the German label overflow');
-    assert.ok(newCount.scroll<=newCount.client+1,'natural badge width contains the full label');
+    // Count quantity and natural-width labels stay independent of readiness.
+    for(const locale of Object.keys(knowledgeInterfaceCopy)) {
+      await page.setViewportSize({width:320,height:568});await load(locale);await primary('ai-assistant');
+      const badge=await page.locator('.knowledge-source-count').evaluate(e=>({client:e.clientWidth,scroll:e.scrollWidth,label:e.querySelector('span').textContent}));
+      evidence.widthCorrection.push({locale,...badge});assert.ok(badge.scroll<=badge.client+1,'full singular badge fits');
+      await load(locale,'visual-empty');await primary('ai-assistant');assert.equal(await page.locator('.knowledge-source-row').count(),0);
+      assert.equal(await page.locator('.knowledge-source-count span').innerText(),{en:'sources',sv:'källor',de:'Quellen',es:'fuentes',fa:'منبع',ar:'مصادر'}[locale]);
+    }
+    save();
 
     // Locale changes preserve draft/source bytes and never save implicitly.
     await load();await primary('ai-assistant');
@@ -104,7 +101,7 @@ export async function runKnowledgeLocalizationChecks({page,load,primary,before,o
     const businessId=await page.locator('.topbar-search select').inputValue();
     await page.locator('.knowledge-create-card button[type="submit"]').click();
     const created=page.locator('.knowledge-source-row').filter({has:page.locator('.knowledge-source-title',{hasText:title.trim()})});
-    await created.waitFor();assert.equal(await input.inputValue(),'');assert.equal(await textarea.inputValue(),'');
+    await created.waitFor();assert.equal(await page.locator('.knowledge-source-count span').innerText(),'مصدران','two Arabic sources use the dual');assert.equal(await input.inputValue(),'');assert.equal(await textarea.inputValue(),'');
     assert.deepEqual(await writes(),[{method:'createKnowledgeSource',id:businessId,payload:{title:title.trim(),content:content.trim()}}]);
     evidence.behavior.push('Explicit create uses the unchanged business ID and trimmed title/content payload; locale changes preserve draft/source bytes.');
     const canceled=async d=>d.dismiss();page.once('dialog',canceled);await created.locator('.knowledge-delete-button').click();

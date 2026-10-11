@@ -3,11 +3,13 @@ import type { Booking, BookingPage, BookingView } from '../../types/dashboard';
 import { bookingStatusLabel, groupBookingsByDate, mergeBookingPages } from '../../bookings/workspace';
 import { api } from '../../services/api';
 import { ChannelIcon } from './Icons';
+import type { WorkspacePreview } from './HomeOperations';
 import { useDashboardI18n } from '../../i18n/dashboard';
 
 interface BookingsPanelProps {
   businessId: string;
   timezone?: string;
+  onPreviewChange?: (preview: WorkspacePreview<Booking>) => void;
 }
 
 const PAGE_SIZE = 25;
@@ -22,7 +24,7 @@ const emptySummary: BookingPage['summary'] = {
   today: 0, upcoming: 0, pending: 0, cancelled: 0, scanTruncated: false,
 };
 
-export default function BookingsPanel({ businessId, timezone = 'UTC' }: BookingsPanelProps) {
+export default function BookingsPanel({ businessId, timezone = 'UTC', onPreviewChange }: BookingsPanelProps) {
   const { locale, formatNumber, t } = useDashboardI18n();
   const [view, setView] = useState<BookingView>('upcoming');
   const [query, setQuery] = useState('');
@@ -153,16 +155,23 @@ export default function BookingsPanel({ businessId, timezone = 'UTC' }: Bookings
     }
   };
 
+  useEffect(() => {
+    if (view !== 'upcoming' || search || query) return;
+    onPreviewChange?.({ businessId, items: bookings, status: loading ? 'loading'
+      : error && bookings.length === 0 ? 'unavailable'
+      : error || summary.scanTruncated || cursor !== null ? 'partial' : 'available' });
+  }, [businessId, view, search, query, bookings, loading, error, summary.scanTruncated, cursor, onPreviewChange]);
+
   return (
-    <section ref={workspaceRef} id="bookings" translate="no" className={`card dashboard-section booking-workspace${singlePane ? ' booking-single-pane' : ''}`}>
-      <div className="booking-summary" aria-label={t("Booking summary")}>
+    <section ref={workspaceRef} id="bookings" translate="no" className={`card dashboard-section booking-workspace${singlePane ? ' booking-single-pane' : ''}${singlePane && detailOpen && selected ? ' booking-detail-open' : ''}`}>
+      <div className="booking-summary" hidden={singlePane && detailOpen && Boolean(selected)} aria-label={t("Booking summary")}>
         <SummaryMetric label={t('Today')} value={loading || (error && bookings.length === 0) ? '—' : formatNumber(summary.today)} />
         <SummaryMetric label={t('Upcoming')} value={loading || (error && bookings.length === 0) ? '—' : formatNumber(summary.upcoming)} active={view === 'upcoming'} onClick={() => setView('upcoming')} />
         <SummaryMetric label={t('Pending')} value={loading || (error && bookings.length === 0) ? '—' : formatNumber(summary.pending)} tone={summary.pending ? 'attention' : undefined} active={view === 'pending'} onClick={() => setView('pending')} />
         <SummaryMetric label={t('Cancelled')} value={loading || (error && bookings.length === 0) ? '—' : formatNumber(summary.cancelled)} active={view === 'cancelled'} onClick={() => setView('cancelled')} />
       </div>
 
-      <div className="booking-toolbar">
+      <div className="booking-toolbar" hidden={singlePane && detailOpen && Boolean(selected)}>
         <div className="booking-view-tabs" aria-label={t("Filter bookings")}>
           {views.map((item) => <button key={item.id} type="button" className={view === item.id ? 'active' : ''} aria-pressed={view === item.id} onClick={() => setView(item.id)}>{t(item.label)}</button>)}
         </div>

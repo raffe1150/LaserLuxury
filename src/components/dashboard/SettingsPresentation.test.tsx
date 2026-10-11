@@ -9,6 +9,7 @@ for(const locale of DASHBOARD_LOCALES){
  const markup=renderToStaticMarkup(<DashboardI18nProvider storage={storage}><BusinessSettings business={business} onSaved={()=>undefined}/></DashboardI18nProvider>);
  const ids=[...markup.matchAll(/\bid="([^"]+)"/g)].map(m=>m[1]);assert.equal(new Set(ids).size,ids.length);
  for(const target of [...markup.matchAll(/\bfor="([^"]+)"/g)].map(m=>m[1]))assert.ok(ids.includes(target),`label ${target} has a control`);
+ for(const target of [...markup.matchAll(/aria-describedby="([^"]+)"/g)].flatMap(m=>m[1].split(/\s+/)))assert.ok(ids.includes(target),`helper ${target} is associated with existing text`);
  for(const id of ['business-name','business-industry','business-language','business-timezone','service-0-name','service-1-duration','service-1-currency','service-1-active'])assert.ok(ids.includes(id));
  assert.equal((markup.match(/type="submit"/g)||[]).length,2,'two submit affordances, one existing bulk form');assert.equal((markup.match(/<form /g)||[]).length,1);
  assert.match(markup,/value="AUD"/);assert.match(markup,/value="EUR"/);assert.match(markup,/aria-pressed="false"/);assert.match(markup,/aria-label="[^"]+1" dir="ltr"/);

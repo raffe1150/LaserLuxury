@@ -663,10 +663,56 @@ addTranslations(['Could not load Knowledge sources', 'Could not add Knowledge', 
   ar: ['تعذر تحميل مصادر المعلومات', 'تعذرت إضافة المعلومات', 'تعذر حذف المعلومات'],
 });
 
+// Dashboard polish: presentation-only copy, translated before the key manifest is frozen.
+addTranslations([
+  'Your next steps', 'View issues', 'View health', 'Coming up', 'Upcoming bookings',
+  'Connect a channel', 'Loading your overview…',
+  'This preview is unavailable. Open the workspace to try again.',
+  'Showing loaded results. Open the workspace for full details.',
+  'No active issues in loaded results.', 'Last known status', 'Filters', 'Reset filters', 'source',
+], {
+  sv: ['Nästa steg', 'Visa ärenden', 'Visa anslutningsstatus', 'På gång', 'Kommande bokningar', 'Anslut en kanal', 'Läser in översikten…', 'Förhandsvisningen är inte tillgänglig. Öppna arbetsytan för att försöka igen.', 'Visar inlästa resultat. Öppna arbetsytan för fullständig information.', 'Inga aktiva ärenden i inlästa resultat.', 'Senast kända status', 'Filter', 'Återställ filter', 'källa'],
+  de: ['Deine nächsten Schritte', 'Probleme anzeigen', 'Verbindungsstatus anzeigen', 'Als Nächstes', 'Anstehende Buchungen', 'Kanal verbinden', 'Die Übersicht wird geladen…', 'Diese Vorschau ist nicht verfügbar. Öffne den Arbeitsbereich und versuche es erneut.', 'Geladene Ergebnisse werden angezeigt. Öffne den Arbeitsbereich für alle Details.', 'Keine aktiven Probleme in den geladenen Ergebnissen.', 'Letzter bekannter Status', 'Filter', 'Filter zurücksetzen', 'Quelle'],
+  es: ['Tus próximos pasos', 'Ver incidencias', 'Ver estado', 'Próximamente', 'Próximas reservas', 'Conectar un canal', 'Cargando tu resumen…', 'Esta vista previa no está disponible. Abre el espacio de trabajo para intentarlo de nuevo.', 'Se muestran los resultados cargados. Abre el espacio de trabajo para ver todos los detalles.', 'No hay incidencias activas en los resultados cargados.', 'Último estado conocido', 'Filtros', 'Restablecer filtros', 'fuente'],
+  fa: ['گام‌های بعدی شما', 'مشاهده موارد', 'مشاهده وضعیت اتصال', 'پیش رو', 'رزروهای پیش رو', 'اتصال یک کانال', 'در حال بارگیری نمای کلی…', 'این پیش‌نمایش در دسترس نیست. برای تلاش دوباره بخش مربوط را باز کنید.', 'نتایج بارگیری‌شده نمایش داده می‌شوند. برای جزئیات کامل بخش مربوط را باز کنید.', 'در نتایج بارگیری‌شده مورد فعالی وجود ندارد.', 'آخرین وضعیت شناخته‌شده', 'فیلترها', 'بازنشانی فیلترها', 'منبع'],
+  ar: ['خطواتك التالية', 'عرض المشكلات', 'عرض حالة الاتصالات', 'القادم', 'الحجوزات القادمة', 'ربط قناة', 'جارٍ تحميل النظرة العامة…', 'هذه المعاينة غير متاحة. افتح مساحة العمل للمحاولة مجددًا.', 'تُعرض النتائج المحمّلة. افتح مساحة العمل للاطلاع على التفاصيل الكاملة.', 'لا توجد مشكلات نشطة في النتائج المحمّلة.', 'آخر حالة معروفة', 'الفلاتر', 'إعادة ضبط الفلاتر', 'مصدر'],
+});
+
+addTranslations(['Critical', 'Information', 'Unresolved', 'Resolved', 'Read'], {
+  sv: ['Kritisk', 'Information', 'Olöst', 'Löst', 'Läst'],
+  de: ['Kritisch', 'Information', 'Ungelöst', 'Gelöst', 'Gelesen'],
+  es: ['Crítico', 'Información', 'Sin resolver', 'Resuelto', 'Leído'],
+  fa: ['بحرانی', 'اطلاع‌رسانی', 'رسیدگی‌نشده', 'رسیدگی‌شده', 'خوانده‌شده'],
+  ar: ['حرج', 'معلومات', 'لم يُحل', 'تم الحل', 'مقروء'],
+});
+
+addTranslations(['Optional adjustments and instructions.'], {
+ sv:['Valfria justeringar och instruktioner.'], de:['Optionale Anpassungen und Anweisungen.'],
+ es:['Ajustes e instrucciones opcionales.'], fa:['تنظیمات و دستورالعمل‌های اختیاری.'], ar:['تعديلات وتعليمات اختيارية.'],
+});
+
+addTranslations(['No upcoming bookings in loaded results.'], {
+ sv:['Inga kommande bokningar i inlästa resultat.'], de:['Keine anstehenden Buchungen in den geladenen Ergebnissen.'],
+ es:['No hay próximas reservas en los resultados cargados.'], fa:['در نتایج بارگیری‌شده رزرو پیش رویی وجود ندارد.'], ar:['لا توجد حجوزات قادمة في النتائج المحمّلة.'],
+});
+
 export const DASHBOARD_TRANSLATION_KEYS = Object.freeze(Object.keys(sv).sort());
 const en = Object.fromEntries(DASHBOARD_TRANSLATION_KEYS.map((key) => [key, key]));
 const dictionaries: Record<DashboardLocale, Record<string, string>> = { en, sv, es, de, fa, ar };
 const localeTags: Record<DashboardLocale, string> = { en: 'en-GB', sv: 'sv-SE', es: 'es-ES', de: 'de-DE', fa: 'fa-IR', ar: 'ar' };
+
+// The count and noun are separate badge elements. Arabic and Persian use their
+// own counted-noun grammar instead of assuming an English singular/plural pair.
+export function dashboardSourceLabel(locale: DashboardLocale, count: number): string {
+  if (locale === 'fa') return dictionaries.fa.source;
+  if (locale === 'ar') {
+    const category = new Intl.PluralRules('ar').select(count);
+    if (category === 'two') return 'مصدران';
+    if (category === 'few' || category === 'zero') return dictionaries.ar.sources;
+    return category === 'many' ? 'مصدرًا' : dictionaries.ar.source;
+  }
+  return dictionaries[locale][count === 1 ? 'source' : 'sources'];
+}
 
 export function missingDashboardTranslationKeys(locale: DashboardLocale): string[] {
   return DASHBOARD_TRANSLATION_KEYS.filter((key) => !dictionaries[locale][key]);

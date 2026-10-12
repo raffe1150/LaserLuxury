@@ -233,3 +233,12 @@ for(const key of [...homeSource.matchAll(/\bt\(\s*'([^']+)'/g)].map(match=>match
  assert.ok(DASHBOARD_TRANSLATION_KEYS.includes(key),`Home copy is canonical: ${key}`);
  for(const locale of ['sv','de','es','fa','ar'] as const) assert.notEqual(translateDashboardText(locale,key),key,`${locale}: no Home copy fallback`);
 }
+
+for (const locale of DASHBOARD_LOCALES) {
+  const policy = translateDashboardText(locale, 'Booking & Cancellation Policies');
+  assert.notEqual(policy, translateDashboardText(locale, 'Advanced'), 'cancellation is an operational policy, not Advanced');
+  for (const key of ['Essential settings', 'Business identity', 'Booking & Cancellation Policies', 'Cancellation policy has its own save action.', 'Ready', 'Failed']) {
+    assert.ok(translateDashboardText(locale, key));
+    if (locale !== 'en') assert.notEqual(translateDashboardText(locale, key), key, key + ' is localized');
+  }
+}

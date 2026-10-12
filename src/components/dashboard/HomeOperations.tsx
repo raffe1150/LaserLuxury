@@ -40,15 +40,6 @@ export default function HomeOperations({ businessId, timezone = 'UTC', bookings,
           <span className="home-issue-mark" aria-hidden="true">{item.severity === 'info' ? 'i' : '!'}</span><div><small className="home-issue-severity">{t(notificationSeverityLabel(item.severity))}</small><strong dir="auto">{t(item.title)}</strong><p dir="auto">{t(item.description)}</p></div>
         </li>)}</ul>
       </PreviewState>
-      <div className="home-connections" aria-busy={connections.status === 'loading'}>
-        <div className="home-connections-heading"><h3>{t('Connection health')}</h3><button className="btn btn-ghost" type="button" onClick={() => onNavigate({ primary: 'settings', secondary: 'connection-health' })}>{t('View health')}</button></div>
-        <PreviewState status={connections.status} empty={connections.items.length === 0} emptyCopy="Connection status unavailable">
-          <ul className="home-channel-summary">{connections.items.map((item) => <li key={item.key} className={`home-channel ${item.refreshInProgress ? 'checking' : item.status}`}>
-            <ChannelIcon channel={item.key} /><span>{item.label}</span><small>{t(homeHealthLabel(item))}{item.stale && <span> · {t('Last known status')}</span>}</small>
-          </li>)}</ul>
-          {connections.items.some((item) => item.status === 'setup_required') && <button className="btn btn-secondary" type="button" onClick={() => onNavigate({ primary: 'settings', secondary: 'connections' })}>{t('Connect a channel')}</button>}
-        </PreviewState>
-      </div>
     </section>
     <section className="home-operation-card home-upcoming" aria-labelledby="home-upcoming-title" aria-busy={appointments.status === 'loading'}>
       <header><div><span className="home-section-kicker">{t('Coming up')}</span><h2 id="home-upcoming-title">{t('Upcoming bookings')}</h2></div>
@@ -62,6 +53,15 @@ export default function HomeOperations({ businessId, timezone = 'UTC', bookings,
       </PreviewState>
       {appointments.status === 'available' && appointments.items.length === 0 && <p className="home-preview-hint">{t('New confirmed and pending appointments will appear here.')}</p>}
     </section>
+    <section className="home-connections home-health-band" aria-labelledby="home-health-title" aria-busy={connections.status === 'loading'}>
+        <div className="home-connections-heading"><h3 id="home-health-title">{t('Connection health')}</h3><button className="btn btn-ghost" type="button" onClick={() => onNavigate({ primary: 'settings', secondary: 'connection-health' })}>{t('View health')}</button></div>
+        <PreviewState status={connections.status} empty={connections.items.length === 0} emptyCopy="Connection status unavailable">
+          <ul className="home-channel-summary">{connections.items.map((item) => <li key={item.key} className={`home-channel ${item.refreshInProgress ? 'checking' : item.status}`}>
+            <ChannelIcon channel={item.key} /><span>{item.label}</span><small>{t(homeHealthLabel(item))}{item.stale && <span> · {t('Last known status')}</span>}</small>
+          </li>)}</ul>
+          {connections.items.some((item) => item.status === 'setup_required') && <button className="btn btn-secondary" type="button" onClick={() => onNavigate({ primary: 'settings', secondary: 'connections' })}>{t('Connect a channel')}</button>}
+        </PreviewState>
+      </section>
   </div>;
 }
 

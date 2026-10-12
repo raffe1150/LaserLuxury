@@ -696,6 +696,14 @@ addTranslations(['No upcoming bookings in loaded results.'], {
  es:['No hay próximas reservas en los resultados cargados.'], fa:['در نتایج بارگیری‌شده رزرو پیش رویی وجود ندارد.'], ar:['لا توجد حجوزات قادمة في النتائج المحمّلة.'],
 });
 
+addTranslations(['Essential settings', 'Business identity', 'Booking & Cancellation Policies', 'Cancellation policy has its own save action.', 'Ready', 'Failed'], {
+  sv: ['Grundläggande inställningar', 'Företagsidentitet', 'Boknings- och avbokningspolicyer', 'Avbokningspolicyn sparas separat.', 'Redo', 'Misslyckades'],
+  de: ['Grundlegende Einstellungen', 'Unternehmensidentität', 'Buchungs- und Stornierungsrichtlinien', 'Die Stornierungsrichtlinie wird separat gespeichert.', 'Bereit', 'Fehlgeschlagen'],
+  es: ['Configuración esencial', 'Identidad del negocio', 'Políticas de reserva y cancelación', 'La política de cancelación se guarda por separado.', 'Listo', 'Fallido'],
+  fa: ['تنظیمات اصلی', 'هویت کسب‌وکار', 'سیاست‌های رزرو و لغو', 'سیاست لغو با دکمهٔ ذخیرهٔ جداگانه ذخیره می‌شود.', 'آماده', 'ناموفق'],
+  ar: ['الإعدادات الأساسية', 'هوية النشاط التجاري', 'سياسات الحجز والإلغاء', 'تُحفظ سياسة الإلغاء باستخدام زر حفظ مستقل.', 'جاهز', 'فشل'],
+});
+
 export const DASHBOARD_TRANSLATION_KEYS = Object.freeze(Object.keys(sv).sort());
 const en = Object.fromEntries(DASHBOARD_TRANSLATION_KEYS.map((key) => [key, key]));
 const dictionaries: Record<DashboardLocale, Record<string, string>> = { en, sv, es, de, fa, ar };
@@ -703,6 +711,8 @@ const localeTags: Record<DashboardLocale, string> = { en: 'en-GB', sv: 'sv-SE', 
 
 // The count and noun are separate badge elements. Arabic and Persian use their
 // own counted-noun grammar instead of assuming an English singular/plural pair.
+
+
 export function dashboardSourceLabel(locale: DashboardLocale, count: number): string {
   if (locale === 'fa') return dictionaries.fa.source;
   if (locale === 'ar') {

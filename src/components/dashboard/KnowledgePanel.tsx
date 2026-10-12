@@ -171,78 +171,6 @@ export default function KnowledgePanel({
       </div>
 
       <div className="knowledge-layout">
-        <form
-          className="knowledge-create-card"
-          onSubmit={addKnowledge}
-        >
-          <div className="knowledge-card-heading">
-            <div>
-              <h3>{t('Add knowledge')}</h3>
-              <p>
-                {t(
-                  'Use manual text for policies, FAQs, procedures and other business information.',
-                )}
-              </p>
-            </div>
-
-            <span className="knowledge-type-badge">
-              {t('Manual text')}
-            </span>
-          </div>
-
-          <label className="knowledge-field">
-            <span>{t('Title')}</span>
-
-            <input
-              className="form-input"
-              dir="auto" translate="no"
-              value={title}
-              onChange={(event) => setTitle(event.target.value)}
-              placeholder={t('Example: Cancellation policy')}
-              aria-describedby={error ? 'knowledge-error' : undefined}
-              maxLength={200}
-              disabled={saving}
-            />
-          </label>
-
-          <label className="knowledge-field">
-            <span>{t('Content')}</span>
-
-            <textarea
-              className="form-input"
-              dir="auto" translate="no"
-              value={content}
-              onChange={(event) => setContent(event.target.value)}
-              placeholder={t(
-                'Write the information the assistant should know...',
-              )}
-              aria-describedby={error ? 'knowledge-error' : undefined}
-              maxLength={100000}
-              rows={8}
-              disabled={saving}
-            />
-          </label>
-
-          <div className="knowledge-form-footer">
-            <span dir="ltr">
-              {content.length.toLocaleString()} / 100,000
-            </span>
-
-            <button
-              className="btn btn-primary"
-              translate="no"
-              type="submit"
-              disabled={
-                saving ||
-                !title.trim() ||
-                !content.trim()
-              }
-            >
-              {saving ? t('Adding...') : t('Add knowledge')}
-            </button>
-          </div>
-        </form>
-
         <div className="knowledge-library-card">
           <div className="knowledge-card-heading">
             <div>
@@ -319,7 +247,7 @@ export default function KnowledgePanel({
                       <span
                         className={`knowledge-status knowledge-status-${source.status}`}
                       >
-                        {source.status}
+                        {source.status === 'ready' ? t('Ready') : source.status === 'pending' ? t('Pending') : source.status === 'failed' ? t('Failed') : source.status}
                       </span>
 
                       {source.updatedAt && (
@@ -347,6 +275,79 @@ export default function KnowledgePanel({
             </div>
           )}
         </div>
+
+        <form
+          className="knowledge-create-card"
+          onSubmit={addKnowledge}
+        >
+          <div className="knowledge-card-heading">
+            <div>
+              <h3>{t('Add knowledge')}</h3>
+              <p>
+                {t(
+                  'Use manual text for policies, FAQs, procedures and other business information.',
+                )}
+              </p>
+            </div>
+
+            <span className="knowledge-type-badge">
+              {t('Manual text')}
+            </span>
+          </div>
+
+          <label className="knowledge-field">
+            <span>{t('Title')}</span>
+
+            <input
+              className="form-input"
+              dir="auto" translate="no"
+              value={title}
+              onChange={(event) => setTitle(event.target.value)}
+              placeholder={t('Example: Cancellation policy')}
+              aria-describedby={error ? 'knowledge-error' : undefined}
+              maxLength={200}
+              disabled={saving}
+            />
+          </label>
+
+          <label className="knowledge-field">
+            <span>{t('Content')}</span>
+
+            <textarea
+              className="form-input"
+              dir="auto" translate="no"
+              value={content}
+              onChange={(event) => setContent(event.target.value)}
+              placeholder={t(
+                'Write the information the assistant should know...',
+              )}
+              aria-describedby={error ? 'knowledge-error' : undefined}
+              maxLength={100000}
+              rows={8}
+              disabled={saving}
+            />
+          </label>
+
+          <div className="knowledge-form-footer">
+            <span dir="ltr">
+              {content.length.toLocaleString()} / 100,000
+            </span>
+
+            <button
+              className="btn btn-primary"
+              translate="no"
+              type="submit"
+              disabled={
+                saving ||
+                !title.trim() ||
+                !content.trim()
+              }
+            >
+              {saving ? t('Adding...') : t('Add knowledge')}
+            </button>
+          </div>
+        </form>
+
       </div>
 
     </section>

@@ -41,7 +41,7 @@ const business = (id) => ({id, name:fixture==='rtl-name-ar'?'استوديو أو
   services:[{name:fixture==='long-setup'?'Personalised '+('InternationalTreatment'.repeat(6)):'Initial consultation and personalised treatment plan',durationMinutes:60,price:1200,currency:'SEK',active:true},{name:'Signature facial treatment',durationMinutes:90,price:1850,currency:'SEK',active:true},{name:'Follow-up consultation',durationMinutes:30,price:80,currency:'EUR',active:true},{name:'Premium membership appointment',durationMinutes:45,price:100,currency:'AUD',active:false}],workingHours:{monday:[{start:'09:00',end:'17:00'}],tuesday:[{start:'09:00',end:'17:00'}],wednesday:[{start:'09:00',end:'17:00'}],thursday:[{start:'09:00',end:'19:00'}],friday:[{start:'09:00',end:'16:00'}],saturday:[],sunday:[]}});
 let businesses = fixture === 'zero' ? [] : [business('7'), business('8')];
 window.fixtureBusinesses=()=>businesses;window.pendingSettings=[];window.delayedSettingsMethods=[];
-const knowledge=Object.fromEntries(['7','8','9'].map(id=>[id,[{id:'source-'+id,businessId:id,title:fixture==='long-setup'?'Information '+('InternationalAppointments'.repeat(6)):'Appointments, arrival and parking information',content:'Please arrive ten minutes before your appointment. Free parking is available behind the studio. Bring your consultation form. Rescheduling is subject to the agreed cancellation policy.',type:'text',status:'ready',updatedAt:now}]]));
+const knowledge=Object.fromEntries(['7','8','9'].map(id=>[id,[{id:'source-'+id,businessId:id,title:fixture==='long-setup'?'Information '+('InternationalAppointments'.repeat(6)):'Appointments, arrival and parking information',content:'Please arrive ten minutes before your appointment. Free parking is available behind the studio. Bring your consultation form. Rescheduling is subject to the agreed cancellation policy.',type:'text',status:fixture==='knowledge-pending'?'pending':fixture==='knowledge-failed'?'failed':fixture==='knowledge-unknown'?'external_state':'ready',updatedAt:now}]]));
 let knowledgeSequence=0;
 const health = [{key:'instagram',label:'Instagram',status:'disconnected',reasonCode:'authorization_invalid',action:'reconnect',detail:'Reconnect Instagram',lastCheckedAt:now,stale:false},{key:'messenger',label:'Messenger',status:'connected',reasonCode:'verified',action:'check_now',detail:'Connected account verified',lastCheckedAt:now,stale:false},{key:'whatsapp',label:'WhatsApp',status:'degraded',reasonCode:'provider_unavailable',action:'retry',detail:'The provider is temporarily unavailable. Your saved connection remains in place.',lastCheckedAt:now,stale:['stale-health','held-stale-health'].includes(fixture)},{key:'telegram',label:'Telegram',status:fixture==='feedback-toast'?'connected':'setup_required',reasonCode:'not_configured',action:'complete_setup',detail:'Finish connecting Telegram to receive customer messages.',lastCheckedAt:now,stale:false},{key:'google_calendar',label:'Google Calendar',status:'connected',reasonCode:'verified',action:'check_now',detail:'Calendar access verified',lastCheckedAt:now,stale:false}];
 const makeNotifications = (id) => Array.from({length:18},(_,i)=>i%3?'activity':'health').map((type,i)=>({id:String(i),category:type==='health'?'integration':'booking',severity:i%4===0?'critical':i%3===0?'attention':'info',title:type==='health'?'Instagram needs to be reconnected':'A customer changed their appointment',description:type==='health'?'Reconnect your account to continue receiving customer messages. Your saved settings will remain in place.':'Sofia Andersson rescheduled her consultation. Open bookings to review the updated appointment.',firstObservedAt:now,lastObservedAt:now,read:i%4===1,active:i%5!==2,actionType:type==='health'?'open_health':'open_activity',actionTarget:type==='health'&&fixture==='ai-targets'?'#prompt-editor':type==='health'&&fixture==='usage-targets'?'#usage-statistics':type==='health'&&fixture==='usage-alias'?'#usage':'#'+type}));
@@ -78,7 +78,7 @@ export const api = new Proxy({}, {get(_, method) { return async (...args) => {
       if(window.delayNextKnowledge){window.delayNextKnowledge=false;return new Promise(resolve=>window.pendingKnowledge.push({id,resolve:()=>resolve(sources)}));}
       return sources;
     }
-    case 'createKnowledgeSource': {const source={id:'created-'+(++knowledgeSequence),businessId:id,...args[1],type:'text',status:'ready',updatedAt:now};knowledge[id]=[source,...(knowledge[id]||[])];return source;}
+    case 'createKnowledgeSource': {const source={id:'created-'+(++knowledgeSequence),businessId:id,...args[1],type:'text',status:fixture==='knowledge-pending'?'pending':fixture==='knowledge-failed'?'failed':fixture==='knowledge-unknown'?'external_state':'ready',updatedAt:now};knowledge[id]=[source,...(knowledge[id]||[])];return source;}
     case 'deleteKnowledgeSource': knowledge[id]=knowledge[id].filter(source=>source.id!==args[1]);return {success:true};
     case 'getCancellationSettings': return {success:true,data:{...cancellationByBusiness[id]}};
     case 'getAdminNotificationSettings': return {success:true,data:{...alertsByBusiness[id]}};
@@ -235,7 +235,13 @@ try {
     }
     return result;
   };
-  if(process.argv.includes('--benchmark')) {
+  if(process.argv.includes('--hero')) {
+    const {runHomeHeroChecks}=await import('./dashboard-signature.browser.mjs');
+    await runHomeHeroChecks({page,load,primary,open,out});
+  } else if(process.argv.includes('--signature')) {
+    const {runSignatureChecks}=await import('./dashboard-signature.browser.mjs');
+    await runSignatureChecks({page,load,primary,open,out});
+  } else if(process.argv.includes('--benchmark')) {
     await runBenchmarkRefinementChecks({page,load,primary,open,measure});
   } else if(process.argv.includes('--rc02b')) {
     const {runRemainingKnowledgeLocalizationChecks} = await import('./dashboard-knowledge-localization.browser.mjs');
@@ -268,10 +274,11 @@ try {
       await open(id);if(id==='health')await page.locator('.automatic-health-row').first().waitFor();if(id==='notifications')await page.locator('.notification-row').first().waitFor();
       const data=await measure(id,'en');
       if(!before&&id==='business'){
-        assert.equal(data.headings.filter(h=>/Business(?: Settings)?/.test(h.text)).length,1,'one Business title retains the existing focus target');
-        const group=await page.locator('.working-hours-target-title h3').evaluate(e=>({size:getComputedStyle(e).fontSize,font:getComputedStyle(e).fontFamily}));assert.equal(group.size,'16px');assert.match(group.font,/Inter/);
+        assert.equal(await page.locator('#settings-business-title').count(),1,'one Business title retains the existing focus target');
+        assert.equal(await page.locator('.booking-policy-heading h2').count(),1,'booking policy has its own operational heading');
+        const group=await page.locator('.working-hours-target-title h3').evaluate(e=>({size:getComputedStyle(e).fontSize,font:getComputedStyle(e).fontFamily}));assert.ok(parseFloat(group.size)>=18&&parseFloat(group.size)<=24,'operational section hierarchy is readable and bounded');assert.match(group.font,/Manrope/);
       }
-      if(id==='home'){assert.match(data.currency[0].text,/8,400 SEK \+ 160 EUR/);if(!before)assert.ok(data.headings[0].size>=(width<=1199?24:28)&&data.headings[0].size<=(width<=1199?28:32),'Home identity uses bounded type scale');}
+      if(id==='home'){assert.match(data.currency[0].text,/8,400 SEK \+ 160 EUR/);if(!before)assert.ok(data.headings[0].size>=(width<=768?28:36)&&data.headings[0].size<=(width<=768?32:52),'Home display identity remains responsive and bounded');}
       if(id==='reports')assert.equal(data.currency[0].text,'€50 + SEK\u00a0100');
       if(out&&captures.has(width+'x'+height)&&!['business','inbox','bookings'].includes(id))await page.screenshot({path:resolve(out,width+'x'+height+'-'+id+'.png'),animations:'disabled'});
     }

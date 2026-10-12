@@ -229,7 +229,7 @@ export function BusinessSettings({ business, onSaved, feedbackMemory }: Business
           </button>
         </div>
 
-        <div className="business-settings-info-card">
+        <header className="business-essential-heading"><h3>{t("Essential settings")}</h3><p>{t("Business information, services and working hours are saved together.")}</p></header><div className="business-settings-layout"><div className="business-settings-info-card"><h3 className="business-identity-title">{t("Business identity")}</h3>
           <div className="business-settings-info-grid">
 
             <div className="business-settings-field">
@@ -940,7 +940,7 @@ export function BusinessSettings({ business, onSaved, feedbackMemory }: Business
 
         </div>
 
-        <DashboardFeedback feedback={feedback} saving={saving} />
+        </div><DashboardFeedback feedback={feedback} saving={saving} />
       </form>
     </section>
   );
@@ -1032,7 +1032,7 @@ export function BusinessToneControls({
   return (
     <div className="ai-assistant-setup">
       <header className="assistant-page-heading"><h1>{t('AI Assistant')}</h1></header>
-      <section id="ai-tone" className="card dashboard-section tone-controls" aria-labelledby="assistant-style-title">
+      <div className="assistant-volumes"><section id="ai-tone" className="card dashboard-section tone-controls" aria-labelledby="assistant-style-title">
         <form id="ai-style-form" onSubmit={save} aria-describedby={saveError ? 'ai-style-error' : undefined}>
           <div className="card-header">
             <div>
@@ -1064,7 +1064,7 @@ export function BusinessToneControls({
           </div>
         </form>
       </section>
-      {businessAnswers}
+      {businessAnswers}</div>
       <details id="ai-advanced" className="ai-advanced" ref={advancedRef}>
         <summary>{t('Advanced')}<span className="advanced-summary-help">{t('Optional adjustments and instructions.')}</span></summary>
         <div className="ai-advanced-content">

@@ -20,6 +20,7 @@ import CurrencyValue from '../components/dashboard/CurrencyValue';
 import { api, loadDashboardData } from '../services/api';
 import { useAuth } from '../auth/AuthProvider';
 import dashboardCss from '../styles/dashboard.css?raw';
+import signatureCss from '../styles/dashboard-signature.css?raw';
 import type { Business, Booking, NotificationItem, IntegrationHealth, DashboardData, IntegrationKey } from '../types/dashboard';
 import type {
   DashboardCountMetric,
@@ -70,7 +71,7 @@ function DashboardContent({ onNavigate }: DashboardProps) {
   useEffect(() => {
     const style = document.createElement('style');
     style.dataset.pageStyle = 'dashboard';
-    style.textContent = dashboardCss;
+    style.textContent = dashboardCss + '\n' + signatureCss;
     document.head.appendChild(style);
     return () => style.remove();
   }, []);
@@ -290,7 +291,7 @@ function DashboardContent({ onNavigate }: DashboardProps) {
   };
 
   return (
-    <div className="dashboard-page" ref={pageRef} dir={direction} lang={locale} data-dashboard-locale={locale}>
+    <div className="dashboard-page signature-dashboard" ref={pageRef} dir={direction} lang={locale} data-dashboard-locale={locale}>
       <DashboardShell
         title={dashboardDestinationTitle(navigation)}
         contentReady={!loading && !error}
@@ -324,7 +325,7 @@ function DashboardContent({ onNavigate }: DashboardProps) {
         {!loading && !error && data && selectedBusiness && (
           <>
             <Workspace primary="home" navigation={navigation}>
-              <div hidden={navigation.primary === 'home' && navigation.secondary === 'reports'}>
+              <div className="home-operating-stage" hidden={navigation.primary === 'home' && navigation.secondary === 'reports'}>
                 <MissionControl
                   business={selectedBusiness}
                   data={data}
@@ -396,7 +397,7 @@ function DashboardContent({ onNavigate }: DashboardProps) {
               <SettingsNavigation navigation={navigation} onNavigate={setNavigation} />
               <div hidden={settingsAreaForNavigation(navigation) !== 'business'}>
                 <BusinessSettings key={`business-${selectedBusiness.id}`} business={selectedBusiness} onSaved={handleSaved} feedbackMemory={businessFeedback} />
-                <CancellationSettings key={`cancellation-${selectedBusiness.id}`} business={selectedBusiness} onSaved={handleSaved} feedbackMemory={cancellationFeedback} />
+                <section className="booking-policy-group"><header className="booking-policy-heading"><h2>{t("Booking & Cancellation Policies")}</h2><p>{t("Cancellation policy has its own save action.")}</p></header><CancellationSettings key={`cancellation-${selectedBusiness.id}`} business={selectedBusiness} onSaved={handleSaved} feedbackMemory={cancellationFeedback} /></section>
               </div>
               <div hidden={settingsAreaForNavigation(navigation) !== 'connections'}>
                 <nav className="settings-secondary-nav" aria-label={t('Connections')}>
@@ -890,13 +891,7 @@ function MissionControl({
     <section id="overview" className="mission-control">
       <div className="mission-hero">
         <div className="mission-hero-content">
-          <p className="mission-greeting">{greeting} <span aria-hidden="true">👋</span></p>
-          <div className="home-business-heading"><h1 dir="auto" translate="no">{displayBusinessName}</h1>
-            <button className="btn btn-primary" type="button" onClick={() => onWorkspaceNavigate({ primary: 'inbox' })}>
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M21 11.5a8.4 8.4 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.4 8.4 0 0 1-3.8-.9L3 21l1.9-5.7a8.4 8.4 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.4 8.4 0 0 1 3.8-.9H13a8.5 8.5 0 0 1 8 8v.5Z" /></svg>
-              {t('Open Inbox')}
-            </button></div>
-
+          <div className="home-business-identity">
           <div className="mission-hero-topline">
             <div className="mission-live-status">
               <div className="mission-live-badge">
@@ -905,9 +900,28 @@ function MissionControl({
               </div>
               <span className="mission-monitoring-copy" translate="no">{summary ? <bdi dir="ltr">{metricScope}</bdi> : t(metricScope)}</span>
             </div>
+            <div className="home-hero-attention">
+              <button
+                className={`mission-status-indicator ${statusClass}`}
+                type="button"
+                title={t(operationalStatus.detail)}
+                aria-label={`${t(operationalStatus.title)}. ${t(operationalStatus.detail)}`}
+                onClick={() => onWorkspaceNavigate({ primary: 'settings', secondary: actionTarget === 'notification-center' ? 'notification-center' : 'connection-health' })}
+              >
+                <i aria-hidden="true" />
+                <span>{t(operationalStatus.title)}</span>
+                <b aria-hidden="true">→</b>
+              </button>
+            </div>
           </div>
+          <p className="mission-greeting">{greeting} <span aria-hidden="true">👋</span></p>
+          <div className="home-business-heading"><h1 dir="auto" translate="no">{displayBusinessName}</h1>
+            <button className="btn btn-primary" type="button" onClick={() => onWorkspaceNavigate({ primary: 'inbox' })}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M21 11.5a8.4 8.4 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.4 8.4 0 0 1-3.8-.9L3 21l1.9-5.7a8.4 8.4 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.4 8.4 0 0 1 3.8-.9H13a8.5 8.5 0 0 1 8 8v.5Z" /></svg>
+              {t('Open Inbox')}
+            </button></div>
 
-          <div className="hero-results-block">
+          </div><div className="hero-results-block">
             <div className="hero-result-grid dashboard-primary-kpis">
               <HeroResult
                 icon="customers"
@@ -932,17 +946,6 @@ function MissionControl({
           </div>
           <div className="home-operational-footer">
             <div className="home-operational-status" translate="no">
-              <button
-                className={`mission-status-indicator ${statusClass}`}
-                type="button"
-                title={t(operationalStatus.detail)}
-                aria-label={`${t(operationalStatus.title)}. ${t(operationalStatus.detail)}`}
-                onClick={() => onWorkspaceNavigate({ primary: 'settings', secondary: actionTarget === 'notification-center' ? 'notification-center' : 'connection-health' })}
-              >
-                <i aria-hidden="true" />
-                <span>{t(operationalStatus.title)}</span>
-                <b aria-hidden="true">→</b>
-              </button>
               <p>{t(operationalStatus.detail)}</p>
             </div>
             <nav className="home-workspace-actions" aria-label={t('Home actions')}>

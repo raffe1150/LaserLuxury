@@ -71,9 +71,16 @@ export async function runFocusVisibilityChecks({page,load,primary,open,out,profi
       ['fa',834,1194,25,'custom-assistant-instructions'],
     ]) {
       await prepare(locale,width,height);
-      let before;
-      for(let i=0;i<=step;i++) {before=await scrollPosition();await page.keyboard.press('Tab');await settled();}
-      const r=await geometry();evidence.originalCases.push({locale,width,height,step,before,...r});save();
+      // Preserve native-Tab reproduction and visibility assertions while allowing
+      // the approved library-first composition to change control positions.
+      const target=id?page.locator('#'+id):page.locator('.knowledge-create-card textarea');
+      let before,tabSteps=0,reached=false;
+      for(let i=0;i<40;i++) {
+        before=await scrollPosition();await page.keyboard.press('Tab');await settled();tabSteps++;
+        if(await target.evaluate(e=>e===document.activeElement)){reached=true;break;}
+      }
+      assert.equal(reached,true,'original textarea remains reachable with native Tab');
+      const r=await geometry();evidence.originalCases.push({locale,width,height,step,tabSteps,before,...r});save();
       if(out)await page.screenshot({path:resolve(out,`original-${locale}-${width}x${height}-tab-${step}.png`),animations:'disabled'});
       assert.equal(r.tag,'TEXTAREA','original case still reaches its textarea');assert.equal(r.id,id);
       assertRevealed(r,`${locale}/${width}/original Tab ${step}`);

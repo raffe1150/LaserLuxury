@@ -242,3 +242,13 @@ for (const locale of DASHBOARD_LOCALES) {
     if (locale !== 'en') assert.notEqual(translateDashboardText(locale, key), key, key + ' is localized');
   }
 }
+
+for (const key of ['More filters', '{count} unresolved issue. Review Needs attention below.', '{count} unresolved issues. Review Needs attention below.']) {
+  assert.ok(DASHBOARD_TRANSLATION_KEYS.includes(key));
+  for (const locale of DASHBOARD_LOCALES) {
+    const copy = translateDashboardText(locale, key, {count: '2'});
+    assert.ok(copy.trim());
+    assert.ok(!copy.includes('{count}'));
+    if (locale !== 'en') assert.notEqual(copy, key.replace('{count}', '2'));
+  }
+}

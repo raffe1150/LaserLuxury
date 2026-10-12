@@ -27,6 +27,12 @@
   unicode-range: U+0600-06FF, U+0750-077F, U+0870-0891, U+0897-08E1, U+08E3-08FF, U+200C-200E, U+2010-2011, U+204F, U+2E41, U+FB50-FDFF, U+FE70-FE74, U+FE76-FEFC, U+102E0-102FB, U+10E60-10E7E, U+10EC2-10EC7, U+10EC9-10EEE, U+10EF0-10EFF, U+1EE00-1EE03, U+1EE05-1EE1F, U+1EE21-1EE22, U+1EE24, U+1EE27, U+1EE29-1EE32, U+1EE34-1EE37, U+1EE39, U+1EE3B, U+1EE42, U+1EE47, U+1EE49, U+1EE4B, U+1EE4D-1EE4F, U+1EE51-1EE52, U+1EE54, U+1EE57, U+1EE59, U+1EE5B, U+1EE5D, U+1EE5F, U+1EE61-1EE62, U+1EE64, U+1EE67-1EE6A, U+1EE6C-1EE72, U+1EE74-1EE77, U+1EE79-1EE7C, U+1EE7E, U+1EE80-1EE89, U+1EE8B-1EE9B, U+1EEA1-1EEA3, U+1EEA5-1EEA9, U+1EEAB-1EEBB, U+1EEF0-1EEF1;
 }
 
+.dashboard-page.signature-dashboard {
+  /* A shared, static forest material. Canvas, reading and semantic roles stay intact. */
+  --dashboard-material-forest: radial-gradient(ellipse 520px 280px at 0 0, #1b3829, transparent 90%), #09170f;
+  --dashboard-material-jade: radial-gradient(ellipse 460px 320px at 100% 0, #163c2c, transparent 90%), #08150e;
+}
+
 .dashboard-page.signature-dashboard :is(button,input,textarea,select) {
   font-family: var(--dashboard-font-ui);
 }
@@ -304,14 +310,14 @@
 }
 
 .dashboard-page.signature-dashboard #workspace-home .home-operation-card {
-  background: none;
+  background: transparent;
   border: 0;
   border-radius: 0;
   padding: 0 28px 0 0;
   min-inline-size: 0;
 }
 .dashboard-page.signature-dashboard #workspace-home .home-upcoming {
-  background: #06100b;
+  background: transparent;
   border-inline-start: 1px solid var(--dashboard-border);
   padding: 0 0 0 28px;
 }
@@ -353,11 +359,60 @@
   gap: 0;
 }
 .dashboard-page.signature-dashboard #conversations .conversation-toolbar {
-  background: transparent;
+  position: relative;
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  background: var(--dashboard-material-forest);
   padding: 0 0 12px;
   border: 0;
-  gap: 16px;
+  border-radius: 16px 16px 0 0;
+  gap: 8px;
 }
+.dashboard-page.signature-dashboard #conversations .conversation-primary-channels {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+}
+.dashboard-page.signature-dashboard #conversations .conversation-primary-channels .conversation-channel-tabs {
+  display: flex;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--dashboard-control-border) transparent;
+  scroll-padding-inline: 4px;
+  padding: 0 2px;
+}
+.dashboard-page.signature-dashboard #conversations .conversation-channel-icon :is(.channel-mark,.channel-logo) {
+  inline-size: 20px;
+  block-size: 20px;
+  min-inline-size: 20px;
+}
+.dashboard-page.signature-dashboard #conversations .conversation-primary-channels button {
+  flex: 0 0 auto;
+  min-block-size: 44px;
+}
+.dashboard-page.signature-dashboard #conversations .conversation-list-stats {
+  flex: 0 0 auto;
+  padding: 4px 12px;
+  color: var(--dashboard-text-meta);
+  font-size: 12px;
+  line-height: 1.5;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+.dashboard-page.signature-dashboard #conversations .conversation-filter-summary {
+  display: none;
+}
+.dashboard-page.signature-dashboard #conversations .conversation-reset {
+  min-block-size: 44px;
+  margin: 0 12px;
+  border-radius: 12px;
+}
+.dashboard-page.signature-dashboard #conversations.conversation-single-pane:has(.conversation-list[hidden]) .conversation-toolbar {
+  display: none;
+}
+
 .dashboard-page.signature-dashboard #conversations .conversation-toolbar-stat {
   color: var(--dashboard-text-meta);
   font-size: 12px;
@@ -369,13 +424,15 @@
   min-block-size: 44px;
 }
 .dashboard-page.signature-dashboard #conversations .conversation-filter-disclosure {
-  background: #122a1c;
+  position: relative;
+  flex: 0 0 auto;
+  background: transparent;
   border: 0;
-  border-block-end: 0;
-  border-radius: 24px 24px 0 0;
+  box-shadow: inset 0 0 0 1px var(--dashboard-control-border);
+  border-radius: 12px;
 }
 .dashboard-page.signature-dashboard #conversations .conversation-filter-disclosure summary {
-  padding: 12px 16px;
+  padding: 8px 12px;
   min-block-size: 44px;
   color: var(--dashboard-text-secondary);
 }
@@ -386,7 +443,7 @@
   background: radial-gradient(ellipse 320px 300px at 0 0,#1b3525,transparent),#07110c;
   border: 0;
   border-block-start: 0;
-  border-radius: 0 0 24px 24px;
+  border-radius: 24px;
 }
 .dashboard-page.signature-dashboard #conversations .conversation-item {
   padding: 12px;
@@ -555,7 +612,16 @@
   grid-column: 1/-1;
 }
 .dashboard-page.signature-dashboard #conversations .conversation-filters {
-  max-block-size: 240px;
+  position: absolute;
+  z-index: 6;
+  inset-block-start: calc(100% + 8px);
+  inset-inline-end: 0;
+  inline-size: min(360px, calc(100vw - 48px));
+  max-block-size: min(240px, 40dvh, var(--conversation-filter-space,240px));
+  background: var(--dashboard-material-forest);
+  border: 1px solid var(--dashboard-control-border);
+  border-radius: 16px;
+  box-shadow: 0 12px 32px #0008;
   overflow: auto;
   grid-template-columns: minmax(0,1fr);
   overscroll-behavior: contain;
@@ -922,15 +988,44 @@ padding-inline: 24px;
 }
 .dashboard-page.signature-dashboard #overview .home-operational-status p {
   margin: 0;
-  color: var(--dashboard-text-meta);
-  font-size: 12px;
+  color: var(--dashboard-text-secondary);
+  font-size: 14px;
   line-height: 1.6;
+  max-inline-size: 52ch;
 }
+.dashboard-page.signature-dashboard :is(.home-operation-card h2,.home-connections-heading h3) {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.dashboard-page.signature-dashboard :is(.home-operation-card h2,.home-connections-heading h3) svg {
+  inline-size: 20px;
+  block-size: 20px;
+  flex: 0 0 20px;
+  stroke-width: 1.8;
+  color: var(--dashboard-information);
+}
+.dashboard-page.signature-dashboard .home-attention h2 svg {
+  color: var(--dashboard-text-meta);
+}
+.dashboard-page.signature-dashboard .home-attention:has(.home-issue:is(.attention,.critical)) h2 svg {
+  color: var(--dashboard-warning);
+}
+.dashboard-page.signature-dashboard .home-health-band {
+  background: var(--dashboard-material-forest);
+}
+.dashboard-page.signature-dashboard .booking-toolbar {
+  background: var(--dashboard-material-forest);
+  border-radius: 16px;
+}
+
 .dashboard-page.signature-dashboard .home-operations {
   display: grid;
   grid-template-columns: minmax(0,1.12fr) minmax(0,1fr);
   gap: 0;
   margin-block-start: 28px;
+  background: radial-gradient(ellipse 680px 340px at 0 0, #1b38296b, transparent 90%), radial-gradient(ellipse 560px 380px at 100% 0, #163c2c80, transparent 90%);
+  border-radius: 20px;
 }
 .dashboard-page.signature-dashboard[dir="rtl"] #workspace-home .home-operation-card {
   padding: 0 0 0 28px;
@@ -1092,7 +1187,7 @@ padding-inline: 24px;
   border-radius: 24px;
 }
 .dashboard-page.signature-dashboard .assistant-volumes > #knowledge {
-  background: #09130d;
+  background: var(--dashboard-material-jade);
 }
 .dashboard-page.signature-dashboard .tone-controls .save-row {
   border-block-start: 0;
@@ -1186,6 +1281,9 @@ padding-inline: 24px;
   border-block-start: 1px solid var(--dashboard-border);
   border-radius: 0;
   padding: 20px 0;
+}
+.dashboard-page.signature-dashboard #channel-settings {
+  background: var(--dashboard-material-forest);
 }
 .dashboard-page.signature-dashboard .integration-card {
   background: var(--dashboard-reading);
@@ -1283,11 +1381,19 @@ padding-inline: 24px;
   border-color: var(--dashboard-control-border);
 }
 
+.dashboard-page.signature-dashboard #conversations.conversation-inbox.conversation-single-pane:has(.conversation-filter-disclosure[open]):not(:has(.conversation-list[hidden])) {
+  flex: 1 1 0%;
+}
+.dashboard-page.signature-dashboard #conversations.conversation-inbox.conversation-single-pane:has(.conversation-filter-disclosure[open]):not(:has(.conversation-list[hidden])) .conversation-layout {
+  flex: 1 1 0%;
+  min-block-size: 0;
+}
+
 @media (min-width:769px) {
 .dashboard-page.signature-dashboard #conversations.conversation-inbox:not(.conversation-single-pane),.dashboard-page.signature-dashboard #conversations.conversation-inbox:not(.conversation-single-pane):has(.conversation-filter-disclosure[open]) {
   display: grid;
   grid-template-columns: 320px minmax(0,1fr);
-  grid-template-rows: auto auto auto minmax(0,1fr);
+  grid-template-rows: auto minmax(0,1fr);
   column-gap: 16px;
   flex: 1 1 0%;
   min-block-size: 0;
@@ -1297,35 +1403,22 @@ padding-inline: 24px;
   grid-column: 1/-1;
   grid-row: 1;
 }
-.dashboard-page.signature-dashboard #conversations:not(.conversation-single-pane) .conversation-filter-disclosure {
-  grid-column: 1;
-  grid-row: 2;
-}
 .dashboard-page.signature-dashboard #conversations:not(.conversation-single-pane) .conversation-layout {
   display: contents;
 }
 .dashboard-page.signature-dashboard #conversations:not(.conversation-single-pane) .conversation-list {
   grid-column: 1;
-  grid-row: 4;
+  grid-row: 2;
   height: auto;
   block-size: auto;
   min-block-size: 0;
 }
 .dashboard-page.signature-dashboard #conversations:not(.conversation-single-pane) .conversation-detail {
   grid-column: 2;
-  grid-row: 2/5;
+  grid-row: 2;
   height: auto;
   block-size: auto;
   min-block-size: 0;
-}
-.dashboard-page.signature-dashboard #conversations:not(.conversation-single-pane) .conversation-reset {
-  grid-column: 1;
-  grid-row: 3;
-  min-block-size: 44px;
-  background: #10281d;
-  color: var(--dashboard-text-secondary);
-  margin: 0;
-  border: 1px solid var(--dashboard-control-border);
 }
 .dashboard-page.signature-dashboard .business-service-row {
   grid-template-columns: minmax(0,1fr) minmax(0,1fr) 80px 56px 44px;
@@ -1348,6 +1441,26 @@ padding-inline: 24px;
 }
 
 @media (max-width:1199px) {
+.dashboard-page.signature-dashboard #conversations .conversation-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0,1fr) auto;
+  gap: 8px;
+}
+.dashboard-page.signature-dashboard #conversations .conversation-primary-channels {
+  grid-column: 1/-1;
+}
+.dashboard-page.signature-dashboard #conversations .dashboard-search {
+  inline-size: 100%;
+  min-inline-size: 0;
+  grid-column: 1;
+  grid-row: 2;
+}
+.dashboard-page.signature-dashboard #conversations .conversation-filter-disclosure {
+  grid-column: 2;
+  grid-row: 2;
+  min-inline-size: 0;
+}
+
 .dashboard-page.signature-dashboard #overview .mission-hero::before {
   inset-block-start: -24px;
   inset-inline: -24px;
@@ -1483,11 +1596,8 @@ padding-inline: 16px 0;
   flex: 0 1 auto;
   block-size: 44px;
 }
-.dashboard-page.signature-dashboard #conversations .conversation-toolbar {
-  gap: 12px;
-}
 .dashboard-page.signature-dashboard #conversations .conversation-filters {
-  max-block-size: 180px;
+  max-block-size: min(180px, var(--conversation-filter-space,180px));
 }
 .dashboard-page.signature-dashboard #conversations .conversation-detail {
   border-radius: 0;
@@ -1680,7 +1790,7 @@ margin: 0;
   padding-block: 8px;
 }
 .dashboard-page.signature-dashboard #conversations .conversation-filters {
-  max-block-size: 180px;
+  max-block-size: min(180px, var(--conversation-filter-space,180px));
 }
 }
 

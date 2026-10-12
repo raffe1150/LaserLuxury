@@ -4,6 +4,7 @@ import { bookingStatusLabel } from '../../bookings/workspace';
 import { useDashboardI18n } from '../../i18n/dashboard';
 import type { NavigateDashboard } from './dashboard-navigation';
 import { ChannelIcon } from './Icons';
+import { CalendarClock, TriangleAlert, Network } from 'lucide-react';
 
 // Presentation snapshots from the already mounted workspaces. Home performs no requests.
 export interface WorkspacePreview<T> {
@@ -33,7 +34,7 @@ export default function HomeOperations({ businessId, timezone = 'UTC', bookings,
 
   return <div className="home-operations" translate="no">
     <section className="home-operation-card home-attention" aria-labelledby="home-attention-title" aria-busy={issues.status === 'loading'}>
-      <header><div><span className="home-section-kicker">{t('Your next steps')}</span><h2 id="home-attention-title">{t('Needs attention')}</h2></div>
+      <header><div><span className="home-section-kicker">{t('Your next steps')}</span><h2 id="home-attention-title"><TriangleAlert aria-hidden="true" />{t('Needs attention')}</h2></div>
         <button className="btn btn-ghost" type="button" onClick={() => onNavigate({ primary: 'settings', secondary: 'notification-center' })}>{t('View issues')}</button></header>
       <PreviewState status={issues.status} empty={activeIssues.length === 0} emptyCopy={issues.status === 'partial' ? 'No active issues in loaded results.' : 'There are no active issues in this view.'}>
         <ul className="home-preview-list">{activeIssues.map((item) => <li className={`home-issue ${item.severity}`} key={item.id}>
@@ -42,7 +43,7 @@ export default function HomeOperations({ businessId, timezone = 'UTC', bookings,
       </PreviewState>
     </section>
     <section className="home-operation-card home-upcoming" aria-labelledby="home-upcoming-title" aria-busy={appointments.status === 'loading'}>
-      <header><div><span className="home-section-kicker">{t('Coming up')}</span><h2 id="home-upcoming-title">{t('Upcoming bookings')}</h2></div>
+      <header><div><span className="home-section-kicker">{t('Coming up')}</span><h2 id="home-upcoming-title"><CalendarClock aria-hidden="true" />{t('Upcoming bookings')}</h2></div>
         <button className="btn btn-ghost" type="button" onClick={() => onNavigate({ primary: 'bookings' })}>{t('View bookings')}</button></header>
       <PreviewState status={appointments.status} empty={appointments.items.length === 0} emptyCopy={appointments.status === 'partial' ? 'No upcoming bookings in loaded results.' : 'No upcoming bookings'}>
         <ul className="home-preview-list home-booking-list">{appointments.items.slice(0, 3).map((booking) => <li key={booking.id}>
@@ -54,7 +55,7 @@ export default function HomeOperations({ businessId, timezone = 'UTC', bookings,
       {appointments.status === 'available' && appointments.items.length === 0 && <p className="home-preview-hint">{t('New confirmed and pending appointments will appear here.')}</p>}
     </section>
     <section className="home-connections home-health-band" aria-labelledby="home-health-title" aria-busy={connections.status === 'loading'}>
-        <div className="home-connections-heading"><h3 id="home-health-title">{t('Connection health')}</h3><button className="btn btn-ghost" type="button" onClick={() => onNavigate({ primary: 'settings', secondary: 'connection-health' })}>{t('View health')}</button></div>
+        <div className="home-connections-heading"><h3 id="home-health-title"><Network aria-hidden="true" />{t('Connection health')}</h3><button className="btn btn-ghost" type="button" onClick={() => onNavigate({ primary: 'settings', secondary: 'connection-health' })}>{t('View health')}</button></div>
         <PreviewState status={connections.status} empty={connections.items.length === 0} emptyCopy="Connection status unavailable">
           <ul className="home-channel-summary">{connections.items.map((item) => <li key={item.key} className={`home-channel ${item.refreshInProgress ? 'checking' : item.status}`}>
             <ChannelIcon channel={item.key} /><span>{item.label}</span><small>{t(homeHealthLabel(item))}{item.stale && <span> · {t('Last known status')}</span>}</small>

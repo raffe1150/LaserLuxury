@@ -31,6 +31,28 @@ const statusTabs: Array<{ id: ConversationStatusFilter; label: string }> = [
 export default function ConversationsPanel({ businessId, active = true }: ConversationsPanelProps) {
   const { locale, formatNumber, t } = useDashboardI18n();
   const [filtersOpen, setFiltersOpen] = useState(false);
+  const filterRef = useRef<HTMLDetailsElement>(null);
+  // The secondary-filter popover is presentation only; filter state stays intact.
+  useEffect(() => {
+    if (!filtersOpen) return;
+    const fit = () => {
+      const menu = filterRef.current?.querySelector<HTMLElement>('.conversation-filters');
+      if (!menu) return;
+      const viewport = window.visualViewport;
+      const viewportBottom = viewport ? viewport.offsetTop + viewport.height : window.innerHeight;
+      const nav = document.querySelector<HTMLElement>('.mobile-bottom-nav');
+      const bottom = nav?.getClientRects().length ? Math.min(viewportBottom, nav.getBoundingClientRect().top) : viewportBottom;
+      menu.style.setProperty('--conversation-filter-space', `${Math.max(44, bottom - menu.getBoundingClientRect().top - 12)}px`);
+    };
+    const frame = requestAnimationFrame(fit);
+    window.addEventListener('resize', fit);
+    window.visualViewport?.addEventListener('resize', fit);
+    const dismiss = (event: PointerEvent) => {
+      if (!filterRef.current?.contains(event.target as Node)) setFiltersOpen(false);
+    };
+    document.addEventListener('pointerdown', dismiss);
+    return () => { cancelAnimationFrame(frame); window.removeEventListener('resize', fit); window.visualViewport?.removeEventListener('resize', fit); document.removeEventListener('pointerdown', dismiss); };
+  }, [filtersOpen]);
   const [query, setQuery] = useState('');
   const [search, setSearch] = useState('');
   const [activeChannel, setActiveChannel] = useState('all');
@@ -279,21 +301,23 @@ export default function ConversationsPanel({ businessId, active = true }: Conver
   return (
     <section ref={inboxRef} id="conversations" translate="no" className={`card dashboard-section conversation-inbox${singlePane ? ' conversation-single-pane' : ''}${mobileChatOpen && mobileViewport ? ' mobile-chat-open' : ''}`}>
       <div className="conversation-toolbar">
-        <div className="conversation-toolbar-stats">
-          <span className="conversation-toolbar-stat active">{t("{count} conversations loaded · {range}", { count: formatNumber(total), range: t(activeRangeLabel) })}</span>
-          <span className="conversation-toolbar-stat">{t("{count} unread in loaded results", { count: formatNumber(loadedUnread) })}</span>
-        </div>
-        <input className="form-input dashboard-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t("Search names or messages…")} aria-label={t("Search conversations")} />
-      </div>
-
-      <details className="conversation-filter-disclosure" open={filtersOpen} onToggle={(event) => setFiltersOpen(event.currentTarget.open)}>
-        <summary><span>{t('Filters')}</span><span className="conversation-filter-summary">{t(channelTabs.find((tab) => tab.id === activeChannel)?.label || 'All')} · {t(activeRangeLabel)} · {t(statusTabs.find((tab) => tab.id === activeStatus)?.label || 'All')}</span></summary>
-      <div className="conversation-filters">
-      <div className="conversation-filter-group"><span className="conversation-filter-label">{t('Channel')}</span><div className="conversation-channel-tabs" aria-label={t('Filter conversations by channel')}>
-        {channelTabs.map((tab) => <button className={activeChannel === tab.id ? 'conversation-channel-tab active' : 'conversation-channel-tab'} key={tab.id} type="button" onClick={() => setActiveChannel(tab.id)} aria-pressed={activeChannel === tab.id}>
+      <div className="conversation-primary-channels"><div className="conversation-channel-tabs" role="group" aria-label={t('Filter conversations by channel')}>
+        {channelTabs.map((tab) => <button className={activeChannel === tab.id ? 'conversation-channel-tab active' : 'conversation-channel-tab'} key={tab.id} type="button" onClick={() => setActiveChannel(tab.id)} onFocus={(event) => event.currentTarget.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'instant' })} aria-pressed={activeChannel === tab.id}>
           {tab.id !== 'all' && <span className="conversation-channel-icon"><ChannelIcon channel={tab.id} /></span>}<span>{t(tab.label)}</span>
         </button>)}
       </div></div>
+
+        <input className="form-input dashboard-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t("Search names or messages…")} aria-label={t("Search conversations")} />
+
+      <details ref={filterRef} className="conversation-filter-disclosure" open={filtersOpen} onToggle={(event) => setFiltersOpen(event.currentTarget.open)} onKeyDown={(event) => {
+        if (event.key !== 'Escape' || !event.currentTarget.open) return;
+        event.preventDefault(); event.stopPropagation();
+        event.currentTarget.open = false;
+        setFiltersOpen(false);
+        event.currentTarget.querySelector('summary')?.focus();
+      }}>
+        <summary aria-label={`${t('More filters')}: ${t(activeRangeLabel)} · ${t(statusTabs.find((tab) => tab.id === activeStatus)?.label || 'All')}`}><span>{t('More filters')}</span>{(activeRange !== 'recent' || activeStatus !== 'all') && <b aria-hidden="true">{formatNumber(Number(activeRange !== 'recent') + Number(activeStatus !== 'all'))}</b>}<span className="conversation-filter-summary">{t(activeRangeLabel)} · {t(statusTabs.find((tab) => tab.id === activeStatus)?.label || 'All')}</span></summary>
+      <div className="conversation-filters">
 
       <div className="conversation-filter-group"><span className="conversation-filter-label">{t('Activity')}</span><div className="conversation-channel-tabs conversation-range-tabs" aria-label={t('Filter conversations by activity range')}>
         {rangeTabs.map((tab) => <button className={activeRange === tab.id ? 'conversation-channel-tab active' : 'conversation-channel-tab'} key={tab.id} type="button" onClick={() => setActiveRange(tab.id)} aria-pressed={activeRange === tab.id}>
@@ -307,12 +331,19 @@ export default function ConversationsPanel({ businessId, active = true }: Conver
         </button>)}
       </div></div>
 
+      {(query || activeChannel !== 'all' || activeRange !== 'recent' || activeStatus !== 'all') && <button className="conversation-reset" type="button" onClick={() => { setQuery(''); setActiveChannel('all'); setActiveRange('recent'); setActiveStatus('all'); }}>{t('Reset filters')}</button>}
       </div>
       </details>
-      {(query || activeChannel !== 'all' || activeRange !== 'recent' || activeStatus !== 'all') && <button className="conversation-reset" type="button" onClick={() => { setQuery(''); setActiveChannel('all'); setActiveRange('recent'); setActiveStatus('all'); }}>{t('Reset filters')}</button>}
+      </div>
+
 
       <div className="conversation-layout">
         <div ref={listRef} className="conversation-list" role="region" aria-label={t("Customer conversations")} tabIndex={0} aria-busy={listLoading} hidden={singlePane && mobileChatOpen}>
+        <div className="conversation-toolbar-stats conversation-list-stats">
+          <span className="conversation-toolbar-stat active">{t("{count} conversations loaded · {range}", { count: formatNumber(total), range: t(activeRangeLabel) })}</span>
+          <span className="conversation-toolbar-stat">{t("{count} unread in loaded results", { count: formatNumber(loadedUnread) })}</span>
+        </div>
+
           {listLoading && <ConversationListSkeleton label={t("Loading conversations")} />}
           {!listLoading && listError && conversations.length === 0 && <div className="conversation-state" role="alert"><strong>{t("Inbox unavailable")}</strong><span>{listError}</span><button type="button" onClick={() => setListRetry((value) => value + 1)}>{t("Retry")}</button></div>}
           {!listLoading && !listError && conversations.length === 0 && <div className="conversation-state"><strong>{t("No conversations found")}</strong><span>{t("Try another search or channel.")}</span></div>}

@@ -159,6 +159,7 @@ export async function runTabletDialogChecks({page,load,primary,open,before,out,m
     // The existing filtering and send contract is exercised, not replaced by layout code.
     await page.locator('.conversation-filter-disclosure summary').press('Enter');
     await page.locator('.conversation-channel-tabs').first().locator('button').nth(1).click();
+    await page.locator('.conversation-filter-disclosure summary').click();
     await page.waitForFunction(()=>window.fixtureCalls.some(c=>c.method==='getConversationPage'&&c.payload.channel==='whatsapp'));
     await page.locator('.conversation-range-tabs').getByRole('button',{name:'30 days',exact:true}).click();
     await page.waitForFunction(()=>window.fixtureCalls.some(c=>c.method==='getConversationPage'&&c.payload.channel==='whatsapp'&&c.payload.range==='30d'));
@@ -227,23 +228,30 @@ export async function runTabletDialogChecks({page,load,primary,open,before,out,m
     // Phase 7: inspect focused filter buttons, including legacy overflow ancestors.
     for(const locale of ['en','sv','de','es','fa','ar']) for(const width of [320,834]) {
       await page.setViewportSize({width,height:1194});await load(locale);await primary('inbox');await page.locator('.conversation-filter-disclosure summary').focus();await page.keyboard.press('Enter');
-      const count=await page.locator('.conversation-channel-tab').count();
+      const count=await page.locator('.conversation-filters .conversation-channel-tab').count();
       for(let i=0;i<count;i++) {
         await page.keyboard.press('Tab');await page.waitForTimeout(40);
         const r=await page.evaluate(()=>{const e=document.activeElement,b=e.getBoundingClientRect();return {button:e.classList.contains('conversation-channel-tab'),left:b.left,right:b.right};});
         assert.equal(r.button,true,'filter is keyboard reachable');assert.ok(r.left>=-1&&r.right<=width+1,'focused filter fully visible in '+locale+' / '+width);
       }
+      // Primary channels now precede search/disclosure; test their own natural Tab order as well.
+      await page.locator('.conversation-primary-channels button').first().focus();
+      for(let i=0;i<5;i++) {
+        if(i)await page.keyboard.press('Tab');
+        const r=await page.evaluate(()=>{const e=document.activeElement,b=e.getBoundingClientRect();return {primary:!!e.closest('.conversation-primary-channels'),left:b.left,right:b.right};});
+        assert.ok(r.primary,'channel pills remain in natural keyboard order');assert.ok(r.left>=-1&&r.right<=width+1,'primary channel fully visible in '+locale+' / '+width);
+      }
       await noWrites();
     }
     // Short workspaces reuse single-pane mode; Back retains filters and the draft.
     for(const locale of ['en','de','fa','ar']) for(const [width,height] of [[834,500],[1024,500],[834,600],[1024,600]]) {
-      await page.setViewportSize({width,height});await load(locale,'long-customer');await primary('inbox');await page.locator('.conversation-filter-disclosure summary').press('Enter');await page.locator('.conversation-item').first().click();await page.locator('.conversation-reply-input:not([disabled])').waitFor();await page.locator('.conversation-reply-input').fill('Short-height draft');
+      await page.setViewportSize({width,height});await load(locale,'long-customer');await primary('inbox');await page.locator('.conversation-filter-disclosure summary').press('Enter');await page.locator('.conversation-filter-disclosure summary').press('Escape');await page.locator('.conversation-item').first().click();await page.locator('.conversation-reply-input:not([disabled])').waitFor();await page.locator('.conversation-reply-input').fill('Short-height draft');
       for(const selector of ['.conversation-reply-input','.conversation-reply-actions button']) {
         const b=await bounds(selector);assert.ok(b.y>=0&&b.bottom<=height+1,'short-height composer fits');assert.deepEqual(b.clips,[],'short-height composer has no clipping ancestor');
       }
       assert.equal(await page.locator('.conversation-filters').isVisible(),false);
       assert.equal(await page.locator('.conversation-detail-head').getAttribute('tabindex'),'0');
-      await page.locator('.conversation-mobile-back').click();assert.equal(await page.locator('.conversation-filters').isVisible(),true);await page.locator('.conversation-item').first().click();assert.equal(await page.locator('.conversation-reply-input').inputValue(),'Short-height draft');await noWrites();
+      await page.locator('.conversation-mobile-back').click();await page.locator('.conversation-filter-disclosure summary').click();assert.equal(await page.locator('.conversation-filters').isVisible(),true);await page.locator('.conversation-filter-disclosure summary').press('Escape');await page.locator('.conversation-item').first().click();assert.equal(await page.locator('.conversation-reply-input').inputValue(),'Short-height draft');await noWrites();
     }
     await page.setViewportSize({width:834,height:1194});await load();await open('health');
     // Control the existing 500ms background refresh so this assertion does not

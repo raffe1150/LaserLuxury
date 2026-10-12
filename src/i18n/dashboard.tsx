@@ -110,6 +110,15 @@ function addTranslations(
 }
 
 
+// Post-release operational presentation; uses the existing authoritative issue count.
+addTranslations(['More filters', '{count} unresolved issue. Review Needs attention below.', '{count} unresolved issues. Review Needs attention below.'], {
+  sv: ['Fler filter', '{count} olöst problem. Se Behöver åtgärdas nedan.', '{count} olösta problem. Se Behöver åtgärdas nedan.'],
+  es: ['Más filtros', '{count} incidencia sin resolver. Revisa Requiere atención más abajo.', '{count} incidencias sin resolver. Revisa Requiere atención más abajo.'],
+  de: ['Weitere Filter', '{count} ungelöstes Problem. Sieh unten unter Handlungsbedarf nach.', '{count} ungelöste Probleme. Sieh unten unter Handlungsbedarf nach.'],
+  fa: ['فیلترهای بیشتر', '{count} مشکل حل‌نشده. بخش نیازمند توجه را در پایین بررسی کنید.', '{count} مشکل حل‌نشده. بخش نیازمند توجه را در پایین بررسی کنید.'],
+  ar: ['المزيد من الفلاتر', '{count} مشكلة لم تُحل. راجع قسم يحتاج إلى اهتمام أدناه.', '{count} مشكلات لم تُحل. راجع قسم يحتاج إلى اهتمام أدناه.'],
+});
+
 // Visual Phase 4: truthful loaded-result context and operational Inbox labels.
 addTranslations([
   '{count} conversations loaded · {range}', '{count} unread in loaded results',

@@ -946,7 +946,9 @@ function MissionControl({
           </div>
           <div className="home-operational-footer">
             <div className="home-operational-status" translate="no">
-              <p>{t(operationalStatus.detail)}</p>
+              <p>{operationalStatus.activeNotificationCount !== null && operationalStatus.activeNotificationCount > 0
+                ? t(operationalStatus.activeNotificationCount === 1 ? '{count} unresolved issue. Review Needs attention below.' : '{count} unresolved issues. Review Needs attention below.', { count: new Intl.NumberFormat(locale).format(operationalStatus.activeNotificationCount) })
+                : t(operationalStatus.detail)}</p>
             </div>
             <nav className="home-workspace-actions" aria-label={t('Home actions')}>
               <button className="btn btn-ghost" type="button" onClick={() => onWorkspaceNavigate({ primary: 'bookings' })}>{t('Open Bookings')}</button>
@@ -977,10 +979,8 @@ function HeroResult({
       <div className="hero-result-icon" aria-hidden="true">
         {icon === 'customers' && (
           <svg viewBox="0 0 24 24" fill="none">
-            <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
-            <circle cx="9" cy="7" r="4" />
-            <path d="M22 21v-2a4 4 0 0 0-3-3.87" />
-            <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+            <path d="M21 11.5a8.5 8.5 0 0 1-12.3 7.6L3 21l1.9-5.7A8.5 8.5 0 1 1 21 11.5Z" />
+            <path d="M8 10h8M8 14h5" />
           </svg>
         )}
         {icon === 'bookings' && (

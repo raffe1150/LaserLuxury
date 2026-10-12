@@ -225,7 +225,10 @@ assert.match(panelMarkup, /Active/);
 assert.match(panelMarkup, /Booked/);
 assert.match(panelMarkup, /Loading conversations/);
 assert.match(panelMarkup, /conversations loaded · Recent/);
-assert.match(panelMarkup, /conversation-filter-label[^>]*>Channel/);
+assert.match(panelMarkup, /conversation-primary-channels.*Filter conversations by channel/);
+const secondaryMarkup = panelMarkup.match(/<details[\s\S]*?<\/details>/)?.[0] || '';
+assert.match(secondaryMarkup, /More filters/);
+assert.ok(!secondaryMarkup.includes('Filter conversations by channel'), 'channels stay accessible outside the closed secondary disclosure');
 assert.match(panelMarkup, /conversation-filter-label[^>]*>Activity/);
 assert.match(panelMarkup, /conversation-filter-label[^>]*>Status/);
 

@@ -211,6 +211,16 @@ export const api = {
       method: 'DELETE',
     }),
 
+  getKnowledgeDocuments: (businessId: string) => request<KnowledgeEnvelope>(`/api/businesses/${encodeURIComponent(businessId)}/knowledge/documents`).then((result) => result.data),
+  uploadKnowledgeDocument: (businessId: string, file: File) => {
+    const mimes: Record<string, string> = { pdf: 'application/pdf', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', txt: 'text/plain', csv: 'text/csv', xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' };
+    return request<{ success: true; sourceId: string }>(`/api/businesses/${encodeURIComponent(businessId)}/knowledge/documents`, {
+      method: 'POST', body: file, headers: { 'Content-Type': 'application/octet-stream', 'X-Document-Name': encodeURIComponent(file.name),
+        'X-Document-Mime': mimes[file.name.split('.').pop()?.toLowerCase() || ''] || file.type, 'X-Business-Knowledge-Only': 'true' },
+    });
+  },
+  retryKnowledgeDocument: (businessId: string, sourceId: string) => request(`/api/businesses/${encodeURIComponent(businessId)}/knowledge/documents/${encodeURIComponent(sourceId)}/retry`, { method: 'POST' }),
+  deleteKnowledgeDocument: (businessId: string, sourceId: string) => request(`/api/businesses/${encodeURIComponent(businessId)}/knowledge/documents/${encodeURIComponent(sourceId)}`, { method: 'DELETE' }),
   getKnowledgeSources: (businessId: string) =>
     request<KnowledgeEnvelope>(
       `/api/businesses/${encodeURIComponent(businessId)}/knowledge`,

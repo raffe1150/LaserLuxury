@@ -1,11 +1,12 @@
 import type { EmbeddingProvider, EmbeddingVector } from "./src/ai/embeddings";
 import crypto from "crypto";
 import { CompatibleSemanticIndex, semanticCorpusFingerprint, type SemanticChunk } from "./src/knowledge/semantic-index";
+import { confirmedTextLanguage, normalizeSemanticQuery, explicitlyWrongWorkflow, MAX_SEMANTIC_QUERIES, type SourceLanguage } from './src/knowledge/semantic-queries';
 
-export const KNOWLEDGE_SOURCE_TYPES = ["faq", "pdf", "website", "text"] as const;
+export const KNOWLEDGE_SOURCE_TYPES = ["faq", "pdf", "website", "text", "document"] as const;
 
 export type KnowledgeSourceType = (typeof KNOWLEDGE_SOURCE_TYPES)[number];
-export type KnowledgeSourceStatus = "pending" | "ready" | "disabled" | "error";
+export type KnowledgeSourceStatus = "pending" | "processing" | "ready" | "failed" | "deleted" | "disabled" | "error";
 export type KnowledgeSourceMetadata = Record<string, unknown>;
 
 export interface KnowledgeSource {
@@ -195,7 +196,7 @@ export class SupabaseKnowledgeStorage implements KnowledgeStorage {
       throw new Error(error.message || "Unable to list knowledge sources.");
     }
 
-    return (data || []).map(mapKnowledgeSourceRow);
+    return (data || []).map(mapKnowledgeSourceRow).filter((source: KnowledgeSource) => source.businessId === businessId && source.status !== "deleted");
   }
 
   async create(source: KnowledgeSource): Promise<KnowledgeSource> {
@@ -438,6 +439,36 @@ export function chunkKnowledgeContent(
   }));
 }
 
+// Reconstruct document chunks from the currently published content and provenance.
+// Search rows and cached vectors never supply their own authority or provenance.
+function documentCorpus(source: KnowledgeSource): SemanticChunk[] {
+  const segments = source.metadata.segments;
+  if (!Array.isArray(segments) || !segments.length || segments.length > 200) return [];
+  let previousEnd = 0;
+  const chunks: SemanticChunk[] = [];
+  const revision = documentRevision(source);
+  for (const segment of segments) {
+    if (!segment || !Number.isInteger(segment.start) || !Number.isInteger(segment.end) ||
+      segment.start < previousEnd || segment.end <= segment.start || segment.end > source.content.length) return [];
+    previousEnd = segment.end;
+    const provenance = {
+      ...(Number.isInteger(segment.page) && segment.page > 0 && segment.page <= 100 ? { page: segment.page } : {}),
+      ...(typeof segment.sheet === "string" ? { sheet: segment.sheet.slice(0, 200) } : {}),
+      ...(typeof segment.section === "string" ? { section: segment.section.slice(0, 200) } : {}),
+    };
+    for (const chunk of chunkKnowledgeContent(source.content.slice(segment.start, segment.end))) chunks.push({
+      sourceId: source.id, businessId: source.businessId, text: chunk.content,
+      metadata: { source: "document", filename: source.title, untrusted: true, ...provenance, documentRevision: revision },
+    });
+  }
+  return chunks.length <= 200 ? chunks : [];
+}
+function documentRevision(source: KnowledgeSource): string {
+  return crypto.createHash("sha256").update(JSON.stringify([
+    source.id, source.businessId, source.type, source.status, source.title, source.content, source.metadata.segments,
+  ])).digest("hex");
+}
+
 export class KnowledgeService {
   private storage: KnowledgeStorage;
   private initialized = false;
@@ -449,7 +480,8 @@ export class KnowledgeService {
   constructor(
     primaryStorage: KnowledgeStorage = new InMemoryKnowledgeStorage(),
     fallbackStorage: KnowledgeStorage = new InMemoryKnowledgeStorage(),
-    embeddingProvider: EmbeddingProvider | null = null
+    embeddingProvider: EmbeddingProvider | null = null,
+    private readonly requireDurableStorage = false
   ) {
     this.primaryStorage = primaryStorage;
     this.fallbackStorage = fallbackStorage;
@@ -458,6 +490,12 @@ export class KnowledgeService {
   }
 
   async initialize(): Promise<void> {
+    if (this.requireDurableStorage) {
+      if (!(this.primaryStorage instanceof SupabaseKnowledgeStorage)) throw new Error("Durable Knowledge storage is required for documents.");
+      await this.primaryStorage.initialize();
+      this.storage = this.primaryStorage; this.initialized = true;
+      return;
+    }
     try {
       await this.primaryStorage.initialize();
       this.storage = this.primaryStorage;
@@ -482,6 +520,7 @@ export class KnowledgeService {
   }
 
   async addSource(input: CreateKnowledgeSourceInput): Promise<KnowledgeSource> {
+    if (input.type === "document") throw new Error("Use durable document ingestion.");
     await this.ensureInitialized();
 
     const now = new Date().toISOString();
@@ -564,6 +603,7 @@ export class KnowledgeService {
 
   async deleteSource(businessId: number, id: string): Promise<boolean> {
     await this.ensureInitialized();
+    if ((await this.storage.list(businessId)).some((s) => s.id === id && s.type === "document")) throw new Error("Use document cleanup.");
     return this.storage.delete(businessId, id);
   }
 
@@ -590,11 +630,8 @@ export class KnowledgeService {
       queryLength: normalizedQuery.length,
     });
 
-    return this.storage.search(
-      normalizedBusinessId,
-      normalizedQuery,
-      Math.max(1, Math.min(Number(limit) || 5, 10))
-    );
+    const matches = await this.storage.search(normalizedBusinessId, normalizedQuery, Math.max(1, Math.min(Number(limit) || 5, 10)));
+    return this.filterCurrentMatches(normalizedBusinessId, matches);
   }
 
   async semanticSearch(
@@ -612,12 +649,13 @@ export class KnowledgeService {
       !Number.isSafeInteger(normalizedBusinessId) ||
       normalizedBusinessId <= 0 ||
       !normalizedQuery ||
-      !this.embeddingProvider ||
-      (typeof this.storage.semanticSearch !== "function" && !this.embeddingProvider.supportsLocalSemanticSearch)
+      !this.embeddingProvider
     ) {
       return [];
     }
 
+    if (typeof this.storage.semanticSearch !== "function" && !this.embeddingProvider.supportsLocalSemanticSearch &&
+      !(await this.semanticCorpus(normalizedBusinessId, true)).length) return [];
     try {
       const embedding =
         await this.embeddingProvider.embedQuery(normalizedQuery);
@@ -632,10 +670,25 @@ export class KnowledgeService {
         );
         // Do not return evidence that changed or was disabled/deleted during embedding.
         const currentChunks = await this.semanticCorpus(normalizedBusinessId);
-        return semanticCorpusFingerprint(chunks) === semanticCorpusFingerprint(currentChunks) ? matches : [];
+        return semanticCorpusFingerprint(chunks) === semanticCorpusFingerprint(currentChunks) ? this.filterCurrentMatches(normalizedBusinessId, matches) : [];
       }
-      if (typeof this.storage.semanticSearch !== "function") return [];
-      return await this.storage.semanticSearch(normalizedBusinessId, embedding, safeLimit, minSimilarity);
+      // Documents deliberately have no ingestion-time vectors. Use the same configured
+      // provider's existing read-only index for them, retaining persisted manual search.
+      const persisted = typeof this.storage.semanticSearch === "function"
+        ? await this.storage.semanticSearch(normalizedBusinessId, embedding, safeLimit, minSimilarity) : [];
+      let fresh: KnowledgeSearchMatch[] = [];
+      try {
+        const chunks = await this.semanticCorpus(normalizedBusinessId, true);
+        const documents = await this.compatibleSemanticIndex.search(normalizedBusinessId, chunks, embedding,
+          this.embeddingProvider, safeLimit, minSimilarity);
+        const current = await this.semanticCorpus(normalizedBusinessId, true);
+        if (semanticCorpusFingerprint(chunks) === semanticCorpusFingerprint(current)) fresh = documents;
+      } catch {
+        // A document-index failure must not remove existing persisted manual matches.
+        console.warn("Document semantic index unavailable; persisted Knowledge remains available.");
+      }
+      return this.filterCurrentMatches(normalizedBusinessId, [...persisted, ...fresh]
+        .sort((a, b) => (b.score || 0) - (a.score || 0)).slice(0, safeLimit));
     } catch (error) {
       console.warn(
         "Semantic Knowledge search failed; lexical fallback remains available.",
@@ -645,10 +698,86 @@ export class KnowledgeService {
     }
   }
 
-  private async semanticCorpus(businessId: number): Promise<SemanticChunk[]> {
+  async sourceLanguageHints(businessId: number): Promise<SourceLanguage[]> {
+    await this.ensureInitialized();
+    if (!Number.isSafeInteger(businessId) || businessId <= 0) return [];
+    const languages = new Set<SourceLanguage>(); let samples = 0;
+    let timer: ReturnType<typeof setTimeout>;
+    const listed = await Promise.race([
+      this.storage.list(businessId).catch(() => [] as KnowledgeSource[]),
+      new Promise<KnowledgeSource[]>(resolve => { timer = setTimeout(() => resolve([]), 500); }),
+    ]).finally(() => clearTimeout(timer));
+    const sources = listed.filter(s => s.businessId === businessId && s.status === 'ready').slice(0, 50);
+    for (const source of sources) {
+      const texts = source.type === 'document' ? documentCorpus(source).slice(0, 2).map(c => c.text) : [source.content];
+      for (const text of texts) for (const paragraph of String(text).slice(0, 4000).split(/\n+/u).slice(0, 4)) {
+        if (++samples > 100) return [...languages];
+        const language = confirmedTextLanguage(paragraph.slice(0, 1600));
+        if (language) languages.add(language);
+      }
+    }
+    return [...languages];
+  }
+
+  /** OpenAI: one query batch, one corpus pass, original threshold and authority.
+   * Other providers retain their existing single-query behavior/request shape.
+   */
+  async semanticSearchQueries(businessId: number, queries: string[], limit = 5): Promise<KnowledgeSearchMatch[]> {
+    await this.ensureInitialized();
+    const seen = new Set<string>();
+    const bounded = queries.slice(0, MAX_SEMANTIC_QUERIES).map(q => String(q).trim()).filter(q => {
+      const key = normalizeSemanticQuery(q);
+      if (!key || seen.has(key)) return false;
+      seen.add(key); return true;
+    });
+    if (!Number.isSafeInteger(businessId) || businessId <= 0 || !bounded.length || bounded[0].length > 4000 || bounded.slice(1).some(q => q.length > 120) || !this.embeddingProvider) return [];
+    if (!this.embeddingProvider.supportsLocalSemanticSearch) return this.semanticSearch(businessId, bounded[0], limit);
+    try {
+      const embeddings = await this.embeddingProvider.embedDocuments(bounded);
+      if (embeddings.length !== bounded.length || embeddings.some(e => e.provider !== 'openai')) return [];
+      const corpus = await this.semanticCorpus(businessId);
+      const chunks = corpus.filter(chunk => !explicitlyWrongWorkflow(chunk.text, bounded[0]));
+      const safeLimit = Math.max(1, Math.min(Number(limit) || 5, 10));
+      const sets = await this.compatibleSemanticIndex.searchQueries(businessId, chunks, embeddings, this.embeddingProvider, safeLimit, 0.55);
+      if (semanticCorpusFingerprint(corpus) !== semanticCorpusFingerprint(await this.semanticCorpus(businessId))) return [];
+      const ranked = new Map<string, { match: KnowledgeSearchMatch; rank: number }>();
+      for (const set of sets) for (const [position, match] of set.entries()) {
+        const key = `${match.sourceId}:${match.text}`;
+        const prior = ranked.get(key);
+        ranked.set(key, { match: prior && Number(prior.match.score) > Number(match.score) ? prior.match : match,
+          rank: (prior?.rank || 0) + 1 / (60 + position + 1) });
+      }
+      return this.filterCurrentMatches(businessId, [...ranked.values()].sort((a, b) => b.rank - a.rank).slice(0, safeLimit).map(e => e.match));
+    } catch {
+      console.warn('Planned semantic Knowledge unavailable; lexical fallback remains available.');
+      return [];
+    }
+  }
+
+  async validateMatches(businessId: number, matches: KnowledgeSearchMatch[]): Promise<KnowledgeSearchMatch[]> {
+    await this.ensureInitialized();
+    return this.filterCurrentMatches(businessId, matches);
+  }
+
+  private async filterCurrentMatches(businessId: number, matches: KnowledgeSearchMatch[]): Promise<KnowledgeSearchMatch[]> {
+    const ready = new Map((await this.storage.list(businessId)).filter((s) => s.businessId === businessId && s.status === "ready").map((s) => [s.id, s]));
+    return matches.flatMap((match) => {
+      const source = ready.get(match.sourceId);
+      if (match.businessId !== businessId || !source) return [];
+      if (source.type !== "document") return [match];
+      const revision = documentRevision(source);
+      if (match.metadata?.documentRevision && match.metadata.documentRevision !== revision) return [];
+      const canonical = documentCorpus(source).find((chunk) => chunk.text === String(match.text || "").trim() &&
+        (match.metadata?.page === undefined || match.metadata.page === chunk.metadata?.page) &&
+        (match.metadata?.sheet === undefined || match.metadata.sheet === chunk.metadata?.sheet));
+      return canonical ? [{ ...match, text: canonical.text, metadata: { ...canonical.metadata, documentRevision: revision } }] : [];
+    });
+  }
+
+  private async semanticCorpus(businessId: number, documentsOnly = false): Promise<SemanticChunk[]> {
     const sources = await this.storage.list(businessId);
-    return sources.filter((source) => source.businessId === businessId && source.status === "ready")
-      .flatMap((source) => chunkKnowledgeContent(source.content).map((chunk) => ({
+    return sources.filter((source) => source.businessId === businessId && source.status === "ready" && (!documentsOnly || source.type === "document"))
+      .flatMap((source) => source.type === "document" ? documentCorpus(source) : chunkKnowledgeContent(source.content).map((chunk) => ({
         sourceId: source.id, businessId, text: chunk.content, metadata: chunk.metadata,
       })));
   }
@@ -666,7 +795,7 @@ export function isKnowledgeSourceType(value: unknown): value is KnowledgeSourceT
 }
 
 export function isKnowledgeSourceStatus(value: unknown): value is KnowledgeSourceStatus {
-  return value === "pending" || value === "ready" || value === "disabled" || value === "error";
+  return typeof value === "string" && ["pending", "processing", "ready", "failed", "deleted", "disabled", "error"].includes(value);
 }
 
 function mapKnowledgeSourceRow(row: any): KnowledgeSource {

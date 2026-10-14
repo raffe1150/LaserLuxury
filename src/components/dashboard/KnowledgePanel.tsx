@@ -1,3 +1,4 @@
+import KnowledgeDocuments from './KnowledgeDocuments';
 import DashboardFeedback, { useDashboardFeedback, type DashboardSaved, type DashboardFeedbackMemory } from './DashboardFeedback';
 import { FormEvent, useEffect, useState } from 'react';
 import { api, type KnowledgeSource } from '../../services/api';
@@ -16,6 +17,7 @@ export default function KnowledgePanel({
 }: KnowledgePanelProps) {
   const { locale, t, formatDate } = useDashboardI18n();
 
+  const [documentCount, setDocumentCount] = useState(0);
   const [sources, setSources] = useState<KnowledgeSource[]>([]);
   const [title, setTitle] = useState('');
   const [content, setContent] = useState('');
@@ -165,8 +167,8 @@ export default function KnowledgePanel({
         </div>
 
         <div className="knowledge-source-count">
-          {loading || error ? '—' : sources.length}
-          <span translate="no">{loading || error ? t('sources') : dashboardSourceLabel(locale, sources.length)}</span>
+          {loading || error ? '—' : sources.length + documentCount}
+          <span translate="no">{loading || error ? t('sources') : dashboardSourceLabel(locale, sources.length + documentCount)}</span>
         </div>
       </div>
 
@@ -206,7 +208,7 @@ export default function KnowledgePanel({
             </div>
           )}
 
-          {!loading && !error && sources.length === 0 && (
+          {!loading && !error && sources.length === 0 && documentCount === 0 && (
             <div className="knowledge-empty">
               <strong>{t('No Knowledge added yet')}</strong>
               <span>
@@ -216,6 +218,8 @@ export default function KnowledgePanel({
               </span>
             </div>
           )}
+
+          <KnowledgeDocuments businessId={businessId} onCount={setDocumentCount} />
 
           {sources.length > 0 && (
             <div className="knowledge-source-list">

@@ -1,3 +1,4 @@
+import { DOCUMENT_TEXT, DOCUMENT_TRANSLATIONS } from './knowledge-documents';
 import {
   createContext,
   useCallback,
@@ -712,6 +713,8 @@ addTranslations(['Essential settings', 'Business identity', 'Booking & Cancellat
   fa: ['تنظیمات اصلی', 'هویت کسب‌وکار', 'سیاست‌های رزرو و لغو', 'سیاست لغو با دکمهٔ ذخیرهٔ جداگانه ذخیره می‌شود.', 'آماده', 'ناموفق'],
   ar: ['الإعدادات الأساسية', 'هوية النشاط التجاري', 'سياسات الحجز والإلغاء', 'تُحفظ سياسة الإلغاء باستخدام زر حفظ مستقل.', 'جاهز', 'فشل'],
 });
+
+addTranslations([...DOCUMENT_TEXT], DOCUMENT_TRANSLATIONS);
 
 export const DASHBOARD_TRANSLATION_KEYS = Object.freeze(Object.keys(sv).sort());
 const en = Object.fromEntries(DASHBOARD_TRANSLATION_KEYS.map((key) => [key, key]));

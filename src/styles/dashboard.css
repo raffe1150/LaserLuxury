@@ -9066,3 +9066,20 @@ textarea.form-input{resize:vertical;min-height:140px;line-height:1.7;}
   .dashboard-page .home-booking-list li { grid-template-columns:minmax(0,1fr); }
   .dashboard-page .home-booking-list .booking-status { grid-column:1; grid-row:auto; justify-self:start; }
 }
+
+/* Knowledge documents share the Signature Library surfaces and controls. */
+.knowledge-documents { border-top: 1px solid var(--dashboard-border, rgba(255,255,255,.1)); margin-top: 20px; padding-top: 20px; min-width: 0; }
+.knowledge-document-upload { display: grid; gap: 12px; margin-block: 16px; }
+.knowledge-document-upload .btn-primary { justify-self: start; }
+.knowledge-document-attestation { display: flex; gap: 10px; align-items: flex-start; font-size: .85rem; line-height: 1.5; }
+.knowledge-document-attestation input { margin-top: 4px; flex-shrink: 0; accent-color: var(--dashboard-success, #a1e7b7); }
+.knowledge-document-help { color: var(--dashboard-text-meta, #a9bcac); font-size: .82rem; line-height: 1.5; overflow-wrap: anywhere; }
+.knowledge-document-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.knowledge-status-processing { color: var(--dashboard-warning, #efcc91); }
+.knowledge-status-failed { color: #ffb6ba; }
+@media (max-width: 600px) { .knowledge-documents .knowledge-source-row { flex-wrap: wrap; } .knowledge-document-actions { width: 100%; justify-content: flex-end; } }
+.knowledge-document-file-choice { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-block-start: 10px; }
+.knowledge-document-file-choice span { overflow-wrap: anywhere; min-width: 0; }
+.dashboard-page.signature-dashboard .knowledge-documents .knowledge-status-processing { color: var(--dashboard-warning); }
+
+.knowledge-document-actions .btn:not(.btn-danger) { color: var(--dashboard-text); border-color: var(--dashboard-control-border); }

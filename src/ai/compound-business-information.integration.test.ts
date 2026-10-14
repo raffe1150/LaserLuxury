@@ -6,7 +6,6 @@ import { Responses } from 'openai/resources/responses';
 import { Embeddings } from 'openai/resources/embeddings';
 import { InMemoryKnowledgeStorage, KnowledgeService, SupabaseKnowledgeStorage } from '../../knowledge';
 import { ConfiguredEmbeddingProvider } from './providers/embeddings';
-import { isSimpleCatalogLocationQuestion } from './business-information';
 
 process.env.NODE_ENV = 'test';
 const { priority1hUnifiedEngineTestBoundary: b } = await import('../../server');
@@ -65,11 +64,10 @@ async function enter(t: any, question: string, language: string, withLocation = 
   });
   const id = `compound-${language}`;
   const result = await b.turn({ sessionId: id, platformName: 'whatsapp', recipientUserId: id, text: question, businessConfig: config });
-  assert.equal(result.handled, withLocation && isSimpleCatalogLocationQuestion(question));
-  if (result.handled) {
-    assert.ok(result.replies.join('\n').includes(address));
-    assert.doesNotMatch(result.replies.join('\n'), /Foreign Road|Private foreign/);
-  }
+  // Information turns capture evidence, then yield to shared grounded generation.
+  // They must not emit a deterministic booking/cancellation reply here.
+  assert.equal(result.handled, false);
+  assert.deepEqual(result.replies, []);
   const state = b.businessInformationState(id)!;
   assert.equal(state.language, language);
   const instruction = b.completedSupportInstruction(id);

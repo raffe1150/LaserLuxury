@@ -14,7 +14,7 @@ const topicPatterns: Record<BusinessInformationTopic, RegExp> = {
   contact: /(?<![\p{L}\p{M}\p{N}_])(?:contact\w*|reach|website|location|located|entrance\w*|entry|übersichtsseite|standort\w*|kundeneingang\w*|eingang\w*|zugang\w*|erreichen|kontakt\w*|address|adresse|adress|ingång\w*|entré\w*|kundentré\w*|ubicaci[oó]n|ubicad\w*|direcci[oó]n|entrada\w*|acceso\w*|befind\w*)(?![\p{L}\p{M}\p{N}_])|\bvar\s+ligger\b|تماس|آدرس|ورودی|محل|موقع|عنوان|اتصال|مدخل|المدخل|مكان|کجا\s+هست/iu,
   hours: /(?<![\p{L}\p{M}\p{N}_])(?:opening hours|hours|öffnungszeiten|öppettider|horarios?)(?![\p{L}\p{M}\p{N}_])|ساعات کاری|ساعات العمل/iu,
   prices: /\b(?:prices?|costs?|pricing|preisen?|preise?|kosten|pris\w*|kostar|precios?|cuesta)\b|قیمت|هزینه|السعر|أسعار/iu,
-  policies: /\b(?:polic\w*|conditions|requirements|preparation|prepare|bring|payment|documents?|bedingungen|geschäftsbedingungen|vorbereit\w*|mitbringen|betalning|villkor|förbereda|ta med|condiciones|preparar|llevar|pago)\b|شرایط|آماده|پرداخت|شروط|تحضير|دفع/iu,
+  policies: /\b(?:polic\w*|conditions|requirements|preparation|prepare|bring|payment|documents?|cancel(?:lation|lations)?|deadline|notice period|stornier\w*|stornierung\w*|absagefrist|bedingungen|geschäftsbedingungen|vorbereit\w*|mitbringen|betalning|villkor|avboka|avbokning\w*|förbereda|ta med|condiciones|preparar|llevar|pago|cancelar|cancelaci[oó]n)\b|شرایط|آماده|پرداخت|لغو|شروط|تحضير|دفع|إلغاء|الغاء/iu,
   parking: /(?<![\p{L}\p{M}\p{N}_])(?:park(?:ing|er[\p{L}\p{M}]*|en|pl[\p{L}\p{M}]*)?|aparca[\p{L}\p{M}]*)(?![\p{L}\p{M}\p{N}_])|پارکینگ|پارک\s+کن|موقف(?:ات)?|مواقف|ركن\s+سيار/iu,
 };
 export function businessInformationTopics(text: string): BusinessInformationTopic[] {
@@ -35,11 +35,14 @@ export function isBusinessRecommendationQuestion(text: string): boolean {
 export function isBusinessInformationQuestion(text: string): boolean {
   if (!businessInformationTopics(text).length && !isBusinessRecommendationQuestion(text)) return false;
   const informationFirst = /\b(?:before\s+i\s+book|bevor\s+ich|erstmal\s+informieren|innan\s+jag\s+bokar|antes\s+de\s+reservar)\b|قبل از رزرو|قبل الحجز/iu.test(text);
+  if (isExplicitBusinessActionRequest(text) && !informationFirst) return false;
+  return isBusinessRecommendationQuestion(text) || /[?؟]|\b(?:tell me|explain|information|describe|erzähl\w*|erfahr\w*|informier\w*|erklär\w*|wissen|berätta|beskriv|förklara|veta|informaci[oó]n|explica\w*)\b|اطلاعات|توضیح|معلومات|اشرح/iu.test(text);
+}
+
+export function isExplicitBusinessActionRequest(text: string): boolean {
   // A real instruction, including a mixed question + booking request, must stay
   // with the deterministic engine. Mentioning "how booking works" is not one.
-  const action = /\b(?:please\s+(?:book|cancel|reschedule)|(?:i\s+(?:want|would like)\s+to|can you)\s+(?:book|cancel|reschedule)|(?:bitte|ich möchte|ich will)\s+(?:(?:einen?|den|die|das)\s+)?(?:.{0,45}\s+)?(?:buchen|buche|stornieren|verschieben)|(?:boka|avboka|omboka)\s+(?:en|ett|min|den)|(?:quiero|por favor)\s+(?:reservar|cancelar|cambiar))\b|(?:رزرو|لغو)\s+کن|(?:احجز|أحجز|الغاء|إلغاء)\s/iu.test(text);
-  if (action && !informationFirst) return false;
-  return isBusinessRecommendationQuestion(text) || /[?؟]|\b(?:tell me|explain|information|describe|erzähl\w*|erfahr\w*|informier\w*|erklär\w*|wissen|berätta|beskriv|förklara|veta|informaci[oó]n|explica\w*)\b|اطلاعات|توضیح|معلومات|اشرح/iu.test(text);
+  return /\b(?:please\s+(?:book|cancel|reschedule)|(?:i\s+(?:want|would like)\s+to|can you)\s+(?:book|cancel|reschedule)|(?:bitte|ich möchte|ich will)\s+(?:(?:einen?|den|die|das)\s+)?(?:.{0,45}\s+)?(?:buchen|buche|stornieren|verschieben)|(?:quiero|por favor)\s+(?:reservar|cancelar|cambiar))\b|(?:^|[.!?؟;,]\s*|\b(?:och|and)\s+)(?:cancel\s+(?:my|the|this)|(?:boka|avboka|omboka)\s+(?:en|ett|min|den))\b|\b(?:jag\s+(?:vill|vill gärna)|kan\s+du|vänligen)\b.{0,45}\b(?:boka|avboka|omboka)\b|(?:رزرو|لغو)\s+کن(?:ید)?(?![\p{L}\p{M}])|می[‌\s]?خواهم[^.!?؟\n]{0,60}(?:رزرو|لغو)\s+کنم(?![\p{L}\p{M}])|(?:احجز|أحجز|ألغِ?|الغِ?)(?![\p{L}\p{M}])|(?:أريد|اريد|أرغب|ارغب)[^.!?؟\n]{0,60}(?:إلغاء|الغاء|حجز)|(?:^|[.!?؟]\s*)(?:الغاء|إلغاء)\s+(?:موعد|حجز)/iu.test(text);
 }
 
 export function formatRecommendationClarification(language: string): string {

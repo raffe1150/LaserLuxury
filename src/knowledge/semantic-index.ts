@@ -18,7 +18,17 @@ export class CompatibleSemanticIndex {
 
   async search(businessId: number, chunks: SemanticChunk[], query: EmbeddingVector,
     provider: EmbeddingProvider, limit: number, minSimilarity: number): Promise<KnowledgeSearchMatch[]> {
-    if (!chunks.length) return [];
+    return (await this.searchQueries(businessId, chunks, [query], provider, limit, minSimilarity))[0] || [];
+  }
+
+  async searchQueries(businessId: number, chunks: SemanticChunk[], queries: EmbeddingVector[],
+    provider: EmbeddingProvider, limit: number, minSimilarity: number): Promise<KnowledgeSearchMatch[][]> {
+    if (!queries.length || queries.length > 3) throw new Error('Semantic query batch exceeds bound.');
+    const query = queries[0];
+    if (queries.some(q => identity(q) !== identity(query) || q.values.length !== query.dimensions || q.values.some(v => !Number.isFinite(v)))) {
+      throw new Error('Semantic query embedding identity mismatch.');
+    }
+    if (!chunks.length) return queries.map(() => []);
     if (chunks.some((chunk) => chunk.businessId !== businessId)) {
       throw new Error("Semantic corpus tenant mismatch.");
     }
@@ -46,13 +56,16 @@ export class CompatibleSemanticIndex {
       }
       if (vectors.length <= 2048) this.cache.set(key, { fingerprint, expires: Date.now() + 300_000, vectors });
     }
-    const queryMagnitude = Math.hypot(...query.values);
     const threshold = Math.max(-1, Math.min(Number.isFinite(minSimilarity) ? minSimilarity : 0.55, 1));
-    return chunks.map((chunk, index) => {
+    // Share one corpus embedding pass even when the corpus exceeds cache capacity.
+    return queries.map(query => {
+      const queryMagnitude = Math.hypot(...query.values);
+      return chunks.map((chunk, index) => {
       const values = vectors![index].values;
       const denominator = queryMagnitude * Math.hypot(...values);
       const score = denominator ? values.reduce((sum, value, i) => sum + value * query.values[i], 0) / denominator : -1;
       return { ...chunk, score };
     }).filter((match) => match.score >= threshold).sort((a, b) => b.score - a.score).slice(0, limit);
+    });
   }
 }

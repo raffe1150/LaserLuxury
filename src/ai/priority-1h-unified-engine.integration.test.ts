@@ -32,7 +32,8 @@ function fixture(options: { fail?: 'calendar_create' | 'calendar_verify' | 'data
       events.set(id, event);
       return { success: true, event };
     },
-    getEventById: async (id: string) => options.fail === 'calendar_verify' ? null : events.get(id) || null,
+    getEventById: async (id: string) => options.fail === 'calendar_verify' ? null : events.has(id)
+      ? { ...events.get(id), etag: '"synthetic-event-version"' } : null,
     updateAppointment: async (id: string, dateTime: string, duration = 30) => {
       counters.calendarUpdate += 1;
       if (options.fail === 'reschedule_update') return { success: false, code: 'PROVIDER_FAILED' };

@@ -1,13 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {priority1hUnifiedEngineTestBoundary as b} from '../../server';
+process.env.NODE_ENV='test';process.env.AI_PROVIDER='gemini';
+const {priority1hUnifiedEngineTestBoundary:b}=await import('../../server');
 import {renderDeterministicMissingDetailsReply} from './deterministic-booking-presentation';
 test('German service inquiry reaches the final model instruction in German', async()=>{
   b.reset(); const requests:any[]=[];b.configure({postProcess:async()=>{},geminiGenerate:async req=>{requests.push(req);return{text:'Wir bieten Beratungsgespräche an.'};}});
   try {for(const language of ['de','sv']){
-    b.promptAuditConfig({id:'quality-language-'+language,businessName:'Example',language,systemPrompt:'Consultation only.'});
-    const result=await b.promptAuditWeb({chatId:'quality-german-'+language,message:'Welche Leistungen bieten Sie an?'});
-    assert.equal(result.status,200);assert.match(requests.at(-1).config.systemInstruction,/ACTIVE CONVERSATION LANGUAGE: German \(de\)/);
+    const config={id:language==='de'?77:88,businessName:'Example',language,systemPrompt:'Consultation only.'};
+    const result=await b.promptAuditWeb({chatId:'quality-german-'+language,message:'Welche Leistungen bieten Sie an?'},config);
+    assert.equal(result.status,200);assert.match(requests.filter(r=>r.config.systemInstruction.includes('READ-ONLY BUSINESS INFORMATION')).at(-1).config.systemInstruction,/ACTIVE CONVERSATION LANGUAGE: German \(de\)/);
   }}finally{b.reset();}
 });
 test('Spanish professional details do not mix usted commands with tu address',()=>{

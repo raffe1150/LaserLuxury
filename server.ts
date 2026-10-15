@@ -1,3 +1,4 @@
+import { hasBookingInterruption, isBookingResumeRequest, withoutNegatedBookingClauses, bookingPauseReply } from './src/ai/booking-interruption';
 import { numericalConstraintSafe, NUMERICAL_DIRECTION_GUIDANCE } from './src/ai/numerical-constraints';
 import { readCancellationPolicy, hasCancellationSettings, cancellationPolicyFingerprint, cancellationGroundingConfig,
   cancellationFee, cancellationConfirmationCurrent, cancellationConsentAfter, cancellationMessageTime, renderCancellationConfirmation, CANCELLATION_POLICY_GUIDANCE,
@@ -143,7 +144,7 @@ import {
   selectTelegramDeliveryMode,
   type TelegramReplyPreference,
 } from "./src/ai/channel-reliability";
-import { applyNormalizedRequestToPending, availabilityFieldsFromConstraint, buildSlotFingerprintSource, classifySpanishManana, formatPersianSpokenPhone, getBookingDateConflict, getBookingWeekdayReference, hasBookingCorrectionCue, getDateInTimeZone, getZonedSlotParts, isCurrentConversationTurn, isReadOnlyAvailabilityInquiry, isServiceGuidanceRequest, isWholeDayAvailabilityRequest, normalizeConversationText, parseBookingDate, parseNamedBookingDateRange, parseTimeConstraint, preparePersianTextForTts, registerConversationTurn, resolveRelativeBookingDateSemantic, slotMinutesSatisfyConstraint, toPersistedBookingRequest, zonedLocalIso, type NormalizedBookingRequest, type NormalizedTimeConstraint } from "./src/ai/booking-intelligence";
+import { applyNormalizedRequestToPending, availabilityFieldsFromConstraint, detectNormalizedIntent, buildSlotFingerprintSource, classifySpanishManana, formatPersianSpokenPhone, getBookingDateConflict, getBookingWeekdayReference, hasBookingCorrectionCue, getDateInTimeZone, getZonedSlotParts, isCurrentConversationTurn, isReadOnlyAvailabilityInquiry, isServiceGuidanceRequest, isWholeDayAvailabilityRequest, normalizeConversationText, parseBookingDate, parseNamedBookingDateRange, parseTimeConstraint, preparePersianTextForTts, registerConversationTurn, resolveRelativeBookingDateSemantic, slotMinutesSatisfyConstraint, toPersistedBookingRequest, zonedLocalIso, type NormalizedBookingRequest, type NormalizedTimeConstraint } from "./src/ai/booking-intelligence";
 import { beginBookingFinalization, getBookingInvariantFailures, getBookingPhase, getMissingBookingContact, isPositiveBookingConfirmation, recoverBookingFinalization, recoverBookingTransaction, type BookingFailureStage } from "./src/ai/booking-state-machine";
 import { enumerateCandidateMinutes, isBlockingCalendarEvent, isCanonicalSlotFree } from "./src/ai/canonical-availability";
 import {
@@ -6042,8 +6043,9 @@ function clearRescheduleContext(sessionId: string) {
 }
 
 function isCancellationIntent(text?: string): boolean {
-  const raw = String(text || "").trim().toLowerCase().normalize("NFKC");
+  const raw = withoutNegatedBookingClauses(String(text || "")).trim().toLowerCase().normalize("NFKC");
   if (!raw) return false;
+  if (detectNormalizedIntent(raw) === "cancellation") return true;
   return /(?:^|\s)(?:avboka|avbokning|avboka den|avboka tiden|cancel|cancel it|cancel my appointment|cancel the appointment|cancell?ation|laghv|لغو|کنسل)(?=\s|$)/iu.test(raw);
 }
 
@@ -6392,8 +6394,9 @@ function isAppointmentNameQuestion(text?: string): boolean {
 }
 
 function isRescheduleIntent(text?: string): boolean {
-  const raw = String(text || "").trim().toLowerCase();
+  const raw = withoutNegatedBookingClauses(String(text || "")).trim().toLowerCase();
   if (!raw) return false;
+  if (detectNormalizedIntent(raw) === "reschedule") return true;
 
   // Do not use JavaScript \b around Swedish words such as "ändra".
   // In JavaScript, \b is ASCII-based, so a word beginning with "ä" can fail to match.
@@ -10600,7 +10603,7 @@ function findExplicitContactPhone(raw: string, allowCompactContact = false): Reg
     const after = raw.slice(Number(match.index) + match[0].length).trim();
     // A phone-only reply or an immediately labeled phone field is deliberate
     // contact input. A long numeric token elsewhere in prose is not.
-    const labeled = /(?:\b(?:phone(?:\s+number)?|mobile(?:\s+number)?|mobil(?:nummer)?|handy(?:nummer)?|telefon(?:nummer|numret)?|(?:my|mitt|min|meine?|mi)\s+(?:nummer|number|n[uú]mero)|tel[eé]fono|m[oó]vil|celular|shomare|shomaram)\b|(?:رقم\s*(?:هاتفي|الهاتف|الجوال)|هاتفي|المحمول|شماره\s*(?:تلفن(?:م|\s+من)?|موبایل|موبایلم)|موبایلم|تلفنم?))\s*(?:(?:is|ist|är|es|هو|هي|است)\s*)?[:=：]?\s*$/iu.test(before);
+    const labeled = /(?:\b(?:phone(?:\s+number)?|mobile(?:\s+number)?|mobil(?:nummer)?|handy(?:nummer)?|telefon(?:nummer|numret)?|(?:my|mitt|min|meine?|mi)\s+(?:nummer|number|n[uú]mero)|tel[eé]fono|m[oó]vil|celular|shomare|shomaram)\b|(?:رقم\s*(?:هاتفي|الهاتف|الجوال)|هاتفي|المحمول|شماره\s*(?:تلفن(?:م|\s+من)?|تماس(?:م|\s+من)?|موبایل|موبایلم)|موبایلم|تلفنم?))\s*(?:(?:is|ist|är|es|هو|هي|است)\s*)?[:=：]?\s*$/iu.test(before);
     if (labeled || (!before && /^[.!?؟]*$/u.test(after))) return match;
     // Preserve the existing compact name + phone contact form, bounded to a
     // short name and recognizable local/international phone syntax.
@@ -11090,6 +11093,12 @@ function resolveAuthoritativeBookingService(
   requireExplicitSelection = false,
   semanticPhrase: string | null = null,
 ): BookingServiceResolution {
+  if (hasBookingInterruption(text)) {
+    text = withoutNegatedBookingClauses(text);
+    semanticPhrase = null;
+    if (!text) return { status: "missing", candidates: getEligibleConfiguredBookingServices(businessConfig).slice(0, 5) };
+    requireExplicitSelection = true;
+  }
   const eligible = getEligibleConfiguredBookingServices(businessConfig);
   const explicitDefault = String(
     businessConfig?.defaultBookingService || businessConfig?.default_booking_service || ""
@@ -11218,6 +11227,7 @@ function extractAwaitingServiceLabel(text: string): string | null {
   // In this one deterministic state, a terse answer to the service question is
   // explicit selection evidence. It still must pass the configured catalog;
   // recognizing the customer's label does not make that service bookable.
+  if (hasBookingInterruption(text) || isBookingResumeRequest(text) || isBusinessInformationQuestion(text)) return null;
   const label = text.trim().replace(/[.!?؟]+$/u, '').trim();
   if (label.length > 80 || !/^[\p{L}\p{M}][\p{L}\p{M}'’\-]*(?:\s+[\p{L}\p{M}][\p{L}\p{M}'’\-]*){0,3}$/u.test(label)) return null;
   if (isGreetingOnlyText(label) || isThanksOnlyText(label) || isAffirmativeBookingText(label) || isAmbiguousShortReply(label) ||
@@ -11227,7 +11237,10 @@ function extractAwaitingServiceLabel(text: string): string | null {
 }
 
 function extractConcreteRequestedService(text?: string): string | null {
-  const original = String(text || "").replace(/\s+/g, " ").trim();
+  const currentIntent = detectNormalizedIntent(String(text || ""));
+  if (["cancellation", "reschedule", "booking_lookup"].includes(currentIntent)) return null;
+  if (isBookingResumeRequest(String(text || ""))) return null;
+  const original = withoutNegatedBookingClauses(String(text || "")).replace(/\s+/g, " ").trim();
   const raw = stripServiceTemporalSuffix(original);
   if (!raw) return null;
 
@@ -11854,6 +11867,7 @@ async function savePendingBooking(chatId: string, platform: string, pending: any
       durationMinutes: pending.durationMinutes,
       status: pending.status,
       operation: pending.operation || "new_booking",
+      continuationPaused: pending.continuationPaused === true,
       operationIdentity: pending.operationIdentity || null,
       contactPhoneSource: pending.contactPhoneSource || null,
       lastFailureStage: pending.lastFailureStage || null,
@@ -12005,6 +12019,7 @@ async function loadPendingBooking(
         ? "awaiting_time_selection"
         : parsed.status || "awaiting_contact",
       operation: parsed.operation || "new_booking",
+      continuationPaused: parsed.continuationPaused === true,
       operationIdentity: parsed.operationIdentity || null,
       contactPhoneSource: parsed.contactPhoneSource || null,
       lastFailureStage: parsed.lastFailureStage || null,
@@ -13831,6 +13846,13 @@ function hasAuthoritativeSelectedSlotSchedulingIntent(
     (request.timeConstraint?.confidence === "high" && request.timeConstraint.kind !== "none") ||
     Boolean(request.dateConflict);
   if (!hasSchedulingProof) return false;
+  // A leading confirmation owns only its own scheduling entities. Evaluate
+  // later sentences independently so incidental plans cannot replace the slot.
+  const sentences = text.split(/[.!?؟]+(?:\s+|$)/u).map(part => part.trim()).filter(Boolean);
+  if (sentences.length > 1 && isPositiveBookingConfirmation(sentences[0]) &&
+      !parseBookingDate(sentences[0], "Europe/Stockholm") && !parseTimeConstraint(sentences[0])) {
+    return hasAuthoritativeSelectedSlotSchedulingIntent(sentences.slice(1).join(". "), request);
+  }
   if (
     isReadOnlyAvailabilityInquiry(text) ||
     isEarliestAvailabilityRequest(text) ||
@@ -16824,6 +16846,41 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
       releasedSelectedSlot
     });
   };
+  const bookingInterrupted = hasBookingInterruption(text) &&
+    !isExplicitBusinessActionRequest(withoutNegatedBookingClauses(text));
+  const currentInformationQuestion = isBusinessInformationQuestion(text);
+  const pausePendingContinuation = async () => {
+    if (pending && getBookingPhase(pending) !== "finalizing" && !pending.continuationPaused) {
+      pending.continuationPaused = true;
+      await savePendingBooking(sessionId, platformName, pending);
+    }
+  };
+  if (bookingInterrupted || pending?.continuationPaused) {
+    if (bookingInterrupted) await pausePendingContinuation();
+    if (!currentInformationQuestion) {
+      const resume = !bookingInterrupted && (isBookingResumeRequest(text) || isExplicitBusinessActionRequest(text) ||
+        operationFromCurrentIntent(detectNormalizedIntent(text)) !== "none" || explicitAvailabilityRequest || isReadOnlyAvailabilityInquiry(text));
+      if (!resume) {
+        nonMutatingSupportTurns[sessionId] = Date.now();
+        const pauseLanguage = getConversationLanguage(sessionId, text, businessConfig);
+        const reply = bookingPauseReply(pauseLanguage, !bookingInterrupted);
+        if (await send(reply) !== false) {
+          appendLocalHistory(sessionId, text, reply);
+          try {
+            await postProcessMessage(recipientUserId, postProcessPlatform, text, reply,
+              businessConfig?.telegramToken, businessConfig?.apiKey, getBusinessIdFromConfig(businessConfig));
+          } catch {
+            console.error("[BookingPostProcess]", { channel: platformName, stage: "booking_pause", success: false });
+          }
+        }
+        return true;
+      }
+      if (pending?.continuationPaused) {
+        delete pending.continuationPaused;
+        await savePendingBooking(sessionId, platformName, pending);
+      }
+    }
+  }
   const reopensPendingServiceChoice = Boolean(
     pending?.operation === "new_booking" &&
     getBookingPhase(pending) !== "finalizing" &&
@@ -16854,12 +16911,14 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
   }
   // Answer the latest informational question before merging booking entities or
   // consuming awaiting_service. Keep pending slots/holds intact for a later turn.
-  if (isBusinessInformationQuestion(text) &&
+  if (currentInformationQuestion &&
     !changesPendingService &&
     (!hasRecentCompletedBookingDetailSemantics(text) || reopensPendingServiceChoice) &&
+    !(recentCompletedBookingAtEntry?.bookingOperation?.ok && isRecentCompletionRequirementsQuestion(text)) &&
     !explicitAvailabilityRequest &&
     !isExistingAppointmentLookupIntent(text) &&
     getBookingPhase(pending) !== "finalizing") {
+    await pausePendingContinuation();
     const recentCompletion = getRecentCompletedBooking(sessionId);
     const currentLanguage = getConversationLanguage(sessionId, text, businessConfig);
     const informationLanguage = recentCompletion?.bookingOperation?.ok
@@ -17242,6 +17301,13 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
   );
   const authoritativeCurrentSchedulingIntent = authoritativeSelectedSlot &&
     hasAuthoritativeSelectedSlotSchedulingIntent(text, normalizedRequest);
+  // An explicit correction of this uncommitted draft is not permission to
+  // look up and reschedule a separately booked appointment.
+  const correctsPendingDraft = Boolean(authoritativeSelectedSlot && normalizedRequest.intent === "reschedule" &&
+    (normalizedRequest.date || normalizedRequest.timeConstraint) &&
+    /\b(?:change|move)\s+(?:the|this)\s+(?:booking|request|selected\s+(?:time|slot))\b/iu.test(text) &&
+    !/\b(?:previous|existing|old|confirmed)\s+(?:appointment|booking)\b/iu.test(text));
+  if (correctsPendingDraft) normalizedRequest = { ...normalizedRequest, intent: "new_booking" };
   const selectedSlotParts = authoritativeSelectedSlot
     ? getZonedSlotParts(String(pending.dateTime), String(businessConfig?.timezone || "Europe/Stockholm"))
     : null;
@@ -20327,6 +20393,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
     // Rescheduling an existing appointment must always win over a stale/new-booking flow.
     // Never ask again for service, duration, name or phone when an existing booking can be found.
     const rescheduleRequested =
+      !correctsPendingDraft &&
       !authoritativeTelegramNewBooking &&
       !explicitNewBookingRequested &&
       !appointmentLookupRequested &&

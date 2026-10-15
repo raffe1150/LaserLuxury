@@ -1,3 +1,5 @@
+import { isBusinessInformationQuestion } from './business-information';
+import { hasBookingInterruption, withoutNegatedBookingClauses } from './booking-interruption';
 import { detectNormalizedIntent, parseTimeConstraint } from './booking-intelligence';
 
 export type MessagingIntent =
@@ -135,13 +137,15 @@ export function resolveStableConversationLanguage(
 }
 
 export function classifyMessagingIntent(text: string): MessagingIntent {
-  const raw = String(text || '').normalize('NFKC').trim().toLowerCase();
-  if (!raw) return 'ambiguous';
+  const raw = withoutNegatedBookingClauses(text).normalize('NFKC').trim().toLowerCase();
+  if (!raw) return hasBookingInterruption(text) ? 'normal' : 'ambiguous';
 
   if (
     /\b(?:why|chera|varför|warum|por qué|por que).{0,30}(?:language|zaban|språk|sprache|idioma).{0,30}(?:change|avaz|switch|bytte|ändra|wechsel|cambi)/iu.test(raw) ||
     /(?:چرا|چرا زبان).{0,30}(?:عوض|تغییر)/u.test(raw)
   ) return 'language_repair';
+
+  if (isBusinessInformationQuestion(raw)) return 'normal';
 
   if (
     /\b(?:cancel|cancellation|avboka|laghv).{0,24}(?:appointment|booking|tid|vaght|rezerv)?\b/iu.test(raw) ||
@@ -175,6 +179,7 @@ export function classifyMessagingIntent(text: string): MessagingIntent {
   ) return 'normal';
 
   const sharedIntent = detectNormalizedIntent(raw);
+  if (sharedIntent === 'cancellation' || sharedIntent === 'reschedule') return sharedIntent;
   if (sharedIntent === 'new_booking') return 'new_booking';
   if (sharedIntent === 'booking_lookup') return 'existing_booking_lookup';
   if (sharedIntent === 'clarification') return 'ambiguous';

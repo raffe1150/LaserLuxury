@@ -1,3 +1,5 @@
+import { withoutNegatedBookingClauses } from './booking-interruption';
+
 /** Read-only topic recognition. It does not choose services or authorize bookings. */
 export type BusinessInformationTopic = 'company' | 'services' | 'contact' | 'hours' | 'prices' | 'policies' | 'parking';
 
@@ -33,13 +35,23 @@ export function isBusinessRecommendationQuestion(text: string): boolean {
 }
 
 export function isBusinessInformationQuestion(text: string): boolean {
-  if (!businessInformationTopics(text).length && !isBusinessRecommendationQuestion(text)) return false;
+  text = withoutNegatedBookingClauses(text);
+  // Documents can contain arbitrary business facts, beyond the catalog of UI
+  // topics. Recognize read-only questions without treating scheduling input as
+  // a Knowledge request (e.g. "what time can I book?").
+  const openQuestion = /[?؟]|\b(?:what|where|who|why|how|tell me|question about|fråga om|frage zu|pregunta sobre|vad|varför|vilken|vilket|berätta|was|wo|wie|welche|qué|cuál|dónde|cómo)\b|(?:سوال|سؤال|چیست|چیه|کجاست|ما هو|ما هي|أين)/iu.test(text);
+  const schedulingInput = /\b(?:book|booking|appointment|reserve|schedule|reschedule|cancel|available|availability|slots?|times?|appointment\w*|tid|tider|vaght|vaghtam|rezerv|boka|bokning\w*|avboka|omboka|ledig\w*|termin\w*|buchen|reservieren|stornieren|verschieben|reservar|reserva|cita|cancelar)\b|رزرو|نوبت|وقت|حجز|موعد|مواعيد|أوقات|الأوقات/iu.test(text);
+  const bookingRefinement = /\b(?:which one|how about|what about)\b|\d{1,2}:\d{2}|\b(?:tienes|tienen|hay)\s+(?:algo|huecos?|tiempo)\s+(?:por|en)\s+la\s+ma[nñ]ana\b/iu.test(text);
+  if (!businessInformationTopics(text).length && !isBusinessRecommendationQuestion(text) &&
+      !(openQuestion && !schedulingInput && !bookingRefinement)) return false;
   const informationFirst = /\b(?:before\s+i\s+book|bevor\s+ich|erstmal\s+informieren|innan\s+jag\s+bokar|antes\s+de\s+reservar)\b|قبل از رزرو|قبل الحجز/iu.test(text);
   if (isExplicitBusinessActionRequest(text) && !informationFirst) return false;
-  return isBusinessRecommendationQuestion(text) || /[?؟]|\b(?:tell me|explain|information|describe|erzähl\w*|erfahr\w*|informier\w*|erklär\w*|wissen|berätta|beskriv|förklara|veta|informaci[oó]n|explica\w*)\b|اطلاعات|توضیح|معلومات|اشرح/iu.test(text);
+  return openQuestion || isBusinessRecommendationQuestion(text) || /[?؟]|\b(?:tell me|explain|information|describe|erzähl\w*|erfahr\w*|informier\w*|erklär\w*|wissen|berätta|beskriv|förklara|veta|informaci[oó]n|explica\w*)\b|اطلاعات|توضیح|معلومات|اشرح/iu.test(text);
 }
 
 export function isExplicitBusinessActionRequest(text: string): boolean {
+  text = withoutNegatedBookingClauses(text);
+  if (/^(?:book|reserve|schedule|reschedule|boka|reservera|buche|reservar|agendar)\s+\p{L}/iu.test(text)) return true;
   // A real instruction, including a mixed question + booking request, must stay
   // with the deterministic engine. Mentioning "how booking works" is not one.
   return /\b(?:please\s+(?:book|cancel|reschedule)|(?:i\s+(?:want|would like)\s+to|can you)\s+(?:book|cancel|reschedule)|(?:bitte|ich möchte|ich will)\s+(?:(?:einen?|den|die|das)\s+)?(?:.{0,45}\s+)?(?:buchen|buche|stornieren|verschieben)|(?:quiero|por favor)\s+(?:reservar|cancelar|cambiar))\b|(?:^|[.!?؟;,]\s*|\b(?:och|and)\s+)(?:cancel\s+(?:my|the|this)|(?:boka|avboka|omboka)\s+(?:en|ett|min|den))\b|\b(?:jag\s+(?:vill|vill gärna)|kan\s+du|vänligen)\b.{0,45}\b(?:boka|avboka|omboka)\b|(?:رزرو|لغو)\s+کن(?:ید)?(?![\p{L}\p{M}])|می[‌\s]?خواهم[^.!?؟\n]{0,60}(?:رزرو|لغو)\s+کنم(?![\p{L}\p{M}])|(?:احجز|أحجز|ألغِ?|الغِ?)(?![\p{L}\p{M}])|(?:أريد|اريد|أرغب|ارغب)[^.!?؟\n]{0,60}(?:إلغاء|الغاء|حجز)|(?:^|[.!?؟]\s*)(?:الغاء|إلغاء)\s+(?:موعد|حجز)/iu.test(text);

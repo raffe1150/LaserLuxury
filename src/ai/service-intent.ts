@@ -17,7 +17,7 @@ måndag tisdag onsdag torsdag fredag lördag söndag januari februari mars maj j
 heute morgen übermorgen uebermorgen am um gegen vor nach ab zwischen für fuer nächsten nächste diesen dieser
 vormittag vormittags nachmittag nachmittags abend abends montag dienstag mittwoch donnerstag freitag samstag sonntag
 januar februar märz maerz mai juni juli oktober dezember uhr buchen bitte und
-hoy mañana manana pasado para el la las a alrededor de antes después despues desde entre por
+hoy mañana manana pasado para el la las en a alrededor de antes después despues desde entre por
 tarde noche lunes martes miércoles miercoles jueves viernes sábado sabado domingo
 enero febrero marzo abril mayo junio julio agosto septiembre octubre noviembre diciembre reservar y
 امروز فردا پس برای در حدود حوالی ساعت قبل بعد از صبح ظهر عصر شب

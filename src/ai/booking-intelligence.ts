@@ -1,3 +1,4 @@
+import { hasBookingInterruption, isBookingResumeRequest, withoutNegatedBookingClauses } from './booking-interruption';
 import { businessInformationTopics, isBusinessInformationQuestion } from './business-information';
 import { applyBookingTransition, mergeBookingRequest } from './booking-state-machine';
 
@@ -251,8 +252,10 @@ function isPreBookingInformationalQuestion(text: string): boolean {
 }
 
 export function detectNormalizedIntent(text: string): NormalizedIntent {
-  const raw = normalizeConversationText(text).toLowerCase();
-  if (!raw) return 'unknown';
+  const raw = normalizeConversationText(withoutNegatedBookingClauses(text)).toLowerCase();
+  if (!raw) return hasBookingInterruption(text) ? 'general_question' : 'unknown';
+  if (isBusinessInformationQuestion(raw) && !isReadOnlyAvailabilityInquiry(raw)) return 'general_question';
+  if (isBookingResumeRequest(raw)) return 'new_booking';
 
   if (isPreBookingInformationalQuestion(raw)) return 'general_question';
 
@@ -264,6 +267,13 @@ export function detectNormalizedIntent(text: string): NormalizedIntent {
   if (/\b(?:cancel|avboka|laghv).{0,25}(?:appointment|booking|tid|vaght|rezerv)?\b/iu.test(raw) || /(?:لغو|کنسل).{0,20}(?:وقت|رزرو)/u.test(raw)) return 'cancellation';
   if (/(?:^|\s)(?:reschedule|move|change|ändra|flytta|taghir|avaz).{0,30}(?:appointment|booking|time|tid|vaght|rezerv)(?=\s|$)/iu.test(raw) || /(?:^|\s)boka\s+om(?=\s|$)/iu.test(raw) || /\b(?:avaz|taghir)\s+(?:bedam|konam)\b/iu.test(raw) || /(?:تغییر|عوض).{0,20}(?:وقت|رزرو|کنم|بدم)/u.test(raw)) return 'reschedule';
   if (/\b(?:do i have|did i book|check|har jag|aya).{0,30}(?:appointment|booking|tid|vaght|rezerv)\b/iu.test(raw) || /(?:آیا|میشه).{0,24}(?:وقت|رزرو).{0,24}(?:دارم|کردم)|(?:هل\s+لدي(?=\s|$).{0,24}(?:موعد|حجز)|هل\s+حجزت|متى\s+موعدي|تحقق\s+من\s+موعدي)/u.test(raw)) return 'booking_lookup';
+
+  // Positive appointment operations must win over catalog/service extraction.
+  // Information questions and negated clauses have already been handled above.
+  if (/\b(?:stornieren|absagen|cancelar)\b/iu.test(raw) ||
+      /(?:إلغاء|الغاء|ألغ[ِىي]?|الغ[ِىي]?)[^.!?؟\n]{0,35}(?:موعد|حجز)/u.test(raw)) return 'cancellation';
+  if (/\b(?:termin|buchung)\b.{0,50}\b(?:ändern|andern|verschieben|umbuchen)\b|\b(?:ändern|andern|verschieben|umbuchen)\b.{0,50}\b(?:termin|buchung)\b|\b(?:cambiar|mover|reprogramar)\b.{0,40}\b(?:cita|reserva)\b/iu.test(raw) ||
+      /(?:وقت|رزرو).{0,30}(?:تغییر|عوض)|(?:تغيير|تعديل|نقل).{0,30}(?:موعد|حجز)/u.test(raw)) return 'reschedule';
 
   // Exact operation labels offered by the clarification prompt are actionable
   // intent choices, not confirmation or permission to mutate an appointment.
@@ -895,7 +905,7 @@ export function normalizeBookingRequest(input: ConversationInput): NormalizedBoo
         confidence: 'high' as const,
       }
     : undefined);
-  const service = inferService(normalizedText);
+  const service = inferService(withoutNegatedBookingClauses(normalizedText));
   // Persian "نه" must be a word: "نهایی" means finalize, not a correction.
   const correction = hasBookingCorrectionCue(normalizedText);
   const unclearCritical = /\[(?:unclear|نامفهوم)\]/iu.test(normalizedText) && /(?:time|date|day|at|klockan|saat|sate|ساعت|روز|تاریخ)/iu.test(normalizedText);

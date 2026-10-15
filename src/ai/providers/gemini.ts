@@ -95,5 +95,8 @@ export function normalizeGeminiGenerationResponse(
   return {
     text: safeText || "",
     functionCalls,
+    ...(Number.isSafeInteger(response?.usageMetadata?.promptTokenCount) && Number.isSafeInteger(response?.usageMetadata?.candidatesTokenCount)
+      ? { usage: { inputTokens: response.usageMetadata.promptTokenCount, outputTokens: response.usageMetadata.candidatesTokenCount +
+        (Number.isSafeInteger(response.usageMetadata.thoughtsTokenCount) && response.usageMetadata.thoughtsTokenCount > 0 ? response.usageMetadata.thoughtsTokenCount : 0) } } : {}),
   };
 }

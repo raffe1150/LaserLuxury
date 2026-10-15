@@ -28,10 +28,11 @@ function setup(business = config, respond: (params: any) => Promise<any> = async
   captures.length = 0;
 }
 
-test('business-selected style is not contradicted by the later language engine', async () => {
+for(const enabled of [false,true]) test(`business-selected style is not contradicted by the later language engine (feature ${enabled?'ON':'OFF'})`, async () => {
+  const oldFlag=process.env.ODINLINK_EVIDENCE_FIRST_KNOWLEDGE;process.env.ODINLINK_EVIDENCE_FIRST_KNOWLEDGE=String(enabled);
   setup();
   globalThis.fetch = async () => new Response(JSON.stringify({ ok: true, result: { message_id: 1 } }), { status: 200 });
-  boundary.configure({ postProcess: async () => {}, incrementUsage: async () => ({ allowed: true, count: 1, limit: 100 }), geminiGenerate: async params => { captures.push(structuredClone(params)); return { text: 'How can I help?' }; } });
+  boundary.configure({ postProcess: async () => {}, incrementUsage: async () => ({ allowed: true, count: 1, limit: 100 }), geminiGenerate: async params => { captures.push(structuredClone(params)); if(params.config.systemInstruction.includes('retrieval query planner')) return {text:JSON.stringify({canonicalMeaning:'general creative conversation',queries:[],requestKind:'GENERAL_CONVERSATION',requestedFacets:[]})}; return { text: 'How can I help?' }; } });
   try {
     await boundary.promptAuditTelegram({ update_id: 100, message: { chat: { id: 42 }, text: 'Tell me a brief story.', date: 1788969600 } }, { ...config, telegramToken: '123456:offline-placeholder', telegramBusinessResolved: true });
     const prompt = captures.find(p => p.config.systemInstruction.includes('LANGUAGE ENGINE:'))?.config.systemInstruction;
@@ -44,7 +45,7 @@ test('business-selected style is not contradicted by the later language engine',
     const other = captures.find(p => p.config.systemInstruction.includes('LANGUAGE ENGINE:'))?.config.systemInstruction;
     assert.ok(other); assert.doesNotMatch(other, /BUSINESS_A_FACT|Tone: direct, economical/);
 
-  } finally { globalThis.fetch = async () => { throw Error('Network forbidden'); }; }
+  } finally { if(oldFlag===undefined)delete process.env.ODINLINK_EVIDENCE_FIRST_KNOWLEDGE;else process.env.ODINLINK_EVIDENCE_FIRST_KNOWLEDGE=oldFlag;globalThis.fetch = async () => { throw Error('Network forbidden'); }; }
 });
 
 test('web requests cannot read another channel history with a supplied chat ID', async () => {

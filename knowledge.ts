@@ -754,17 +754,23 @@ export class KnowledgeService {
     }
   }
 
-  async validateMatches(businessId: number, matches: KnowledgeSearchMatch[]): Promise<KnowledgeSearchMatch[]> {
+  async validateMatches(businessId: number, matches: KnowledgeSearchMatch[], options: { strictSources?: boolean; captureRevision?: boolean } = {}): Promise<KnowledgeSearchMatch[]> {
     await this.ensureInitialized();
-    return this.filterCurrentMatches(businessId, matches);
+    return this.filterCurrentMatches(businessId, matches, options);
   }
 
-  private async filterCurrentMatches(businessId: number, matches: KnowledgeSearchMatch[]): Promise<KnowledgeSearchMatch[]> {
+  private async filterCurrentMatches(businessId: number, matches: KnowledgeSearchMatch[], options: { strictSources?: boolean; captureRevision?: boolean } = {}): Promise<KnowledgeSearchMatch[]> {
     const ready = new Map((await this.storage.list(businessId)).filter((s) => s.businessId === businessId && s.status === "ready").map((s) => [s.id, s]));
     return matches.flatMap((match) => {
       const source = ready.get(match.sourceId);
       if (match.businessId !== businessId || !source) return [];
-      if (source.type !== "document") return [match];
+      if (source.type !== "document") {
+        if (!options.strictSources) return [match];
+        const revision = crypto.createHash('sha256').update(JSON.stringify([source.id, source.businessId, source.type, source.status, source.title, source.content, source.updatedAt, source.metadata])).digest('hex');
+        if (!chunkKnowledgeContent(source.content).some(chunk => chunk.content === String(match.text || '').trim())) return [];
+        if (match.metadata?.sourceRevision !== revision && (!options.captureRevision || match.metadata?.sourceRevision)) return [];
+        return [{ ...match, metadata: { ...match.metadata, sourceRevision: revision } }];
+      }
       const revision = documentRevision(source);
       if (match.metadata?.documentRevision && match.metadata.documentRevision !== revision) return [];
       const canonical = documentCorpus(source).find((chunk) => chunk.text === String(match.text || "").trim() &&

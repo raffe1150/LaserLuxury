@@ -106,6 +106,8 @@ export function normalizeOpenAiGenerationResponse(
   return {
     text: String(response?.output_text || ""),
     functionCalls,
+    ...(Number.isSafeInteger(response?.usage?.input_tokens) && Number.isSafeInteger(response?.usage?.output_tokens)
+      ? { usage: { inputTokens: response.usage.input_tokens, outputTokens: response.usage.output_tokens } } : {}),
   };
 }
 

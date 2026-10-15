@@ -54,6 +54,7 @@ export interface UnifiedAiGenerationRequest {
 
 export interface UnifiedAiGenerationResponse {
   text: string;
+  usage?: { inputTokens: number; outputTokens: number };
   functionCalls: Array<{
     id: string;
     function: {

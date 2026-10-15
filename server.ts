@@ -9764,15 +9764,6 @@ async function recoverSinglePolicyFact(
       isExplicitBusinessActionRequest(request.customerMessage) ||
       isBusinessRecommendationQuestion(request.customerMessage)) return '';
 
-  const completeSentence = (quote: string): boolean => {
-    const start = request.candidateReply.indexOf(quote);
-    if (quote.length < 8 || !quote.endsWith('.') || start < 0 ||
-        start !== request.candidateReply.lastIndexOf(quote) ||
-        !businessInformationTopics(quote).includes('policies')) return false;
-    const before = request.candidateReply.slice(0, start).trimEnd();
-    const after = request.candidateReply.slice(start + quote.length);
-    return (!before || /[.!。]$/u.test(before)) && (!after || /^\s/u.test(after));
-  };
   // Reuse ordinary verdicts from the same request/snapshot; never turn an
   // UNKNOWN sibling into a supported claim. Finish rejection boundaries first.
   const rejected = new Set<BusinessGroundingAssessment['claims'][number]>();
@@ -9787,25 +9778,41 @@ async function recoverSinglePolicyFact(
     const ordinary = await assessmentClaimsAreEntailed(single, request,
       support.completed?.bookingOperation?.serviceName, entailmentResults);
     if (!ordinary.entailed || ordinary.deterministicReply) { rejected.add(claim); continue; }
-    if (claim.claimKind === 'OTHER' && completeSentence(quote)) checked.push({ claim, quote });
+    if (claim.claimKind === 'OTHER') checked.push({ claim, quote });
   }
-  const candidate = checked.find(({ claim }) =>
-    isSafeBusinessRecoveryQuote(claim, assessment, snapshot, request.candidateReply, rejected));
-  if (!candidate) return '';
-  // One extra semantic check at most, with no retry/adjudication or generated
-  // rewrite. The sentence must fully answer the asked fact, not a nearby policy.
-  const relevance = await assessBusinessClaimEntailmentWithReuse({
-    ...(request.businessInfoTurnId ? { businessInfoTurnId: request.businessInfoTurnId } : {}),
-    customerMessage: request.customerMessage, atomicClaim: candidate.claim.claim,
-    candidateQuote: candidate.quote, claimKind: candidate.claim.claimKind,
-    citedEvidence: candidate.claim.evidence, evidenceCorpus: request.evidenceCorpus,
-    serviceName: support.completed?.bookingOperation?.serviceName,
-    workflow: support.completed?.bookingOperation?.serviceName ? 'post_completion_business_support' : 'business_information',
-    language: request.language, businessId: request.businessId, requireRequestedFact: true,
-  }, entailmentResults);
-  if (relevance?.relation !== 'ENTAILED' || relevance.claimKind !== 'OTHER') return '';
-  console.info('[SinglePolicyFactRecovery]', { businessId: request.businessId, disposition: 'verified_requested_sentence' });
-  return candidate.quote;
+  // Extraction is atomic; publication is a complete, unchanged sentence. A
+  // sentence can contain several verified clauses. No policy keyword is needed:
+  // requested-fact entailment establishes relevance, never lexical overlap.
+  let relevanceChecks = 0;
+  for (const match of request.candidateReply.matchAll(/(?:^|(?<=[.!?؟。！？])\s+)([^.!?؟。！？\n]+[.!。！])(?=\s|$)/gu)) {
+    const sentence = match[1].trim();
+    if (sentence.length < 8 || request.candidateReply.indexOf(sentence) !== request.candidateReply.lastIndexOf(sentence)) continue;
+    const group = checked.filter(item => sentence.includes(item.quote) &&
+      request.candidateReply.indexOf(item.quote) === request.candidateReply.lastIndexOf(item.quote) &&
+      isSafeBusinessRecoveryQuote(item.claim, assessment, snapshot, request.candidateReply, rejected));
+    // Do not strip leading negation/context or publish uncovered material. Every
+    // retained proposition still needs its exact source and ordinary entailment.
+    if (!group.some(item => sentence.startsWith(item.quote)) ||
+        !assessmentHasVerifiedEvidence({ hasBusinessFactualClaims: true, allBusinessClaimsSupported: true,
+          claims: group.map(item => item.claim) }, snapshot, sentence)) continue;
+    for (const item of group) {
+      if (relevanceChecks++ >= 3) return '';
+      const relevance = await assessBusinessClaimEntailmentWithReuse({
+        ...(request.businessInfoTurnId ? { businessInfoTurnId: request.businessInfoTurnId } : {}),
+        customerMessage: request.customerMessage, atomicClaim: item.claim.claim,
+        candidateQuote: item.quote, claimKind: item.claim.claimKind,
+        citedEvidence: item.claim.evidence, evidenceCorpus: request.evidenceCorpus,
+        serviceName: support.completed?.bookingOperation?.serviceName,
+        workflow: support.completed?.bookingOperation?.serviceName ? 'post_completion_business_support' : 'business_information',
+        language: request.language, businessId: request.businessId, requireRequestedFact: true,
+      }, entailmentResults);
+      if (relevance?.relation !== 'ENTAILED' || relevance.claimKind !== 'OTHER') continue;
+      console.info('[SinglePolicyFactRecovery]', { businessId: request.businessId,
+        disposition: 'verified_requested_sentence', verifiedAtomicClaims: group.length, relevanceChecks });
+      return sentence;
+    }
+  }
+  return '';
 }
 
 // Newly recovered single-topic prose must be a whole independent sentence,
@@ -10215,8 +10222,7 @@ async function guardBusinessSupportGroundingImpl(
     !serviceCatalogQuestion &&
     !assessmentCoverageOk &&
     assessment.hasBusinessFactualClaims &&
-    assessment.allBusinessClaimsSupported &&
-    assessment.claims.length > 0
+    assessment.claims.some(claim => claim.supported)
   ) {
     const previousAssessment = assessment;
 
@@ -10291,20 +10297,15 @@ async function guardBusinessSupportGroundingImpl(
     ),
   );
 
+  const supportedEvidenceAssessment = (value: BusinessGroundingAssessment): BusinessGroundingAssessment => ({
+    ...value, claims: value.claims.filter(claim => claim.supported),
+  });
   if (
-    assessment &&
-    assessment.hasBusinessFactualClaims &&
-    assessment.allBusinessClaimsSupported &&
-    assessment.claims.length > 0 &&
-    assessment.claims.every((claim) =>
-      Boolean(
-        claim?.requiresBusinessEvidence &&
-        claim.supported &&
-        Array.isArray(claim.evidence) &&
-        claim.evidence.length > 0
-      )
-    ) &&
-    !evidenceQuotesPresentForAssessment(assessment)
+    assessment && assessment.hasBusinessFactualClaims &&
+    assessment.claims.some(claim => claim.supported) &&
+    assessment.claims.filter(claim => claim.supported).every(claim =>
+      claim.requiresBusinessEvidence && Array.isArray(claim.evidence) && claim.evidence.length > 0) &&
+    !evidenceQuotesPresentForAssessment(supportedEvidenceAssessment(assessment))
   ) {
     const previousAssessment = assessment;
 
@@ -10336,7 +10337,7 @@ async function guardBusinessSupportGroundingImpl(
     if (
       repairedAssessment &&
       preservedDecisions &&
-      evidenceQuotesPresentForAssessment(repairedAssessment)
+      evidenceQuotesPresentForAssessment(supportedEvidenceAssessment(repairedAssessment))
     ) {
       assessment = normalizeAtomicTerminalPunctuation(repairedAssessment, snapshot, candidateReply);
       assessmentCoverageOk = coversAssessment(assessment);
@@ -35720,6 +35721,18 @@ export const priority1hUnifiedEngineTestBoundary = {
   async messengerInbound(event: any, config: any) {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
     return processMessengerUpdate(event, config);
+  },
+  async telegramInbound(event: any, config: any) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Test-only");
+    return processTelegramUpdate(event, config);
+  },
+  async instagramInbound(event: any, config: any) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Test-only");
+    return processInstagramUpdate(event, config);
+  },
+  async whatsappInbound(message: any, metadata: any, config: any) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Test-only");
+    return processWhatsAppMessage(message, metadata, config);
   },
   withMetaInboundEventTime<T>(platform: "whatsapp" | "messenger" | "instagram", customerId: string, timestamp: unknown, businessId: string, work: () => T) {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");

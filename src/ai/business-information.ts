@@ -1,7 +1,7 @@
 import { withoutNegatedBookingClauses } from './booking-interruption';
 
 /** Read-only topic recognition. It does not choose services or authorize bookings. */
-export type BusinessInformationTopic = 'company' | 'services' | 'contact' | 'hours' | 'prices' | 'policies' | 'parking';
+export type BusinessInformationTopic = 'company' | 'services' | 'contact' | 'hours' | 'prices' | 'policies' | 'parking' | 'meetings';
 
 const businessAddressPattern = /(?<![\p{L}\p{M}\p{N}_])(?:location|located|standort\w*|kundeneingang\w*|adresse|adress|kundentré\w*|ubicaci[oó]n|ubicad\w*|direcci[oó]n|befind\w*)(?![\p{L}\p{M}\p{N}_])|\b(?:your|our|business|street|postal|mailing|physical)\s+address\b|\b(?:what(?:['’]s|\s+is)|where(?:['’]s|\s+is))\s+(?:the\s+|your\s+|our\s+)?address\b|\bcustomer\s+entrance\b|\bentrance\s+(?:for\s+)?customers?\b|\bvar\s+ligger\b|\bentrada\s+(?:de\s+|para\s+)?clientes?\b|آدرس|ورودی\s+مشتری(?:ان)?|کجا\s+هست|عنوان(?:كم|ك|نا)|مدخل\s+العملاء|(?:أين|اين)\s+(?:يقع\s+)?(?:مكان|موقع)/iu;
 
@@ -10,6 +10,22 @@ const businessAddressPattern = /(?<![\p{L}\p{M}\p{N}_])(?:location|located|stand
 // recognizing the role does not establish that the claim is supported.
 const businessLocationRelationPattern = /\bvar\s+finns\s+ni\b|\b(?:ni|du)\s+(?:kan\s+)?hitta(?:r)?\s+oss\s+(?:på|i)(?![\p{L}\p{M}])|\b(?:you\s+(?:can\s+)?find\s+us\s+at|where\s+can\s+i\s+find\s+you)\b|\b(?:sie|du|ihr)\s+(?:finden|findest|findet)\s+uns\s+(?:in|an|auf)\b|\bnos\s+encuentra(?:s|n)?\s+en\b|(?<![\p{L}\p{M}])تجدوننا\s+في\s|(?<![\p{L}\p{M}])ما\s+را\s+در\s+[^.!?؟\n]{1,120}\s+پیدا\s+می[‌\s]?کنید/iu;
 
+/** A question about permission/requirements is not a request to create a booking. */
+export function isAdvanceBookingPolicyQuestion(text: string): boolean {
+  const raw = String(text || '').trim();
+  const question = /[?؟]|^(?:can|may|do|must|should|is|are|kan|får|måste|behöver|tar|kann|darf|muss|ist|puedo|necesito|es)\b|آیا|هل/iu.test(raw);
+  if (!question) return false;
+  if (/\b(?:walk[- ]?ins?|drop[- ]?in)\b/iu.test(raw)) return true;
+  if (!/\b(?:book(?:ing)?|appointments?|reservation|boka|förboka|bokning|buchung|reservierung|termin|buchen|reservieren|reservar|reserva|cita)\b|رزرو|وقت|حجز/iu.test(raw)) return false;
+  return (
+    /\b(?:can|may|could)\s+i\s+(?:come|visit|attend)\b[^.!?\n]{0,80}\bwithout\s+(?:an?\s+)?(?:booking|appointment|reservation)|\b(?:do\s+i\s+(?:need|have)\s+to|must\s+i|is\s+(?:advance\s+)?booking\s+(?:required|necessary))\b[^.!?\n]{0,60}(?:book|reserv|appointment)?/iu.test(raw) ||
+    /\b(?:kan|får)\s+jag\b[^.!?\n]{0,60}\butan\s+(?:att\s+)?boka\b|\b(?:måste|behöver)\s+jag\b[^.!?\n]{0,50}\b(?:boka|förboka)\b/iu.test(raw) ||
+    /\b(?:kann|darf)\s+ich\b[^.!?\n]{0,80}\bohne\b[^.!?\n]{0,40}\b(?:buchung|reservierung|termin)\b|\bmuss\s+ich\b[^.!?\n]{0,60}\b(?:buchen|reservieren)\b/iu.test(raw) ||
+    /\bpuedo\s+(?:venir|acudir)\b[^.!?\n]{0,40}\bsin\s+(?:reservar|reserva|cita)\b|\b(?:necesito|es\s+necesario)\s+reservar\b/iu.test(raw) ||
+    /(?:بدون\s+رزرو|بدون\s+وقت\s+قبلی)|(?:بدون\s+حجز|من\s+دون\s+حجز)/u.test(raw)
+  );
+}
+
 const topicPatterns: Record<BusinessInformationTopic, RegExp> = {
   company: /\b(?:company|business|unternehmen|firma|företag|verksamhet|empresa|negocio)\b|کسب.?و.?کار|شرکت|الشركة|المنشأة/iu,
   services: /\b(?:services?|offer(?:ings?)?|dienstleistungen?|leistungen?|angebot\w*|serviceportfolio|leistungskatalog|pakete?|tjänst\w*|utbud|servicios?|ofrecen|paquetes?)\b|خدمات|سرویس|الخدمات|خدمة/iu,
@@ -17,11 +33,12 @@ const topicPatterns: Record<BusinessInformationTopic, RegExp> = {
   hours: /(?<![\p{L}\p{M}\p{N}_])(?:opening hours|hours|öffnungszeiten|öppettider|horarios?)(?![\p{L}\p{M}\p{N}_])|ساعات کاری|ساعات العمل/iu,
   prices: /\b(?:prices?|costs?|pricing|preisen?|preise?|kosten|pris\w*|kostar|precios?|cuesta)\b|قیمت|هزینه|السعر|أسعار/iu,
   policies: /\b(?:polic\w*|conditions|requirements|preparation|prepare|bring|payment|documents?|cancel(?:lation|lations)?|deadline|notice period|stornier\w*|stornierung\w*|absagefrist|bedingungen|geschäftsbedingungen|vorbereit\w*|mitbringen|betalning|villkor|avboka|avbokning\w*|förbereda|ta med|condiciones|preparar|llevar|pago|cancelar|cancelaci[oó]n)\b|شرایط|آماده|پرداخت|لغو|شروط|تحضير|دفع|إلغاء|الغاء/iu,
+  meetings: /\b(?:digitala?\s+m(?:ö|o)ten|digitalt|digital(?:e[nr]?|es)?\s+(?:meetings?|treffen|besprechungen)|digitally|online|remote\s+(?:meetings?|services?)|reuniones?\s+(?:digitales|virtuales))\b|(?:جلسات|خدمات)\s+(?:آنلاین|دیجیتال)|اجتماعات\s+(?:رقمية|افتراضية)|عن\s+بعد/iu,
   parking: /(?<![\p{L}\p{M}\p{N}_])(?:park(?:ing|er[\p{L}\p{M}]*|en|pl[\p{L}\p{M}]*)?|aparca[\p{L}\p{M}]*)(?![\p{L}\p{M}\p{N}_])|پارکینگ|پارک\s+کن|موقف(?:ات)?|مواقف|ركن\s+سيار/iu,
 };
 export function businessInformationTopics(text: string): BusinessInformationTopic[] {
   return (Object.entries(topicPatterns) as [BusinessInformationTopic, RegExp][])
-    .filter(([topic, pattern]) => pattern.test(text) || (topic === 'contact' && isBusinessAddressQuestion(text)))
+    .filter(([topic, pattern]) => pattern.test(text) || (topic === 'policies' && isAdvanceBookingPolicyQuestion(text)) || (topic === 'contact' && isBusinessAddressQuestion(text)))
     .map(([topic]) => topic);
 }
 
@@ -41,16 +58,23 @@ export function isBusinessInformationQuestion(text: string): boolean {
   // a Knowledge request (e.g. "what time can I book?").
   const openQuestion = /[?؟]|\b(?:what|where|who|why|how|tell me|question about|fråga om|frage zu|pregunta sobre|vad|varför|vilken|vilket|berätta|was|wo|wie|welche|qué|cuál|dónde|cómo)\b|(?:سوال|سؤال|چیست|چیه|کجاست|ما هو|ما هي|أين)/iu.test(text);
   const schedulingInput = /\b(?:book|booking|appointment|reserve|schedule|reschedule|cancel|available|availability|slots?|times?|appointment\w*|tid|tider|vaght|vaghtam|rezerv|boka|bokning\w*|avboka|omboka|ledig\w*|termin\w*|buchen|reservieren|stornieren|verschieben|reservar|reserva|cita|cancelar)\b|رزرو|نوبت|وقت|حجز|موعد|مواعيد|أوقات|الأوقات/iu.test(text);
+  const requestedTopics = businessInformationTopics(text);
+  // A service named "Online Appointment" does not turn an explicit request
+  // for available times into a question about digital service delivery.
+  const asksForAvailableTimes = /\b(?:available|availability|free|ledig\w*|frei\w*|verf[üu]gbar\w*|disponible\w*|libres?)\b|متاح|خالی/u.test(text.toLowerCase()) &&
+    /\b(?:times?|slots?|tider|zeiten|uhrzeiten|horas?)\b|مواعيد|زمان|أوقات/iu.test(text);
+  if (asksForAvailableTimes && requestedTopics.every(topic => topic === 'meetings' || topic === 'services')) return false;
   const bookingRefinement = /\b(?:which one|how about|what about)\b|\d{1,2}:\d{2}|\b(?:tienes|tienen|hay)\s+(?:algo|huecos?|tiempo)\s+(?:por|en)\s+la\s+ma[nñ]ana\b/iu.test(text);
-  if (!businessInformationTopics(text).length && !isBusinessRecommendationQuestion(text) &&
+  if (!requestedTopics.length && !isBusinessRecommendationQuestion(text) &&
       !(openQuestion && !schedulingInput && !bookingRefinement)) return false;
   const informationFirst = /\b(?:before\s+i\s+book|bevor\s+ich|erstmal\s+informieren|innan\s+jag\s+bokar|antes\s+de\s+reservar)\b|قبل از رزرو|قبل الحجز/iu.test(text);
   if (isExplicitBusinessActionRequest(text) && !informationFirst) return false;
-  return openQuestion || isBusinessRecommendationQuestion(text) || /[?؟]|\b(?:tell me|explain|information|describe|erzähl\w*|erfahr\w*|informier\w*|erklär\w*|wissen|berätta|beskriv|förklara|veta|informaci[oó]n|explica\w*)\b|اطلاعات|توضیح|معلومات|اشرح/iu.test(text);
+  return openQuestion || isAdvanceBookingPolicyQuestion(text) || isBusinessRecommendationQuestion(text) || /[?؟]|\b(?:tell me|explain|information|describe|erzähl\w*|erfahr\w*|informier\w*|erklär\w*|wissen|berätta|beskriv|förklara|veta|informaci[oó]n|explica\w*)\b|اطلاعات|توضیح|معلومات|اشرح/iu.test(text);
 }
 
 export function isExplicitBusinessActionRequest(text: string): boolean {
   text = withoutNegatedBookingClauses(text);
+  if (/\b(?:could|can|would)\s+(?:we|you)\s+(?:arrange|book|reserve|schedule)\b/iu.test(text)) return true;
   if (/^(?:book|reserve|schedule|reschedule|boka|reservera|buche|reservar|agendar)\s+\p{L}/iu.test(text)) return true;
   // A real instruction, including a mixed question + booking request, must stay
   // with the deterministic engine. Mentioning "how booking works" is not one.
@@ -67,12 +91,12 @@ export function formatRecommendationClarification(language: string): string {
 }
 
 const topicLabels: Record<string, Record<BusinessInformationTopic, string>> = {
-  en: { company: 'the company', services: 'services', contact: 'contact details and links', hours: 'opening hours', prices: 'prices', policies: 'terms and preparation', parking: 'parking' },
-  de: { company: 'das Unternehmen', services: 'die Dienstleistungen', contact: 'Kontaktmöglichkeiten und Links', hours: 'die Öffnungszeiten', prices: 'die Preise', policies: 'Bedingungen und Vorbereitung', parking: 'Parkmöglichkeiten' },
-  sv: { company: 'företaget', services: 'tjänsterna', contact: 'kontaktuppgifter och länkar', hours: 'öppettiderna', prices: 'priserna', policies: 'villkor och förberedelser', parking: 'parkering' },
-  es: { company: 'la empresa', services: 'los servicios', contact: 'contactos y enlaces', hours: 'los horarios', prices: 'los precios', policies: 'condiciones y preparación', parking: 'aparcamiento' },
-  fa: { company: 'شرکت', services: 'خدمات', contact: 'اطلاعات تماس و لینک‌ها', hours: 'ساعات کاری', prices: 'قیمت‌ها', policies: 'شرایط و آمادگی', parking: 'پارکینگ' },
-  ar: { company: 'الشركة', services: 'الخدمات', contact: 'بيانات الاتصال والروابط', hours: 'ساعات العمل', prices: 'الأسعار', policies: 'الشروط والتحضير', parking: 'مواقف السيارات' },
+  en: { company: 'the company', services: 'services', contact: 'contact details and links', hours: 'opening hours', prices: 'prices', policies: 'terms and preparation', parking: 'parking', meetings: 'digital meetings' },
+  de: { company: 'das Unternehmen', services: 'die Dienstleistungen', contact: 'Kontaktmöglichkeiten und Links', hours: 'die Öffnungszeiten', prices: 'die Preise', policies: 'Bedingungen und Vorbereitung', parking: 'Parkmöglichkeiten', meetings: 'digitale Besprechungen' },
+  sv: { company: 'företaget', services: 'tjänsterna', contact: 'kontaktuppgifter och länkar', hours: 'öppettiderna', prices: 'priserna', policies: 'villkor och förberedelser', parking: 'parkering', meetings: 'digitala möten' },
+  es: { company: 'la empresa', services: 'los servicios', contact: 'contactos y enlaces', hours: 'los horarios', prices: 'los precios', policies: 'condiciones y preparación', parking: 'aparcamiento', meetings: 'reuniones digitales' },
+  fa: { company: 'شرکت', services: 'خدمات', contact: 'اطلاعات تماس و لینک‌ها', hours: 'ساعات کاری', prices: 'قیمت‌ها', policies: 'شرایط و آمادگی', parking: 'پارکینگ', meetings: 'جلسات آنلاین' },
+  ar: { company: 'الشركة', services: 'الخدمات', contact: 'بيانات الاتصال والروابط', hours: 'ساعات العمل', prices: 'الأسعار', policies: 'الشروط والتحضير', parking: 'مواقف السيارات', meetings: 'الاجتماعات الرقمية' },
 };
 export function businessInformationSubject(
   text: string,

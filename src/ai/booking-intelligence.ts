@@ -376,6 +376,17 @@ export function parseNamedBookingDateRange(
   return valid(startDate) && valid(endDate) ? { startDate, endDate } : null;
 }
 
+/** The next ISO calendar week in the business timezone, not the next seven days. */
+export function parseRelativeBookingWeekRange(text: string, timezone: string, now = new Date()): { startDate: string; endDate: string } | null {
+  const raw = normalizeConversationText(text).toLowerCase();
+  if (!/\b(?:next\s+week|nästa\s+vecka|nächste[nr]?\s+woche|(?:la\s+)?pr[oó]xima\s+semana)\b|هفته[‌\s]+(?:آینده|بعد)|(?:الأسبوع|الاسبوع)\s+(?:القادم|المقبل)/iu.test(raw)) return null;
+  // A specific calendar date or weekday retains its existing interpretation.
+  if (getBookingWeekdayReference(raw) || parseBookingDate(raw, timezone, now)) return null;
+  const today = zonedDateParts(now, timezone);
+  const startDate = addIsoDays(today.iso, 8 - (today.weekday || 7));
+  return { startDate, endDate: addIsoDays(startDate, 6) };
+}
+
 // Alternative enumeration is an explicit replacement of the previous time
 // restriction. Match a request cue and a time/slot noun, rather than treating
 // "other", "different" or "else" alone as permission to reset booking state.
@@ -879,7 +890,7 @@ export function normalizeBookingRequest(input: ConversationInput): NormalizedBoo
     normalizedText,
     input.timezone,
     input.now
-  );
+  ) || parseRelativeBookingWeekRange(normalizedText, input.timezone, input.now);
   const parsedDate = namedDateRange
     ? {
         kind: 'date_range' as const,

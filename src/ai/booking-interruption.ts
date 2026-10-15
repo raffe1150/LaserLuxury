@@ -13,7 +13,7 @@ export function hasBookingInterruption(text: string): boolean {
   return negatedAction.test(text) || pauseAction.test(text);
 }
 export function isBookingResumeRequest(text: string): boolean {
-  return /\b(?:continue|resume)\b[^.!?؟\n]{0,65}\b(?:booking|appointment|reservation)\b|\b(?:fortsätt|återuppta)\b[^.!?؟\n]{0,65}\b(?:bokning\w*|boka)\b|\b(?:buchung|termin)\b[^.!?؟\n]{0,60}\b(?:fortsetzen|weitermachen)\b|\b(?:continuar|continuemos|retomar)\b[^.!?؟\n]{0,65}\b(?:reserva|cita)\b|(?:رزرو|وقت)[^.!?؟\n]{0,60}ادامه|ادامه[^.!?؟\n]{0,60}(?:رزرو|وقت)|(?:نكمل|أكمل|اكمل|متابعة)[^.!?؟\n]{0,60}(?:الحجز|حجز|الموعد)/iu.test(text) && !hasBookingInterruption(text);
+  return /\b(?:continue|resume)\b[^.!?؟\n]{0,65}\b(?:booking|appointment|reservation)\b|\b(?:fortsätt(?:a|er)?|återuppta)\b[^.!?؟\n]{0,65}\b(?:bokning\w*|boka)\b|\b(?:buchung|termin)\b[^.!?؟\n]{0,60}\b(?:fortsetzen|weitermachen)\b|\b(?:continuar|continuemos|retomar)\b[^.!?؟\n]{0,65}\b(?:reserva|cita)\b|(?:رزرو|وقت)[^.!?؟\n]{0,60}ادامه|ادامه[^.!?؟\n]{0,60}(?:رزرو|وقت)|(?:نكمل|أكمل|اكمل|متابعة)[^.!?؟\n]{0,60}(?:الحجز|حجز|الموعد)/iu.test(text) && !hasBookingInterruption(text);
 }
 export function bookingPauseReply(language: string, needsResume = false): string {
   const replies: Record<string, string[]> = {

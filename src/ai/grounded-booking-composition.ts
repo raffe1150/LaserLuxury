@@ -274,6 +274,17 @@ export type BookingCompositionOptions = {
   toneConfig?: unknown; generate?: (request: UnifiedAiGenerationRequest) => Promise<UnifiedAiGenerationResponse>;
   languageMatches: (text: string) => boolean; timeoutMs?: number;
 };
+function availabilityCorrectionAcknowledgement(text: string, facts: BookingReplyFacts): string {
+  if (facts.kind !== 'availability' || !facts.slots?.length) return '';
+  const correction = /\b(?:haven['’]?t|have not|didn['’]?t|did not)\s+(?:shown|show)|\b(?:inte|nicht)\b[^.!?\n]{0,35}\b(?:visat|visade|gezeigt)|\bno\s+(?:has|ha|han)\s+mostrado\b|نشان[^.!?؟\n]{0,20}نداد|لم\s+تعرض/iu.test(text);
+  if (!correction) return '';
+  const replies: Record<string, string> = {
+    sv: 'Tack för förtydligandet.', en: 'Thanks for clarifying.', de: 'Danke für die Klarstellung.',
+    es: 'Gracias por aclararlo.', fa: 'ممنون از توضیحتان.', ar: 'شكرًا على التوضيح.',
+  };
+  return replies[facts.language] || '';
+}
+
 export async function composeGroundedBookingReply(options: BookingCompositionOptions): Promise<{ text: string; source: 'openai' | 'deterministic'; repeated: boolean; fallbackReason?: string; validationReason?: BookingValidationReason }> {
   const { facts, fallback, scope } = options;
   const previous = previousOutcome(scope);
@@ -286,7 +297,7 @@ export async function composeGroundedBookingReply(options: BookingCompositionOpt
   const recent = buildRecentConversationHistory(options.history, 10)
     .filter(message => ['user', 'assistant'].includes(message?.role) && typeof message.content === 'string')
     .map(message => ({ role: message.role, content: message.content.slice(0, 1200) }));
-  const recover = (fallbackReason: string, validationReason?: BookingValidationReason) => ({ fallbackReason, ...(validationReason ? { validationReason } : {}), text: repeatAwareFallback(fallback, facts, repeated ? previous!.count : 0), source: 'deterministic' as const, repeated });
+  const recover = (fallbackReason: string, validationReason?: BookingValidationReason) => ({ fallbackReason, ...(validationReason ? { validationReason } : {}), text: [availabilityCorrectionAcknowledgement(options.latestText, facts), repeatAwareFallback(fallback, facts, repeated ? previous!.count : 0)].filter(Boolean).join(' '), source: 'deterministic' as const, repeated });
   if (!options.generate) return recover('generation_not_configured');
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -304,7 +315,7 @@ export async function composeGroundedBookingReply(options: BookingCompositionOpt
           'Ask the required next step: service choice for missing/unsupported/ambiguous service, another date for no availability, offered slot choice for availability/choose_slot, booking authorization for confirm_slot, the missing fields for missing_contact, date for date, time for time, both service and date for service_date.',
           'For unsupported service explicitly state the requested service is not bookable. For ambiguous service include all candidates. If operation=reschedule, ask about moving the existing appointment, never creating another. A selected slot is never a completed booking. Only confirmed with verified=true permits a completion claim; include every supplied confirmation fact.',
           'When repeatedOutcome=true acknowledge that the same constraint still applies, adapt wording, and suggest the useful next step. Do not ask which service as though an unsupported service was never named. Do not repeat previousReply verbatim. Also recognize earlier explanations in recentConversation when presentation memory is absent.',
-          'Keep it concise, warm and direct. Return JSON with only reply.',
+          'Acknowledge an explicit correction briefly before presenting the newly supplied facts. Do not claim that earlier offers were shown or that a booking was completed. Keep it concise, warm and direct. Return JSON with only reply.',
           `AUTHORITATIVE_BOOKING_FACTS=${JSON.stringify(facts)}`,
           `PRESENTATION_MEMORY=${JSON.stringify({ repeatedOutcome: repeated, count: repeated ? previous!.count : 0, previousReply: previous?.reply || null })}`,
         ].join('\n'), options.toneConfig),

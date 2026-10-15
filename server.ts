@@ -144,7 +144,7 @@ import {
   selectTelegramDeliveryMode,
   type TelegramReplyPreference,
 } from "./src/ai/channel-reliability";
-import { applyNormalizedRequestToPending, availabilityFieldsFromConstraint, detectNormalizedIntent, buildSlotFingerprintSource, classifySpanishManana, formatPersianSpokenPhone, getBookingDateConflict, getBookingWeekdayReference, hasBookingCorrectionCue, getDateInTimeZone, getZonedSlotParts, isCurrentConversationTurn, isReadOnlyAvailabilityInquiry, isServiceGuidanceRequest, isWholeDayAvailabilityRequest, normalizeConversationText, parseBookingDate, parseNamedBookingDateRange, parseTimeConstraint, preparePersianTextForTts, registerConversationTurn, resolveRelativeBookingDateSemantic, slotMinutesSatisfyConstraint, toPersistedBookingRequest, zonedLocalIso, type NormalizedBookingRequest, type NormalizedTimeConstraint } from "./src/ai/booking-intelligence";
+import { applyNormalizedRequestToPending, availabilityFieldsFromConstraint, detectNormalizedIntent, buildSlotFingerprintSource, classifySpanishManana, formatPersianSpokenPhone, getBookingDateConflict, getBookingWeekdayReference, hasBookingCorrectionCue, getDateInTimeZone, getZonedSlotParts, isCurrentConversationTurn, isReadOnlyAvailabilityInquiry, isServiceGuidanceRequest, isWholeDayAvailabilityRequest, normalizeConversationText, parseBookingDate, parseNamedBookingDateRange, parseRelativeBookingWeekRange, parseTimeConstraint, preparePersianTextForTts, registerConversationTurn, resolveRelativeBookingDateSemantic, slotMinutesSatisfyConstraint, toPersistedBookingRequest, zonedLocalIso, type NormalizedBookingRequest, type NormalizedTimeConstraint } from "./src/ai/booking-intelligence";
 import { beginBookingFinalization, getBookingInvariantFailures, getBookingPhase, getMissingBookingContact, isPositiveBookingConfirmation, recoverBookingFinalization, recoverBookingTransaction, type BookingFailureStage } from "./src/ai/booking-state-machine";
 import { enumerateCandidateMinutes, isBlockingCalendarEvent, isCanonicalSlotFree } from "./src/ai/canonical-availability";
 import {
@@ -806,9 +806,11 @@ async function generateContentWithFallback(ai: GoogleGenAI | null, options: {
 // Removed global wait checking
 
   const configuredTimeoutMs = Number(process.env.AI_PROVIDER_TIMEOUT_MS || 20_000);
-  const timeoutMs = Number.isFinite(configuredTimeoutMs) && configuredTimeoutMs > 0
+  const providerTimeoutMs = Number.isFinite(configuredTimeoutMs) && configuredTimeoutMs > 0
     ? Math.min(60_000, Math.max(1_000, configuredTimeoutMs))
     : 20_000;
+  const timeoutMs = options.context?.stage === "business_information_completeness_repair"
+    ? Math.min(5_000, providerTimeoutMs) : providerTimeoutMs;
   // Temporary verifier-only timings distinguish queue starvation from slow
   // transport, including late completion after the reliability deadline.
   const verifierTimingEnabled = provider === "openai" && (
@@ -8467,6 +8469,7 @@ CROSS-LANGUAGE FACTUAL ANSWERING:
 Business evidence may be written in another language. Convey only explicitly supported factual meaning in ${info.language}; answering from foreign-language evidence does not require a document-translation request. Preserve configured service names exactly. A source about another business or workflow cannot support claims about this business merely because it is stored here. Missing, ambiguous and conflicting facts still require uncertainty; this clarification grants no tools or operational authority.
 
 REQUESTED FACT SCOPE:
+Requested aspects: ${JSON.stringify(businessInformationTopics(info.question))}. Address each independently; do not collapse a second aspect into the first. Preserve quantifiers and service scope from the evidence: some services offered digitally does not establish that a particular named service is digital.
 For a question asking one factual detail, give one concise complete sentence about that detail. Do not append adjacent policies, rescheduling rules, exceptions, facilities or other facts merely because they appear in the evidence. For a cancellation-deadline question, state the supported policy with its exact meaning; distinguish free cancellation and late fees from any separately established hard prohibition; discuss rescheduling or exceptions only when asked. Each factual clause must include its own subject and predicate so it can be quoted and verified independently. Compound questions still require every requested supported part, with uncertainty for any requested part that cannot be verified.
 
 SERVICE CATALOG RENDERING CONTRACT:
@@ -9805,6 +9808,60 @@ async function recoverSinglePolicyFact(
   return candidate.quote;
 }
 
+// Newly recovered single-topic prose must be a whole independent sentence,
+// never an identifier prefix or a clause stripped of its surrounding qualifier.
+function isIndependentBusinessRecoverySentence(candidate: string, quote: string): boolean {
+  const start = candidate.indexOf(quote);
+  if (start < 0 || start !== candidate.lastIndexOf(quote)) return false;
+  const before = candidate.slice(0, start).trimEnd();
+  const after = candidate.slice(start + quote.length);
+  return (!before || /[.!?؟。！？]$/u.test(before)) &&
+    (!after || (/[.!?؟。！？]$/u.test(quote) && /^\s/u.test(after)));
+}
+
+/** One tool-free completeness attempt; proposed prose never bypasses ordinary claim gates. */
+async function recoverMissingBusinessInformation(
+  support: { businessConfig: any; completed?: RecentCompletedBooking; retrievedKnowledge?: string },
+  missingTopics: ReturnType<typeof businessInformationTopics>,
+  snapshot: BusinessGroundingSnapshot,
+  request: BusinessGroundingVerificationRequest,
+  entailmentResults: BusinessClaimEntailmentResults,
+): Promise<Array<{ quote: string; topics: ReturnType<typeof businessInformationTopics> }>> {
+  const relevant = businessInformationTopics(snapshot.sources.retrieved_knowledge);
+  if (missingTopics.length > 3 || !missingTopics.some(topic => relevant.includes(topic))) return [];
+  try {
+    const response = await generateContentWithFallback(null, {
+      messages: [{ role: "user", content: request.customerMessage }],
+      systemInstruction: buildBusinessInformationInstruction({ ...support, question: request.customerMessage, language: request.language,
+        retrievedKnowledge: snapshot.sources.retrieved_knowledge }) +
+        `\nCOMPLETENESS REPAIR: Answer only these missing requested aspects: ${JSON.stringify(missingTopics)}. Use complete independently quotable factual sentences. Preserve evidence quantifiers and scope: a statement about some services does not identify which services, all services, a price or a guarantee. If evidence does not answer an aspect, omit it. Do not repeat already answered aspects. No tools or operational claims.`,
+      model: "gemini-2.5-flash",
+      context: { businessId: request.businessId, channel: "internal", stage: "business_information_completeness_repair", language: request.language,
+        ...(request.businessInfoTurnId ? { businessInfoTurnId: request.businessInfoTurnId } : {}) },
+    });
+    const candidate = String(response?.text || '').trim();
+    if (!candidate || candidate.length > 1200 || response?.functionCalls?.length) return [];
+    const repairRequest = { ...request, candidateReply: candidate };
+    const assessment = normalizeAtomicTerminalPunctuation(await assessBusinessSupportGrounding(repairRequest), snapshot, candidate);
+    if (!assessment?.hasBusinessFactualClaims || assessment.claims.length > 3) return [];
+    const rejected = new Set<BusinessGroundingAssessment['claims'][number]>();
+    const checked: Array<{ claim: BusinessGroundingAssessment['claims'][number]; quote: string; topics: ReturnType<typeof businessInformationTopics> }> = [];
+    for (const claim of assessment.claims) {
+      const quote = String(claim.candidateQuote || '').trim();
+      const single = { hasBusinessFactualClaims: true, allBusinessClaimsSupported: true, claims: [claim] };
+      if (!quote || !isIndependentBusinessRecoverySentence(candidate, quote) || !assessmentHasVerifiedEvidence(single, snapshot, quote)) { rejected.add(claim); continue; }
+      const verdict = await assessmentClaimsAreEntailed(single, repairRequest, support.completed?.bookingOperation?.serviceName, entailmentResults);
+      if (!verdict.entailed || verdict.deterministicReply) { rejected.add(claim); continue; }
+      checked.push({ claim, quote, topics: businessInformationTopics(`${claim.claim} ${quote}`) });
+    }
+    return checked.filter(item => item.topics.some(topic => missingTopics.includes(topic)) &&
+      isSafeBusinessRecoveryQuote(item.claim, assessment, snapshot, candidate, rejected));
+  } catch {
+    console.warn('[BusinessInformationCompleteness]', { businessId: request.businessId, outcome: 'repair_unavailable' });
+    return [];
+  }
+}
+
 async function recoverCompoundBusinessInformation(
   support: { businessConfig: any; completed?: RecentCompletedBooking },
   assessment: BusinessGroundingAssessment | null,
@@ -9813,9 +9870,11 @@ async function recoverCompoundBusinessInformation(
   entailmentResults: BusinessClaimEntailmentResults,
 ): Promise<string> {
   const topics = businessInformationTopics(request.customerMessage);
-  if (topics.length < 2 || isBusinessRecommendationQuestion(request.customerMessage)) return "";
+  if (!topics.length || (topics.length === 1 && topics[0] === 'policies') ||
+      isBusinessRecommendationQuestion(request.customerMessage)) return "";
 
   const parts: string[] = [];
+  let supportedRequestedProse = false;
   const supportedTopics = new Set<string>();
   const verifiedLocationQuotes: string[] = [];
   const catalogPlan = isServiceCatalogQuestion(request.customerMessage, true)
@@ -9830,7 +9889,8 @@ async function recoverCompoundBusinessInformation(
   const rejectedClaims = new Set<BusinessGroundingAssessment["claims"][number]>();
   for (const claim of assessment?.claims || []) {
     const quote = String(claim.candidateQuote || "").trim();
-    if (quote.length < 4 || !request.candidateReply.includes(quote)) continue;
+    if (quote.length < 4 || !request.candidateReply.includes(quote) ||
+        (topics.length === 1 && !isIndependentBusinessRecoverySentence(request.candidateReply, quote))) continue;
     const single: BusinessGroundingAssessment = {
       hasBusinessFactualClaims: true, allBusinessClaimsSupported: true, claims: [claim],
     };
@@ -9848,12 +9908,16 @@ async function recoverCompoundBusinessInformation(
     if (!decision.entailed || !assessment ||
         !isSafeBusinessRecoveryQuote(claim, assessment, snapshot, request.candidateReply, rejectedClaims)) continue;
     const claimTopics = businessInformationTopics(`${claim.claim} ${quote}`);
+    if (topics.length === 1 && !claimTopics.some(topic => topics.includes(topic))) continue;
     if (isBusinessAddressQuestion(claim.claim)) verifiedLocationQuotes.push(quote);
     // The authoritative catalog replaces its own service/price clauses while
     // independently grounded location, preparation, and other facts survive.
     const replacedByCatalog = catalog && catalogPlan &&
       recoveredClaimIsRepresentedByCatalog(claim, catalogPlan, support.businessConfig);
-    if (!replacedByCatalog) parts.push(decision.deterministicReply || quote);
+    if (!replacedByCatalog) {
+      parts.push(decision.deterministicReply || quote);
+      supportedRequestedProse ||= claimTopics.some(topic => topics.includes(topic));
+    }
     for (const topic of claimTopics) supportedTopics.add(topic);
     if (claim.evidence.some(item =>
       item.source === "structured_business_config" && /"name"\s*:/u.test(item.quote)
@@ -9876,13 +9940,23 @@ async function recoverCompoundBusinessInformation(
       supportedTopics.add("contact");
     }
   }
+  // Missing-role detection is a request to propose evidence-grounded wording,
+  // never authority to assert a fact. Repair runs at most once, without tools.
+  const missingBeforeRepair = topics.filter(topic => !supportedTopics.has(topic));
+  if (assessment && supportedRequestedProse && missingBeforeRepair.length) {
+    const repaired = await recoverMissingBusinessInformation(support, missingBeforeRepair, snapshot, request, entailmentResults);
+    for (const item of repaired) {
+      parts.push(item.quote);
+      for (const topic of item.topics) supportedTopics.add(topic);
+    }
+  }
   if (!parts.length) return "";
   const missingTopics = topics.filter(topic => !supportedTopics.has(topic));
   const formatGap = !assessment || entailmentResults.verificationUnavailable
     ? formatBusinessSupportVerificationUnavailable
     : formatBusinessSupportKnowledgeGap;
-  const omittedUnsupportedClaim = assessment?.claims.some(claim => !claimHasVerifiedBusinessEvidence(claim, snapshot));
-  if (missingTopics.length || omittedUnsupportedClaim) parts.push(formatGap(
+  // Rejected unrelated prose does not make an already answered topic unknown.
+  if (missingTopics.length) parts.push(formatGap(
     request.language, businessInformationSubject(request.customerMessage, request.language, missingTopics.length ? missingTopics : topics),
   ));
   const groundedReply = [...new Set(parts)].join("\n");
@@ -10365,7 +10439,14 @@ async function guardBusinessSupportGroundingImpl(
     businessInformationTopics(latestCustomerMessage).length < 2 ||
     !isServiceCatalogQuestion(latestCustomerMessage, true) ||
     serviceCatalogReplyCoversConfiguredServices(candidateReply, support.businessConfig);
-  if (assessment && verifiedEvidence && claimsEntailed && compoundCatalogComplete) {
+  const requestedTopics = businessInformationTopics(latestCustomerMessage);
+  const coveredTopics = new Set(assessment?.claims.flatMap(claim => businessInformationTopics(`${claim.claim} ${claim.candidateQuote}`)) || []);
+  // Only explicitly recognizable retrieved roles trigger completeness recovery.
+  // Broad "company/services" questions need not repeat those nouns in the answer.
+  const retrievedTopics = businessInformationTopics(snapshot.sources.retrieved_knowledge);
+  const compoundTopicsComplete = requestedTopics.length < 2 ||
+    requestedTopics.filter(topic => retrievedTopics.includes(topic)).every(topic => coveredTopics.has(topic));
+  if (assessment && verifiedEvidence && claimsEntailed && compoundCatalogComplete && compoundTopicsComplete) {
     if (serviceCatalogQuestion) {
       console.info("[ServiceCatalogPresentationFinal]", {
         sessionId,
@@ -12925,6 +13006,10 @@ function parseAvailabilityRangeRequest(
     }
   }
 
+  if (!explicitStartDate) {
+    const week = parseRelativeBookingWeekRange(raw, String(businessConfig?.timezone || "Europe/Stockholm"), now);
+    if (week) { explicitStartDate = week.startDate; explicitEndDate = week.endDate; }
+  }
   if (!flexibleDays && !explicitStartDate && weekdays.length === 0) return null;
   if (!hasValidWindow && !weekdays.length && !explicitStartDate) return null;
 
@@ -22009,11 +22094,14 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
           await savePendingBooking(sessionId, platformName, pending);
         }
       };
+      const requestsFreshAvailability = isReadOnlyAvailabilityInquiry(text) ||
+        (isBookingResumeRequest(text) && Boolean(normalizedRequest.date || normalizedRequest.timeConstraint));
       if (
         availabilityConstraintKey &&
         pending?.lastAvailabilityConstraintKey === availabilityConstraintKey &&
         !pendingSelectionRejected &&
-        !isSlotListRepeatRequest(text)
+        !isSlotListRepeatRequest(text) &&
+        !requestsFreshAvailability
       ) {
         await persistCachedOfferContact();
         await replyAndRecord(

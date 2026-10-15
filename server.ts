@@ -7209,7 +7209,7 @@ function inferRecentCompletedBookingRequestedDetails(text?: string): RecentCompl
       /\b(?:name|namn|nombre|namen)\b/u.test(normalized) || /(?:نام|اسم)/u.test(normalized),
     phone:
       /\b(?:phone|mobile|contact|telefon|telefonnummer|mobilnummer|telefono|movil|contacto)\b/u.test(normalized) ||
-      /(?:شماره|تلفن|تماس|هاتف|جوال|رقم|اتصال)/u.test(normalized),
+      /(?:شماره|تلفن|تماس|هاتف|جوال|(?<![\p{L}\p{M}])(?:ال)?رقم(?:[يیكک]|[كک]م|نا|ه|ها|هم)?(?![\p{L}\p{M}])|اتصال)/u.test(normalized),
     email: /\b(?:email|e-mail|correo|e-post)\b/u.test(normalized) || /(?:ایمیل|بريد)/u.test(normalized),
     service:
       /\b(?:what|which|vilken|welche|que)\s+(?:service|treatment|tjanst|behandling|servicio|tratamiento|dienstleistung)\b/u.test(normalized) ||
@@ -9828,7 +9828,12 @@ async function recoverMissingBusinessInformation(
   entailmentResults: BusinessClaimEntailmentResults,
 ): Promise<Array<{ quote: string; topics: ReturnType<typeof businessInformationTopics> }>> {
   const relevant = businessInformationTopics(snapshot.sources.retrieved_knowledge);
-  if (missingTopics.length > 3 || !missingTopics.some(topic => relevant.includes(topic))) return [];
+  const requestedTopics = businessInformationTopics(request.customerMessage);
+  const singlePolicyFact = requestedTopics.length === 1 && requestedTopics[0] === 'policies';
+  // A policy recommendation need not contain a policy/category noun. It still
+  // needs positive evidence and the stricter requested-fact check below.
+  if (missingTopics.length > 3 || !snapshot.sources.retrieved_knowledge.trim() ||
+      (!missingTopics.some(topic => relevant.includes(topic)) && !singlePolicyFact)) return [];
   try {
     const response = await generateContentWithFallback(null, {
       messages: [{ role: "user", content: request.customerMessage }],
@@ -9852,7 +9857,19 @@ async function recoverMissingBusinessInformation(
       if (!quote || !isIndependentBusinessRecoverySentence(candidate, quote) || !assessmentHasVerifiedEvidence(single, snapshot, quote)) { rejected.add(claim); continue; }
       const verdict = await assessmentClaimsAreEntailed(single, repairRequest, support.completed?.bookingOperation?.serviceName, entailmentResults);
       if (!verdict.entailed || verdict.deterministicReply) { rejected.add(claim); continue; }
-      checked.push({ claim, quote, topics: businessInformationTopics(`${claim.claim} ${quote}`) });
+      const topics = businessInformationTopics(`${claim.claim} ${quote}`);
+      if (singlePolicyFact) {
+        const relevance = await assessBusinessClaimEntailmentWithReuse({
+          ...(request.businessInfoTurnId ? { businessInfoTurnId: request.businessInfoTurnId } : {}),
+          customerMessage: request.customerMessage, atomicClaim: claim.claim, candidateQuote: quote,
+          claimKind: claim.claimKind, citedEvidence: claim.evidence, evidenceCorpus: request.evidenceCorpus,
+          serviceName: support.completed?.bookingOperation?.serviceName, workflow: 'business_information',
+          language: request.language, businessId: request.businessId, requireRequestedFact: true,
+        }, entailmentResults);
+        if (relevance?.relation !== 'ENTAILED' || relevance.claimKind !== 'OTHER') { rejected.add(claim); continue; }
+        topics.push('policies');
+      }
+      checked.push({ claim, quote, topics });
     }
     return checked.filter(item => item.topics.some(topic => missingTopics.includes(topic)) &&
       isSafeBusinessRecoveryQuote(item.claim, assessment, snapshot, candidate, rejected));
@@ -9860,6 +9877,44 @@ async function recoverMissingBusinessInformation(
     console.warn('[BusinessInformationCompleteness]', { businessId: request.businessId, outcome: 'repair_unavailable' });
     return [];
   }
+}
+
+/** Repair coverage, never authority: uncovered original prose is not published. */
+async function recoverIncompleteSingleBusinessInformation(
+  support: { businessConfig: any; completed?: RecentCompletedBooking },
+  assessment: BusinessGroundingAssessment | null,
+  snapshot: BusinessGroundingSnapshot,
+  request: BusinessGroundingVerificationRequest,
+  entailmentResults: BusinessClaimEntailmentResults,
+): Promise<string> {
+  const topics = businessInformationTopics(request.customerMessage);
+  if (!assessment || topics.length !== 1 || isExplicitBusinessActionRequest(request.customerMessage) ||
+      isBusinessRecommendationQuestion(request.customerMessage)) return '';
+  // A complete supported atomic proposition may be embedded in conversational
+  // prose that failed coverage or sentence boundaries. It can authorize one
+  // repair attempt, but cannot itself authorize publishing that prose.
+  let verifiedSeed = false;
+  for (const claim of assessment.claims) {
+    const quote = String(claim.candidateQuote || '').trim();
+    const single = { hasBusinessFactualClaims: true, allBusinessClaimsSupported: true, claims: [claim] };
+    const start = request.candidateReply.indexOf(quote);
+    const tail = request.candidateReply.slice(start + quote.length);
+    if (quote.length < 4 || start < 0 || start !== request.candidateReply.lastIndexOf(quote) ||
+        /[\p{L}\p{M}\p{N}]$/u.test(request.candidateReply.slice(0, start)) ||
+        (tail && (/[.!?؟。！？]$/u.test(quote) ? !/^\s/u.test(tail) : /^[\p{L}\p{M}\p{N}]/u.test(tail))) ||
+        !isSafeBusinessRecoveryQuote(claim, assessment, snapshot, request.candidateReply) ||
+        !assessmentHasVerifiedEvidence(single, snapshot, quote)) continue;
+    const decision = await assessmentClaimsAreEntailed(single, { ...request, candidateReply: quote },
+      support.completed?.bookingOperation?.serviceName, entailmentResults);
+    if (decision.entailed && !decision.deterministicReply) { verifiedSeed = true; break; }
+  }
+  if (!verifiedSeed) return '';
+  const repaired = await recoverMissingBusinessInformation(support, topics, snapshot, request, entailmentResults);
+  const reply = [...new Set(repaired.map(item => item.quote))].join('\n');
+  console.info('[BusinessInformationCompleteness]', {
+    businessId: request.businessId, outcome: reply ? 'verified_single_topic_repair' : 'single_topic_repair_rejected',
+  });
+  return reply;
 }
 
 async function recoverCompoundBusinessInformation(
@@ -10487,6 +10542,13 @@ async function guardBusinessSupportGroundingImpl(
     support, assessment, snapshot, verificationRequest, entailmentResults,
   );
   if (compoundReply) return compoundReply;
+
+  if (!assessmentCoverageOk) {
+    const repairedReply = await recoverIncompleteSingleBusinessInformation(
+      support, assessment, snapshot, verificationRequest, entailmentResults,
+    );
+    if (repairedReply) return repairedReply;
+  }
 
   if (
     assessment &&

@@ -24,7 +24,7 @@ export function naturalVerdict(data:any) {
 // pure contract tests. No provider, database, transport or Calendar is available.
 async function run(o:{proposal?:any;verdict?:(data:any)=>any;single?:boolean;direct?:boolean;enabled?:boolean;allowSinglePartial?:boolean;
   stageFailure?:string;result?:any;delay?:number;budget?:InformationBudget;fresh?:()=>Promise<any>;current?:()=>Promise<boolean>;
-  languageSafe?:(u:any)=>boolean;scope?:typeof scope;unitReject?:boolean}={}) {
+  languageSafe?:(u:any)=>boolean;scope?:typeof scope;unitReject?:boolean;oversized?:boolean}={}) {
  const calls:string[]=[],events:any[]=[],budget=o.budget||new InformationBudget();
  const units=[rec,...(o.single===false?[arrangement]:[])].map((text,i)=>({facetIds:['f1'],subject:'studio',predicate:'states',value:text,
   modality:i?'descriptive':'recommended',negation:false,scope:'visits',qualifiers:[],language:'en',text,evidenceRefs:[{evidenceId:`e${i+1}`,exactQuote:text}]}));
@@ -34,7 +34,7 @@ async function run(o:{proposal?:any;verdict?:(data:any)=>any;single?:boolean;dir
   current:o.current|| (async()=>true),revalidateEvidence:o.fresh,languageSafe:o.languageSafe||(()=>true),diagnostic:e=>events.push(e),
   generate:async(stage,instruction,data:any)=>{
    budget.attempt();calls.push(stage);if(o.stageFailure===stage)throw new Error('private provider failure body');
-   if(stage==='extraction')return{text:JSON.stringify({units,naturalProposal:o.proposal===undefined?proposal():o.proposal})};
+   if(stage==='extraction')return{text:JSON.stringify({units,oversized:o.oversized||false,naturalProposal:o.proposal===undefined?proposal():o.proposal})};
    if(stage==='verification'){
     assert.equal(instruction,UNIT_VERIFICATION_INSTRUCTION,'factual judge instructions unchanged');
     assert.equal(JSON.stringify(data).includes('naturalProposal'),false);assert.equal(JSON.stringify(data).includes('arranging your visit'),false,'unit judge is blind to speculative prose');
@@ -138,6 +138,16 @@ test('insufficient shared deadline skips optional validation and retains canonic
 test('final verification is capped at two seconds with no late prose publication',async()=>{
  const start=Date.now();const {manifest,calls}=await run({delay:2050});assert.equal(manifest.naturalReason,'NATURAL_TIMEOUT');assert.equal(manifest.naturalOutcome,'canonical_fallback');assert.equal(calls.length,3);
  assert.ok(Date.now()-start<2400);assert.equal(NATURAL_LIMITS.verificationMs,2000);assert.ok(manifest.text.includes(rec));
+});
+test('oversized optional prose and its oversize flag cannot erase independently verifiable canonical units',async()=>{
+ const p=proposal();p.blocks[0].text='x'.repeat(NATURAL_LIMITS.characters+1);
+ const {manifest,calls}=await run({proposal:p,oversized:true});assert.equal(manifest.units.length,1);assert.ok(manifest.text.includes(rec));
+ assert.equal(manifest.naturalReason,'NATURAL_PROPOSAL_INVALID');assert.equal(calls.length,2);
+});
+test('optional verifier must leave the publication reserve within the unchanged 20s deadline',async()=>{
+ const budget=new InformationBudget(2800),deadline=budget.deadlineAt;
+ const {manifest,calls}=await run({budget});assert.equal(calls.length,2);assert.equal(manifest.naturalReason,'COMPOSER_SKIPPED_BUDGET');
+ assert.ok(manifest.text.includes(rec));assert.equal(budget.deadlineAt,deadline);assert.ok(budget.generationRemaining()<2000);
 });
 test('natural schemas are explicit extensions, OFF unit schema is unchanged',()=>{
  const off:any=knowledgeStructuredOutput('extraction'),on:any=knowledgeStructuredOutput('extraction',true),judge:any=knowledgeStructuredOutput('presentation_verification',true);

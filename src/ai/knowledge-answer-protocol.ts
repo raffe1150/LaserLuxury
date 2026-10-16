@@ -19,6 +19,7 @@ export const DECISION_REASONS = [
   'DIRECT_SINGLE_UNIT', 'COMPOSED', 'COMPOSER_FALLBACK', 'COMPOSER_SKIPPED_BUDGET', 'LEGACY_ROUTE', 'PUBLICATION_SUPPRESSED',
   'NATURAL_ACCEPTED', 'NATURAL_PROPOSAL_INVALID', 'NATURAL_CONTRACT_INVALID', 'NATURAL_BINDINGS', 'NATURAL_REPETITION', 'NATURAL_IDENTIFIER',
   'NATURAL_VERDICT_INVALID', 'NATURAL_SEMANTIC_REJECTION', 'NATURAL_COVERAGE_REJECTION', 'NATURAL_SINGLE_PARTIAL_DISABLED', 'NATURAL_TIMEOUT',
+  'PUBLICATION_RESERVE', 'SOURCE_UNAVAILABLE',
 ] as const;
 export type DecisionReason = typeof DECISION_REASONS[number];
 export type KnowledgeDecision = {
@@ -33,6 +34,8 @@ export type KnowledgeDecision = {
   correlationId?: string; durationMs?: number; transportSuccess?: boolean; inputTokens?: number | null; outputTokens?: number | null;
   outputMode?: 'json_schema' | 'validated_text';
   failureCategory?: string;
+  blockId?: string; blockKind?: 'fact'|'uncertainty'|'courtesy'; requestedLanguage?: string;
+  semanticVerifiedUnits?: number; publishableUnits?: number; deadlineAt?: number; timeoutMs?: number;
   natural?: { schemaVersion: string; outcome: 'accepted_natural'|'canonical_fallback'|'direct_canonical'; reason: DecisionReason | null };
   route?: 'verified_manifest' | 'partial_manifest' | 'unavailable' | 'suppressed' | 'legacy';
 };
@@ -79,6 +82,7 @@ export function knowledgeFailureReason(error: unknown): DecisionReason {
   if (category === 'TIMEOUT' || /^information_deadline$/u.test(message)) return 'DEADLINE';
   if (category === 'MALFORMED_RESPONSE') return 'MALFORMED_RESPONSE';
   if (message === 'information_budget_exhausted') return 'BUDGET_EXHAUSTED';
+  if (message === 'information_publication_reserve') return 'PUBLICATION_RESERVE';
   return 'PROVIDER_FAILURE';
 }
 

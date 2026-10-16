@@ -4,6 +4,7 @@ import { beforeEach, afterEach, test } from 'node:test';
 import { Responses } from 'openai/resources/responses';
 import { normalizeConversationText } from './booking-intelligence';
 import { NATURAL_FLAGS } from './grounded-knowledge-composition';
+import { performance } from 'node:perf_hooks';
 process.env.NODE_ENV = 'test';
 process.env.GEMINI_API_KEY = 'synthetic-offline-only';
 const { priority1hUnifiedEngineTestBoundary: b } = await import('../../server');
@@ -503,4 +504,130 @@ for(const ch of channels) for(const outcome of ['complete','refused','truncated'
  await inbound(ch,q.policy);assert.equal(calls,3);assert.equal(reads,0);assert.equal(published().includes(policy),outcome==='complete');
  assert.ok(decisionEvents.some(e=>e.provider==='openai'&&e.model==='gpt-5.6-luna'&&e.outputMode==='json_schema'));
  if(outcome!=='complete')assert.ok(decisionEvents.some(e=>e.reason===(outcome==='refused'?'REFUSAL':'TRUNCATED')));
+});
+
+// Retain real timers while advancing only elapsed request time. This exercises
+// the actual provider/source Promise.race deadlines near 20s, not a fake timeout
+// exception or a mock that makes every freshness check instantaneous.
+function elapsedClock(t:any) {
+ const now=Date.now.bind(Date);let offset=0;
+ t.mock.method(Date,'now',()=>now()+offset);
+ return (remaining:number,target:number)=>{offset+=Math.max(0,remaining-target);};
+}
+const wait=(ms:number)=>new Promise<void>(resolve=>setTimeout(resolve,ms));
+
+for(const ch of channels)for(const natural of [false,true])for(const [i,[language,question,text]]of translations.entries())
+ test(`${ch}/${language}/deadline-repair/natural-${natural}: verified facts survive delayed publication near the live boundary`,async t=>{
+  const id=ch==='whatsapp'?'46700000039':'deadline-context',sid=session(ch,id);
+  if(i%3===1)b.promptAuditHistory(sid,[{role:'user',content:'Vi kan boka senare.'},{role:'assistant',content:'Vi kan fortsätta när du vill.'}]);
+  if(i%3===2){await inbound(ch,'Jag vill boka Video Consultation nästa vecka. Visa lediga tider.',id);assert.equal(b.pendingStateSnapshot(sid)?.service,'Video Consultation');}
+  sent=[];requests=[];metrics=[];reads=0;lang=language;
+  proposed=[{...unit(text),modality:'recommended',evidenceRefs:[{evidenceId:'e1',exactQuote:policy}]},
+   {...unit(arrangements[i]),modality:'descriptive',evidenceRefs:[{evidenceId:'e1',exactQuote:policy}]}];
+  if(natural)enableNatural({blocks:[{kind:'fact',text:fluent[i][0]+' '+arrangements[i],proposedUnitOrdinals:[1,2],obligationIds:[]},
+   {kind:'uncertainty',text:fluent[i][1],proposedUnitOrdinals:[],obligationIds:['f1.o1']}]},{permission:true});
+  else {
+   const generate=deps.geminiGenerate!;
+   configure({geminiGenerate:async p=>{
+    const result=await generate(p),instruction=p.config.systemInstruction;
+    if(instruction.includes('retrieval query planner')){const v=JSON.parse(result.text);v.requestedFacets=[{subject:'visits',attribute:'visit policy',questionType:'permission',obligations:[{description:'walk-in permission',questionType:'permission'},{description:'booking recommendation',questionType:'recommendation'}]}];return{text:JSON.stringify(v)};}
+    if(instruction.includes('BATCH ENTAILMENT')){const v=JSON.parse(result.text),data=JSON.parse(p.contents[0].parts[0].text);v.coverage=[{facetId:'f1',requestAligned:true,materialFactsComplete:true,materialUnitIds:['u1','u2'],obligations:[{obligationId:data.facets[0].obligations[0].id,status:'UNRESOLVED',unitIds:[]},{obligationId:data.facets[0].obligations[1].id,status:'COVERED',unitIds:['u1']}]}];return{text:JSON.stringify(v)};}
+    return result;
+   }});
+  }
+  const advance=elapsedClock(t);let verified=false,sourceReadsAfterVerification=0;
+  configure({evidenceFirstDecisionDiagnostic:(e:any)=>{
+   decisionEvents.push(e);
+   if(e.stage==='verification'&&e.counts?.verified===2&&!verified){verified=true;advance(e.remainingMs,1086);}
+  },validateKnowledgeMatches:async(_id,matches)=>{
+   if(verified){sourceReadsAfterVerification++;await wait(250);}
+   return current?matches:[];
+  }});
+  await inbound(ch,question,id);
+  assert.ok(published().includes(text));assert.ok(published().includes(arrangements[i]));
+  assert.ok(verified);assert.equal(sourceReadsAfterVerification,ch==='telegram'?3:2,'one builder check plus every actual native publication check');
+  const final=decisionEvents.filter(e=>e.stage==='publication').at(-1);
+  assert.equal(final.semanticVerifiedUnits,2);assert.equal(final.publishableUnits,2);assert.ok(final.remainingMs>0);
+  assert.equal(final.facets[0].status,'PARTIAL','a recommendation does not establish walk-in permission');
+  assert.equal(final.naturalEnabled,natural);assert.equal(typeof final.revision,'string');
+  assert.equal(metrics.at(-1).attempts,3);assert.equal(reads,0);
+  if(natural)assert.equal(final.natural.outcome,'canonical_fallback');
+  if(i%3===2){assert.equal(b.pendingStateSnapshot(sid)?.service,'Video Consultation');assert.equal(b.pendingStateSnapshot(sid)?.dateTime,null);assert.equal(b.pendingStateSnapshot(sid)?.continuationPaused,true);}
+ });
+
+for(const ch of channels)for(const fault of ['provider-deadline','builder-deadline','publication-deadline','revoked']as const)
+ test(`${ch}/deadline-repair/${fault}: real delayed work cannot restore expired or revoked authority`,async t=>{
+  facts=[parking,digital];facetCount=2;
+  enableNatural({blocks:[{kind:'fact',text:parking+' '+digital,proposedUnitOrdinals:[1,2],obligationIds:[]}]});
+  const advance=elapsedClock(t),generate=deps.geminiGenerate!;let extraction=false,publishing=false,verified=false,sourceCalls=0;
+  configure({geminiGenerate:async p=>{
+   if(p.config.systemInstruction.includes('BATCH ENTAILMENT')&&fault==='provider-deadline')await wait(350);
+   const result=await generate(p);if(p.config.systemInstruction.includes('UNIT EXTRACTION'))extraction=true;return result;
+  },evidenceFirstDecisionDiagnostic:(e:any)=>{
+   decisionEvents.push(e);
+   if(fault==='provider-deadline'&&extraction&&e.reason==='SOURCE_CURRENT')advance(e.remainingMs,1150);
+   if(fault==='builder-deadline'&&!verified&&e.stage==='verification'&&e.counts?.verified===2){verified=true;advance(e.remainingMs,90);}
+  },evidenceFirstPublicationDiagnostic:e=>{if(e.phase==='publication_start'){
+   publishing=true;
+   if(fault==='publication-deadline'){
+    const last=decisionEvents.at(-1);advance(last.remainingMs,90);
+   }
+  }},validateKnowledgeMatches:async(_id,matches)=>{
+   sourceCalls++;
+   if(publishing&&fault==='publication-deadline'||verified&&fault==='builder-deadline')await wait(180);
+   if(publishing&&fault==='revoked')return [];
+   return matches;
+  }});
+  const started=performance.now();await inbound(ch,q.compound);await wait(220);
+  assert.ok(performance.now()-started>=150,'actual elapsed timers used');
+  assert.equal(published().includes(parking),false);assert.equal(published().includes(digital),false);
+  assert.doesNotMatch(published(),/hittar ingen specifik/iu,'unavailability is not asserted evidence absence');
+  const final=decisionEvents.filter(e=>e.stage==='publication').at(-1);
+  assert.equal(final.publishableUnits,0);assert.equal(final.semanticVerifiedUnits,fault==='provider-deadline'?0:2);
+  assert.equal(final.reason,fault==='revoked'?'SOURCE_INVALID':'DEADLINE');
+  if(fault==='publication-deadline'||fault==='builder-deadline')assert.equal(decisionEvents.some(e=>e.reason==='SOURCE_INVALID'),false,'a timed-out source read is not revocation');
+  assert.equal(reads,0);assert.ok(requests.length<=4);assert.ok(sourceCalls>0);
+ });
+
+for(const ch of channels)for(const invalid of ['missing','oversized','malformed','language']as const)
+ test(`${ch}/deadline-repair/${invalid}: optional proposal never erases canonical units`,async()=>{
+  facts=[parking,digital];facetCount=2;
+  const proposal=invalid==='missing'?null:invalid==='malformed'?{blocks:'invalid'}:{blocks:[{kind:'fact',text:invalid==='oversized'?'x'.repeat(1201):'We recommend that you book an appointment in advance because visits to the studio are arranged by agreement.',proposedUnitOrdinals:[1,2],obligationIds:[]}]};
+  enableNatural(proposal);
+  await inbound(ch,q.compound);assert.ok(published().includes(parking));assert.ok(published().includes(digital));
+  const final=decisionEvents.filter(e=>e.stage==='publication').at(-1);assert.equal(final.publishableUnits,2);assert.equal(final.natural.outcome,'canonical_fallback');
+  assert.equal(metrics.at(-1).attempts,3);assert.equal(reads,0);
+  if(invalid==='language'){
+   const rejection=decisionEvents.find(e=>e.reason==='LOCAL_LANGUAGE'&&e.blockId);
+   assert.equal(rejection?.blockId,'b1');assert.equal(rejection?.blockKind,'fact');assert.equal(rejection?.requestedLanguage,'sv');
+   assert.equal(JSON.stringify(rejection).includes('We recommend'),false);
+  }
+ });
+
+test('deadline-repair/four-native/real-wall-clock: slow authoritative providers fail closed within the unchanged deadline', {timeout:30_000}, async()=>{
+ facts=[parking,digital];facetCount=2;
+ enableNatural({blocks:[{kind:'fact',text:parking+' '+digital,proposedUnitOrdinals:[1,2],obligationIds:[]}]});
+ const generate=deps.geminiGenerate!;
+ configure({geminiGenerate:async p=>{
+  if(p.config.systemInstruction.includes('BATCH ENTAILMENT'))await wait(20_050);
+  return generate(p);
+ }});
+ const started=performance.now();
+ // Separate real native request scopes, with identical synthetic evidence. No
+ // accelerated Date clock: late results finish after the actual 20-second cap.
+ await Promise.all(channels.map(ch=>inbound(ch,q.compound)));
+ const publicationElapsed=performance.now()-started;
+ await wait(1300);
+ assert.ok(publicationElapsed>=18_000&&publicationElapsed<21_000);
+ assert.ok(performance.now()-started>=20_000);
+ assert.equal(sent.length,4);assert.equal(reads,0);assert.equal(metrics.length,4);
+ for(const ch of channels){
+  const final=decisionEvents.filter(e=>e.nativeChannel===ch&&e.stage==='publication').at(-1);
+  assert.equal(final.semanticVerifiedUnits,0);assert.equal(final.publishableUnits,0);assert.equal(final.reason,'DEADLINE');
+  assert.equal(final.naturalEnabled,true);
+  const metric=metrics.find(e=>e.nativeChannel===ch);assert.equal(metric.attempts,3);assert.equal(metric.units,0);
+  assert.ok(metric.durationMs<=20_000);assert.equal(metric.retries,0);
+ }
+ assert.equal(decisionEvents.some(e=>e.stage==='verification'&&e.relation==='ENTAILED'),false,'late results cannot restore verified authority');
+ assert.equal(decisionEvents.some(e=>e.reason==='SOURCE_INVALID'),false);
 });

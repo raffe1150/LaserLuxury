@@ -829,9 +829,10 @@ async function generateContentWithFallback(ai: GoogleGenAI | null, options: {
     knowledgeState.model=safeModelIdentifier(provider==='openai'?resolveOpenAiTextModel(options.model):options.model||'gemini-2.5-flash');
   }
   if (informationBudget && !informationBudget.remaining()) throw new Error("information_deadline");
+  if(informationBudget && !informationBudget.generationRemaining()) throw new Error('information_publication_reserve');
   const informationStageLimit = ['knowledge_units_composition','knowledge_units_presentation_verification'].includes(options.context?.stage || '') && informationBudget
-    ? Math.max(1, Math.min(2_000, informationBudget.remaining() - 500)) : providerTimeoutMs;
-  const timeoutMs = informationBudget ? Math.min(providerTimeoutMs, informationStageLimit, informationBudget.remaining()) : options.context?.stage === "business_information_completeness_repair"
+    ? Math.max(1, Math.min(2_000, informationBudget.generationRemaining())) : providerTimeoutMs;
+  const timeoutMs = informationBudget ? Math.min(providerTimeoutMs, informationStageLimit, informationBudget.generationRemaining()) : options.context?.stage === "business_information_completeness_repair"
     ? Math.min(5_000, providerTimeoutMs) : providerTimeoutMs;
   // Temporary verifier-only timings distinguish queue starvation from slow
   // transport, including late completion after the reliability deadline.
@@ -902,7 +903,7 @@ async function generateContentWithFallback(ai: GoogleGenAI | null, options: {
       if(informationBudget) emitKnowledgeDecision({stage:knowledgeProviderStage(options.context?.stage),reason:event.ok?'ACCEPTED':knowledgeFailureReason({category:event.category}),
         ...(event.category?{failureCategory:event.category}:{}),
         correlationId,durationMs:event.durationMs,transportSuccess:event.ok,remainingMs:informationBudget.remaining(),
-        outputMode:request.structuredOutput?'json_schema':'validated_text'});
+        timeoutMs,deadlineAt:informationBudget.deadlineAt,outputMode:request.structuredOutput?'json_schema':'validated_text'});
       logVerifierTiming(event.attempt, event.category === "TIMEOUT" ? "attempt_timeout" : "attempt_complete");
       console.log("[AIRequest]", {
         correlationId,
@@ -5221,11 +5222,12 @@ type KnowledgeTurnState = { migrated?: boolean; budget?: InformationBudget; face
   businessId?: number; question?: string; manifest?: AnswerManifest; sessionId?: string; history?: any[]; matches?: KnowledgeSearchMatch[];
   snapshot?: Readonly<{ businessId: number; question: string; matches: KnowledgeSearchMatch[]; evidence: Evidence[] }>;
   invalidSourceIds?: Set<string>; nativeChannel?: 'telegram'|'instagram'|'whatsapp'|'messenger'; provider?:string; model?:string;
+  freshnessFailure?:DecisionReason; sourceValidationUnavailable?:boolean; freshnessChecks?:number; freshnessDurationMs?:number; semanticVerifiedUnits?:number;
   diagnosticCount?:number; unitCounts?:KnowledgeDecision['counts'] };
 const knowledgeTurnScope = new AsyncLocalStorage<KnowledgeTurnState>();
 function runUnifiedConversationRequest<T>(work: () => Promise<T>, nativeChannel:KnowledgeTurnState['nativeChannel']): Promise<T> {
   const naturalEnabled=process.env.ODINLINK_EVIDENCE_FIRST_KNOWLEDGE==='true'&&process.env.ODINLINK_GROUNDED_NATURAL_RESPONSES==='true';
-  return requestSecurity.run(() => knowledgeTurnScope.run({nativeChannel,...(naturalEnabled?{naturalEnabled:true,
+  return requestSecurity.run(() => knowledgeTurnScope.run({nativeChannel,naturalEnabled,...(naturalEnabled?{
     naturalSinglePartial:process.env.ODINLINK_GROUNDED_NATURAL_SINGLE_PARTIAL==='true',naturalTurnId:crypto.randomUUID()}: {})}, work));
 }
 function knowledgeProviderStage(stage?:string):KnowledgeStage {
@@ -5234,6 +5236,7 @@ function knowledgeProviderStage(stage?:string):KnowledgeStage {
 }
 function emitKnowledgeDecision(event:KnowledgeDecision) {
   const state=knowledgeTurnScope.getStore();if(!state?.budget)return;
+  if(event.stage==='verification'&&event.counts)state.semanticVerifiedUnits=event.counts.verified;
   if(event.counts)state.unitCounts=event.stage==='extraction'?event.counts:{proposed:state.unitCounts?.proposed??event.counts.proposed,parsed:state.unitCounts?.parsed??event.counts.parsed,
     verified:event.counts.verified,rejected:(state.unitCounts?.proposed??event.counts.proposed)-event.counts.verified};
   // Reserve publication capacity; all arrays/IDs/reasons originate from bounded
@@ -5244,6 +5247,8 @@ function emitKnowledgeDecision(event:KnowledgeDecision) {
     eventType:event.transportSuccess!==undefined?'transport':event.inputTokens!==undefined?'usage':event.sources?'source_validation':event.route?'publication':event.unitId?event.stage==='extraction'?'unit_parse':event.stage==='verification'?'unit_verdict':'unit_state':event.facetId?'coverage':event.counts?'unit_counts':event.stage,
     businessInfoTurnId:state.sessionId?businessInformationTimingContext(state.sessionId).businessInfoTurnId||null:null,
     businessId:state.businessId||null,nativeChannel:state.nativeChannel||'internal',provider:state.provider||'unresolved',model:state.model||'unresolved',
+    naturalEnabled:state.naturalEnabled===true,naturalSinglePartial:state.naturalSinglePartial===true,
+    revision:/^[a-f0-9]{7,40}$/u.test(process.env.RENDER_GIT_COMMIT||'')?process.env.RENDER_GIT_COMMIT:'local-unversioned',
     ...event,remainingMs:state.budget.remaining()};
   priority1hTestDependencies?.evidenceFirstDecisionDiagnostic?.(diagnostic);
   console.info('[EvidenceFirstDecision]',JSON.stringify(diagnostic));
@@ -5288,34 +5293,67 @@ async function knowledgeContextCurrent(): Promise<boolean> {
 async function currentAnswerEvidence(): Promise<readonly Evidence[]> {
   const state = knowledgeTurnScope.getStore();
   if (!state?.snapshot || !state.budget) return [];
+  if(state.sourceValidationUnavailable){state.freshnessFailure='SOURCE_UNAVAILABLE';return [];}
   const snapshot = state.snapshot;
   state.invalidSourceIds ||= new Set();
   const reasons=new Map<string,DecisionReason>();
+  const started=Date.now();state.freshnessChecks=(state.freshnessChecks||0)+1;
   let valid: ReadonlySet<string> = new Set();
   try {
     valid = await withinInformationDeadline(state.budget, async () => {
-      if (!await knowledgeContextCurrent()) {emitKnowledgeDecision({stage:'freshness',reason:'CONTEXT_INVALID'});return new Set<string>();}
+      if (!await knowledgeContextCurrent()) throw new Error('knowledge_context_invalid');
       return revalidateKnowledgeSourceIds(snapshot.businessId, snapshot.matches,
         priority1hTestDependencies?.validateKnowledgeMatches || ((id, matches) => knowledgeService.validateMatches(id, matches, { strictSources: true,onRejected:(id,reason)=>reasons.set(id,reason) })),
         (id,reason)=>{if(!reasons.has(id))reasons.set(id,reason);});
     });
-  } catch(error) {emitKnowledgeDecision({stage:'freshness',reason:knowledgeFailureReason(error)});}
+    // A Promise.race timeout does not cancel its read. Commit no source state
+    // from work that completed after authority expired, or from validator errors.
+    if(!state.budget.remaining())throw new Error('information_deadline');
+    if(!requestSecurity.current())throw new Error('knowledge_context_invalid');
+    if([...reasons.values()].includes('VALIDATOR_ERROR'))throw new Error('knowledge_source_unavailable');
+    state.freshnessFailure=undefined;
+  } catch(error) {
+    state.freshnessFailure=error instanceof Error&&error.message==='knowledge_context_invalid'?'CONTEXT_INVALID':
+      knowledgeFailureReason(error)==='DEADLINE'?'DEADLINE':'SOURCE_UNAVAILABLE';
+    if(state.freshnessFailure==='SOURCE_UNAVAILABLE')state.sourceValidationUnavailable=true;
+    emitKnowledgeDecision({stage:'freshness',reason:state.freshnessFailure,durationMs:Date.now()-started});
+    return [];
+  } finally {state.freshnessDurationMs=(state.freshnessDurationMs||0)+Date.now()-started;}
   for (const sourceId of new Set(snapshot.matches.map(m => m.sourceId))) if (!valid.has(sourceId)) state.invalidSourceIds.add(sourceId);
-  emitKnowledgeDecision({stage:'freshness',reason:valid.size?'SOURCE_CURRENT':'SOURCE_INVALID',sources:[...new Set(snapshot.matches.map(m=>m.sourceId))].slice(0,5).map((id,index)=>({
+  emitKnowledgeDecision({stage:'freshness',reason:valid.size?'SOURCE_CURRENT':'SOURCE_INVALID',durationMs:Date.now()-started,sources:[...new Set(snapshot.matches.map(m=>m.sourceId))].slice(0,5).map((id,index)=>({
     index,valid:valid.has(id)&&!state.invalidSourceIds!.has(id),reason:state.invalidSourceIds!.has(id)?reasons.get(id)==='SOURCE_CURRENT'?'SOURCE_QUARANTINED':reasons.get(id)||'SOURCE_INVALID':'SOURCE_CURRENT'}))});
   return requestSecurity.current() ? snapshot.evidence.filter(e => valid.has(e.sourceId) && !state.invalidSourceIds!.has(e.sourceId)) : [];
+}
+
+async function knowledgeOwnershipCurrent(): Promise<boolean> {
+  const state=knowledgeTurnScope.getStore();
+  if(!state?.budget||state.migrated===false)return requestEvidenceCurrent();
+  try {
+    const current=await withinInformationDeadline(state.budget,knowledgeContextCurrent);
+    if(!current)state.freshnessFailure='CONTEXT_INVALID';
+    if(!state.budget.remaining()){state.freshnessFailure='DEADLINE';return false;}
+    return current;
+  }catch{state.freshnessFailure='DEADLINE';return false;}
 }
 
 async function knowledgeEvidenceCurrent(): Promise<boolean> {
   const state = knowledgeTurnScope.getStore();
   if (!state?.budget || state.migrated === false) return requestEvidenceCurrent();
-  try {
-    return await withinInformationDeadline(state.budget, async () => {
-      if (!await knowledgeContextCurrent()) return false;
-      if (state.manifest) state.manifest = pruneAnswerManifest(state.manifest, await currentAnswerEvidence(),emitKnowledgeDecision);
-      return requestSecurity.current();
-    });
-  } catch { return false; }
+  if(!await knowledgeOwnershipCurrent())return false;
+  if(state.manifest) {
+    const evidence=await currentAnswerEvidence();
+    // This continuation runs only after a completed, timely read. In particular
+    // no detached timeout continuation may later prune or restore the manifest.
+    if(state.freshnessFailure||!state.budget.remaining()||!requestSecurity.current())return false;
+    state.manifest=pruneAnswerManifest(state.manifest,evidence,emitKnowledgeDecision);
+  }
+  if(!state.budget.remaining()){state.freshnessFailure='DEADLINE';return false;}
+  return requestSecurity.current();
+}
+
+function knowledgeUnavailableReply(language:string):string {
+  const support=requestSecurity.evidence?.support;
+  return formatBusinessSupportVerificationUnavailable(language,businessInformationSubject(support&&'question' in support?support.question:'',language));
 }
 
 async function generateSecureConversationContent(sessionId: string, options: any) {
@@ -5334,7 +5372,7 @@ async function generateSecureConversationContent(sessionId: string, options: any
   }
   const available = await (state?.budget ? knowledgeEvidenceCurrent() : requestEvidenceCurrent());
   if (!requestSecurity.current()) throw new Error('request_superseded_or_expired');
-  if (!available) return { text: formatBusinessSupportKnowledgeGap(capturedSupportLanguage(support)), functionCalls: null };
+  if (!available) return { text: state?.budget&&state.migrated!==false?knowledgeUnavailableReply(capturedSupportLanguage(support)):formatBusinessSupportKnowledgeGap(capturedSupportLanguage(support)), functionCalls: null };
   if (support && 'question' in support && evidenceFirstEligible(support.question) && state?.budget && state.migrated !== false &&
       state.businessId === Number(getBusinessIdFromConfig(support.businessConfig)) && state.question === support.question) {
     state.sessionId = sessionId;
@@ -5350,9 +5388,10 @@ async function generateSecureConversationContent(sessionId: string, options: any
         ...(state.naturalEnabled?{natural:{scope:immutable({turnId:state.naturalTurnId!,businessId:state.businessId!,question:support.question,
           tone:normalizeBusinessToneConfig(support.businessConfig?.toneConfig)}),allowSinglePartial:state.naturalSinglePartial===true}}:{}),
         languageSafe: unit => !customerReplyLanguageIsIncompatible(unit.text, support.language),
-        current: knowledgeEvidenceCurrent,
+        current: knowledgeOwnershipCurrent,
         revalidateEvidence: currentAnswerEvidence,
-        diagnostic:emitKnowledgeDecision,
+        diagnostic:event=>emitKnowledgeDecision(event.stage==='freshness'&&event.reason==='SOURCE_INVALID'&&state.freshnessFailure
+          ? {...event,reason:state.freshnessFailure}:event),
         generate: async (stage, instruction, data) => {
           const started = Date.now(); let ok = false;
           try { const result = await generateContentWithFallback(null, { messages: [{ role: 'user', content: JSON.stringify(data) }],
@@ -5363,13 +5402,17 @@ async function generateSecureConversationContent(sessionId: string, options: any
           } finally { state.budget!.stages.push({ stage, durationMs: Date.now() - started, ok }); }
         },
       });
-      state.manifest = state.oversized ? { ...manifest, text: narrowInformationRequest(support.language) } : manifest;
+      const unavailable=state.freshnessFailure?{...manifest,fallbackReason:state.freshnessFailure,
+        ...(state.naturalEnabled?{naturalOutcome:'canonical_fallback' as const,naturalReason:state.freshnessFailure}:{})}:manifest;
+      state.manifest = state.oversized ? { ...unavailable, text: narrowInformationRequest(support.language) } : unavailable;
       const diagnostic = { businessInfoTurnId: businessInformationTimingContext(sessionId).businessInfoTurnId,
         nativeChannel:state.nativeChannel||'internal',schemaVersion:KNOWLEDGE_SCHEMA_VERSION,provider:state.provider,model:state.model,
         facets: state.manifest.outcomes.map(o => ({ status: o.status, units: o.unitIds.length })), units: state.manifest.units.length,
         presentationFallback: state.manifest.presentationFallback,presentationPath:state.manifest.presentationPath,fallbackReason:state.manifest.fallbackReason,
         ...(state.naturalEnabled?{naturalResponse:{enabled:true,schemaVersion:'grounded-natural-v1',outcome:state.manifest.naturalOutcome||'canonical_fallback',
           reason:state.manifest.naturalReason||state.manifest.fallbackReason}}:{}),
+        naturalEnabled:state.naturalEnabled===true,naturalSinglePartial:state.naturalSinglePartial===true,
+        semanticVerifiedUnits:state.semanticVerifiedUnits||0,freshnessChecks:state.freshnessChecks||0,freshnessDurationMs:state.freshnessDurationMs||0,
         unitCounts:state.unitCounts,completeness:state.manifest.outcomes.map(o=>({status:o.status,obligations:o.obligations.map(d=>d.status),requestAligned:o.requestAligned,materialFactsComplete:o.materialFactsComplete})), attempts: state.budget.attempts, retries: 0,
         durationMs: Date.now() - state.budget.startedAt, stages: state.budget.stages, inputTokens: state.budget.inputTokens,
         outputTokens: state.budget.outputTokens, meteredAttempts: state.budget.meteredAttempts, estimatedCostUsd: state.budget.meteredAttempts === state.budget.attempts ? state.budget.estimatedCostUsd : null };
@@ -5394,7 +5437,8 @@ async function securePublicationReply(reply: string, language?: string): Promise
   // Freshness and request ownership above remain mandatory for every send.
   const publishable = current;
   if (!requestSecurity.current()) return null;
-  const text = publishable ? state?.manifest?.text || reply : formatBusinessSupportKnowledgeGap(language || capturedSupportLanguage(requestSecurity.evidence.support));
+  const outputLanguage=language || capturedSupportLanguage(requestSecurity.evidence.support);
+  const text = publishable ? state?.manifest?.text || reply : state?.budget&&state.migrated!==false?knowledgeUnavailableReply(outputLanguage):formatBusinessSupportKnowledgeGap(outputLanguage);
   if (state?.manifest) {
     // Only the last assistant entry for this owned turn can be corrected. Never
     // retain unpublished revoked prose as the next turn's conversation context.
@@ -5403,12 +5447,13 @@ async function securePublicationReply(reply: string, language?: string): Promise
     if (last?.role === 'assistant' && (last.content === previousText || last.content === reply)) last.content = text;
     priority1hTestDependencies?.evidenceFirstPublicationDiagnostic?.({ phase: 'publication_result', units: state.manifest.units.length,
       facets: state.manifest.outcomes.map(o => ({ status: o.status, units: o.unitIds.length })), invalidSources: state.invalidSourceIds?.size || 0 });
-    emitKnowledgeDecision({stage:'publication',reason:!publishable?'CONTEXT_INVALID':state.manifest.fallbackReason||'ACCEPTED',
+    emitKnowledgeDecision({stage:'publication',reason:!publishable?state.freshnessFailure||'CONTEXT_INVALID':state.manifest.fallbackReason||'ACCEPTED',
+      semanticVerifiedUnits:state.semanticVerifiedUnits||0,publishableUnits:publishable?state.manifest.units.length:0,
       counts:{proposed:state.unitCounts?.proposed||0,parsed:state.unitCounts?.parsed||0,verified:publishable?state.manifest.units.length:0,
         rejected:(state.unitCounts?.proposed||0)-(publishable?state.manifest.units.length:0)},
       facets:state.manifest.facets.map(f=>({type:f.questionType,obligations:f.obligations.length,status:state.manifest!.outcomes.find(o=>o.facetId===f.id)?.status})),
       ...(state.naturalEnabled?{natural:{schemaVersion:'grounded-natural-v1',outcome:!publishable?'canonical_fallback' as const:state.manifest.naturalOutcome||'canonical_fallback' as const,
-        reason:!publishable?'CONTEXT_INVALID' as const:state.manifest.naturalReason||state.manifest.fallbackReason}}:{}),
+        reason:!publishable?state.freshnessFailure||'CONTEXT_INVALID' as const:state.manifest.naturalReason||state.manifest.fallbackReason}}:{}),
       route:!publishable||!state.manifest.units.length?'unavailable':state.manifest.outcomes.every(o=>o.status==='VERIFIED')?'verified_manifest':'partial_manifest'});
   }
   return text;
@@ -10314,7 +10359,10 @@ async function guardBusinessSupportGrounding(
     const expiredDocument = !captured && !support && businessInformationTurns[sessionId]?.retrievedKnowledge?.includes('untrusted_document_text:');
     const current = async () => {
       const knowledgeState = knowledgeTurnScope.getStore();
-      if (knowledgeState?.budget && knowledgeState.migrated !== false) return knowledgeEvidenceCurrent();
+      // Intermediate guards validate ownership and the immutable request context.
+      // Source reads here duplicated the authoritative checks at actual send and
+      // consumed publication headroom. Never bypass securePublicationReply.
+      if (knowledgeState?.budget && knowledgeState.migrated !== false) return knowledgeOwnershipCurrent();
       if (expiredDocument || (requestSecurity.bound && (!captured || !requestSecurity.current()))) return false;
       if (captured) return requestEvidenceCurrent();
       if (!support) return true;
@@ -10322,11 +10370,11 @@ async function guardBusinessSupportGrounding(
         priority1hTestDependencies?.validateKnowledgeMatches || ((id, matches) => knowledgeService.validateMatches(id, matches)))) return false;
       return cancellationInformationCurrent(support);
     };
-    if (!await current()) return formatBusinessSupportKnowledgeGap(language);
+    if (!await current()) return knowledgeTurnScope.getStore()?.budget?knowledgeUnavailableReply(language):formatBusinessSupportKnowledgeGap(language);
     const state = knowledgeTurnScope.getStore();
     const reply = state?.budget && state.migrated !== false ? state.manifest?.text || formatBusinessSupportVerificationUnavailable(language, businessInformationSubject(latestCustomerMessage, language))
       : await guardBusinessSupportGroundingImpl(sessionId, latestCustomerMessage, candidateReply, language, support);
-    if (!await current()) return formatBusinessSupportKnowledgeGap(language);
+    if (!await current()) return knowledgeTurnScope.getStore()?.budget?knowledgeUnavailableReply(language):formatBusinessSupportKnowledgeGap(language);
     // The second freshness check may have removed a source after reply selection.
     return state?.manifest && state.migrated !== false ? state.manifest.text : reply;
   }

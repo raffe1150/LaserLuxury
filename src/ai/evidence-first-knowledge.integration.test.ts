@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { beforeEach, afterEach, test } from 'node:test';
+import { Responses } from 'openai/resources/responses';
 process.env.NODE_ENV = 'test';
 process.env.GEMINI_API_KEY = 'synthetic-offline-only';
 const { priority1hUnifiedEngineTestBoundary: b } = await import('../../server');
@@ -25,6 +26,7 @@ const config = { id: 77, businessId: 77, businessName: 'Synthetic studio', langu
 let deps: Parameters<typeof b.configure>[0], sent: any[], requests: any[], metrics: any[], reads: number, current: boolean, mode: string, lang: string;
 let facts: string[], proposed: any[] | undefined, verdict: string, composer: string, facetCount: number, oldFetch: typeof fetch, oldFlag: string | undefined;
 let sequence = 0;
+let decisionEvents:any[], decisionLogs:string[];
 const configure = (d: Parameters<typeof b.configure>[0]) => { deps = { ...deps, ...d }; b.configure(deps); };
 const forbidden = async () => assert.fail('Unauthorized appointment mutation');
 const unit = (text: string, index = 0) => ({ facetIds: [`f${index + 1}`], subject: 'studio', predicate: 'offers', value: text,
@@ -32,10 +34,13 @@ const unit = (text: string, index = 0) => ({ facetIds: [`f${index + 1}`], subjec
  evidenceRefs: [{ evidenceId: 'e1', exactQuote: text }] });
 beforeEach((t: any) => {
  b.reset(); deps = {}; sent = []; requests = []; metrics = []; reads = 0; current = true; mode = 'present'; lang = 'sv';
+ decisionEvents=[];decisionLogs=[];
  facts = [policy]; proposed = undefined; verdict = 'ENTAILED'; composer = 'valid'; facetCount = 1;
  oldFlag = process.env.ODINLINK_EVIDENCE_FIRST_KNOWLEDGE; process.env.ODINLINK_EVIDENCE_FIRST_KNOWLEDGE = 'true';
  oldFetch = globalThis.fetch;
- for (const m of ['log','info','warn','error'] as const) t.mock.method(console, m, () => {});
+ for (const m of ['log','info','warn','error'] as const) t.mock.method(console, m, (...args:any[]) => {
+  if(m==='info'&&['[EvidenceFirstDecision]','[EvidenceFirstKnowledge]'].includes(args[0])){assert.equal(typeof args[1],'string');assert.equal(args[1].includes('\n'),false);JSON.parse(args[1]);decisionLogs.push(args[1]);}
+ });
  globalThis.fetch = async (input, options) => {
   const url = String(input); assert.ok(url.startsWith('https://api.telegram.org/bot123456:synthetic-offline/sendMessage') || /^https:\/\/graph\.(?:facebook|instagram)\.com\//u.test(url), url);
   sent.push({ url, body: JSON.parse(String(options?.body || '{}')) });
@@ -45,6 +50,7 @@ beforeEach((t: any) => {
   knowledgeSearch: async id => { assert.equal(id, 77); return mode === 'missing' ? [] : [{ businessId: mode === 'foreign' ? 88 : 77, sourceId: 'synthetic-document', text: [policy,parking,digital,...facts].filter((v,i,a) => a.indexOf(v) === i).join('\n'), score: 1, metadata: { source: 'document', documentRevision: 'synthetic-v1' } }]; },
   semanticKnowledgeSearch: async () => [], validateKnowledgeMatches: async (_id, matches) => current ? matches : [],
   evidenceFirstDiagnostic: event => metrics.push(event),
+  evidenceFirstDecisionDiagnostic:event=>decisionEvents.push(event),
   geminiGenerate: async p => {
    requests.push(p); const instruction = p.config.systemInstruction;
    if (instruction.includes('retrieval query planner')) return { text: JSON.stringify({ canonicalMeaning: 'requested business information', queries: [], requestedFacets: Array.from({ length: facetCount }, (_,i) => ({ subject: 'studio', attribute: `requested-part-${i+1}`, questionType: 'description' })) }), usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 10 } };
@@ -59,7 +65,10 @@ beforeEach((t: any) => {
    if (instruction.includes('EVIDENCE-FIRST BATCH ENTAILMENT')) {
     if (mode === 'revoke-verification') current = false;
     if (mode === 'verify-error') throw new Error('synthetic failure');
-    return { text: JSON.stringify({ decisions: payload.units.map((u:any, i:number) => ({ unitId: u.id, relation: (mode === 'reject-sibling' && i) || (mode === 'reject-first' && !i) ? 'UNKNOWN' : verdict, facetIds: u.facetIds, meaningPreserved: true, languageCorrect: true, negativeAbsence: false, explicitAbsenceEvidence: false })) }) };
+    const decisions=payload.units.map((u:any,i:number)=>({unitId:u.id,relation:(mode==='reject-sibling'&&i)||(mode==='reject-first'&&!i)?'UNKNOWN':verdict,facetIds:u.facetIds,
+     meaningPreserved:true,modalityPreserved:true,qualifiersPreserved:true,relevant:true,languageCorrect:true,negativeAbsence:false,explicitAbsenceEvidence:false}));
+    return {text:JSON.stringify({decisions,coverage:payload.facets.map((f:any)=>{const ids=decisions.filter((d:any)=>d.relation==='ENTAILED'&&d.facetIds.includes(f.id)).map((d:any)=>d.unitId);
+     return{facetId:f.id,requestAligned:true,materialFactsComplete:ids.length>0,materialUnitIds:ids,obligations:f.obligations.map((o:any)=>({obligationId:o.id,status:ids.length?'COVERED':'UNRESOLVED',unitIds:ids}))};})})};
    }
    if (instruction.includes('VERIFIED-UNIT PRESENTATION')) {
     if (mode === 'revoke-composition') current = false;
@@ -90,7 +99,7 @@ for (const ch of channels) for (const [name,text,expected] of [
  facts = [...expected]; facetCount = facts.length; composer = 'natural'; await inbound(ch,text);
  const answer = published(); for (const fact of facts) assert.ok(answer.includes(fact), answer);
  assert.doesNotMatch(answer,/måste|ingen specifik|available times/iu); assert.equal(reads,0);
- assert.equal(metrics.at(-1).units,facts.length); assert.equal(metrics.at(-1).attempts,4); assert.equal(metrics.at(-1).retries,0);
+ assert.equal(metrics.at(-1).units,facts.length); assert.equal(metrics.at(-1).attempts,facts.length===1?3:4); assert.equal(metrics.at(-1).retries,0);
  assert.equal(metrics.at(-1).presentationFallback,false); assert.ok(requests.every(r => !r.config.systemInstruction.includes('COMPLETENESS REPAIR')));
 });
 for (const ch of channels) for (const context of ['history','active-draft','long-response'] as const) test(`${ch}/${context}: final guards preserve verified units and draft ownership`, async () => {
@@ -105,11 +114,11 @@ for (const ch of channels) for (const context of ['history','active-draft','long
  if (context === 'active-draft') { const pending = b.pendingStateSnapshot(sid); assert.equal(pending?.service,'Video Consultation'); assert.equal(pending?.continuationPaused,true); assert.equal(pending?.dateTime,null); }
 });
 for (const ch of channels) for (const failure of ['malformed','extract-error','verify-error','missing','foreign','revoke-extraction','revoke-verification','revoke-composition'] as const) test(`${ch}/${failure}: no unverified or revoked facts are published`, async () => {
- mode = failure; await inbound(ch,q.policy); assert.equal(published().includes(policy),false); assert.equal(reads,0);
+ mode = failure; if(failure==='revoke-composition'){facts=[policy,parking];facetCount=2;} await inbound(ch,q.policy); assert.equal(published().includes(policy),false); assert.equal(reads,0);
  assert.ok(requests.length <= 4); if (failure === 'missing' || failure === 'foreign') assert.equal(requests.length,1);
 });
 for (const ch of channels) for (const failure of ['error','malformed'] as const) test(`${ch}/composer-${failure}: preserve verified answer without counting fallback as composition`, async () => {
- composer = failure; await inbound(ch,q.policy); assert.equal(published(),policy); assert.equal(metrics.at(-1).presentationFallback,true); assert.equal(requests.length,4);
+ composer = failure; facts=[policy,parking];facetCount=2;await inbound(ch,q.policy); assert.ok(published().includes(policy));assert.ok(published().includes(parking)); assert.equal(metrics.at(-1).presentationFallback,true); assert.equal(requests.length,4);
 });
 for (const ch of channels) test(`${ch}: rejected independent unit cannot erase a verified sibling`, async () => {
  facts = [parking,digital]; facetCount = 2; mode = 'reject-sibling'; await inbound(ch,q.compound);
@@ -154,7 +163,7 @@ for (const ch of channels) test(`${ch}: transient provider failure cannot start 
  await inbound(ch,q.policy);assert.equal(requests.length,1);assert.equal(published().includes(policy),false);
 });
 for (const ch of channels) test(`${ch}: non-document source is revalidated before publication`,async()=>{
- configure({knowledgeSearch:async()=>[{businessId:77,sourceId:'synthetic-web',text:policy,metadata:{source:'website'}}]});
+ facts=[policy,parking];facetCount=2;configure({knowledgeSearch:async()=>[{businessId:77,sourceId:'synthetic-web',text:policy+'\n'+parking,metadata:{source:'website'}}]});
  mode='revoke-composition';await inbound(ch,q.policy);assert.equal(published().includes(policy),false);
 });
 for (const ch of channels) test(`${ch}: conflicting verification does not publish a disputed fact`,async()=>{
@@ -243,7 +252,7 @@ for(const ch of channels) for(const stage of ['verification','composition'] as c
  configure({geminiGenerate:async p=>{const result=await generate(p);if(p.config.systemInstruction.includes(stage==='verification'?'BATCH ENTAILMENT':'VERIFIED-UNIT PRESENTATION'))invalid=true;return result;},
   validateKnowledgeMatches:async(_id,matches)=>matches.filter(m=>!invalid||m.sourceId!=='parking-doc'),
  });
- await inbound(ch,q.compound);assert.equal(published().includes(parking),false);assert.ok(published().includes(digital));assert.equal(reads,0);assert.equal(requests.length,4);
+ await inbound(ch,q.compound);assert.equal(published().includes(parking),false);assert.ok(published().includes(digital));assert.equal(reads,0);assert.equal(requests.length,stage==='verification'?3:4);
 });
 for(const ch of channels) test(`${ch}: all dependencies of compound negated/qualified unit must remain valid`,async()=>{
  separateSources();
@@ -264,4 +273,79 @@ for(const ch of channels) test(`${ch}: transient validator exception fails close
  let publishing=false,fail=true;configure({evidenceFirstPublicationDiagnostic:e=>{if(e.phase==='publication_start')publishing=true;},
   validateKnowledgeMatches:async(_id,matches)=>{if(publishing&&fail){fail=false;throw new Error('synthetic freshness failure');}return matches;}});
  await inbound(ch,q.compound);assert.equal(published().includes(parking),false);assert.equal(published().includes(digital),false);assert.equal(reads,0);
+});
+
+for(const ch of channels) for(const [language,question,text] of translations) for(const context of ['fresh','history','draft'] as const)
+ test(`${ch}/${language}/${context}: recommendation survives unresolved permission with explicit partial coverage`,async()=>{
+  const id=ch==='whatsapp'?'46700000019':'reliability',sid=session(ch,id);
+  if(context==='draft'){await inbound(ch,'Jag vill boka Video Consultation nästa vecka. Visa lediga tider.',id);assert.equal(b.pendingStateSnapshot(sid)?.service,'Video Consultation');}
+  if(context==='history')b.promptAuditHistory(sid,[{role:'user',content:'Jag funderar på att boka senare.'},{role:'assistant',content:'Vi kan fortsätta när du vill.'}]);
+  sent=[];requests=[];metrics=[];decisionEvents=[];decisionLogs=[];reads=0;lang=language;
+  proposed=[{...unit(text),modality:'recommended',evidenceRefs:[{evidenceId:'e1',exactQuote:policy}]}];
+  const generate=deps.geminiGenerate!;
+  configure({geminiGenerate:async p=>{
+   const result=await generate(p);
+   if(p.config.systemInstruction.includes('retrieval query planner')){const plan=JSON.parse(result.text);plan.requestedFacets=[{subject:'visits',attribute:'visit policy',questionType:'permission',obligations:[{description:'whether visits are permitted',questionType:'permission'},{description:'advance-booking recommendation',questionType:'recommendation'}]}];return{text:JSON.stringify(plan)};}
+   if(p.config.systemInstruction.includes('BATCH ENTAILMENT')){const data=JSON.parse(p.contents[0].parts[0].text),verified=JSON.parse(result.text);
+    verified.coverage=[{facetId:'f1',requestAligned:true,materialFactsComplete:true,materialUnitIds:['u1'],obligations:[{obligationId:data.facets[0].obligations[0].id,status:'UNRESOLVED',unitIds:[]},{obligationId:data.facets[0].obligations[1].id,status:'COVERED',unitIds:['u1']}]}];return{text:JSON.stringify(verified)};}
+   return result;
+  }});
+  await inbound(ch,question,id);const answer=published();assert.ok(answer.includes(text),answer);assert.equal(metrics.at(-1).units,1);
+  assert.equal(metrics.at(-1).facets[0].status,'PARTIAL');assert.deepEqual(metrics.at(-1).completeness[0].obligations,['UNRESOLVED','COVERED']);
+  assert.equal(metrics.at(-1).presentationPath,'direct_single_unit');assert.equal(requests.length,3);assert.equal(reads,0);
+  assert.ok(decisionEvents.some(e=>e.reason==='OBLIGATION_UNRESOLVED'));assert.ok(decisionEvents.some(e=>e.eventType==='unit_verdict'&&e.reason==='ACCEPTED'&&e.flags.modalityPreserved));
+  assert.ok(decisionEvents.some(e=>e.stage==='publication'&&e.route==='partial_manifest'));
+  assert.ok(decisionEvents.every(e=>e.nativeChannel===ch&&e.businessId===77&&e.businessInfoTurnId&&e.schemaVersion==='evidence-first-v2'));
+  assert.ok(decisionEvents.length<=64);assert.ok(decisionLogs.every(s=>!s.includes(policy)&&!s.includes(text)&&!s.includes(config.telegramToken)&&!s.includes(id)));
+  if(context==='draft'){const draft=b.pendingStateSnapshot(sid);assert.equal(draft.service,'Video Consultation');assert.equal(draft.dateTime,null);assert.equal(draft.continuationPaused,true);}
+ });
+
+const liveFaults=[['UNKNOWN','UNKNOWN'],['NOT_APPLICABLE','NOT_APPLICABLE'],['CONTRADICTED','CONTRADICTED'],['wrong-id','MISSING_VERDICT'],['missing','MISSING_VERDICT'],['duplicate','DUPLICATE_VERDICT'],
+ ['modality','MODALITY_CHANGED'],['qualifiers','QUALIFIERS_CHANGED'],['meaning','MEANING_CHANGED'],['language-local','LOCAL_LANGUAGE'],['language-flag','VERIFIER_LANGUAGE'],
+ ['malformed-verification','MALFORMED_JSON'],['blocked','BLOCKED'],['truncated','TRUNCATED'],['timeout','DEADLINE'],
+ ['coverage-missing','MISSING_COVERAGE'],['coverage-incomplete','MATERIAL_FACTS_MISSING'],['coverage-wrong-id','INVALID_COVERAGE'],['missing-recommendation','MATERIAL_FACTS_MISSING']] as const;
+for(const ch of channels) for(const [fault,reason] of liveFaults)test(`${ch}/${fault}: live-incident failure boundary is diagnosable through the native adapter`,async()=>{
+ const generate=deps.geminiGenerate!;
+ if(fault==='language-local')proposed=[{...unit('We recommend that you book an appointment in advance because visits to the studio are arranged by agreement.'),modality:'recommended',evidenceRefs:[{evidenceId:'e1',exactQuote:policy}]}];
+ const arranged='Besök sker efter överenskommelse.';
+ if(fault==='missing-recommendation'){proposed=[{...unit(arranged),modality:'descriptive'}];configure({knowledgeSearch:async()=>[{businessId:77,sourceId:'synthetic-document',text:policy+'\n'+arranged,metadata:{source:'document',documentRevision:'v1'}}]});}
+ configure({geminiGenerate:async p=>{
+  const result=await generate(p);
+  if(fault==='missing-recommendation'&&p.config.systemInstruction.includes('retrieval query planner')){const plan=JSON.parse(result.text);plan.requestedFacets[0].questionType='recommendation';return{text:JSON.stringify(plan)};}
+  if(!p.config.systemInstruction.includes('BATCH ENTAILMENT'))return result;
+  if(fault==='timeout')throw Object.assign(new Error('private provider timeout body'),{category:'TIMEOUT'});
+  if(fault==='malformed-verification')return{text:'private malformed output'};
+  if(fault==='blocked')return{...result,promptFeedback:{blockReason:'SAFETY'}};
+  if(fault==='truncated')return{...result,candidates:[{finishReason:'MAX_TOKENS'}]};
+  const data=JSON.parse(result.text),v=data.decisions[0];
+  if(['UNKNOWN','NOT_APPLICABLE','CONTRADICTED'].includes(fault))v.relation=fault;
+  if(fault==='wrong-id')v.unitId='private-injected-identifier';if(fault==='missing')data.decisions=[];if(fault==='duplicate')data.decisions.push({...v});
+  if(fault==='modality')v.modalityPreserved=false;if(fault==='qualifiers')v.qualifiersPreserved=false;if(fault==='meaning')v.meaningPreserved=false;if(fault==='language-flag')v.languageCorrect=false;
+  if(fault==='coverage-missing')delete data.coverage;if(fault==='coverage-incomplete'||fault==='missing-recommendation')data.coverage[0].materialFactsComplete=false;
+  if(fault==='coverage-wrong-id')data.coverage[0].materialUnitIds=['u9'];
+  return{text:JSON.stringify(data)};
+ }});
+ await inbound(ch,q.policy);
+ const partial=fault.startsWith('coverage-')||fault==='missing-recommendation';
+ assert.equal(metrics.at(-1).units,partial?1:0);assert.equal(published().includes(fault==='missing-recommendation'?arranged:policy),partial);
+ if(partial)assert.equal(metrics.at(-1).facets[0].status,'PARTIAL');
+ assert.ok(decisionEvents.some(e=>e.reason===reason),JSON.stringify(decisionEvents));assert.equal(reads,0);assert.equal(requests.length,3);
+ assert.doesNotMatch(decisionLogs.join(' '),/private-injected-identifier|private malformed output|private provider timeout body/);
+});
+
+for(const ch of channels) for(const outcome of ['complete','refused','truncated'] as const)test(`${ch}/openai-${outcome}: effective model and strict protocol reach the real provider adapter without network`,async t=>{
+ const previous={AI_PROVIDER:process.env.AI_PROVIDER,OPENAI_API_KEY:process.env.OPENAI_API_KEY,OPENAI_MODEL:process.env.OPENAI_MODEL};
+ process.env.AI_PROVIDER='openai';process.env.OPENAI_API_KEY='synthetic-offline-only';process.env.OPENAI_MODEL='gpt-5.6-luna';
+ t.after(()=>{for(const[k,v]of Object.entries(previous)){if(v===undefined)delete process.env[k];else process.env[k]=v;}});
+ const generate=deps.geminiGenerate!;let calls=0;
+ t.mock.method(Responses.prototype,'create',async(params:any)=>{
+  calls++;assert.equal(params.model,'gpt-5.6-luna');assert.equal(params.text.format.type,'json_schema');assert.equal(params.text.format.strict,true);
+  assert.ok(params.text.format.name.startsWith('odinlink_knowledge_'));assert.equal(params.tools?.length||0,0,'no mutation tools offered');
+  const result=await generate({config:{systemInstruction:params.instructions,tools:[]},contents:[{parts:[{text:params.input[0].content}]}]});
+  if(params.instructions.includes('BATCH ENTAILMENT')&&outcome!=='complete')return{output_text:result.text,status:outcome==='truncated'?'incomplete':'completed',output:outcome==='refused'?[{content:[{type:'refusal',refusal:'private refusal'}]}]:[],usage:{input_tokens:10,output_tokens:10}} as any;
+  return{output_text:result.text,status:'completed',output:[],usage:{input_tokens:10,output_tokens:10}} as any;
+ });
+ await inbound(ch,q.policy);assert.equal(calls,3);assert.equal(reads,0);assert.equal(published().includes(policy),outcome==='complete');
+ assert.ok(decisionEvents.some(e=>e.provider==='openai'&&e.model==='gpt-5.6-luna'&&e.outputMode==='json_schema'));
+ if(outcome!=='complete')assert.ok(decisionEvents.some(e=>e.reason===(outcome==='refused'?'REFUSAL':'TRUNCATED')));
 });

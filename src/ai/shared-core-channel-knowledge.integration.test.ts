@@ -59,8 +59,8 @@ async function structuredProvider(p:any):Promise<any>{
    const unsupported=claims.some(c=>c.claim===u.text&&!c.supported);
    const result=await deps.assessBusinessClaimEntailment!({customerMessage:data.question,atomicClaim:u.text,candidateQuote:u.text,claimKind:'OTHER',
     citedEvidence:u.evidenceRefs.map((r:any)=>({source:'retrieved_knowledge',quote:r.exactQuote})),workflow:'business_information',language:data.requestedLanguage,businessId:'77',requireRequestedFact:true});
-   return{unitId:u.id,relation:unsupported||unitFault==='overlap'||unitFault==='change-claim'?'UNKNOWN':result?.relation||'UNKNOWN',facetIds:u.facetIds,meaningPreserved:true,languageCorrect:true,negativeAbsence:false,explicitAbsenceEvidence:false};
-  }));return{text:JSON.stringify({decisions})};
+   return{unitId:u.id,relation:unsupported||unitFault==='overlap'||unitFault==='change-claim'?'UNKNOWN':result?.relation||'UNKNOWN',facetIds:u.facetIds,meaningPreserved:true,modalityPreserved:true,qualifiersPreserved:true,relevant:true,languageCorrect:true,negativeAbsence:false,explicitAbsenceEvidence:false};
+  }));return{text:JSON.stringify({decisions,coverage:data.facets.map((f:any)=>{const ids=decisions.filter((d:any)=>d.relation==='ENTAILED'&&d.facetIds.includes(f.id)).map((d:any)=>d.unitId);return{facetId:f.id,requestAligned:true,materialFactsComplete:ids.length>0,materialUnitIds:ids,obligations:f.obligations.map((o:any)=>({obligationId:o.id,status:ids.length?'COVERED':'UNRESOLVED',unitIds:ids}))};})})};
  }
  return{text:JSON.stringify({unitIds:data.units.map((u:any)=>u.id),prefix:'none',addition:false})};
 }

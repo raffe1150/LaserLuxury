@@ -51,8 +51,10 @@ for(const type of ['text','website'] as const) for(const fault of ['content','ou
   ...(fault==='revoked'?{status:'disabled' as const}:{}),
   ...(fault==='foreign'?{businessId:88}:{}),
  });
- const fresh = await service.validateMatches(77,captured,{strictSources:true});
+ const rejections:Array<{id:string;reason:string}>=[];
+ const fresh = await service.validateMatches(77,captured,{strictSources:true,onRejected:(id,reason)=>rejections.push({id,reason})});
  assert.deepEqual(fresh.map(m=>m.sourceId),[other.id]);
+ assert.deepEqual(rejections,[{id:source.id,reason:fault==='content'?'SOURCE_CHUNK':fault==='revoked'?'SOURCE_NOT_READY':fault==='deleted'||fault==='foreign'?'SOURCE_MISSING_OR_UNAUTHORIZED':'SOURCE_REVISION'}]);
  if(['content','outside-chunk','revision'].includes(fault)) assert.equal((await service.validateMatches(77,[first])).length,1,'OFF legacy contract unchanged');
  assert.equal((await service.validateMatches(88,captured,{strictSources:true})).length,0);
 });

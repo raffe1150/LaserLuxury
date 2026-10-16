@@ -8,21 +8,23 @@ export type DocumentEvidenceSnapshot = Readonly<{ businessId: number; text: stri
  * Unexpected rows cannot expand the captured authority. Errors fail closed.
  */
 export async function revalidateKnowledgeSourceIds(businessId: number, captured: readonly KnowledgeSearchMatch[],
-  validate: (id: number, matches: KnowledgeSearchMatch[]) => Promise<KnowledgeSearchMatch[]>): Promise<ReadonlySet<string>> {
+  validate: (id: number, matches: KnowledgeSearchMatch[]) => Promise<KnowledgeSearchMatch[]>,
+  onDecision?: (sourceId:string,reason:'SOURCE_CURRENT'|'SOURCE_CHANGED'|'SOURCE_SCOPE'|'SOURCE_INVALID'|'VALIDATOR_ERROR')=>void): Promise<ReadonlySet<string>> {
   if (!Number.isSafeInteger(businessId) || businessId <= 0 || !captured.length) return new Set();
   try {
     const fresh = await validate(businessId, structuredClone([...captured]));
-    if (!Array.isArray(fresh)) return new Set();
+    if (!Array.isArray(fresh)) { new Set(captured.map(m=>m.sourceId)).forEach(id=>onDecision?.(id,'VALIDATOR_ERROR'));return new Set(); }
     const valid = new Set<string>();
     for (const sourceId of new Set(captured.map(m => m.sourceId))) {
       if (!sourceId) continue;
       const before = captured.filter(m => m.sourceId === sourceId);
       const after = fresh.filter(m => m?.sourceId === sourceId);
-      if (before.some(m => m.businessId !== businessId) || after.some(m => m.businessId !== businessId)) continue;
-      if (JSON.stringify(before.map(m => JSON.stringify(m)).sort()) === JSON.stringify(after.map(m => JSON.stringify(m)).sort())) valid.add(sourceId);
+      if (before.some(m => m.businessId !== businessId) || after.some(m => m.businessId !== businessId)) {onDecision?.(sourceId,'SOURCE_SCOPE');continue;}
+      if (JSON.stringify(before.map(m => JSON.stringify(m)).sort()) === JSON.stringify(after.map(m => JSON.stringify(m)).sort())) {valid.add(sourceId);onDecision?.(sourceId,'SOURCE_CURRENT');}
+      else onDecision?.(sourceId,after.length?'SOURCE_CHANGED':'SOURCE_INVALID');
     }
     return valid;
-  } catch { return new Set(); }
+  } catch { new Set(captured.map(m=>m.sourceId)).forEach(id=>onDecision?.(id,'VALIDATOR_ERROR'));return new Set(); }
 }
 
 /** Bounded turn evidence. Revalidate before and after grounding; never trust old prose. */

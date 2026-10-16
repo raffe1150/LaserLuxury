@@ -10,14 +10,14 @@ const evidence = answerEvidence(77,[{ businessId:77, sourceId:'doc', text:`${quo
 const proposal = (text = quote, f = 'f1') => ({ subject:'studio', predicate:'recommends', value:'advance booking', modality:'recommended', negation:false,
  scope:'visits', qualifiers:[], language:'sv', text, facetIds:[f], evidenceRefs:[{ evidenceId:'e1', exactQuote:text }] });
 const parsed = (units:any[]) => parseAnswerUnits({ units },facets,evidence,'sv').units;
-const verdict = (id:string, f:string) => ({ unitId:id, relation:'ENTAILED', facetIds:[f], meaningPreserved:true, languageCorrect:true, negativeAbsence:false, explicitAbsenceEvidence:false });
+const verdict = (id:string, f:string) => ({ unitId:id, relation:'ENTAILED', facetIds:[f], meaningPreserved:true, modalityPreserved:true, qualifiersPreserved:true, relevant:true, languageCorrect:true, negativeAbsence:false, explicitAbsenceEvidence:false });
 async function run(options:{ units?:any[]; decisions?:any[]; compose?:any; current?:()=>Promise<boolean>; fail?:string } = {}) {
  const budget = new InformationBudget(), calls:string[] = [];
  const manifest = await buildEvidenceFirstAnswer({ question:'Can I visit and do you offer digital meetings?', language:'sv', facets, evidence,
   authoritativeEvidence:'', businessTone:{}, history:[], budget, current:options.current || (async()=>true), generate:async(stage,_instruction,data:any)=>{
    budget.attempt(); calls.push(stage); if(options.fail === stage) throw new Error('synthetic');
    return { text:JSON.stringify(stage === 'extraction' ? { units:options.units || [proposal(),proposal(second,'f2')] } : stage === 'verification' ?
-    { decisions:options.decisions || [verdict('u1','f1'),verdict('u2','f2')] } : options.compose || { unitIds:data.units.map((u:any)=>u.id),prefix:'none',addition:false }) };
+    { decisions:options.decisions || [verdict('u1','f1'),verdict('u2','f2')],coverage:data.facets.map((f:any)=>({facetId:f.id,requestAligned:true,materialFactsComplete:true,materialUnitIds:data.units.filter((u:any)=>u.facetIds.includes(f.id)).map((u:any)=>u.id),obligations:f.obligations.map((o:any)=>({obligationId:o.id,status:'COVERED',unitIds:data.units.filter((u:any)=>u.facetIds.includes(f.id)).map((u:any)=>u.id)}))})) } : options.compose || { unitIds:data.units.map((u:any)=>u.id),prefix:'none',addition:false }) };
   } });
  return { manifest, calls, budget };
 }
@@ -103,6 +103,8 @@ test('multi-source compound statement loses its entire text, qualifiers and nega
 test('loss of one unit on a shared facet does not claim complete coverage',async()=>{
  const {manifest}=await run();
  const units=manifest.units.map((u,i)=>({...u,facetIds:['f1'],evidenceRefs:i?[{...u.evidenceRefs[0],sourceId:'revoked'}]:u.evidenceRefs}));
- const pruned=pruneAnswerManifest({...manifest,units},evidence);
- assert.equal(pruned.units.length,1);assert.equal(pruned.outcomes[0].status,'UNAVAILABLE');assert.deepEqual(pruned.outcomes[0].unitIds,['u1']);
+ const outcomes=manifest.outcomes.map(o=>o.facetId==='f1'?{...o,materialUnitIds:['u1','u2']}:o);
+ const pruned=pruneAnswerManifest({...manifest,units,outcomes},evidence);
+ assert.equal(pruned.units.length,1);assert.equal(pruned.outcomes[0].status,'PARTIAL');assert.deepEqual(pruned.outcomes[0].unitIds,['u1']);
+ assert.equal(pruned.outcomes[0].materialFactsComplete,false);
 });

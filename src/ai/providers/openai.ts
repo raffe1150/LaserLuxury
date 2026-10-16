@@ -106,6 +106,9 @@ export function normalizeOpenAiGenerationResponse(
   return {
     text: String(response?.output_text || ""),
     functionCalls,
+    ...(Array.isArray(response?.output)&&response.output.some((item:any)=>Array.isArray(item?.content)&&item.content.some((part:any)=>part?.type==='refusal')) ? { structuredFailure:'REFUSAL' as const }
+      : response?.status==='incomplete' ? { structuredFailure:'TRUNCATED' as const }
+      : response?.status==='failed' || response?.status==='cancelled' ? { structuredFailure:'BLOCKED' as const } : {}),
     ...(Number.isSafeInteger(response?.usage?.input_tokens) && Number.isSafeInteger(response?.usage?.output_tokens)
       ? { usage: { inputTokens: response.usage.input_tokens, outputTokens: response.usage.output_tokens } } : {}),
   };

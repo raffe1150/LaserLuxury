@@ -37,6 +37,8 @@ export interface KnowledgeSearchMatch {
   text?: string;
   metadata?: KnowledgeSourceMetadata;
 }
+type KnowledgeValidationOptions = { strictSources?: boolean; captureRevision?: boolean;
+  onRejected?: (sourceId:string,reason:'SOURCE_SCOPE'|'SOURCE_MISSING_OR_UNAUTHORIZED'|'SOURCE_NOT_READY'|'SOURCE_REVISION'|'SOURCE_CHUNK')=>void };
 
 export interface KnowledgeChunkInput {
   chunkIndex: number;
@@ -754,29 +756,32 @@ export class KnowledgeService {
     }
   }
 
-  async validateMatches(businessId: number, matches: KnowledgeSearchMatch[], options: { strictSources?: boolean; captureRevision?: boolean } = {}): Promise<KnowledgeSearchMatch[]> {
+  async validateMatches(businessId: number, matches: KnowledgeSearchMatch[], options: KnowledgeValidationOptions = {}): Promise<KnowledgeSearchMatch[]> {
     await this.ensureInitialized();
     return this.filterCurrentMatches(businessId, matches, options);
   }
 
-  private async filterCurrentMatches(businessId: number, matches: KnowledgeSearchMatch[], options: { strictSources?: boolean; captureRevision?: boolean } = {}): Promise<KnowledgeSearchMatch[]> {
-    const ready = new Map((await this.storage.list(businessId)).filter((s) => s.businessId === businessId && s.status === "ready").map((s) => [s.id, s]));
+  private async filterCurrentMatches(businessId: number, matches: KnowledgeSearchMatch[], options: KnowledgeValidationOptions = {}): Promise<KnowledgeSearchMatch[]> {
+    const sources=await this.storage.list(businessId);
+    const ready = new Map(sources.filter((s) => s.businessId === businessId && s.status === "ready").map((s) => [s.id, s]));
     return matches.flatMap((match) => {
+      const reject=(reason:Parameters<NonNullable<KnowledgeValidationOptions['onRejected']>>[1])=>{options.onRejected?.(match.sourceId,reason);return [];};
       const source = ready.get(match.sourceId);
-      if (match.businessId !== businessId || !source) return [];
+      if(match.businessId!==businessId)return reject('SOURCE_SCOPE');
+      if(!source)return reject(sources.some(s=>s.id===match.sourceId&&s.businessId===businessId)?'SOURCE_NOT_READY':'SOURCE_MISSING_OR_UNAUTHORIZED');
       if (source.type !== "document") {
         if (!options.strictSources) return [match];
         const revision = crypto.createHash('sha256').update(JSON.stringify([source.id, source.businessId, source.type, source.status, source.title, source.content, source.updatedAt, source.metadata])).digest('hex');
-        if (!chunkKnowledgeContent(source.content).some(chunk => chunk.content === String(match.text || '').trim())) return [];
-        if (match.metadata?.sourceRevision !== revision && (!options.captureRevision || match.metadata?.sourceRevision)) return [];
+        if (!chunkKnowledgeContent(source.content).some(chunk => chunk.content === String(match.text || '').trim())) return reject('SOURCE_CHUNK');
+        if (match.metadata?.sourceRevision !== revision && (!options.captureRevision || match.metadata?.sourceRevision)) return reject('SOURCE_REVISION');
         return [{ ...match, metadata: { ...match.metadata, sourceRevision: revision } }];
       }
       const revision = documentRevision(source);
-      if (match.metadata?.documentRevision && match.metadata.documentRevision !== revision) return [];
+      if (match.metadata?.documentRevision && match.metadata.documentRevision !== revision) return reject('SOURCE_REVISION');
       const canonical = documentCorpus(source).find((chunk) => chunk.text === String(match.text || "").trim() &&
         (match.metadata?.page === undefined || match.metadata.page === chunk.metadata?.page) &&
         (match.metadata?.sheet === undefined || match.metadata.sheet === chunk.metadata?.sheet));
-      return canonical ? [{ ...match, text: canonical.text, metadata: { ...canonical.metadata, documentRevision: revision } }] : [];
+      return canonical ? [{ ...match, text: canonical.text, metadata: { ...canonical.metadata, documentRevision: revision } }] : reject('SOURCE_CHUNK');
     });
   }
 

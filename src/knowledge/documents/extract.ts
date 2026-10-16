@@ -1,6 +1,7 @@
 import yauzl from 'yauzl';
 import { XMLParser, XMLValidator } from 'fast-xml-parser';
 import { parse } from 'csv-parse/sync';
+import { posix } from 'node:path';
 import { DOCUMENT_LIMITS as L, DocumentError, decodeText, rejectSensitiveText, type DocumentFormat, type ExtractedSection } from './formats';
 
 const crcTable = Array.from({ length: 256 }, (_, value) => {
@@ -40,13 +41,17 @@ async function unzip(bytes: Buffer): Promise<Map<string, Buffer>> {
     });
   });
 }
-function xml(files: Map<string, Buffer>, path: string, ordered = false): any {
+function xml(files: Map<string, Buffer>, path: string, ordered = false, preserveReferences = false): any {
   const data = files.get(path);
   if (!data) throw new DocumentError('document_structure');
   const text = new TextDecoder('utf-8', { fatal: true }).decode(data);
   if (/<!\s*(?:DOCTYPE|ENTITY)/iu.test(text) || XMLValidator.validate(text) !== true) throw new DocumentError('document_structure');
   // Decode only XML's predefined/numeric entities. DTDs and custom entities are never evaluated.
-  return new XMLParser({ ignoreAttributes: false, preserveOrder: ordered, processEntities: false, parseTagValue: false, parseAttributeValue: false }).parse(text);
+  return new XMLParser({ ignoreAttributes: false, preserveOrder: ordered, processEntities: false, parseTagValue: false, parseAttributeValue: false,
+    // A malformed reference must not become valid through attribute trimming.
+    trimValues: !preserveReferences, tagValueProcessor: (_name, value) => value.trim(),
+    attributeValueProcessor: (name, value) => preserveReferences && name === 'r' ? value : value.trim(),
+  }).parse(text);
 }
 const array = (value: any): any[] => value === undefined ? [] : Array.isArray(value) ? value : [value];
 function textOf(value: any): string {
@@ -69,6 +74,41 @@ function wordText(nodes: any[]): string {
   }
   return text;
 }
+function rejectPopulatedWordHeadersFooters(files: Map<string, Buffer>, nodes: any[]): void {
+  const hasText = (items: any[]): boolean => items.some((item) => Object.entries(item).some(([key, value]) =>
+    key === '#text' ? Boolean(String(value).trim()) : Array.isArray(value) && hasText(value)));
+  for (const node of nodes) for (const [key, value] of Object.entries(node)) {
+    if (key === 'w:headerReference' || key === 'w:footerReference') {
+      const id = node[':@']?.['@_r:id'];
+      const kind = key === 'w:headerReference' ? 'header' : 'footer';
+      const relations = array(xml(files, 'word/_rels/document.xml.rels').Relationships?.Relationship);
+      const matches = relations.filter((r) => r['@_Id'] === id);
+      const relation = matches[0];
+      if (!id || matches.length !== 1 || !String(relation['@_Type']).endsWith('/' + kind) ||
+        typeof relation['@_Target'] !== 'string') throw new DocumentError('document_structure');
+      const path = posix.resolve('/word', relation['@_Target']).slice(1);
+      if (!path.startsWith('word/')) throw new DocumentError('document_structure');
+      const part = xml(files, path, true);
+      if (!part.some((n: any) => n[kind === 'header' ? 'w:hdr' : 'w:ftr'])) throw new DocumentError('document_structure');
+      // Headers/footers are not part of our body-only extraction contract.
+      // Reject text (including hidden text) and fields/symbols rather than publish partial information.
+      if (hasText(part) || /<(?:[\w.-]+:)?(?:altChunk|object|drawing|pict|sym|fldSimple|fldChar|instrText|delText)\b/u.test(files.get(path)!.toString('utf8'))) {
+        throw new DocumentError('document_header_footer');
+      }
+    } else if (Array.isArray(value)) rejectPopulatedWordHeadersFooters(files, value);
+  }
+}
+function cellReference(value: unknown, row: unknown): string {
+  const match = typeof value === 'string' && /^([A-Z]{1,3})([1-9]\d{0,6})$/u.exec(value);
+  if (!match) throw new DocumentError('document_structure');
+  let column = 0;
+  for (const letter of match[1]) column = column * 26 + letter.charCodeAt(0) - 64;
+  const number = Number(match[2]);
+  if (column > 16_384 || number > 1_048_576 || (row !== undefined && String(row) !== match[2])) {
+    throw new DocumentError('document_structure');
+  }
+  return value as string;
+}
 async function office(bytes: Buffer, format: 'docx' | 'xlsx'): Promise<ExtractedSection[]> {
   const files = await unzip(bytes);
   const types = xml(files, '[Content_Types].xml');
@@ -83,6 +123,7 @@ async function office(bytes: Buffer, format: 'docx' | 'xlsx'): Promise<Extracted
     if (/<w:(?:altChunk|object|drawing|fldSimple|fldChar|instrText|del|ins)\b/u.test(files.get('word/document.xml')?.toString('utf8') || '')) throw new DocumentError('document_structure');
     const body = xml(files, 'word/document.xml', true);
     if (!body.some((v: any) => v['w:document'])) throw new DocumentError('document_structure');
+    rejectPopulatedWordHeadersFooters(files, body);
     return [{ text: wordText(body), section: 'Body' }];
   }
   const workbook = xml(files, 'xl/workbook.xml');
@@ -98,14 +139,16 @@ async function office(bytes: Buffer, format: 'docx' | 'xlsx'): Promise<Extracted
     const target = String(relation?.['@_Target'] || '');
     const path = target.startsWith('/xl/') ? target.slice(1) : `xl/${target}`;
     if (!/^xl\/worksheets\/[^/]+\.xml$/u.test(path)) throw new DocumentError('document_structure');
-    const data = xml(files, path).worksheet;
+    const data = xml(files, path, false, true).worksheet;
     if (array(data?.cols?.col).some((c) => c['@_hidden'] === '1' || c['@_hidden'] === 'true')) throw new DocumentError('document_spreadsheet');
     if (!data?.sheetData) throw new DocumentError('document_structure');
     const output = array(data.sheetData.row).map((row) => {
       if (++rows > L.rows || row['@_hidden'] === '1' || row['@_hidden'] === 'true') throw new DocumentError('document_spreadsheet');
-      const number = String(row['@_r'] || rows);
       return array(row.c).map((cell) => {
         if (++cells > L.cells) throw new DocumentError('document_limits');
+        // The optional r attribute retains the existing row-label fallback.
+        // When a coordinate is supplied it must be valid, never silently repaired.
+        const reference = cell['@_r'] === undefined ? String(row['@_r'] || rows) : cellReference(cell['@_r'], row['@_r']);
         // No formula evaluation or cached formula claims, dates/styles/charts are not inferred.
         if (cell.f !== undefined || (cell['@_t'] && !['n','s','str','inlineStr','b'].includes(cell['@_t']))) throw new DocumentError('document_spreadsheet');
         let value = textOf(cell.v);
@@ -118,7 +161,7 @@ async function office(bytes: Buffer, format: 'docx' | 'xlsx'): Promise<Extracted
           if (cell['@_s'] && !['str'].includes(cell['@_t'])) throw new DocumentError('document_spreadsheet');
           if ((!cell['@_t'] || cell['@_t'] === 'n') && value && !/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/u.test(value)) throw new DocumentError('document_structure');
         }
-        return `${String(cell['@_r'] || number)}: ${value}`;
+        return `${reference}: ${value}`;
       }).join(' | ');
     }).join('\n');
     return { text: output, sheet: textOf(sheet['@_name']) };

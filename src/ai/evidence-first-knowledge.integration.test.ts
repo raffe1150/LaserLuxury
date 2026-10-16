@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { beforeEach, afterEach, test } from 'node:test';
 import { Responses } from 'openai/resources/responses';
 import { normalizeConversationText } from './booking-intelligence';
+import { NATURAL_FLAGS } from './grounded-knowledge-composition';
 process.env.NODE_ENV = 'test';
 process.env.GEMINI_API_KEY = 'synthetic-offline-only';
 const { priority1hUnifiedEngineTestBoundary: b } = await import('../../server');
@@ -28,6 +29,7 @@ let deps: Parameters<typeof b.configure>[0], sent: any[], requests: any[], metri
 let facts: string[], proposed: any[] | undefined, verdict: string, composer: string, facetCount: number, oldFetch: typeof fetch, oldFlag: string | undefined;
 let sequence = 0;
 let decisionEvents:any[], decisionLogs:string[];
+let oldNatural:string|undefined,oldSinglePartial:string|undefined;
 const configure = (d: Parameters<typeof b.configure>[0]) => { deps = { ...deps, ...d }; b.configure(deps); };
 const forbidden = async () => assert.fail('Unauthorized appointment mutation');
 const unit = (text: string, index = 0) => ({ facetIds: [`f${index + 1}`], subject: 'studio', predicate: 'offers', value: text,
@@ -38,6 +40,10 @@ beforeEach((t: any) => {
  decisionEvents=[];decisionLogs=[];
  facts = [policy]; proposed = undefined; verdict = 'ENTAILED'; composer = 'valid'; facetCount = 1;
  oldFlag = process.env.ODINLINK_EVIDENCE_FIRST_KNOWLEDGE; process.env.ODINLINK_EVIDENCE_FIRST_KNOWLEDGE = 'true';
+ oldNatural=process.env.ODINLINK_GROUNDED_NATURAL_RESPONSES;oldSinglePartial=process.env.ODINLINK_GROUNDED_NATURAL_SINGLE_PARTIAL;
+ // Preserve explicit rollback-protocol coverage. New natural cases below opt in
+ // independently and exercise the real native adapters, not a shared-engine loop.
+ process.env.ODINLINK_GROUNDED_NATURAL_RESPONSES='false';process.env.ODINLINK_GROUNDED_NATURAL_SINGLE_PARTIAL='false';
  oldFetch = globalThis.fetch;
  for (const m of ['log','info','warn','error'] as const) t.mock.method(console, m, (...args:any[]) => {
   if(m==='info'&&['[EvidenceFirstDecision]','[EvidenceFirstKnowledge]'].includes(args[0])){assert.equal(typeof args[1],'string');assert.equal(args[1].includes('\n'),false);JSON.parse(args[1]);decisionLogs.push(args[1]);}
@@ -84,7 +90,10 @@ beforeEach((t: any) => {
   recordAppointment: forbidden, cancelAppointmentRow: forbidden, updateAppointmentRow: forbidden,
  });
 });
-afterEach((t: any) => { t.diagnostic(`EvidenceFirstCase ${JSON.stringify({ name:t.name, events:metrics, simulatedProviderRequests:requests.length, stages:requests.map(p=>p.context?.stage || p.config.systemInstruction.slice(0,90)), calendarReads:reads })}`); globalThis.fetch = oldFetch; if (oldFlag === undefined) delete process.env.ODINLINK_EVIDENCE_FIRST_KNOWLEDGE; else process.env.ODINLINK_EVIDENCE_FIRST_KNOWLEDGE = oldFlag; b.reset(); });
+afterEach((t: any) => { t.diagnostic(`EvidenceFirstCase ${JSON.stringify({ name:t.name, events:metrics, naturalPublications:decisionEvents.filter(e=>e.stage==='publication'&&e.natural).map(e=>({nativeChannel:e.nativeChannel,...e.natural})), simulatedProviderRequests:requests.length, stages:requests.map(p=>p.context?.stage || p.config.systemInstruction.slice(0,90)), calendarReads:reads })}`); globalThis.fetch = oldFetch; if (oldFlag === undefined) delete process.env.ODINLINK_EVIDENCE_FIRST_KNOWLEDGE; else process.env.ODINLINK_EVIDENCE_FIRST_KNOWLEDGE = oldFlag; b.reset(); });
+afterEach(()=>{for(const [key,value]of [['ODINLINK_GROUNDED_NATURAL_RESPONSES',oldNatural],['ODINLINK_GROUNDED_NATURAL_SINGLE_PARTIAL',oldSinglePartial]]){
+ if(value===undefined)delete process.env[key!];else process.env[key!]=value;
+}});
 function session(ch: Channel, id: string) { return ch === 'telegram' ? `tg:77:${createHash('sha256').update(config.telegramToken).digest('hex').slice(0,12)}:${id}` : b.channelSessionId(ch,id,config,ch === 'instagram' ? 'ig-synthetic' : ch === 'whatsapp' ? 'wa-synthetic' : 'ms-synthetic'); }
 async function inbound(ch: Channel, text: string, id = ch === 'whatsapp' ? '46700000001' : 'synthetic-customer', eventId = String(++sequence)) {
  const now = Date.now(), cfg = { ...config };
@@ -321,6 +330,129 @@ for(const ch of channels) for(const [i,[language,question,text]] of translations
   assert.doesNotMatch(answer,/Den delen|that part|diesen Teil|esa parte|آن بخش|هذا الجزء/iu);
   assert.equal(metrics.at(-1).units,2);assert.equal(metrics.at(-1).facets[0].status,'PARTIAL');assert.equal(metrics.at(-1).presentationFallback,failComposer);
   assert.equal(requests.length,4);assert.equal(reads,0);assert.ok(decisionEvents.some(e=>e.stage==='publication'&&e.route==='partial_manifest'&&e.nativeChannel===ch));
+ });
+
+const fluent = [
+ ['Vi rekommenderar en bokad tid inför besöket.','Jag kan däremot inte bekräfta om du kan komma utan bokad tid.'],
+ ['We recommend arranging your visit in advance.','I cannot confirm whether you can visit without an appointment.'],
+ ['Wir empfehlen, Ihren Besuch vorab zu vereinbaren.','Ob Sie auch ohne Termin kommen können, kann ich allerdings nicht bestätigen.'],
+ ['Te recomendamos concertar la visita con antelación.','Lo que no puedo confirmar es si puedes venir sin cita.'],
+ ['توصیهٔ ما این است که از قبل وقت بگیرید.','اما نمی‌توانم تأیید کنم که مراجعه بدون وقت قبلی امکان‌پذیر است.'],
+ ['نوصيك بترتيب موعد زيارتك مسبقاً.','لكن لا أستطيع تأكيد إمكانية الحضور دون موعد مسبق.'],
+];
+function approvedNatural(data:any) {
+ return {contractHash:data.contractHash,proposalHash:data.proposalHash,flags:Object.fromEntries(NATURAL_FLAGS.map(k=>[k,true])),
+  blocks:data.proposal.blocks.map((b:any)=>({blockId:b.id,relation:'ENTAILED',noUnsupportedFacts:true,meaningPreserved:true,uncertaintyAccurate:true})),
+  unitCoverage:data.contract.units.map((u:any)=>({unitId:u.id,blockIds:data.proposal.blocks.filter((b:any)=>b.unitIds.includes(u.id)).map((b:any)=>b.id),complete:true})),
+  obligationCoverage:data.contract.outcomes.flatMap((o:any)=>o.obligations.filter((d:any)=>d.status==='UNRESOLVED').map((d:any)=>({obligationId:d.obligationId,
+   blockIds:data.proposal.blocks.filter((b:any)=>b.obligationIds.includes(d.obligationId)).map((b:any)=>b.id),accurate:true})))};
+}
+function enableNatural(presentation:any, options:{permission?:boolean;failure?:string}={}) {
+ process.env.ODINLINK_GROUNDED_NATURAL_RESPONSES='true';process.env.ODINLINK_GROUNDED_NATURAL_SINGLE_PARTIAL='true';
+ const generate=deps.geminiGenerate!;
+ configure({geminiGenerate:async p=>{
+  const instruction=p.config.systemInstruction;
+  if(instruction.includes('INDEPENDENT NATURAL RESPONSE VALIDATION')){
+   requests.push(p);assert.deepEqual(p.config.tools,[]);const data=JSON.parse(p.contents[0].parts[0].text);assert.equal(JSON.stringify(data.contract).includes('exactQuote'),false);
+   assert.ok(data.contract.scope.turnId);assert.equal(data.contract.scope.businessId,77);assert.equal(data.contract.language,lang);
+   if(options.failure==='provider')throw new Error('private natural provider failure');
+   if(options.failure==='malformed')return{text:'private malformed natural body'};
+   if(options.failure==='revocation')current=false;
+   if(options.failure==='flag-change')process.env.ODINLINK_GROUNDED_NATURAL_RESPONSES='false';
+   const v:any=approvedNatural(data);
+   if(options.failure==='unsupported')v.flags.noUnsupportedFacts=false;
+   if(options.failure==='missing-unit')v.unitCoverage.pop();
+   if(options.failure==='duplicate')v.blocks.push(v.blocks[0]);
+   if(options.failure==='wrong-hash')v.contractHash='foreign-contract';
+   if(options.failure==='modality')v.flags.modalityPreserved=false;
+   if(options.failure==='uncertainty')v.flags.uncertaintyAccurate=false;
+   if(options.failure==='refusal')return{text:JSON.stringify(v),candidates:[{finishReason:'MAX_TOKENS'}]};
+   return{text:JSON.stringify(v)};
+  }
+  const result=await generate(p);
+  if(instruction.includes('retrieval query planner')&&options.permission){const v=JSON.parse(result.text);v.requestedFacets=[{subject:'visits',attribute:'visit policy',questionType:'permission',obligations:[{description:'permission without appointment',questionType:'permission'},{description:'booking recommendation',questionType:'recommendation'}]}];return{text:JSON.stringify(v)};}
+  if(instruction.includes('UNIT EXTRACTION')){assert.ok(instruction.includes('GROUNDED NATURAL PROPOSAL'));return{text:JSON.stringify({...JSON.parse(result.text),naturalProposal:presentation})};}
+  if(instruction.includes('BATCH ENTAILMENT')){
+   const data=JSON.parse(p.contents[0].parts[0].text);assert.equal(data.naturalProposal,undefined);assert.equal(data.proposal,undefined,'unit verifier is blind to proposed presentation');
+   if(options.permission){const v=JSON.parse(result.text);v.coverage=[{facetId:'f1',requestAligned:true,materialFactsComplete:true,materialUnitIds:data.units.map((u:any)=>u.id),obligations:[
+    {obligationId:data.facets[0].obligations[0].id,status:'UNRESOLVED',unitIds:[]},{obligationId:data.facets[0].obligations[1].id,status:'COVERED',unitIds:['u1']}]}];return{text:JSON.stringify(v)};}
+  }
+  return result;
+ }});
+}
+for(const ch of channels)for(const [i,[language,question,text]]of translations.entries())for(const context of ['fresh','history','draft']as const)
+ test(`${ch}/${language}/${context}/grounded-natural: preserved policy with native expression and unresolved permission`,async()=>{
+  const id=ch==='whatsapp'?'46700000029':'natural-context',sid=session(ch,id);
+  if(context==='draft'){await inbound(ch,'Jag vill boka Video Consultation nästa vecka. Visa lediga tider.',id);assert.equal(b.pendingStateSnapshot(sid)?.service,'Video Consultation');}
+  if(context==='history')b.promptAuditHistory(sid,[{role:'user',content:'Jag vill boka senare.'},{role:'assistant',content:'Vi fortsätter när du vill.'}]);
+  sent=[];requests=[];metrics=[];reads=0;lang=language;
+  proposed=[{...unit(text),modality:'recommended',evidenceRefs:[{evidenceId:'e1',exactQuote:policy}]},
+   {...unit(arrangements[i]),modality:'descriptive',evidenceRefs:[{evidenceId:'e1',exactQuote:policy}]}];
+  const fact=fluent[i][0]+' '+arrangements[i],uncertain=fluent[i][1];
+  enableNatural({blocks:[{kind:'fact',text:fact,proposedUnitOrdinals:[1,2],obligationIds:[]},{kind:'uncertainty',text:uncertain,proposedUnitOrdinals:[],obligationIds:['f1.o1']}]},{permission:true});
+  await inbound(ch,question,id);const answer=published();assert.equal(answer,fact+' '+uncertain);assert.equal(answer.includes(normalizeConversationText(question)),false);
+  assert.equal(metrics.at(-1).units,2);assert.equal(metrics.at(-1).facets[0].status,'PARTIAL');assert.equal(metrics.at(-1).naturalResponse.outcome,'accepted_natural');
+  assert.equal(metrics.at(-1).presentationPath,'validated_natural');assert.equal(requests.length,4);assert.equal(reads,0);
+  assert.ok(decisionEvents.some(e=>e.stage==='publication'&&e.natural?.outcome==='accepted_natural'&&e.nativeChannel===ch));
+  assert.ok(decisionLogs.every(log=>!log.includes(fact)&&!log.includes(uncertain)&&!log.includes(config.telegramToken)));
+  if(context==='draft'){const draft=b.pendingStateSnapshot(sid);assert.equal(draft.service,'Video Consultation');assert.equal(draft.dateTime,null);assert.equal(draft.continuationPaused,true);}
+ });
+for(const ch of channels)for(const [language,question,parkText,digitalText]of partialLanguages)
+ test(`${ch}/${language}/grounded-natural-compound: independently verified facts combine without an invented disclaimer`,async()=>{
+  lang=language;facts=[parking,digital];facetCount=2;proposed=[{...unit(parkText,0),evidenceRefs:[{evidenceId:'e1',exactQuote:parking}]},{...unit(digitalText,1),evidenceRefs:[{evidenceId:'e1',exactQuote:digital}]}];
+  const answer=parkText+' '+digitalText;enableNatural({blocks:[{kind:'fact',text:answer,proposedUnitOrdinals:[1,2],obligationIds:[]}]});
+  await inbound(ch,question);assert.equal(published(),answer);assert.equal(metrics.at(-1).naturalResponse.outcome,'accepted_natural');assert.equal(requests.length,4);assert.equal(reads,0);
+ });
+for(const ch of channels)for(const failure of ['provider','malformed','unsupported','missing-unit','duplicate','wrong-hash','modality','uncertainty','refusal','revocation']as const)
+ test(`${ch}/grounded-natural-${failure}: canonical facts survive rejected presentation, with no repair request`,async()=>{
+  facts=[parking,digital];facetCount=2;enableNatural({blocks:[{kind:'fact',text:parking+' '+digital,proposedUnitOrdinals:[1,2],obligationIds:[]}]},{failure});
+  await inbound(ch,q.compound);assert.equal(metrics.at(-1).naturalResponse.outcome,'canonical_fallback');assert.equal(requests.length,4);assert.equal(reads,0);
+  if(failure!=='revocation'){assert.ok(published().includes(parking));assert.ok(published().includes(digital));}
+  else{assert.equal(published().includes(parking),false);assert.equal(published().includes(digital),false);}
+ });
+for(const ch of channels)for(const failure of ['revoked','stale','foreign']as const)
+ test(`${ch}/grounded-natural-publication-${failure}: source pruning discards whole prose but preserves independent facts`,async()=>{
+  separateSources();proposed=[{...unit(parking),evidenceRefs:[{evidenceId:'e1',exactQuote:parking}]},{...unit(digital,1),evidenceRefs:[{evidenceId:'e2',exactQuote:digital}]}];
+  enableNatural({blocks:[{kind:'fact',text:'Nära studion finns parkering. Vissa tjänster erbjuds digitalt.',proposedUnitOrdinals:[1,2],obligationIds:[]}]});
+  let publishing=false;configure({evidenceFirstPublicationDiagnostic:e=>{if(e.phase==='publication_start')publishing=true;},
+   validateKnowledgeMatches:async(_id,matches)=>matches.flatMap(m=>!publishing||m.sourceId!=='parking-doc'?[m]:failure==='revoked'?[]:failure==='stale'?[{...m,metadata:{...m.metadata,documentRevision:'v2'}}]:[{...m,businessId:88}])});
+  await inbound(ch,q.compound);assert.equal(metrics.at(-1).naturalResponse.outcome,'accepted_natural','accepted before source change');
+  assert.ok(published().includes(digital));assert.equal(published().includes('Nära studion'),false);assert.equal(published().includes('Vissa tjänster erbjuds digitalt'),false);
+  assert.ok(decisionEvents.some(e=>e.stage==='publication'&&e.natural?.outcome==='canonical_fallback'&&e.natural.reason==='SOURCE_INVALID'));assert.equal(requests.length,4);assert.equal(reads,0);
+ });
+for(const ch of channels)for(const mode of ['direct','single-disabled','single-enabled','flag-change']as const)
+ test(`${ch}/grounded-natural-${mode}: request-scoped feature and single-unit admission policy`,async()=>{
+  proposed=[{...unit(policy),modality:'recommended'}];enableNatural({blocks:[{kind:'fact',text:fluent[0][0],proposedUnitOrdinals:[1],obligationIds:[]},
+   {kind:'uncertainty',text:fluent[0][1],proposedUnitOrdinals:[],obligationIds:['f1.o1']}]},{permission:mode!=='direct',failure:mode==='flag-change'?'flag-change':undefined});
+  if(mode==='single-disabled')process.env.ODINLINK_GROUNDED_NATURAL_SINGLE_PARTIAL='false';
+  await inbound(ch,q.policy);assert.equal(requests.length,mode==='direct'||mode==='single-disabled'?3:4);assert.equal(reads,0);
+  assert.equal(metrics.at(-1).naturalResponse.outcome,mode==='direct'?'direct_canonical':mode==='single-disabled'?'canonical_fallback':'accepted_natural');
+ });
+for(const ch of channels)for(const outcome of ['complete','timeout']as const)
+ test(`${ch}/grounded-natural-openai-${outcome}: installed SDK schema handoff and two-second abort without external transport`,async t=>{
+  const previous={AI_PROVIDER:process.env.AI_PROVIDER,OPENAI_API_KEY:process.env.OPENAI_API_KEY,OPENAI_MODEL:process.env.OPENAI_MODEL,AI_PROVIDER_TIMEOUT_MS:process.env.AI_PROVIDER_TIMEOUT_MS};
+  Object.assign(process.env,{AI_PROVIDER:'openai',OPENAI_API_KEY:'synthetic-offline-only',OPENAI_MODEL:'gpt-5.6-luna',AI_PROVIDER_TIMEOUT_MS:'10000'});
+  t.after(()=>{for(const[k,v]of Object.entries(previous)){if(v===undefined)delete process.env[k];else process.env[k]=v;}});
+  facts=[parking,digital];facetCount=2;enableNatural({blocks:[{kind:'fact',text:parking+' '+digital,proposedUnitOrdinals:[1,2],obligationIds:[]}]});
+  const nativeFetch=globalThis.fetch;let sdkCalls=0,aborted=false;const names:string[]=[];let validationMs=0;
+  globalThis.fetch=async(input,init)=>{
+   if(!String(input).startsWith('https://api.openai.com/'))return nativeFetch(input,init);
+   const params=JSON.parse(String(init?.body));sdkCalls++;assert.equal(params.text.format.type,'json_schema');assert.equal(params.text.format.strict,true);names.push(params.text.format.name);
+   const p={config:{systemInstruction:params.instructions,tools:[]},contents:[{parts:[{text:params.input[0].content}]}]};
+   if(params.instructions.includes('INDEPENDENT NATURAL RESPONSE VALIDATION')&&outcome==='timeout'){
+    requests.push(p);const started=Date.now();
+    await new Promise<void>((resolve,reject)=>{const timer=setTimeout(resolve,2400);const signal=init?.signal;
+     const abort=()=>{clearTimeout(timer);aborted=true;validationMs=Date.now()-started;reject(new DOMException('Aborted','AbortError'));};
+     if(signal?.aborted)abort();else signal?.addEventListener('abort',abort,{once:true});});
+   }
+   const generated=await deps.geminiGenerate!(p as any);
+   return new Response(JSON.stringify({id:'resp_synthetic',object:'response',status:'completed',output:[{type:'message',role:'assistant',status:'completed',content:[{type:'output_text',text:generated.text,annotations:[]}]}],usage:{input_tokens:10,output_tokens:10}}),{headers:{'content-type':'application/json'}});
+  };
+  await inbound(ch,q.compound);assert.equal(sdkCalls,4);assert.equal(reads,0);assert.equal(metrics.at(-1).attempts,4);assert.equal(metrics.at(-1).retries,0);
+  assert.ok(names.includes('odinlink_natural_extraction_v1'));assert.ok(names.includes('odinlink_knowledge_verification_v2'));assert.ok(names.includes('odinlink_natural_validation_v1'));
+  assert.ok(published().includes(parking));assert.ok(published().includes(digital));
+  assert.equal(metrics.at(-1).naturalResponse.outcome,outcome==='complete'?'accepted_natural':'canonical_fallback');
+  if(outcome==='timeout'){assert.equal(aborted,true);assert.ok(validationMs<=2300,'transport aborted within the existing two-second allowance plus scheduling tolerance');}
  });
 
 const liveFaults=[['UNKNOWN','UNKNOWN'],['NOT_APPLICABLE','NOT_APPLICABLE'],['CONTRADICTED','CONTRADICTED'],['wrong-id','MISSING_VERDICT'],['missing','MISSING_VERDICT'],['duplicate','DUPLICATE_VERDICT'],

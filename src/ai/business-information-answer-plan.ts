@@ -4,6 +4,9 @@ import { containsUnverifiedBookingSuccessClaim } from './reliability';
 import { containsWebOperationSuccess } from './web-response-integrity';
 import { QUESTION_TYPES, MODALITIES, RELATIONS, knowledgeFailureReason, type KnowledgeDecision, type DecisionReason } from './knowledge-answer-protocol';
 import { uncertaintyNotice, uncertaintyReferences, type UncertaintyReference } from './knowledge-answer-presentation';
+import { NATURAL_LIMITS, NATURAL_PROPOSAL_INSTRUCTION, NATURAL_VALIDATION_INSTRUCTION, NATURAL_SCHEMA_VERSION, naturalContract, naturalContractHash,
+  naturalAttachmentCurrent, naturalProposalReason, parseNaturalProposal, validateNaturalVerdict,
+  type NaturalScope, type NaturalAttachment, type NaturalProposal, type NaturalOutcome } from './grounded-knowledge-composition';
 
 export const ANSWER_LIMITS = Object.freeze({ facets: 4, obligationsPerFacet: 2, units: 6, attempts: 4, deadlineMs: 20_000 });
 type QuestionType = typeof QUESTION_TYPES[number];
@@ -23,8 +26,9 @@ export type FacetOutcome = Readonly<{ facetId: string; status: 'VERIFIED' | 'PAR
 export type AnswerPresentation = Readonly<{ unitIds: readonly string[]; prefix: 'none' | 'greeting' | 'acknowledgement'; addition: boolean }>;
 export type AnswerManifest = Readonly<{ language: string; presentation: AnswerPresentation; facets: readonly Facet[]; units: readonly AnswerUnit[]; outcomes: readonly FacetOutcome[]; text: string; presentationFallback: boolean;
   uncertaintyReferences?: readonly UncertaintyReference[];
-  presentationPath: 'direct_single_unit' | 'composed' | 'fallback'; fallbackReason: DecisionReason | null }>;
-type Stage = 'planning' | 'extraction' | 'verification' | 'composition';
+  naturalScope?: NaturalScope; naturalAttachment?: NaturalAttachment; naturalOutcome?: NaturalOutcome; naturalReason?: DecisionReason | null;
+  presentationPath: 'direct_single_unit' | 'composed' | 'fallback' | 'validated_natural'; fallbackReason: DecisionReason | null }>;
+type Stage = 'planning' | 'extraction' | 'verification' | 'composition' | 'presentation_verification';
 export type ProviderResult = { text: string; functionCalls?: unknown[]; structuredFailure?: 'REFUSAL' | 'TRUNCATED' | 'BLOCKED' };
 export type AnswerGenerator = (stage: Exclude<Stage, 'planning'>, instruction: string, data: unknown) => Promise<ProviderResult>;
 
@@ -184,6 +188,10 @@ function assessCoverage(raw: unknown, facets: readonly Facet[], units: readonly 
 }
 
 function renderVerifiedManifest(manifest: Omit<AnswerManifest, 'text'>): AnswerManifest {
+  if(manifest.naturalAttachment) {
+    if(manifest.naturalScope && naturalAttachmentCurrent(manifest.naturalAttachment,manifest,manifest.naturalScope))return Object.freeze({...manifest,text:manifest.naturalAttachment.proposal.text});
+    manifest={...manifest,naturalAttachment:undefined,naturalOutcome:'canonical_fallback',naturalReason:'NATURAL_CONTRACT_INVALID',presentationFallback:true,presentationPath:'fallback'};
+  }
   const notices = connective[manifest.language] || connective.en;
   if (!manifest.units.length) return Object.freeze({ ...manifest, text: notices.unavailable });
   const ordered = manifest.presentation.unitIds.map(id => manifest.units.find(u => u.id === id)).filter((u): u is AnswerUnit => Boolean(u));
@@ -200,7 +208,8 @@ function renderVerifiedManifest(manifest: Omit<AnswerManifest, 'text'>): AnswerM
 export function pruneAnswerManifest(manifest: AnswerManifest, validEvidence: readonly Evidence[], diagnostic: (e:KnowledgeDecision)=>void = ()=>{}): AnswerManifest {
   const current = (unit: AnswerUnit) => unit.evidenceRefs.every(ref => validEvidence.some(e => e.id === ref.evidenceId && e.sourceId === ref.sourceId && e.chunkId === ref.chunkId && e.version === ref.version));
   const units = manifest.units.filter(current);
-  if (units.length === manifest.units.length) return manifest;
+  if (units.length === manifest.units.length) return manifest.naturalAttachment && (!manifest.naturalScope || !naturalAttachmentCurrent(manifest.naturalAttachment,manifest,manifest.naturalScope))
+    ? renderVerifiedManifest({...manifest,naturalAttachment:undefined,naturalOutcome:'canonical_fallback',naturalReason:'NATURAL_CONTRACT_INVALID',presentationFallback:true,presentationPath:'fallback'}) : manifest;
   const affected = new Set(manifest.units.filter(u => !current(u)).flatMap(u => [...u.facetIds]));
   const ids = new Set(units.map(u => u.id));
   manifest.units.filter(u=>!current(u)).forEach(u=>diagnostic({stage:'freshness',unitId:u.id,reason:'SOURCE_INVALID'}));
@@ -212,6 +221,8 @@ export function pruneAnswerManifest(manifest: AnswerManifest, validEvidence: rea
     return Object.freeze({...o,status,unitIds,obligations,materialFactsComplete,materialUnitIds:Object.freeze(o.materialUnitIds.filter(id=>ids.has(id)))});
   });
   return renderVerifiedManifest({ ...manifest, units: Object.freeze(units), outcomes: Object.freeze(outcomes),
+    ...(manifest.naturalScope?{naturalAttachment:undefined,naturalOutcome:'canonical_fallback' as const,naturalReason:'SOURCE_INVALID' as const,
+      presentationFallback:true,presentationPath:'fallback' as const}:{}),
     fallbackReason:'SOURCE_INVALID',
     presentation: Object.freeze({ ...manifest.presentation, unitIds: Object.freeze(manifest.presentation.unitIds.filter(id => ids.has(id))) }) });
 }
@@ -222,6 +233,7 @@ export async function buildEvidenceFirstAnswer(input: {
   languageSafe?: (unit: AnswerUnit) => boolean;
   revalidateEvidence?: () => Promise<readonly Evidence[]>;
   diagnostic?: (event: KnowledgeDecision) => void;
+  natural?: { scope: NaturalScope; allowSinglePartial: boolean };
   generate: AnswerGenerator; current: () => Promise<boolean>;
 }): Promise<AnswerManifest> {
   const { facets, language, budget } = input;
@@ -232,7 +244,7 @@ export async function buildEvidenceFirstAnswer(input: {
       outcomes:facets.map(f=>({facetId:f.id,status,unitIds:[],obligations:unresolvedObligations(f),requestAligned:false,materialFactsComplete:false,materialUnitIds:[]})),
       text:status==='NO_EVIDENCE'?notices.missing:notices.unavailable,presentationFallback:true,presentationPath:'fallback',fallbackReason:reason });
   };
-  const checked = (result:ProviderResult, stage:'extraction'|'verification'|'composition') => {
+  const checked = (result:ProviderResult, stage:Exclude<Stage,'planning'>) => {
     const reason:DecisionReason|null=result.structuredFailure || (result.functionCalls?.length?'TOOL_OUTPUT':null);
     if(reason){diagnostic({stage,reason});return null;}
     const parsed=answerJson(result.text);if(!parsed)diagnostic({stage,reason:'MALFORMED_JSON'});return parsed;
@@ -250,17 +262,19 @@ export async function buildEvidenceFirstAnswer(input: {
   let availableEvidence = await revalidate();
   if (!availableEvidence.length) return empty('UNAVAILABLE','SOURCE_INVALID');
   let proposed: ReturnType<typeof parseAnswerUnits>;
+  let naturalProposal: NaturalProposal | null = null;
   const rejectProposals=(reason:DecisionReason) => {
     proposed?.units.forEach(u=>diagnostic({stage:'verification',unitId:u.id,reason}));
     return empty('UNAVAILABLE',reason);
   };
   try {
-    const result = await input.generate('extraction', UNIT_EXTRACTION_INSTRUCTION, {
+    const result = await input.generate('extraction', UNIT_EXTRACTION_INSTRUCTION+(input.natural?'\n'+NATURAL_PROPOSAL_INSTRUCTION:''), {
       question: input.question, requestedLanguage: language, facets, evidence: availableEvidence, businessTone: input.businessTone, relevantHistory: input.history,
     });
     const raw = checked(result,'extraction');
     if(!raw)return empty('UNAVAILABLE',result.structuredFailure||'MALFORMED_JSON');
     proposed = parseAnswerUnits(raw, facets, availableEvidence, language,diagnostic);
+    if(input.natural)naturalProposal=parseNaturalProposal(raw.naturalProposal,facets);
     if (raw?.oversized === true || proposed.oversized) return Object.freeze({ ...empty('UNAVAILABLE'), text: narrowInformationRequest(language) });
   } catch(error) { return empty('UNAVAILABLE',knowledgeFailureReason(error)); }
   if (!proposed.units.length) return empty('UNAVAILABLE','NO_PARSED_UNITS');
@@ -305,10 +319,47 @@ export async function buildEvidenceFirstAnswer(input: {
   const outcomes=assessCoverage(parsed.coverage,facets,verified,conflicts,diagnostic);
   if (!verified.length) return Object.freeze({ ...empty('UNAVAILABLE','NO_VERIFIED_UNITS'), outcomes });
   let manifest = pruneAnswerManifest(Object.freeze({ ...empty('UNAVAILABLE'), units: Object.freeze(verified), outcomes: Object.freeze(outcomes),
+    ...(input.natural?{naturalScope:input.natural.scope,naturalOutcome:'canonical_fallback' as const,naturalReason:'NATURAL_PROPOSAL_INVALID' as const}:{}),
     uncertaintyReferences: uncertaintyReferences(input.question, language, facets, outcomes,
       text => Boolean(input.languageSafe?.({ ...verified[0], text }))),
     presentation: Object.freeze({ unitIds: Object.freeze(verified.map(u => u.id)), prefix: 'none' as const, addition: false }) }), await revalidate(),diagnostic);
   if (!manifest.units.length) return manifest;
+  if(input.natural) {
+    const finish=async(reason:DecisionReason|null, attachment?:NaturalAttachment):Promise<AnswerManifest>=>{
+      if(!await input.current())return empty('UNAVAILABLE','CONTEXT_INVALID');
+      const direct=manifest.units.length===1&&manifest.outcomes.every(o=>o.status==='VERIFIED');
+      const naturalOutcome:NaturalOutcome=attachment?'accepted_natural':direct?'direct_canonical':'canonical_fallback';
+      const rendered=renderVerifiedManifest({...manifest,naturalAttachment:attachment,naturalOutcome,naturalReason:reason,
+        presentationFallback:!attachment&&!direct,presentationPath:attachment?'validated_natural':direct?'direct_single_unit':'fallback',fallbackReason:reason});
+      const final=pruneAnswerManifest(rendered,await revalidate(),diagnostic);
+      diagnostic({stage:'presentation_verification',reason:final.naturalReason||'NATURAL_ACCEPTED',natural:{schemaVersion:NATURAL_SCHEMA_VERSION,
+        outcome:final.naturalOutcome||'canonical_fallback',reason:final.naturalReason??null}});
+      return final;
+    };
+    if(manifest.units.length===1&&manifest.outcomes.every(o=>o.status==='VERIFIED'))return finish('DIRECT_SINGLE_UNIT');
+    if(manifest.units.length===1&&!input.natural.allowSinglePartial)return finish('NATURAL_SINGLE_PARTIAL_DISABLED');
+    if(!naturalProposal)return finish('NATURAL_PROPOSAL_INVALID');
+    const scope=input.natural.scope;
+    if(!Number.isSafeInteger(scope.businessId)||scope.businessId<=0||!scope.turnId||scope.question!==input.question||manifest.units.some(u=>u.evidenceRefs.some(r=>
+      !input.evidence.some(e=>e.id===r.evidenceId&&e.businessId===scope.businessId))))return finish('NATURAL_CONTRACT_INVALID');
+    const localReason=naturalProposalReason(naturalProposal,manifest,scope,u=>Boolean(input.languageSafe?.(u)));
+    if(localReason)return finish(localReason);
+    if(budget.remaining()<=NATURAL_LIMITS.verificationMs||budget.attempts>=ANSWER_LIMITS.attempts)return finish('COMPOSER_SKIPPED_BUDGET');
+    const contractHash=naturalContractHash(manifest,scope);
+    const limit=Math.min(NATURAL_LIMITS.verificationMs,budget.remaining()-NATURAL_LIMITS.reserveMs);
+    const verificationDeadline=Date.now()+limit;
+    let timer:ReturnType<typeof setTimeout>|undefined;
+    try {
+      const result=await Promise.race([input.generate('presentation_verification',NATURAL_VALIDATION_INSTRUCTION,
+        {contract:naturalContract(manifest,scope),contractHash,proposal:naturalProposal,proposalHash:naturalProposal.hash}),
+        new Promise<never>((_,reject)=>{timer=setTimeout(()=>reject(new Error('natural_verification_deadline')),limit);})]);
+      if(Date.now()>verificationDeadline)return await finish('NATURAL_TIMEOUT');
+      const verdict=checked(result,'presentation_verification');
+      const reason=verdict?validateNaturalVerdict(verdict,naturalProposal,manifest,scope):result.structuredFailure||(result.functionCalls?.length?'TOOL_OUTPUT':'NATURAL_VERDICT_INVALID');
+      return await finish(reason,reason?undefined:Object.freeze({proposal:naturalProposal,contractHash}));
+    }catch(error){const reason=knowledgeFailureReason(error);return finish(error instanceof Error&&error.message==='natural_verification_deadline'||reason==='DEADLINE'?'NATURAL_TIMEOUT':reason);}
+    finally{if(timer)clearTimeout(timer);}
+  }
   // Completeness here is the indivisible verified unit (including its qualifiers),
   // not a claim that every requested obligation is resolved. Local uncertainty is
   // rendered separately; ordering a single fact needs no model even for PARTIAL.

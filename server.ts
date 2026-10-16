@@ -829,7 +829,7 @@ async function generateContentWithFallback(ai: GoogleGenAI | null, options: {
     knowledgeState.model=safeModelIdentifier(provider==='openai'?resolveOpenAiTextModel(options.model):options.model||'gemini-2.5-flash');
   }
   if (informationBudget && !informationBudget.remaining()) throw new Error("information_deadline");
-  const informationStageLimit = options.context?.stage === 'knowledge_units_composition' && informationBudget
+  const informationStageLimit = ['knowledge_units_composition','knowledge_units_presentation_verification'].includes(options.context?.stage || '') && informationBudget
     ? Math.max(1, Math.min(2_000, informationBudget.remaining() - 500)) : providerTimeoutMs;
   const timeoutMs = informationBudget ? Math.min(providerTimeoutMs, informationStageLimit, informationBudget.remaining()) : options.context?.stage === "business_information_completeness_repair"
     ? Math.min(5_000, providerTimeoutMs) : providerTimeoutMs;
@@ -5217,15 +5217,19 @@ type BusinessInformationTurn = {
 const businessInformationTurns: Record<string, BusinessInformationTurn> = {};
 // Opt-in shared rollout. No per-channel overrides; no persistent answer/unit cache.
 type KnowledgeTurnState = { migrated?: boolean; budget?: InformationBudget; facets?: Facet[]; oversized?: boolean; evidence?: Evidence[];
+  naturalEnabled?: boolean; naturalSinglePartial?: boolean; naturalTurnId?: string;
   businessId?: number; question?: string; manifest?: AnswerManifest; sessionId?: string; history?: any[]; matches?: KnowledgeSearchMatch[];
   snapshot?: Readonly<{ businessId: number; question: string; matches: KnowledgeSearchMatch[]; evidence: Evidence[] }>;
   invalidSourceIds?: Set<string>; nativeChannel?: 'telegram'|'instagram'|'whatsapp'|'messenger'; provider?:string; model?:string;
   diagnosticCount?:number; unitCounts?:KnowledgeDecision['counts'] };
 const knowledgeTurnScope = new AsyncLocalStorage<KnowledgeTurnState>();
 function runUnifiedConversationRequest<T>(work: () => Promise<T>, nativeChannel:KnowledgeTurnState['nativeChannel']): Promise<T> {
-  return requestSecurity.run(() => knowledgeTurnScope.run({nativeChannel}, work));
+  const naturalEnabled=process.env.ODINLINK_EVIDENCE_FIRST_KNOWLEDGE==='true'&&process.env.ODINLINK_GROUNDED_NATURAL_RESPONSES==='true';
+  return requestSecurity.run(() => knowledgeTurnScope.run({nativeChannel,...(naturalEnabled?{naturalEnabled:true,
+    naturalSinglePartial:process.env.ODINLINK_GROUNDED_NATURAL_SINGLE_PARTIAL==='true',naturalTurnId:crypto.randomUUID()}: {})}, work));
 }
 function knowledgeProviderStage(stage?:string):KnowledgeStage {
+  if(stage==='knowledge_units_presentation_verification')return 'presentation_verification';
   return stage==='semantic_knowledge_query_resolution'?'planning':stage==='knowledge_units_extraction'?'extraction':stage==='knowledge_units_verification'?'verification':'composition';
 }
 function emitKnowledgeDecision(event:KnowledgeDecision) {
@@ -5343,6 +5347,8 @@ async function generateSecureConversationContent(sessionId: string, options: any
         authoritativeEvidence: JSON.stringify({ business_system_prompt: snapshot.sources.business_system_prompt,
           structured_business_config: snapshot.sources.structured_business_config, verified_booking_state: snapshot.sources.verified_booking_state }),
         businessTone: normalizeBusinessToneConfig(support.businessConfig?.toneConfig), history: state.history || (options.messages || []).slice(-3), budget: state.budget,
+        ...(state.naturalEnabled?{natural:{scope:immutable({turnId:state.naturalTurnId!,businessId:state.businessId!,question:support.question,
+          tone:normalizeBusinessToneConfig(support.businessConfig?.toneConfig)}),allowSinglePartial:state.naturalSinglePartial===true}}:{}),
         languageSafe: unit => !customerReplyLanguageIsIncompatible(unit.text, support.language),
         current: knowledgeEvidenceCurrent,
         revalidateEvidence: currentAnswerEvidence,
@@ -5351,7 +5357,7 @@ async function generateSecureConversationContent(sessionId: string, options: any
           const started = Date.now(); let ok = false;
           try { const result = await generateContentWithFallback(null, { messages: [{ role: 'user', content: JSON.stringify(data) }],
             systemInstruction: instruction, tools: [], informationBudget: state.budget,
-            ...(stage!=='composition'?{structuredOutput:knowledgeStructuredOutput(stage)}:{}),
+            ...(stage!=='composition'?{structuredOutput:knowledgeStructuredOutput(stage,state.naturalEnabled)}:{}),
             context: { ...businessInformationTimingContext(sessionId), businessId: state.businessId, channel: 'knowledge-core', stage: `knowledge_units_${stage}`, language: support.language } });
             ok = true; return result;
           } finally { state.budget!.stages.push({ stage, durationMs: Date.now() - started, ok }); }
@@ -5362,6 +5368,8 @@ async function generateSecureConversationContent(sessionId: string, options: any
         nativeChannel:state.nativeChannel||'internal',schemaVersion:KNOWLEDGE_SCHEMA_VERSION,provider:state.provider,model:state.model,
         facets: state.manifest.outcomes.map(o => ({ status: o.status, units: o.unitIds.length })), units: state.manifest.units.length,
         presentationFallback: state.manifest.presentationFallback,presentationPath:state.manifest.presentationPath,fallbackReason:state.manifest.fallbackReason,
+        ...(state.naturalEnabled?{naturalResponse:{enabled:true,schemaVersion:'grounded-natural-v1',outcome:state.manifest.naturalOutcome||'canonical_fallback',
+          reason:state.manifest.naturalReason||state.manifest.fallbackReason}}:{}),
         unitCounts:state.unitCounts,completeness:state.manifest.outcomes.map(o=>({status:o.status,obligations:o.obligations.map(d=>d.status),requestAligned:o.requestAligned,materialFactsComplete:o.materialFactsComplete})), attempts: state.budget.attempts, retries: 0,
         durationMs: Date.now() - state.budget.startedAt, stages: state.budget.stages, inputTokens: state.budget.inputTokens,
         outputTokens: state.budget.outputTokens, meteredAttempts: state.budget.meteredAttempts, estimatedCostUsd: state.budget.meteredAttempts === state.budget.attempts ? state.budget.estimatedCostUsd : null };
@@ -5399,6 +5407,8 @@ async function securePublicationReply(reply: string, language?: string): Promise
       counts:{proposed:state.unitCounts?.proposed||0,parsed:state.unitCounts?.parsed||0,verified:publishable?state.manifest.units.length:0,
         rejected:(state.unitCounts?.proposed||0)-(publishable?state.manifest.units.length:0)},
       facets:state.manifest.facets.map(f=>({type:f.questionType,obligations:f.obligations.length,status:state.manifest!.outcomes.find(o=>o.facetId===f.id)?.status})),
+      ...(state.naturalEnabled?{natural:{schemaVersion:'grounded-natural-v1',outcome:!publishable?'canonical_fallback' as const:state.manifest.naturalOutcome||'canonical_fallback' as const,
+        reason:!publishable?'CONTEXT_INVALID' as const:state.manifest.naturalReason||state.manifest.fallbackReason}}:{}),
       route:!publishable||!state.manifest.units.length?'unavailable':state.manifest.outcomes.every(o=>o.status==='VERIFIED')?'verified_manifest':'partial_manifest'});
   }
   return text;
@@ -14577,8 +14587,8 @@ function guardCustomerFacingReply(sessionId: string, reply: string, fallbackLang
     );
   }
 
-  // Exact request-local information manifests already have independently verified
-  // factual wording and language. Keep their coverage through send-only guards;
+  // Exact request-local manifests carry canonical verified wording or separately
+  // validated presentation. Keep their coverage through send-only guards;
   // booking-integrity vetoes above and publication freshness remain mandatory.
   const information = knowledgeTurnScope.getStore();
   if (information?.sessionId === sessionId && information.manifest?.text === raw && !containsWebOperationSuccess(raw)) return raw;

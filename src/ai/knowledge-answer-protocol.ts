@@ -1,10 +1,11 @@
 import type { UnifiedAiStructuredOutputRequest } from './providers/provider';
+import { NATURAL_FLAGS } from './grounded-knowledge-composition';
 
 export const KNOWLEDGE_SCHEMA_VERSION = 'evidence-first-v2';
 export const QUESTION_TYPES = ['description', 'recommendation', 'requirement', 'permission', 'prohibition'] as const;
 export const MODALITIES = ['descriptive', 'recommended', 'required', 'permitted', 'prohibited'] as const;
 export const RELATIONS = ['ENTAILED', 'UNKNOWN', 'CONTRADICTED', 'NOT_APPLICABLE'] as const;
-export type KnowledgeStage = 'planning' | 'extraction' | 'verification' | 'composition' | 'freshness' | 'publication';
+export type KnowledgeStage = 'planning' | 'extraction' | 'verification' | 'composition' | 'presentation_verification' | 'freshness' | 'publication';
 export const DECISION_REASONS = [
   'ACCEPTED', 'MALFORMED_JSON', 'MALFORMED_ARRAY', 'LIMIT_EXCEEDED', 'INVALID_FIELDS', 'INVALID_FACET',
   'LANGUAGE_LABEL', 'OPERATION_CLAIM', 'QUESTION_TEXT', 'MISSING_CITATION', 'INVALID_CITATION', 'NUMERICAL_CONSTRAINT',
@@ -16,6 +17,8 @@ export const DECISION_REASONS = [
   'SOURCE_MISSING_OR_UNAUTHORIZED', 'SOURCE_NOT_READY', 'SOURCE_REVISION', 'SOURCE_CHUNK', 'SOURCE_QUARANTINED', 'VALIDATOR_ERROR',
   'REFUSAL', 'TRUNCATED', 'BLOCKED', 'MALFORMED_RESPONSE', 'PROVIDER_FAILURE', 'DEADLINE', 'BUDGET_EXHAUSTED', 'TOOL_OUTPUT',
   'DIRECT_SINGLE_UNIT', 'COMPOSED', 'COMPOSER_FALLBACK', 'COMPOSER_SKIPPED_BUDGET', 'LEGACY_ROUTE', 'PUBLICATION_SUPPRESSED',
+  'NATURAL_ACCEPTED', 'NATURAL_PROPOSAL_INVALID', 'NATURAL_CONTRACT_INVALID', 'NATURAL_BINDINGS', 'NATURAL_REPETITION', 'NATURAL_IDENTIFIER',
+  'NATURAL_VERDICT_INVALID', 'NATURAL_SEMANTIC_REJECTION', 'NATURAL_COVERAGE_REJECTION', 'NATURAL_SINGLE_PARTIAL_DISABLED', 'NATURAL_TIMEOUT',
 ] as const;
 export type DecisionReason = typeof DECISION_REASONS[number];
 export type KnowledgeDecision = {
@@ -30,6 +33,7 @@ export type KnowledgeDecision = {
   correlationId?: string; durationMs?: number; transportSuccess?: boolean; inputTokens?: number | null; outputTokens?: number | null;
   outputMode?: 'json_schema' | 'validated_text';
   failureCategory?: string;
+  natural?: { schemaVersion: string; outcome: 'accepted_natural'|'canonical_fallback'|'direct_canonical'; reason: DecisionReason | null };
   route?: 'verified_manifest' | 'partial_manifest' | 'unavailable' | 'suppressed' | 'legacy';
 };
 
@@ -55,7 +59,16 @@ const schemas = {
     meaningPreserved: bool, modalityPreserved: bool, qualifiersPreserved: bool, relevant: bool, languageCorrect: bool,
     explicitAbsenceEvidence: bool, negativeAbsence: bool })), coverage: array(coverage) }),
 } as const;
-export function knowledgeStructuredOutput(stage: keyof typeof schemas): UnifiedAiStructuredOutputRequest {
+const naturalProposal = object({blocks:array(object({kind:enumeration(['fact','uncertainty','courtesy']),text:str,
+  proposedUnitOrdinals:array({type:'integer'}),obligationIds:array(str)}))});
+const naturalValidation = object({contractHash:str,proposalHash:str,
+  blocks:array(object({blockId:str,relation:enumeration(RELATIONS),noUnsupportedFacts:bool,meaningPreserved:bool,uncertaintyAccurate:bool})),
+  unitCoverage:array(object({unitId:str,blockIds:array(str),complete:bool})),obligationCoverage:array(object({obligationId:str,blockIds:array(str),accurate:bool})),
+  flags:object(Object.fromEntries(NATURAL_FLAGS.map(key=>[key,bool])))});
+export function knowledgeStructuredOutput(stage: keyof typeof schemas|'presentation_verification', natural=false): UnifiedAiStructuredOutputRequest {
+  if(stage==='presentation_verification')return{name:'odinlink_natural_validation_v1',strict:true,schema:naturalValidation};
+  if(stage==='extraction'&&natural)return{name:'odinlink_natural_extraction_v1',strict:true,
+    schema:object({...schemas.extraction.properties,naturalProposal:{anyOf:[{type:'null'},naturalProposal]}})};
   return { name: `odinlink_knowledge_${stage}_v2`, strict: true, schema: schemas[stage] };
 }
 

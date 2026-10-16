@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { beforeEach, afterEach, test } from 'node:test';
 import { Responses } from 'openai/resources/responses';
+import { normalizeConversationText } from './booking-intelligence';
 process.env.NODE_ENV = 'test';
 process.env.GEMINI_API_KEY = 'synthetic-offline-only';
 const { priority1hUnifiedEngineTestBoundary: b } = await import('../../server');
@@ -292,12 +293,34 @@ for(const ch of channels) for(const [language,question,text] of translations) fo
   }});
   await inbound(ch,question,id);const answer=published();assert.ok(answer.includes(text),answer);assert.equal(metrics.at(-1).units,1);
   assert.equal(metrics.at(-1).facets[0].status,'PARTIAL');assert.deepEqual(metrics.at(-1).completeness[0].obligations,['UNRESOLVED','COVERED']);
+  assert.ok(answer.includes(normalizeConversationText(question)),'references preserve the actual question after the existing shared input normalization');
+  assert.doesNotMatch(answer,/Den delen|that part|diesen Teil|esa parte|آن بخش|هذا الجزء/iu);
   assert.equal(metrics.at(-1).presentationPath,'direct_single_unit');assert.equal(requests.length,3);assert.equal(reads,0);
   assert.ok(decisionEvents.some(e=>e.reason==='OBLIGATION_UNRESOLVED'));assert.ok(decisionEvents.some(e=>e.eventType==='unit_verdict'&&e.reason==='ACCEPTED'&&e.flags.modalityPreserved));
   assert.ok(decisionEvents.some(e=>e.stage==='publication'&&e.route==='partial_manifest'));
   assert.ok(decisionEvents.every(e=>e.nativeChannel===ch&&e.businessId===77&&e.businessInfoTurnId&&e.schemaVersion==='evidence-first-v2'));
   assert.ok(decisionEvents.length<=64);assert.ok(decisionLogs.every(s=>!s.includes(policy)&&!s.includes(text)&&!s.includes(config.telegramToken)&&!s.includes(id)));
   if(context==='draft'){const draft=b.pendingStateSnapshot(sid);assert.equal(draft.service,'Video Consultation');assert.equal(draft.dateTime,null);assert.equal(draft.continuationPaused,true);}
+ });
+
+const arrangements = ['Besök sker efter överenskommelse.','Visits are arranged by agreement.','Besuche erfolgen nach Vereinbarung.',
+ 'Las visitas se realizan con cita acordada.','بازدیدها با هماهنگی انجام می‌شود.','تتم الزيارات بالاتفاق المسبق.'];
+for(const ch of channels) for(const [i,[language,question,text]] of translations.entries()) for(const failComposer of [false,true])
+ test(`${ch}/${language}/natural-partial/composer-${failComposer?'failed':'valid'}: two immutable facts, specific uncertainty, no extra request`,async()=>{
+  lang=language;composer=failComposer?'error':'natural';
+  proposed=[{...unit(text),modality:'recommended',evidenceRefs:[{evidenceId:'e1',exactQuote:policy}]},
+   {...unit(arrangements[i]),modality:'descriptive',evidenceRefs:[{evidenceId:'e1',exactQuote:policy}]}];
+  const generate=deps.geminiGenerate!;
+  configure({geminiGenerate:async p=>{
+   const result=await generate(p),instruction=p.config.systemInstruction;
+   if(instruction.includes('retrieval query planner')){const plan=JSON.parse(result.text);plan.requestedFacets=[{subject:'visits',attribute:'visit policy',questionType:'permission',obligations:[{description:'permission to visit',questionType:'permission'},{description:'recommendation for advance booking',questionType:'recommendation'}]}];return{text:JSON.stringify(plan)};}
+   if(instruction.includes('BATCH ENTAILMENT')){const data=JSON.parse(p.contents[0].parts[0].text),v=JSON.parse(result.text);v.coverage=[{facetId:'f1',requestAligned:true,materialFactsComplete:true,materialUnitIds:['u1','u2'],obligations:[{obligationId:data.facets[0].obligations[0].id,status:'UNRESOLVED',unitIds:[]},{obligationId:data.facets[0].obligations[1].id,status:'COVERED',unitIds:['u1']}]}];return{text:JSON.stringify(v)};}
+   return result;
+  }});
+  await inbound(ch,question);const answer=published();assert.ok(answer.includes(text),'recommendation preserved');assert.ok(answer.includes(arrangements[i]),'independent arrangement preserved');assert.ok(answer.includes(normalizeConversationText(question)),'specific normalized question reference');
+  assert.doesNotMatch(answer,/Den delen|that part|diesen Teil|esa parte|آن بخش|هذا الجزء/iu);
+  assert.equal(metrics.at(-1).units,2);assert.equal(metrics.at(-1).facets[0].status,'PARTIAL');assert.equal(metrics.at(-1).presentationFallback,failComposer);
+  assert.equal(requests.length,4);assert.equal(reads,0);assert.ok(decisionEvents.some(e=>e.stage==='publication'&&e.route==='partial_manifest'&&e.nativeChannel===ch));
  });
 
 const liveFaults=[['UNKNOWN','UNKNOWN'],['NOT_APPLICABLE','NOT_APPLICABLE'],['CONTRADICTED','CONTRADICTED'],['wrong-id','MISSING_VERDICT'],['missing','MISSING_VERDICT'],['duplicate','DUPLICATE_VERDICT'],

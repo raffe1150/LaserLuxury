@@ -3,6 +3,7 @@ import { numericalConstraintSafe, NUMERICAL_DIRECTION_GUIDANCE } from './numeric
 import { containsUnverifiedBookingSuccessClaim } from './reliability';
 import { containsWebOperationSuccess } from './web-response-integrity';
 import { QUESTION_TYPES, MODALITIES, RELATIONS, knowledgeFailureReason, type KnowledgeDecision, type DecisionReason } from './knowledge-answer-protocol';
+import { uncertaintyNotice, uncertaintyReferences, type UncertaintyReference } from './knowledge-answer-presentation';
 
 export const ANSWER_LIMITS = Object.freeze({ facets: 4, obligationsPerFacet: 2, units: 6, attempts: 4, deadlineMs: 20_000 });
 type QuestionType = typeof QUESTION_TYPES[number];
@@ -21,6 +22,7 @@ export type FacetOutcome = Readonly<{ facetId: string; status: 'VERIFIED' | 'PAR
   obligations: readonly ObligationOutcome[]; requestAligned: boolean; materialFactsComplete: boolean; materialUnitIds: readonly string[] }>;
 export type AnswerPresentation = Readonly<{ unitIds: readonly string[]; prefix: 'none' | 'greeting' | 'acknowledgement'; addition: boolean }>;
 export type AnswerManifest = Readonly<{ language: string; presentation: AnswerPresentation; facets: readonly Facet[]; units: readonly AnswerUnit[]; outcomes: readonly FacetOutcome[]; text: string; presentationFallback: boolean;
+  uncertaintyReferences?: readonly UncertaintyReference[];
   presentationPath: 'direct_single_unit' | 'composed' | 'fallback'; fallbackReason: DecisionReason | null }>;
 type Stage = 'planning' | 'extraction' | 'verification' | 'composition';
 export type ProviderResult = { text: string; functionCalls?: unknown[]; structuredFailure?: 'REFUSAL' | 'TRUNCATED' | 'BLOCKED' };
@@ -185,10 +187,11 @@ function renderVerifiedManifest(manifest: Omit<AnswerManifest, 'text'>): AnswerM
   const notices = connective[manifest.language] || connective.en;
   if (!manifest.units.length) return Object.freeze({ ...manifest, text: notices.unavailable });
   const ordered = manifest.presentation.unitIds.map(id => manifest.units.find(u => u.id === id)).filter((u): u is AnswerUnit => Boolean(u));
-  const lines = ordered.map((u, i) => i && manifest.presentation.addition ? `${notices.addition} ${u.text}` : u.text);
-  for (const [index, outcome] of manifest.outcomes.entries()) if (outcome.status !== 'VERIFIED') lines.push(`${manifest.facets.length>1?`${index + 1}. `:''}${outcome.status === 'CONFLICT' ? notices.conflict : notices.unavailable}`);
+  const lines = ordered.map((u, i) => i === 1 && manifest.presentation.addition ? `${notices.addition} ${u.text}` : u.text);
+  const uncertainty = [...new Set(manifest.outcomes.filter(o => o.status !== 'VERIFIED').map(outcome =>
+    uncertaintyNotice(manifest.language, manifest.facets.find(f => f.id === outcome.facetId), outcome, manifest.uncertaintyReferences)))];
   const prefix = manifest.presentation.prefix === 'none' ? '' : notices[manifest.presentation.prefix];
-  return Object.freeze({ ...manifest, text: [prefix, ...lines].filter(Boolean).join('\n') });
+  return Object.freeze({ ...manifest, text: [[prefix, ...lines].filter(Boolean).join(' '), uncertainty.join(' ')].filter(Boolean).join('\n\n') });
 }
 
 /** Subtraction only: preserve whole independently verified units, never edit a clause
@@ -302,6 +305,8 @@ export async function buildEvidenceFirstAnswer(input: {
   const outcomes=assessCoverage(parsed.coverage,facets,verified,conflicts,diagnostic);
   if (!verified.length) return Object.freeze({ ...empty('UNAVAILABLE','NO_VERIFIED_UNITS'), outcomes });
   let manifest = pruneAnswerManifest(Object.freeze({ ...empty('UNAVAILABLE'), units: Object.freeze(verified), outcomes: Object.freeze(outcomes),
+    uncertaintyReferences: uncertaintyReferences(input.question, language, facets, outcomes,
+      text => Boolean(input.languageSafe?.({ ...verified[0], text }))),
     presentation: Object.freeze({ unitIds: Object.freeze(verified.map(u => u.id)), prefix: 'none' as const, addition: false }) }), await revalidate(),diagnostic);
   if (!manifest.units.length) return manifest;
   // Completeness here is the indivisible verified unit (including its qualifiers),

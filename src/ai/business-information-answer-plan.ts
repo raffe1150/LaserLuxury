@@ -1,3 +1,4 @@
+import { resolveEvidenceQuote } from './knowledge-citation';
 import { createHash } from 'node:crypto';
 import { numericalConstraintSafe, NUMERICAL_DIRECTION_GUIDANCE } from './numerical-constraints';
 import { containsUnverifiedBookingSuccessClaim } from './reliability';
@@ -9,9 +10,9 @@ import { NATURAL_LIMITS, NATURAL_PROPOSAL_INSTRUCTION, NATURAL_VALIDATION_INSTRU
   type NaturalScope, type NaturalAttachment, type NaturalProposal, type NaturalOutcome } from './grounded-knowledge-composition';
 
 export const ANSWER_LIMITS = Object.freeze({ facets: 4, obligationsPerFacet: 2, units: 6, attempts: 4, deadlineMs: 20_000 });
-// The incident's 500ms remainder did not cover publication. Reserve one second
-// within (never in addition to) the shared deadline, including native send guards.
-export const INFORMATION_PUBLICATION_RESERVE_MS = 1_000;
+// The measured final authorization read took 1,337ms. Leave 1,500ms within
+// the unchanged 20-second deadline; unknown freshness still fails closed.
+export const INFORMATION_PUBLICATION_RESERVE_MS = 1_500;
 type QuestionType = typeof QUESTION_TYPES[number];
 export type Obligation = Readonly<{ id: string; description: string; questionType: QuestionType }>;
 export type Facet = Readonly<{ id: string; subject: string; attribute: string; questionType: QuestionType; obligations: readonly Obligation[] }>;
@@ -102,15 +103,6 @@ export function answerEvidence(businessId: number, matches: readonly any[]): Evi
       version: String(m.metadata?.documentRevision || m.metadata?.sourceRevision || hash(m.text)), text: m.text }));
 }
 
-function literalQuote(text: string, quote: string) {
-  const at = text.indexOf(quote);
-  if (at < 0 || text.indexOf(quote, at + 1) !== -1) return false;
-  // Exact substrings must not turn an identifier prefix into another identifier.
-  const token = /[\p{L}\p{M}\p{N}_-]/u;
-  return !(token.test(quote[0]) && at > 0 && token.test(text[at - 1])) &&
-    !(token.test(quote.at(-1)!) && at + quote.length < text.length && token.test(text[at + quote.length]));
-}
-
 export function parseAnswerUnits(raw: unknown, facets: readonly Facet[], evidence: readonly Evidence[], language: string,
   diagnostic: (event: KnowledgeDecision) => void = () => {}): { units: AnswerUnit[]; oversized: boolean } {
   if (!object(raw) || !Array.isArray(raw.units)) { diagnostic({ stage:'extraction', reason:'MALFORMED_ARRAY' }); return { units: [], oversized: false }; }
@@ -128,8 +120,11 @@ export function parseAnswerUnits(raw: unknown, facets: readonly Facet[], evidenc
     const refs: AnswerUnit['evidenceRefs'][number][] = [];
     for (const r of u.evidenceRefs) {
       const e = object(r) && evidence.find(e => e.id === r.evidenceId);
-      if (!e || !short(r.exactQuote, 2400) || !literalQuote(e.text, r.exactQuote)) break;
-      refs.push(Object.freeze({ evidenceId: e.id, sourceId: e.sourceId, chunkId: e.chunkId, version: e.version, exactQuote: r.exactQuote }));
+      if (!e) { diagnostic({stage:'extraction',unitId:`u${index+1}`,reason:'INVALID_CITATION',citationSubtype:'EVIDENCE_ID'}); break; }
+      const citation=short(r.exactQuote,2400)?resolveEvidenceQuote(e.text,r.exactQuote):{subtype:'QUOTE_NOT_FOUND' as const};
+      if (!citation.quote) { diagnostic({stage:'extraction',unitId:`u${index+1}`,reason:'INVALID_CITATION',citationSubtype:citation.subtype,typographyHint:citation.typographyHint}); break; }
+      if(citation.subtype)diagnostic({stage:'extraction',unitId:`u${index+1}`,reason:'ACCEPTED',citationSubtype:citation.subtype});
+      refs.push(Object.freeze({ evidenceId: e.id, sourceId: e.sourceId, chunkId: e.chunkId, version: e.version, exactQuote: citation.quote }));
     }
     if (refs.length !== u.evidenceRefs.length) { reject('INVALID_CITATION'); continue; }
     if (!numericalConstraintSafe(u.text,u.text,refs.map(r=>({source:'retrieved_knowledge',quote:r.exactQuote})))) { reject('NUMERICAL_CONSTRAINT'); continue; }
@@ -236,6 +231,8 @@ export async function buildEvidenceFirstAnswer(input: {
   authoritativeEvidence: string; businessTone: unknown; history: unknown; budget: InformationBudget;
   languageSafe?: (unit: AnswerUnit) => boolean;
   revalidateEvidence?: () => Promise<readonly Evidence[]>;
+  /** Only native callers which independently revalidate immediately before send. */
+  finalPublicationRevalidates?: boolean;
   diagnostic?: (event: KnowledgeDecision) => void;
   natural?: { scope: NaturalScope; allowSinglePartial: boolean };
   generate: AnswerGenerator; current: () => Promise<boolean>;
@@ -255,14 +252,18 @@ export async function buildEvidenceFirstAnswer(input: {
   };
   if (!facets.length || !budget.remaining() || !await input.current()) return empty('UNAVAILABLE',budget.remaining()?'CONTEXT_INVALID':'DEADLINE');
   if (!input.evidence.length) return empty('NO_EVIDENCE','NO_EVIDENCE');
+  const capturedEvidence=new Map(input.evidence.map(e=>[e.id,JSON.stringify(e)]));
   const revalidate = async () => {
     if (!input.revalidateEvidence) return input.evidence;
     try {
       const fresh = await input.revalidateEvidence();
       // A freshness callback may subtract captured authority, never replace it.
-      return input.evidence.filter(e => fresh.some(f => JSON.stringify(f) === JSON.stringify(e)));
+      const current=new Map(fresh.map(e=>[e.id,JSON.stringify(e)]));
+      return input.evidence.filter(e=>current.get(e.id)===capturedEvidence.get(e.id));
     } catch { return []; }
   };
+  // Model input needs no duplicate source/chunk hashes; internal refs retain them.
+  const wireEvidence = (items: readonly Evidence[]) => items.map(({id,businessId,version,text})=>({id,businessId,version,text}));
   let availableEvidence = await revalidate();
   if (!availableEvidence.length) return empty('UNAVAILABLE','SOURCE_INVALID');
   let proposed: ReturnType<typeof parseAnswerUnits>;
@@ -274,7 +275,7 @@ export async function buildEvidenceFirstAnswer(input: {
   };
   try {
     const result = await input.generate('extraction', UNIT_EXTRACTION_INSTRUCTION+(input.natural?'\n'+NATURAL_PROPOSAL_INSTRUCTION:''), {
-      question: input.question, requestedLanguage: language, facets, evidence: availableEvidence, businessTone: input.businessTone, relevantHistory: input.history,
+      question: input.question, requestedLanguage: language, facets, evidence: wireEvidence(availableEvidence), businessTone: input.businessTone, relevantHistory: input.history,
     });
     const raw = checked(result,'extraction');
     if(!raw)return empty('UNAVAILABLE',result.structuredFailure||'MALFORMED_JSON');
@@ -297,7 +298,7 @@ export async function buildEvidenceFirstAnswer(input: {
   let parsed: any;
   try {
     const result = await input.generate('verification', UNIT_VERIFICATION_INSTRUCTION, {
-      question: input.question, requestedLanguage: language, facets, units: proposed.units, evidence: availableEvidence, authoritativeEvidence: input.authoritativeEvidence,
+      question: input.question, requestedLanguage: language, facets, units: proposed.units.map(({verification,...u})=>({...u,evidenceRefs:u.evidenceRefs.map(({evidenceId,exactQuote})=>({evidenceId,exactQuote}))})), evidence: wireEvidence(availableEvidence), authoritativeEvidence: input.authoritativeEvidence,
     });
     parsed = checked(result,'verification');
     if(!parsed)return rejectProposals(result.structuredFailure||(result.functionCalls?.length?'TOOL_OUTPUT':'MALFORMED_JSON'));
@@ -333,11 +334,14 @@ export async function buildEvidenceFirstAnswer(input: {
     return Object.freeze({...o,status:'PARTIAL' as const,materialFactsComplete:false});
   });
   if (!verified.length) return Object.freeze({ ...empty('UNAVAILABLE','NO_VERIFIED_UNITS'), outcomes });
+  // With no further model work, defer the duplicate post-verification read to
+  // the native publication guard. This grants no authority to send the manifest.
+  const deferFreshness=input.finalPublicationRevalidates && !input.natural && budget.generationRemaining()<=2_000;
   let manifest = pruneAnswerManifest(Object.freeze({ ...empty('UNAVAILABLE'), units: Object.freeze(verified), outcomes: Object.freeze(outcomes),
     ...(input.natural?{naturalScope:input.natural.scope,naturalOutcome:'canonical_fallback' as const,naturalReason:'NATURAL_PROPOSAL_INVALID' as const}:{}),
     uncertaintyReferences: uncertaintyReferences(input.question, language, facets, outcomes,
       text => Boolean(input.languageSafe?.({ ...verified[0], text }))),
-    presentation: Object.freeze({ unitIds: Object.freeze(verified.map(u => u.id)), prefix: 'none' as const, addition: false }) }), await revalidate(),diagnostic);
+    presentation: Object.freeze({ unitIds: Object.freeze(verified.map(u => u.id)), prefix: 'none' as const, addition: false }) }), deferFreshness ? availableEvidence : await revalidate(),diagnostic);
   if (!manifest.units.length) return manifest;
   if(input.natural) {
     const finish=async(reason:DecisionReason|null, attachment?:NaturalAttachment):Promise<AnswerManifest>=>{

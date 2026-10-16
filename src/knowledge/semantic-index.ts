@@ -22,7 +22,8 @@ export class CompatibleSemanticIndex {
   }
 
   async searchQueries(businessId: number, chunks: SemanticChunk[], queries: EmbeddingVector[],
-    provider: EmbeddingProvider, limit: number, minSimilarity: number): Promise<KnowledgeSearchMatch[][]> {
+    provider: EmbeddingProvider, limit: number, minSimilarity: number, options?: import("../ai/embeddings").EmbeddingRequestOptions): Promise<KnowledgeSearchMatch[][]> {
+    options?.signal?.throwIfAborted();
     if (!queries.length || queries.length > 3) throw new Error('Semantic query batch exceeds bound.');
     const query = queries[0];
     if (queries.some(q => identity(q) !== identity(query) || q.values.length !== query.dimensions || q.values.some(v => !Number.isFinite(v)))) {
@@ -41,7 +42,7 @@ export class CompatibleSemanticIndex {
       // Bound each API request independently of tenant corpus size.
       for (let offset = 0; offset < chunks.length; offset += 64) {
         const batch = chunks.slice(offset, offset + 64);
-        const embedded = await provider.embedDocuments(batch.map((chunk) => chunk.text));
+        const embedded = await provider.embedDocuments(batch.map((chunk) => chunk.text), options);
         if (embedded.length !== batch.length || embedded.some((vector) =>
           identity(vector) !== identity(query) || vector.values.length !== query.dimensions ||
           vector.values.some((value) => !Number.isFinite(value)))) {
@@ -49,6 +50,7 @@ export class CompatibleSemanticIndex {
         }
         vectors.push(...embedded);
       }
+      options?.signal?.throwIfAborted();
       // Bound retained vectors across tenants; large corpora still remain searchable.
       this.cache.delete(key);
       while ([...this.cache.values()].reduce((sum, entry) => sum + entry.vectors.length, 0) + vectors.length > 2048 && this.cache.size) {

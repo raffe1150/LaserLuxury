@@ -11,8 +11,8 @@ export class ConfiguredEmbeddingProvider implements EmbeddingProvider {
   get supportsLocalSemanticSearch(): boolean {
     return getConfiguredAiProvider() === "openai";
   }
-  embedDocuments(texts: string[]): Promise<EmbeddingVector[]> {
-    return embedWithConfiguredProvider(texts, this.gemini);
+  embedDocuments(texts: string[], options?: import("../embeddings").EmbeddingRequestOptions): Promise<EmbeddingVector[]> {
+    return embedWithConfiguredProvider(texts, this.gemini, options);
   }
   async embedQuery(text: string): Promise<EmbeddingVector> {
     // Preserve Gemini's original query request shape.

@@ -870,6 +870,7 @@ async function generateContentWithFallback(ai: GoogleGenAI | null, options: {
       attemptTimings.set(attempt, { queuedAt: Date.now() });
       return runWithAiQueue(async () => {
         if (informationBudget && !informationBudget.remaining()) throw new Error("information_deadline");
+        if (informationBudget && !informationBudget.generationRemaining()) throw new Error("information_publication_reserve");
         try {
           return await (provider === "gemini"
             ? process.env.NODE_ENV === "test" && priority1hTestDependencies?.geminiGenerate
@@ -1350,6 +1351,8 @@ type BusinessGroundingVerificationRequest = {
 };
 
 type Priority1hTestDependencies = {
+  knowledgeVoiceValidation?: () => Promise<void>;
+  messengerVoiceReply?: (text: string) => Promise<{filePath: string; url: string}>;
   evidenceFirstDiagnostic?: (event: Record<string, unknown>) => void;
   evidenceFirstDecisionDiagnostic?: (event: Record<string, unknown>) => void;
   evidenceFirstPublicationDiagnostic?: (event: Record<string, unknown>) => void;
@@ -5390,6 +5393,7 @@ async function generateSecureConversationContent(sessionId: string, options: any
         languageSafe: unit => !customerReplyLanguageIsIncompatible(unit.text, support.language),
         current: knowledgeOwnershipCurrent,
         revalidateEvidence: currentAnswerEvidence,
+        finalPublicationRevalidates: options.knowledgePublication === 'guarded_text',
         diagnostic:event=>emitKnowledgeDecision(event.stage==='freshness'&&event.reason==='SOURCE_INVALID'&&state.freshnessFailure
           ? {...event,reason:state.freshnessFailure}:event),
         generate: async (stage, instruction, data) => {
@@ -5456,6 +5460,7 @@ async function securePublicationReply(reply: string, language?: string): Promise
         reason:!publishable?state.freshnessFailure||'CONTEXT_INVALID' as const:state.manifest.naturalReason||state.manifest.fallbackReason}}:{}),
       route:!publishable||!state.manifest.units.length?'unavailable':state.manifest.outcomes.every(o=>o.status==='VERIFIED')?'verified_manifest':'partial_manifest'});
   }
+  if (process.env.NODE_ENV === 'test') await priority1hTestDependencies?.knowledgeVoiceValidation?.();
   return text;
 }
 
@@ -8547,11 +8552,29 @@ async function retrieveBusinessKnowledgeForQuestion(
             );
 
     const semanticSearchKnowledge = (id: number, planned: string[], limit: number) => {
-      if (process.env.NODE_ENV === 'test') {
-        if (priority1hTestDependencies?.semanticKnowledgeSearchQueries) return priority1hTestDependencies.semanticKnowledgeSearchQueries(id, planned, limit);
-        if (priority1hTestDependencies?.semanticKnowledgeSearch) return Promise.all(planned.map(query => priority1hTestDependencies!.semanticKnowledgeSearch!(id, query, limit))).then(sets => sets.flat());
+      // Bound optional semantic work so lexical evidence remains usable. The
+      // same signal covers query and cold-corpus embedding calls.
+      // Legacy retrieval retains its existing provider timeout and cache behavior.
+      if (!state?.budget) {
+        if (process.env.NODE_ENV === 'test') {
+          if (priority1hTestDependencies?.semanticKnowledgeSearchQueries) return priority1hTestDependencies.semanticKnowledgeSearchQueries(id, planned, limit);
+          if (priority1hTestDependencies?.semanticKnowledgeSearch) return Promise.all(planned.map(query => priority1hTestDependencies!.semanticKnowledgeSearch!(id, query, limit))).then(sets => sets.flat());
+        }
+        return knowledgeService.semanticSearchQueries(id, planned, limit);
       }
-      return knowledgeService.semanticSearchQueries(id, planned, limit);
+      const remaining=state.budget.generationRemaining();
+      if(remaining<=0)return Promise.resolve([]);
+      const timeoutMs=Math.min(2_500,remaining);
+      const controller=new AbortController();let timer:ReturnType<typeof setTimeout>;
+      const work=()=>{
+        if (process.env.NODE_ENV === 'test') {
+          if (priority1hTestDependencies?.semanticKnowledgeSearchQueries) return priority1hTestDependencies.semanticKnowledgeSearchQueries(id, planned, limit);
+          if (priority1hTestDependencies?.semanticKnowledgeSearch) return Promise.all(planned.map(query => priority1hTestDependencies!.semanticKnowledgeSearch!(id, query, limit))).then(sets => sets.flat());
+        }
+        return knowledgeService.semanticSearchQueries(id, planned, limit,{signal:controller.signal,timeoutMs});
+      };
+      const deadline=new Promise<KnowledgeSearchMatch[]>(resolve=>{timer=setTimeout(()=>{controller.abort();resolve([]);},timeoutMs);});
+      return Promise.race([Promise.resolve().then(work),deadline]).finally(()=>clearTimeout(timer));
     };
 
     const search = () => Promise.all([
@@ -29210,6 +29233,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       language: getConversationLanguage(chatId, textMessage, businessConfig),
     };
     let chatResponse = await generateSecureConversationContent(chatId, {
+      knowledgePublication: 'guarded_text',
       messages: minimizeBusinessSupportMessages(chatId, messages),
       systemInstruction: finalSystemInstruction,
       tools: getGeminiSupportTools(chatId),
@@ -29348,6 +29372,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       messages.push(...functionResponsesParts);
 
       chatResponse = await generateSecureConversationContent(chatId, {
+        knowledgePublication: 'guarded_text',
         messages: minimizeBusinessSupportMessages(chatId, messages),
         systemInstruction: finalSystemInstruction,
         tools: getGeminiSupportTools(chatId),
@@ -29358,6 +29383,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
 
     if (chatResponse.functionCalls && chatResponse.functionCalls.length > 0) {
       chatResponse = await generateSecureConversationContent(chatId, {
+        knowledgePublication: 'guarded_text',
         messages: minimizeBusinessSupportMessages(chatId, messages),
         systemInstruction: finalSystemInstruction + "\nCRITICAL: Maximum tool calls reached. You MUST reply in natural language only. Summarize what you know. DO NOT USE TOOLS.",
         model: "gemini-2.5-flash",
@@ -29648,6 +29674,7 @@ async function debugPublicAudioUrl(audioUrl: string) {
 }
 
 async function createMessengerVoiceReplyFile(text: string) {
+  if (process.env.NODE_ENV === 'test' && priority1hTestDependencies?.messengerVoiceReply) return priority1hTestDependencies.messengerVoiceReply(text);
   const EdgeTTS = (await import("node-edge-tts")).EdgeTTS;
   const voiceCode = detectTtsVoiceCode(text);
   const audioDir = "/tmp/clinicpilot_messenger_audio";
@@ -29679,8 +29706,34 @@ async function createMessengerVoiceReplyFile(text: string) {
   };
 }
 
-async function sendMessengerAudioMessage(recipientId: string, audioUrl: string, businessConfig: any) {
-  if (requestSecurity.evidence && (!requestSecurity.current() || !await requestEvidenceCurrent() || !requestSecurity.current())) return false;
+async function deliverMessengerKnowledgeVoice(recipientId: string, text: string, businessConfig: any) {
+  let attempted = false;
+  if (!knowledgeTurnScope.getStore()?.budget) {
+    const voice = await createMessengerVoiceReplyFile(text);
+    return {sent: await sendMessengerAudioMessage(recipientId, voice.url, businessConfig), attempted};
+  }
+  const authorized = await securePublicationReply(text);
+  const state = knowledgeTurnScope.getStore()!;
+  if (authorized === null || !requestSecurity.current() || !state.budget?.remaining() || state.freshnessFailure || !state.manifest?.units.length) return {sent: false, attempted};
+  const voice = await createMessengerVoiceReplyFile(authorized);
+  const sent = await sendMessengerAudioMessage(recipientId, voice.url, businessConfig,
+    {text: authorized, onAttempt: () => { attempted = true; }});
+  return {sent, attempted};
+}
+
+async function messengerAudioTextCurrent(text: string): Promise<boolean> {
+  const state = knowledgeTurnScope.getStore();
+  const authorized = await securePublicationReply(text);
+  return authorized !== null && authorized === text && requestSecurity.current() &&
+    (!state?.budget || (state.budget.remaining() > 0 && !state.freshnessFailure && Boolean(state.manifest?.units.length)));
+}
+
+async function sendMessengerAudioMessage(recipientId: string, audioUrl: string, businessConfig: any,
+  authorization?: { text: string; onAttempt: () => void }) {
+  // Knowledge audio must carry the exact text used for TTS, never legacy document-only authority.
+  if (knowledgeTurnScope.getStore()?.budget && !authorization) return false;
+  if (authorization && !await messengerAudioTextCurrent(authorization.text)) return false;
+  if (!authorization && requestSecurity.evidence && (!requestSecurity.current() || !await requestEvidenceCurrent() || !requestSecurity.current())) return false;
   const token = getBusinessMessengerToken(businessConfig);
 
   if (!token) {
@@ -29705,6 +29758,8 @@ async function sendMessengerAudioMessage(recipientId: string, audioUrl: string, 
   });
 
   async function sendAttachmentPayload(attachmentType: "audio" | "file") {
+    if (authorization && !await messengerAudioTextCurrent(authorization.text)) return false;
+    authorization?.onAttempt();
     const response = await fetch(`https://graph.facebook.com/v25.0/me/messages?access_token=${encodeURIComponent(token)}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -29730,6 +29785,8 @@ async function sendMessengerAudioMessage(recipientId: string, audioUrl: string, 
     // Some Messenger accounts reject audio upload from generated URLs.
     // Try file attachment as a fallback; Messenger can still deliver/play it in many clients.
     console.log("Messenger audio failed, trying file attachment fallback...");
+    // An attempted Knowledge send has an uncertain delivery outcome; never duplicate it.
+    if (authorization) return false;
     const fileSent = await sendAttachmentPayload("file");
     if (fileSent) return true;
 
@@ -30534,6 +30591,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       language: getConversationLanguage(chatId, userMessageForLog, businessConfig),
     };
     let chatResponse = await generateSecureConversationContent(chatId, {
+      knowledgePublication: isVoiceMessage ? undefined : 'guarded_text',
       messages: minimizeBusinessSupportMessages(chatId, messages),
       systemInstruction: finalSystemInstruction,
       tools: getGeminiSupportTools(chatId),
@@ -30697,6 +30755,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       messages.push(...functionResponsesParts);
 
       chatResponse = await generateSecureConversationContent(chatId, {
+        knowledgePublication: isVoiceMessage ? undefined : 'guarded_text',
         messages: minimizeBusinessSupportMessages(chatId, messages),
         systemInstruction: finalSystemInstruction,
         tools: getGeminiSupportTools(chatId),
@@ -30707,6 +30766,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
 
     if (chatResponse.functionCalls && chatResponse.functionCalls.length > 0) {
       chatResponse = await generateSecureConversationContent(chatId, {
+        knowledgePublication: isVoiceMessage ? undefined : 'guarded_text',
         messages: minimizeBusinessSupportMessages(chatId, messages),
         systemInstruction: finalSystemInstruction + "\nCRITICAL: Maximum tool calls reached. You MUST reply in natural language only. Summarize what you know. DO NOT USE TOOLS.",
         model: "gemini-2.5-flash",
@@ -30774,10 +30834,12 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
 
     if (isVoiceMessage) {
       let sentVoiceReply = false;
+      let attemptedVoiceReply = false;
 
       try {
-        const voiceReply = await createMessengerVoiceReplyFile(textResponse);
-        sentVoiceReply = await sendMessengerAudioMessage(senderId, voiceReply.url, businessConfig);
+        const delivery = await deliverMessengerKnowledgeVoice(senderId, textResponse, businessConfig);
+        sentVoiceReply = delivery.sent;
+        attemptedVoiceReply = delivery.attempted;
         if (sentVoiceReply) {
           recordDeliveredAssistantResponse({
             businessId: getBusinessIdFromConfig(businessConfig),
@@ -30798,7 +30860,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
         });
       }
 
-      if (!sentVoiceReply) {
+      if (!sentVoiceReply && !attemptedVoiceReply) {
         await sendMessengerConversationReply(textResponse, "voice_text_fallback");
       }
     } else {
@@ -31222,6 +31284,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       language: getConversationLanguage(chatId, userMessageForLog, businessConfig),
     };
     let chatResponse = await generateSecureConversationContent(chatId, {
+      knowledgePublication: 'guarded_text',
       messages: minimizeBusinessSupportMessages(chatId, messages),
       systemInstruction: finalSystemInstruction,
       tools: getGeminiSupportTools(chatId),
@@ -31438,6 +31501,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
       messages.push(...functionResponsesParts);
 
       chatResponse = await generateSecureConversationContent(chatId, {
+        knowledgePublication: 'guarded_text',
         messages: minimizeBusinessSupportMessages(chatId, messages),
         systemInstruction: finalSystemInstruction,
         tools: getGeminiSupportTools(chatId),
@@ -31448,6 +31512,7 @@ LANGUAGE RULE: Reply only in the active conversation language injected by the se
 
     if (chatResponse.functionCalls && chatResponse.functionCalls.length > 0) {
       chatResponse = await generateSecureConversationContent(chatId, {
+        knowledgePublication: 'guarded_text',
         messages: minimizeBusinessSupportMessages(chatId, messages),
         systemInstruction: finalSystemInstruction + '\nCRITICAL: Maximum tool calls reached. You MUST reply in natural language only. Summarize what you know. DO NOT USE TOOLS.',
         model: 'gemini-2.5-flash',
@@ -35176,6 +35241,10 @@ export const priority1hUnifiedEngineTestBoundary = {
   secureGenerate(sessionId: string, options: any) {
     if (process.env.NODE_ENV !== 'test') throw new Error('Test-only');
     return generateSecureConversationContent(sessionId, options);
+  },
+  messengerVoice(recipientId: string, text: string, config: any) {
+    if (process.env.NODE_ENV !== 'test') throw new Error('Test-only');
+    return deliverMessengerKnowledgeVoice(recipientId, text, config);
   },
   securePublication(reply: string) {
     if (process.env.NODE_ENV !== 'test') throw new Error('Test-only');

@@ -91,7 +91,7 @@ export interface AiProviderAdapter {
   name: AiProviderName;
   capabilities: AiProviderCapabilities;
 
-  embed?: (texts: string[]) => Promise<EmbeddingVector[]>;
+  embed?: (texts: string[], options?: import("../embeddings").EmbeddingRequestOptions) => Promise<EmbeddingVector[]>;
 
   generate?: (
     request: UnifiedAiGenerationRequest,

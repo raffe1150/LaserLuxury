@@ -724,7 +724,7 @@ export class KnowledgeService {
   /** OpenAI: one query batch, one corpus pass, original threshold and authority.
    * Other providers retain their existing single-query behavior/request shape.
    */
-  async semanticSearchQueries(businessId: number, queries: string[], limit = 5): Promise<KnowledgeSearchMatch[]> {
+  async semanticSearchQueries(businessId: number, queries: string[], limit = 5, options?: import("./src/ai/embeddings").EmbeddingRequestOptions): Promise<KnowledgeSearchMatch[]> {
     await this.ensureInitialized();
     const seen = new Set<string>();
     const bounded = queries.slice(0, MAX_SEMANTIC_QUERIES).map(q => String(q).trim()).filter(q => {
@@ -735,12 +735,12 @@ export class KnowledgeService {
     if (!Number.isSafeInteger(businessId) || businessId <= 0 || !bounded.length || bounded[0].length > 4000 || bounded.slice(1).some(q => q.length > 120) || !this.embeddingProvider) return [];
     if (!this.embeddingProvider.supportsLocalSemanticSearch) return this.semanticSearch(businessId, bounded[0], limit);
     try {
-      const embeddings = await this.embeddingProvider.embedDocuments(bounded);
+      const embeddings = await this.embeddingProvider.embedDocuments(bounded, options);
       if (embeddings.length !== bounded.length || embeddings.some(e => e.provider !== 'openai')) return [];
       const corpus = await this.semanticCorpus(businessId);
       const chunks = corpus.filter(chunk => !explicitlyWrongWorkflow(chunk.text, bounded[0]));
       const safeLimit = Math.max(1, Math.min(Number(limit) || 5, 10));
-      const sets = await this.compatibleSemanticIndex.searchQueries(businessId, chunks, embeddings, this.embeddingProvider, safeLimit, 0.55);
+      const sets = await this.compatibleSemanticIndex.searchQueries(businessId, chunks, embeddings, this.embeddingProvider, safeLimit, 0.55, options);
       if (semanticCorpusFingerprint(corpus) !== semanticCorpusFingerprint(await this.semanticCorpus(businessId))) return [];
       const ranked = new Map<string, { match: KnowledgeSearchMatch; rank: number }>();
       for (const set of sets) for (const [position, match] of set.entries()) {

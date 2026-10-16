@@ -27,9 +27,11 @@ export interface EmbeddingVector {
   version: number;
 }
 
+export type EmbeddingRequestOptions = { signal?: AbortSignal; timeoutMs?: number };
+
 export interface EmbeddingProvider {
   readonly supportsLocalSemanticSearch?: boolean;
-  embedDocuments(texts: string[]): Promise<EmbeddingVector[]>;
+  embedDocuments(texts: string[], options?: EmbeddingRequestOptions): Promise<EmbeddingVector[]>;
   embedQuery(text: string): Promise<EmbeddingVector>;
 }
 

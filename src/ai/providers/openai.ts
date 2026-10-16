@@ -236,7 +236,7 @@ export async function transcribeWithOpenAi(
 }
 
 // Separate from the conversation model: the database's existing vector width is 768.
-export async function embedWithOpenAi(texts: string[]): Promise<EmbeddingVector[]> {
+export async function embedWithOpenAi(texts: string[], options?: import("../embeddings").EmbeddingRequestOptions): Promise<EmbeddingVector[]> {
   if (!texts.length || texts.some((text) => !text.trim())) {
     throw new Error("Embedding input must contain non-empty text.");
   }
@@ -245,9 +245,10 @@ export async function embedWithOpenAi(texts: string[]): Promise<EmbeddingVector[
   const client = new OpenAI({ apiKey, maxRetries: 0, timeout: 20_000 });
   const model = "text-embedding-3-small";
   const dimensions = 768;
+  options?.signal?.throwIfAborted();
   const response = await client.embeddings.create({
     model, input: texts, dimensions, encoding_format: "float",
-  });
+  }, { signal: options?.signal, timeout: Math.min(20_000, options?.timeoutMs ?? 20_000) });
   if (!Array.isArray(response.data) || response.data.length !== texts.length) {
     throw new Error("Embedding provider returned an unexpected result count.");
   }

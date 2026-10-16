@@ -303,7 +303,7 @@ for(const ch of channels) for(const [language,question,text] of translations) fo
   }});
   await inbound(ch,question,id);const answer=published();assert.ok(answer.includes(text),answer);assert.equal(metrics.at(-1).units,1);
   assert.equal(metrics.at(-1).facets[0].status,'PARTIAL');assert.deepEqual(metrics.at(-1).completeness[0].obligations,['UNRESOLVED','COVERED']);
-  assert.ok(answer.includes(normalizeConversationText(question)),'references preserve the actual question after the existing shared input normalization');
+  assert.equal(answer.includes(normalizeConversationText(question)),false,'partial answers must not echo the whole normalized question');
   assert.doesNotMatch(answer,/Den delen|that part|diesen Teil|esa parte|آن بخش|هذا الجزء/iu);
   assert.equal(metrics.at(-1).presentationPath,'direct_single_unit');assert.equal(requests.length,3);assert.equal(reads,0);
   assert.ok(decisionEvents.some(e=>e.reason==='OBLIGATION_UNRESOLVED'));assert.ok(decisionEvents.some(e=>e.eventType==='unit_verdict'&&e.reason==='ACCEPTED'&&e.flags.modalityPreserved));
@@ -327,7 +327,7 @@ for(const ch of channels) for(const [i,[language,question,text]] of translations
    if(instruction.includes('BATCH ENTAILMENT')){const data=JSON.parse(p.contents[0].parts[0].text),v=JSON.parse(result.text);v.coverage=[{facetId:'f1',requestAligned:true,materialFactsComplete:true,materialUnitIds:['u1','u2'],obligations:[{obligationId:data.facets[0].obligations[0].id,status:'UNRESOLVED',unitIds:[]},{obligationId:data.facets[0].obligations[1].id,status:'COVERED',unitIds:['u1']}]}];return{text:JSON.stringify(v)};}
    return result;
   }});
-  await inbound(ch,question);const answer=published();assert.ok(answer.includes(text),'recommendation preserved');assert.ok(answer.includes(arrangements[i]),'independent arrangement preserved');assert.ok(answer.includes(normalizeConversationText(question)),'specific normalized question reference');
+  await inbound(ch,question);const answer=published();assert.ok(answer.includes(text),'recommendation preserved');assert.ok(answer.includes(arrangements[i]),'independent arrangement preserved');assert.equal(answer.includes(normalizeConversationText(question)),false,'partial uncertainty must not repeat the whole question');
   assert.doesNotMatch(answer,/Den delen|that part|diesen Teil|esa parte|آن بخش|هذا الجزء/iu);
   assert.equal(metrics.at(-1).units,2);assert.equal(metrics.at(-1).facets[0].status,'PARTIAL');assert.equal(metrics.at(-1).presentationFallback,failComposer);
   assert.equal(requests.length,4);assert.equal(reads,0);assert.ok(decisionEvents.some(e=>e.stage==='publication'&&e.route==='partial_manifest'&&e.nativeChannel===ch));
@@ -545,7 +545,7 @@ for(const ch of channels)for(const natural of [false,true])for(const [i,[languag
   }});
   await inbound(ch,question,id);
   assert.ok(published().includes(text));assert.ok(published().includes(arrangements[i]));
-  assert.ok(verified);assert.equal(sourceReadsAfterVerification,ch==='telegram'?3:2,'one builder check plus every actual native publication check');
+  assert.ok(verified);assert.equal(sourceReadsAfterVerification,ch==='telegram'?3:1+(natural?1:0),'canonical no-provider path defers builder read; every actual native publication still checks');
   const final=decisionEvents.filter(e=>e.stage==='publication').at(-1);
   assert.equal(final.semanticVerifiedUnits,2);assert.equal(final.publishableUnits,2);assert.ok(final.remainingMs>0);
   assert.equal(final.facets[0].status,'PARTIAL','a recommendation does not establish walk-in permission');
@@ -584,7 +584,8 @@ for(const ch of channels)for(const fault of ['provider-deadline','builder-deadli
   assert.doesNotMatch(published(),/hittar ingen specifik/iu,'unavailability is not asserted evidence absence');
   const final=decisionEvents.filter(e=>e.stage==='publication').at(-1);
   assert.equal(final.publishableUnits,0);assert.equal(final.semanticVerifiedUnits,fault==='provider-deadline'?0:2);
-  assert.equal(final.reason,fault==='revoked'?'SOURCE_INVALID':'DEADLINE');
+  assert.equal(final.reason,fault==='provider-deadline'?'PUBLICATION_RESERVE':fault==='revoked'?'SOURCE_INVALID':'DEADLINE');
+  if(fault==='provider-deadline')assert.equal(requests.length,2,'verification must not begin inside the measured publication reserve');
   if(fault==='publication-deadline'||fault==='builder-deadline')assert.equal(decisionEvents.some(e=>e.reason==='SOURCE_INVALID'),false,'a timed-out source read is not revocation');
   assert.equal(reads,0);assert.ok(requests.length<=4);assert.ok(sourceCalls>0);
  });
@@ -617,7 +618,8 @@ test('deadline-repair/four-native/real-wall-clock: slow authoritative providers 
  // accelerated Date clock: late results finish after the actual 20-second cap.
  await Promise.all(channels.map(ch=>inbound(ch,q.compound)));
  const publicationElapsed=performance.now()-started;
- await wait(1300);
+ // Wait past the actual provider completion, independent of the earlier reserve.
+ await wait(Math.max(0,20_500-publicationElapsed));
  assert.ok(publicationElapsed>=18_000&&publicationElapsed<21_000);
  assert.ok(performance.now()-started>=20_000);
  assert.equal(sent.length,4);assert.equal(reads,0);assert.equal(metrics.length,4);

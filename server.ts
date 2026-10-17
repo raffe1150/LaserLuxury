@@ -1,3 +1,4 @@
+import { deterministicLocationPlan, KNOWLEDGE_PLANNING_LIMIT_MS, KNOWLEDGE_VERIFICATION_MIN_MS } from './src/ai/knowledge-planning';
 import { hasBookingInterruption, isBookingResumeRequest, withoutNegatedBookingClauses, bookingPauseReply } from './src/ai/booking-interruption';
 import { numericalConstraintSafe, NUMERICAL_DIRECTION_GUIDANCE } from './src/ai/numerical-constraints';
 import { readCancellationPolicy, hasCancellationSettings, cancellationPolicyFingerprint, cancellationGroundingConfig,
@@ -482,6 +483,13 @@ async function resolveSemanticKnowledgeQueries(
   const informationBudget = knowledgeTurnScope.getStore()?.budget;
   const customerQuestion = String(question || "").trim();
   if (!customerQuestion) return null;
+  // Reuse the established read-only business intent signal only for a single,
+  // self-contained locative request. Cross-language embeddings still use the
+  // original question, and coverage must be independently established.
+  if (informationBudget) {
+    const deterministic=deterministicLocationPlan(customerQuestion,isBusinessInformationQuestion(customerQuestion));
+    if(deterministic)return deterministic;
+  }
 
   try {
     const response = await generateContentWithFallback(null, {
@@ -830,7 +838,9 @@ async function generateContentWithFallback(ai: GoogleGenAI | null, options: {
   }
   if (informationBudget && !informationBudget.remaining()) throw new Error("information_deadline");
   if(informationBudget && !informationBudget.generationRemaining()) throw new Error('information_publication_reserve');
-  const informationStageLimit = ['knowledge_units_composition','knowledge_units_presentation_verification'].includes(options.context?.stage || '') && informationBudget
+  if(informationBudget && options.context?.stage==='knowledge_units_verification' && informationBudget.generationRemaining()<KNOWLEDGE_VERIFICATION_MIN_MS) throw new Error('information_verification_admission');
+  const informationStageLimit = options.context?.stage==='semantic_knowledge_query_resolution' && informationBudget
+    ? Math.min(KNOWLEDGE_PLANNING_LIMIT_MS,providerTimeoutMs) : ['knowledge_units_composition','knowledge_units_presentation_verification'].includes(options.context?.stage || '') && informationBudget
     ? Math.max(1, Math.min(2_000, informationBudget.generationRemaining())) : providerTimeoutMs;
   const timeoutMs = informationBudget ? Math.min(providerTimeoutMs, informationStageLimit, informationBudget.generationRemaining()) : options.context?.stage === "business_information_completeness_repair"
     ? Math.min(5_000, providerTimeoutMs) : providerTimeoutMs;
@@ -871,6 +881,7 @@ async function generateContentWithFallback(ai: GoogleGenAI | null, options: {
       return runWithAiQueue(async () => {
         if (informationBudget && !informationBudget.remaining()) throw new Error("information_deadline");
         if (informationBudget && !informationBudget.generationRemaining()) throw new Error("information_publication_reserve");
+        if(informationBudget && options.context?.stage==='knowledge_units_verification' && informationBudget.generationRemaining()<KNOWLEDGE_VERIFICATION_MIN_MS) throw new Error('information_verification_admission');
         try {
           return await (provider === "gemini"
             ? process.env.NODE_ENV === "test" && priority1hTestDependencies?.geminiGenerate

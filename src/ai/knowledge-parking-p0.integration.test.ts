@@ -199,7 +199,7 @@ for(const ch of channels)for(const fault of ['complete','whitespace','bad-id','a
  const text=published();assert.equal(text.includes('Studio Street 99'),false);assert.equal(text.includes(question),false);assert.equal(text.includes('contact'),false);
  const final=decisionEvents.filter(e=>e.stage==='publication').at(-1);assert.ok(final);assert.equal(final.naturalEnabled,false);
  results.push({channel:ch,fault,output:text,elapsedControlledMs:f.elapsed(),validationReads:f.validation(),publication:final,contextChars:requests.filter(p=>!/retrieval query planner/u.test(p.config.systemInstruction)).map(p=>({stage:p.config.systemInstruction.includes('EXTRACTION')?'extraction':p.config.systemInstruction.includes('ENTAILMENT')?'verification':'presentation',chars:p.contents[0].parts[0].text.length}))});
- if(['complete','whitespace','timing'].includes(fault)&&!(fault==='timing'&&ch==='telegram')){
+ if(['complete','whitespace','timing'].includes(fault)){
   for(const fact of parkingFacts)assert.ok(text.includes(fact),text);
   assert.equal(final.publishableUnits,3);assert.equal(final.facets[0].status,'VERIFIED');
  }else if(fault==='negation'){
@@ -234,7 +234,7 @@ for(const ch of channels)test(`P0 parking/${ch}/OpenAI SDK protocol: explicit mo
   return{output_text:r.text,status:'completed',output:[],usage:{input_tokens:10,output_tokens:10}} as any;
  });
  await inbound(ch,question);assert.equal(sent.length,1);for(const fact of parkingFacts)assert.ok(published().includes(fact));
- assert.equal(published().includes(question),false);assert.equal(calls,4);assert.equal(reads,0);
+ assert.equal(published().includes(question),false);assert.equal(calls,3);assert.equal(reads,0);
  const final=decisionEvents.filter(e=>e.stage==='publication').at(-1);assert.equal(final.provider,'openai');assert.equal(final.publishableUnits,3);assert.equal(final.naturalEnabled,false);
 });
 
@@ -326,4 +326,144 @@ for(const revoked of [false,true])test(`Native Messenger voice inbound / verific
  const original=globalThis.fetch;globalThis.fetch=async(input,options)=>String(input).includes('synthetic.invalid/inbound')?new Response('mocked audio',{headers:{'content-type':'audio/ogg'}}):original(input,options);
  await b.messengerInbound({sender:{id:'synthetic-customer'},recipient:{id:'ms-synthetic'},timestamp:Date.now(),message:{mid:String(++sequence),attachments:[{type:'audio',payload:{url:'https://synthetic.invalid/inbound'}}]}},config);
  assert.equal(transcription,1);assert.equal(sent.length,1);assert.equal(published().includes('Nordpark'),!revoked);assert.equal(reads,0);
+});
+
+// Production observations: timeout durations are censored, NOT completed model latencies.
+// The completion probe uses Telegram's observed 6963ms verifier on every profile;
+// it is an explicitly counterfactual provider fixture, never a historical Meta response.
+const incidentProfiles={
+ telegram:{units:3,planning:2463,search:847,first:125,extraction:7270,overhead:184,next:147,verification:6963,bookkeeping:8,final:340},
+ instagram:{units:4,planning:3244,search:1024,first:319,extraction:7591,overhead:118,next:343,verification:5860,bookkeeping:2,final:192},
+ whatsapp:{units:3,planning:8810,search:893,first:348,extraction:8024,overhead:190,next:134,verification:102,bookkeeping:1,final:316},
+ messenger:{units:2,planning:4284,search:1561,first:132,extraction:6342,overhead:322,next:146,verification:5714,bookkeeping:1,final:135},
+};
+for(const profile of channels)for(const channel of channels)for(const completion of [false,true])test(`production-replay/${profile}/${channel}/${completion?'completion-probe':'observed-censored'}`,async t=>{
+ await install(t,'complete',channel);const original={...deps};const p=incidentProfiles[profile];
+ const epoch=Date.now();let elapsed=0,validations=0,publishing=false,searched=false,publicationReads=0;const checkpoints:any[]=[];
+ t.mock.method(Date,'now',()=>epoch+elapsed);
+ const timeout=()=>{const e:any=new Error('Explicit simulated provider timeout');e.category='TIMEOUT';throw e;};
+ const work=(ms:number)=>{const allowance=Math.max(0,20000-elapsed-1500);if(ms>allowance){elapsed+=allowance+2;timeout();}elapsed+=ms;};
+ configure({knowledgeSearch:async(...args)=>{if(!searched){elapsed+=p.search;searched=true;}return original.knowledgeSearch!(...args);},
+ validateKnowledgeMatches:async(...args)=>{validations++;elapsed+=publishing?(++publicationReads===1?p.final:109):validations===1?p.first:validations===2?p.next:333;return original.validateKnowledgeMatches!(...args);},
+ evidenceFirstPublicationDiagnostic:e=>{if(e.phase==='publication_start'){publishing=true;if(channel==='telegram'&&publicationReads===0)elapsed+=5;}if(e.phase==='publication_result'&&channel==='telegram'&&publicationReads===2)elapsed+=1;},
+ evidenceFirstDecisionDiagnostic:e=>{
+  original.evidenceFirstDecisionDiagnostic!(e);
+  if(e.stage==='composition'&&profile==='telegram'&&process.env.KNOWLEDGE_REPLAY_BASELINE==='true')elapsed+=4;
+  if(e.stage==='extraction'&&e.counts){checkpoints.push({stage:'parsed',remainingMs:e.remainingMs});if(process.env.KNOWLEDGE_REPLAY_BASELINE==='true')assert.equal(e.remainingMs,{telegram:9111,instagram:7704,whatsapp:1735,messenger:7359}[profile]);}
+ },
+ geminiGenerate:async params=>{
+  const instruction=params.config.systemInstruction;
+  try {
+  if(instruction.includes('retrieval query planner'))work(p.planning);
+  if(instruction.includes('UNIT EXTRACTION')){work(p.extraction);elapsed+=p.overhead;}
+  if(instruction.includes('BATCH ENTAILMENT')){
+   work(completion?6963:p.verification);elapsed+=p.bookkeeping;
+   if(!completion&&profile!=='telegram'){elapsed=18502;timeout();}
+  }
+  if(instruction.includes('VERIFIED-UNIT PRESENTATION'))work(2000);
+  const result=await original.geminiGenerate!(params);
+  if(instruction.includes('UNIT EXTRACTION')&&p.units!==3){
+   const data=JSON.parse(result.text),[garage,free,reserved]=data.units;
+   data.units=p.units===2?[garage,{...free,text:parkingFacts[1]+' '+parkingFacts[2],value:parkingFacts[1]+' '+parkingFacts[2]}]:
+    [{...garage,text:'You can park at Nordpark, with the garage entrance at Stjärngatan 14.',value:'Nordpark entrance Stjärngatan 14'},
+     {...garage,text:'The garage is approximately a five-minute walk from the studio.',value:'approximately a five-minute walk'},free,reserved];
+   return{text:JSON.stringify(data)};
+  }
+  if(instruction.includes('BATCH ENTAILMENT')&&p.units!==3){
+   const data=JSON.parse(result.text),ids=JSON.parse(params.contents[0].parts[0].text).units.map((u:any)=>u.id);
+   data.coverage=[{facetId:'f1',requestAligned:true,materialFactsComplete:true,materialUnitIds:ids,obligations:[{obligationId:'f1.o1',status:'COVERED',unitIds:ids}]}];return{text:JSON.stringify(data)};
+  }
+  return result;
+  } finally {if(!requests.includes(params))requests.push(params);}
+ }});
+ b.promptAuditHistory(session(channel,channel==='whatsapp'?'46700000001':'synthetic-customer'),[]);
+ await inbound(channel,question);assert.equal(sent.length,1);assert.equal(reads,0);
+ const baseline=process.env.KNOWLEDGE_REPLAY_BASELINE==='true';
+ if(baseline)assert.equal(checkpoints.find(c=>c.stage==='parsed')?.remainingMs,{telegram:9111,instagram:7704,whatsapp:1735,messenger:7359}[profile]);
+ const complete=profile==='telegram'||completion&&!baseline;
+ const output=published();assert.equal(output.includes('Nordpark'),complete,JSON.stringify({profile,channel,completion,elapsed,output}));
+ if(complete)for(const fact of ['Nordpark','Stjärngatan 14','five-minute walk','Parking is not free.','Parking spaces cannot be reserved.'])assert.ok(output.includes(fact));
+ assert.equal(output.includes(question),false);
+ const publication=decisionEvents.filter(e=>e.stage==='publication').at(-1);assert.equal(publication.publishableUnits,complete?p.units:0);
+ results.push({profile,channel,completion,label:completion?'Counterfactual 6963ms completion fixture':'Observed timeout is censored; no recovered Meta answer',inventoryUnits:p.units,elapsedControlledMs:elapsed,checkpoints,output,publication,
+  requests:requests.map(r=>({stage:r.config.systemInstruction.includes('retrieval query planner')?'planning':r.config.systemInstruction.includes('UNIT EXTRACTION')?'extraction':r.config.systemInstruction.includes('BATCH ENTAILMENT')?'verification':'ordering',chars:r.contents?.[0]?.parts?.[0]?.text?.length||0,instructionChars:r.config.systemInstruction.length}))});
+});
+
+for(const channel of channels)for(const variant of ['two-complete','two-partial','three-complete','four-complete'])test(`latency-inventory/${channel}/${variant}: complete facts or explicit partial coverage`,async t=>{
+ await install(t,'complete',channel);const original=deps.geminiGenerate!;let proposedUnits:any[]=[];
+ configure({geminiGenerate:async p=>{
+  assert.equal(p.config.systemInstruction.includes('retrieval query planner'),false,'Recognized self-contained question must not pay for planning');
+  const result=await original(p);
+  if(p.config.systemInstruction.includes('UNIT EXTRACTION')){
+   const data=JSON.parse(result.text);const [garage,free,reserved]=data.units;
+   proposedUnits=variant==='two-complete'?[garage,{...free,text:parkingFacts[1]+' '+parkingFacts[2],value:parkingFacts[1]+' '+parkingFacts[2]}]:variant==='two-partial'?[garage,free]:variant==='four-complete'?
+    [{...garage,text:'You can park at Nordpark, with the garage entrance at Stjärngatan 14.',value:'Nordpark entrance Stjärngatan 14'},
+     {...garage,text:'The garage is approximately a five-minute walk from the studio.',value:'approximately a five-minute walk'},free,reserved]:data.units;
+   return{text:JSON.stringify({...data,units:proposedUnits})};
+  }
+  if(p.config.systemInstruction.includes('BATCH ENTAILMENT')){
+   const data=JSON.parse(result.text),ids=JSON.parse(p.contents[0].parts[0].text).units.map((u:any)=>u.id),complete=variant!=='two-partial';
+   data.coverage=[{facetId:'f1',requestAligned:true,materialFactsComplete:complete,materialUnitIds:ids,obligations:[{obligationId:'f1.o1',status:complete?'COVERED':'UNRESOLVED',unitIds:complete?ids:[]}]}];return{text:JSON.stringify(data)};
+  }
+  return result;
+ }});
+ await inbound(channel,question);assert.equal(sent.length,1);assert.equal(reads,0);
+ const output=published(),publication=decisionEvents.filter(e=>e.stage==='publication').at(-1);
+ for(const fact of ['Nordpark','Stjärngatan 14','five-minute walk','Parking is not free.'])assert.ok(output.includes(fact),output);
+ assert.equal(publication.facets[0].status,variant==='two-partial'?'PARTIAL':'VERIFIED');
+ assert.equal(output.includes('Parking spaces cannot be reserved.'),variant!=='two-partial');assert.equal(output.includes(question),false);
+});
+
+for(const channel of channels)test(`latency-admission/${channel}: no new verifier below measured six-second window`,async t=>{
+ await install(t);const original=deps.geminiGenerate!;const epoch=Date.now();let elapsed=0;t.mock.method(Date,'now',()=>epoch+elapsed);
+ configure({geminiGenerate:async p=>{assert.equal(p.config.systemInstruction.includes('BATCH ENTAILMENT'),false);const result=await original(p);if(p.config.systemInstruction.includes('UNIT EXTRACTION'))elapsed=14001;return result;}});
+ await inbound(channel,question);assert.equal(sent.length,1);assert.equal(published().includes('Nordpark'),false);assert.ok(decisionEvents.some(e=>e.reason==='STAGE_ADMISSION'));assert.equal(reads,0);
+});
+
+for(const slow of [false,true])test(`latency-ambiguous-planning/${slow?'slow':'normal'}: bounded model planning retains fail-closed contract`,async t=>{
+ await install(t);const original=deps.geminiGenerate!;let plannerCompleted=false;
+ configure({geminiGenerate:async p=>{if(p.config.systemInstruction.includes('retrieval query planner')){if(slow)await new Promise(r=>setTimeout(r,2800));plannerCompleted=true;}return original(p);}});
+ const start=performance.now();await inbound('whatsapp','Could you tell me about parking arrangements at AdMotion Studio?');
+ assert.equal(sent.length,1);assert.equal(published().includes('Nordpark'),!slow);
+ if(slow){assert.equal(plannerCompleted,false);assert.ok(performance.now()-start>=2400&&performance.now()-start<4000);await new Promise(r=>setTimeout(r,400));assert.equal(plannerCompleted,true);assert.equal(sent.length,1,'Late planning cannot publish another answer');}
+});
+
+const locationLanguages=[
+ ['sv','Var finns kundparkering vid AdMotion Studio?',['Du kan parkera i Nordpark med infart på Stjärngatan 14, ungefär fem minuters promenad från studion.','Parkeringen är inte gratis.','Parkeringsplatser kan inte reserveras.']],
+ ['en',question,parkingFacts],
+ ['de','Wo ist der Kundenparkplatz bei AdMotion Studio?',['Sie können im Nordpark parken. Die Einfahrt liegt an der Stjärngatan 14, etwa fünf Gehminuten vom Studio entfernt.','Das Parken ist nicht kostenlos.','Parkplätze können nicht reserviert werden.']],
+ ['es','Dónde está el aparcamiento para clientes de AdMotion Studio?',['Puede aparcar en Nordpark. La entrada está en Stjärngatan 14, a unos cinco minutos a pie del estudio.','El aparcamiento no es gratuito.','No se pueden reservar plazas.']],
+ ['fa','کجا می توانم پارکینگ مشتریان AdMotion Studio را پیدا کنم؟',['می‌توانید در Nordpark پارک کنید. ورودی در Stjärngatan 14 است و حدود پنج دقیقه پیاده تا استودیو فاصله دارد.','پارکینگ رایگان نیست.','امکان رزرو جای پارک وجود ندارد.']],
+ ['ar','أين يمكنني العثور على موقف سيارات عملاء AdMotion Studio؟',['يمكنك الوقوف في Nordpark. المدخل في Stjärngatan 14، على بعد حوالي خمس دقائق سيرًا على الأقدام من الاستوديو.','الوقوف ليس مجانيًا.','لا يمكن حجز أماكن الوقوف.']],
+] as const;
+for(const channel of channels)for(const [language,localizedQuestion,translations]of locationLanguages)test(`latency-location/${channel}/${language}: actual semantic index, explicitly synthetic embeddings and model translations`,async t=>{
+ const f=await install(t);lang=language;const normalizedQuestion=localizedQuestion.replace(/؟/gu,'?');const original=deps.geminiGenerate!;
+ const vector=(values:number[])=>({provider:'openai',model:'synthetic-multilingual-only',dimensions:2,version:1,values});
+ const provider:any={supportsLocalSemanticSearch:true,embedQuery:async()=>vector([1,0]),embedDocuments:async(texts:string[])=>texts.map(text=>vector(texts[0]===normalizedQuestion?[1,0]:text.includes('Nordpark')?[1,0]:text.includes('Kontakta företaget')?[.98,.2]:[0,1]))};
+ const semantic=new KnowledgeService(f.storage,f.storage,provider);let semanticCalls=0;
+ configure({semanticKnowledgeSearchQueries:async(id,queries,limit)=>{semanticCalls++;assert.equal(queries[0],normalizedQuestion);return semantic.semanticSearchQueries(id,queries,limit);},geminiGenerate:async p=>{
+  assert.equal(p.config.systemInstruction.includes('retrieval query planner'),false);
+  let result:any;try{result=await original(p);}catch(error){t.diagnostic('Explicit model fixture error: '+String(error));throw error;}if(p.config.systemInstruction.includes('UNIT EXTRACTION')){const data=JSON.parse(result.text);data.units.forEach((u:any,i:number)=>{u.language=language;u.text=translations[i];u.value=translations[i];});return{text:JSON.stringify(data)};}return result;
+ }});
+ await inbound(channel,localizedQuestion);assert.equal(semanticCalls,1);assert.equal(sent.length,1);assert.equal(reads,0);
+ const output=published();for(const fact of translations)assert.ok(output.includes(fact),output);assert.equal(output.includes(localizedQuestion),false);
+ const publication=decisionEvents.filter(e=>e.stage==='publication').at(-1);assert.equal(publication.publishableUnits,3);assert.equal(publication.facets[0].status,'VERIFIED');
+});
+
+
+test('Bounded optional planner abort reaches mocked OpenAI SDK; late completion cannot send',async t=>{
+ await install(t);const fixture=deps.geminiGenerate!;
+ const previous={AI_PROVIDER:process.env.AI_PROVIDER,OPENAI_API_KEY:process.env.OPENAI_API_KEY};Object.assign(process.env,{AI_PROVIDER:'openai',OPENAI_API_KEY:'synthetic-only'});
+ t.after(()=>{for(const [key,value]of Object.entries(previous)){if(value===undefined)delete process.env[key];else process.env[key]=value;}});
+ let aborted=false,completed=false,calls=0;
+ t.mock.method(Responses.prototype,'create',async(p:any,options:any)=>{
+  calls++;assert.ok(p.instructions.includes('retrieval query planner'));assert.ok(options.signal);
+  options.signal.addEventListener('abort',()=>{aborted=true;},{once:true});
+  await new Promise(r=>setTimeout(r,2800));completed=true;
+  const result=await fixture({config:{systemInstruction:p.instructions,tools:[]},contents:[{parts:[{text:p.input[0].content}]}]});
+  return{output_text:result.text,status:'completed',output:[],usage:{input_tokens:10,output_tokens:10}} as any;
+ });
+ await inbound('whatsapp','Could you tell me about parking arrangements at AdMotion Studio?');
+ assert.equal(aborted,true);assert.equal(completed,false);assert.equal(sent.length,1);assert.equal(published().includes('Nordpark'),false);
+ await new Promise(r=>setTimeout(r,400));assert.equal(completed,true);assert.equal(calls,1);assert.equal(sent.length,1);
 });

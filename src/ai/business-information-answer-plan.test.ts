@@ -11,10 +11,10 @@ const proposal = (text = quote, f = 'f1') => ({ subject:'studio', predicate:'rec
  scope:'visits', qualifiers:[], language:'sv', text, facetIds:[f], evidenceRefs:[{ evidenceId:'e1', exactQuote:text }] });
 const parsed = (units:any[]) => parseAnswerUnits({ units },facets,evidence,'sv').units;
 const verdict = (id:string, f:string) => ({ unitId:id, relation:'ENTAILED', facetIds:[f], meaningPreserved:true, modalityPreserved:true, qualifiersPreserved:true, relevant:true, languageCorrect:true, negativeAbsence:false, explicitAbsenceEvidence:false });
-async function run(options:{ units?:any[]; decisions?:any[]; compose?:any; current?:()=>Promise<boolean>; fail?:string } = {}) {
- const budget = new InformationBudget(), calls:string[] = [];
+async function run(options:{ units?:any[]; decisions?:any[]; compose?:any; current?:()=>Promise<boolean>; fail?:string; budget?:InformationBudget; finalPublicationRevalidates?:boolean; revalidateEvidence?:()=>Promise<typeof evidence> } = {}) {
+ const budget = options.budget || new InformationBudget(), calls:string[] = [];
  const manifest = await buildEvidenceFirstAnswer({ question:'Can I visit and do you offer digital meetings?', language:'sv', facets, evidence,
-  authoritativeEvidence:'', businessTone:{}, history:[], budget, current:options.current || (async()=>true), generate:async(stage,_instruction,data:any)=>{
+  authoritativeEvidence:'', businessTone:{}, history:[], budget, finalPublicationRevalidates:options.finalPublicationRevalidates, revalidateEvidence:options.revalidateEvidence, current:options.current || (async()=>true), generate:async(stage,_instruction,data:any)=>{
    budget.attempt(); calls.push(stage); if(options.fail === stage) throw new Error('synthetic');
    return { text:JSON.stringify(stage === 'extraction' ? { units:options.units || [proposal(),proposal(second,'f2')] } : stage === 'verification' ?
     { decisions:options.decisions || [verdict('u1','f1'),verdict('u2','f2')],coverage:data.facets.map((f:any)=>({facetId:f.id,requestAligned:true,materialFactsComplete:true,materialUnitIds:data.units.filter((u:any)=>u.facetIds.includes(f.id)).map((u:any)=>u.id),obligations:f.obligations.map((o:any)=>({obligationId:o.id,status:'COVERED',unitIds:data.units.filter((u:any)=>u.facetIds.includes(f.id)).map((u:any)=>u.id)}))})) } : options.compose || { unitIds:data.units.map((u:any)=>u.id),prefix:'none',addition:false }) };
@@ -107,4 +107,19 @@ test('loss of one unit on a shared facet does not claim complete coverage',async
  const pruned=pruneAnswerManifest({...manifest,units,outcomes},evidence);
  assert.equal(pruned.units.length,1);assert.equal(pruned.outcomes[0].status,'PARTIAL');assert.deepEqual(pruned.outcomes[0].unitIds,['u1']);
  assert.equal(pruned.outcomes[0].materialFactsComplete,false);
+});
+
+for(const remaining of [4159,6500,6501,8000])test(`composer admission at ${remaining}ms preserves exact verified sentences`,async()=>{
+ const budget=new InformationBudget();budget.remaining=()=>remaining;
+ let validations=0;
+ const {manifest,calls}=await run({budget,finalPublicationRevalidates:true,revalidateEvidence:async()=>{validations++;return evidence;}});
+ assert.equal(calls.includes('composition'),remaining>6500);
+ assert.deepEqual(manifest.units.map(u=>u.text),[quote,second]);
+ assert.deepEqual(manifest.units.map(u=>u.modality),['recommended','recommended']);
+ assert.equal(validations,remaining>6500?4:2);
+});
+test('unguarded canonical caller still revalidates after verification when composer is skipped',async()=>{
+ const budget=new InformationBudget();budget.remaining=()=>4159;let validations=0;
+ await run({budget,revalidateEvidence:async()=>{validations++;return evidence;}});
+ assert.equal(validations,3);
 });

@@ -29,7 +29,7 @@ export type KnowledgeDecision = {
     relevant: boolean | null; languageCorrect: boolean | null; negativeAbsence: boolean | null; explicitAbsenceEvidence: boolean | null };
   counts?: { proposed: number; parsed: number; verified: number; rejected: number };
   facets?: readonly { type: string; obligations: number; status?: string }[];
-  sourceIndex?: number; valid?: boolean; remainingMs?: number;
+  sourceIndex?: number; valid?: boolean; remainingMs?: number; startingBudgetMs?: number; startedAtMs?: number; reserveMs?: number;
   sources?: readonly { index: number; valid: boolean; reason: DecisionReason }[];
   correlationId?: string; durationMs?: number; transportSuccess?: boolean; inputTokens?: number | null; outputTokens?: number | null;
   outputMode?: 'json_schema' | 'validated_text';

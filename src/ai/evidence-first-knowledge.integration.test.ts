@@ -633,3 +633,41 @@ test('deadline-repair/four-native/real-wall-clock: slow authoritative providers 
  assert.equal(decisionEvents.some(e=>e.stage==='verification'&&e.relation==='ENTAILED'),false,'late results cannot restore verified authority');
  assert.equal(decisionEvents.some(e=>e.reason==='SOURCE_INVALID'),false);
 });
+
+for(const ch of channels)for(const scenario of ['low','boundary','ample','revoked','modified','late']as const)
+ test(`${ch}/publication-headroom/${scenario}: optional ordering preserves mandatory publication authority`,async t=>{
+  facts=[parking,digital];facetCount=2;
+  const advance=elapsedClock(t);let verified=false,publishing=false,postVerificationReads=0;
+  configure({evidenceFirstDecisionDiagnostic:(e:any)=>{
+   decisionEvents.push(e);
+   if(!verified&&e.stage==='verification'&&e.counts?.verified===2){
+    verified=true;advance(e.remainingMs,scenario==='ample'?8_000:scenario==='boundary'?6_500:4_159);
+   }
+  },evidenceFirstPublicationDiagnostic:e=>{
+   if(e.phase==='publication_start'){
+    publishing=true;
+    if(scenario==='late')advance(decisionEvents.at(-1).remainingMs,40);
+   }
+  },validateKnowledgeMatches:async(_id,matches)=>{
+   if(verified)postVerificationReads++;
+   if(publishing&&scenario==='late')await wait(100);
+   if(publishing&&scenario==='revoked')return [];
+   if(publishing&&scenario==='modified')return matches.map(m=>({...m,text:'Changed source content',metadata:{...m.metadata,documentRevision:'v2'}}));
+   return matches;
+  }});
+  await inbound(ch,q.compound);
+  if(scenario==='late'){const publishedCount=sent.length;await wait(130);assert.equal(sent.length,publishedCount,'late freshness cannot trigger another send');}
+  const composition=decisionEvents.filter(e=>e.stage==='composition'&&e.startingBudgetMs!==undefined);
+  assert.equal(composition.length,1);
+  assert.equal(composition[0].reason,scenario==='ample'?'ACCEPTED':'COMPOSER_SKIPPED_BUDGET');
+  assert.equal(requests.filter(p=>p.config.systemInstruction.includes('VERIFIED-UNIT PRESENTATION')).length,scenario==='ample'?1:0);
+  const final=decisionEvents.filter(e=>e.stage==='publication').at(-1);
+  assert.equal(typeof final.durationMs,'number');assert.equal(typeof final.startingBudgetMs,'number');assert.equal(typeof final.startedAtMs,'number');
+  assert.ok(final.businessInfoTurnId);
+  const rejected=['revoked','modified','late'].includes(scenario);
+  assert.equal(final.publishableUnits,rejected?0:2);
+  assert.equal(published().includes(parking),!rejected);assert.equal(published().includes(digital),!rejected);
+  assert.ok(postVerificationReads>0,'independent publication validation remains mandatory');
+  if(!rejected&&scenario!=='ample')assert.equal(postVerificationReads,ch==='telegram'?3:1,'no intermediate builder read on guarded canonical path');
+  if(scenario==='late')assert.equal(final.reason,'DEADLINE');
+ });

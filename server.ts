@@ -5440,14 +5440,17 @@ async function generateSecureConversationContent(sessionId: string, options: any
 }
 
 async function securePublicationReply(reply: string, language?: string): Promise<string | null> {
+  const publicationStartedAt=Date.now();
+  const publicationStartingBudgetMs=knowledgeTurnScope.getStore()?.budget?.remaining();
+  const publicationTiming=()=>({startedAtMs:publicationStartedAt,startingBudgetMs:publicationStartingBudgetMs,durationMs:Date.now()-publicationStartedAt});
   if (!requestSecurity.evidence) return reply; // Existing deterministic booking sends precede AI capture.
   const state = knowledgeTurnScope.getStore();
-  if (!requestSecurity.current()) {emitKnowledgeDecision({stage:'publication',reason:'PUBLICATION_SUPPRESSED',route:'suppressed'});return null;}
-  if(state?.budget&&state.migrated===false)emitKnowledgeDecision({stage:'publication',reason:'LEGACY_ROUTE',route:'legacy'});
+  if (!requestSecurity.current()) {emitKnowledgeDecision({stage:'publication',...publicationTiming(),reason:'PUBLICATION_SUPPRESSED',route:'suppressed'});return null;}
+  if(state?.budget&&state.migrated===false)emitKnowledgeDecision({stage:'publication',...publicationTiming(),reason:'LEGACY_ROUTE',route:'legacy'});
   const previousText = state?.manifest?.text;
   if (state?.manifest) priority1hTestDependencies?.evidenceFirstPublicationDiagnostic?.({ phase: 'publication_start', units: state.manifest.units.length });
   const current = await (state?.manifest ? knowledgeEvidenceCurrent() : requestEvidenceCurrent());
-  if (!requestSecurity.current()) {emitKnowledgeDecision({stage:'publication',reason:'PUBLICATION_SUPPRESSED',route:'suppressed'});return null;}
+  if (!requestSecurity.current()) {emitKnowledgeDecision({stage:'publication',...publicationTiming(),reason:'PUBLICATION_SUPPRESSED',route:'suppressed'});return null;}
   // Re-render the immutable manifest after downstream concision/identity/CTA guards.
   // Freshness and request ownership above remain mandatory for every send.
   const publishable = current;
@@ -5462,7 +5465,7 @@ async function securePublicationReply(reply: string, language?: string): Promise
     if (last?.role === 'assistant' && (last.content === previousText || last.content === reply)) last.content = text;
     priority1hTestDependencies?.evidenceFirstPublicationDiagnostic?.({ phase: 'publication_result', units: state.manifest.units.length,
       facets: state.manifest.outcomes.map(o => ({ status: o.status, units: o.unitIds.length })), invalidSources: state.invalidSourceIds?.size || 0 });
-    emitKnowledgeDecision({stage:'publication',reason:!publishable?state.freshnessFailure||'CONTEXT_INVALID':state.manifest.fallbackReason||'ACCEPTED',
+    emitKnowledgeDecision({stage:'publication',...publicationTiming(),reason:!publishable?state.freshnessFailure||'CONTEXT_INVALID':state.manifest.fallbackReason||'ACCEPTED',
       semanticVerifiedUnits:state.semanticVerifiedUnits||0,publishableUnits:publishable?state.manifest.units.length:0,
       counts:{proposed:state.unitCounts?.proposed||0,parsed:state.unitCounts?.parsed||0,verified:publishable?state.manifest.units.length:0,
         rejected:(state.unitCounts?.proposed||0)-(publishable?state.manifest.units.length:0)},

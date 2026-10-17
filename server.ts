@@ -8589,7 +8589,10 @@ async function retrieveBusinessKnowledgeForQuestion(
     };
 
     const search = () => Promise.all([
-      Promise.all(queries.map((query) =>
+      process.env.ODINLINK_KNOWLEDGE_LEXICAL_BATCH === 'true'
+        ? knowledgeService.searchLexicalQueries(businessId, queries, 5,
+          metrics => console.log('[KnowledgeLexicalRetrieval]', metrics))
+        : Promise.all(queries.map((query) =>
         Promise.resolve(
           searchKnowledge(businessId, query, 5)
         )

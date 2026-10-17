@@ -500,3 +500,40 @@ for(const channel of channels)for(const variant of ['plain','prefixed','verifier
    if(variant==='prefixed')assert.ok(output.startsWith('Hello!'),output);
   }
  });
+
+for(const channel of channels)for(const flag of [undefined,'false','true'] as const)test(`lexical-batch-dispatch/${channel}/${flag===undefined?'default':flag==='true'?'batch':'legacy'}: same selected evidence and verified answer`,async t=>{
+ const enabled=flag==='true';
+ const previous=process.env.ODINLINK_KNOWLEDGE_LEXICAL_BATCH;
+ if(flag===undefined)delete process.env.ODINLINK_KNOWLEDGE_LEXICAL_BATCH;else process.env.ODINLINK_KNOWLEDGE_LEXICAL_BATCH=flag;
+ t.after(()=>{if(previous===undefined)delete process.env.ODINLINK_KNOWLEDGE_LEXICAL_BATCH;else process.env.ODINLINK_KNOWLEDGE_LEXICAL_BATCH=previous;});
+ const f=await install(t,'complete',channel);const legacySearch=deps.knowledgeSearch!;
+ const batch=KnowledgeService.prototype.searchLexicalQueries;let batchCalls=0,legacyCalls=0;let retrieval:any;
+ t.mock.method(KnowledgeService.prototype,'searchLexicalQueries',async function(id,queries,limit,diagnostic){
+  batchCalls++;assert.deepEqual(queries,[question,'park','car']);assert.equal(limit,5);
+  return batch.call(f.service,id,queries,limit,diagnostic);
+ });
+ configure({knowledgeSearch:async(...args)=>{legacyCalls++;return legacySearch(...args);},knowledgeRetrievalDiagnostic:e=>{retrieval=e;}});
+ await inbound(channel,question);assert.equal(sent.length,1);assert.equal(reads,0);
+ assert.equal(batchCalls,enabled?1:0);assert.equal(legacyCalls,enabled?0:3);
+ assert.equal(retrieval.mergeStrategy,'lexical_fallback');assert.equal(retrieval.queryCount,3);
+ assert.deepEqual([...new Set(retrieval.sourceIds)],['exact-pdf','generic-txt']);
+ const extraction=requests.find(r=>r.config.systemInstruction.includes('UNIT EXTRACTION'));
+ const payload=JSON.parse(extraction.contents[0].parts[0].text);
+ assert.ok(payload.evidence.some((e:any)=>e.text.includes('Kontakta företaget')),'Supplementary recommendation remains in selected evidence');
+ for(const fact of parkingFacts)assert.ok(published().includes(fact));
+ assert.equal(decisionEvents.filter(e=>e.stage==='publication').at(-1).facets[0].status,'VERIFIED');
+});
+
+for(const fault of ['delete','revision','publication-timeout','late-search','semantic-failure'])test(`lexical-batch-safety/${fault}: semantic fallback and final publication retain their guards`,async t=>{
+ const previous=process.env.ODINLINK_KNOWLEDGE_LEXICAL_BATCH;process.env.ODINLINK_KNOWLEDGE_LEXICAL_BATCH='true';
+ t.after(()=>{if(previous===undefined)delete process.env.ODINLINK_KNOWLEDGE_LEXICAL_BATCH;else process.env.ODINLINK_KNOWLEDGE_LEXICAL_BATCH=previous;});
+ const f=await install(t,fault==='semantic-failure'||fault==='late-search'?'complete':fault,'whatsapp');
+ let elapsed=0;const epoch=Date.now();if(fault==='late-search')t.mock.method(Date,'now',()=>epoch+elapsed);
+ const batch=KnowledgeService.prototype.searchLexicalQueries;
+ t.mock.method(KnowledgeService.prototype,'searchLexicalQueries',async function(id,queries,limit,diagnostic){const sets=await batch.call(f.service,id,queries,limit,diagnostic);if(fault==='late-search')elapsed=21000;return sets;});
+ if(fault==='semantic-failure')configure({semanticKnowledgeSearchQueries:async()=>{throw Error('synthetic unavailable semantic search');}});
+ await inbound('whatsapp',question);assert.equal(sent.length,1);assert.equal(reads,0);
+ if(fault==='semantic-failure')for(const fact of parkingFacts)assert.ok(published().includes(fact));
+ else {assert.equal(published().includes('Nordpark'),false);if(fault!=='late-search')assert.equal(decisionEvents.filter(e=>e.stage==='publication').at(-1).publishableUnits,0);}
+ if(fault==='late-search')assert.equal(requests.some(r=>r.config.systemInstruction.includes('UNIT EXTRACTION')||r.config.systemInstruction.includes('BATCH ENTAILMENT')),false,'Late retrieval cannot start model work');
+});

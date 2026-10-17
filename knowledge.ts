@@ -40,6 +40,23 @@ export interface KnowledgeSearchMatch {
 type KnowledgeValidationOptions = { strictSources?: boolean; captureRevision?: boolean;
   onRejected?: (sourceId:string,reason:'SOURCE_SCOPE'|'SOURCE_MISSING_OR_UNAUTHORIZED'|'SOURCE_NOT_READY'|'SOURCE_REVISION'|'SOURCE_CHUNK')=>void };
 
+/** Operation counts and wall-clock durations only; never query/source contents. */
+export type LexicalRetrievalMetrics = {
+  path: 'legacy' | 'batch'; queryCount: number; storageSearchCalls: number; searchFailures: number;
+  sourceListReads: number; sourceListFailures: number; validationFailures: number; documentReconstructions: number;
+  lexicalSearchMs: number; sourceListMs: number; validationMs: number; documentReconstructionMs: number; totalMs: number;
+};
+type LexicalDiagnostic = (metrics: Readonly<LexicalRetrievalMetrics>) => void;
+const lexicalMetrics = (path: LexicalRetrievalMetrics['path'], queryCount: number): LexicalRetrievalMetrics => ({
+  path, queryCount, storageSearchCalls: 0, searchFailures: 0, sourceListReads: 0, sourceListFailures: 0,
+  validationFailures: 0, documentReconstructions: 0, lexicalSearchMs: 0, sourceListMs: 0, validationMs: 0, documentReconstructionMs: 0, totalMs: 0,
+});
+function reportLexicalMetrics(metrics: LexicalRetrievalMetrics | undefined, started: number, diagnostic?: LexicalDiagnostic) {
+  if (!metrics || !diagnostic) return;
+  metrics.totalMs = performance.now() - started;
+  try { diagnostic(Object.freeze({ ...metrics })); } catch { /* Diagnostics cannot change retrieval authority. */ }
+}
+
 export interface KnowledgeChunkInput {
   chunkIndex: number;
   content: string;
@@ -612,28 +629,57 @@ export class KnowledgeService {
   async search(
     businessId: number,
     query: string,
-    limit = 5
+    limit = 5,
+    diagnostic?: LexicalDiagnostic,
   ): Promise<KnowledgeSearchMatch[]> {
-    await this.ensureInitialized();
+    const started = performance.now();
+    const metrics = diagnostic ? lexicalMetrics('legacy', 1) : undefined;
+    try {
+      await this.ensureInitialized();
+      const normalizedBusinessId = Number(businessId);
+      const normalizedQuery = String(query || "").trim();
+      if (!Number.isSafeInteger(normalizedBusinessId) || normalizedBusinessId <= 0 || !normalizedQuery) return [];
+      console.log("Knowledge search", { businessId: normalizedBusinessId, queryLength: normalizedQuery.length });
+      const searchStarted = performance.now();
+      let matches: KnowledgeSearchMatch[];
+      if (metrics) metrics.storageSearchCalls++;
+      try { matches = await this.storage.search(normalizedBusinessId, normalizedQuery, Math.max(1, Math.min(Number(limit) || 5, 10))); }
+      catch (error) { if (metrics) metrics.searchFailures++; throw error; }
+      finally { if (metrics) metrics.lexicalSearchMs = performance.now() - searchStarted; }
+      return await this.filterCurrentMatches(normalizedBusinessId, matches, {}, metrics);
+    } finally { reportLexicalMetrics(metrics, started, diagnostic); }
+  }
 
-    const normalizedBusinessId = Number(businessId);
-    const normalizedQuery = String(query || "").trim();
-
-    if (
-      !Number.isSafeInteger(normalizedBusinessId) ||
-      normalizedBusinessId <= 0 ||
-      !normalizedQuery
-    ) {
-      return [];
-    }
-
-    console.log("Knowledge search", {
-      businessId: normalizedBusinessId,
-      queryLength: normalizedQuery.length,
-    });
-
-    const matches = await this.storage.search(normalizedBusinessId, normalizedQuery, Math.max(1, Math.min(Number(limit) || 5, 10)));
-    return this.filterCurrentMatches(normalizedBusinessId, matches);
+  /** Ordered per-query lexical results. No ranking, deduplication or cross-request cache.
+   * Read current sources AFTER all searches; this snapshot expires on return.
+   * Subsequent verification/publication must use their existing fresh reads. */
+  async searchLexicalQueries(businessId: number, queries: readonly string[], limit = 5,
+    diagnostic?: LexicalDiagnostic): Promise<KnowledgeSearchMatch[][]> {
+    const started = performance.now(), metrics = lexicalMetrics('batch', queries.length);
+    try {
+      await this.ensureInitialized();
+      const id = Number(businessId), normalized = queries.map(query => String(query || "").trim());
+      if (!Number.isSafeInteger(id) || id <= 0 || !normalized.some(Boolean)) return queries.map(() => []);
+      const boundedLimit = Math.max(1, Math.min(Number(limit) || 5, 10));
+      const searchStarted = performance.now();
+      const sets = await Promise.all(normalized.map(async query => {
+        if (!query) return [];
+        metrics.storageSearchCalls++;
+        try { return await this.storage.search(id, query, boundedLimit); }
+        catch { metrics.searchFailures++; return []; }
+      }));
+      metrics.lexicalSearchMs = performance.now() - searchStarted;
+      const listStarted = performance.now(); metrics.sourceListReads++;
+      let sources: KnowledgeSource[];
+      try { sources = await this.storage.list(id); }
+      catch { metrics.sourceListFailures++; return queries.map(() => []); }
+      finally { metrics.sourceListMs = performance.now() - listStarted; }
+      const documents = new Map<string, { revision: string; corpus: SemanticChunk[] }>();
+      return sets.map(matches => {
+        try { return this.filterMatchesFromSources(id, matches, sources, {}, metrics, documents); }
+        catch { metrics.validationFailures++; return []; }
+      });
+    } finally { reportLexicalMetrics(metrics, started, diagnostic); }
   }
 
   async semanticSearch(
@@ -761,28 +807,55 @@ export class KnowledgeService {
     return this.filterCurrentMatches(businessId, matches, options);
   }
 
-  private async filterCurrentMatches(businessId: number, matches: KnowledgeSearchMatch[], options: KnowledgeValidationOptions = {}): Promise<KnowledgeSearchMatch[]> {
-    const sources=await this.storage.list(businessId);
-    const ready = new Map(sources.filter((s) => s.businessId === businessId && s.status === "ready").map((s) => [s.id, s]));
-    return matches.flatMap((match) => {
-      const reject=(reason:Parameters<NonNullable<KnowledgeValidationOptions['onRejected']>>[1])=>{options.onRejected?.(match.sourceId,reason);return [];};
-      const source = ready.get(match.sourceId);
-      if(match.businessId!==businessId)return reject('SOURCE_SCOPE');
-      if(!source)return reject(sources.some(s=>s.id===match.sourceId&&s.businessId===businessId)?'SOURCE_NOT_READY':'SOURCE_MISSING_OR_UNAUTHORIZED');
-      if (source.type !== "document") {
-        if (!options.strictSources) return [match];
-        const revision = crypto.createHash('sha256').update(JSON.stringify([source.id, source.businessId, source.type, source.status, source.title, source.content, source.updatedAt, source.metadata])).digest('hex');
-        if (!chunkKnowledgeContent(source.content).some(chunk => chunk.content === String(match.text || '').trim())) return reject('SOURCE_CHUNK');
-        if (match.metadata?.sourceRevision !== revision && (!options.captureRevision || match.metadata?.sourceRevision)) return reject('SOURCE_REVISION');
-        return [{ ...match, metadata: { ...match.metadata, sourceRevision: revision } }];
-      }
-      const revision = documentRevision(source);
-      if (match.metadata?.documentRevision && match.metadata.documentRevision !== revision) return reject('SOURCE_REVISION');
-      const canonical = documentCorpus(source).find((chunk) => chunk.text === String(match.text || "").trim() &&
-        (match.metadata?.page === undefined || match.metadata.page === chunk.metadata?.page) &&
-        (match.metadata?.sheet === undefined || match.metadata.sheet === chunk.metadata?.sheet));
-      return canonical ? [{ ...match, text: canonical.text, metadata: { ...canonical.metadata, documentRevision: revision } }] : reject('SOURCE_CHUNK');
-    });
+  private async filterCurrentMatches(businessId: number, matches: KnowledgeSearchMatch[], options: KnowledgeValidationOptions = {},
+    metrics?: LexicalRetrievalMetrics): Promise<KnowledgeSearchMatch[]> {
+    const listStarted = performance.now();
+    if (metrics) metrics.sourceListReads++;
+    let sources: KnowledgeSource[];
+    try { sources = await this.storage.list(businessId); }
+    catch (error) { if (metrics) metrics.sourceListFailures++; throw error; }
+    finally { if (metrics) metrics.sourceListMs += performance.now() - listStarted; }
+    try { return this.filterMatchesFromSources(businessId, matches, sources, options, metrics); }
+    catch (error) { if (metrics) metrics.validationFailures++; throw error; }
+  }
+
+  private filterMatchesFromSources(businessId: number, matches: KnowledgeSearchMatch[], sources: KnowledgeSource[],
+    options: KnowledgeValidationOptions, metrics?: LexicalRetrievalMetrics,
+    documents?: Map<string, { revision: string; corpus: SemanticChunk[] }>): KnowledgeSearchMatch[] {
+    const validationStarted = performance.now();
+    try {
+      const ready = new Map(sources.filter((s) => s.businessId === businessId && s.status === "ready").map((s) => [s.id, s]));
+      return matches.flatMap((match) => {
+        const reject=(reason:Parameters<NonNullable<KnowledgeValidationOptions['onRejected']>>[1])=>{options.onRejected?.(match.sourceId,reason);return [];};
+        const source = ready.get(match.sourceId);
+        if(match.businessId!==businessId)return reject('SOURCE_SCOPE');
+        if(!source)return reject(sources.some(s=>s.id===match.sourceId&&s.businessId===businessId)?'SOURCE_NOT_READY':'SOURCE_MISSING_OR_UNAUTHORIZED');
+        if (source.type !== "document") {
+          if (!options.strictSources) return [match];
+          const revision = crypto.createHash('sha256').update(JSON.stringify([source.id, source.businessId, source.type, source.status, source.title, source.content, source.updatedAt, source.metadata])).digest('hex');
+          if (!chunkKnowledgeContent(source.content).some(chunk => chunk.content === String(match.text || '').trim())) return reject('SOURCE_CHUNK');
+          if (match.metadata?.sourceRevision !== revision && (!options.captureRevision || match.metadata?.sourceRevision)) return reject('SOURCE_REVISION');
+          return [{ ...match, metadata: { ...match.metadata, sourceRevision: revision } }];
+        }
+        let document = documents?.get(source.id);
+        if (!document) {
+          const reconstructionStarted = performance.now();
+          const revision = documentRevision(source);
+          // Preserve the legacy early revision rejection before reconstruction.
+          if (match.metadata?.documentRevision && match.metadata.documentRevision !== revision) return reject('SOURCE_REVISION');
+          if (metrics) metrics.documentReconstructions++;
+          document = { revision, corpus: documentCorpus(source) };
+          if (metrics) metrics.documentReconstructionMs += performance.now() - reconstructionStarted;
+          documents?.set(source.id, document);
+        }
+        const { revision, corpus } = document;
+        if (match.metadata?.documentRevision && match.metadata.documentRevision !== revision) return reject('SOURCE_REVISION');
+        const canonical = corpus.find((chunk) => chunk.text === String(match.text || "").trim() &&
+          (match.metadata?.page === undefined || match.metadata.page === chunk.metadata?.page) &&
+          (match.metadata?.sheet === undefined || match.metadata.sheet === chunk.metadata?.sheet));
+        return canonical ? [{ ...match, text: canonical.text, metadata: { ...canonical.metadata, documentRevision: revision } }] : reject('SOURCE_CHUNK');
+      });
+    } finally { if (metrics) metrics.validationMs += performance.now() - validationStarted; }
   }
 
   private async semanticCorpus(businessId: number, documentsOnly = false): Promise<SemanticChunk[]> {

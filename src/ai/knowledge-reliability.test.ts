@@ -151,3 +151,37 @@ test('provider refusal and truncation status survives normalization without raw 
  assert.equal(normalizeGeminiGenerationResponse({text:'{}',promptFeedback:{blockReason:'SAFETY'}}).structuredFailure,'BLOCKED');
  assert.equal(safeModelIdentifier('sk-private-key'),'invalid_identifier');assert.equal(safeModelIdentifier('gpt-5.6-luna'),'gpt-5.6-luna');
 });
+
+for (const variant of ['complete','omitted','rejected'] as const) test(`source-backed contact recommendation: ${variant} inventory retains independent completeness authority`,async()=>{
+ const location='Visitor parking is behind the building.';
+ const contact='For alternative parking information, we recommend contacting the business.';
+ const sources=answerEvidence(77,[
+  {businessId:77,sourceId:'synthetic-pdf',text:location,metadata:{documentRevision:'v1'}},
+  {businessId:77,sourceId:'synthetic-txt',text:contact,metadata:{documentRevision:'v1'}},
+ ]);
+ const fs=facets('description'),calls:string[]=[],events:KnowledgeDecision[]=[];
+ const manifest=await buildEvidenceFirstAnswer({question:'Where is visitor parking?',language:'en',facets:fs,evidence:sources,
+  authoritativeEvidence:'',businessTone:{},history:[],budget:new InformationBudget(),current:async()=>true,
+  diagnostic:e=>events.push(e),generate:async(stage,instruction,data:any)=>{
+   calls.push(stage);
+   if(stage==='extraction'){
+    assert.ok(instruction.includes('No greeting, question, unsolicited CTA'));
+    assert.ok(instruction.includes('not an unsolicited CTA; include it with its conditions and recommended modality when relevant'));
+    assert.equal(data.evidence.length,2);
+    return{text:JSON.stringify({units:[unit(location,'descriptive','f1','e1'),
+     ...(variant==='omitted'?[]:[unit(contact,'recommended','f1','e2')])]})};
+   }
+   if(stage==='verification')return{text:JSON.stringify({
+    decisions:data.units.map((u:any)=>({...decision(u),...(variant==='rejected'&&u.id==='u2'?{relation:'UNKNOWN'}:{})})),
+    coverage:coverage(data.facets,data.units).map(c=>({...c,materialFactsComplete:variant!=='omitted',
+     incompletenessReason:variant==='omitted'?'MISSING_RECOMMENDATION':'NONE'})),
+   })};
+   return{text:JSON.stringify({unitIds:data.units.map((u:any)=>u.id),prefix:'none',addition:false})};
+  }});
+ assert.ok(manifest.text.includes(location));
+ assert.equal(manifest.text.includes(contact),variant==='complete');
+ assert.equal(manifest.outcomes[0].status,variant==='complete'?'VERIFIED':'PARTIAL');
+ assert.equal(manifest.outcomes[0].materialFactsComplete,variant==='complete');
+ assert.equal(calls.filter(s=>s==='extraction').length,1);assert.equal(calls.filter(s=>s==='verification').length,1);
+ if(variant==='omitted')assert.ok(events.some(e=>e.incompletenessReason==='MISSING_RECOMMENDATION'));
+});

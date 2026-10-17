@@ -467,3 +467,36 @@ test('Bounded optional planner abort reaches mocked OpenAI SDK; late completion 
  assert.equal(aborted,true);assert.equal(completed,false);assert.equal(sent.length,1);assert.equal(published().includes('Nordpark'),false);
  await new Promise(r=>setTimeout(r,400));assert.equal(completed,true);assert.equal(calls,1);assert.equal(sent.length,1);
 });
+
+for(const channel of channels)for(const variant of ['plain','prefixed','verifier-timeout'] as const)
+ test(`greeting-regression/${channel}/${variant}: native adapter keeps original question and verification authority`,async t=>{
+  const inboundQuestion=variant==='plain'?question:'Hi,'+question;
+  await install(t,variant==='verifier-timeout'?'verification-timeout':'complete',channel);
+  const fixture=deps.geminiGenerate!;const stages:string[]=[];
+  configure({geminiGenerate:async p=>{
+   const instruction=p.config.systemInstruction;
+   assert.equal(instruction.includes('retrieval query planner'),false,'A literal location question with an optional greeting must not enter the timed planner');
+   const payload=JSON.parse(p.contents[0].parts[0].text);
+   if(instruction.includes('UNIT EXTRACTION')||instruction.includes('BATCH ENTAILMENT')){
+    stages.push(instruction.includes('UNIT EXTRACTION')?'extraction':'verification');
+    assert.equal(payload.question,inboundQuestion,'The original customer input remains authoritative');
+    assert.equal(payload.facets[0].obligations[0].description,inboundQuestion);
+   }
+   const result=await fixture(p);
+   if(instruction.includes('VERIFIED-UNIT PRESENTATION')&&variant==='prefixed'){
+    assert.equal(payload.question,inboundQuestion);
+    return{text:JSON.stringify({...JSON.parse(result.text),prefix:'greeting'})};
+   }
+   return result;
+  }});
+  await inbound(channel,inboundQuestion);assert.equal(sent.length,1);assert.equal(reads,0);
+  assert.deepEqual(stages,['extraction','verification']);
+  const output=published(),publication=decisionEvents.filter(e=>e.stage==='publication').at(-1);
+  if(variant==='verifier-timeout'){
+   assert.equal(output.includes('Nordpark'),false);assert.equal(publication.publishableUnits,0);
+  }else{
+   for(const fact of parkingFacts)assert.ok(output.includes(fact),output);
+   assert.equal(publication.facets[0].status,'VERIFIED');
+   if(variant==='prefixed')assert.ok(output.startsWith('Hello!'),output);
+  }
+ });

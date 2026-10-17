@@ -23,7 +23,7 @@ export const DECISION_REASONS = [
 ] as const;
 export type DecisionReason = typeof DECISION_REASONS[number];
 export type KnowledgeDecision = {
-  stage: KnowledgeStage; reason: DecisionReason; unitId?: string; facetId?: string;
+  stage: KnowledgeStage; reason: DecisionReason; unitId?: string; facetId?: string; incompletenessReason?: 'NONE' | 'MISSING_RELEVANT_FACT' | 'MISSING_CONDITION' | 'MISSING_RECOMMENDATION' | 'UNRESOLVED';
   relation?: typeof RELATIONS[number] | 'INVALID';
   flags?: { meaningPreserved: boolean | null; modalityPreserved: boolean | null; qualifiersPreserved: boolean | null;
     relevant: boolean | null; languageCorrect: boolean | null; negativeAbsence: boolean | null; explicitAbsenceEvidence: boolean | null };
@@ -50,7 +50,9 @@ const enumeration = (values: readonly string[]) => ({ type: 'string', enum: [...
 const array = (items: unknown) => ({ type: 'array', items });
 const object = (properties: Record<string, unknown>) => ({ type: 'object', properties, required: Object.keys(properties), additionalProperties: false });
 const questionType = enumeration(QUESTION_TYPES);
-const coverage = object({ facetId: str, requestAligned: bool, materialFactsComplete: bool, materialUnitIds: array(str), obligations: array(object({ obligationId: str,
+const coverage = object({ facetId: str, requestAligned: bool, materialFactsComplete: bool,
+  incompletenessReason: enumeration(['NONE','MISSING_RELEVANT_FACT','MISSING_CONDITION','MISSING_RECOMMENDATION','UNRESOLVED']),
+  materialUnitIds: array(str), obligations: array(object({ obligationId: str,
   status: enumeration(['COVERED', 'UNRESOLVED']), unitIds: array(str) })) });
 const schemas = {
   planning: object({ canonicalMeaning: str, queries: array(str), queryLanguages: array(object({ query: str, language: enumeration(['sv','en','de','es','fa','ar']) })),

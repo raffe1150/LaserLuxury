@@ -52,6 +52,40 @@ test('generic descriptive fact cannot replace a missing recommendation despite a
  const {manifest}=await run({units:[unit(arrangement,'descriptive')]});assert.equal(manifest.outcomes[0].status,'PARTIAL');assert.ok(manifest.text.includes(arrangement));
  assert.equal(manifest.text.includes(recommendation),false,'do not invent the omitted fact at publication');assert.equal(manifest.outcomes[0].obligations[0].status,'UNRESOLVED');
 });
+test('complete coverage logs NONE without changing VERIFIED status',async()=>{
+ const {manifest,events}=await run({verify:d=>({
+  decisions:d.units.map(decision),
+  coverage:coverage(d.facets,d.units).map(c=>({...c,incompletenessReason:'NONE'}))
+ })});
+ assert.equal(manifest.outcomes[0].status,'VERIFIED');
+ assert.ok(events.some(e=>e.stage==='verification'&&e.facetId==='f1'&&e.incompletenessReason==='NONE'));
+});
+
+test('invalid coverage cannot report a trusted incompleteness reason',async()=>{
+ const {manifest,events}=await run({verify:d=>({
+  decisions:d.units.map(decision),
+  coverage:coverage(d.facets,d.units).map(c=>({
+   ...c,materialFactsComplete:false,
+   obligations:[],
+   incompletenessReason:'MISSING_RECOMMENDATION'
+  }))
+ })});
+ assert.notEqual(manifest.outcomes[0].status,'VERIFIED');
+ assert.ok(events.some(e=>e.facetId==='f1'&&e.reason==='INVALID_COVERAGE'));
+ assert.ok(!events.some(e=>e.facetId==='f1'&&e.incompletenessReason==='MISSING_RECOMMENDATION'));
+});
+
+test('incompleteness reason is diagnostic only and cannot promote partial coverage',async()=>{
+ const {manifest,events}=await run({verify:d=>({
+  decisions:d.units.map(decision),
+  coverage:coverage(d.facets,d.units).map(c=>({
+   ...c,materialFactsComplete:false,incompletenessReason:'MISSING_RECOMMENDATION'
+  }))
+ })});
+ assert.equal(manifest.outcomes[0].status,'PARTIAL');
+ assert.equal(manifest.outcomes[0].materialFactsComplete,false);
+ assert.ok(events.some(e=>e.stage==='verification'&&e.facetId==='f1'&&e.incompletenessReason==='MISSING_RECOMMENDATION'));
+});
 test('independent material-completeness rejection preserves the verified requested fact',async()=>{
  const {manifest,events}=await run({verify:d=>({decisions:d.units.map(decision),coverage:coverage(d.facets,d.units).map(c=>({...c,materialFactsComplete:false}))})});
  assert.equal(manifest.outcomes[0].status,'PARTIAL');assert.equal(manifest.outcomes[0].obligations[0].status,'COVERED');assert.ok(manifest.text.includes(recommendation));

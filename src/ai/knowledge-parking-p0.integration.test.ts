@@ -9,6 +9,8 @@ import { Responses } from 'openai/resources/responses';
 import { normalizeConversationText } from './booking-intelligence';
 import { NATURAL_FLAGS } from './grounded-knowledge-composition';
 import { performance } from 'node:perf_hooks';
+import { compactFixture } from '../../tests/fixtures/knowledge-verification-protocol';
+import { COMPACT_VERIFICATION_FLAG, COMPACT_VERIFICATION_NAME } from './knowledge-compact-verification';
 process.env.NODE_ENV = 'test';
 process.env.AI_PROVIDER='gemini';
 process.env.GEMINI_API_KEY = 'synthetic-offline-only';
@@ -536,4 +538,86 @@ for(const fault of ['delete','revision','publication-timeout','late-search','sem
  if(fault==='semantic-failure')for(const fact of parkingFacts)assert.ok(published().includes(fact));
  else {assert.equal(published().includes('Nordpark'),false);if(fault!=='late-search')assert.equal(decisionEvents.filter(e=>e.stage==='publication').at(-1).publishableUnits,0);}
  if(fault==='late-search')assert.equal(requests.some(r=>r.config.systemInstruction.includes('UNIT EXTRACTION')||r.config.systemInstruction.includes('BATCH ENTAILMENT')),false,'Late retrieval cannot start model work');
+});
+
+// Compact protocol checks reuse the existing native adapter/PDF fixture. Both
+// protocols receive the same explicit independent semantic judgments.
+async function compactNativeCase(t:any, ch:Channel, compact:boolean, fault='complete', language='en', localizedQuestion=question, translations:readonly string[]=parkingFacts, sdk=false) {
+ const previous={[COMPACT_VERIFICATION_FLAG]:process.env[COMPACT_VERIFICATION_FLAG],AI_PROVIDER:process.env.AI_PROVIDER,OPENAI_API_KEY:process.env.OPENAI_API_KEY};
+ let dateMock:any,sdkMock:any;
+ try {
+ process.env[COMPACT_VERIFICATION_FLAG]=String(compact);
+ b.reset();b.configure(deps);sent=[];requests=[];metrics=[];decisionEvents=[];reads=0;
+ const custom=['missing-recommendation','unsupported','malformed','unknown','duplicate','late','admission'].includes(fault);
+ const f=await install(t,custom?'complete':fault,ch);lang=language;
+ if(language!=='en'){
+  const normalizedQuestion=localizedQuestion.replace(/؟/gu,'?');
+  const vector=(values:number[])=>({provider:'openai',model:'synthetic-multilingual-only',dimensions:2,version:1,values});
+  const embeddings:any={supportsLocalSemanticSearch:true,embedQuery:async()=>vector([1,0]),embedDocuments:async(texts:string[])=>texts.map(text=>vector(texts[0]===normalizedQuestion?[1,0]:text.includes('Nordpark')?[1,0]:text.includes('Kontakta företaget')?[.98,.2]:[0,1]))};
+  const semantic=new KnowledgeService(f.storage,f.storage,embeddings);
+  configure({semanticKnowledgeSearchQueries:async(id,queries,limit)=>semantic.semanticSearchQueries(id,queries,limit)});
+ }
+ const provider=deps.geminiGenerate!;let verifierCalls=0,elapsed=0;const epoch=Date.now();
+ if(fault==='late'||fault==='admission')dateMock=t.mock.method(Date,'now',()=>epoch+elapsed);
+ const fixture=async(p:any)=>{
+  const result=await provider(p),instruction=p.config.systemInstruction;
+  if(instruction.includes('UNIT EXTRACTION')){
+   const data=JSON.parse(result.text);data.units.forEach((u:any,i:number)=>{u.language=language;u.text=translations[i];u.value=translations[i];});
+   if(fault==='admission')elapsed=14001;
+   return{text:JSON.stringify(data)};
+  }
+  if(!instruction.includes('BATCH ENTAILMENT'))return result;
+  verifierCalls++;if(fault==='late')elapsed=21000;
+  const raw=JSON.parse(result.text);raw.coverage.forEach((c:any)=>c.incompletenessReason=c.materialFactsComplete?'NONE':'MISSING_RELEVANT_FACT');
+  if(fault==='missing-recommendation'){raw.coverage[0].materialFactsComplete=false;raw.coverage[0].incompletenessReason='MISSING_RECOMMENDATION';}
+  if(fault==='unsupported'){
+   raw.decisions[0].relation='UNKNOWN';const id=raw.decisions[0].unitId;
+   raw.coverage.forEach((c:any)=>{c.materialUnitIds=c.materialUnitIds.filter((i:string)=>i!==id);c.materialFactsComplete=false;c.incompletenessReason='MISSING_RELEVANT_FACT';
+    c.obligations.forEach((o:any)=>{o.status='UNRESOLVED';o.unitIds=[];});});
+  }
+  const wire=compact?compactFixture(raw):raw;
+  if(fault==='malformed')return{text:'{"'};
+  if(fault==='unknown')wire[compact?'extra':'decisions']=compact?true:[];
+  if(fault==='duplicate')return{text:JSON.stringify(wire).replace('{','{"'+(compact?'d':'decisions')+'":[],')};
+  return{text:JSON.stringify(wire)};
+ };
+ if(sdk){
+  Object.assign(process.env,{AI_PROVIDER:'openai',OPENAI_API_KEY:'synthetic-only'});
+  sdkMock=t.mock.method(Responses.prototype,'create',async(p:any)=>{
+   assert.equal(p.tools?.length||0,0);
+   if(p.instructions.includes('BATCH ENTAILMENT'))assert.equal(p.text.format.name,compact?COMPACT_VERIFICATION_NAME:'odinlink_knowledge_verification_v2');
+   const r=await fixture({config:{systemInstruction:p.instructions,tools:[]},contents:[{parts:[{text:p.input[0].content}]}]});
+   return{output_text:r.text,status:'completed',output:[],usage:{input_tokens:10,output_tokens:10}} as any;
+  });
+ }else configure({geminiGenerate:fixture});
+ await inbound(ch,localizedQuestion);assert.equal(reads,0);assert.ok(sent.length<=1);
+ const last=decisionEvents.filter(e=>e.stage==='publication').at(-1);
+ const summary=metrics.at(-1);
+ return{output:sent.length?published():null,publishable:last?.publishableUnits,route:last?.route,
+  facets:last?.facets,completeness:summary?.completeness,verifierCalls,stages:summary?.stages.map((s:any)=>s.stage),
+  controlledMs:elapsed||f.elapsed()};
+ } finally {
+  sdkMock?.mock.restore();dateMock?.mock.restore();
+  for(const[k,v]of Object.entries(previous)){if(v===undefined)delete process.env[k];else process.env[k]=v;}
+ }
+}
+for(const channel of channels)for(const [language,localizedQuestion,translations]of locationLanguages)test(`compact-native/equivalence/${channel}/${language}`,async t=>{
+ const legacy=await compactNativeCase(t,channel,false,'complete',language,localizedQuestion,translations);
+ const compact=await compactNativeCase(t,channel,true,'complete',language,localizedQuestion,translations);
+ assert.deepEqual(compact,legacy);assert.equal(compact.publishable,3);for(const fact of translations)assert.ok(compact.output.includes(fact));
+});
+for(const channel of channels)for(const fault of ['partial','conflict','foreign','delete','revision','stale','ownership','verification-timeout','publication-timeout','timing','timing-delete','timing-revision','missing-recommendation','unsupported','malformed','late','admission'])test(`compact-native/safety/${channel}/${fault}`,async t=>{
+ const legacy=await compactNativeCase(t,channel,false,fault),compact=await compactNativeCase(t,channel,true,fault);
+ assert.deepEqual(compact,legacy);
+ if(['partial','missing-recommendation','unsupported'].includes(fault))assert.equal(compact.route,'partial_manifest');
+ else if(fault==='timing')assert.equal(compact.route,'verified_manifest');
+ else assert.ok(!compact.publishable,'no unverified or stale units');
+});
+for(const channel of channels)test(`compact-native/OpenAI SDK/${channel}`,async t=>{
+ const legacy=await compactNativeCase(t,channel,false,'complete','en',question,parkingFacts,true);
+ const compact=await compactNativeCase(t,channel,true,'complete','en',question,parkingFacts,true);
+ assert.deepEqual(compact,legacy);assert.equal(compact.publishable,3);
+});
+for(const fault of ['unknown','duplicate'])for(const channel of channels)test(`compact-native/strict/${channel}/${fault}`,async t=>{
+ const result=await compactNativeCase(t,channel,true,fault);assert.equal(result.publishable,0);assert.equal(result.verifierCalls,1);
 });

@@ -1,5 +1,6 @@
 import type { UnifiedAiStructuredOutputRequest } from './providers/provider';
 import { NATURAL_FLAGS } from './grounded-knowledge-composition';
+import { compactVerificationEnabled, compactVerificationSchema, COMPACT_VERIFICATION_NAME } from './knowledge-compact-verification';
 
 export const KNOWLEDGE_SCHEMA_VERSION = 'evidence-first-v2';
 export const QUESTION_TYPES = ['description', 'recommendation', 'requirement', 'permission', 'prohibition'] as const;
@@ -72,6 +73,7 @@ const naturalValidation = object({contractHash:str,proposalHash:str,
   unitCoverage:array(object({unitId:str,blockIds:array(str),complete:bool})),obligationCoverage:array(object({obligationId:str,blockIds:array(str),accurate:bool})),
   flags:object(Object.fromEntries(NATURAL_FLAGS.map(key=>[key,bool])))});
 export function knowledgeStructuredOutput(stage: keyof typeof schemas|'presentation_verification', natural=false): UnifiedAiStructuredOutputRequest {
+  if(stage==='verification'&&compactVerificationEnabled())return{name:COMPACT_VERIFICATION_NAME,strict:true,schema:compactVerificationSchema()};
   if(stage==='presentation_verification')return{name:'odinlink_natural_validation_v1',strict:true,schema:naturalValidation};
   if(stage==='extraction'&&natural)return{name:'odinlink_natural_extraction_v1',strict:true,
     schema:object({...schemas.extraction.properties,naturalProposal:{anyOf:[{type:'null'},naturalProposal]}})};

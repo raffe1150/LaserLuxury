@@ -5,6 +5,7 @@ import { containsUnverifiedBookingSuccessClaim } from './reliability';
 import { containsWebOperationSuccess } from './web-response-integrity';
 import { QUESTION_TYPES, MODALITIES, RELATIONS, knowledgeFailureReason, type KnowledgeDecision, type DecisionReason } from './knowledge-answer-protocol';
 import { uncertaintyNotice, uncertaintyReferences, type UncertaintyReference } from './knowledge-answer-presentation';
+import { compactVerificationEnabled, compactVerificationInstruction, decodeCompactVerification } from './knowledge-compact-verification';
 import { NATURAL_LIMITS, NATURAL_PROPOSAL_INSTRUCTION, NATURAL_VALIDATION_INSTRUCTION, NATURAL_SCHEMA_VERSION, naturalContract, naturalContractHash,
   naturalAttachmentCurrent, naturalProposalReason, parseNaturalProposal, validateNaturalVerdict,
   type NaturalScope, type NaturalAttachment, type NaturalProposal, type NaturalOutcome } from './grounded-knowledge-composition';
@@ -312,10 +313,15 @@ export async function buildEvidenceFirstAnswer(input: {
   if (!proposed.units.length) return empty('UNAVAILABLE','SOURCE_INVALID');
   let parsed: any;
   try {
-    const result = await input.generate('verification', UNIT_VERIFICATION_INSTRUCTION, {
+    const compact = compactVerificationEnabled();
+    const result = await input.generate('verification', compact ? compactVerificationInstruction(UNIT_VERIFICATION_INSTRUCTION) : UNIT_VERIFICATION_INSTRUCTION, {
       question: input.question, requestedLanguage: language, facets, units: proposed.units.map(({verification,...u})=>({...u,evidenceRefs:u.evidenceRefs.map(({evidenceId,exactQuote})=>({evidenceId,exactQuote}))})), evidence: wireEvidence(availableEvidence), authoritativeEvidence: input.authoritativeEvidence,
     });
-    parsed = checked(result,'verification');
+    if (compact) {
+      if (result.structuredFailure || result.functionCalls?.length) return rejectProposals(result.structuredFailure || 'TOOL_OUTPUT');
+      parsed = decodeCompactVerification(result.text, proposed.units, facets);
+      if (!parsed) return rejectProposals('INVALID_FIELDS');
+    } else parsed = checked(result,'verification');
     if(!parsed)return rejectProposals(result.structuredFailure||(result.functionCalls?.length?'TOOL_OUTPUT':'MALFORMED_JSON'));
   } catch(error) { return rejectProposals(knowledgeFailureReason(error)); }
   if (!Array.isArray(parsed?.decisions)) return rejectProposals('MALFORMED_ARRAY');

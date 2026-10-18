@@ -1,4 +1,4 @@
-import { isBusinessInformationQuestion } from './business-information';
+import { isBusinessInformationQuestion, isExplicitBusinessActionRequest } from './business-information';
 import { hasBookingInterruption, withoutNegatedBookingClauses } from './booking-interruption';
 import { detectNormalizedIntent, parseTimeConstraint } from './booking-intelligence';
 
@@ -182,6 +182,9 @@ export function classifyMessagingIntent(text: string): MessagingIntent {
   if (sharedIntent === 'cancellation' || sharedIntent === 'reschedule') return sharedIntent;
   if (sharedIntent === 'new_booking') return 'new_booking';
   if (sharedIntent === 'booking_lookup') return 'existing_booking_lookup';
+  // An explicit action is dispatch authority even if its service still needs
+  // resolution. The engine retains ownership/confirmation checks.
+  if (sharedIntent === 'clarification' && isExplicitBusinessActionRequest(raw)) return 'new_booking';
   if (sharedIntent === 'clarification') return 'ambiguous';
   if (/\b(?:appointment|booking|bokning|tid|vaght|vaghtam|rezerv|وقت|رزرو)\b/iu.test(raw)) {
     return 'ambiguous';

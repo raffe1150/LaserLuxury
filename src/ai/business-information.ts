@@ -58,6 +58,12 @@ export function isBusinessInformationQuestion(text: string): boolean {
   // a Knowledge request (e.g. "what time can I book?").
   const openQuestion = /[?؟]|\b(?:what|where|who|why|how|tell me|question about|fråga om|frage zu|pregunta sobre|vad|varför|vilken|vilket|berätta|was|wo|wie|welche|qué|cuál|dónde|cómo)\b|(?:سوال|سؤال|چیست|چیه|کجاست|ما هو|ما هي|أين)/iu.test(text);
   const schedulingInput = /\b(?:book|booking|appointment|reserve|schedule|reschedule|cancel|available|availability|slots?|times?|appointment\w*|tid|tider|vaght|vaghtam|rezerv|boka|bokning\w*|avboka|omboka|ledig\w*|termin\w*|buchen|reservieren|stornieren|verschieben|reservar|reserva|cita|cancelar)\b|رزرو|نوبت|وقت|حجز|موعد|مواعيد|أوقات|الأوقات/iu.test(text);
+  // Possibility/permission is a speech act, not authority to execute the verb.
+  // Do not require a topic noun: "there/that/it" is resolved from both speakers'
+  // history by the existing Knowledge planner, never by the service matcher.
+  // An explicit action anywhere in a mixed turn retains deterministic authority.
+  const permissionQuestion = /\b(?:(?:can|could|may)\s+i|(?:is|would)\s+it\s+(?:be\s+)?possible|(?:do\s+i\s+need|do\s+i\s+have)\s+to|can\s+[^.!?\n]{1,60}\s+be)\b|\b(?:(?:kan|får|måste|behöver)\s+jag|(?:är|vore)\s+det\s+möjligt|kan\s+[^.!?\n]{1,60}\s+(?:bokas|avbokas))\b|\b(?:(?:kann|darf|muss)\s+ich|ist\s+es\s+möglich|kann\s+[^.!?\n]{1,60}\s+werden)\b|\b(?:puedo|es\s+posible|se\s+puede|necesito)\b|آیا[^.!?؟\n]{0,30}(?:می[‌\s]?توان|باید)|هل\s+(?:يمكن|يجب)/iu.test(text);
+  if (schedulingInput && permissionQuestion && !isExplicitBusinessActionRequest(text)) return true;
   const requestedTopics = businessInformationTopics(text);
   // A service named "Online Appointment" does not turn an explicit request
   // for available times into a question about digital service delivery.
@@ -78,7 +84,7 @@ export function isExplicitBusinessActionRequest(text: string): boolean {
   if (/^(?:book|reserve|schedule|reschedule|boka|reservera|buche|reservar|agendar)\s+\p{L}/iu.test(text)) return true;
   // A real instruction, including a mixed question + booking request, must stay
   // with the deterministic engine. Mentioning "how booking works" is not one.
-  return /\b(?:please\s+(?:book|cancel|reschedule)|(?:i\s+(?:want|would like)\s+to|can you)\s+(?:book|cancel|reschedule)|(?:bitte|ich möchte|ich will)\s+(?:(?:einen?|den|die|das)\s+)?(?:.{0,45}\s+)?(?:buchen|buche|stornieren|verschieben)|(?:quiero|por favor)\s+(?:reservar|cancelar|cambiar))\b|(?:^|[.!?؟;,]\s*|\b(?:och|and)\s+)(?:cancel\s+(?:my|the|this)|(?:boka|avboka|omboka)\s+(?:en|ett|min|den))\b|\b(?:jag\s+(?:vill|vill gärna)|kan\s+du|vänligen)\b.{0,45}\b(?:boka|avboka|omboka)\b|(?:رزرو|لغو)\s+کن(?:ید)?(?![\p{L}\p{M}])|می[‌\s]?خواهم[^.!?؟\n]{0,60}(?:رزرو|لغو)\s+کنم(?![\p{L}\p{M}])|(?:احجز|أحجز|ألغِ?|الغِ?)(?![\p{L}\p{M}])|(?:أريد|اريد|أرغب|ارغب)[^.!?؟\n]{0,60}(?:إلغاء|الغاء|حجز)|(?:^|[.!?؟]\s*)(?:الغاء|إلغاء)\s+(?:موعد|حجز)/iu.test(text);
+  return /\b(?:please\s+(?:book|cancel|reschedule)|(?:i(?:\s+(?:want|would like)|[’']d\s+like)\s+to|can you)\s+(?:book|cancel|reschedule)|(?:bitte|ich möchte|ich will)\s+(?:(?:einen?|den|die|das)\s+)?(?:.{0,45}\s+)?(?:buchen|buche|stornieren|verschieben)|(?:quiero|por favor)\s+(?:reservar|cancelar|cambiar))\b|(?:^|[.!?؟;,]\s*|\b(?:och|and)\s+)(?:cancel\s+(?:my|the|this)|(?:boka|avboka|omboka)\s+(?:en|ett|min|den))\b|\b(?:jag\s+(?:vill|vill gärna)|kan\s+du|vänligen)\b.{0,45}\b(?:boka|avboka|omboka)\b|(?:رزرو|لغو)\s+کن(?:ید)?(?![\p{L}\p{M}])|می[‌\s]?خواهم[^.!?؟\n]{0,60}(?:رزرو|لغو)\s+کنم(?![\p{L}\p{M}])|(?:احجز|أحجز|ألغِ?|الغِ?)(?![\p{L}\p{M}])|(?:أريد|اريد|أرغب|ارغب)[^.!?؟\n]{0,60}(?:إلغاء|الغاء|حجز)|(?:^|[.!?؟]\s*)(?:الغاء|إلغاء)\s+(?:موعد|حجز)/iu.test(text);
 }
 
 export function formatRecommendationClarification(language: string): string {

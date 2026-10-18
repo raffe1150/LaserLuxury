@@ -131,8 +131,30 @@ for(const ch of channels)for(const action of [
  'Please cancel my appointment. Could you tell me where I can park?',
  'Please reschedule my appointment. Could you tell me where I can park?',
 ])test(`${ch}/conversational-location/action-boundary: ${action}`,async()=>{
- lang='en';await inbound(ch,action);
- assert.equal(metrics.length,0);assert.equal(requests.some(p=>p.config.systemInstruction.includes('EVIDENCE-FIRST')),false);
+ lang='en';
+ const information='Could you tell me where I can park?';
+ const mixed=action.endsWith(information);
+ if(mixed)facts=['Visitor parking is near the studio.'];
+ await inbound(ch,action);
+ if(!mixed){
+  // Pure actions still cannot enter information generation or obtain tool authority from it.
+  assert.equal(metrics.length,0);assert.equal(requests.some(p=>p.config.systemInstruction.includes('EVIDENCE-FIRST')),false);
+ }else{
+  // The former blanket ban on Knowledge for mixed turns discarded this question.
+  // Require its independent verification without transferring any action authority.
+  assert.ok(sent.length>=2,'both the action response and information response are delivered');
+  assert.equal(published(),facts[0]);
+  const extraction=requests.find(p=>p.config.systemInstruction.includes('UNIT EXTRACTION'));assert.ok(extraction);
+  assert.equal(JSON.parse(extraction.contents[0].parts[0].text).question,information);
+  assert.deepEqual(extraction.config.tools,[]);
+  assert.equal(metrics.length,1);assert.equal(metrics[0].completeness[0].status,'VERIFIED');
+  assert.ok(requests.some(p=>p.config.systemInstruction.includes('BATCH ENTAILMENT')));
+  if(action.startsWith('I want to book')){
+   const id=ch==='whatsapp'?'46700000001':'synthetic-customer';
+   assert.equal(b.pendingStateSnapshot(session(ch,id))?.service,'Video Consultation');
+   assert.equal(b.pendingStateSnapshot(session(ch,id))?.continuationPaused,true);
+  }
+ }
 });
 for(const ch of channels)for(const fault of ['foreign','revoke-extraction','verify-error']as const)
  test(`${ch}/conversational-location/${fault}: shortcut never grants publication authority`,async()=>{

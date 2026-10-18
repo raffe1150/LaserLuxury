@@ -167,3 +167,26 @@ for (const service of missingNumericFactsPlan.displayedServices) {
 }
 
 console.log('missing catalog numeric facts remain null');
+
+// Permission/possibility questions do not authorize executing the named action.
+for (const text of [
+ 'Thanks! And can I reserve a spot there in advance?',
+ 'Is it possible to book parking?', 'Can this service be cancelled?',
+ "What's the cancellation policy for that?", 'Do I need to reserve a place before visiting?',
+ 'Kan jag reservera en plats där i förväg?', 'Kan den tjänsten avbokas?',
+ 'Kann ich dort im Voraus einen Platz reservieren?', 'Kann dieser Service storniert werden?',
+ '¿Puedo reservar una plaza allí con antelación?', '¿Se puede cancelar ese servicio?',
+ 'آیا می‌توانم از قبل آنجا جا رزرو کنم؟', 'آیا می‌توان این خدمت را لغو کرد؟',
+ 'هل يمكنني حجز مكان هناك مسبقًا؟', 'هل يمكن إلغاء هذه الخدمة؟',
+]) assert.equal(isBusinessInformationQuestion(text), true, text);
+for (const text of [
+ "I'd like to book a video consultation for Tuesday.", 'Please cancel my appointment tomorrow.',
+ 'Move my booking to Friday.', 'Book that service for me.',
+ "Can I reserve a spot there? I'd like to book Video Consultation for Tuesday.",
+ 'Can I reserve a spot there? Please book Video Consultation for Tuesday.',
+ 'Kan jag reservera en plats där? Boka en Video Consultation åt mig.',
+ 'Kann ich dort reservieren? Bitte buchen Sie Video Consultation.',
+ '¿Puedo reservar allí? Quiero reservar Video Consultation.',
+ 'آیا می‌توانم آنجا رزرو کنم؟ Video Consultation را رزرو کنید.',
+ 'هل يمكنني الحجز هناك؟ احجز Video Consultation.',
+]) assert.equal(isBusinessInformationQuestion(text), false, text);

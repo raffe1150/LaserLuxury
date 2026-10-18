@@ -122,7 +122,7 @@ const extracted=documentChunks(sections,'admotion studio1.pdf');
 const parkingFacts=[
  'You can park at Nordpark, with the garage entrance at Stjärngatan 14, approximately a five-minute walk from the studio.',
  'Parking is not free.',
- 'Parking spaces cannot be reserved.',
+ 'AdMotion Studio cannot reserve parking spaces.',
 ];
 const rawQuotes=[
  'För besökare som kommer med bil fi nns ett parkeringsgarage som i detta test kallas Nordpark .\nGaragets infart ligger på Stjärngatan 14 . Från garaget tar det ungefär fem minuter att gå till studions entré.',
@@ -384,7 +384,7 @@ for(const profile of channels)for(const channel of channels)for(const completion
  if(baseline)assert.equal(checkpoints.find(c=>c.stage==='parsed')?.remainingMs,{telegram:9111,instagram:7704,whatsapp:1735,messenger:7359}[profile]);
  const complete=profile==='telegram'||completion&&!baseline;
  const output=published();assert.equal(output.includes('Nordpark'),complete,JSON.stringify({profile,channel,completion,elapsed,output}));
- if(complete)for(const fact of ['Nordpark','Stjärngatan 14','five-minute walk','Parking is not free.','Parking spaces cannot be reserved.'])assert.ok(output.includes(fact));
+ if(complete)for(const fact of ['Nordpark','Stjärngatan 14','five-minute walk','Parking is not free.','AdMotion Studio cannot reserve parking spaces.'])assert.ok(output.includes(fact));
  assert.equal(output.includes(question),false);
  const publication=decisionEvents.filter(e=>e.stage==='publication').at(-1);assert.equal(publication.publishableUnits,complete?p.units:0);
  results.push({profile,channel,completion,label:completion?'Counterfactual 6963ms completion fixture':'Observed timeout is censored; no recovered Meta answer',inventoryUnits:p.units,elapsedControlledMs:elapsed,checkpoints,output,publication,
@@ -413,7 +413,7 @@ for(const channel of channels)for(const variant of ['two-complete','two-partial'
  const output=published(),publication=decisionEvents.filter(e=>e.stage==='publication').at(-1);
  for(const fact of ['Nordpark','Stjärngatan 14','five-minute walk','Parking is not free.'])assert.ok(output.includes(fact),output);
  assert.equal(publication.facets[0].status,variant==='two-partial'?'PARTIAL':'VERIFIED');
- assert.equal(output.includes('Parking spaces cannot be reserved.'),variant!=='two-partial');assert.equal(output.includes(question),false);
+ assert.equal(output.includes('AdMotion Studio cannot reserve parking spaces.'),variant!=='two-partial');assert.equal(output.includes(question),false);
 });
 
 for(const channel of channels)test(`latency-admission/${channel}: no new verifier below measured six-second window`,async t=>{
@@ -431,12 +431,12 @@ for(const slow of [false,true])test(`latency-ambiguous-planning/${slow?'slow':'n
 });
 
 const locationLanguages=[
- ['sv','Var finns kundparkering vid AdMotion Studio?',['Du kan parkera i Nordpark med infart på Stjärngatan 14, ungefär fem minuters promenad från studion.','Parkeringen är inte gratis.','Parkeringsplatser kan inte reserveras.']],
+ ['sv','Var finns kundparkering vid AdMotion Studio?',['Du kan parkera i Nordpark med infart på Stjärngatan 14, ungefär fem minuters promenad från studion.','Parkeringen är inte gratis.','AdMotion Studio kan inte reservera parkeringsplatser.']],
  ['en',question,parkingFacts],
- ['de','Wo ist der Kundenparkplatz bei AdMotion Studio?',['Sie können im Nordpark parken. Die Einfahrt liegt an der Stjärngatan 14, etwa fünf Gehminuten vom Studio entfernt.','Das Parken ist nicht kostenlos.','Parkplätze können nicht reserviert werden.']],
- ['es','Dónde está el aparcamiento para clientes de AdMotion Studio?',['Puede aparcar en Nordpark. La entrada está en Stjärngatan 14, a unos cinco minutos a pie del estudio.','El aparcamiento no es gratuito.','No se pueden reservar plazas.']],
- ['fa','کجا می توانم پارکینگ مشتریان AdMotion Studio را پیدا کنم؟',['می‌توانید در Nordpark پارک کنید. ورودی در Stjärngatan 14 است و حدود پنج دقیقه پیاده تا استودیو فاصله دارد.','پارکینگ رایگان نیست.','امکان رزرو جای پارک وجود ندارد.']],
- ['ar','أين يمكنني العثور على موقف سيارات عملاء AdMotion Studio؟',['يمكنك الوقوف في Nordpark. المدخل في Stjärngatan 14، على بعد حوالي خمس دقائق سيرًا على الأقدام من الاستوديو.','الوقوف ليس مجانيًا.','لا يمكن حجز أماكن الوقوف.']],
+ ['de','Wo ist der Kundenparkplatz bei AdMotion Studio?',['Sie können im Nordpark parken. Die Einfahrt liegt an der Stjärngatan 14, etwa fünf Gehminuten vom Studio entfernt.','Das Parken ist nicht kostenlos.','AdMotion Studio kann keine Parkplätze reservieren.']],
+ ['es','Dónde está el aparcamiento para clientes de AdMotion Studio?',['Puede aparcar en Nordpark. La entrada está en Stjärngatan 14, a unos cinco minutos a pie del estudio.','El aparcamiento no es gratuito.','AdMotion Studio no puede reservar plazas.']],
+ ['fa','کجا می توانم پارکینگ مشتریان AdMotion Studio را پیدا کنم؟',['می‌توانید در Nordpark پارک کنید. ورودی در Stjärngatan 14 است و حدود پنج دقیقه پیاده تا استودیو فاصله دارد.','پارکینگ رایگان نیست.','AdMotion Studio نمی‌تواند جای پارک رزرو کند.']],
+ ['ar','أين يمكنني العثور على موقف سيارات عملاء AdMotion Studio؟',['يمكنك الوقوف في Nordpark. المدخل في Stjärngatan 14، على بعد حوالي خمس دقائق سيرًا على الأقدام من الاستوديو.','الوقوف ليس مجانيًا.','لا يستطيع AdMotion Studio حجز أماكن الوقوف.']],
 ] as const;
 for(const channel of channels)for(const [language,localizedQuestion,translations]of locationLanguages)test(`latency-location/${channel}/${language}: actual semantic index, explicitly synthetic embeddings and model translations`,async t=>{
  const f=await install(t);lang=language;const normalizedQuestion=localizedQuestion.replace(/؟/gu,'?');const original=deps.geminiGenerate!;
@@ -620,4 +620,286 @@ for(const channel of channels)test(`compact-native/OpenAI SDK/${channel}`,async 
 });
 for(const fault of ['unknown','duplicate'])for(const channel of channels)test(`compact-native/strict/${channel}/${fault}`,async t=>{
  const result=await compactNativeCase(t,channel,true,fault);assert.equal(result.publishable,0);assert.equal(result.verifierCalls,1);
+});
+
+// Continuity regressions use the real native adapters and the actual PDF.
+// Provider semantics/translation remain explicit fixtures, not live evaluations.
+const continuityLanguages = [
+ ['en', "Hello, I'm thinking about visiting your studio next week. Could you tell me where I can park my car?",
+  ['Thanks! And can I reserve a spot there in advance?', 'Is it possible to book parking?', 'Can I reserve it at the same place?'],
+  'AdMotion Studio cannot reserve parking spaces.'],
+ ['sv', 'Var kan jag parkera bilen när jag besöker er studio?',
+  ['Kan jag reservera en plats där i förväg?', 'Är det möjligt att boka parkering?', 'Kan jag reservera det på samma plats?'],
+  'AdMotion Studio kan inte reservera parkeringsplatser.'],
+ ['de', 'Wo kann ich mein Auto parken, wenn ich Ihr Studio besuche?',
+  ['Kann ich dort im Voraus einen Platz reservieren?', 'Ist es möglich, einen Parkplatz zu buchen?', 'Kann ich das am selben Ort reservieren?'],
+  'AdMotion Studio kann keine Parkplätze reservieren.'],
+ ['es', '¿Dónde puedo aparcar mi coche cuando visite su estudio?',
+  ['¿Puedo reservar una plaza allí con antelación?', '¿Es posible reservar aparcamiento?', '¿Puedo reservar eso en el mismo lugar?'],
+  'AdMotion Studio no puede reservar plazas.'],
+ ['fa', 'کجا می‌توانم ماشینم را هنگام بازدید از استودیو پارک کنم؟',
+  ['آیا می‌توانم از قبل آنجا جا رزرو کنم؟', 'آیا می‌توان پارکینگ رزرو کرد؟', 'آیا می‌توانم آن را در همان مکان رزرو کنم؟'],
+  'AdMotion Studio نمی‌تواند جای پارک رزرو کند.'],
+ ['ar', 'أين يمكنني ركن سيارتي عند زيارة الاستوديو؟',
+  ['هل يمكنني حجز مكان هناك مسبقًا؟', 'هل يمكن حجز موقف سيارات؟', 'هل يمكنني حجز ذلك في نفس المكان؟'],
+  'لا يستطيع AdMotion Studio حجز أماكن الوقوف.'],
+] as const;
+async function continuityFixture(t: any, ch: Channel, language: string, initial: string, answer: string) {
+ await install(t, 'complete', ch); lang = language;
+ const firstProvider = deps.geminiGenerate!;
+ const localSearch = deps.knowledgeSearch!;
+ // Fixed cross-language retrieval probe: retrieval semantics are intercepted.
+ configure({knowledgeSearch: (id, _q, limit) => localSearch(id, 'parkering garage infart', limit), geminiGenerate: async p => {
+  const result = await firstProvider(p);
+  if (p.config.systemInstruction.includes('UNIT EXTRACTION')) {
+   const data = JSON.parse(result.text);
+   const translations = locationLanguages.find(l => l[0] === language)![2];
+   data.units.forEach((u:any,i:number) => {u.language=language;u.text=translations[i];u.value=translations[i];});
+   return {text:JSON.stringify(data)};
+  }
+  return result;
+ }});
+ await inbound(ch, initial);
+ assert.ok(published().includes('Nordpark'), JSON.stringify({reply:published(),stages:requests.map(p=>p.config.systemInstruction.slice(0,80))}));
+ sent = []; requests = []; reads = 0; metrics = []; decisionEvents = [];
+ const original = deps.geminiGenerate!;
+ let groundingCalls = 0, entailmentCalls = 0;
+ configure({
+  assessBusinessSupportGrounding: async r => {
+   groundingCalls++;
+   return {hasBusinessFactualClaims:true,allBusinessClaimsSupported:true,claims:[{claim:answer,candidateQuote:answer,
+    claimKind:'NEGATIVE_ABSENCE',requiresBusinessEvidence:true,supported:true,
+    evidence:[{source:'retrieved_knowledge',quote:rawQuotes[1]}]}]};
+  },
+  assessBusinessClaimEntailment: async () => {entailmentCalls++;return {relation:'ENTAILED',claimKind:'NEGATIVE_ABSENCE',explicitAbsenceEvidence:true};},
+  geminiGenerate: async p => {
+  const instruction = p.config.systemInstruction;
+  if (!/retrieval query planner|UNIT EXTRACTION|BATCH ENTAILMENT|VERIFIED-UNIT PRESENTATION/u.test(instruction)) {
+   requests.push(p);
+   return {text:answer};
+  }
+  if (instruction.includes('retrieval query planner')) {
+   requests.push(p);
+   const payload = JSON.parse(p.contents[0].parts[0].text);
+   assert.ok(payload.referenceHistory.some((m: any) => m.role === 'assistant' && m.content.includes('Nordpark')));
+   assert.ok(payload.referenceHistory.some((m: any) => m.role === 'user' && m.content === initial));
+   return {text: JSON.stringify({canonicalMeaning:'parking reservations',queries:['parkering reservera'],requestKind:'BUSINESS_INFORMATION',requestedFacets:[
+    {subject:'studio',attribute:'reservation authority',questionType:'description',obligations:[{description:'studio reservation authority',questionType:'description'}]},
+    {subject:'garage operator',attribute:'independent reservation policy',questionType:'permission',obligations:[{description:'operator reservation policy',questionType:'permission'}]},
+   ]})};
+  }
+  if (instruction.includes('UNIT EXTRACTION')) {
+   requests.push(p); const data = JSON.parse(p.contents[0].parts[0].text);
+   const ev = data.evidence.find((e: any) => e.text.includes(rawQuotes[1])); assert.ok(ev);
+   return {text:JSON.stringify({units:[{facetIds:['f1'],subject:'AdMotion Studio',predicate:'reserve parking spaces',value:answer,
+    scope:'studio authority only',qualifiers:[],negation:true,modality:'descriptive',language,text:answer,
+    evidenceRefs:[{evidenceId:ev.id,exactQuote:rawQuotes[1]}]}]})};
+  }
+  if (instruction.includes('BATCH ENTAILMENT')) {
+   requests.push(p); const data = JSON.parse(p.contents[0].parts[0].text); const ids = data.units.map((u:any)=>u.id);
+   return {text:JSON.stringify({decisions:data.units.map((u:any)=>({unitId:u.id,relation:'ENTAILED',facetIds:['f1'],meaningPreserved:true,
+    modalityPreserved:true,qualifiersPreserved:true,relevant:true,languageCorrect:true,negativeAbsence:true,explicitAbsenceEvidence:true})),coverage:[
+     {facetId:'f1',requestAligned:true,materialFactsComplete:true,materialUnitIds:ids,obligations:[{obligationId:'f1.o1',status:'COVERED',unitIds:ids}]},
+     {facetId:'f2',requestAligned:true,materialFactsComplete:false,materialUnitIds:[],obligations:[{obligationId:'f2.o1',status:'UNRESOLVED',unitIds:[]}]},
+    ]})};
+  }
+  return original(p);
+ }});
+ return {groundingCalls:()=>groundingCalls,entailmentCalls:()=>entailmentCalls};
+}
+for (const ch of channels) for (const [language, initial, followups, answer] of continuityLanguages) for (const followup of followups)
+ test(`intent continuity/${ch}/${language}: ${followup}`, async t => {
+  const checks = await continuityFixture(t, ch, language, initial, answer);
+  await inbound(ch, followup);
+  t.diagnostic(JSON.stringify({channel:ch,language,input:followup,output:published()}));
+  assert.equal(sent.length, 1); assert.equal(reads, 0);
+  assert.ok(requests.some(p => p.config.systemInstruction.includes('retrieval query planner')), 'follow-up must reach history-aware Knowledge planning');
+  assert.ok(published().includes(answer), 'supported studio authority is included');
+  assert.doesNotMatch(published(), /not offered|Available services|Which one would you like to book/i);
+  const final = decisionEvents.filter(e=>e.stage==='publication').at(-1);
+  if (final) {
+   assert.equal(final.facets[0].status,'VERIFIED'); assert.equal(final.facets[1].status,'UNAVAILABLE');
+   assert.equal(final.publishableUnits,1); assert.equal(metrics.at(-1).completeness[1].obligations[0], 'UNRESOLVED');
+  } else {
+   assert.ok(checks.groundingCalls()>0); assert.ok(checks.entailmentCalls()>0, 'legacy information still independently verifies');
+   assert.equal(published(), answer);
+  }
+ });
+
+for (const ch of channels) for (const [language, initial, followups, answer] of continuityLanguages)
+ test(`intent pending/${ch}/${language}: information preserves the active draft and suppresses duplicate events`, async t => {
+  await continuityFixture(t, ch, language, initial, answer);
+  const id = ch === 'whatsapp' ? '46700000001' : 'synthetic-customer', sid = session(ch, id);
+  await b.stateAuditPersist(sid, ch, {bookingStateVersion:3,businessId:77,platform:ch,userId:id,businessConfig:config,
+   operation:'new_booking',status:'awaiting_service',expectedInput:'service',language,service:'Bokning',
+   selectedDate:'2026-10-20',dateTime:null,offeredSlots:[],ownedOfferedSlots:[],customerName:'Alex Testsson'});
+  const before = b.pendingStateSnapshot(sid), event = String(++sequence);
+  await inbound(ch, followups[0], id, event);
+  assert.ok(published().includes(answer)); assert.equal(reads,0);
+  const after = b.pendingStateSnapshot(sid);
+  for (const key of ['service','status','selectedDate','dateTime','customerName','ownedOfferedSlots']) assert.deepEqual(after[key],before[key],key);
+  assert.equal(after.continuationPaused,true);
+  const sends = sent.length, calls = requests.length;
+  await inbound(ch, followups[0], id, event);
+  assert.equal(sent.length,sends); assert.equal(requests.length,calls);
+ });
+
+for (const ch of channels) test(`intent action/${ch}: explicit booking after parking remains actionable`, async t => {
+ await install(t,'complete',ch);
+ await inbound(ch,"Hello, I'm thinking about visiting your studio next week. Could you tell me where I can park my car?");
+ sent=[];requests=[];reads=0;
+ await inbound(ch,"I'd like to book a Video Consultation for Tuesday.");
+ const id=ch==='whatsapp'?'46700000001':'synthetic-customer';
+ assert.equal(b.pendingStateSnapshot(session(ch,id))?.service,'Video Consultation');
+ assert.ok(reads>0,'real booking must reach calendar availability');
+ assert.equal(requests.some(p=>p.config.systemInstruction.includes('retrieval query planner')),false);
+});
+
+for (const ch of channels) test(`intent acceptance/${ch}: mixed action and information must preserve both requests`, async t => {
+ await continuityFixture(t,ch,'en',continuityLanguages[0][1],continuityLanguages[0][3]);
+ await inbound(ch, 'Please book Video Consultation for Tuesday. Can I reserve a spot there in advance?');
+ const id=ch==='whatsapp'?'46700000001':'synthetic-customer';
+ const pending=b.pendingStateSnapshot(session(ch,id));
+ assert.equal(pending?.service,'Video Consultation');
+ assert.ok(published().includes('AdMotion Studio cannot reserve parking spaces.') ||
+  /(?:both|information question|which.*first)/iu.test(published()),
+  `The information question must be answered or explicitly retained for clarification: ${published()}`);
+});
+for (const ch of channels) test(`intent acceptance/${ch}: unresolved reference requires clarification`, async t => {
+ await install(t,'complete',ch);
+ // b.reset clears booking state, but deliberately does not erase chat history.
+ // Make the claimed no-antecedent precondition explicit for this customer.
+ const id=ch==='whatsapp'?'46700000001':'synthetic-customer';
+ b.promptAuditHistory(session(ch,id),[]);
+ // No antecedent and no usable source: do not synthesize a referent from a document.
+ configure({knowledgeSearch:async()=>[],semanticKnowledgeSearch:async()=>[]});
+ await inbound(ch,'Can I reserve it there?');
+ assert.equal(sent.length,1);assert.equal(reads,0);
+ assert.match(published(), /\?|؟/u, `An unresolved reference needs a question: ${published()}`);
+ assert.doesNotMatch(published(), /Nordpark|Stjärngatan|Video Consultation/u);
+});
+
+const continuityActions = {
+ en: {book:'Please book Video Consultation for Tuesday.',cancel:'Please cancel my appointment tomorrow.',move:'Please reschedule my appointment to Friday.'},
+ sv: {book:'Boka en Video Consultation på tisdag.',cancel:'Avboka min tid imorgon.',move:'Jag vill omboka min tid till fredag.'},
+ de: {book:'Bitte buchen Sie Video Consultation für Dienstag.',cancel:'Bitte stornieren Sie meinen Termin morgen.',move:'Bitte verschieben Sie meinen Termin auf Freitag.'},
+ es: {book:'Quiero reservar Video Consultation para el martes.',cancel:'Quiero cancelar mi cita de mañana.',move:'Quiero cambiar mi cita al viernes.'},
+ fa: {book:'Video Consultation را رزرو کنید برای سه‌شنبه.',cancel:'لطفاً نوبتم را لغو کنید.',move:'می‌خواهم وقتم را تغییر بدهم به جمعه.'},
+ ar: {book:'احجز Video Consultation يوم الثلاثاء.',cancel:'أريد إلغاء موعدي غدًا.',move:'أريد تغيير موعدي إلى الجمعة.'},
+} as const;
+for (const ch of channels) for (const [language, initial, followups, answer] of continuityLanguages) for (const action of ['book','cancel','move'] as const)
+ test(`intent combined/${ch}/${language}/${action}: independent verified information and authorized operation survive together`, async t => {
+  (config as any).allowCancellation=true;t.after(()=>delete (config as any).allowCancellation);
+  await continuityFixture(t,ch,language,initial,answer);
+  const id=ch==='whatsapp'?'46700000001':'synthetic-customer',sid=session(ch,id);
+  if (action!=='book') b.seedOwnedAppointment({sessionId:sid,platform:ch,userId:id,businessConfig:config,operation:action==='cancel'?'cancellation':'reschedule',
+   appointment:{id:'owned-event',calendarEventId:'owned-event',source:'calendar',businessId:'77',business_id:77,platform:ch,userId:id,
+    service:'Video Consultation',start:new Date(Date.now()+86400000).toISOString(),end:new Date(Date.now()+90000000).toISOString(),status:'booked'}});
+  if(action!=='book') {
+   const event={id:'owned-event',status:'confirmed',summary:'Video Consultation',description:`BusinessId: 77\nPlatform: ${ch}\nUserId: ${id}`,
+    start:{dateTime:new Date(Date.now()+86400000).toISOString()},end:{dateTime:new Date(Date.now()+90000000).toISOString()},
+    extendedProperties:{private:{businessId:'77',platform:ch,userId:id}}};
+   configure({calendarAdapter:{...deps.calendarAdapter!,getEvents:async()=>{reads++;return[event];},getEventById:async eventId=>{assert.equal(eventId,'owned-event');return event;}}});
+  }
+  const event=String(++sequence);
+  await inbound(ch,`${continuityActions[language][action]} ${followups[0]}`,id,event);
+  assert.ok(published().includes(answer),published());
+  assert.ok(sent.length>=2,'operation response and information answer both delivered');
+  if(action==='book') {assert.equal(b.pendingStateSnapshot(sid)?.service,'Video Consultation');assert.equal(b.pendingStateSnapshot(sid)?.continuationPaused,true);}
+  if(action==='cancel') assert.ok(b.cancellationState(sid),'information must not erase cancellation authority');
+  if(action==='move') assert.equal(b.appointmentOperationState(sid).operation,'reschedule','information must not erase rescheduling authority');
+  const extraction=requests.find(p=>p.config.systemInstruction.includes('UNIT EXTRACTION'));
+  if(extraction) {
+   const question=JSON.parse(extraction.contents[0].parts[0].text).question;
+   assert.ok(normalizeConversationText(followups[0]).includes(question),question);
+   assert.equal(question.includes('Video Consultation'),false,'action clause is not the Knowledge request');
+  }
+  const sends=sent.length,calls=requests.length,calendarReads=reads;
+  await inbound(ch,`${continuityActions[language][action]} ${followups[0]}`,id,event);
+  assert.equal(sent.length,sends);assert.equal(requests.length,calls);assert.equal(reads,calendarReads);
+ });
+
+const bareReferences = {
+ en:'Can I reserve it there?',sv:'Kan jag reservera det där?',de:'Kann ich das dort reservieren?',
+ es:'¿Puedo reservar eso allí?',fa:'آیا می‌توانم آن را آنجا رزرو کنم؟',ar:'هل يمكنني حجز ذلك هناك؟',
+} as const;
+for (const ch of channels) for (const [language] of continuityLanguages)
+ test(`intent clarification/${ch}/${language}: no antecedent, bounded repeat, and explicit action pivot`,async t=>{
+  await install(t,'complete',ch);lang=language;
+  const id=ch==='whatsapp'?'46700000001':'synthetic-customer',sid=session(ch,id);
+  b.promptAuditHistory(sid,[]);
+  await inbound(ch,bareReferences[language]);
+  const first=published();assert.match(first,/[?؟]/u);assert.equal(requests.length,0);assert.equal(reads,0);
+  assert.doesNotMatch(first,/Nordpark|Stjärngatan|Video Consultation/u);
+  assert.ok(b.businessInformationState(sid)?.referenceClarification);
+  await inbound(ch,bareReferences[language]);
+  assert.notEqual(published(),first);assert.doesNotMatch(published(),/[?؟]/u,'repeat asks for concrete names instead of looping');
+  const before=requests.length;
+  await inbound(ch,continuityActions[language].book);
+  assert.equal(b.pendingStateSnapshot(sid)?.service,'Video Consultation','explicit action overrides a clarification');
+  assert.equal(requests.slice(before).some(p=>p.config.systemInstruction.includes('retrieval query planner')),false);
+ });
+
+for(const ch of channels)test(`intent contextual ambiguity/${ch}: planner asks before retrieval, clarification retains booking and then verifies evidence`,async t=>{
+ await continuityFixture(t,ch,'en',continuityLanguages[0][1],continuityLanguages[0][3]);
+ const id=ch==='whatsapp'?'46700000001':'synthetic-customer',sid=session(ch,id);
+ const original=deps.geminiGenerate!;let unresolved=true,searches=0,planners=0;
+ const search=deps.knowledgeSearch!;
+ configure({knowledgeSearch:(...args)=>{searches++;return search(...args);},geminiGenerate:async p=>{
+  if(p.config.systemInstruction.includes('retrieval query planner')){
+   requests.push(p);planners++;
+   const question=JSON.parse(p.contents[0].parts[0].text).question;
+   if(!unresolved) assert.ok(question.includes('Nordpark garage'),question);
+   return {text:JSON.stringify({canonicalMeaning:'reservation question',queries:['parkering reservera'],requestKind:'BUSINESS_INFORMATION',
+    referenceResolution:unresolved?'UNRESOLVED':'RESOLVED',requestedFacets:[
+     {subject:'studio',attribute:'reservation authority',questionType:'description',obligations:[{description:'studio reservation authority',questionType:'description'}]},
+     {subject:'garage operator',attribute:'independent reservation policy',questionType:'permission',obligations:[{description:'operator reservation policy',questionType:'permission'}]},
+    ]})};
+  }
+  return original(p);
+ }});
+ await inbound(ch,'Please book Video Consultation for Tuesday. Can I reserve it there?');
+ assert.equal(planners,1);assert.equal(searches,0,'ambiguous referent cannot be selected from documents');
+ assert.match(published(),/[?؟]/u);assert.equal(b.pendingStateSnapshot(sid)?.service,'Video Consultation');
+ const before=b.pendingStateSnapshot(sid);
+ unresolved=false;sent=[];requests=[];
+ await inbound(ch,'I mean parking at the Nordpark garage.');
+ assert.ok(published().includes(continuityLanguages[0][3]),published());
+ assert.equal(planners,2);assert.ok(searches>0);
+ const after=b.pendingStateSnapshot(sid);
+ for(const key of ['service','selectedDate','dateTime','ownedOfferedSlots'])assert.deepEqual(after[key],before[key],key);
+ assert.equal(after.continuationPaused,true);
+ assert.ok(requests.some(p=>p.config.systemInstruction.includes('BATCH ENTAILMENT')),'clarification answer does not bypass independent verification');
+});
+
+for(const ch of channels)test(`intent combined source failure/${ch}: missing authorization cannot erase booking or publish document claims`,async t=>{
+ await continuityFixture(t,ch,'en',continuityLanguages[0][1],continuityLanguages[0][3]);
+ configure({validateKnowledgeMatches:async()=>[]});
+ await inbound(ch,'Please book Video Consultation for Tuesday. Can I reserve a spot there in advance?');
+ const id=ch==='whatsapp'?'46700000001':'synthetic-customer';
+ assert.equal(b.pendingStateSnapshot(session(ch,id))?.service,'Video Consultation');
+ assert.ok(sent.length>=2);assert.doesNotMatch(published(),/Nordpark|Studio cannot reserve|Stjärngatan/u);
+ assert.equal(requests.some(p=>p.config.systemInstruction.includes('UNIT EXTRACTION')),false,'unauthorized source never reaches generation');
+});
+
+for(const ch of channels)test(`intent declined action/${ch}: ask for its target without discarding the independently answerable question`,async t=>{
+ await continuityFixture(t,ch,'en',continuityLanguages[0][1],continuityLanguages[0][3]);
+ await inbound(ch,'Could we arrange an outdoor event? Can I reserve a spot there in advance?');
+ assert.equal(sent.length,2);
+ const body=sent[0].body;
+ const first=(typeof body.text==='string'?body.text:body.text?.body)||body.message?.text;
+ assert.match(first,/which service or appointment/iu);
+ assert.ok(published().includes(continuityLanguages[0][3]),published());
+ const id=ch==='whatsapp'?'46700000001':'synthetic-customer';
+ assert.equal(b.pendingStateSnapshot(session(ch,id)),null);
+ assert.equal(reads,0,'information does not authorize an unrecognized action');
+});
+
+for(const ch of channels)test(`intent reference planner failure/${ch}: uncertain meaning never becomes a source-derived assumption`,async t=>{
+ await continuityFixture(t,ch,'en',continuityLanguages[0][1],continuityLanguages[0][3]);
+ let searches=0;
+ configure({knowledgeSearch:async()=>{searches++;return[];},geminiGenerate:async()=>{throw Error('intercepted planner failure');}});
+ await inbound(ch,'Can I reserve it there?');
+ assert.match(published(),/[?؟]/u);assert.equal(searches,0);assert.equal(reads,0);
+ assert.doesNotMatch(published(),/Nordpark|Stjärngatan|Studio cannot reserve|Video Consultation/u);
 });

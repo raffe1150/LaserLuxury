@@ -57,7 +57,7 @@ const coverage = object({ facetId: str, requestAligned: bool, materialFactsCompl
   status: enumeration(['COVERED', 'UNRESOLVED']), unitIds: array(str) })) });
 const schemas = {
   planning: object({ canonicalMeaning: str, queries: array(str), queryLanguages: array(object({ query: str, language: enumeration(['sv','en','de','es','fa','ar']) })),
-    requestKind: enumeration(['BUSINESS_INFORMATION','GENERAL_CONVERSATION']), requestedFacets: array(object({ subject: str, attribute: str, questionType,
+    requestKind: enumeration(['BUSINESS_INFORMATION','GENERAL_CONVERSATION']), referenceResolution: enumeration(['RESOLVED','UNRESOLVED','NOT_REQUIRED']), requestedFacets: array(object({ subject: str, attribute: str, questionType,
       obligations: array(object({ description: str, questionType })) })) }),
   extraction: object({ oversized: bool, units: array(object({ facetIds: array(str), subject: str, predicate: str, value: str,
     modality: enumeration(MODALITIES), negation: bool, scope: str, qualifiers: array(str), language: str, text: str,

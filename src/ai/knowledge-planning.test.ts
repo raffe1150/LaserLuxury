@@ -2,6 +2,29 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {deterministicLocationPlan} from './knowledge-planning';
 import {parseRequestedFacets} from './business-information-answer-plan';
+import {isBusinessInformationQuestion} from './business-information';
+import {naturalLocationCases} from '../../tests/fixtures/knowledge-natural-location';
+
+for(const [,question] of naturalLocationCases)test(`Conversational location contract retains original request: ${question}`,()=>{
+ const plan=deterministicLocationPlan(question,isBusinessInformationQuestion(question));assert.ok(plan);
+ assert.equal(plan.canonicalMeaning,question);assert.equal(plan.queries[0],question);
+ const {facets}=parseRequestedFacets(plan.requestedFacets);
+ assert.equal(facets[0].attribute,question);assert.equal(facets[0].obligations[0].description,question);
+ assert.equal(deterministicLocationPlan(question,false),null);
+});
+test('Retrieval probes use the location clause while the original preface stays in the request',()=>{
+ const question=naturalLocationCases[0][1],plan=deterministicLocationPlan(question,true)!;
+ assert.deepEqual(plan.queries,[question,'park','car']);
+});
+for(const question of [
+ 'Could you tell me where I can park and what a visit costs?',
+ 'Could you tell me where it is?',
+ 'Could you tell me where I can book a visit?',
+ 'Could you tell me where I can park? Please cancel my appointment.',
+ 'Please reschedule my appointment. Could you tell me where I can park?',
+ 'I want to book a visit. Could you tell me where I can park?',
+ 'I wonder where I should park?',
+])test(`Conversational preface cannot bypass planning guards: ${question}`,()=>assert.equal(deterministicLocationPlan(question,isBusinessInformationQuestion(question)),null));
 for(const question of ['Where can I park my car when visiting AdMotion Studio?','Where is the customer entrance at Clinic Alpha?','Var finns kundparkering vid studion?','Wo ist der Eingang für Kunden?','Dónde está la entrada para clientes?','کجا می توانم پارکینگ مشتریان را پیدا کنم؟','أين يمكنني العثور على موقف سيارات العملاء؟'])test(`Literal single-location contract: ${question}`,()=>{
  const plan=deterministicLocationPlan(question,true);assert.ok(plan);assert.equal(plan.requestKind,'BUSINESS_INFORMATION');
  const {facets}=parseRequestedFacets(plan.requestedFacets);assert.equal(facets.length,1);assert.equal(facets[0].obligations[0].description,question);

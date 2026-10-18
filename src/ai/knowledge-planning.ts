@@ -7,7 +7,11 @@ export function deterministicLocationPlan(question: string, businessInformationR
   // Ignore only one explicit leading greeting for shortcut eligibility. Keep the
   // complete original input in the request contract and model/retrieval context.
   const locationQuestion=text.replace(/^(?:hi|hello|hey|hej|hallo|hola|سلام|مرحبا|مرحباً)[ \t]*[,،!.][ \t]*/iu,'');
-  if(!/^(?:where\b|var\b|wo\b|d[oó]nde\b|کجا(?:\s|$)|(?:أين|اين)(?:\s|$))/iu.test(locationQuestion))return null;
+  // A locative question can follow conversational context or a polite request.
+  // Reuse the established read-only intent and the whole-question safety guards
+  // below; never discard the preface or infer an answer from this marker.
+  const location=/(?<![\p{L}\p{M}\p{N}_])(?:where\b|var\b|wo\b|d[oó]nde\b|کجا(?:\s|$)|(?:أين|اين)(?:\s|$))/iu.exec(locationQuestion);
+  if(!location)return null;
   // Do not collapse multiple intents, alternatives or conditional requirements.
   if((locationQuestion.match(/[?؟]/gu)||[]).length>1 || /[?؟].*\S|[,،;:\n]|\b(?:and|or|but|unless|also|plus|without|ohne|utan|sin|och|eller|men|und|oder|aber|y|o|pero)\b|(?:^|\s)(?:و|یا|أو|او|لكن|بدون|دون)(?:\s|$)/iu.test(locationQuestion))return null;
   // References without an explicit topic need the history-aware model planner.
@@ -17,7 +21,7 @@ export function deterministicLocationPlan(question: string, businessInformationR
   // question. No translations or business facts are invented. Stop words affect
   // retrieval only; qualifiers and numbers remain in the full request contract.
   const stop=new Set('where can could may i we you my our your the a an is are do does in at near when visiting visit var kan jag vi ni min vår din er är finns wo kann ich wir sie mein der die das ist sind dónde puedo yo mi el la en está کجا من می توانم أين اين يمكن يمكنني أنا انا'.split(' '));
-  const keywords=(locationQuestion.match(/[\p{L}\p{M}\p{N}]+/gu)||[]).filter(w=>w.length>=3&&!stop.has(w.toLocaleLowerCase())).slice(0,2);
+  const keywords=(locationQuestion.slice(location.index).match(/[\p{L}\p{M}\p{N}]+/gu)||[]).filter(w=>w.length>=3&&!stop.has(w.toLocaleLowerCase())).slice(0,2);
   return {
     canonicalMeaning:text,queries:[...new Set([text,...keywords])],queryLanguages:{},requestKind:'BUSINESS_INFORMATION',
     requestedFacets:[{subject:'business',attribute:text,questionType:'description',

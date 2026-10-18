@@ -3,6 +3,8 @@ import { afterEach, test } from 'node:test';
 import { businessInformationTopics, isBusinessInformationQuestion } from './business-information';
 import { InMemoryKnowledgeStorage, KnowledgeService } from '../../knowledge';
 import { documentChunks } from '../knowledge/documents/service';
+import { cancellationGroundingConfig } from './cancellation-policy';
+import { numericalConstraintSafe } from './numerical-constraints';
 
 process.env.NODE_ENV = 'test';
 process.env.DOTENV_CONFIG_PATH = '/dev/null';
@@ -112,6 +114,11 @@ test('recorded Persian compound and business-B questions use real tenant-filtere
   }
   await service.addSource({ businessId: 77, type: 'text', status: 'ready', title: 'Manual', content: 'Manuell information: kvittot skickas inom åtta arbetsdagar.' });
   const queries: number[] = [];
+  // This fixture exercises document-owned notice periods, not configured fee
+  // windows. Keep cancellation settings on the action fixtures above/below;
+  // allowCancellation alone creates authoritative zero-window settings.
+  const { allowCancellation: _allowCancellation, ...documentPolicyConfig } = config;
+  assert.equal(cancellationGroundingConfig(documentPolicyConfig), undefined);
   for (const [id, text, facts, foreign, reply] of [
     [77, persianCompound, factsA, 'BJORK-915', 'لغو نوبت به اطلاع 37 ساعت قبل نیاز دارد. شناسه دروازه پارکینگ TALL-742 است. سرویس Introduktionsbesök مدت 45 دقیقه دارد.'],
     [88, persianBusinessB, factsB, 'TALL-742', 'لغو نوبت به اطلاع 91 ساعت قبل نیاز دارد. شناسه دروازه پارکینگ BJORK-915 است.'],
@@ -132,7 +139,7 @@ test('recorded Persian compound and business-B questions use real tenant-filtere
             : [{ source: 'retrieved_knowledge', quote: facts.split('. ')[index] + (index === 0 ? '.' : '') }] })) }),
       assessBusinessClaimEntailment: async () => ({ relation: 'ENTAILED', claimKind: 'OTHER', explicitAbsenceEvidence: false }),
     });
-    const result = await b.promptAuditWeb({ chatId: 'same-visitor', message: text }, { ...config, id, language: 'fa' });
+    const result = await b.promptAuditWeb({ chatId: 'same-visitor', message: text }, { ...documentPolicyConfig, id, language: 'fa' });
     assert.equal(result.body.text, reply);
     assert.equal(requests.length, 1);
     const instruction = requests[0].config.systemInstruction;
@@ -143,6 +150,32 @@ test('recorded Persian compound and business-B questions use real tenant-filtere
   }
   assert.ok(queries.includes(77) && queries.includes(88));
   assert.ok((await service.search(77, 'kvittot')).some(match => match.metadata?.source !== 'document'));
+});
+
+test('Persian document notice remains subordinate to explicit structured cancellation settings', async t => {
+  for (const method of ['info', 'warn', 'error', 'log'] as const) t.mock.method(console, method, () => undefined);
+  const notice = 'لغو نوبت به اطلاع 37 ساعت قبل نیاز دارد.';
+  const gate = 'شناسه دروازه پارکینگ TALL-742 است.';
+  const policy = 'Avbokning: En bokad tid ska avbokas senast 37 timmar före besöket.';
+  const parking = 'Parkeringsgrindens märkning är TALL-742.';
+  const structured = JSON.stringify({ cancellation: cancellationGroundingConfig(config) });
+  assert.equal(numericalConstraintSafe(notice, notice, [policy]), true);
+  assert.equal(numericalConstraintSafe(notice, notice, [policy], structured), false);
+  const verified: string[] = [];
+  b.configure({
+    assessBusinessSupportGrounding: async () => ({ hasBusinessFactualClaims: true, allBusinessClaimsSupported: true,
+      claims: [[notice, policy], [gate, parking]].map(([claim, quote]) => ({ claim, candidateQuote: claim,
+        claimKind: 'OTHER', requiresBusinessEvidence: true, supported: true,
+        evidence: [{ source: 'retrieved_knowledge', quote }] })) }),
+    assessBusinessClaimEntailment: async request => { verified.push(request.atomicClaim);
+      return { relation: 'ENTAILED', claimKind: 'OTHER', explicitAbsenceEvidence: false }; },
+  });
+  b.businessInformationState('structured-policy-conflict', { ...config, language: 'fa' }, persianBusinessB, 'fa', policy + '\n' + parking);
+  const reply = await b.businessSupportGrounding('structured-policy-conflict', persianBusinessB, notice + ' ' + gate, 'fa');
+  assert.ok(reply.includes(gate), 'Preserve the independently supported parking fact');
+  assert.ok(!reply.includes(notice) && !/37|۳۷/u.test(reply), 'Do not publish a conflicting mandatory notice');
+  assert.ok(verified.includes(gate), 'Supported facts still require independent verification');
+  assert.ok(!verified.includes(notice), 'A positive model verdict cannot override the structured-policy veto');
 });
 
 test('actual cancellation requests still enter the deterministic engine on all four messaging channels', async t => {

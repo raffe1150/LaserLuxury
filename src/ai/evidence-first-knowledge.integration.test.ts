@@ -5,6 +5,7 @@ import { Responses } from 'openai/resources/responses';
 import { normalizeConversationText } from './booking-intelligence';
 import { NATURAL_FLAGS } from './grounded-knowledge-composition';
 import { performance } from 'node:perf_hooks';
+import { naturalLocationCases } from '../../tests/fixtures/knowledge-natural-location';
 process.env.NODE_ENV = 'test';
 process.env.GEMINI_API_KEY = 'synthetic-offline-only';
 const { priority1hUnifiedEngineTestBoundary: b } = await import('../../server');
@@ -104,6 +105,98 @@ async function inbound(ch: Channel, text: string, id = ch === 'whatsapp' ? '4670
  return ch === 'instagram' ? b.instagramInbound(event,cfg) : b.messengerInbound(event,cfg);
 }
 function published() { assert.ok(sent.length, 'actual adapter reached fake outbound boundary'); const body = sent.at(-1).body; return (typeof body.text === 'string' ? body.text : body.text?.body) || body.message?.text; }
+for(const ch of channels)for(const [language,question,text]of naturalLocationCases)
+ test(`${ch}/${language}/conversational-location: complete authorized answer without a planner call`,async()=>{
+  lang=language;facts=[text];
+  const history=[{role:'user',content:'We are discussing a future studio visit.'},{role:'assistant',content:'How can I help with your visit?'}];
+  b.promptAuditHistory(session(ch,ch==='whatsapp'?'46700000001':'synthetic-customer'),history);
+  await inbound(ch,question);
+  assert.equal(published(),text,'Retain address, walking distance, payment, reservation restriction and alternatives');
+  assert.equal(requests.some(p=>p.config.systemInstruction.includes('retrieval query planner')),false);
+  const extraction=requests.find(p=>p.config.systemInstruction.includes('EVIDENCE-FIRST UNIT EXTRACTION'));
+  const verification=requests.find(p=>p.config.systemInstruction.includes('EVIDENCE-FIRST BATCH ENTAILMENT'));
+  assert.ok(extraction&&verification,'Extraction and independent verification must both execute');
+  for(const request of [extraction,verification]){
+   const data=JSON.parse(request.contents[0].parts[0].text);
+   assert.equal(data.question,normalizeConversationText(question));
+   assert.equal(data.facets[0].obligations[0].description,data.question);
+  }
+  assert.deepEqual(JSON.parse(extraction.contents[0].parts[0].text).relevantHistory,history);
+  assert.equal(metrics.at(-1).completeness[0].status,'VERIFIED');
+  assert.ok(decisionEvents.some(e=>e.stage==='publication'&&e.publishableUnits===1));assert.equal(reads,0);
+ });
+for(const ch of channels)for(const action of [
+ 'I want to book Video Consultation next week.', 'Please cancel my appointment.', 'Please reschedule my appointment.',
+ 'I want to book Video Consultation next week. Could you tell me where I can park?',
+ 'Please cancel my appointment. Could you tell me where I can park?',
+ 'Please reschedule my appointment. Could you tell me where I can park?',
+])test(`${ch}/conversational-location/action-boundary: ${action}`,async()=>{
+ lang='en';await inbound(ch,action);
+ assert.equal(metrics.length,0);assert.equal(requests.some(p=>p.config.systemInstruction.includes('EVIDENCE-FIRST')),false);
+});
+for(const ch of channels)for(const fault of ['foreign','revoke-extraction','verify-error']as const)
+ test(`${ch}/conversational-location/${fault}: shortcut never grants publication authority`,async()=>{
+  const [language,question,text]=naturalLocationCases[0];lang=language;facts=[text];mode=fault;
+  await inbound(ch,question);assert.ok(!published().includes('Nordpark'));
+  assert.equal(requests.some(p=>p.config.systemInstruction.includes('retrieval query planner')),false);
+  assert.ok(!decisionEvents.some(e=>e.stage==='publication'&&e.publishableUnits>0));assert.equal(reads,0);
+ });
+for(const ch of channels)test(`${ch}/conversational-location/incomplete: source-backed unit cannot certify full coverage`,async()=>{
+ lang='en';facts=[naturalLocationCases[0][2]];
+ proposed=[{...unit('Use the Nordpark garage at Stjärngatan 14.'),evidenceRefs:[{evidenceId:'e1',exactQuote:facts[0]}]}];
+ const generate=deps.geminiGenerate!;
+ configure({geminiGenerate:async p=>{
+  const result=await generate(p);
+  if(!p.config.systemInstruction.includes('BATCH ENTAILMENT'))return result;
+  const verdict=JSON.parse(result.text);
+  verdict.coverage.forEach((c:any)=>{c.materialFactsComplete=false;c.incompletenessReason='MISSING_RECOMMENDATION';
+   c.obligations.forEach((o:any)=>{o.status='UNRESOLVED';o.unitIds=[];});});
+  return{text:JSON.stringify(verdict)};
+ }});
+ await inbound(ch,naturalLocationCases[0][1]);
+ assert.equal(metrics.at(-1).completeness[0].materialFactsComplete,false);
+ assert.notEqual(metrics.at(-1).completeness[0].status,'VERIFIED');
+ assert.ok(decisionEvents.some(e=>e.eventType==='coverage'&&e.incompletenessReason==='MISSING_RECOMMENDATION'));
+ assert.equal(reads,0);
+});
+for(const ch of channels)for(const fault of ['timeout','malformed','provider']as const)
+ test(`${ch}/conversational-location/planner-${fault}: ambiguous reference retains fail-closed semantic planning`,async()=>{
+  lang='en';const question='Could you tell me where that parking is?';
+  configure({geminiGenerate:async p=>{
+   requests.push(p);assert.match(p.config.systemInstruction,/retrieval query planner/);
+   if(fault==='malformed')return{text:'not-json'};
+   throw fault==='timeout'?Object.assign(new Error('synthetic planner timeout'),{category:'TIMEOUT'}):new Error('synthetic planner failure');
+  }});
+  await inbound(ch,question);assert.equal(requests.length,1);assert.ok(!published().includes('Nordpark'));
+  assert.equal(decisionEvents.some(e=>e.stage==='extraction'),false);assert.equal(reads,0);
+ });
+for(const ch of channels)test(`${ch}/conversational-location/context: ambiguous follow-up keeps history-aware planner`,async()=>{
+ lang='en';facts=[naturalLocationCases[0][2]];
+ const history=[{role:'user',content:'I am asking about visitor parking.'},{role:'assistant',content:'We can discuss parking for the studio.'}];
+ b.promptAuditHistory(session(ch,ch==='whatsapp'?'46700000001':'synthetic-customer'),history);
+ await inbound(ch,'Could you tell me where that parking is?');
+ const planner=requests.find(p=>p.config.systemInstruction.includes('retrieval query planner'));assert.ok(planner);
+ assert.deepEqual(JSON.parse(planner.contents[0].parts[0].text).referenceHistory,history);
+ assert.equal(published(),facts[0]);assert.equal(metrics.at(-1).completeness[0].status,'VERIFIED');assert.equal(reads,0);
+});
+for(const ch of channels)for(const exhausted of [false,true])
+ test(`${ch}/conversational-location/budget-${exhausted?'exhausted':'reserved'}: unchanged verifier admission and deadline`,async t=>{
+  lang='en';facts=[naturalLocationCases[0][2]];const advance=elapsedClock(t),generate=deps.geminiGenerate!;
+  configure({geminiGenerate:async p=>{
+   if(p.config.systemInstruction.includes('UNIT EXTRACTION'))advance(exhausted?13_000:8_000,0);
+   if(p.config.systemInstruction.includes('BATCH ENTAILMENT'))advance(6_900,0);
+   return generate(p);
+  }});
+  await inbound(ch,naturalLocationCases[0][1]);
+  assert.equal(requests.some(p=>p.config.systemInstruction.includes('retrieval query planner')),false);
+  const publication=decisionEvents.find(e=>e.stage==='publication'&&e.eventType==='publication');assert.ok(publication);
+  if(exhausted){assert.ok(!published().includes('Nordpark'));assert.equal(publication.publishableUnits,0);
+   assert.ok(decisionEvents.some(e=>e.reason==='STAGE_ADMISSION'));}
+  else {assert.equal(published(),facts[0]);assert.ok(publication.remainingMs>=1500);
+   const verification=decisionEvents.find(e=>e.stage==='verification'&&e.eventType==='transport');
+   assert.ok(verification.timeoutMs>=6000);assert.equal(metrics.at(-1).attempts,2);}
+  assert.equal(reads,0);
+ });
 for (const ch of channels) for (const [name,text,expected] of [
  ['policy',q.policy,[policy]], ['paraphrase',q.paraphrase,[policy]], ['parking',q.parking,[parking]], ['digital-intro',q.intro,[digital]], ['digital-direct',q.direct,[digital]], ['compound',q.compound,[parking,digital]],
 ] as const) test(`${ch}/${name}: real adapter publishes independently verified facts`, async () => {

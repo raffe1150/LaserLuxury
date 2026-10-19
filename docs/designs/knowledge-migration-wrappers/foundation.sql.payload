@@ -1,0 +1,107 @@
+BEGIN;
+SET LOCAL odin.approved_p2_knowledge_foundation = 'yes';
+-- UNAPPLIED. Deliberately outside supabase/migrations. No live runner/activation.
+-- Four-table backend-only foundation for the Slice 1 Knowledge extension.
+-- Reuses P2 repository field names; does NOT install P2 Booking authority/RPCs.
+begin;
+set local lock_timeout = '5s';
+set local statement_timeout = '30s';
+do $$
+declare t text;
+begin
+  if current_setting('odin.approved_p2_knowledge_foundation',true) is distinct from 'yes' then
+    raise exception 'p2_knowledge_foundation_separate_approval_required'; end if;
+  if not exists(select 1 from pg_roles where rolname='service_role' and rolbypassrls and not rolsuper)
+    or exists(select 1 from pg_roles where rolname in ('anon','authenticated') and (rolsuper or rolbypassrls))
+    or not exists(select 1 from pg_roles where rolname='anon')
+    or not exists(select 1 from pg_roles where rolname='authenticated') then raise exception 'p2_backend_roles_require_review'; end if;
+  if not exists(select 1 from pg_attribute where attrelid=to_regclass('public.businesses') and attname='id'
+    and atttypid='bigint'::regtype and not attisdropped) then raise exception 'p2_business_tenant_foundation_missing'; end if;
+  foreach t in array array['odin_conversations','odin_inbox','odin_tasks','odin_outbox'] loop
+    if to_regclass('public.'||t) is not null then raise exception 'p2_existing_relation_requires_review: %',t; end if;
+  end loop;
+end $$;
+
+create table public.odin_conversations (
+  id uuid primary key default gen_random_uuid(),
+  business_id bigint not null references public.businesses(id) on delete cascade,
+  conversation_key text not null check(length(conversation_key) between 1 and 1000),
+  schema_version integer not null default 1 check(schema_version=1),
+  -- Reserved P2 aggregate fields; this migration installs no mutation authority.
+  revision bigint not null default 0 check(revision>=0),
+  runtime_generation text,
+  lease_owner text,
+  lease_expires_at timestamptz,
+  fence_epoch bigint not null default 0 check(fence_epoch>=0),
+  language_code text,
+  aggregate_meta jsonb not null default '{}' check(jsonb_typeof(aggregate_meta)='object'),
+  created_at timestamptz not null default clock_timestamp(),
+  updated_at timestamptz not null default clock_timestamp(),
+  unique(business_id,conversation_key), unique(business_id,id)
+);
+create table public.odin_inbox (
+  id uuid primary key default gen_random_uuid(),
+  business_id bigint not null references public.businesses(id) on delete cascade,
+  conversation_id uuid,
+  channel text not null check(channel in ('whatsapp','telegram','instagram','messenger')),
+  provider_scope text not null default '' check(length(provider_scope)<=160),
+  provider_event_id text not null check(length(provider_event_id) between 1 and 256),
+  turn_sequence bigint check(turn_sequence>=0),
+  schema_version integer not null default 1 check(schema_version=1),
+  payload jsonb not null default '{}' check(jsonb_typeof(payload)='object'),
+  status text not null default 'accepted' check(length(status) between 1 and 40),
+  received_at timestamptz not null default clock_timestamp(),
+  foreign key(business_id,conversation_id) references public.odin_conversations(business_id,id) on delete cascade,
+  unique(business_id,channel,provider_scope,provider_event_id),
+  unique(business_id,conversation_id,id)
+);
+create table public.odin_tasks (
+  id uuid primary key default gen_random_uuid(),
+  business_id bigint not null references public.businesses(id) on delete cascade,
+  conversation_id uuid not null,
+  schema_version integer not null default 1 check(schema_version=1),
+  task_type text not null check(length(task_type) between 1 and 80),
+  status text not null default 'accepted' check(length(status) between 1 and 40),
+  task_revision bigint not null default 0 check(task_revision>=0),
+  payload jsonb not null default '{}' check(jsonb_typeof(payload)='object'),
+  created_at timestamptz not null default clock_timestamp(),
+  updated_at timestamptz not null default clock_timestamp(),
+  foreign key(business_id,conversation_id) references public.odin_conversations(business_id,id) on delete cascade,
+  unique(business_id,conversation_id,id)
+);
+create table public.odin_outbox (
+  id uuid primary key default gen_random_uuid(),
+  business_id bigint not null references public.businesses(id) on delete cascade,
+  conversation_id uuid,
+  -- Nullable opaque compatibility field only. No odin_operations table or
+  -- operation executor is introduced for Knowledge. Do not route Booking here.
+  operation_id uuid,
+  schema_version integer not null default 1 check(schema_version=1),
+  channel text not null check(channel in ('whatsapp','telegram','instagram','messenger')),
+  recipient_key text not null check(length(recipient_key) between 1 and 1000),
+  delivery_key text not null check(length(delivery_key) between 1 and 500),
+  artifact jsonb not null default '{}' check(jsonb_typeof(artifact)='object'),
+  status text not null default 'pending' check(length(status) between 1 and 40),
+  attempt_count integer not null default 0 check(attempt_count>=0),
+  available_at timestamptz not null default clock_timestamp(),
+  last_attempt_at timestamptz,
+  provider_message_id text,
+  last_error jsonb,
+  created_at timestamptz not null default clock_timestamp(),
+  updated_at timestamptz not null default clock_timestamp(),
+  foreign key(business_id,conversation_id) references public.odin_conversations(business_id,id) on delete cascade,
+  unique(business_id,delivery_key)
+);
+-- Other scoped FKs use leading columns of existing UNIQUE indexes.
+-- Outbox needs one FK-support index, separate from extension recovery indexes.
+create index odin_outbox_conversation_idx on public.odin_outbox(business_id,conversation_id);
+alter table public.odin_conversations enable row level security;
+alter table public.odin_inbox enable row level security;
+alter table public.odin_tasks enable row level security;
+alter table public.odin_outbox enable row level security;
+-- Revoke PUBLIC too: hosted default privileges may grant clients automatically.
+revoke all on public.odin_conversations,public.odin_inbox,public.odin_tasks,public.odin_outbox from public,anon,authenticated;
+grant select,insert,update,delete on public.odin_conversations,public.odin_inbox,public.odin_tasks,public.odin_outbox to service_role;
+-- No client policies, no sequences, no SECURITY DEFINER, no scheduler/triggers
+-- performing external work. Slice 1 extension supplies Knowledge fences/leases.
+commit;

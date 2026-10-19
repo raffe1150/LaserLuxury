@@ -40,7 +40,37 @@ export type KnowledgeDecision = {
   semanticVerifiedUnits?: number; publishableUnits?: number; deadlineAt?: number; timeoutMs?: number;
   natural?: { schemaVersion: string; outcome: 'accepted_natural'|'canonical_fallback'|'direct_canonical'; reason: DecisionReason | null };
   route?: 'verified_manifest' | 'partial_manifest' | 'unavailable' | 'suppressed' | 'legacy';
+  providerAttempted?: boolean;
+  admission?: ReturnType<typeof verificationAdmissionDiagnostic>;
 };
+
+/** Snapshot the existing remaining-minus-reserve guard and trace atomically. */
+export function verificationAdmissionDiagnostic(remainingMs: number, publicationReserveMs: number,
+  verificationAdmissionFloorMs: number, checkpoint: 'before_queue' | 'after_queue') {
+  const bounded = (n: number) => Number.isFinite(n) ? Math.min(60_000, Math.max(0, Math.floor(n))) : 0;
+  const remaining = bounded(remainingMs), reserve = bounded(publicationReserveMs), floor = bounded(verificationAdmissionFloorMs);
+  const effectiveAllowanceMs = Math.max(0, remaining - reserve);
+  return { checkpoint, remainingBudgetMs: remaining, publicationReserveMs: reserve,
+    verificationAdmissionFloorMs: floor, effectiveAllowanceMs,
+    admitted: effectiveAllowanceMs >= floor,
+    rejectionReason: effectiveAllowanceMs >= floor ? 'NONE' as const : 'INSUFFICIENT_VERIFICATION_ALLOWANCE' as const };
+}
+
+export function knowledgeDiagnosticFailure(event: KnowledgeDecision) {
+  if (event.reason === 'STAGE_ADMISSION') return 'not_admitted';
+  if (event.transportSuccess === false && event.failureCategory === 'TIMEOUT') return event.providerAttempted === false ? 'queue_timeout' : 'provider_timeout';
+  if (['MALFORMED_JSON', 'MALFORMED_ARRAY', 'MALFORMED_RESPONSE', 'INVALID_FIELDS',
+    'MISSING_VERDICT', 'DUPLICATE_VERDICT', 'WRONG_VERDICT_ID', 'INVALID_RELATION', 'INVALID_FLAGS', 'NATURAL_VERDICT_INVALID'].includes(event.reason)) return 'decoder_failure';
+  if (['MISSING_COVERAGE', 'INVALID_COVERAGE', 'REQUEST_OBLIGATIONS_MISSING', 'MATERIAL_FACTS_MISSING',
+    'OBLIGATION_UNRESOLVED', 'NATURAL_COVERAGE_REJECTION'].includes(event.reason)) return 'incomplete_coverage';
+  if (['SOURCE_INVALID', 'SOURCE_CHANGED', 'SOURCE_SCOPE', 'SOURCE_MISSING_OR_UNAUTHORIZED', 'SOURCE_NOT_READY',
+    'SOURCE_REVISION', 'SOURCE_CHUNK', 'SOURCE_QUARANTINED', 'VALIDATOR_ERROR', 'SOURCE_UNAVAILABLE'].includes(event.reason)) return 'source_invalidation';
+  if (event.stage === 'verification' && ['UNKNOWN', 'CONTRADICTED', 'NOT_APPLICABLE', 'MEANING_CHANGED',
+    'MODALITY_CHANGED', 'QUALIFIERS_CHANGED', 'NOT_RELEVANT', 'NEGATIVE_ABSENCE'].includes(event.reason)) return 'semantic_rejection';
+  if (event.reason === 'DEADLINE') return 'deadline';
+  if (event.reason === 'PROVIDER_FAILURE') return 'provider_failure';
+  return 'none';
+}
 
 // These schemas use the adapter's existing OpenAI JSON-schema capability. Bounds
 // and cross-reference constraints are also enforced in application code. Gemini

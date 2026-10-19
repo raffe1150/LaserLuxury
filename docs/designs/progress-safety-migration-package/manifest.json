@@ -1,0 +1,10 @@
+{
+  "source": "docs/designs/knowledge-progress-safety-v1/progress-safety-v1.sql.draft",
+  "sourceSha256": "d93ee49ec845dcef99abc8e0f5e663b04b32a4338dc83809f85720e394aa8b04",
+  "sourceBytes": 8995,
+  "sourceOffset": 69,
+  "payload": "progress-safety-v1.sql",
+  "payloadBytes": 9064,
+  "payloadSha256": "a79756b1878b5709117dcd3f2e7f508b9ba77ff2a435187c6776315b655912f2",
+  "applied": false
+}

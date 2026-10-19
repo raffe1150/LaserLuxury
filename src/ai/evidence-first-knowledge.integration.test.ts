@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { beforeEach, afterEach, test } from 'node:test';
 import { Responses } from 'openai/resources/responses';
 import { normalizeConversationText } from './booking-intelligence';
+import { withBusinessInformationTiming, beginBusinessInformationTiming } from './business-information-timing';
 import { NATURAL_FLAGS } from './grounded-knowledge-composition';
 import { performance } from 'node:perf_hooks';
 import { naturalLocationCases } from '../../tests/fixtures/knowledge-natural-location';
@@ -30,7 +31,7 @@ const config = { id: 77, businessId: 77, businessName: 'Synthetic studio', langu
 let deps: Parameters<typeof b.configure>[0], sent: any[], requests: any[], metrics: any[], reads: number, current: boolean, mode: string, lang: string;
 let facts: string[], proposed: any[] | undefined, verdict: string, composer: string, facetCount: number, oldFetch: typeof fetch, oldFlag: string | undefined;
 let sequence = 0;
-let decisionEvents:any[], decisionLogs:string[];
+let decisionEvents:any[], decisionLogs:string[], timingEvents:any[], outboundEvents:any[];
 let oldNatural:string|undefined,oldSinglePartial:string|undefined;
 const configure = (d: Parameters<typeof b.configure>[0]) => { deps = { ...deps, ...d }; b.configure(deps); };
 const forbidden = async () => assert.fail('Unauthorized appointment mutation');
@@ -39,7 +40,7 @@ const unit = (text: string, index = 0) => ({ facetIds: [`f${index + 1}`], subjec
  evidenceRefs: [{ evidenceId: 'e1', exactQuote: text }] });
 beforeEach((t: any) => {
  b.reset(); deps = {}; sent = []; requests = []; metrics = []; reads = 0; current = true; mode = 'present'; lang = 'sv';
- decisionEvents=[];decisionLogs=[];
+ decisionEvents=[];decisionLogs=[];timingEvents=[];outboundEvents=[];
  facts = [policy]; proposed = undefined; verdict = 'ENTAILED'; composer = 'valid'; facetCount = 1;
  oldFlag = process.env.ODINLINK_EVIDENCE_FIRST_KNOWLEDGE; process.env.ODINLINK_EVIDENCE_FIRST_KNOWLEDGE = 'true';
  oldNatural=process.env.ODINLINK_GROUNDED_NATURAL_RESPONSES;oldSinglePartial=process.env.ODINLINK_GROUNDED_NATURAL_SINGLE_PARTIAL;
@@ -48,6 +49,8 @@ beforeEach((t: any) => {
  process.env.ODINLINK_GROUNDED_NATURAL_RESPONSES='false';process.env.ODINLINK_GROUNDED_NATURAL_SINGLE_PARTIAL='false';
  oldFetch = globalThis.fetch;
  for (const m of ['log','info','warn','error'] as const) t.mock.method(console, m, (...args:any[]) => {
+  if(m==='info'&&args[0]==='[BusinessInformationTiming]')timingEvents.push(args[1]);
+  if(m==='info'&&args[0]==='[BusinessInformationOutbound]')outboundEvents.push(JSON.parse(args[1]));
   if(m==='info'&&['[EvidenceFirstDecision]','[EvidenceFirstKnowledge]'].includes(args[0])){assert.equal(typeof args[1],'string');assert.equal(args[1].includes('\n'),false);JSON.parse(args[1]);decisionLogs.push(args[1]);}
  });
  globalThis.fetch = async (input, options) => {
@@ -785,4 +788,215 @@ for(const ch of channels)for(const scenario of ['low','boundary','ample','revoke
   assert.ok(postVerificationReads>0,'independent publication validation remains mandatory');
   if(!rejected&&scenario!=='ample')assert.equal(postVerificationReads,ch==='telegram'?3:1,'no intermediate builder read on guarded canonical path');
   if(scenario==='late')assert.equal(final.reason,'DEADLINE');
+ });
+
+// Release 1 observes real adapter entry/send paths without changing their answers.
+for (const ch of channels) test(`release1/${ch}: exact incident admission and final send share one ID`, async t => {
+ lang='en';facts=['Use Nordpark at Stjärngatan 14, five minutes on foot from the studio.', 'Parking is paid.', 'Parking spaces cannot be reserved.'];
+ proposed=facts.map(text=>unit(text,0));
+ const epoch=Date.now();let elapsed=0;t.mock.method(Date,'now',()=>epoch+elapsed);
+ const generate=deps.geminiGenerate!;
+ configure({geminiGenerate:async p=>{
+  assert.equal(p.config.systemInstruction.includes('BATCH ENTAILMENT'),false,'verifier must not start');
+  const result=await generate(p);
+  if(p.config.systemInstruction.includes('UNIT EXTRACTION'))elapsed=12796;
+  return result;
+ }});
+ await inbound(ch,"Hi! I'm thinking about visiting your studio next week. Could you tell me where I can park my car?");
+ const admission=decisionEvents.find(e=>e.eventType==='verification_admission');
+ assert.deepEqual(admission.admission,{checkpoint:'before_queue',remainingBudgetMs:7204,publicationReserveMs:1500,
+  verificationAdmissionFloorMs:6000,effectiveAllowanceMs:5704,admitted:false,rejectionReason:'INSUFFICIENT_VERIFICATION_ALLOWANCE'});
+ assert.equal(admission.reason,'STAGE_ADMISSION');assert.equal(admission.failureKind,'not_admitted');
+ assert.ok(decisionEvents.some(e=>e.stage==='extraction'&&e.counts?.proposed===3&&e.counts?.parsed===3));
+ assert.equal(published(),'I cannot verify that part right now.');assert.equal(sent.length,1);assert.equal(reads,0);
+ const id=admission.businessInfoTurnId;assert.match(id,/^[0-9a-f-]{36}$/u);
+ assert.ok(decisionEvents.some(e=>e.stage==='publication'&&e.businessInfoTurnId===id&&e.reason==='STAGE_ADMISSION'));
+ assert.ok(decisionEvents.every(e=>e.businessInfoTurnId===id));
+ assert.ok(timingEvents.some(e=>e.stage==='retrieval_complete'&&e.businessInfoTurnId===id));
+ assert.deepEqual(outboundEvents.map(e=>e.eventType),['send_attempt','http_response','application_result']);
+ assert.ok(outboundEvents.every(e=>e.businessInfoTurnId===id&&e.customerDelivery==='unconfirmed'));
+ assert.equal(outboundEvents.at(-1).applicationAccepted,true);
+ assert.doesNotMatch(JSON.stringify([...decisionEvents,...timingEvents,...outboundEvents]),/synthetic-customer|46700000001|synthetic-offline|Stjärngatan|thinking about visiting/);
+});
+for(const ch of channels)test(`release1/${ch}: admitted verification, publication and HTTP-only acceptance remain distinct`,async()=>{
+ facts=[parking];await inbound(ch,q.parking);
+ assert.equal(published(),parking);assert.equal(reads,0);
+ const admissions=decisionEvents.filter(e=>e.eventType==='verification_admission');
+ assert.deepEqual(admissions.map(e=>e.admission.checkpoint),['before_queue','after_queue']);
+ assert.ok(admissions.every(e=>e.admission.admitted&&e.admission.effectiveAllowanceMs>=6000));
+ const id=admissions[0].businessInfoTurnId;
+ assert.ok(decisionEvents.every(e=>e.businessInfoTurnId===id));
+ assert.ok(decisionEvents.some(e=>e.stage==='verification'&&e.eventType==='transport'&&e.transportSuccess));
+ assert.equal(outboundEvents.at(-1).businessInfoTurnId,id);
+ assert.equal(outboundEvents.find(e=>e.eventType==='http_response').providerAcceptance,'unknown');
+ assert.equal(outboundEvents.at(-1).customerDelivery,'unconfirmed');
+});
+for(const fault of ['timeout','decoder','coverage','source'] as const)test(`release1/whatsapp: ${fault} is not admission rejection`,async()=>{
+ facts=[parking];const generate=deps.geminiGenerate!;
+ configure({geminiGenerate:async p=>{
+  const instruction=p.config.systemInstruction;
+  if(instruction.includes('BATCH ENTAILMENT')){
+   if(fault==='timeout')throw Object.assign(new Error('private provider timeout body'),{category:'TIMEOUT'});
+   if(fault==='decoder')return{text:'private invalid json document body'};
+   const result=await generate(p);
+   if(fault==='coverage'){const parsed=JSON.parse(result.text);parsed.coverage=[];return{text:JSON.stringify(parsed)};}
+   return result;
+  }
+  const result=await generate(p);if(fault==='source'&&instruction.includes('UNIT EXTRACTION'))current=false;
+  return result;
+ }});
+ await inbound('whatsapp',q.parking);
+ const expected={timeout:'provider_timeout',decoder:'decoder_failure',coverage:'incomplete_coverage',source:'source_invalidation'}[fault];
+ assert.ok(decisionEvents.some(e=>e.failureKind===expected),JSON.stringify(decisionEvents));
+ assert.equal(decisionEvents.some(e=>e.failureKind==='not_admitted'),false);
+ assert.doesNotMatch(JSON.stringify(decisionEvents),/private provider|private invalid|document body/);
+});
+
+for(const ch of channels)test(`release1/${ch}: concurrent conversations retain distinct stage and send correlation`,async()=>{
+ facts=[parking];const generate=deps.geminiGenerate!;let extractionCount=0;
+ let entered!:()=>void,release!:()=>void;
+ const started=new Promise<void>(r=>{entered=r;}),held=new Promise<void>(r=>{release=r;});
+ configure({geminiGenerate:async p=>{
+  if(p.config.systemInstruction.includes('UNIT EXTRACTION')&&++extractionCount===1){entered();await held;}
+  return generate(p);
+ }});
+ const first=inbound(ch,q.parking,ch==='whatsapp'?'46700000002':'concurrent-a');
+ await started;
+ try{await inbound(ch,q.parking,ch==='whatsapp'?'46700000003':'concurrent-b');}finally{release();}
+ await first;
+ const ids=[...new Set(decisionEvents.map(e=>e.businessInfoTurnId))];assert.equal(ids.length,2);assert.ok(ids.every(Boolean));
+ for(const id of ids){
+  assert.ok(decisionEvents.some(e=>e.businessInfoTurnId===id&&e.stage==='planning'));
+  assert.ok(decisionEvents.some(e=>e.businessInfoTurnId===id&&e.stage==='publication'));
+  assert.deepEqual(outboundEvents.filter(e=>e.businessInfoTurnId===id).map(e=>e.eventType),['send_attempt','http_response','application_result']);
+ }
+ assert.equal(sent.length,2);assert.equal(reads,0);
+});
+
+for(const ch of channels)for(const failure of ['http','transport','api-body'] as const)
+ test(`release1/${ch}: ${failure} send evidence is correlated without changing adapter results`,async()=>{
+  facts=[parking];const send=globalThis.fetch;
+  globalThis.fetch=async(input,options)=>{
+   await send(input,options); // Existing fake adapter records the unchanged payload.
+   if(failure==='transport')throw new Error('private transport secret recipient');
+   return new Response(JSON.stringify({error:{code:100,message:'private API secret recipient'}}),{status:failure==='http'?403:200});
+  };
+  await inbound(ch,q.parking);
+  assert.equal(sent.length,1);
+  const id=decisionEvents.find(e=>e.stage==='publication').businessInfoTurnId;
+  assert.ok(outboundEvents.every(e=>e.businessInfoTurnId===id&&e.customerDelivery==='unconfirmed'));
+  if(failure==='transport'){
+   assert.deepEqual(outboundEvents.map(e=>e.eventType),['send_attempt','transport_exception']);
+   assert.equal(outboundEvents.at(-1).providerAcceptance,'unknown');
+  }else{
+   assert.equal(outboundEvents.at(-1).eventType,'application_result');
+   // Keep the existing HTTP-only application decision even for an error body.
+   assert.equal(outboundEvents.at(-1).applicationAccepted,failure==='api-body');
+   assert.equal(outboundEvents.at(-1).providerAcceptance,ch==='telegram'&&failure==='api-body'?'unknown':'rejected');
+   assert.equal(outboundEvents.find(e=>e.eventType==='http_response').httpStatus,failure==='http'?403:200);
+  }
+  assert.doesNotMatch(JSON.stringify(outboundEvents),/private|recipient|secret|synthetic-offline/);
+ });
+
+for(const ch of channels)test(`p1-isolation/${ch}: throwing timing and outbound sinks preserve one verified send`,async t=>{
+ facts=[parking];const info=console.info;
+ t.mock.method(console,'info',(...args:any[])=>{
+  if(['[BusinessInformationTiming]','[BusinessInformationOutbound]'].includes(args[0]))throw new Error('optional sink failure');
+  info(...args);
+ });
+ await inbound(ch,q.parking);
+ assert.equal(sent.length,1);assert.equal(published(),parking);assert.equal(reads,0);
+ assert.ok(decisionEvents.some(e=>e.stage==='publication'&&e.publishableUnits===1));
+});
+
+for(const fault of ['sink','serialization','observer','async-observer'] as const)
+ for(const outcome of ['admitted','not-admitted','source-revoked'] as const)
+ test(`p1-isolation/whatsapp/${fault}/${outcome}: admission and publication authority survive telemetry failure`,async t=>{
+  lang='en';facts=['Parking is available near the studio.'];const epoch=Date.now();let elapsed=0;
+  t.mock.method(Date,'now',()=>epoch+elapsed);
+  const generate=deps.geminiGenerate!,stringify=JSON.stringify;
+  if(fault==='sink')t.mock.method(console,'info',()=>{throw new Error('optional sink failure');});
+  if(fault==='serialization')t.mock.method(JSON,'stringify',(value:any,...args:any[])=>{
+   if(['evidence-first-v2','knowledge-outbound-v1'].includes(value?.schemaVersion))throw new Error('optional serialization failure');
+   return stringify(value,...args);
+  });
+  const publications:any[]=[];
+  if(fault==='observer'||fault==='async-observer'){
+   const fail=()=>{if(fault==='async-observer')return Promise.reject(new Error('optional async observer'));throw new Error('optional observer');};
+   configure({evidenceFirstDecisionDiagnostic:e=>{decisionEvents.push(e);return fail();},
+    evidenceFirstDiagnostic:e=>{metrics.push(e);return fail();},
+    evidenceFirstPublicationDiagnostic:e=>{publications.push(e);return fail();}});
+  }
+  configure({geminiGenerate:async p=>{
+   if(outcome==='not-admitted')assert.equal(p.config.systemInstruction.includes('BATCH ENTAILMENT'),false);
+   const result=await generate(p);
+   if(p.config.systemInstruction.includes('UNIT EXTRACTION')){
+    if(outcome==='not-admitted')elapsed=12796;
+    if(outcome==='source-revoked')current=false;
+   }
+   return result;
+  }});
+  await inbound('whatsapp','Where can I park my car?');
+  assert.equal(sent.length,1);assert.equal(reads,0);
+  const final=decisionEvents.filter(e=>e.stage==='publication').at(-1);assert.ok(final);
+  assert.equal(final.publishableUnits,outcome==='admitted'?1:0);
+  assert.equal(published(),outcome==='admitted'?facts[0]:'I cannot verify that part right now.');
+  if(outcome==='not-admitted'){
+   const admission=decisionEvents.find(e=>e.admission);assert.ok(admission);
+   assert.equal(admission.reason,'STAGE_ADMISSION');
+   assert.deepEqual(admission.admission,{checkpoint:'before_queue',remainingBudgetMs:7204,publicationReserveMs:1500,
+    verificationAdmissionFloorMs:6000,effectiveAllowanceMs:5704,admitted:false,rejectionReason:'INSUFFICIENT_VERIFICATION_ALLOWANCE'});
+  }
+  if(outcome==='admitted')assert.ok(requests.some(p=>p.config.systemInstruction.includes('BATCH ENTAILMENT')));
+  if(outcome==='source-revoked')assert.ok(decisionEvents.some(e=>e.failureKind==='source_invalidation'));
+  if(fault==='observer'||fault==='async-observer')assert.ok(publications.some(e=>e.phase==='publication_result'));
+ });
+
+test('p1-isolation/whatsapp: application-result logging exception preserves the adapter true return',async t=>{
+ const info=console.info;
+ t.mock.method(console,'info',(...args:any[])=>{
+  if(args[0]==='[BusinessInformationOutbound]'&&JSON.parse(args[1]).eventType==='application_result')throw new Error('optional result observer');
+  info(...args);
+ });
+ const result=await withBusinessInformationTiming(async()=>{
+  beginBusinessInformationTiming('synthetic-send-session','private question',77);
+  return b.sendCustomerMessage('whatsapp','46700000001',parking,config,'conversation');
+ },'whatsapp');
+ assert.equal(result,true);assert.equal(sent.length,1);
+});
+
+for(const rejected of [false,true])test(`p1-isolation/observer-mutation/${rejected}: observer snapshot cannot change admission authority`,async t=>{
+ lang='en';facts=['Parking is available near the studio.'];
+ const epoch=Date.now();let elapsed=0,mutations=0;t.mock.method(Date,'now',()=>epoch+elapsed);
+ const generate=deps.geminiGenerate!;
+ configure({geminiGenerate:async p=>{
+  const result=await generate(p);if(rejected&&p.config.systemInstruction.includes('UNIT EXTRACTION'))elapsed=12796;return result;
+ },evidenceFirstDecisionDiagnostic:e=>{
+  decisionEvents.push(e);
+  if(e.admission){mutations++;(e.admission as any).admitted=!(e.admission as any).admitted;throw new Error('optional observer mutation');}
+ }});
+ await inbound('whatsapp','Where can I park my car?');
+ assert.ok(mutations>0);assert.equal(sent.length,1);
+ assert.equal(published(),rejected?'I cannot verify that part right now.':facts[0]);
+ assert.equal(requests.some(p=>p.config.systemInstruction.includes('BATCH ENTAILMENT')),!rejected);
+ assert.ok(decisionEvents.filter(e=>e.admission).every(e=>e.admission.admitted===!rejected));
+});
+
+for(const ch of channels)for(const informationFirst of [false,true])
+ test(`extraction/mixed/${ch}/${informationFirst}: literal action first, one independent answer and frozen pre-action history`,async()=>{
+  lang='en';facts=['Parking is available near the studio.'];
+  const action='Please book Unicorn Surgery for 2026-10-20.',information='Where can I park my car?';
+  const history=[{role:'user',content:'I am thinking of visiting.'},{role:'assistant',content:'What would you like to know?'}];
+  const id=ch==='whatsapp'?'46700000001':'synthetic-customer';b.promptAuditHistory(session(ch,id),history);
+  const search=deps.knowledgeSearch!;let retrievals=0;
+  configure({knowledgeSearch:async(...args:any[])=>{
+   retrievals++;assert.equal(sent.length,1,'the action branch must finish its response before Knowledge retrieval');
+   return (search as any)(...args);
+  }});
+  await inbound(ch,informationFirst?`${information} ${action}`:`${action} ${information}`,id);
+  assert.ok(retrievals>0);assert.equal(sent.length,2);assert.equal(published(),facts[0]);assert.equal(reads,0);
+  const extraction=requests.find(p=>p.config.systemInstruction.includes('UNIT EXTRACTION'));assert.ok(extraction);
+  const payload=JSON.parse(extraction.contents[0].parts[0].text);
+  assert.equal(payload.question,normalizeConversationText(information));assert.deepEqual(payload.relevantHistory,history);
+  const turnIds=new Set(decisionEvents.map(e=>e.businessInfoTurnId));assert.equal(turnIds.size,1);assert.ok([...turnIds][0]);
  });

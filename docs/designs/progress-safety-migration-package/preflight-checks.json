@@ -1,0 +1,20 @@
+{
+  "odin_accept_knowledge_turn_v1BodyExact": true,
+  "odin_accept_knowledge_turn_v1ServiceOnly": true,
+  "odin_accept_knowledge_turn_v2BodyExact": true,
+  "odin_accept_knowledge_turn_v2ServiceOnly": true,
+  "odin_guard_knowledge_identity_v1BodyExact": true,
+  "odin_guard_knowledge_identity_v1ServiceOnly": true,
+  "odin_guard_knowledge_ingress_v1BodyExact": true,
+  "odin_guard_knowledge_ingress_v1ServiceOnly": true,
+  "odin_guard_native_order_v2BodyExact": true,
+  "odin_guard_native_order_v2ServiceOnly": true,
+  "odin_transition_knowledge_v1BodyExact": true,
+  "odin_transition_knowledge_v1ServiceOnly": true,
+  "fourTablesEmpty": true,
+  "noPolicies": true,
+  "progressAbsent": true,
+  "constraintsValid": true,
+  "indexesValid": true,
+  "rlsAndGrants": true
+}

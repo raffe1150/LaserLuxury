@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { hasConversationReference, referenceClarificationReply, splitMixedBusinessRequest } from './conversation-intent-continuity';
+import { hasConversationReference, referenceClarificationReply, splitMixedBusinessRequest, prepareLiteralTurn } from './conversation-intent-continuity';
 
 const examples = [
  ['en','Please book Video Consultation for Tuesday.','Can I reserve a spot there in advance?'],
@@ -30,4 +30,25 @@ test('abbreviated service label stays whole in the action span', () => {
 for (const action of ['Please book Video Consultation between Tuesday and Friday.', 'Please book Wash and Color for Tuesday.'])
  test(`conjunction inside an action span remains literal: ${action}`, () => {
   assert.deepEqual(splitMixedBusinessRequest(`${action} Can I reserve it there?`), {action,information:'Can I reserve it there?'});
+ });
+
+for(const [language,action,information] of examples)for(const informationFirst of [false,true])
+ test(`${language}: literal preparation freezes source order and executes the action first (${informationFirst})`,()=>{
+  const text=informationFirst?`${information} ${action}`:`${action} ${information}`;
+  const prepared=prepareLiteralTurn(text);
+  assert.equal(prepared.kind,'mixed');
+  assert.deepEqual(prepared.clauses.map(c=>c.text),informationFirst?[information,action]:[action,information]);
+  assert.deepEqual(prepared.executionOrder.map(i=>prepared.clauses[i].text),[action,information]);
+  assert.ok(Object.isFrozen(prepared)&&Object.isFrozen(prepared.clauses)&&Object.isFrozen(prepared.executionOrder));
+  assert.ok(prepared.clauses.every(Object.isFrozen));
+  assert.throws(()=>{(prepared.clauses[0] as any).text='changed target';},TypeError);
+ });
+for(const text of ['Could you tell me where I can park my car?', 'Please cancel my appointment.',
+ 'Please reschedule my appointment.', 'Please book Wash and Color for Tuesday.',
+ 'Please book Video Consultation. Please cancel my appointment. What are the policies?'])
+ test(`unsplit preparation preserves the complete literal request: ${text}`,()=>{
+  const prepared=prepareLiteralTurn(text);
+  assert.equal(prepared.kind,'single');
+  assert.deepEqual(prepared.clauses,[{kind:'unclassified',text}]);
+  assert.deepEqual(prepared.executionOrder,[0]);
  });

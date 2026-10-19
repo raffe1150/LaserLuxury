@@ -59,3 +59,30 @@ export function mixedActionClarificationReply(language: string): string {
   };
   return copy[language] || copy.en;
 }
+
+/** Literal preparation only. Semantic reference resolution and mutation
+ * authorization remain in their existing engines; this is not a TurnDecision. */
+export type LiteralTurnPreparation = Readonly<{
+  kind: 'single' | 'mixed';
+  clauses: readonly Readonly<{ kind: 'action' | 'information' | 'unclassified'; text: string }>[];
+  executionOrder: readonly number[];
+}>;
+
+export function prepareLiteralTurn(text: string, isAction = isExplicitBusinessActionRequest): LiteralTurnPreparation {
+  const mixed = splitMixedBusinessRequest(text, isAction);
+  if (!mixed) return Object.freeze({ kind: 'single', clauses: Object.freeze([
+    Object.freeze({ kind: 'unclassified' as const, text }),
+  ]), executionOrder: Object.freeze([0]) });
+  const actionFirst = text.startsWith(mixed.action);
+  const action = Object.freeze({ kind: 'action' as const, text: mixed.action });
+  const information = Object.freeze({ kind: 'information' as const, text: mixed.information });
+  return Object.freeze({ kind: 'mixed',
+    clauses: Object.freeze(actionFirst ? [action, information] : [information, action]),
+    executionOrder: Object.freeze(actionFirst ? [0, 1] : [1, 0]),
+  });
+}
+
+export type SharedTurnExecutionResult =
+  | Readonly<{ kind: 'handled'; preparation: LiteralTurnPreparation }>
+  | Readonly<{ kind: 'information_prepared'; preparation: LiteralTurnPreparation; question: string }>
+  | Readonly<{ kind: 'continue_conversation'; preparation: LiteralTurnPreparation }>;

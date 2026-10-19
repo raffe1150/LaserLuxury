@@ -1,0 +1,372 @@
+-- UNAPPLIED REVIEW DRAFT. Outside supabase/migrations; not discovered by db push.
+-- Generated filename by `supabase migration new`, then moved here.
+-- Requires separate schema/privilege review and database integration tests.
+-- No runner, trigger-to-worker, scheduler or live traffic is enabled by this draft.
+begin;
+set local lock_timeout = '5s';
+set local statement_timeout = '30s';
+do $$
+declare t text;
+begin
+  if current_setting('odin.approved_knowledge_slice1', true) is distinct from 'yes' then
+    raise exception 'knowledge_slice1_separate_approval_required';
+  end if;
+  if not exists(select 1 from pg_roles where rolname='service_role' and rolbypassrls) then raise exception 'service_role_requires_review'; end if;
+  foreach t in array array['odin_conversations','odin_inbox','odin_tasks','odin_outbox'] loop
+    if to_regclass('public.' || t) is null then raise exception 'missing_P2_table: %',t; end if;
+    if not exists(select 1 from pg_attribute where attrelid=to_regclass('public.'||t)
+        and attname='id' and atttypid='uuid'::regtype and not attisdropped)
+      or not exists(select 1 from pg_attribute where attrelid=to_regclass('public.'||t)
+        and attname='business_id' and atttypid='bigint'::regtype and not attisdropped) then
+      raise exception 'P2_identity_schema_requires_review: %',t;
+    end if;
+    -- Do not silently revoke an existing client-dependent P2 workflow.
+    if has_table_privilege('anon','public.'||t,'SELECT,INSERT,UPDATE,DELETE')
+       or has_table_privilege('authenticated','public.'||t,'SELECT,INSERT,UPDATE,DELETE')
+       or exists(select 1 from pg_attribute where attrelid=to_regclass('public.'||t) and attacl is not null)
+       or exists(select 1 from pg_policy where polrelid=to_regclass('public.'||t)) then
+      raise exception 'P2_access_requires_separate_review: %',t;
+    end if;
+  end loop;
+  -- Existing required columns, defaults, status CHECKs, triggers, PKs and provider
+  -- event/delivery unique constraints must also be reviewed against repositories.
+  -- No attempt is made here to invent or install the missing P2 base schema.
+end $$;
+
+alter table public.odin_conversations
+  add column knowledge_sequence bigint not null default 0 check(knowledge_sequence>=0),
+  add column knowledge_channel text,
+  add column knowledge_account text;
+alter table public.odin_inbox add column knowledge_turn_id uuid;
+alter table public.odin_inbox add column knowledge_sequence bigint;
+alter table public.odin_inbox add column knowledge_accepted_at timestamptz;
+alter table public.odin_inbox add column knowledge_expires_at timestamptz;
+alter table public.odin_inbox add column knowledge_max_runs integer;
+alter table public.odin_inbox add column knowledge_max_models integer;
+alter table public.odin_tasks
+  add column knowledge_turn_id uuid,
+  add column knowledge_inbox_id uuid,
+  add constraint knowledge_task_inbox_scope foreign key(business_id,conversation_id,knowledge_inbox_id)
+    references public.odin_inbox(business_id,conversation_id,id) on delete cascade,
+  add column knowledge_channel text,
+  add column knowledge_account text,
+  add column knowledge_sequence bigint,
+  add column knowledge_accepted_at timestamptz,
+  add column knowledge_expires_at timestamptz,
+  add column knowledge_state text,
+  add column knowledge_fence bigint not null default 0,
+  add column knowledge_owner text,
+  add column knowledge_lease_until timestamptz,
+  add column knowledge_run_attempts integer not null default 0,
+  add column knowledge_max_runs integer,
+  add column knowledge_model_attempts integer not null default 0,
+  add column knowledge_max_models integer,
+  add column knowledge_checkpoint text,
+  add column knowledge_result jsonb,
+  add column knowledge_result_digest text,
+  add constraint knowledge_task_bounds check(knowledge_turn_id is null or coalesce((
+    task_type='knowledge_async_v1' and knowledge_inbox_id is not null
+    and knowledge_channel in ('whatsapp','telegram','instagram','messenger')
+    and knowledge_account ~ '^[A-Za-z0-9:_-]{1,160}$' and knowledge_sequence>0
+    and knowledge_expires_at>knowledge_accepted_at
+    and knowledge_expires_at<=knowledge_accepted_at+interval '120 seconds'
+    and knowledge_state in ('ACCEPTED','RUNNING','VERIFIED','FINALIZED','FAILED','EXPIRED','SUPERSEDED')
+    and knowledge_max_runs between 1 and 5 and knowledge_max_models between 1 and 8
+    and knowledge_run_attempts between 0 and knowledge_max_runs
+    and knowledge_model_attempts between 0 and knowledge_max_models),false));
+alter table public.odin_outbox
+  add column knowledge_task_id uuid,
+  add constraint knowledge_outbox_task_scope foreign key(business_id,conversation_id,knowledge_task_id)
+    references public.odin_tasks(business_id,conversation_id,id) on delete cascade,
+  add column knowledge_kind text check(knowledge_kind in ('final','progress')),
+  add column knowledge_state text check(knowledge_state in ('PENDING','SENDING','SENT','FAILED','EXPIRED','SUPERSEDED','UNCERTAIN')),
+  add column knowledge_fence bigint not null default 0,
+  add column knowledge_owner text,
+  add column knowledge_lease_until timestamptz,
+  add column knowledge_max_attempts integer not null default 3 check(knowledge_max_attempts between 1 and 3),
+  add constraint knowledge_notification_shape check(
+    (knowledge_task_id is null and knowledge_kind is null and knowledge_state is null) or
+    (knowledge_task_id is not null and conversation_id is not null and knowledge_kind is not null and knowledge_state is not null));
+create unique index odin_knowledge_event_once on public.odin_inbox(business_id,channel,provider_scope,provider_event_id) where knowledge_turn_id is not null;
+create unique index odin_knowledge_task_once on public.odin_tasks(business_id,knowledge_inbox_id) where knowledge_turn_id is not null;
+create unique index odin_knowledge_turn_once on public.odin_tasks(business_id,knowledge_turn_id) where knowledge_turn_id is not null;
+create unique index odin_knowledge_notification_once on public.odin_outbox(business_id,knowledge_task_id,knowledge_kind) where knowledge_task_id is not null;
+create index odin_knowledge_recovery on public.odin_tasks(knowledge_state,knowledge_lease_until,knowledge_expires_at) where knowledge_turn_id is not null;
+create index odin_knowledge_delivery_recovery on public.odin_outbox(knowledge_state,knowledge_lease_until) where knowledge_task_id is not null;
+
+
+-- Protect acceptance-relative identity/input/limits even from accidental backend
+-- UPDATEs. Future schema-specific adapters must map P2 and namespaced revisions.
+create function public.odin_guard_knowledge_identity_v1() returns trigger
+language plpgsql security invoker set search_path=pg_catalog,public as $$
+begin
+  if old.knowledge_turn_id is null then return new; end if;
+  if row(new.id,new.business_id,new.conversation_id,new.task_type,new.payload,new.knowledge_turn_id,new.knowledge_inbox_id,
+      new.knowledge_channel,new.knowledge_account,new.knowledge_sequence,new.knowledge_accepted_at,new.knowledge_expires_at,
+      new.knowledge_max_runs,new.knowledge_max_models)
+    is distinct from row(old.id,old.business_id,old.conversation_id,old.task_type,old.payload,old.knowledge_turn_id,old.knowledge_inbox_id,
+      old.knowledge_channel,old.knowledge_account,old.knowledge_sequence,old.knowledge_accepted_at,old.knowledge_expires_at,
+      old.knowledge_max_runs,old.knowledge_max_models) then raise exception 'knowledge_immutable_acceptance'; end if;
+  if new.knowledge_run_attempts<old.knowledge_run_attempts or new.knowledge_model_attempts<old.knowledge_model_attempts
+    or new.knowledge_fence<old.knowledge_fence then raise exception 'knowledge_accounting_regression'; end if;
+  if old.knowledge_result is not null and (new.knowledge_result is distinct from old.knowledge_result
+    or new.knowledge_result_digest is distinct from old.knowledge_result_digest) then raise exception 'knowledge_immutable_result'; end if;
+  if new.knowledge_state is distinct from old.knowledge_state and not (
+    (old.knowledge_state='ACCEPTED' and new.knowledge_state in ('RUNNING','FAILED','EXPIRED','SUPERSEDED')) or
+    (old.knowledge_state='RUNNING' and new.knowledge_state in ('VERIFIED','FAILED','EXPIRED','SUPERSEDED')) or
+    (old.knowledge_state='VERIFIED' and new.knowledge_state in ('FINALIZED','FAILED','EXPIRED','SUPERSEDED')) or
+    (old.knowledge_state='FINALIZED' and new.knowledge_state='SUPERSEDED')
+  ) then raise exception 'knowledge_invalid_transition'; end if;
+  return new;
+end $$;
+create trigger odin_guard_knowledge_identity_v1 before update on public.odin_tasks
+  for each row execute function public.odin_guard_knowledge_identity_v1();
+revoke all on function public.odin_guard_knowledge_identity_v1() from public,anon,authenticated;
+grant execute on function public.odin_guard_knowledge_identity_v1() to service_role;
+
+-- Existing P2 finalization may change inbox.status, but never its durable identity.
+create function public.odin_guard_knowledge_ingress_v1() returns trigger
+language plpgsql security invoker set search_path=pg_catalog,public as $$
+begin
+  if old.knowledge_turn_id is not null and row(new.business_id,new.conversation_id,new.channel,new.provider_scope,new.provider_event_id,
+    new.knowledge_turn_id,new.knowledge_sequence,new.knowledge_accepted_at,new.knowledge_expires_at,new.knowledge_max_runs,new.knowledge_max_models)
+    is distinct from row(old.business_id,old.conversation_id,old.channel,old.provider_scope,old.provider_event_id,
+    old.knowledge_turn_id,old.knowledge_sequence,old.knowledge_accepted_at,old.knowledge_expires_at,old.knowledge_max_runs,old.knowledge_max_models)
+  then raise exception 'knowledge_immutable_ingress'; end if;
+  return new;
+end $$;
+create trigger odin_guard_knowledge_ingress_v1 before update on public.odin_inbox
+  for each row execute function public.odin_guard_knowledge_ingress_v1();
+revoke all on function public.odin_guard_knowledge_ingress_v1() from public,anon,authenticated;
+grant execute on function public.odin_guard_knowledge_ingress_v1() to service_role;
+
+-- New namespaced lifecycle columns preserve legacy status semantics. All four
+-- P2 entities must already be backend-only; this migration refuses client use.
+alter table public.odin_inbox enable row level security;
+alter table public.odin_tasks enable row level security;
+alter table public.odin_conversations enable row level security;
+alter table public.odin_outbox enable row level security;
+revoke all on public.odin_inbox,public.odin_tasks,public.odin_conversations,public.odin_outbox from public,anon,authenticated;
+grant select,insert,update on public.odin_inbox,public.odin_tasks,public.odin_conversations,public.odin_outbox to service_role;
+
+-- Durable ingress also accepts non-Knowledge turns (p_input=NULL), so every
+-- newer customer turn advances publication ownership without running Booking.
+-- A duplicate never increments the watermark or overwrites input/expiry.
+create function public.odin_accept_knowledge_turn_v1(
+  p_business bigint,p_conversation uuid,p_channel text,p_account text,p_event text,
+  p_input jsonb default null,p_execution_ms integer default 40000,
+  p_max_runs integer default 3,p_max_models integer default 4
+) returns jsonb language plpgsql security invoker set search_path=pg_catalog,public as $$
+declare c public.odin_conversations%rowtype; i public.odin_inbox%rowtype;
+  t public.odin_tasks%rowtype; n timestamptz:=clock_timestamp(); turn_id uuid:=gen_random_uuid(); existing boolean:=false;
+begin
+  if p_channel not in ('whatsapp','telegram','instagram','messenger') or
+     p_account !~ '^[A-Za-z0-9:_-]{1,160}$' or (length(p_event) not between 1 and 256 or p_event !~ '^[A-Za-z0-9:_.=+/-]+$')
+     or p_execution_ms not between 1000 and 120000 or p_max_runs not between 1 and 5 or p_max_models not between 1 and 8
+     or p_channel is null or p_account is null or p_event is null
+     or p_execution_ms is null or p_max_runs is null or p_max_models is null then raise exception 'invalid_knowledge_acceptance'; end if;
+  select * into c from public.odin_conversations where id=p_conversation and business_id=p_business for update;
+  if not found then raise exception 'knowledge_conversation_scope'; end if;
+  -- Refuse rebinding a conversation to another provider account/channel.
+  if c.knowledge_channel is not null and (c.knowledge_channel is distinct from p_channel or c.knowledge_account is distinct from p_account) then
+    raise exception 'knowledge_conversation_scope_mismatch'; end if;
+  update public.odin_conversations set knowledge_channel=p_channel,knowledge_account=p_account where id=c.id;
+  -- Existing conversation_key must additionally be checked by the future bridge
+  -- against the canonical P2 channel/account key before first authoritative use.
+  select * into i from public.odin_inbox where business_id=p_business and channel=p_channel
+    and provider_scope=p_account and provider_event_id=p_event for update;
+  if found then
+    if i.conversation_id is distinct from p_conversation or i.knowledge_turn_id is null then
+      raise exception 'knowledge_existing_event_requires_review'; end if;
+    select * into t from public.odin_tasks where business_id=p_business and knowledge_inbox_id=i.id;
+    if t.id is not null or p_input is null or i.knowledge_sequence<>c.knowledge_sequence or i.knowledge_expires_at<=clock_timestamp() then
+      return jsonb_build_object('inserted',false,'inbox',to_jsonb(i),'task',case when t.id is null then null else to_jsonb(t) end);
+    end if;
+    -- Foreground action completed: attach Knowledge once to original ingress.
+    -- No Booking handler is called; no expiry/attempt limit can be reset.
+    existing:=true; n:=i.knowledge_accepted_at; turn_id:=i.knowledge_turn_id;
+    p_max_runs:=i.knowledge_max_runs; p_max_models:=i.knowledge_max_models;
+  end if;
+  if p_input is not null then
+    if jsonb_typeof(p_input) is distinct from 'object' or
+       (p_input - array['question','language','history']) <> '{}'::jsonb or
+       jsonb_typeof(p_input->'question') is distinct from 'string' or length(p_input->>'question') not between 1 and 4000 or
+       coalesce(p_input->>'language','') !~ '^[a-z]{2,3}(-[A-Za-z]{2,8})?$' or
+       jsonb_typeof(p_input->'history') is distinct from 'array' then raise exception 'knowledge_input_bounds'; end if;
+    if jsonb_array_length(p_input->'history')>4 or octet_length(p_input::text)>40000 or exists(
+      select 1 from jsonb_array_elements(p_input->'history') h where
+        jsonb_typeof(h) is distinct from 'object' or (h-array['role','content'])<>'{}'::jsonb or
+        coalesce(h->>'role','') not in ('user','assistant') or jsonb_typeof(h->'content') is distinct from 'string'
+        or length(coalesce(h->>'content','')) not between 1 and 1200
+    ) then raise exception 'knowledge_history_bounds'; end if;
+  end if;
+  if not existing then
+  update public.odin_conversations set knowledge_sequence=knowledge_sequence+1 where id=c.id returning * into c;
+  insert into public.odin_inbox(business_id,conversation_id,channel,provider_scope,provider_event_id,schema_version,payload,status,knowledge_turn_id,knowledge_sequence,knowledge_accepted_at,knowledge_expires_at,knowledge_max_runs,knowledge_max_models)
+    values(p_business,p_conversation,p_channel,p_account,p_event,1,'{}','accepted',turn_id,c.knowledge_sequence,n,n+p_execution_ms*interval '1 millisecond',p_max_runs,p_max_models) returning * into i;
+  end if;
+  if p_input is not null then
+    insert into public.odin_tasks(business_id,conversation_id,schema_version,task_type,status,task_revision,payload,
+      knowledge_turn_id,knowledge_inbox_id,knowledge_channel,knowledge_account,knowledge_sequence,
+      knowledge_accepted_at,knowledge_expires_at,knowledge_state,knowledge_max_runs,knowledge_max_models)
+    values(p_business,p_conversation,1,'knowledge_async_v1','accepted',0,p_input,turn_id,i.id,p_channel,p_account,c.knowledge_sequence,
+      n,i.knowledge_expires_at,'ACCEPTED',p_max_runs,p_max_models) returning * into t;
+  end if;
+  return jsonb_build_object('inserted',not existing,'inbox',to_jsonb(i),'task',case when t.id is null then null else to_jsonb(t) end);
+end $$;
+
+-- One locked transition RPC is the transaction boundary. Trusted service only.
+-- Authority receipts are freshly produced by the FUTURE trusted verifier/source/
+-- channel bridge; these booleans are NOT customer claims or independent evidence.
+-- The SQL cannot inspect arbitrary document authority by itself. That bridge and
+-- its database-backed source-version checks are mandatory Slice 2 prerequisites.
+create function public.odin_transition_knowledge_v1(
+  p_business bigint,p_conversation uuid,p_task uuid,p_channel text,p_account text,
+  p_command text,p_args jsonb default '{}'
+) returns jsonb language plpgsql security invoker set search_path=pg_catalog,public as $$
+declare c public.odin_conversations%rowtype; t public.odin_tasks%rowtype;
+  d public.odin_outbox%rowtype; n timestamptz; receipt jsonb:=p_args->'authority';
+  owner_id text:=p_args->>'owner'; lease_ms integer; stage integer; previous_stage integer;
+  body text; kind text; valid_authority boolean; result jsonb; key text;
+begin
+  select * into c from public.odin_conversations where business_id=p_business and id=p_conversation for update;
+  if not found then return null; end if;
+  select * into t from public.odin_tasks where business_id=p_business and conversation_id=p_conversation and id=p_task
+    and knowledge_channel=p_channel and knowledge_account=p_account and task_type='knowledge_async_v1'
+    and knowledge_turn_id is not null for update;
+  if not found then return null; end if;
+  n:=clock_timestamp();
+  if c.knowledge_channel is distinct from p_channel or c.knowledge_account is distinct from p_account then return null; end if;
+  if t.knowledge_sequence<>c.knowledge_sequence then
+    update public.odin_tasks set knowledge_state='SUPERSEDED',knowledge_owner=null,knowledge_lease_until=null where id=t.id and knowledge_state not in ('FAILED','EXPIRED','SUPERSEDED');
+    update public.odin_outbox set knowledge_state='SUPERSEDED' where knowledge_task_id=t.id and knowledge_state in ('PENDING','FAILED');
+    -- An in-flight send cannot be recalled. Preserve it for factual settlement;
+    -- expired sending leases become uncertain below/on the next recovery scan.
+    if p_command<>'settle_delivery' then
+      update public.odin_outbox set knowledge_state='UNCERTAIN',knowledge_owner=null,knowledge_lease_until=null
+        where knowledge_task_id=t.id and knowledge_state='SENDING' and knowledge_lease_until<=n;
+      return null; end if;
+  end if;
+  update public.odin_outbox set knowledge_state='UNCERTAIN',knowledge_owner=null,knowledge_lease_until=null
+    where knowledge_task_id=t.id and knowledge_state='SENDING' and knowledge_lease_until<=n;
+  if t.knowledge_expires_at<=n then
+    update public.odin_tasks set knowledge_state='EXPIRED',knowledge_owner=null,knowledge_lease_until=null
+      where id=t.id and knowledge_state in ('ACCEPTED','RUNNING','VERIFIED');
+    update public.odin_outbox set knowledge_state='EXPIRED' where knowledge_task_id=t.id and knowledge_state in ('PENDING','FAILED');
+    return null;
+  end if;
+  if p_command='recover' then return to_jsonb(t); end if;
+  if p_command in ('claim','renew','claim_delivery') then
+    lease_ms:=(p_args->>'leaseMs')::integer;
+    if owner_id is null or owner_id !~ '^[A-Za-z0-9:_-]{1,160}$' or lease_ms is null or lease_ms not between 1 and 30000 then
+      raise exception 'knowledge_invalid_lease'; end if;
+  end if;
+  if p_command='claim' then
+    if t.knowledge_state not in ('ACCEPTED','RUNNING','VERIFIED') or t.knowledge_lease_until>n then return null; end if;
+    if t.knowledge_run_attempts>=t.knowledge_max_runs then
+      update public.odin_tasks set knowledge_state='FAILED',knowledge_owner=null,knowledge_lease_until=null where id=t.id; return null; end if;
+    update public.odin_tasks set knowledge_state=case when knowledge_state='VERIFIED' then 'VERIFIED' else 'RUNNING' end,
+      knowledge_fence=knowledge_fence+1,knowledge_owner=owner_id,knowledge_lease_until=least(n+lease_ms*interval '1 millisecond',knowledge_expires_at),
+      knowledge_run_attempts=knowledge_run_attempts+1,task_revision=task_revision+1 where id=t.id returning * into t;
+    return to_jsonb(t);
+  end if;
+  if p_command in ('renew','model_attempt','checkpoint','verified','fail','finalize') then
+    if t.knowledge_state not in ('RUNNING','VERIFIED') or t.knowledge_owner is distinct from owner_id or
+       t.knowledge_fence is distinct from (p_args->>'fence')::bigint or t.knowledge_lease_until is null or t.knowledge_lease_until<=n then return null; end if;
+  end if;
+  if p_command='renew' then
+    update public.odin_tasks set knowledge_lease_until=least(n+lease_ms*interval '1 millisecond',knowledge_expires_at),task_revision=task_revision+1 where id=t.id returning * into t;
+  elsif p_command='model_attempt' then
+    if t.knowledge_state<>'RUNNING' or t.knowledge_model_attempts>=t.knowledge_max_models then return null; end if;
+    update public.odin_tasks set knowledge_model_attempts=knowledge_model_attempts+1,task_revision=task_revision+1 where id=t.id returning * into t;
+  elsif p_command='checkpoint' then
+    stage:=array_position(array['planning','retrieval','extraction'],p_args->>'checkpoint');
+    previous_stage:=coalesce(array_position(array['planning','retrieval','extraction'],t.knowledge_checkpoint),0);
+    if stage is null then raise exception 'knowledge_invalid_checkpoint'; end if;
+    if t.knowledge_state<>'RUNNING' or stage<=previous_stage then return null; end if;
+    update public.odin_tasks set knowledge_checkpoint=p_args->>'checkpoint',task_revision=task_revision+1 where id=t.id returning * into t;
+  elsif p_command='verified' then
+    result:=p_args->'result';
+    if t.knowledge_state<>'RUNNING' or result->>'protocol' is distinct from 'evidence-first-v2' or
+       result->'independentlyVerified' is distinct from 'true'::jsonb or result->'completeRequiredFacts' is distinct from 'true'::jsonb or
+       jsonb_typeof(result->'sources') is distinct from 'array' or jsonb_typeof(result->'text') is distinct from 'string' or
+       length(coalesce(result->>'text','')) not between 1 and 6000 or octet_length(result::text)>40000 then raise exception 'knowledge_unverified_result'; end if;
+    if (result-array['protocol','independentlyVerified','completeRequiredFacts','text','sources'])<>'{}'::jsonb then raise exception 'knowledge_result_fields'; end if;
+    if jsonb_array_length(result->'sources') not between 1 and 10 or
+      (select count(*)<>count(distinct s->>'id') from jsonb_array_elements(result->'sources') s) or exists(select 1 from jsonb_array_elements(result->'sources') s
+      where (s-array['id','revision'])<>'{}'::jsonb or coalesce(s->>'id','') !~ '^[A-Za-z0-9:_-]{1,160}$' or coalesce(s->>'revision','') !~ '^[A-Za-z0-9:_-]{1,160}$') then raise exception 'knowledge_source_bounds'; end if;
+    update public.odin_tasks set knowledge_result=result,knowledge_result_digest=encode(sha256(convert_to(
+      (result->>'protocol')||E'\n'||octet_length(convert_to(result->>'text','UTF8'))::text||':'||(result->>'text')||E'\n'||
+      jsonb_array_length(result->'sources')::text||E'\n'||
+      (select string_agg(length(s->>'id')::text||':'||(s->>'id')||length(s->>'revision')::text||':'||(s->>'revision'),E'\n' order by ord)
+        from jsonb_array_elements(result->'sources') with ordinality as sources(s,ord)), 'UTF8')),'hex'),
+      knowledge_state='VERIFIED',task_revision=task_revision+1 where id=t.id returning * into t;
+  elsif p_command='fail' then
+    update public.odin_tasks set knowledge_state='FAILED',knowledge_owner=null,knowledge_lease_until=null,task_revision=task_revision+1 where id=t.id returning * into t;
+  elsif p_command in ('finalize','progress','claim_delivery','settle_delivery') then
+    valid_authority:=coalesce(receipt->'allowed'='true'::jsonb and receipt->>'taskId'=t.id::text
+      and receipt->>'turnId'=t.knowledge_turn_id::text and (receipt->>'sequence')::bigint=c.knowledge_sequence
+      and (receipt->>'businessId')::bigint=p_business and receipt->>'channel'=p_channel and receipt->>'account'=p_account
+      and receipt->>'conversationId'=p_conversation::text
+      and receipt->>'phase'=case when p_command='finalize' then 'finalize' else 'send' end
+      and (receipt->>'checkedAt')::timestamptz between n-interval '1 second' and n
+      and (receipt->>'resultDigest') is not distinct from t.knowledge_result_digest,false);
+    if p_command='finalize' then
+      if t.knowledge_state<>'VERIFIED' or t.knowledge_result is null or not valid_authority then return null; end if;
+      kind:='final'; body:=t.knowledge_result->>'text';
+    elsif p_command='progress' then
+      if t.knowledge_state not in ('ACCEPTED','RUNNING','VERIFIED') then return null; end if;
+      kind:='progress'; body:=p_args->>'text';
+      if body is null or length(body) not between 1 and 240 then raise exception 'knowledge_progress_bounds'; end if;
+    end if;
+    if p_command in ('finalize','progress') then
+      key:='knowledge:v1:'||t.knowledge_turn_id::text||':'||kind;
+      -- Separate progress/final keys; caller cannot select another recipient.
+      -- Recipient key is a scoped conversation reference, resolved by the future
+      -- transport bridge. Never pass this directly as a provider recipient ID.
+      insert into public.odin_outbox(business_id,conversation_id,schema_version,channel,recipient_key,delivery_key,artifact,status,attempt_count,
+        knowledge_task_id,knowledge_kind,knowledge_state)
+      values(p_business,p_conversation,1,p_channel,c.conversation_key,key,
+        jsonb_build_object('text',body,'requiresLiveAuthorization',true),'pending',0,t.id,kind,'PENDING')
+      on conflict (business_id,knowledge_task_id,knowledge_kind) where knowledge_task_id is not null do nothing;
+      select * into d from public.odin_outbox where business_id=p_business and knowledge_task_id=t.id and knowledge_kind=kind;
+      if p_command='finalize' then
+        if clock_timestamp()>=t.knowledge_expires_at or clock_timestamp()>=t.knowledge_lease_until
+          or (receipt->>'checkedAt')::timestamptz<clock_timestamp()-interval '1 second' then
+          raise exception 'knowledge_authority_expired_during_commit'; end if;
+        update public.odin_tasks set knowledge_state='FINALIZED',knowledge_owner=null,knowledge_lease_until=null,task_revision=task_revision+1 where id=t.id;
+        update public.odin_outbox set knowledge_state='SUPERSEDED' where knowledge_task_id=t.id and knowledge_kind='progress' and knowledge_state in ('PENDING','FAILED');
+      end if;
+      return to_jsonb(d);
+    end if;
+    select * into d from public.odin_outbox where id=(p_args->>'deliveryId')::uuid and business_id=p_business and knowledge_task_id=t.id for update;
+    if not found then return null; end if;
+    if p_command='claim_delivery' then
+      if d.knowledge_state not in ('PENDING','FAILED') or d.attempt_count>=d.knowledge_max_attempts or not valid_authority
+        or t.knowledge_state in ('FAILED','EXPIRED','SUPERSEDED') or (d.knowledge_kind='final' and t.knowledge_state<>'FINALIZED') then return null; end if;
+      update public.odin_outbox set knowledge_state='SENDING',knowledge_fence=knowledge_fence+1,knowledge_owner=owner_id,
+        knowledge_lease_until=least(n+lease_ms*interval '1 millisecond',t.knowledge_expires_at),attempt_count=attempt_count+1,last_attempt_at=n where id=d.id returning * into d;
+    else
+      if d.knowledge_state<>'SENDING' or d.knowledge_owner is distinct from owner_id or d.knowledge_fence is distinct from (p_args->>'fence')::bigint
+        or d.knowledge_lease_until is null or d.knowledge_lease_until<=n then return null; end if;
+      if p_args->>'outcome' not in ('API_ACCEPTED','DEFINITIVELY_UNSENT','AMBIGUOUS') or p_args->>'outcome' is null then raise exception 'knowledge_invalid_delivery_outcome'; end if;
+      if p_args->>'outcome'='API_ACCEPTED' and (length(coalesce(p_args->>'providerMessageId','')) not between 1 and 256 or coalesce(p_args->>'providerMessageId','') !~ '^[A-Za-z0-9:_.=+/-]+$') then raise exception 'knowledge_provider_id'; end if;
+      if p_args->>'outcome'='DEFINITIVELY_UNSENT' and jsonb_typeof(p_args->'retryable') is distinct from 'boolean' then raise exception 'knowledge_retry_outcome'; end if;
+      update public.odin_outbox set knowledge_state=case p_args->>'outcome' when 'API_ACCEPTED' then 'SENT' when 'AMBIGUOUS' then 'UNCERTAIN' else 'FAILED' end,
+        knowledge_max_attempts=case when p_args->>'outcome'='DEFINITIVELY_UNSENT' and p_args->'retryable'='false'::jsonb then attempt_count else knowledge_max_attempts end,
+        provider_message_id=case when p_args->>'outcome'='API_ACCEPTED' then p_args->>'providerMessageId' else provider_message_id end,
+        knowledge_owner=null,knowledge_lease_until=null where id=d.id returning * into d;
+    end if;
+    if p_command='claim_delivery' and (clock_timestamp()>=d.knowledge_lease_until
+      or (receipt->>'checkedAt')::timestamptz<clock_timestamp()-interval '1 second') then
+      raise exception 'knowledge_delivery_authority_expired_during_claim'; end if;
+    return to_jsonb(d);
+  else raise exception 'knowledge_unknown_transition';
+  end if;
+  return to_jsonb(t);
+end $$;
+revoke all on function public.odin_accept_knowledge_turn_v1(bigint,uuid,text,text,text,jsonb,integer,integer,integer) from public,anon,authenticated;
+revoke all on function public.odin_transition_knowledge_v1(bigint,uuid,uuid,text,text,text,jsonb) from public,anon,authenticated;
+grant execute on function public.odin_accept_knowledge_turn_v1(bigint,uuid,text,text,text,jsonb,integer,integer,integer) to service_role;
+grant execute on function public.odin_transition_knowledge_v1(bigint,uuid,uuid,text,text,text,jsonb) to service_role;
+commit;

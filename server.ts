@@ -1,4 +1,10 @@
-import { splitMixedBusinessRequest, hasConversationReference, referenceClarificationReply, mixedActionClarificationReply } from './src/ai/conversation-intent-continuity';
+import { NativeKnowledgeRuntime, nativeAsyncControls, type NativeKnowledgeAdmission } from './src/p2/native-knowledge-runtime';
+import { nativeKnowledgeOrder, type NativeKnowledgeOrder } from './src/p2/native-knowledge-order';
+import { bindBusinessInformationTurnId } from './src/ai/business-information-timing';
+import { DurableKnowledgeBudget } from './src/p2/durable-knowledge-budget';
+import { captureVerified, type KnowledgeTask, type VerifiedKnowledge } from './src/p2/knowledge-lifecycle';
+import type { KnowledgeExecutor } from './src/p2/knowledge-runner';
+import { prepareLiteralTurn, type SharedTurnExecutionResult, hasConversationReference, referenceClarificationReply, mixedActionClarificationReply } from './src/ai/conversation-intent-continuity';
 import { deterministicLocationPlan, KNOWLEDGE_PLANNING_LIMIT_MS, KNOWLEDGE_VERIFICATION_MIN_MS } from './src/ai/knowledge-planning';
 import { hasBookingInterruption, isBookingResumeRequest, withoutNegatedBookingClauses, bookingPauseReply } from './src/ai/booking-interruption';
 import { numericalConstraintSafe, NUMERICAL_DIRECTION_GUIDANCE } from './src/ai/numerical-constraints';
@@ -9,8 +15,8 @@ import { readCancellationPolicy, hasCancellationSettings, cancellationPolicyFing
   type CancellationConfirmation, type CancellationSubject } from './src/ai/cancellation-policy';
 import { selectSemanticQueries, retainPlannedQueryLanguages, explicitlyWrongWorkflow, type PlannedQueryLanguages, type SourceLanguage } from './src/knowledge/semantic-queries';
 import { RequestSecurity, immutable } from './src/knowledge/request-security';
-import { InformationBudget, parseRequestedFacets, answerEvidence, buildEvidenceFirstAnswer, narrowInformationRequest, withinInformationDeadline, pruneAnswerManifest, type Facet, type Evidence, type AnswerManifest } from './src/ai/business-information-answer-plan';
-import { KNOWLEDGE_SCHEMA_VERSION, knowledgeStructuredOutput, knowledgeFailureReason, safeModelIdentifier, type KnowledgeDecision, type DecisionReason, type KnowledgeStage } from './src/ai/knowledge-answer-protocol';
+import { InformationBudget, INFORMATION_PUBLICATION_RESERVE_MS, parseRequestedFacets, answerEvidence, buildEvidenceFirstAnswer, narrowInformationRequest, withinInformationDeadline, pruneAnswerManifest, type Facet, type Evidence, type AnswerManifest } from './src/ai/business-information-answer-plan';
+import { KNOWLEDGE_SCHEMA_VERSION, verificationAdmissionDiagnostic, knowledgeDiagnosticFailure, knowledgeStructuredOutput, knowledgeFailureReason, safeModelIdentifier, type KnowledgeDecision, type DecisionReason, type KnowledgeStage } from './src/ai/knowledge-answer-protocol';
 import { resolveOpenAiTextModel } from './src/ai/providers/openai';
 import { mapWebsiteInstallation, websiteInstallationRouter } from './src/knowledge/website-installations';
 import { DocumentEvidenceRegistry, revalidateKnowledgeSourceIds } from './src/knowledge/evidence-registry';
@@ -57,7 +63,7 @@ import {
   isRecommendationInformationRequest,
 } from './src/ai/business-information';
 import { beginBusinessInformationTiming, businessInformationTimingContext, clearBusinessInformationTiming,
-  markBusinessInformationTiming, timeBusinessInformationDelivery } from './src/ai/business-information-timing';
+  markBusinessInformationTiming, timeBusinessInformationDelivery, withBusinessInformationTiming, recordBusinessInformationSendResult, runOptionalDiagnostic } from './src/ai/business-information-timing';
 import "dotenv/config";
 import { extractExplicitArabicCustomerName, extractStandaloneArabicScriptCustomerName, stripCustomerNameDiagnosticSuffix } from './src/ai/arabic-customer-name';
 import express from "express";
@@ -845,7 +851,11 @@ async function generateContentWithFallback(ai: GoogleGenAI | null, options: {
   }
   if (informationBudget && !informationBudget.remaining()) throw new Error("information_deadline");
   if(informationBudget && !informationBudget.generationRemaining()) throw new Error('information_publication_reserve');
-  if(informationBudget && options.context?.stage==='knowledge_units_verification' && informationBudget.generationRemaining()<KNOWLEDGE_VERIFICATION_MIN_MS) throw new Error('information_verification_admission');
+  if (informationBudget && options.context?.stage === 'knowledge_units_verification') {
+    const admission = verificationAdmissionDiagnostic(informationBudget.remaining(), INFORMATION_PUBLICATION_RESERVE_MS, KNOWLEDGE_VERIFICATION_MIN_MS, 'before_queue');
+    emitKnowledgeDecision({ stage: 'verification', reason: admission.admitted ? 'ACCEPTED' : 'STAGE_ADMISSION', admission });
+    if (!admission.admitted) throw new Error('information_verification_admission');
+  }
   const informationStageLimit = options.context?.stage==='semantic_knowledge_query_resolution' && informationBudget
     ? Math.min(KNOWLEDGE_PLANNING_LIMIT_MS,providerTimeoutMs) : ['knowledge_units_composition','knowledge_units_presentation_verification'].includes(options.context?.stage || '') && informationBudget
     ? Math.max(1, Math.min(2_000, informationBudget.generationRemaining())) : providerTimeoutMs;
@@ -857,13 +867,13 @@ async function generateContentWithFallback(ai: GoogleGenAI | null, options: {
     options.context?.stage === "business_support_grounding_verification" ||
     options.context?.stage === "business_support_grounding_entailment"
   );
-  const attemptTimings = new Map<number, { queuedAt: number; executionStartedAt?: number }>();
+  const attemptTimings = new Map<number, { queuedAt: number; executionStartedAt?: number; providerInvoked?: boolean }>();
   const logVerifierTiming = (attempt: number, phase: string) => {
     if (!verifierTimingEnabled) return;
     const timing = attemptTimings.get(attempt);
     if (!timing) return;
     const now = Date.now();
-    console.info("[BusinessSupportVerifierTiming]", {
+    runOptionalDiagnostic(() => console.info("[BusinessSupportVerifierTiming]", {
       stage: `${options.context!.stage}_${phase}`,
       correlationId,
       businessId: options.context?.businessId ?? null,
@@ -876,7 +886,7 @@ async function generateContentWithFallback(ai: GoogleGenAI | null, options: {
       claimCount: options.context?.claimCount ?? null,
       timeoutBudgetMs: timeoutMs,
       ...(options.context?.businessInfoTurnId ? { businessInfoTurnId: options.context.businessInfoTurnId } : {}),
-    });
+    }));
   };
   const response = await runAiProviderRequest({
     timeoutMs,
@@ -888,8 +898,27 @@ async function generateContentWithFallback(ai: GoogleGenAI | null, options: {
       return runWithAiQueue(async () => {
         if (informationBudget && !informationBudget.remaining()) throw new Error("information_deadline");
         if (informationBudget && !informationBudget.generationRemaining()) throw new Error("information_publication_reserve");
-        if(informationBudget && options.context?.stage==='knowledge_units_verification' && informationBudget.generationRemaining()<KNOWLEDGE_VERIFICATION_MIN_MS) throw new Error('information_verification_admission');
+        if (informationBudget && options.context?.stage === 'knowledge_units_verification') {
+          const admission = verificationAdmissionDiagnostic(informationBudget.remaining(), INFORMATION_PUBLICATION_RESERVE_MS, KNOWLEDGE_VERIFICATION_MIN_MS, 'after_queue');
+          emitKnowledgeDecision({ stage: 'verification', reason: admission.admitted ? 'ACCEPTED' : 'STAGE_ADMISSION', admission });
+          if (!admission.admitted) throw new Error('information_verification_admission');
+        }
+        if (informationBudget instanceof DurableKnowledgeBudget) {
+          if (!informationBudget.remaining()) throw new Error('information_deadline');
+          await informationBudget.reserve();
+          if (!informationBudget.remaining()) throw new Error('information_deadline');
+          if (!informationBudget.generationRemaining()) throw new Error('information_publication_reserve');
+          // Durable reservation is an async database boundary. Reapply the same
+          // admission floor after it, before any verifier request is submitted.
+          if (options.context?.stage === 'knowledge_units_verification') {
+            const admission = verificationAdmissionDiagnostic(informationBudget.remaining(), INFORMATION_PUBLICATION_RESERVE_MS, KNOWLEDGE_VERIFICATION_MIN_MS, 'after_queue');
+            emitKnowledgeDecision({ stage: 'verification', reason: admission.admitted ? 'ACCEPTED' : 'STAGE_ADMISSION', admission });
+            if (!admission.admitted) throw new Error('information_verification_admission');
+          }
+          signal = AbortSignal.any([...(signal ? [signal] : []), informationBudget.signal]);
+        }
         try {
+          attemptTimings.get(attempt)!.providerInvoked = true;
           return await (provider === "gemini"
             ? process.env.NODE_ENV === "test" && priority1hTestDependencies?.geminiGenerate
               ? priority1hTestDependencies.geminiGenerate(params)
@@ -902,11 +931,11 @@ async function generateContentWithFallback(ai: GoogleGenAI | null, options: {
         attemptTimings.get(attempt)!.executionStartedAt = Date.now();
         logVerifierTiming(attempt, "provider_start");
         if (options.context?.businessInfoTurnId) {
-          console.info('[BusinessInformationProviderTiming]', {
+          runOptionalDiagnostic(() => console.info('[BusinessInformationProviderTiming]', {
             businessInfoTurnId: options.context.businessInfoTurnId, correlationId,
             stage: options.context.stage || 'generation', attempt, phase: 'provider_start',
             queueWaitMs: Date.now() - attemptTimings.get(attempt)!.queuedAt,
-          });
+          }));
         }
       }, signal);
     },
@@ -920,7 +949,7 @@ async function generateContentWithFallback(ai: GoogleGenAI | null, options: {
     },
     onAttemptComplete: (event) => {
       if(informationBudget) emitKnowledgeDecision({stage:knowledgeProviderStage(options.context?.stage),reason:event.ok?'ACCEPTED':knowledgeFailureReason({category:event.category}),
-        ...(event.category?{failureCategory:event.category}:{}),
+        ...(event.category?{failureCategory:event.category}:{}),providerAttempted:attemptTimings.get(event.attempt)?.providerInvoked===true,
         correlationId,durationMs:event.durationMs,transportSuccess:event.ok,remainingMs:informationBudget.remaining(),
         timeoutMs,deadlineAt:informationBudget.deadlineAt,outputMode:request.structuredOutput?'json_schema':'validated_text'});
       logVerifierTiming(event.attempt, event.category === "TIMEOUT" ? "attempt_timeout" : "attempt_complete");
@@ -1369,6 +1398,7 @@ type BusinessGroundingVerificationRequest = {
 };
 
 type Priority1hTestDependencies = {
+  nativeKnowledgeRuntime?: NativeKnowledgeRuntime;
   knowledgeVoiceValidation?: () => Promise<void>;
   messengerVoiceReply?: (text: string) => Promise<{filePath: string; url: string}>;
   evidenceFirstDiagnostic?: (event: Record<string, unknown>) => void;
@@ -5239,7 +5269,8 @@ type BusinessInformationTurn = {
 
 const businessInformationTurns: Record<string, BusinessInformationTurn> = {};
 // Opt-in shared rollout. No per-channel overrides; no persistent answer/unit cache.
-type KnowledgeTurnState = { requiresReferenceResolution?: boolean; unresolvedReference?: boolean; migrated?: boolean; budget?: InformationBudget; facets?: Facet[]; oversized?: boolean; evidence?: Evidence[];
+type NativeKnowledgeEvent = {eventId:string;account:string;recipient:string;order:NativeKnowledgeOrder|null};
+type KnowledgeTurnState = { nativeEvent?: NativeKnowledgeEvent; nativeAsync?: {runtime:NativeKnowledgeRuntime|null;admission:NativeKnowledgeAdmission|null;failed:boolean}; durableCheckpoint?: (stage: 'extraction') => Promise<void>; durableProgress?: Parameters<KnowledgeExecutor>[1]['progress']; durableCurrent?: () => Promise<boolean>; requiresReferenceResolution?: boolean; unresolvedReference?: boolean; migrated?: boolean; budget?: InformationBudget; facets?: Facet[]; oversized?: boolean; evidence?: Evidence[];
   naturalEnabled?: boolean; naturalSinglePartial?: boolean; naturalTurnId?: string;
   businessId?: number; question?: string; manifest?: AnswerManifest; sessionId?: string; history?: any[]; matches?: KnowledgeSearchMatch[];
   snapshot?: Readonly<{ businessId: number; question: string; matches: KnowledgeSearchMatch[]; evidence: Evidence[] }>;
@@ -5247,33 +5278,69 @@ type KnowledgeTurnState = { requiresReferenceResolution?: boolean; unresolvedRef
   freshnessFailure?:DecisionReason; sourceValidationUnavailable?:boolean; freshnessChecks?:number; freshnessDurationMs?:number; semanticVerifiedUnits?:number;
   diagnosticCount?:number; unitCounts?:KnowledgeDecision['counts'] };
 const knowledgeTurnScope = new AsyncLocalStorage<KnowledgeTurnState>();
-function runUnifiedConversationRequest<T>(work: () => Promise<T>, nativeChannel:KnowledgeTurnState['nativeChannel']): Promise<T> {
+function runUnifiedConversationRequest<T>(work: () => Promise<T>, nativeChannel:KnowledgeTurnState['nativeChannel'], nativeEvent?:NativeKnowledgeEvent): Promise<T> {
   const naturalEnabled=process.env.ODINLINK_EVIDENCE_FIRST_KNOWLEDGE==='true'&&process.env.ODINLINK_GROUNDED_NATURAL_RESPONSES==='true';
-  return requestSecurity.run(() => knowledgeTurnScope.run({nativeChannel,naturalEnabled,...(naturalEnabled?{
-    naturalSinglePartial:process.env.ODINLINK_GROUNDED_NATURAL_SINGLE_PARTIAL==='true',naturalTurnId:crypto.randomUUID()}: {})}, work));
+  return withBusinessInformationTiming(() => requestSecurity.run(() => knowledgeTurnScope.run({nativeChannel,nativeEvent,naturalEnabled,...(naturalEnabled?{
+    naturalSinglePartial:process.env.ODINLINK_GROUNDED_NATURAL_SINGLE_PARTIAL==='true',naturalTurnId:crypto.randomUUID()}: {})}, work)), nativeChannel);
+}
+let hostedNativeKnowledge:NativeKnowledgeRuntime|null=null;
+function getNativeKnowledgeRuntime():NativeKnowledgeRuntime|null {
+  if (priority1hTestDependencies?.nativeKnowledgeRuntime) return priority1hTestDependencies.nativeKnowledgeRuntime;
+  const controls=nativeAsyncControls();
+  if (!controls.admission && !controls.processing && !controls.delivery) return null;
+  if (!supabase) throw new Error('knowledge_database_required');
+  if (!hostedNativeKnowledge) hostedNativeKnowledge=new NativeKnowledgeRuntime({db:supabase,secret:process.env.P2_CONVERSATION_KEY_SECRET||'',controls:nativeAsyncControls,
+    diagnostic:event=>console.log('[AsyncKnowledge]',event),
+    execute:async(task,context,current)=>{
+      const {data,error}=await supabase!.from('businesses').select('*').eq('id',task.scope.businessId).maybeSingle();
+      if(error || !data || Number(data.id)!==task.scope.businessId) throw new Error('knowledge_business_scope_unavailable');
+      return executeDurableKnowledgeTask(task,context,normalizeBusinessConfig(data),current);
+    }});
+  return hostedNativeKnowledge;
+}
+async function prepareNativeKnowledgeIngress(businessConfig:any):Promise<boolean> {
+  const state=knowledgeTurnScope.getStore();if(!state?.nativeEvent || !state.nativeChannel || state.nativeAsync)return false;
+  let runtime:NativeKnowledgeRuntime|null=null;
+  try {
+    runtime=getNativeKnowledgeRuntime();if(!runtime)return false;
+    const event=state.nativeEvent;
+    const admission=await runtime.accept({businessId:Number(getBusinessIdFromConfig(businessConfig)),channel:state.nativeChannel,
+      account:event.account,recipient:event.recipient,eventId:event.eventId,order:event.order});
+    if(!admission)return false;
+    state.nativeAsync={runtime,admission,failed:false};
+    const turnId=admission.result.acceptance?.identity.turnId;
+    if(turnId){bindBusinessInformationTurnId(turnId);state.naturalTurnId=turnId;}
+    return ['STALE','DUPLICATE'].includes(admission.result.disposition);
+  } catch {
+    state.nativeAsync={runtime,admission:null,failed:true};
+    runOptionalDiagnostic(()=>console.error('[AsyncKnowledge]',{stage:'admission_unavailable'}));
+    return false; // Booking retains its existing foreground authority/path.
+  }
 }
 function knowledgeProviderStage(stage?:string):KnowledgeStage {
   if(stage==='knowledge_units_presentation_verification')return 'presentation_verification';
   return stage==='semantic_knowledge_query_resolution'?'planning':stage==='knowledge_units_extraction'?'extraction':stage==='knowledge_units_verification'?'verification':'composition';
 }
 function emitKnowledgeDecision(event:KnowledgeDecision) {
-  const state=knowledgeTurnScope.getStore();if(!state?.budget)return;
-  if(event.stage==='verification'&&event.counts)state.semanticVerifiedUnits=event.counts.verified;
-  if(event.counts)state.unitCounts=event.stage==='extraction'?event.counts:{proposed:state.unitCounts?.proposed??event.counts.proposed,parsed:state.unitCounts?.parsed??event.counts.parsed,
-    verified:event.counts.verified,rejected:(state.unitCounts?.proposed??event.counts.proposed)-event.counts.verified};
-  // Reserve publication capacity; all arrays/IDs/reasons originate from bounded
-  // validated contracts, never provider free text or exception messages.
-  if((state.diagnosticCount||0)>=(event.stage==='publication'?64:60))return;
-  state.diagnosticCount=(state.diagnosticCount||0)+1;
-  const diagnostic={schemaVersion:KNOWLEDGE_SCHEMA_VERSION,featureEnabled:true,
-    eventType:event.transportSuccess!==undefined?'transport':event.inputTokens!==undefined?'usage':event.sources?'source_validation':event.route?'publication':event.unitId?event.stage==='extraction'?'unit_parse':event.stage==='verification'?'unit_verdict':'unit_state':event.facetId?'coverage':event.counts?'unit_counts':event.stage,
-    businessInfoTurnId:state.sessionId?businessInformationTimingContext(state.sessionId).businessInfoTurnId||null:null,
-    businessId:state.businessId||null,nativeChannel:state.nativeChannel||'internal',provider:state.provider||'unresolved',model:state.model||'unresolved',
-    naturalEnabled:state.naturalEnabled===true,naturalSinglePartial:state.naturalSinglePartial===true,
-    revision:/^[a-f0-9]{7,40}$/u.test(process.env.RENDER_GIT_COMMIT||'')?process.env.RENDER_GIT_COMMIT:'local-unversioned',
-    ...event,remainingMs:state.budget.remaining()};
-  priority1hTestDependencies?.evidenceFirstDecisionDiagnostic?.(diagnostic);
-  console.info('[EvidenceFirstDecision]',JSON.stringify(diagnostic));
+  runOptionalDiagnostic(() => {
+    const state=knowledgeTurnScope.getStore();if(!state?.budget)return;
+    if(event.stage==='verification'&&event.counts)state.semanticVerifiedUnits=event.counts.verified;
+    if(event.counts)state.unitCounts=event.stage==='extraction'?event.counts:{proposed:state.unitCounts?.proposed??event.counts.proposed,parsed:state.unitCounts?.parsed??event.counts.parsed,
+      verified:event.counts.verified,rejected:(state.unitCounts?.proposed??event.counts.proposed)-event.counts.verified};
+    // Reserve publication capacity; all arrays/IDs/reasons originate from bounded
+    // validated contracts, never provider free text or exception messages.
+    if((state.diagnosticCount||0)>=(event.stage==='publication'?64:60))return;
+    state.diagnosticCount=(state.diagnosticCount||0)+1;
+    const diagnostic=immutable({schemaVersion:KNOWLEDGE_SCHEMA_VERSION,featureEnabled:true,
+      eventType:event.admission?'verification_admission':event.transportSuccess!==undefined?'transport':event.inputTokens!==undefined?'usage':event.sources?'source_validation':event.route?'publication':event.unitId?event.stage==='extraction'?'unit_parse':event.stage==='verification'?'unit_verdict':'unit_state':event.facetId?'coverage':event.counts?'unit_counts':event.stage,
+      businessInfoTurnId:state.sessionId?businessInformationTimingContext(state.sessionId).businessInfoTurnId||null:null,
+      businessId:state.businessId||null,nativeChannel:state.nativeChannel||'internal',provider:state.provider||'unresolved',model:state.model||'unresolved',
+      naturalEnabled:state.naturalEnabled===true,naturalSinglePartial:state.naturalSinglePartial===true,
+      revision:/^[a-f0-9]{7,40}$/u.test(process.env.RENDER_GIT_COMMIT||'')?process.env.RENDER_GIT_COMMIT:'local-unversioned',
+      ...event,failureKind:knowledgeDiagnosticFailure(event),remainingMs:state.budget.remaining()});
+    runOptionalDiagnostic(() => priority1hTestDependencies?.evidenceFirstDecisionDiagnostic?.(diagnostic));
+    return console.info('[EvidenceFirstDecision]',JSON.stringify(diagnostic));
+  });
 }
 function evidenceFirstEligible(question: string): boolean {
   return process.env.ODINLINK_EVIDENCE_FIRST_KNOWLEDGE === 'true' && !cancellationInformationRequested(question) &&
@@ -5301,6 +5368,7 @@ async function knowledgeContextCurrent(): Promise<boolean> {
   const captured = requestSecurity.evidence;
   const support = captured?.support;
   const snapshot = state?.snapshot;
+  if (state?.durableCurrent && !await state.durableCurrent()) return false;
   if (!requestSecurity.current() || !snapshot || !support || !('question' in support) ||
       snapshot.businessId !== Number(getBusinessIdFromConfig(support.businessConfig)) || snapshot.question !== support.question ||
       state!.question !== support.question || state!.businessId !== snapshot.businessId) return false;
@@ -5417,34 +5485,91 @@ async function generateSecureConversationContent(sessionId: string, options: any
           ? {...event,reason:state.freshnessFailure}:event),
         generate: async (stage, instruction, data) => {
           const started = Date.now(); let ok = false;
-          try { const result = await generateContentWithFallback(null, { messages: [{ role: 'user', content: JSON.stringify(data) }],
+          try { const pending = generateContentWithFallback(null, { messages: [{ role: 'user', content: JSON.stringify(data) }],
             systemInstruction: instruction, tools: [], informationBudget: state.budget,
             ...(stage!=='composition'?{structuredOutput:knowledgeStructuredOutput(stage,state.naturalEnabled)}:{}),
             context: { ...businessInformationTimingContext(sessionId), businessId: state.businessId, channel: 'knowledge-core', stage: `knowledge_units_${stage}`, language: support.language } });
+            if(stage==='extraction'||stage==='verification')runOptionalDiagnostic(()=>state.durableProgress?.(stage,(state.facets||[]).map(f=>f.attribute)));
+            const result=await pending;
+            if (stage === 'extraction' && state.durableCheckpoint) await state.durableCheckpoint('extraction');
             ok = true; return result;
-          } finally { state.budget!.stages.push({ stage, durationMs: Date.now() - started, ok }); }
+          } finally {
+            if(stage==='extraction'||stage==='verification')runOptionalDiagnostic(()=>state.durableProgress?.(null));
+            state.budget!.stages.push({ stage, durationMs: Date.now() - started, ok });
+          }
         },
       });
       const unavailable=state.freshnessFailure?{...manifest,fallbackReason:state.freshnessFailure,
         ...(state.naturalEnabled?{naturalOutcome:'canonical_fallback' as const,naturalReason:state.freshnessFailure}:{})}:manifest;
       state.manifest = state.oversized ? { ...unavailable, text: narrowInformationRequest(support.language) } : unavailable;
-      const diagnostic = { businessInfoTurnId: businessInformationTimingContext(sessionId).businessInfoTurnId,
-        nativeChannel:state.nativeChannel||'internal',schemaVersion:KNOWLEDGE_SCHEMA_VERSION,provider:state.provider,model:state.model,
-        facets: state.manifest.outcomes.map(o => ({ status: o.status, units: o.unitIds.length })), units: state.manifest.units.length,
-        presentationFallback: state.manifest.presentationFallback,presentationPath:state.manifest.presentationPath,fallbackReason:state.manifest.fallbackReason,
-        ...(state.naturalEnabled?{naturalResponse:{enabled:true,schemaVersion:'grounded-natural-v1',outcome:state.manifest.naturalOutcome||'canonical_fallback',
-          reason:state.manifest.naturalReason||state.manifest.fallbackReason}}:{}),
-        naturalEnabled:state.naturalEnabled===true,naturalSinglePartial:state.naturalSinglePartial===true,
-        semanticVerifiedUnits:state.semanticVerifiedUnits||0,freshnessChecks:state.freshnessChecks||0,freshnessDurationMs:state.freshnessDurationMs||0,
-        unitCounts:state.unitCounts,completeness:state.manifest.outcomes.map(o=>({status:o.status,obligations:o.obligations.map(d=>d.status),requestAligned:o.requestAligned,materialFactsComplete:o.materialFactsComplete})), attempts: state.budget.attempts, retries: 0,
-        durationMs: Date.now() - state.budget.startedAt, stages: state.budget.stages, inputTokens: state.budget.inputTokens,
-        outputTokens: state.budget.outputTokens, meteredAttempts: state.budget.meteredAttempts, estimatedCostUsd: state.budget.meteredAttempts === state.budget.attempts ? state.budget.estimatedCostUsd : null };
-      priority1hTestDependencies?.evidenceFirstDiagnostic?.(diagnostic);
-      console.info('[EvidenceFirstKnowledge]', JSON.stringify(diagnostic));
+      runOptionalDiagnostic(() => {
+        const diagnostic = immutable({ businessInfoTurnId: businessInformationTimingContext(sessionId).businessInfoTurnId,
+          nativeChannel:state.nativeChannel||'internal',schemaVersion:KNOWLEDGE_SCHEMA_VERSION,provider:state.provider,model:state.model,
+          facets: state.manifest.outcomes.map(o => ({ status: o.status, units: o.unitIds.length })), units: state.manifest.units.length,
+          presentationFallback: state.manifest.presentationFallback,presentationPath:state.manifest.presentationPath,fallbackReason:state.manifest.fallbackReason,
+          ...(state.naturalEnabled?{naturalResponse:{enabled:true,schemaVersion:'grounded-natural-v1',outcome:state.manifest.naturalOutcome||'canonical_fallback',
+            reason:state.manifest.naturalReason||state.manifest.fallbackReason}}:{}),
+          naturalEnabled:state.naturalEnabled===true,naturalSinglePartial:state.naturalSinglePartial===true,
+          semanticVerifiedUnits:state.semanticVerifiedUnits||0,freshnessChecks:state.freshnessChecks||0,freshnessDurationMs:state.freshnessDurationMs||0,
+          unitCounts:state.unitCounts,completeness:state.manifest.outcomes.map(o=>({status:o.status,obligations:o.obligations.map(d=>d.status),requestAligned:o.requestAligned,materialFactsComplete:o.materialFactsComplete})), attempts: state.budget.attempts, retries: 0,
+          durationMs: Date.now() - state.budget.startedAt, stages: state.budget.stages, inputTokens: state.budget.inputTokens,
+          outputTokens: state.budget.outputTokens, meteredAttempts: state.budget.meteredAttempts, estimatedCostUsd: state.budget.meteredAttempts === state.budget.attempts ? state.budget.estimatedCostUsd : null });
+        runOptionalDiagnostic(() => priority1hTestDependencies?.evidenceFirstDiagnostic?.(diagnostic));
+        return console.info('[EvidenceFirstKnowledge]', JSON.stringify(diagnostic));
+      });
     }
     return { text: state.manifest.text, functionCalls: [] };
   }
   return generateContentWithFallback(null, { ...options, tools });
+}
+
+
+/** Inactive Knowledge-only recovery entry. Config and current ownership are
+ * resolved by the trusted server composition root, never by stored task input.
+ * Does not dispatch intent, read pending Booking state, mutate calendars or send.
+ */
+export async function executeDurableKnowledgeTask(task: KnowledgeTask,
+  context: Parameters<KnowledgeExecutor>[1], businessConfig: any,
+  current: () => Promise<boolean>): Promise<VerifiedKnowledge | null> {
+  const question = task.input.question.trim();
+  if (Number(getBusinessIdFromConfig(businessConfig)) !== task.scope.businessId ||
+      !evidenceFirstEligible(question) || context.signal.aborted || !await current()) return null;
+  const sessionId = `durable-knowledge:${task.turnId}:${task.fence}`;
+  const budget = new DurableKnowledgeBudget(task, context.signal, context.reserveModelAttempt);
+  const naturalEnabled = process.env.ODINLINK_GROUNDED_NATURAL_RESPONSES === 'true';
+  const state: KnowledgeTurnState = { nativeChannel: task.scope.channel, sessionId,
+    budget, businessId: task.scope.businessId, question: question, history: structuredClone([...task.input.history]),
+    durableCheckpoint: context.checkpoint, durableProgress: context.progress, durableCurrent: async () => !context.signal.aborted && budget.remaining() > 0 && await current(),
+    naturalEnabled, naturalSinglePartial: process.env.ODINLINK_GROUNDED_NATURAL_SINGLE_PARTIAL === 'true', naturalTurnId: task.turnId };
+  return withBusinessInformationTiming(() => requestSecurity.run(() => knowledgeTurnScope.run(state, async () => {
+    requestSecurity.bind(sessionId);
+    beginBusinessInformationTiming(sessionId, question, task.scope.businessId);
+    try {
+      await context.checkpoint('planning');
+      const retrievedKnowledge = await retrieveBusinessKnowledgeForQuestion(businessConfig, question,
+        businessInformationTimingContext(sessionId));
+      await context.checkpoint('retrieval');
+      if (state.unresolvedReference || state.oversized || !state.budget?.remaining()) return null;
+      businessInformationTurns[sessionId] = { savedAt: Date.now(), businessConfig, question: question,
+        language: task.input.language, retrievedKnowledge };
+      await generateSecureConversationContent(sessionId, { messages: task.input.history,
+        systemInstruction: retrievedKnowledge, tools: [], knowledgePublication: 'guarded_text' });
+      if (!await knowledgeEvidenceCurrent() || !await current() || !budget.remaining()) return null;
+      const manifest = state.manifest;
+      // A canonical presentation fallback can still contain every independently
+      // verified fact. Eligibility depends on coverage/evidence, not formatting.
+      if (!manifest || !manifest.units.length || manifest.units.some(unit => unit.verification !== 'ENTAILED') || manifest.outcomes.length !== manifest.facets.length ||
+          manifest.outcomes.some(o => o.status !== 'VERIFIED' || !o.requestAligned || !o.materialFactsComplete ||
+            o.obligations.some(item => item.status !== 'COVERED'))) return null;
+      const sources = new Map<string, string>();
+      for (const item of state.snapshot?.evidence || []) {
+        if (sources.has(item.sourceId) && sources.get(item.sourceId) !== item.version) return null;
+        sources.set(item.sourceId, item.version);
+      }
+      return captureVerified({ protocol: 'evidence-first-v2', independentlyVerified: true, completeRequiredFacts: true,
+        text: manifest.text, sources: [...sources].map(([id, revision]) => ({ id, revision })) });
+    } finally { delete businessInformationTurns[sessionId]; }
+  })), task.scope.channel, task.turnId);
 }
 
 async function securePublicationReply(reply: string, language?: string): Promise<string | null> {
@@ -5456,7 +5581,7 @@ async function securePublicationReply(reply: string, language?: string): Promise
   if (!requestSecurity.current()) {emitKnowledgeDecision({stage:'publication',...publicationTiming(),reason:'PUBLICATION_SUPPRESSED',route:'suppressed'});return null;}
   if(state?.budget&&state.migrated===false)emitKnowledgeDecision({stage:'publication',...publicationTiming(),reason:'LEGACY_ROUTE',route:'legacy'});
   const previousText = state?.manifest?.text;
-  if (state?.manifest) priority1hTestDependencies?.evidenceFirstPublicationDiagnostic?.({ phase: 'publication_start', units: state.manifest.units.length });
+  if (state?.manifest) runOptionalDiagnostic(() => priority1hTestDependencies?.evidenceFirstPublicationDiagnostic?.({ phase: 'publication_start', units: state.manifest.units.length }));
   const current = await (state?.manifest ? knowledgeEvidenceCurrent() : requestEvidenceCurrent());
   if (!requestSecurity.current()) {emitKnowledgeDecision({stage:'publication',...publicationTiming(),reason:'PUBLICATION_SUPPRESSED',route:'suppressed'});return null;}
   // Re-render the immutable manifest after downstream concision/identity/CTA guards.
@@ -5471,8 +5596,8 @@ async function securePublicationReply(reply: string, language?: string): Promise
     const history = state.sessionId && chatSessions[state.sessionId];
     const last = history && history[history.length - 1];
     if (last?.role === 'assistant' && (last.content === previousText || last.content === reply)) last.content = text;
-    priority1hTestDependencies?.evidenceFirstPublicationDiagnostic?.({ phase: 'publication_result', units: state.manifest.units.length,
-      facets: state.manifest.outcomes.map(o => ({ status: o.status, units: o.unitIds.length })), invalidSources: state.invalidSourceIds?.size || 0 });
+    runOptionalDiagnostic(() => priority1hTestDependencies?.evidenceFirstPublicationDiagnostic?.({ phase: 'publication_result', units: state.manifest.units.length,
+      facets: state.manifest.outcomes.map(o => ({ status: o.status, units: o.unitIds.length })), invalidSources: state.invalidSourceIds?.size || 0 }));
     emitKnowledgeDecision({stage:'publication',...publicationTiming(),reason:!publishable?state.freshnessFailure||'CONTEXT_INVALID':state.manifest.fallbackReason||'ACCEPTED',
       semanticVerifiedUnits:state.semanticVerifiedUnits||0,publishableUnits:publishable?state.manifest.units.length:0,
       counts:{proposed:state.unitCounts?.proposed||0,parsed:state.unitCounts?.parsed||0,verified:publishable?state.manifest.units.length:0,
@@ -12719,6 +12844,7 @@ async function sendCustomerMessage(
       }));
       const accepted = res.ok && (!pendingCancellationDelivery() || cancellationProviderAcknowledged(
         'telegram', await res.json().catch(() => null), recipient));
+      recordBusinessInformationSendResult(res, accepted);
       logTelegramMessageSent({
         token,
         config: businessConfig,
@@ -17055,14 +17181,14 @@ async function runSerializedUnifiedBookingTurn<T>(sessionId: string, work: () =>
   }
 }
 
-async function handleUnifiedBookingEngine(params: UnifiedBookingEngineParams): Promise<boolean> {
+async function handleUnifiedBookingEngine(params: UnifiedBookingEngineParams): Promise<SharedTurnExecutionResult> {
   const turnToken = Symbol(params.sessionId);
   const runTurn = async () => {
     // A queued turn must not suppress the reply of the turn that currently
     // owns this serialized conversation.
     latestUnifiedBookingTurn.set(params.sessionId, turnToken);
     try {
-      return await runBookingPresentationScope(() => handleUnifiedBookingEngineTurn({
+      return await runBookingPresentationScope(() => executePreparedLiteralTurn({
       ...params,
       send: async (reply) => {
         if (latestUnifiedBookingTurn.get(params.sessionId) !== turnToken) {
@@ -17151,6 +17277,40 @@ function getPendingNormalizedBookingRequest(
   return hydrated;
 }
 
+/** Execute the already-split literal branches under the existing serialized
+ * owner. The Booking Engine itself continues to enforce all domain authority. */
+async function executePreparedLiteralTurn(params: UnifiedBookingEngineParams): Promise<SharedTurnExecutionResult> {
+  const preparation = prepareLiteralTurn(normalizeConversationText(params.text), clause =>
+    isExplicitBusinessActionRequest(clause) ||
+    (!isBusinessInformationQuestion(clause) && (isRescheduleIntent(clause) || isCancellationIntent(clause))));
+  let history = preparation.kind === 'mixed' ? immutable(params.history || []) : params.history;
+  const native = knowledgeTurnScope.getStore()?.nativeAsync;
+  if (native?.admission && native.runtime) {
+    try { history = immutable([...(await native.runtime.history(native.admission, history || []))]); }
+    catch { native.failed=true; runOptionalDiagnostic(()=>console.error('[AsyncKnowledge]',{stage:'history_unavailable'})); }
+  }
+  const previousInformation = getActiveBusinessInformation(params.sessionId);
+  let handled = false;
+  for (const index of preparation.executionOrder) {
+    const clause = preparation.clauses[index];
+    handled = await handleUnifiedBookingEngineTurn({ ...params, text: clause.text, history });
+    if (preparation.kind === 'mixed' && clause.kind === 'action' && !handled) {
+      const reply = mixedActionClarificationReply(getConversationLanguage(params.sessionId, clause.text, params.businessConfig));
+      if (await params.send(reply) === false) return { kind: 'handled', preparation };
+      appendLocalHistory(params.sessionId, clause.text, reply);
+      try {
+        await postProcessMessage(params.recipientUserId, params.postProcessPlatform, clause.text, reply,
+          params.businessConfig?.telegramToken, params.businessConfig?.apiKey, getBusinessIdFromConfig(params.businessConfig));
+      } catch { console.error("[BookingPostProcess]", { channel: params.platformName, stage: "mixed_action_clarification", success: false }); }
+    }
+  }
+  if (handled) return { kind: 'handled', preparation };
+  const information = getActiveBusinessInformation(params.sessionId);
+  return information && information !== previousInformation
+    ? { kind: 'information_prepared', preparation, question: information.question }
+    : { kind: 'continue_conversation', preparation };
+}
+
 async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams): Promise<boolean> {
   const {
     sessionId,
@@ -17171,26 +17331,6 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
   let text = normalizeConversationText(inboundText);
 
   if (!text) return false;
-  const mixed = splitMixedBusinessRequest(text, clause => isExplicitBusinessActionRequest(clause) ||
-    (!isBusinessInformationQuestion(clause) && (isRescheduleIntent(clause) || isCancellationIntent(clause))));
-  if (mixed) {
-    // One serialized native request, with the same ownership/send boundary.
-    // Freeze reference history before the action can append its own slot reply.
-    const referenceHistory = structuredClone(history || []);
-    const handled = await handleUnifiedBookingEngineTurn({ ...params, text: mixed.action, history: referenceHistory });
-    if (!handled) {
-      // A declined action must not discard the independent question, nor gain
-      // authority from it. Ask for the action target and keep its literal turn.
-      const reply = mixedActionClarificationReply(getConversationLanguage(sessionId, mixed.action, businessConfig));
-      if (await send(reply) === false) return true;
-      appendLocalHistory(sessionId, mixed.action, reply);
-      try {
-        await postProcessMessage(recipientUserId, postProcessPlatform, mixed.action, reply,
-          businessConfig?.telegramToken, businessConfig?.apiKey, getBusinessIdFromConfig(businessConfig));
-      } catch { console.error("[BookingPostProcess]", { channel: platformName, stage: "mixed_action_clarification", success: false }); }
-    }
-    return handleUnifiedBookingEngineTurn({ ...params, text: mixed.information, history: referenceHistory });
-  }
   const previousInformation = getActiveBusinessInformation(sessionId);
   const clarification = previousInformation?.referenceClarification &&
     String(getBusinessIdFromConfig(previousInformation.businessConfig)) === String(getBusinessIdFromConfig(businessConfig))
@@ -17475,6 +17615,23 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
     if (knowledgeState && evidenceFirstEligible(informationQuestion)) knowledgeState.sessionId=sessionId;
     if (knowledgeState) knowledgeState.requiresReferenceResolution = clarifiesReference;
     if (knowledgeState) knowledgeState.history = (history || []).filter(m => typeof m.content === 'string').slice(-4).map(m => ({ role: m.role, content: m.content.slice(0, 1200) }));
+    const nativeAsync=knowledgeState?.nativeAsync;
+    if (nativeAsync && evidenceFirstEligible(informationQuestion) && !configuredOnly) {
+      lockConversationFlowLanguage(sessionId,informationLanguage,'booking_support');
+      nonMutatingSupportTurns[sessionId]=Date.now();
+      businessInformationTurns[sessionId]={savedAt:Date.now(),businessConfig,question:informationQuestion,language:informationLanguage,retrievedKnowledge:''};
+      if (!nativeAsync.failed && nativeAsync.admission?.result.mayAttach && nativeAsync.runtime) {
+        try {
+          await nativeAsync.runtime.attach(nativeAsync.admission,{question:informationQuestion,language:informationLanguage,
+            history:(knowledgeState?.history || []).filter(h=>['user','assistant'].includes(h.role))});
+        } catch { runOptionalDiagnostic(()=>console.error('[AsyncKnowledge]',{stage:'attachment_outcome_unknown'})); }
+      } else {
+        await send(formatBusinessSupportVerificationUnavailable(informationLanguage,businessInformationSubject(informationQuestion,informationLanguage)));
+      }
+      // Never run foreground planning after an admission/attachment attempt,
+      // including an ambiguous database result that may already have committed.
+      return true;
+    }
     const retrievedKnowledge = configuredOnly ? '' : await retrieveBusinessKnowledgeForQuestion(
       businessConfig, informationQuestion, businessInformationTimingContext(sessionId),
     );
@@ -25047,7 +25204,7 @@ async function routeRescheduleToolCallThroughUnified(params: {
     send,
     postProcessPlatform
   });
-  return handled
+  return handled.kind === 'handled'
     ? { handled: true, responseAlreadySent: true }
     : {
         handled: false,
@@ -25121,12 +25278,13 @@ async function sendTelegramPreferredReply(params: {
     formData.append("voice", new Blob([mp3Buffer as any], { type: "audio/mpeg" }), "response.mp3");
     if (requestSecurity.evidence && (!requestSecurity.current() || !await requestEvidenceCurrent() || !requestSecurity.current())) throw new Error("voice_evidence_unavailable");
     voiceRequestAttempted = true;
-    const response = await fetch(
+    const response = await timeBusinessInformationDelivery(sessionId, () => fetch(
       `https://api.telegram.org/bot${telegramToken}/sendVoice`,
       { method: "POST", body: formData as any }
-    );
+    ));
     const accepted = response.ok && (!pendingCancellationDelivery() || cancellationProviderAcknowledged(
       'telegram', await response.json().catch(() => null), chatId));
+    recordBusinessInformationSendResult(response, accepted);
     logTelegramMessageSent({
       token: telegramToken,
       config,
@@ -25247,7 +25405,7 @@ async function processTelegramUpdate(
 }
 
 async function processTelegramUpdateClaimed(update: any, config: any, platform: string = "telegram-polling") {
-  return runUnifiedConversationRequest(() => processTelegramUpdateClaimedInternal(update, config, platform), 'telegram');
+  return runUnifiedConversationRequest(() => processTelegramUpdateClaimedInternal(update, config, platform), 'telegram', {eventId:String(update.update_id),account:String(config?.telegramToken||'').split(':')[0],recipient:String(update.message?.chat?.id||''),order:nativeKnowledgeOrder('telegram',update)});
 }
 
 async function processTelegramUpdateClaimedInternal(
@@ -25286,6 +25444,7 @@ async function processTelegramUpdateClaimedInternal(
   registerConversationTurn(telegramSessionId, telegramTurnSequence);
   resetSessionIfBusinessConfigChanged(telegramSessionId, config);
   requestSecurity.bind(telegramSessionId);
+  if (await prepareNativeKnowledgeIngress(config)) return;
 
   const { apiKey } = config;
   console.log("[TelegramUpdateProcessing]", {
@@ -25535,11 +25694,11 @@ async function processTelegramUpdateClaimedInternal(
           (telegramPending?.customerName && telegramPending?.customerPhone) ||
           telegramCompleted
         ),
-        finalHandledPath: unifiedHandled
+        finalHandledPath: unifiedHandled.kind === 'handled'
           ? "unified_booking_engine"
           : "unified_not_handled"
       });
-      if (unifiedHandled) return;
+      if (unifiedHandled.kind === 'handled') return;
     }
 
     const completedBooking = getRecentCompletedBooking(telegramSessionId);
@@ -28566,10 +28725,12 @@ async function sendInstagramMessage(
       Boolean(result.message_id.trim()) && result?.recipient_id === recipientId;
     if (response.ok && (!reminderDelivery || reminderAccepted) && (!pendingCancellationDelivery() ||
       cancellationProviderAcknowledged('instagram', result, recipientId))) {
+      recordBusinessInformationSendResult(response, true, result?.error ? 'rejected' : typeof result?.message_id === 'string' && result.message_id.trim() ? 'accepted' : 'unknown');
       console.log("[ChannelSend]", { channel: "instagram", success: true, httpStatus: response.status });
       return true;
     }
 
+    recordBusinessInformationSendResult(response, false, result?.error || !response.ok ? 'rejected' : 'unknown');
     console.error("[ChannelSend]", {
       channel: "instagram",
       success: false,
@@ -28694,14 +28855,15 @@ async function sendInstagramAudioMessage(recipientId: string, audioUrl: string, 
 
   try {
     const endpoint = 'https://graph.instagram.com/v25.0/me/messages';
-    const response = await fetch(`${endpoint}?access_token=${encodeURIComponent(token)}`, {
+    const response = await timeBusinessInformationDelivery(knowledgeTurnScope.getStore()?.sessionId || "", () => fetch(`${endpoint}?access_token=${encodeURIComponent(token)}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
-    });
+    }));
 
     const result = await response.json().catch(() => ({}));
 
+    recordBusinessInformationSendResult(response, response.ok, result?.error ? 'rejected' : !response.ok ? 'rejected' : typeof result?.message_id === 'string' && result.message_id.trim() ? 'accepted' : 'unknown');
     if (response.ok) {
       console.log("[ChannelSend]", { channel: "instagram", type: "audio", success: true, httpStatus: response.status });
       return true;
@@ -28883,10 +29045,12 @@ async function sendWhatsAppMessage(
     const cancellationAccepted = !pendingCancellationDelivery() || (!result?.error && providerMessageIdValid &&
       result?.contacts?.some((contact: any) => String(contact?.wa_id || '') === recipient));
     if (response.ok && cancellationAccepted && (outboundContext !== "proactive" || (!result?.error && providerMessageIdValid))) {
+      recordBusinessInformationSendResult(response, true, result?.error ? 'rejected' : providerMessageIdValid ? 'accepted' : 'unknown');
       console.log("[ChannelSend]", { channel: "whatsapp", success: true, httpStatus: response.status });
       return true;
     }
 
+    recordBusinessInformationSendResult(response, false, result?.error || !response.ok ? 'rejected' : 'unknown');
     console.error("[ChannelSend]", {
       channel: "whatsapp",
       success: false,
@@ -28921,7 +29085,7 @@ async function processWhatsAppMessage(message: any, metadata: any, config: any, 
 }
 
 async function processWhatsAppMessageClaimed(message: any, metadata: any, config: any, platform: string = "whatsapp-webhook") {
-  return runUnifiedConversationRequest(() => processWhatsAppMessageClaimedInternal(message, metadata, config, platform), 'whatsapp');
+  return runUnifiedConversationRequest(() => processWhatsAppMessageClaimedInternal(message, metadata, config, platform), 'whatsapp', {eventId:String(message.id||''),account:String(metadata.phone_number_id||''),recipient:canonicalWhatsAppProviderCustomerId(message.from),order:nativeKnowledgeOrder('whatsapp',message)});
 }
 
 async function processWhatsAppMessageClaimedInternal(message: any, metadata: any, config: any, platform: string = "whatsapp-webhook") {
@@ -29041,6 +29205,7 @@ async function processWhatsAppMessageClaimedInternal(message: any, metadata: any
   bindMetaInboundEventBusiness(getBusinessIdFromConfig(businessConfig));
   resetSessionIfBusinessConfigChanged(chatId, businessConfig);
   requestSecurity.bind(chatId);
+  if (await prepareNativeKnowledgeIngress(businessConfig)) return;
   const preTranscriptionVoiceLanguage = isVoiceMessage
     ? resolveWhatsAppVoicePreTranscriptionLanguage(chatId, businessConfig)
     : null;
@@ -29227,7 +29392,7 @@ async function processWhatsAppMessageClaimedInternal(message: any, metadata: any
         postProcessPlatform: platform,
         shadowEligibleCustomerTurn: true
       });
-      if (unifiedHandled) return;
+      if (unifiedHandled.kind === 'handled') return;
     }
 
     const whatsappIntent = whatsappRoutingPlan.intent;
@@ -29260,7 +29425,7 @@ async function processWhatsAppMessageClaimedInternal(message: any, metadata: any
         postProcessPlatform: platform,
         shadowEligibleCustomerTurn: true
       });
-      if (unifiedHandled) return;
+      if (unifiedHandled.kind === 'handled') return;
     } else {
       nonMutatingSupportTurns[chatId] = Date.now();
       console.log("[WhatsAppIntent] normal conversation bypassed booking management", {
@@ -29657,6 +29822,7 @@ async function sendMessengerMessage(
       Boolean(result.message_id.trim()) && result?.recipient_id === recipientId;
     if (response.ok && (!reminderDelivery || reminderAccepted) && (!pendingCancellationDelivery() ||
       cancellationProviderAcknowledged('messenger', result, recipientId))) {
+      recordBusinessInformationSendResult(response, true, result?.error ? 'rejected' : typeof result?.message_id === 'string' && result.message_id.trim() ? 'accepted' : 'unknown');
       if (reminderDelivery) console.log("[ChannelSend]", {
         channel: "messenger", reminderDelivery: true, success: true, providerMessageId: result.message_id,
       });
@@ -29664,6 +29830,7 @@ async function sendMessengerMessage(
       return true;
     }
 
+    recordBusinessInformationSendResult(response, false, result?.error || !response.ok ? 'rejected' : 'unknown');
     console.error("Messenger send failed:", JSON.stringify({ code: result?.error?.code, type: result?.error?.type }));
     await markChannelCredentialFailure(businessConfig, response.status, result?.error?.code);
     return false;
@@ -29846,14 +30013,15 @@ async function sendMessengerAudioMessage(recipientId: string, audioUrl: string, 
   async function sendAttachmentPayload(attachmentType: "audio" | "file") {
     if (authorization && !await messengerAudioTextCurrent(authorization.text)) return false;
     authorization?.onAttempt();
-    const response = await fetch(`https://graph.facebook.com/v25.0/me/messages?access_token=${encodeURIComponent(token)}`, {
+    const response = await timeBusinessInformationDelivery(knowledgeTurnScope.getStore()?.sessionId || "", () => fetch(`https://graph.facebook.com/v25.0/me/messages?access_token=${encodeURIComponent(token)}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(buildPayload(attachmentType))
-    });
+    }));
 
     const result = await response.json().catch(() => ({}));
 
+    recordBusinessInformationSendResult(response, response.ok, result?.error ? 'rejected' : !response.ok ? 'rejected' : typeof result?.message_id === 'string' && result.message_id.trim() ? 'accepted' : 'unknown');
     if (response.ok) {
       console.log(`Messenger ${attachmentType} reply sent.`);
       return true;
@@ -30378,7 +30546,7 @@ async function processMessengerUpdate(webhookEvent: any, config: any, platform: 
 }
 
 async function processMessengerUpdateClaimed(webhookEvent: any, config: any, platform: string = "messenger-webhook") {
-  return runUnifiedConversationRequest(() => processMessengerUpdateClaimedInternal(webhookEvent, config, platform), 'messenger');
+  return runUnifiedConversationRequest(() => processMessengerUpdateClaimedInternal(webhookEvent, config, platform), 'messenger', {eventId:String(webhookEvent.message?.mid||''),account:String(webhookEvent.recipient?.id||''),recipient:String(webhookEvent.sender?.id||''),order:nativeKnowledgeOrder('messenger',webhookEvent)});
 }
 
 async function processMessengerUpdateClaimedInternal(webhookEvent: any, config: any, platform: string = "messenger-webhook") {
@@ -30464,6 +30632,7 @@ async function processMessengerUpdateClaimedInternal(webhookEvent: any, config: 
   bindMetaInboundEventBusiness(getBusinessIdFromConfig(businessConfig));
   resetSessionIfBusinessConfigChanged(chatId, businessConfig);
   requestSecurity.bind(chatId);
+  if (await prepareNativeKnowledgeIngress(businessConfig)) return;
   userLanguage = await prepareConversationLanguageForTurn(
     chatId,
     textMessage || "",
@@ -30551,7 +30720,7 @@ async function processMessengerUpdateClaimedInternal(webhookEvent: any, config: 
         postProcessPlatform: platform,
         shadowEligibleCustomerTurn: true
       });
-      if (unifiedHandled) return;
+      if (unifiedHandled.kind === 'handled') return;
     }
   } catch (bookingFallbackErr) {
     console.error("[UnifiedBooking] Messenger deterministic dispatch crashed:", bookingFallbackErr);
@@ -30604,7 +30773,7 @@ async function processMessengerUpdateClaimedInternal(webhookEvent: any, config: 
           send: (reply) => sendMessengerConversationReply(reply, "unified_booking_reply"),
           postProcessPlatform: platform
         });
-        if (unifiedHandled) return;
+        if (unifiedHandled.kind === 'handled') return;
       } else {
         userMessageForLog = "[Messenger Voice Message]";
         if (getConfiguredAiProvider() !== "gemini") {
@@ -31034,7 +31203,7 @@ function isSupportedInstagramConversationalEvent(webhookEvent: any): boolean {
 }
 
 async function processInstagramUpdateClaimed(webhook_event: any, config: any, platform: string = "instagram-webhook") {
-  return runUnifiedConversationRequest(() => processInstagramUpdateClaimedInternal(webhook_event, config, platform), 'instagram');
+  return runUnifiedConversationRequest(() => processInstagramUpdateClaimedInternal(webhook_event, config, platform), 'instagram', {eventId:String(webhook_event.message?.mid||''),account:String(webhook_event.recipient?.id||''),recipient:String(webhook_event.sender?.id||''),order:nativeKnowledgeOrder('instagram',webhook_event)});
 }
 
 async function processInstagramUpdateClaimedInternal(webhook_event: any, config: any, platform: string = "instagram-webhook") {
@@ -31121,6 +31290,7 @@ async function processInstagramUpdateClaimedInternal(webhook_event: any, config:
   bindMetaInboundEventBusiness(getBusinessIdFromConfig(businessConfig));
   resetSessionIfBusinessConfigChanged(chatId, businessConfig);
   requestSecurity.bind(chatId);
+  if (await prepareNativeKnowledgeIngress(businessConfig)) return;
   userLanguage = await prepareConversationLanguageForTurn(
     chatId,
     textMessage || "",
@@ -31223,7 +31393,7 @@ async function processInstagramUpdateClaimedInternal(webhook_event: any, config:
         postProcessPlatform: platform,
         shadowEligibleCustomerTurn: true
       });
-      if (unifiedHandled) return;
+      if (unifiedHandled.kind === 'handled') return;
     }
 
     const completedBooking = getRecentCompletedBooking(chatId);
@@ -31291,7 +31461,7 @@ if (contentType === "video/mp4") {
             ),
             postProcessPlatform: platform
           });
-          if (unifiedHandled) return;
+          if (unifiedHandled.kind === 'handled') return;
         } else if (getConfiguredAiProvider() !== "gemini") {
           throw new Error("Instagram voice transcription unavailable");
         }
@@ -35252,7 +35422,7 @@ Generate the final production-ready system prompt now.
       res.sendFile(path.join(distPath, "index.html"));
     });
   }
-  app.listen(PORT, () => {
+  const nativeHttpServer=app.listen(PORT, () => {
     console.log(`Server running smoothly on port ${PORT}`);
 
     if (odinLinkStartupPolicy.backgroundJobsEnabled) {
@@ -35265,6 +35435,18 @@ Generate the final production-ready system prompt now.
       // Setup cron
       setupDailyReminders();
       setupBookingResultOutboxWorker();
+      try {
+      const nativeControls=nativeAsyncControls();
+      if(nativeControls.processing || nativeControls.delivery) {
+        const runtime=getNativeKnowledgeRuntime();runtime?.start();
+        const shutdown=()=>{
+          const closed=new Promise<void>(resolve=>nativeHttpServer.close(()=>resolve()));
+          const forced=setTimeout(()=>process.exit(0),5500);
+          void Promise.allSettled([closed,runtime?.stop(5000)]).finally(()=>{clearTimeout(forced);process.exit(0);});
+        };
+        process.once('SIGTERM',shutdown);process.once('SIGINT',shutdown);
+      }
+      } catch { runOptionalDiagnostic(()=>console.error('[AsyncKnowledge]',{stage:'host_configuration_failed'})); }
     } else {
       console.log("[OdinLinkLocalTestMode] All background jobs disabled.");
     }
@@ -36023,7 +36205,7 @@ export const priority1hUnifiedEngineTestBoundary = {
       },
     });
     return {
-      handled,
+      handled: handled.kind === 'handled',
       replies,
       pending: pendingBookings[params.sessionId] ? structuredClone(pendingBookings[params.sessionId]) : null,
       operation: resolveAuthoritativeOperation({
@@ -36051,13 +36233,14 @@ export const priority1hUnifiedEngineTestBoundary = {
           platform: params.platformName,
           userId: params.sessionId,
         });
-        handled = await handleUnifiedBookingEngine({
+        const result = await handleUnifiedBookingEngine({
           ...params, customerMessageAt: params.customerMessageAt === undefined ? new Date(Date.now() + 1).toISOString() : params.customerMessageAt,
           history: chatSessions[params.sessionId] || [],
           platformLogName: params.platformName,
           postProcessPlatform: params.platformName,
           send: async (reply) => { replies.push(reply); return true; },
         });
+        handled = result.kind === 'handled';
       },
     });
     return {

@@ -1,0 +1,11 @@
+{
+  "source": "docs/designs/ordered-native-admission/20261019120000_ordered_knowledge_admission_v2.sql.draft",
+  "sourceSha256": "0a4c40d4092f74d0b87f2f331657dca69cf05f5f2065477d6fc097409efe1197",
+  "sourceBytes": 13428,
+  "payload": "ordered-admission-v2.sql",
+  "payloadSha256": "b385b90405829a6c1ad8c8e4f3d297d2ee4d6bcd9814c83d8fcc62d41595dca3",
+  "payloadBytes": 13489,
+  "sourceOffset": 61,
+  "productionApplied": false,
+  "automaticMigrationDiscovery": false
+}

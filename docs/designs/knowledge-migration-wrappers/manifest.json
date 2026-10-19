@@ -1,0 +1,22 @@
+{
+  "foundation": {
+    "source": "docs/designs/p2-knowledge-foundation/20261019084642_minimal_p2_knowledge_foundation.sql.draft",
+    "source_sha256": "a2f25ecc98bb273e3e9d7eaa3449dfc890201e31f45d932503a3b0bc78e2f525",
+    "source_offset_bytes": 64,
+    "source_length_bytes": 6471,
+    "payload_sha256": "89472b7d676dfc005ec9345c3810225422f38fa688be47df6d3089e224e29b49",
+    "guard": "odin.approved_p2_knowledge_foundation",
+    "production_approved": false,
+    "payload_file": "docs/designs/knowledge-migration-wrappers/foundation.sql.payload"
+  },
+  "extension": {
+    "source": "docs/designs/async-knowledge-slice1/20261019081511_async_knowledge_lifecycle_slice1.sql.draft",
+    "source_sha256": "564f6f88e87db9f4577b9bff174c0087dcc348ee72c06c86a2e52dd4d4c2f1fb",
+    "source_offset_bytes": 57,
+    "source_length_bytes": 29883,
+    "payload_sha256": "269dfd172d21840b9f610da4697479a8176052d9faafff45e02d5210b365f038",
+    "guard": "odin.approved_knowledge_slice1",
+    "production_approved": false,
+    "payload_file": "docs/designs/knowledge-migration-wrappers/extension.sql.payload"
+  }
+}

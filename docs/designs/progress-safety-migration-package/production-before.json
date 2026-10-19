@@ -1,0 +1,2212 @@
+{
+  "cron": null,
+  "counts": {
+    "inbox": 0,
+    "tasks": 0,
+    "outbox": 0,
+    "conversations": 0
+  },
+  "tables": [
+    {
+      "acl": [
+        "postgres=arwdDxtm/postgres",
+        "service_role=arwd/postgres"
+      ],
+      "rls": true,
+      "name": "businesses",
+      "owner": "postgres",
+      "privileges": [
+        {
+          "role": "anon",
+          "delete": false,
+          "insert": false,
+          "select": false,
+          "update": false
+        },
+        {
+          "role": "authenticated",
+          "delete": false,
+          "insert": false,
+          "select": false,
+          "update": false
+        },
+        {
+          "role": "service_role",
+          "delete": true,
+          "insert": true,
+          "select": true,
+          "update": true
+        }
+      ]
+    },
+    {
+      "acl": [
+        "postgres=arwdDxtm/postgres",
+        "service_role=arwdDxtm/postgres"
+      ],
+      "rls": true,
+      "name": "odin_conversations",
+      "owner": "postgres",
+      "privileges": [
+        {
+          "role": "anon",
+          "delete": false,
+          "insert": false,
+          "select": false,
+          "update": false
+        },
+        {
+          "role": "authenticated",
+          "delete": false,
+          "insert": false,
+          "select": false,
+          "update": false
+        },
+        {
+          "role": "service_role",
+          "delete": true,
+          "insert": true,
+          "select": true,
+          "update": true
+        }
+      ]
+    },
+    {
+      "acl": [
+        "postgres=arwdDxtm/postgres",
+        "service_role=arwdDxtm/postgres"
+      ],
+      "rls": true,
+      "name": "odin_inbox",
+      "owner": "postgres",
+      "privileges": [
+        {
+          "role": "anon",
+          "delete": false,
+          "insert": false,
+          "select": false,
+          "update": false
+        },
+        {
+          "role": "authenticated",
+          "delete": false,
+          "insert": false,
+          "select": false,
+          "update": false
+        },
+        {
+          "role": "service_role",
+          "delete": true,
+          "insert": true,
+          "select": true,
+          "update": true
+        }
+      ]
+    },
+    {
+      "acl": [
+        "postgres=arwdDxtm/postgres",
+        "service_role=arwdDxtm/postgres"
+      ],
+      "rls": true,
+      "name": "odin_outbox",
+      "owner": "postgres",
+      "privileges": [
+        {
+          "role": "anon",
+          "delete": false,
+          "insert": false,
+          "select": false,
+          "update": false
+        },
+        {
+          "role": "authenticated",
+          "delete": false,
+          "insert": false,
+          "select": false,
+          "update": false
+        },
+        {
+          "role": "service_role",
+          "delete": true,
+          "insert": true,
+          "select": true,
+          "update": true
+        }
+      ]
+    },
+    {
+      "acl": [
+        "postgres=arwdDxtm/postgres",
+        "service_role=arwdDxtm/postgres"
+      ],
+      "rls": true,
+      "name": "odin_tasks",
+      "owner": "postgres",
+      "privileges": [
+        {
+          "role": "anon",
+          "delete": false,
+          "insert": false,
+          "select": false,
+          "update": false
+        },
+        {
+          "role": "authenticated",
+          "delete": false,
+          "insert": false,
+          "select": false,
+          "update": false
+        },
+        {
+          "role": "service_role",
+          "delete": true,
+          "insert": true,
+          "select": true,
+          "update": true
+        }
+      ]
+    }
+  ],
+  "booking": [
+    {
+      "acl": [
+        "postgres=arwdDxtm/postgres",
+        "anon=arwdDxtm/postgres",
+        "authenticated=arwdDxtm/postgres",
+        "service_role=arwdDxtm/postgres"
+      ],
+      "rls": true,
+      "kind": "table",
+      "name": "appointments",
+      "columns": [
+        [
+          "id",
+          "bigint",
+          true,
+          "nextval('appointments_id_seq'::regclass)"
+        ],
+        [
+          "business_id",
+          "bigint",
+          false,
+          null
+        ],
+        [
+          "customer_name",
+          "text",
+          false,
+          null
+        ],
+        [
+          "phone_number",
+          "text",
+          false,
+          null
+        ],
+        [
+          "platform",
+          "text",
+          false,
+          null
+        ],
+        [
+          "user_id",
+          "text",
+          false,
+          null
+        ],
+        [
+          "service",
+          "text",
+          false,
+          null
+        ],
+        [
+          "start_time",
+          "timestamp with time zone",
+          true,
+          null
+        ],
+        [
+          "end_time",
+          "timestamp with time zone",
+          false,
+          null
+        ],
+        [
+          "status",
+          "text",
+          false,
+          "'booked'::text"
+        ],
+        [
+          "reminder_24_sent",
+          "boolean",
+          false,
+          "false"
+        ],
+        [
+          "reminder_2_sent",
+          "boolean",
+          false,
+          "false"
+        ],
+        [
+          "created_at",
+          "timestamp with time zone",
+          false,
+          "now()"
+        ],
+        [
+          "language",
+          "text",
+          false,
+          null
+        ]
+      ]
+    },
+    {
+      "acl": [
+        "postgres=arwdDxtm/postgres",
+        "service_role=arwdDxtm/postgres"
+      ],
+      "rls": true,
+      "kind": "table",
+      "name": "appointments_leads",
+      "columns": [
+        [
+          "id",
+          "bigint",
+          true,
+          null
+        ],
+        [
+          "user_id",
+          "text",
+          true,
+          null
+        ],
+        [
+          "customer_name",
+          "text",
+          false,
+          null
+        ],
+        [
+          "phone_number",
+          "text",
+          false,
+          null
+        ],
+        [
+          "appointment_date",
+          "date",
+          false,
+          null
+        ],
+        [
+          "appointment_time",
+          "time without time zone",
+          false,
+          null
+        ],
+        [
+          "raw_feedback",
+          "text",
+          false,
+          null
+        ],
+        [
+          "ai_summary",
+          "text",
+          false,
+          null
+        ],
+        [
+          "platform",
+          "text",
+          false,
+          "'telegram'::text"
+        ],
+        [
+          "created_at",
+          "timestamp with time zone",
+          true,
+          "timezone('utc'::text, now())"
+        ],
+        [
+          "business_id",
+          "bigint",
+          false,
+          null
+        ]
+      ]
+    },
+    {
+      "acl": [
+        "postgres=arwdDxtm/postgres",
+        "service_role=arwdDxtm/postgres"
+      ],
+      "rls": true,
+      "kind": "table",
+      "name": "booking_result_outbox",
+      "columns": [
+        [
+          "id",
+          "uuid",
+          true,
+          "gen_random_uuid()"
+        ],
+        [
+          "operation_id",
+          "text",
+          true,
+          null
+        ],
+        [
+          "business_id",
+          "bigint",
+          true,
+          null
+        ],
+        [
+          "channel",
+          "text",
+          true,
+          null
+        ],
+        [
+          "customer_id",
+          "text",
+          true,
+          null
+        ],
+        [
+          "session_id",
+          "text",
+          true,
+          null
+        ],
+        [
+          "booking_id",
+          "text",
+          true,
+          null
+        ],
+        [
+          "provider_booking_id",
+          "text",
+          true,
+          null
+        ],
+        [
+          "terminal_result",
+          "jsonb",
+          true,
+          null
+        ],
+        [
+          "response_text",
+          "text",
+          true,
+          null
+        ],
+        [
+          "status",
+          "text",
+          true,
+          "'pending'::text"
+        ],
+        [
+          "attempts",
+          "integer",
+          true,
+          "0"
+        ],
+        [
+          "delivery_token",
+          "uuid",
+          false,
+          null
+        ],
+        [
+          "lease_expires_at",
+          "timestamp with time zone",
+          false,
+          null
+        ],
+        [
+          "delivered_at",
+          "timestamp with time zone",
+          false,
+          null
+        ],
+        [
+          "last_error",
+          "text",
+          false,
+          null
+        ],
+        [
+          "created_at",
+          "timestamp with time zone",
+          true,
+          "now()"
+        ],
+        [
+          "updated_at",
+          "timestamp with time zone",
+          true,
+          "now()"
+        ]
+      ]
+    },
+    {
+      "acl": [
+        "postgres=arwdDxtm/postgres",
+        "service_role=arwdDxtm/postgres"
+      ],
+      "rls": true,
+      "kind": "table",
+      "name": "booking_slot_reservations",
+      "columns": [
+        [
+          "business_id",
+          "bigint",
+          true,
+          null
+        ],
+        [
+          "calendar_identity",
+          "text",
+          true,
+          null
+        ],
+        [
+          "start_time",
+          "timestamp with time zone",
+          true,
+          null
+        ],
+        [
+          "end_time",
+          "timestamp with time zone",
+          true,
+          null
+        ],
+        [
+          "operation_id",
+          "text",
+          true,
+          null
+        ],
+        [
+          "customer_key",
+          "text",
+          true,
+          null
+        ],
+        [
+          "status",
+          "text",
+          true,
+          null
+        ],
+        [
+          "expires_at",
+          "timestamp with time zone",
+          true,
+          null
+        ],
+        [
+          "created_at",
+          "timestamp with time zone",
+          true,
+          "now()"
+        ],
+        [
+          "updated_at",
+          "timestamp with time zone",
+          true,
+          "now()"
+        ]
+      ]
+    },
+    {
+      "acl": [
+        "postgres=X/postgres",
+        "service_role=X/postgres"
+      ],
+      "kind": "function",
+      "name": "claim_booking_result_outbox_delivery",
+      "definition": "CREATE OR REPLACE FUNCTION public.claim_booking_result_outbox_delivery(p_operation_id text, p_delivery_token uuid, p_lease_seconds integer DEFAULT 60)\n RETURNS SETOF booking_result_outbox\n LANGUAGE sql\n SET search_path TO 'public'\nAS $function$\n  update public.booking_result_outbox\n  set status = 'delivering',\n      attempts = attempts + 1,\n      delivery_token = p_delivery_token,\n      lease_expires_at = now() + make_interval(secs => greatest(10, least(p_lease_seconds, 300))),\n      updated_at = now(),\n      last_error = null\n  where operation_id = btrim(p_operation_id)\n    and (\n      status in ('pending', 'failed') or\n      (status = 'delivering' and lease_expires_at <= now())\n    )\n  returning *;\n$function$\n"
+    },
+    {
+      "acl": [
+        "postgres=X/postgres",
+        "service_role=X/postgres"
+      ],
+      "kind": "function",
+      "name": "claim_booking_slot_reservation",
+      "definition": "CREATE OR REPLACE FUNCTION public.claim_booking_slot_reservation(p_business_id bigint, p_calendar_identity text, p_start_time timestamp with time zone, p_end_time timestamp with time zone, p_operation_id text, p_customer_key text, p_expires_at timestamp with time zone)\n RETURNS SETOF booking_slot_reservations\n LANGUAGE plpgsql\n SET search_path TO 'public'\nAS $function$\nbegin\n  if p_end_time <= p_start_time or p_expires_at <= now() then\n    raise exception 'invalid slot reservation interval';\n  end if;\n\n  return query\n  insert into public.booking_slot_reservations as reservation (\n    business_id, calendar_identity, start_time, end_time,\n    operation_id, customer_key, status, expires_at\n  ) values (\n    p_business_id, btrim(p_calendar_identity), p_start_time, p_end_time,\n    btrim(p_operation_id), btrim(p_customer_key), 'reserved', p_expires_at\n  )\n  on conflict (business_id, calendar_identity, start_time, end_time)\n  do update set\n    operation_id = excluded.operation_id,\n    customer_key = excluded.customer_key,\n    status = 'reserved',\n    expires_at = excluded.expires_at,\n    updated_at = now()\n  where\n    reservation.status = 'released' or\n    (\n      reservation.status = 'reserved' and\n      (\n        reservation.operation_id = excluded.operation_id or\n        reservation.expires_at <= now()\n      )\n    )\n  returning reservation.*;\nend;\n$function$\n"
+    },
+    {
+      "acl": [
+        "postgres=X/postgres",
+        "service_role=X/postgres"
+      ],
+      "kind": "function",
+      "name": "complete_booking_result_outbox_delivery",
+      "definition": "CREATE OR REPLACE FUNCTION public.complete_booking_result_outbox_delivery(p_operation_id text, p_delivery_token uuid, p_delivered boolean, p_error text DEFAULT NULL::text)\n RETURNS boolean\n LANGUAGE plpgsql\n SET search_path TO 'public'\nAS $function$\ndeclare changed integer;\nbegin\n  update public.booking_result_outbox\n  set status = case when p_delivered then 'delivered' else 'failed' end,\n      delivered_at = case when p_delivered then now() else delivered_at end,\n      lease_expires_at = null,\n      last_error = case when p_delivered then null else left(coalesce(p_error, 'delivery_failed'), 500) end,\n      updated_at = now()\n  where operation_id = btrim(p_operation_id)\n    and delivery_token = p_delivery_token\n    and status = 'delivering';\n  get diagnostics changed = row_count;\n  if changed = 1 then\n    return true;\n  end if;\n\n  -- A provider acknowledgement may be retried after the process loses its\n  -- response. Return the existing terminal success only to the same lease\n  -- token; foreign tokens must not be able to acknowledge this delivery.\n  return p_delivered and exists (\n    select 1\n    from public.booking_result_outbox\n    where operation_id = btrim(p_operation_id)\n      and delivery_token = p_delivery_token\n      and status = 'delivered'\n  );\nend;\n$function$\n"
+    },
+    {
+      "acl": [
+        "postgres=X/postgres",
+        "service_role=X/postgres"
+      ],
+      "kind": "function",
+      "name": "finalize_booking_result_outbox",
+      "definition": "CREATE OR REPLACE FUNCTION public.finalize_booking_result_outbox(p_claim_user_id text, p_claim_platform text, p_claim_state text, p_operation_id text, p_business_id bigint, p_channel text, p_customer_id text, p_session_id text, p_booking_id text, p_provider_booking_id text, p_calendar_identity text, p_slot_start_time timestamp with time zone, p_slot_end_time timestamp with time zone, p_terminal_result jsonb, p_response_text text)\n RETURNS SETOF booking_result_outbox\n LANGUAGE plpgsql\n SET search_path TO 'public'\nAS $function$\ndeclare claim_exists boolean;\ndeclare reservation_changed integer;\nbegin\n  select true into claim_exists\n  from public.appointments_leads\n  where user_id = p_claim_user_id and platform = p_claim_platform\n  for update;\n\n  if not coalesce(claim_exists, false) then\n    raise exception 'booking operation claim not found';\n  end if;\n\n  update public.booking_slot_reservations\n  set status = 'settled', expires_at = 'infinity'::timestamptz, updated_at = now()\n  where business_id = p_business_id\n    and calendar_identity = btrim(p_calendar_identity)\n    and start_time = p_slot_start_time\n    and end_time = p_slot_end_time\n    and operation_id = btrim(p_operation_id)\n    and status in ('reserved', 'settled');\n  get diagnostics reservation_changed = row_count;\n  if reservation_changed <> 1 then\n    raise exception 'booking slot reservation not owned';\n  end if;\n\n  insert into public.booking_result_outbox (\n    operation_id, business_id, channel, customer_id, session_id,\n    booking_id, provider_booking_id, terminal_result, response_text\n  ) values (\n    btrim(p_operation_id), p_business_id, btrim(p_channel), btrim(p_customer_id), p_session_id,\n    p_booking_id, p_provider_booking_id, p_terminal_result, p_response_text\n  )\n  on conflict (operation_id) do nothing;\n\n  update public.appointments_leads\n  set ai_summary = p_claim_state\n  where user_id = p_claim_user_id and platform = p_claim_platform;\n\n  return query\n  select * from public.booking_result_outbox where operation_id = btrim(p_operation_id);\nend;\n$function$\n"
+    },
+    {
+      "acl": [
+        "postgres=X/postgres",
+        "service_role=X/postgres"
+      ],
+      "kind": "function",
+      "name": "release_booking_slot_reservation",
+      "definition": "CREATE OR REPLACE FUNCTION public.release_booking_slot_reservation(p_business_id bigint, p_calendar_identity text, p_start_time timestamp with time zone, p_end_time timestamp with time zone, p_operation_id text)\n RETURNS boolean\n LANGUAGE plpgsql\n SET search_path TO 'public'\nAS $function$\ndeclare changed integer;\nbegin\n  update public.booking_slot_reservations\n  set status = 'released', expires_at = now(), updated_at = now()\n  where business_id = p_business_id\n    and calendar_identity = btrim(p_calendar_identity)\n    and start_time = p_start_time\n    and end_time = p_end_time\n    and operation_id = btrim(p_operation_id)\n    and status = 'reserved';\n  get diagnostics changed = row_count;\n  return changed = 1;\nend;\n$function$\n"
+    },
+    {
+      "acl": [
+        "postgres=X/postgres",
+        "service_role=X/postgres"
+      ],
+      "kind": "function",
+      "name": "settle_booking_slot_reservation",
+      "definition": "CREATE OR REPLACE FUNCTION public.settle_booking_slot_reservation(p_business_id bigint, p_calendar_identity text, p_start_time timestamp with time zone, p_end_time timestamp with time zone, p_operation_id text)\n RETURNS boolean\n LANGUAGE plpgsql\n SET search_path TO 'public'\nAS $function$\ndeclare changed integer;\nbegin\n  update public.booking_slot_reservations\n  set status = 'settled', expires_at = 'infinity'::timestamptz, updated_at = now()\n  where business_id = p_business_id\n    and calendar_identity = btrim(p_calendar_identity)\n    and start_time = p_start_time\n    and end_time = p_end_time\n    and operation_id = btrim(p_operation_id)\n    and status in ('reserved', 'settled');\n  get diagnostics changed = row_count;\n  return changed = 1;\nend;\n$function$\n"
+    },
+    {
+      "kind": "constraint",
+      "name": "appointments_business_id_fkey",
+      "table": "appointments",
+      "definition": "FOREIGN KEY (business_id) REFERENCES businesses(id)"
+    },
+    {
+      "kind": "constraint",
+      "name": "appointments_language_check",
+      "table": "appointments",
+      "definition": "CHECK (((language IS NULL) OR (language = ANY (ARRAY['sv'::text, 'en'::text, 'de'::text, 'es'::text, 'fa'::text, 'ar'::text]))))"
+    },
+    {
+      "kind": "constraint",
+      "name": "appointments_leads_pkey",
+      "table": "appointments_leads",
+      "definition": "PRIMARY KEY (id)"
+    },
+    {
+      "kind": "constraint",
+      "name": "appointments_pkey",
+      "table": "appointments",
+      "definition": "PRIMARY KEY (id)"
+    },
+    {
+      "kind": "constraint",
+      "name": "booking_result_outbox_attempts_check",
+      "table": "booking_result_outbox",
+      "definition": "CHECK ((attempts >= 0))"
+    },
+    {
+      "kind": "constraint",
+      "name": "booking_result_outbox_business_id_fkey",
+      "table": "booking_result_outbox",
+      "definition": "FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE"
+    },
+    {
+      "kind": "constraint",
+      "name": "booking_result_outbox_channel_check",
+      "table": "booking_result_outbox",
+      "definition": "CHECK ((channel = ANY (ARRAY['telegram'::text, 'whatsapp'::text, 'instagram'::text, 'messenger'::text])))"
+    },
+    {
+      "kind": "constraint",
+      "name": "booking_result_outbox_customer_id_check",
+      "table": "booking_result_outbox",
+      "definition": "CHECK (((char_length(btrim(customer_id)) >= 1) AND (char_length(btrim(customer_id)) <= 500)))"
+    },
+    {
+      "kind": "constraint",
+      "name": "booking_result_outbox_operation_id_check",
+      "table": "booking_result_outbox",
+      "definition": "CHECK (((char_length(btrim(operation_id)) >= 1) AND (char_length(btrim(operation_id)) <= 200)))"
+    },
+    {
+      "kind": "constraint",
+      "name": "booking_result_outbox_operation_id_key",
+      "table": "booking_result_outbox",
+      "definition": "UNIQUE (operation_id)"
+    },
+    {
+      "kind": "constraint",
+      "name": "booking_result_outbox_pkey",
+      "table": "booking_result_outbox",
+      "definition": "PRIMARY KEY (id)"
+    },
+    {
+      "kind": "constraint",
+      "name": "booking_result_outbox_response_text_check",
+      "table": "booking_result_outbox",
+      "definition": "CHECK (((char_length(btrim(response_text)) >= 1) AND (char_length(btrim(response_text)) <= 4000)))"
+    },
+    {
+      "kind": "constraint",
+      "name": "booking_result_outbox_session_id_check",
+      "table": "booking_result_outbox",
+      "definition": "CHECK (((char_length(btrim(session_id)) >= 1) AND (char_length(btrim(session_id)) <= 1000)))"
+    },
+    {
+      "kind": "constraint",
+      "name": "booking_result_outbox_status_check",
+      "table": "booking_result_outbox",
+      "definition": "CHECK ((status = ANY (ARRAY['pending'::text, 'delivering'::text, 'delivered'::text, 'failed'::text, 'cancelled'::text])))"
+    },
+    {
+      "kind": "constraint",
+      "name": "booking_result_outbox_terminal_result_check",
+      "table": "booking_result_outbox",
+      "definition": "CHECK ((jsonb_typeof(terminal_result) = 'object'::text))"
+    },
+    {
+      "kind": "constraint",
+      "name": "booking_slot_reservations_business_id_fkey",
+      "table": "booking_slot_reservations",
+      "definition": "FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE"
+    },
+    {
+      "kind": "constraint",
+      "name": "booking_slot_reservations_calendar_identity_check",
+      "table": "booking_slot_reservations",
+      "definition": "CHECK (((char_length(btrim(calendar_identity)) >= 1) AND (char_length(btrim(calendar_identity)) <= 200)))"
+    },
+    {
+      "kind": "constraint",
+      "name": "booking_slot_reservations_check",
+      "table": "booking_slot_reservations",
+      "definition": "CHECK ((end_time > start_time))"
+    },
+    {
+      "kind": "constraint",
+      "name": "booking_slot_reservations_customer_key_check",
+      "table": "booking_slot_reservations",
+      "definition": "CHECK (((char_length(btrim(customer_key)) >= 1) AND (char_length(btrim(customer_key)) <= 500)))"
+    },
+    {
+      "kind": "constraint",
+      "name": "booking_slot_reservations_operation_id_check",
+      "table": "booking_slot_reservations",
+      "definition": "CHECK (((char_length(btrim(operation_id)) >= 1) AND (char_length(btrim(operation_id)) <= 200)))"
+    },
+    {
+      "kind": "constraint",
+      "name": "booking_slot_reservations_pkey",
+      "table": "booking_slot_reservations",
+      "definition": "PRIMARY KEY (business_id, calendar_identity, start_time, end_time)"
+    },
+    {
+      "kind": "constraint",
+      "name": "booking_slot_reservations_status_check",
+      "table": "booking_slot_reservations",
+      "definition": "CHECK ((status = ANY (ARRAY['reserved'::text, 'settled'::text, 'released'::text])))"
+    },
+    {
+      "kind": "index",
+      "name": "appointments_leads_idempotency_user_id_uidx",
+      "table": "appointments_leads",
+      "definition": "CREATE UNIQUE INDEX appointments_leads_idempotency_user_id_uidx ON public.appointments_leads USING btree (user_id) WHERE (platform ~~ 'idempotency:%'::text)"
+    },
+    {
+      "kind": "index",
+      "name": "appointments_leads_pkey",
+      "table": "appointments_leads",
+      "definition": "CREATE UNIQUE INDEX appointments_leads_pkey ON public.appointments_leads USING btree (id)"
+    },
+    {
+      "kind": "index",
+      "name": "appointments_pkey",
+      "table": "appointments",
+      "definition": "CREATE UNIQUE INDEX appointments_pkey ON public.appointments USING btree (id)"
+    },
+    {
+      "kind": "index",
+      "name": "booking_result_outbox_delivery_idx",
+      "table": "booking_result_outbox",
+      "definition": "CREATE INDEX booking_result_outbox_delivery_idx ON public.booking_result_outbox USING btree (status, lease_expires_at, created_at) WHERE (status = ANY (ARRAY['pending'::text, 'failed'::text, 'delivering'::text]))"
+    },
+    {
+      "kind": "index",
+      "name": "booking_result_outbox_operation_id_key",
+      "table": "booking_result_outbox",
+      "definition": "CREATE UNIQUE INDEX booking_result_outbox_operation_id_key ON public.booking_result_outbox USING btree (operation_id)"
+    },
+    {
+      "kind": "index",
+      "name": "booking_result_outbox_pkey",
+      "table": "booking_result_outbox",
+      "definition": "CREATE UNIQUE INDEX booking_result_outbox_pkey ON public.booking_result_outbox USING btree (id)"
+    },
+    {
+      "kind": "index",
+      "name": "booking_result_outbox_recovery_idx",
+      "table": "booking_result_outbox",
+      "definition": "CREATE INDEX booking_result_outbox_recovery_idx ON public.booking_result_outbox USING btree (business_id, channel, customer_id, created_at DESC)"
+    },
+    {
+      "kind": "index",
+      "name": "booking_slot_reservations_expiry_idx",
+      "table": "booking_slot_reservations",
+      "definition": "CREATE INDEX booking_slot_reservations_expiry_idx ON public.booking_slot_reservations USING btree (expires_at) WHERE (status = 'reserved'::text)"
+    },
+    {
+      "kind": "index",
+      "name": "booking_slot_reservations_pkey",
+      "table": "booking_slot_reservations",
+      "definition": "CREATE UNIQUE INDEX booking_slot_reservations_pkey ON public.booking_slot_reservations USING btree (business_id, calendar_identity, start_time, end_time)"
+    }
+  ],
+  "columns": [
+    {
+      "type": "bigint",
+      "table": "businesses",
+      "column": "id",
+      "default": null,
+      "notnull": true
+    },
+    {
+      "type": "text",
+      "table": "businesses",
+      "column": "business_name",
+      "default": null,
+      "notnull": true
+    },
+    {
+      "type": "text",
+      "table": "businesses",
+      "column": "telegram_bot_token",
+      "default": null,
+      "notnull": false
+    },
+    {
+      "type": "text",
+      "table": "businesses",
+      "column": "google_calendar_id",
+      "default": null,
+      "notnull": false
+    },
+    {
+      "type": "text",
+      "table": "businesses",
+      "column": "custom_system_prompt",
+      "default": null,
+      "notnull": false
+    },
+    {
+      "type": "text",
+      "table": "businesses",
+      "column": "instagram_page_id",
+      "default": null,
+      "notnull": false
+    },
+    {
+      "type": "text",
+      "table": "businesses",
+      "column": "instagram_account_id",
+      "default": null,
+      "notnull": false
+    },
+    {
+      "type": "text",
+      "table": "businesses",
+      "column": "instagram_access_token",
+      "default": null,
+      "notnull": false
+    },
+    {
+      "type": "text",
+      "table": "businesses",
+      "column": "instagram_verify_token",
+      "default": null,
+      "notnull": false
+    },
+    {
+      "type": "boolean",
+      "table": "businesses",
+      "column": "instagram_enabled",
+      "default": "false",
+      "notnull": false
+    },
+    {
+      "type": "text",
+      "table": "businesses",
+      "column": "whatsapp_access_token",
+      "default": null,
+      "notnull": false
+    },
+    {
+      "type": "text",
+      "table": "businesses",
+      "column": "whatsapp_phone_number_id",
+      "default": null,
+      "notnull": false
+    },
+    {
+      "type": "text",
+      "table": "businesses",
+      "column": "whatsapp_business_account_id",
+      "default": null,
+      "notnull": false
+    },
+    {
+      "type": "boolean",
+      "table": "businesses",
+      "column": "messenger_enabled",
+      "default": "false",
+      "notnull": false
+    },
+    {
+      "type": "text",
+      "table": "businesses",
+      "column": "messenger_page_id",
+      "default": null,
+      "notnull": false
+    },
+    {
+      "type": "text",
+      "table": "businesses",
+      "column": "messenger_page_access_token",
+      "default": null,
+      "notnull": false
+    },
+    {
+      "type": "text",
+      "table": "businesses",
+      "column": "admin_telegram_chat_id",
+      "default": null,
+      "notnull": false
+    },
+    {
+      "type": "text",
+      "table": "businesses",
+      "column": "timezone",
+      "default": "'Europe/Stockholm'::text",
+      "notnull": false
+    },
+    {
+      "type": "text",
+      "table": "businesses",
+      "column": "language",
+      "default": "'sv'::text",
+      "notnull": false
+    },
+    {
+      "type": "text",
+      "table": "businesses",
+      "column": "industry",
+      "default": null,
+      "notnull": false
+    },
+    {
+      "type": "text",
+      "table": "businesses",
+      "column": "whatsapp_verify_token",
+      "default": null,
+      "notnull": false
+    },
+    {
+      "type": "boolean",
+      "table": "businesses",
+      "column": "whatsapp_enabled",
+      "default": "false",
+      "notnull": false
+    },
+    {
+      "type": "text",
+      "table": "businesses",
+      "column": "admin_notification_channel",
+      "default": "'telegram'::text",
+      "notnull": false
+    },
+    {
+      "type": "text",
+      "table": "businesses",
+      "column": "admin_whatsapp_number",
+      "default": null,
+      "notnull": false
+    },
+    {
+      "type": "boolean",
+      "table": "businesses",
+      "column": "allow_cancellation",
+      "default": "false",
+      "notnull": true
+    },
+    {
+      "type": "integer",
+      "table": "businesses",
+      "column": "cancellation_deadline_minutes",
+      "default": "0",
+      "notnull": true
+    },
+    {
+      "type": "boolean",
+      "table": "businesses",
+      "column": "cancellation_fee_enabled",
+      "default": "false",
+      "notnull": true
+    },
+    {
+      "type": "numeric(12,2)",
+      "table": "businesses",
+      "column": "cancellation_fee_amount",
+      "default": "0",
+      "notnull": true
+    },
+    {
+      "type": "text",
+      "table": "businesses",
+      "column": "cancellation_fee_currency",
+      "default": "'SEK'::text",
+      "notnull": true
+    },
+    {
+      "type": "jsonb",
+      "table": "businesses",
+      "column": "working_hours",
+      "default": null,
+      "notnull": false
+    },
+    {
+      "type": "jsonb",
+      "table": "businesses",
+      "column": "services",
+      "default": "'[]'::jsonb",
+      "notnull": true
+    },
+    {
+      "type": "jsonb",
+      "table": "businesses",
+      "column": "ai_tone_config",
+      "default": "jsonb_build_object('tonePreset', 'professional', 'responseLength', 'balanced', 'emojiUsage', 'none', 'formality', 'balanced', 'customToneInstructions', '')",
+      "notnull": true
+    },
+    {
+      "type": "jsonb",
+      "table": "businesses",
+      "column": "whatsapp_reminder_templates",
+      "default": null,
+      "notnull": false
+    },
+    {
+      "type": "uuid",
+      "table": "odin_conversations",
+      "column": "id",
+      "default": "gen_random_uuid()",
+      "notnull": true
+    },
+    {
+      "type": "bigint",
+      "table": "odin_conversations",
+      "column": "business_id",
+      "default": null,
+      "notnull": true
+    },
+    {
+      "type": "text",
+      "table": "odin_conversations",
+      "column": "conversation_key",
+      "default": null,
+      "notnull": true
+    },
+    {
+      "type": "integer",
+      "table": "odin_conversations",
+      "column": "schema_version",
+      "default": "1",
+      "notnull": true
+    },
+    {
+      "type": "bigint",
+      "table": "odin_conversations",
+      "column": "revision",
+      "default": "0",
+      "notnull": true
+    },
+    {
+      "type": "text",
+      "table": "odin_conversations",
+      "column": "runtime_generation",
+      "default": null,
+      "notnull": false
+    },
+    {
+      "type": "text",
+      "table": "odin_conversations",
+      "column": "lease_owner",
+      "default": null,
+      "notnull": false
+    },
+    {
+      "type": "timestamp with time zone",
+      "table": "odin_conversations",
+      "column": "lease_expires_at",
+      "default": null,
+      "notnull": false
+    },
+    {
+      "type": "bigint",
+      "table": "odin_conversations",
+      "column": "fence_epoch",
+      "default": "0",
+      "notnull": true
+    },
+    {
+      "type": "text",
+      "table": "odin_conversations",
+      "column": "language_code",
+      "default": null,
+      "notnull": false
+    },
+    {
+      "type": "jsonb",
+      "table": "odin_conversations",
+      "column": "aggregate_meta",
+      "default": "'{}'::jsonb",
+      "notnull": true
+    },
+    {
+      "type": "timestamp with time zone",
+      "table": "odin_conversations",
+      "column": "created_at",
+      "default": "clock_timestamp()",
+      "notnull": true
+    },
+    {
+      "type": "timestamp with time zone",
+      "table": "odin_conversations",
+      "column": "updated_at",
+      "default": "clock_timestamp()",
+      "notnull": true
+    },
+    {
+      "type": "bigint",
+      "table": "odin_conversations",
+      "column": "knowledge_sequence",
+      "default": "0",
+      "notnull": true
+    },
+    {
+      "type": "text",
+      "table": "odin_conversations",
+      "column": "knowledge_channel",
+      "default": null,
+      "notnull": false
+    },
+    {
+      "type": "text",
+      "table": "odin_conversations",
+      "column": "knowledge_account",
+      "default": null,
+      "notnull": false
+    },
+    {
+      "type": "uuid",
+      "table": "odin_inbox",
+      "column": "id",
+      "default": "gen_random_uuid()",
+      "notnull": true
+    },
+    {
+      "type": "bigint",
+      "table": "odin_inbox",
+      "column": "business_id",
+      "default": null,
+      "notnull": true
+    },
+    {
+      "type": "uuid",
+      "table": "odin_inbox",
+      "column": "conversation_id",
+      "default": null,
+      "notnull": false
+    },
+    {
+      "type": "text",
+      "table": "odin_inbox",
+      "column": "channel",
+      "default": null,
+      "notnull": true
+    },
+    {
+      "type": "text",
+      "table": "odin_inbox",
+      "column": "provider_scope",
+      "default": "''::text",
+      "notnull": true
+    },
+    {
+      "type": "text",
+      "table": "odin_inbox",
+      "column": "provider_event_id",
+      "default": null,
+      "notnull": true
+    },
+    {
+      "type": "bigint",
+      "table": "odin_inbox",
+      "column": "turn_sequence",
+      "default": null,
+      "notnull": false
+    },
+    {
+      "type": "integer",
+      "table": "odin_inbox",
+      "column": "schema_version",
+      "default": "1",
+      "notnull": true
+    },
+    {
+      "type": "jsonb",
+      "table": "odin_inbox",
+      "column": "payload",
+      "default": "'{}'::jsonb",
+      "notnull": true
+    },
+    {
+      "type": "text",
+      "table": "odin_inbox",
+      "column": "status",
+      "default": "'accepted'::text",
+      "notnull": true
+    },
+    {
+      "type": "timestamp with time zone",
+      "table": "odin_inbox",
+      "column": "received_at",
+      "default": "clock_timestamp()",
+      "notnull": true
+    },
+    {
+      "type": "uuid",
+      "table": "odin_inbox",
+      "column": "knowledge_turn_id",
+      "default": null,
+      "notnull": false
+    },
+    {
+      "type": "bigint",
+      "table": "odin_inbox",
+      "column": "knowledge_sequence",
+      "default": null,
+      "notnull": false
+    },
+    {
+      "type": "timestamp with time zone",
+      "table": "odin_inbox",
+      "column": "knowledge_accepted_at",
+      "default": null,
+      "notnull": false
+    },
+    {
+      "type": "timestamp with time zone",
+      "table": "odin_inbox",
+      "column": "knowledge_expires_at",
+      "default": null,
+      "notnull": false
+    },
+    {
+      "type": "integer",
+      "table": "odin_inbox",
+      "column": "knowledge_max_runs",
+      "default": null,
+      "notnull": false
+    },
+    {
+      "type": "integer",
+      "table": "odin_inbox",
+      "column": "knowledge_max_models",
+      "default": null,
+      "notnull": false
+    },
+    {
+      "type": "uuid",
+      "table": "odin_outbox",
+      "column": "id",
+      "default": "gen_random_uuid()",
+      "notnull": true
+    },
+    {
+      "type": "bigint",
+      "table": "odin_outbox",
+      "column": "business_id",
+      "default": null,
+      "notnull": true
+    },
+    {
+      "type": "uuid",
+      "table": "odin_outbox",
+      "column": "conversation_id",
+      "default": null,
+      "notnull": false
+    },
+    {
+      "type": "uuid",
+      "table": "odin_outbox",
+      "column": "operation_id",
+      "default": null,
+      "notnull": false
+    },
+    {
+      "type": "integer",
+      "table": "odin_outbox",
+      "column": "schema_version",
+      "default": "1",
+      "notnull": true
+    },
+    {
+      "type": "text",
+      "table": "odin_outbox",
+      "column": "channel",
+      "default": null,
+      "notnull": true
+    },
+    {
+      "type": "text",
+      "table": "odin_outbox",
+      "column": "recipient_key",
+      "default": null,
+      "notnull": true
+    },
+    {
+      "type": "text",
+      "table": "odin_outbox",
+      "column": "delivery_key",
+      "default": null,
+      "notnull": true
+    },
+    {
+      "type": "jsonb",
+      "table": "odin_outbox",
+      "column": "artifact",
+      "default": "'{}'::jsonb",
+      "notnull": true
+    },
+    {
+      "type": "text",
+      "table": "odin_outbox",
+      "column": "status",
+      "default": "'pending'::text",
+      "notnull": true
+    },
+    {
+      "type": "integer",
+      "table": "odin_outbox",
+      "column": "attempt_count",
+      "default": "0",
+      "notnull": true
+    },
+    {
+      "type": "timestamp with time zone",
+      "table": "odin_outbox",
+      "column": "available_at",
+      "default": "clock_timestamp()",
+      "notnull": true
+    },
+    {
+      "type": "timestamp with time zone",
+      "table": "odin_outbox",
+      "column": "last_attempt_at",
+      "default": null,
+      "notnull": false
+    },
+    {
+      "type": "text",
+      "table": "odin_outbox",
+      "column": "provider_message_id",
+      "default": null,
+      "notnull": false
+    },
+    {
+      "type": "jsonb",
+      "table": "odin_outbox",
+      "column": "last_error",
+      "default": null,
+      "notnull": false
+    },
+    {
+      "type": "timestamp with time zone",
+      "table": "odin_outbox",
+      "column": "created_at",
+      "default": "clock_timestamp()",
+      "notnull": true
+    },
+    {
+      "type": "timestamp with time zone",
+      "table": "odin_outbox",
+      "column": "updated_at",
+      "default": "clock_timestamp()",
+      "notnull": true
+    },
+    {
+      "type": "uuid",
+      "table": "odin_outbox",
+      "column": "knowledge_task_id",
+      "default": null,
+      "notnull": false
+    },
+    {
+      "type": "text",
+      "table": "odin_outbox",
+      "column": "knowledge_kind",
+      "default": null,
+      "notnull": false
+    },
+    {
+      "type": "text",
+      "table": "odin_outbox",
+      "column": "knowledge_state",
+      "default": null,
+      "notnull": false
+    },
+    {
+      "type": "bigint",
+      "table": "odin_outbox",
+      "column": "knowledge_fence",
+      "default": "0",
+      "notnull": true
+    },
+    {
+      "type": "text",
+      "table": "odin_outbox",
+      "column": "knowledge_owner",
+      "default": null,
+      "notnull": false
+    },
+    {
+      "type": "timestamp with time zone",
+      "table": "odin_outbox",
+      "column": "knowledge_lease_until",
+      "default": null,
+      "notnull": false
+    },
+    {
+      "type": "integer",
+      "table": "odin_outbox",
+      "column": "knowledge_max_attempts",
+      "default": "3",
+      "notnull": true
+    },
+    {
+      "type": "uuid",
+      "table": "odin_tasks",
+      "column": "id",
+      "default": "gen_random_uuid()",
+      "notnull": true
+    },
+    {
+      "type": "bigint",
+      "table": "odin_tasks",
+      "column": "business_id",
+      "default": null,
+      "notnull": true
+    },
+    {
+      "type": "uuid",
+      "table": "odin_tasks",
+      "column": "conversation_id",
+      "default": null,
+      "notnull": true
+    },
+    {
+      "type": "integer",
+      "table": "odin_tasks",
+      "column": "schema_version",
+      "default": "1",
+      "notnull": true
+    },
+    {
+      "type": "text",
+      "table": "odin_tasks",
+      "column": "task_type",
+      "default": null,
+      "notnull": true
+    },
+    {
+      "type": "text",
+      "table": "odin_tasks",
+      "column": "status",
+      "default": "'accepted'::text",
+      "notnull": true
+    },
+    {
+      "type": "bigint",
+      "table": "odin_tasks",
+      "column": "task_revision",
+      "default": "0",
+      "notnull": true
+    },
+    {
+      "type": "jsonb",
+      "table": "odin_tasks",
+      "column": "payload",
+      "default": "'{}'::jsonb",
+      "notnull": true
+    },
+    {
+      "type": "timestamp with time zone",
+      "table": "odin_tasks",
+      "column": "created_at",
+      "default": "clock_timestamp()",
+      "notnull": true
+    },
+    {
+      "type": "timestamp with time zone",
+      "table": "odin_tasks",
+      "column": "updated_at",
+      "default": "clock_timestamp()",
+      "notnull": true
+    },
+    {
+      "type": "uuid",
+      "table": "odin_tasks",
+      "column": "knowledge_turn_id",
+      "default": null,
+      "notnull": false
+    },
+    {
+      "type": "uuid",
+      "table": "odin_tasks",
+      "column": "knowledge_inbox_id",
+      "default": null,
+      "notnull": false
+    },
+    {
+      "type": "text",
+      "table": "odin_tasks",
+      "column": "knowledge_channel",
+      "default": null,
+      "notnull": false
+    },
+    {
+      "type": "text",
+      "table": "odin_tasks",
+      "column": "knowledge_account",
+      "default": null,
+      "notnull": false
+    },
+    {
+      "type": "bigint",
+      "table": "odin_tasks",
+      "column": "knowledge_sequence",
+      "default": null,
+      "notnull": false
+    },
+    {
+      "type": "timestamp with time zone",
+      "table": "odin_tasks",
+      "column": "knowledge_accepted_at",
+      "default": null,
+      "notnull": false
+    },
+    {
+      "type": "timestamp with time zone",
+      "table": "odin_tasks",
+      "column": "knowledge_expires_at",
+      "default": null,
+      "notnull": false
+    },
+    {
+      "type": "text",
+      "table": "odin_tasks",
+      "column": "knowledge_state",
+      "default": null,
+      "notnull": false
+    },
+    {
+      "type": "bigint",
+      "table": "odin_tasks",
+      "column": "knowledge_fence",
+      "default": "0",
+      "notnull": true
+    },
+    {
+      "type": "text",
+      "table": "odin_tasks",
+      "column": "knowledge_owner",
+      "default": null,
+      "notnull": false
+    },
+    {
+      "type": "timestamp with time zone",
+      "table": "odin_tasks",
+      "column": "knowledge_lease_until",
+      "default": null,
+      "notnull": false
+    },
+    {
+      "type": "integer",
+      "table": "odin_tasks",
+      "column": "knowledge_run_attempts",
+      "default": "0",
+      "notnull": true
+    },
+    {
+      "type": "integer",
+      "table": "odin_tasks",
+      "column": "knowledge_max_runs",
+      "default": null,
+      "notnull": false
+    },
+    {
+      "type": "integer",
+      "table": "odin_tasks",
+      "column": "knowledge_model_attempts",
+      "default": "0",
+      "notnull": true
+    },
+    {
+      "type": "integer",
+      "table": "odin_tasks",
+      "column": "knowledge_max_models",
+      "default": null,
+      "notnull": false
+    },
+    {
+      "type": "text",
+      "table": "odin_tasks",
+      "column": "knowledge_checkpoint",
+      "default": null,
+      "notnull": false
+    },
+    {
+      "type": "jsonb",
+      "table": "odin_tasks",
+      "column": "knowledge_result",
+      "default": null,
+      "notnull": false
+    },
+    {
+      "type": "text",
+      "table": "odin_tasks",
+      "column": "knowledge_result_digest",
+      "default": null,
+      "notnull": false
+    }
+  ],
+  "indexes": [
+    {
+      "name": "businesses_pkey",
+      "ready": true,
+      "table": "businesses",
+      "valid": true,
+      "definition": "CREATE UNIQUE INDEX businesses_pkey ON public.businesses USING btree (id)"
+    },
+    {
+      "name": "odin_conversations_business_id_conversation_key_key",
+      "ready": true,
+      "table": "odin_conversations",
+      "valid": true,
+      "definition": "CREATE UNIQUE INDEX odin_conversations_business_id_conversation_key_key ON public.odin_conversations USING btree (business_id, conversation_key)"
+    },
+    {
+      "name": "odin_conversations_business_id_id_key",
+      "ready": true,
+      "table": "odin_conversations",
+      "valid": true,
+      "definition": "CREATE UNIQUE INDEX odin_conversations_business_id_id_key ON public.odin_conversations USING btree (business_id, id)"
+    },
+    {
+      "name": "odin_conversations_pkey",
+      "ready": true,
+      "table": "odin_conversations",
+      "valid": true,
+      "definition": "CREATE UNIQUE INDEX odin_conversations_pkey ON public.odin_conversations USING btree (id)"
+    },
+    {
+      "name": "odin_inbox_business_id_channel_provider_scope_provider_even_key",
+      "ready": true,
+      "table": "odin_inbox",
+      "valid": true,
+      "definition": "CREATE UNIQUE INDEX odin_inbox_business_id_channel_provider_scope_provider_even_key ON public.odin_inbox USING btree (business_id, channel, provider_scope, provider_event_id)"
+    },
+    {
+      "name": "odin_inbox_business_id_conversation_id_id_key",
+      "ready": true,
+      "table": "odin_inbox",
+      "valid": true,
+      "definition": "CREATE UNIQUE INDEX odin_inbox_business_id_conversation_id_id_key ON public.odin_inbox USING btree (business_id, conversation_id, id)"
+    },
+    {
+      "name": "odin_inbox_pkey",
+      "ready": true,
+      "table": "odin_inbox",
+      "valid": true,
+      "definition": "CREATE UNIQUE INDEX odin_inbox_pkey ON public.odin_inbox USING btree (id)"
+    },
+    {
+      "name": "odin_knowledge_event_once",
+      "ready": true,
+      "table": "odin_inbox",
+      "valid": true,
+      "definition": "CREATE UNIQUE INDEX odin_knowledge_event_once ON public.odin_inbox USING btree (business_id, channel, provider_scope, provider_event_id) WHERE (knowledge_turn_id IS NOT NULL)"
+    },
+    {
+      "name": "odin_knowledge_delivery_recovery",
+      "ready": true,
+      "table": "odin_outbox",
+      "valid": true,
+      "definition": "CREATE INDEX odin_knowledge_delivery_recovery ON public.odin_outbox USING btree (knowledge_state, knowledge_lease_until) WHERE (knowledge_task_id IS NOT NULL)"
+    },
+    {
+      "name": "odin_knowledge_notification_once",
+      "ready": true,
+      "table": "odin_outbox",
+      "valid": true,
+      "definition": "CREATE UNIQUE INDEX odin_knowledge_notification_once ON public.odin_outbox USING btree (business_id, knowledge_task_id, knowledge_kind) WHERE (knowledge_task_id IS NOT NULL)"
+    },
+    {
+      "name": "odin_outbox_business_id_delivery_key_key",
+      "ready": true,
+      "table": "odin_outbox",
+      "valid": true,
+      "definition": "CREATE UNIQUE INDEX odin_outbox_business_id_delivery_key_key ON public.odin_outbox USING btree (business_id, delivery_key)"
+    },
+    {
+      "name": "odin_outbox_conversation_idx",
+      "ready": true,
+      "table": "odin_outbox",
+      "valid": true,
+      "definition": "CREATE INDEX odin_outbox_conversation_idx ON public.odin_outbox USING btree (business_id, conversation_id)"
+    },
+    {
+      "name": "odin_outbox_pkey",
+      "ready": true,
+      "table": "odin_outbox",
+      "valid": true,
+      "definition": "CREATE UNIQUE INDEX odin_outbox_pkey ON public.odin_outbox USING btree (id)"
+    },
+    {
+      "name": "odin_knowledge_recovery",
+      "ready": true,
+      "table": "odin_tasks",
+      "valid": true,
+      "definition": "CREATE INDEX odin_knowledge_recovery ON public.odin_tasks USING btree (knowledge_state, knowledge_lease_until, knowledge_expires_at) WHERE (knowledge_turn_id IS NOT NULL)"
+    },
+    {
+      "name": "odin_knowledge_task_once",
+      "ready": true,
+      "table": "odin_tasks",
+      "valid": true,
+      "definition": "CREATE UNIQUE INDEX odin_knowledge_task_once ON public.odin_tasks USING btree (business_id, knowledge_inbox_id) WHERE (knowledge_turn_id IS NOT NULL)"
+    },
+    {
+      "name": "odin_knowledge_turn_once",
+      "ready": true,
+      "table": "odin_tasks",
+      "valid": true,
+      "definition": "CREATE UNIQUE INDEX odin_knowledge_turn_once ON public.odin_tasks USING btree (business_id, knowledge_turn_id) WHERE (knowledge_turn_id IS NOT NULL)"
+    },
+    {
+      "name": "odin_tasks_business_id_conversation_id_id_key",
+      "ready": true,
+      "table": "odin_tasks",
+      "valid": true,
+      "definition": "CREATE UNIQUE INDEX odin_tasks_business_id_conversation_id_id_key ON public.odin_tasks USING btree (business_id, conversation_id, id)"
+    },
+    {
+      "name": "odin_tasks_pkey",
+      "ready": true,
+      "table": "odin_tasks",
+      "valid": true,
+      "definition": "CREATE UNIQUE INDEX odin_tasks_pkey ON public.odin_tasks USING btree (id)"
+    }
+  ],
+  "activity": [],
+  "identity": {
+    "at": "2026-10-19T19:29:11.001265+00:00",
+    "role": "postgres",
+    "version": "17.6",
+    "database": "postgres"
+  },
+  "p2_locks": [
+    {
+      "pid": 343558,
+      "mode": "AccessShareLock",
+      "granted": true,
+      "relation": "odin_outbox"
+    },
+    {
+      "pid": 343558,
+      "mode": "AccessShareLock",
+      "granted": true,
+      "relation": "odin_tasks"
+    },
+    {
+      "pid": 343558,
+      "mode": "AccessShareLock",
+      "granted": true,
+      "relation": "odin_inbox"
+    },
+    {
+      "pid": 343558,
+      "mode": "AccessShareLock",
+      "granted": true,
+      "relation": "odin_conversations"
+    }
+  ],
+  "policies": [],
+  "triggers": [
+    {
+      "name": "odin_guard_native_order_conversation_v2",
+      "table": "odin_conversations",
+      "enabled": "O",
+      "definition": "CREATE TRIGGER odin_guard_native_order_conversation_v2 BEFORE UPDATE ON public.odin_conversations FOR EACH ROW EXECUTE FUNCTION odin_guard_native_order_v2()"
+    },
+    {
+      "name": "odin_guard_knowledge_ingress_v1",
+      "table": "odin_inbox",
+      "enabled": "O",
+      "definition": "CREATE TRIGGER odin_guard_knowledge_ingress_v1 BEFORE UPDATE ON public.odin_inbox FOR EACH ROW EXECUTE FUNCTION odin_guard_knowledge_ingress_v1()"
+    },
+    {
+      "name": "odin_guard_native_order_ingress_v2",
+      "table": "odin_inbox",
+      "enabled": "O",
+      "definition": "CREATE TRIGGER odin_guard_native_order_ingress_v2 BEFORE UPDATE ON public.odin_inbox FOR EACH ROW EXECUTE FUNCTION odin_guard_native_order_v2()"
+    },
+    {
+      "name": "odin_guard_knowledge_identity_v1",
+      "table": "odin_tasks",
+      "enabled": "O",
+      "definition": "CREATE TRIGGER odin_guard_knowledge_identity_v1 BEFORE UPDATE ON public.odin_tasks FOR EACH ROW EXECUTE FUNCTION odin_guard_knowledge_identity_v1()"
+    },
+    {
+      "name": "odin_guard_native_order_task_v2",
+      "table": "odin_tasks",
+      "enabled": "O",
+      "definition": "CREATE TRIGGER odin_guard_native_order_task_v2 BEFORE INSERT ON public.odin_tasks FOR EACH ROW EXECUTE FUNCTION odin_guard_native_order_v2()"
+    }
+  ],
+  "functions": [
+    {
+      "acl": [
+        "postgres=X/postgres",
+        "service_role=X/postgres"
+      ],
+      "anon": false,
+      "body": "\ndeclare c public.odin_conversations%rowtype; i public.odin_inbox%rowtype;\n  t public.odin_tasks%rowtype; n timestamptz:=clock_timestamp(); turn_id uuid:=gen_random_uuid(); existing boolean:=false;\nbegin\n  if p_channel not in ('whatsapp','telegram','instagram','messenger') or\n     p_account !~ '^[A-Za-z0-9:_-]{1,160}$' or (length(p_event) not between 1 and 256 or p_event !~ '^[A-Za-z0-9:_.=+/-]+$')\n     or p_execution_ms not between 1000 and 120000 or p_max_runs not between 1 and 5 or p_max_models not between 1 and 8\n     or p_channel is null or p_account is null or p_event is null\n     or p_execution_ms is null or p_max_runs is null or p_max_models is null then raise exception 'invalid_knowledge_acceptance'; end if;\n  select * into c from public.odin_conversations where id=p_conversation and business_id=p_business for update;\n  if not found then raise exception 'knowledge_conversation_scope'; end if;\n  -- Refuse rebinding a conversation to another provider account/channel.\n  if c.knowledge_channel is not null and (c.knowledge_channel is distinct from p_channel or c.knowledge_account is distinct from p_account) then\n    raise exception 'knowledge_conversation_scope_mismatch'; end if;\n  update public.odin_conversations set knowledge_channel=p_channel,knowledge_account=p_account where id=c.id;\n  -- Existing conversation_key must additionally be checked by the future bridge\n  -- against the canonical P2 channel/account key before first authoritative use.\n  select * into i from public.odin_inbox where business_id=p_business and channel=p_channel\n    and provider_scope=p_account and provider_event_id=p_event for update;\n  if found then\n    if i.conversation_id is distinct from p_conversation or i.knowledge_turn_id is null then\n      raise exception 'knowledge_existing_event_requires_review'; end if;\n    select * into t from public.odin_tasks where business_id=p_business and knowledge_inbox_id=i.id;\n    if t.id is not null or p_input is null or i.knowledge_sequence<>c.knowledge_sequence or i.knowledge_expires_at<=clock_timestamp() then\n      return jsonb_build_object('inserted',false,'inbox',to_jsonb(i),'task',case when t.id is null then null else to_jsonb(t) end);\n    end if;\n    -- Foreground action completed: attach Knowledge once to original ingress.\n    -- No Booking handler is called; no expiry/attempt limit can be reset.\n    existing:=true; n:=i.knowledge_accepted_at; turn_id:=i.knowledge_turn_id;\n    p_max_runs:=i.knowledge_max_runs; p_max_models:=i.knowledge_max_models;\n  end if;\n  if p_input is not null then\n    if jsonb_typeof(p_input) is distinct from 'object' or\n       (p_input - array['question','language','history']) <> '{}'::jsonb or\n       jsonb_typeof(p_input->'question') is distinct from 'string' or length(p_input->>'question') not between 1 and 4000 or\n       coalesce(p_input->>'language','') !~ '^[a-z]{2,3}(-[A-Za-z]{2,8})?$' or\n       jsonb_typeof(p_input->'history') is distinct from 'array' then raise exception 'knowledge_input_bounds'; end if;\n    if jsonb_array_length(p_input->'history')>4 or octet_length(p_input::text)>40000 or exists(\n      select 1 from jsonb_array_elements(p_input->'history') h where\n        jsonb_typeof(h) is distinct from 'object' or (h-array['role','content'])<>'{}'::jsonb or\n        coalesce(h->>'role','') not in ('user','assistant') or jsonb_typeof(h->'content') is distinct from 'string'\n        or length(coalesce(h->>'content','')) not between 1 and 1200\n    ) then raise exception 'knowledge_history_bounds'; end if;\n  end if;\n  if not existing then\n  update public.odin_conversations set knowledge_sequence=knowledge_sequence+1 where id=c.id returning * into c;\n  insert into public.odin_inbox(business_id,conversation_id,channel,provider_scope,provider_event_id,schema_version,payload,status,knowledge_turn_id,knowledge_sequence,knowledge_accepted_at,knowledge_expires_at,knowledge_max_runs,knowledge_max_models)\n    values(p_business,p_conversation,p_channel,p_account,p_event,1,'{}','accepted',turn_id,c.knowledge_sequence,n,n+p_execution_ms*interval '1 millisecond',p_max_runs,p_max_models) returning * into i;\n  end if;\n  if p_input is not null then\n    insert into public.odin_tasks(business_id,conversation_id,schema_version,task_type,status,task_revision,payload,\n      knowledge_turn_id,knowledge_inbox_id,knowledge_channel,knowledge_account,knowledge_sequence,\n      knowledge_accepted_at,knowledge_expires_at,knowledge_state,knowledge_max_runs,knowledge_max_models)\n    values(p_business,p_conversation,1,'knowledge_async_v1','accepted',0,p_input,turn_id,i.id,p_channel,p_account,c.knowledge_sequence,\n      n,i.knowledge_expires_at,'ACCEPTED',p_max_runs,p_max_models) returning * into t;\n  end if;\n  return jsonb_build_object('inserted',not existing,'inbox',to_jsonb(i),'task',case when t.id is null then null else to_jsonb(t) end);\nend ",
+      "name": "odin_accept_knowledge_turn_v1",
+      "owner": "postgres",
+      "definer": false,
+      "signature": "p_business bigint, p_conversation uuid, p_channel text, p_account text, p_event text, p_input jsonb, p_execution_ms integer, p_max_runs integer, p_max_models integer",
+      "definition": "CREATE OR REPLACE FUNCTION public.odin_accept_knowledge_turn_v1(p_business bigint, p_conversation uuid, p_channel text, p_account text, p_event text, p_input jsonb DEFAULT NULL::jsonb, p_execution_ms integer DEFAULT 40000, p_max_runs integer DEFAULT 3, p_max_models integer DEFAULT 4)\n RETURNS jsonb\n LANGUAGE plpgsql\n SET search_path TO 'pg_catalog', 'public'\nAS $function$\ndeclare c public.odin_conversations%rowtype; i public.odin_inbox%rowtype;\n  t public.odin_tasks%rowtype; n timestamptz:=clock_timestamp(); turn_id uuid:=gen_random_uuid(); existing boolean:=false;\nbegin\n  if p_channel not in ('whatsapp','telegram','instagram','messenger') or\n     p_account !~ '^[A-Za-z0-9:_-]{1,160}$' or (length(p_event) not between 1 and 256 or p_event !~ '^[A-Za-z0-9:_.=+/-]+$')\n     or p_execution_ms not between 1000 and 120000 or p_max_runs not between 1 and 5 or p_max_models not between 1 and 8\n     or p_channel is null or p_account is null or p_event is null\n     or p_execution_ms is null or p_max_runs is null or p_max_models is null then raise exception 'invalid_knowledge_acceptance'; end if;\n  select * into c from public.odin_conversations where id=p_conversation and business_id=p_business for update;\n  if not found then raise exception 'knowledge_conversation_scope'; end if;\n  -- Refuse rebinding a conversation to another provider account/channel.\n  if c.knowledge_channel is not null and (c.knowledge_channel is distinct from p_channel or c.knowledge_account is distinct from p_account) then\n    raise exception 'knowledge_conversation_scope_mismatch'; end if;\n  update public.odin_conversations set knowledge_channel=p_channel,knowledge_account=p_account where id=c.id;\n  -- Existing conversation_key must additionally be checked by the future bridge\n  -- against the canonical P2 channel/account key before first authoritative use.\n  select * into i from public.odin_inbox where business_id=p_business and channel=p_channel\n    and provider_scope=p_account and provider_event_id=p_event for update;\n  if found then\n    if i.conversation_id is distinct from p_conversation or i.knowledge_turn_id is null then\n      raise exception 'knowledge_existing_event_requires_review'; end if;\n    select * into t from public.odin_tasks where business_id=p_business and knowledge_inbox_id=i.id;\n    if t.id is not null or p_input is null or i.knowledge_sequence<>c.knowledge_sequence or i.knowledge_expires_at<=clock_timestamp() then\n      return jsonb_build_object('inserted',false,'inbox',to_jsonb(i),'task',case when t.id is null then null else to_jsonb(t) end);\n    end if;\n    -- Foreground action completed: attach Knowledge once to original ingress.\n    -- No Booking handler is called; no expiry/attempt limit can be reset.\n    existing:=true; n:=i.knowledge_accepted_at; turn_id:=i.knowledge_turn_id;\n    p_max_runs:=i.knowledge_max_runs; p_max_models:=i.knowledge_max_models;\n  end if;\n  if p_input is not null then\n    if jsonb_typeof(p_input) is distinct from 'object' or\n       (p_input - array['question','language','history']) <> '{}'::jsonb or\n       jsonb_typeof(p_input->'question') is distinct from 'string' or length(p_input->>'question') not between 1 and 4000 or\n       coalesce(p_input->>'language','') !~ '^[a-z]{2,3}(-[A-Za-z]{2,8})?$' or\n       jsonb_typeof(p_input->'history') is distinct from 'array' then raise exception 'knowledge_input_bounds'; end if;\n    if jsonb_array_length(p_input->'history')>4 or octet_length(p_input::text)>40000 or exists(\n      select 1 from jsonb_array_elements(p_input->'history') h where\n        jsonb_typeof(h) is distinct from 'object' or (h-array['role','content'])<>'{}'::jsonb or\n        coalesce(h->>'role','') not in ('user','assistant') or jsonb_typeof(h->'content') is distinct from 'string'\n        or length(coalesce(h->>'content','')) not between 1 and 1200\n    ) then raise exception 'knowledge_history_bounds'; end if;\n  end if;\n  if not existing then\n  update public.odin_conversations set knowledge_sequence=knowledge_sequence+1 where id=c.id returning * into c;\n  insert into public.odin_inbox(business_id,conversation_id,channel,provider_scope,provider_event_id,schema_version,payload,status,knowledge_turn_id,knowledge_sequence,knowledge_accepted_at,knowledge_expires_at,knowledge_max_runs,knowledge_max_models)\n    values(p_business,p_conversation,p_channel,p_account,p_event,1,'{}','accepted',turn_id,c.knowledge_sequence,n,n+p_execution_ms*interval '1 millisecond',p_max_runs,p_max_models) returning * into i;\n  end if;\n  if p_input is not null then\n    insert into public.odin_tasks(business_id,conversation_id,schema_version,task_type,status,task_revision,payload,\n      knowledge_turn_id,knowledge_inbox_id,knowledge_channel,knowledge_account,knowledge_sequence,\n      knowledge_accepted_at,knowledge_expires_at,knowledge_state,knowledge_max_runs,knowledge_max_models)\n    values(p_business,p_conversation,1,'knowledge_async_v1','accepted',0,p_input,turn_id,i.id,p_channel,p_account,c.knowledge_sequence,\n      n,i.knowledge_expires_at,'ACCEPTED',p_max_runs,p_max_models) returning * into t;\n  end if;\n  return jsonb_build_object('inserted',not existing,'inbox',to_jsonb(i),'task',case when t.id is null then null else to_jsonb(t) end);\nend $function$\n",
+      "service_role": true,
+      "authenticated": false
+    },
+    {
+      "acl": [
+        "postgres=X/postgres",
+        "service_role=X/postgres"
+      ],
+      "anon": false,
+      "body": "\ndeclare c public.odin_conversations%rowtype; i public.odin_inbox%rowtype;\n  t public.odin_tasks%rowtype; n timestamptz; turn_id uuid:=gen_random_uuid();\n  w jsonb; new_w jsonb; at_ms bigint; seq bigint; previous_at bigint; previous_seq bigint;\n  disposition text:='ACCEPTED'; state text:='ACTIVE'; duplicate boolean:=false; may_attach boolean:=false;\nbegin\n  if p_business is null or p_business<=0 or p_conversation is null or p_key is null or length(p_key) not between 1 and 1000\n    or p_channel is null or p_channel not in ('whatsapp','telegram','instagram','messenger')\n    or p_account is null or p_account !~ '^[A-Za-z0-9:_-]{1,160}$'\n    or p_event is null or length(p_event) not between 1 and 256 or p_event !~ '^[A-Za-z0-9:_.=+/-]+$'\n    or p_execution_ms is null or p_execution_ms not between 1000 and 120000\n    or p_max_runs is null or p_max_runs not between 1 and 5\n    or p_max_models is null or p_max_models not between 1 and 8 then raise exception 'invalid_ordered_acceptance'; end if;\n  if p_order is not null then\n    if jsonb_typeof(p_order) is distinct from 'object' or (p_order-array['atMs','sequence'])<>'{}'::jsonb\n      or jsonb_typeof(p_order->'atMs') is distinct from 'number' or coalesce(p_order->>'atMs','') !~ '^[1-9][0-9]{0,15}$'\n      or (p_channel='telegram' and (jsonb_typeof(p_order->'sequence') is distinct from 'number'\n        or coalesce(p_order->>'sequence','') !~ '^[0-9]{1,16}$'))\n      or (p_channel<>'telegram' and p_order->'sequence' is distinct from 'null'::jsonb) then raise exception 'invalid_native_order'; end if;\n    at_ms:=(p_order->>'atMs')::bigint; seq:=(p_order->>'sequence')::bigint;\n    if at_ms>9007199254740991 or seq>9007199254740991\n      or (p_channel in ('telegram','whatsapp') and at_ms%1000<>0) then raise exception 'invalid_native_order'; end if;\n  end if;\n  -- All admission, duplicate attachment and supersession checks share this lock.\n  select * into c from public.odin_conversations where business_id=p_business and id=p_conversation for update;\n  if not found or c.conversation_key is distinct from p_key then raise exception 'ordered_conversation_scope'; end if;\n  if c.knowledge_channel is not null and (c.knowledge_channel is distinct from p_channel or c.knowledge_account is distinct from p_account) then\n    raise exception 'ordered_provider_scope'; end if;\n  n:=clock_timestamp(); w:=c.aggregate_meta->'knowledge_native_order_v2';\n  if w is not null and (jsonb_typeof(w) is distinct from 'object' or\n    coalesce(w->>'state','') not in ('ACTIVE','TIED','BLOCKED') or\n    (w->>'ownerSequence')::bigint is distinct from c.knowledge_sequence or\n    (w->>'state' in ('ACTIVE','TIED') and (w->>'atMs' is null or\n      (p_channel='telegram' and w->>'sequence' is null)))) then raise exception 'ordered_metadata_invalid'; end if;\n  select * into i from public.odin_inbox where business_id=p_business and channel=p_channel\n    and provider_scope=p_account and provider_event_id=p_event for update;\n  if found then\n    if i.conversation_id is distinct from p_conversation or i.knowledge_turn_id is null\n      or i.payload->'native_order_v2' is null then raise exception 'ordered_existing_event_requires_review'; end if;\n    duplicate:=true; disposition:='DUPLICATE';\n    select * into t from public.odin_tasks where business_id=p_business and knowledge_inbox_id=i.id;\n    may_attach:=coalesce(i.knowledge_sequence=c.knowledge_sequence and i.knowledge_expires_at>n\n      and w->>'state'='ACTIVE' and i.payload->'native_order_v2'->>'disposition'='ACCEPTED'\n      and i.payload->'native_order_v2'->'order' is not distinct from p_order,false);\n    if t.id is not null or p_input is null or not may_attach then\n      return jsonb_build_object('disposition',disposition,'mayAttach',may_attach,'inserted',false,'inbox',to_jsonb(i),\n        'task',case when t.id is null then null else to_jsonb(t) end); end if;\n    n:=i.knowledge_accepted_at; turn_id:=i.knowledge_turn_id;\n    p_max_runs:=i.knowledge_max_runs; p_max_models:=i.knowledge_max_models;\n  else\n    if w is null and c.knowledge_sequence<>0 then raise exception 'ordered_legacy_conversation_requires_drain'; end if;\n    if w->>'state'='BLOCKED' then\n      return jsonb_build_object('disposition','BLOCKED','mayAttach',false,'inserted',false,'inbox',null,'task',null); end if;\n    previous_at:=(w->>'atMs')::bigint; previous_seq:=(w->>'sequence')::bigint;\n    -- Missing/future order is not receipt time. Fence current work and latch\n    -- BLOCKED until a separately authorized resynchronization; no invented epoch.\n    if p_order is null or at_ms>floor(extract(epoch from clock_timestamp())*1000)::bigint then\n      disposition:='AMBIGUOUS'; state:='BLOCKED'; at_ms:=previous_at; seq:=previous_seq;\n    elsif p_channel='telegram' and previous_at is not null and at_ms<previous_at and seq>previous_seq then\n      disposition:='AMBIGUOUS'; state:='BLOCKED'; at_ms:=previous_at; seq:=previous_seq;\n    elsif previous_at is not null and (at_ms<previous_at or\n      (p_channel='telegram' and at_ms=previous_at and seq<previous_seq)) then\n      return jsonb_build_object('disposition','STALE','mayAttach',false,'inserted',false,'inbox',null,'task',null);\n    elsif previous_at is not null and at_ms=previous_at and\n      (p_channel<>'telegram' or seq=previous_seq or w->>'state'='TIED') then\n      disposition:='AMBIGUOUS'; state:='TIED'; seq:=previous_seq;\n    -- Telegram IDs may reset after a week without updates. A higher timestamp\n    -- with a regressed sequence inside that interval is contradictory: fence.\n    elsif p_channel='telegram' and previous_at is not null and at_ms>previous_at and seq<=previous_seq\n      and at_ms-previous_at<604800000 then\n      disposition:='AMBIGUOUS'; state:='BLOCKED';\n    end if;\n    may_attach:=state='ACTIVE';\n  end if;\n  if p_input is not null and may_attach then\n    if jsonb_typeof(p_input) is distinct from 'object' or (p_input-array['question','language','history'])<>'{}'::jsonb\n      or jsonb_typeof(p_input->'question') is distinct from 'string' or length(p_input->>'question') not between 1 and 4000\n      or coalesce(p_input->>'language','') !~ '^[a-z]{2,3}(-[A-Za-z]{2,8})?$'\n      or jsonb_typeof(p_input->'history') is distinct from 'array' then raise exception 'knowledge_input_bounds'; end if;\n    if jsonb_array_length(p_input->'history')>4 or octet_length(p_input::text)>40000 or exists(\n      select 1 from jsonb_array_elements(p_input->'history') h where jsonb_typeof(h) is distinct from 'object'\n      or (h-array['role','content'])<>'{}'::jsonb or coalesce(h->>'role','') not in ('user','assistant')\n      or jsonb_typeof(h->'content') is distinct from 'string' or length(coalesce(h->>'content','')) not between 1 and 1200\n    ) then raise exception 'knowledge_history_bounds'; end if;\n  end if;\n  if not duplicate then\n    new_w:=jsonb_build_object('state',state,'atMs',at_ms,'sequence',seq,'ownerSequence',c.knowledge_sequence+1);\n    -- knowledge_sequence is an invalidation fence, not a claim of native order.\n    -- Ambiguity advances ONLY this fence; atMs/sequence never invent a tie order.\n    update public.odin_conversations set knowledge_sequence=knowledge_sequence+1,knowledge_channel=p_channel,knowledge_account=p_account,\n      aggregate_meta=jsonb_set(aggregate_meta,'{knowledge_native_order_v2}',new_w) where id=c.id returning * into c;\n    insert into public.odin_inbox(business_id,conversation_id,channel,provider_scope,provider_event_id,turn_sequence,schema_version,payload,status,\n      knowledge_turn_id,knowledge_sequence,knowledge_accepted_at,knowledge_expires_at,knowledge_max_runs,knowledge_max_models)\n    values(p_business,p_conversation,p_channel,p_account,p_event,case when p_channel='telegram' then (p_order->>'sequence')::bigint else null end,\n      1,jsonb_build_object('native_order_v2',jsonb_build_object('order',p_order,'disposition',disposition)),'accepted',turn_id,c.knowledge_sequence,\n      n,n+p_execution_ms*interval '1 millisecond',p_max_runs,p_max_models) returning * into i;\n  end if;\n  if p_input is not null and may_attach then\n    insert into public.odin_tasks(business_id,conversation_id,schema_version,task_type,status,task_revision,payload,\n      knowledge_turn_id,knowledge_inbox_id,knowledge_channel,knowledge_account,knowledge_sequence,\n      knowledge_accepted_at,knowledge_expires_at,knowledge_state,knowledge_max_runs,knowledge_max_models)\n    values(p_business,p_conversation,1,'knowledge_async_v1','accepted',0,p_input,turn_id,i.id,p_channel,p_account,c.knowledge_sequence,\n      n,i.knowledge_expires_at,'ACCEPTED',p_max_runs,p_max_models) returning * into t;\n  end if;\n  return jsonb_build_object('disposition',disposition,'mayAttach',may_attach,'inserted',not duplicate,'inbox',to_jsonb(i),\n    'task',case when t.id is null then null else to_jsonb(t) end);\nend ",
+      "name": "odin_accept_knowledge_turn_v2",
+      "owner": "postgres",
+      "definer": false,
+      "signature": "p_business bigint, p_conversation uuid, p_channel text, p_account text, p_event text, p_key text, p_order jsonb, p_input jsonb, p_execution_ms integer, p_max_runs integer, p_max_models integer",
+      "definition": "CREATE OR REPLACE FUNCTION public.odin_accept_knowledge_turn_v2(p_business bigint, p_conversation uuid, p_channel text, p_account text, p_event text, p_key text, p_order jsonb, p_input jsonb DEFAULT NULL::jsonb, p_execution_ms integer DEFAULT 40000, p_max_runs integer DEFAULT 3, p_max_models integer DEFAULT 4)\n RETURNS jsonb\n LANGUAGE plpgsql\n SET search_path TO 'pg_catalog', 'public'\nAS $function$\ndeclare c public.odin_conversations%rowtype; i public.odin_inbox%rowtype;\n  t public.odin_tasks%rowtype; n timestamptz; turn_id uuid:=gen_random_uuid();\n  w jsonb; new_w jsonb; at_ms bigint; seq bigint; previous_at bigint; previous_seq bigint;\n  disposition text:='ACCEPTED'; state text:='ACTIVE'; duplicate boolean:=false; may_attach boolean:=false;\nbegin\n  if p_business is null or p_business<=0 or p_conversation is null or p_key is null or length(p_key) not between 1 and 1000\n    or p_channel is null or p_channel not in ('whatsapp','telegram','instagram','messenger')\n    or p_account is null or p_account !~ '^[A-Za-z0-9:_-]{1,160}$'\n    or p_event is null or length(p_event) not between 1 and 256 or p_event !~ '^[A-Za-z0-9:_.=+/-]+$'\n    or p_execution_ms is null or p_execution_ms not between 1000 and 120000\n    or p_max_runs is null or p_max_runs not between 1 and 5\n    or p_max_models is null or p_max_models not between 1 and 8 then raise exception 'invalid_ordered_acceptance'; end if;\n  if p_order is not null then\n    if jsonb_typeof(p_order) is distinct from 'object' or (p_order-array['atMs','sequence'])<>'{}'::jsonb\n      or jsonb_typeof(p_order->'atMs') is distinct from 'number' or coalesce(p_order->>'atMs','') !~ '^[1-9][0-9]{0,15}$'\n      or (p_channel='telegram' and (jsonb_typeof(p_order->'sequence') is distinct from 'number'\n        or coalesce(p_order->>'sequence','') !~ '^[0-9]{1,16}$'))\n      or (p_channel<>'telegram' and p_order->'sequence' is distinct from 'null'::jsonb) then raise exception 'invalid_native_order'; end if;\n    at_ms:=(p_order->>'atMs')::bigint; seq:=(p_order->>'sequence')::bigint;\n    if at_ms>9007199254740991 or seq>9007199254740991\n      or (p_channel in ('telegram','whatsapp') and at_ms%1000<>0) then raise exception 'invalid_native_order'; end if;\n  end if;\n  -- All admission, duplicate attachment and supersession checks share this lock.\n  select * into c from public.odin_conversations where business_id=p_business and id=p_conversation for update;\n  if not found or c.conversation_key is distinct from p_key then raise exception 'ordered_conversation_scope'; end if;\n  if c.knowledge_channel is not null and (c.knowledge_channel is distinct from p_channel or c.knowledge_account is distinct from p_account) then\n    raise exception 'ordered_provider_scope'; end if;\n  n:=clock_timestamp(); w:=c.aggregate_meta->'knowledge_native_order_v2';\n  if w is not null and (jsonb_typeof(w) is distinct from 'object' or\n    coalesce(w->>'state','') not in ('ACTIVE','TIED','BLOCKED') or\n    (w->>'ownerSequence')::bigint is distinct from c.knowledge_sequence or\n    (w->>'state' in ('ACTIVE','TIED') and (w->>'atMs' is null or\n      (p_channel='telegram' and w->>'sequence' is null)))) then raise exception 'ordered_metadata_invalid'; end if;\n  select * into i from public.odin_inbox where business_id=p_business and channel=p_channel\n    and provider_scope=p_account and provider_event_id=p_event for update;\n  if found then\n    if i.conversation_id is distinct from p_conversation or i.knowledge_turn_id is null\n      or i.payload->'native_order_v2' is null then raise exception 'ordered_existing_event_requires_review'; end if;\n    duplicate:=true; disposition:='DUPLICATE';\n    select * into t from public.odin_tasks where business_id=p_business and knowledge_inbox_id=i.id;\n    may_attach:=coalesce(i.knowledge_sequence=c.knowledge_sequence and i.knowledge_expires_at>n\n      and w->>'state'='ACTIVE' and i.payload->'native_order_v2'->>'disposition'='ACCEPTED'\n      and i.payload->'native_order_v2'->'order' is not distinct from p_order,false);\n    if t.id is not null or p_input is null or not may_attach then\n      return jsonb_build_object('disposition',disposition,'mayAttach',may_attach,'inserted',false,'inbox',to_jsonb(i),\n        'task',case when t.id is null then null else to_jsonb(t) end); end if;\n    n:=i.knowledge_accepted_at; turn_id:=i.knowledge_turn_id;\n    p_max_runs:=i.knowledge_max_runs; p_max_models:=i.knowledge_max_models;\n  else\n    if w is null and c.knowledge_sequence<>0 then raise exception 'ordered_legacy_conversation_requires_drain'; end if;\n    if w->>'state'='BLOCKED' then\n      return jsonb_build_object('disposition','BLOCKED','mayAttach',false,'inserted',false,'inbox',null,'task',null); end if;\n    previous_at:=(w->>'atMs')::bigint; previous_seq:=(w->>'sequence')::bigint;\n    -- Missing/future order is not receipt time. Fence current work and latch\n    -- BLOCKED until a separately authorized resynchronization; no invented epoch.\n    if p_order is null or at_ms>floor(extract(epoch from clock_timestamp())*1000)::bigint then\n      disposition:='AMBIGUOUS'; state:='BLOCKED'; at_ms:=previous_at; seq:=previous_seq;\n    elsif p_channel='telegram' and previous_at is not null and at_ms<previous_at and seq>previous_seq then\n      disposition:='AMBIGUOUS'; state:='BLOCKED'; at_ms:=previous_at; seq:=previous_seq;\n    elsif previous_at is not null and (at_ms<previous_at or\n      (p_channel='telegram' and at_ms=previous_at and seq<previous_seq)) then\n      return jsonb_build_object('disposition','STALE','mayAttach',false,'inserted',false,'inbox',null,'task',null);\n    elsif previous_at is not null and at_ms=previous_at and\n      (p_channel<>'telegram' or seq=previous_seq or w->>'state'='TIED') then\n      disposition:='AMBIGUOUS'; state:='TIED'; seq:=previous_seq;\n    -- Telegram IDs may reset after a week without updates. A higher timestamp\n    -- with a regressed sequence inside that interval is contradictory: fence.\n    elsif p_channel='telegram' and previous_at is not null and at_ms>previous_at and seq<=previous_seq\n      and at_ms-previous_at<604800000 then\n      disposition:='AMBIGUOUS'; state:='BLOCKED';\n    end if;\n    may_attach:=state='ACTIVE';\n  end if;\n  if p_input is not null and may_attach then\n    if jsonb_typeof(p_input) is distinct from 'object' or (p_input-array['question','language','history'])<>'{}'::jsonb\n      or jsonb_typeof(p_input->'question') is distinct from 'string' or length(p_input->>'question') not between 1 and 4000\n      or coalesce(p_input->>'language','') !~ '^[a-z]{2,3}(-[A-Za-z]{2,8})?$'\n      or jsonb_typeof(p_input->'history') is distinct from 'array' then raise exception 'knowledge_input_bounds'; end if;\n    if jsonb_array_length(p_input->'history')>4 or octet_length(p_input::text)>40000 or exists(\n      select 1 from jsonb_array_elements(p_input->'history') h where jsonb_typeof(h) is distinct from 'object'\n      or (h-array['role','content'])<>'{}'::jsonb or coalesce(h->>'role','') not in ('user','assistant')\n      or jsonb_typeof(h->'content') is distinct from 'string' or length(coalesce(h->>'content','')) not between 1 and 1200\n    ) then raise exception 'knowledge_history_bounds'; end if;\n  end if;\n  if not duplicate then\n    new_w:=jsonb_build_object('state',state,'atMs',at_ms,'sequence',seq,'ownerSequence',c.knowledge_sequence+1);\n    -- knowledge_sequence is an invalidation fence, not a claim of native order.\n    -- Ambiguity advances ONLY this fence; atMs/sequence never invent a tie order.\n    update public.odin_conversations set knowledge_sequence=knowledge_sequence+1,knowledge_channel=p_channel,knowledge_account=p_account,\n      aggregate_meta=jsonb_set(aggregate_meta,'{knowledge_native_order_v2}',new_w) where id=c.id returning * into c;\n    insert into public.odin_inbox(business_id,conversation_id,channel,provider_scope,provider_event_id,turn_sequence,schema_version,payload,status,\n      knowledge_turn_id,knowledge_sequence,knowledge_accepted_at,knowledge_expires_at,knowledge_max_runs,knowledge_max_models)\n    values(p_business,p_conversation,p_channel,p_account,p_event,case when p_channel='telegram' then (p_order->>'sequence')::bigint else null end,\n      1,jsonb_build_object('native_order_v2',jsonb_build_object('order',p_order,'disposition',disposition)),'accepted',turn_id,c.knowledge_sequence,\n      n,n+p_execution_ms*interval '1 millisecond',p_max_runs,p_max_models) returning * into i;\n  end if;\n  if p_input is not null and may_attach then\n    insert into public.odin_tasks(business_id,conversation_id,schema_version,task_type,status,task_revision,payload,\n      knowledge_turn_id,knowledge_inbox_id,knowledge_channel,knowledge_account,knowledge_sequence,\n      knowledge_accepted_at,knowledge_expires_at,knowledge_state,knowledge_max_runs,knowledge_max_models)\n    values(p_business,p_conversation,1,'knowledge_async_v1','accepted',0,p_input,turn_id,i.id,p_channel,p_account,c.knowledge_sequence,\n      n,i.knowledge_expires_at,'ACCEPTED',p_max_runs,p_max_models) returning * into t;\n  end if;\n  return jsonb_build_object('disposition',disposition,'mayAttach',may_attach,'inserted',not duplicate,'inbox',to_jsonb(i),\n    'task',case when t.id is null then null else to_jsonb(t) end);\nend $function$\n",
+      "service_role": true,
+      "authenticated": false
+    },
+    {
+      "acl": [
+        "postgres=X/postgres",
+        "service_role=X/postgres"
+      ],
+      "anon": false,
+      "body": "\nbegin\n  if old.knowledge_turn_id is null then return new; end if;\n  if row(new.id,new.business_id,new.conversation_id,new.task_type,new.payload,new.knowledge_turn_id,new.knowledge_inbox_id,\n      new.knowledge_channel,new.knowledge_account,new.knowledge_sequence,new.knowledge_accepted_at,new.knowledge_expires_at,\n      new.knowledge_max_runs,new.knowledge_max_models)\n    is distinct from row(old.id,old.business_id,old.conversation_id,old.task_type,old.payload,old.knowledge_turn_id,old.knowledge_inbox_id,\n      old.knowledge_channel,old.knowledge_account,old.knowledge_sequence,old.knowledge_accepted_at,old.knowledge_expires_at,\n      old.knowledge_max_runs,old.knowledge_max_models) then raise exception 'knowledge_immutable_acceptance'; end if;\n  if new.knowledge_run_attempts<old.knowledge_run_attempts or new.knowledge_model_attempts<old.knowledge_model_attempts\n    or new.knowledge_fence<old.knowledge_fence then raise exception 'knowledge_accounting_regression'; end if;\n  if old.knowledge_result is not null and (new.knowledge_result is distinct from old.knowledge_result\n    or new.knowledge_result_digest is distinct from old.knowledge_result_digest) then raise exception 'knowledge_immutable_result'; end if;\n  if new.knowledge_state is distinct from old.knowledge_state and not (\n    (old.knowledge_state='ACCEPTED' and new.knowledge_state in ('RUNNING','FAILED','EXPIRED','SUPERSEDED')) or\n    (old.knowledge_state='RUNNING' and new.knowledge_state in ('VERIFIED','FAILED','EXPIRED','SUPERSEDED')) or\n    (old.knowledge_state='VERIFIED' and new.knowledge_state in ('FINALIZED','FAILED','EXPIRED','SUPERSEDED')) or\n    (old.knowledge_state='FINALIZED' and new.knowledge_state='SUPERSEDED')\n  ) then raise exception 'knowledge_invalid_transition'; end if;\n  return new;\nend ",
+      "name": "odin_guard_knowledge_identity_v1",
+      "owner": "postgres",
+      "definer": false,
+      "signature": "",
+      "definition": "CREATE OR REPLACE FUNCTION public.odin_guard_knowledge_identity_v1()\n RETURNS trigger\n LANGUAGE plpgsql\n SET search_path TO 'pg_catalog', 'public'\nAS $function$\nbegin\n  if old.knowledge_turn_id is null then return new; end if;\n  if row(new.id,new.business_id,new.conversation_id,new.task_type,new.payload,new.knowledge_turn_id,new.knowledge_inbox_id,\n      new.knowledge_channel,new.knowledge_account,new.knowledge_sequence,new.knowledge_accepted_at,new.knowledge_expires_at,\n      new.knowledge_max_runs,new.knowledge_max_models)\n    is distinct from row(old.id,old.business_id,old.conversation_id,old.task_type,old.payload,old.knowledge_turn_id,old.knowledge_inbox_id,\n      old.knowledge_channel,old.knowledge_account,old.knowledge_sequence,old.knowledge_accepted_at,old.knowledge_expires_at,\n      old.knowledge_max_runs,old.knowledge_max_models) then raise exception 'knowledge_immutable_acceptance'; end if;\n  if new.knowledge_run_attempts<old.knowledge_run_attempts or new.knowledge_model_attempts<old.knowledge_model_attempts\n    or new.knowledge_fence<old.knowledge_fence then raise exception 'knowledge_accounting_regression'; end if;\n  if old.knowledge_result is not null and (new.knowledge_result is distinct from old.knowledge_result\n    or new.knowledge_result_digest is distinct from old.knowledge_result_digest) then raise exception 'knowledge_immutable_result'; end if;\n  if new.knowledge_state is distinct from old.knowledge_state and not (\n    (old.knowledge_state='ACCEPTED' and new.knowledge_state in ('RUNNING','FAILED','EXPIRED','SUPERSEDED')) or\n    (old.knowledge_state='RUNNING' and new.knowledge_state in ('VERIFIED','FAILED','EXPIRED','SUPERSEDED')) or\n    (old.knowledge_state='VERIFIED' and new.knowledge_state in ('FINALIZED','FAILED','EXPIRED','SUPERSEDED')) or\n    (old.knowledge_state='FINALIZED' and new.knowledge_state='SUPERSEDED')\n  ) then raise exception 'knowledge_invalid_transition'; end if;\n  return new;\nend $function$\n",
+      "service_role": true,
+      "authenticated": false
+    },
+    {
+      "acl": [
+        "postgres=X/postgres",
+        "service_role=X/postgres"
+      ],
+      "anon": false,
+      "body": "\nbegin\n  if old.knowledge_turn_id is not null and row(new.business_id,new.conversation_id,new.channel,new.provider_scope,new.provider_event_id,\n    new.knowledge_turn_id,new.knowledge_sequence,new.knowledge_accepted_at,new.knowledge_expires_at,new.knowledge_max_runs,new.knowledge_max_models)\n    is distinct from row(old.business_id,old.conversation_id,old.channel,old.provider_scope,old.provider_event_id,\n    old.knowledge_turn_id,old.knowledge_sequence,old.knowledge_accepted_at,old.knowledge_expires_at,old.knowledge_max_runs,old.knowledge_max_models)\n  then raise exception 'knowledge_immutable_ingress'; end if;\n  return new;\nend ",
+      "name": "odin_guard_knowledge_ingress_v1",
+      "owner": "postgres",
+      "definer": false,
+      "signature": "",
+      "definition": "CREATE OR REPLACE FUNCTION public.odin_guard_knowledge_ingress_v1()\n RETURNS trigger\n LANGUAGE plpgsql\n SET search_path TO 'pg_catalog', 'public'\nAS $function$\nbegin\n  if old.knowledge_turn_id is not null and row(new.business_id,new.conversation_id,new.channel,new.provider_scope,new.provider_event_id,\n    new.knowledge_turn_id,new.knowledge_sequence,new.knowledge_accepted_at,new.knowledge_expires_at,new.knowledge_max_runs,new.knowledge_max_models)\n    is distinct from row(old.business_id,old.conversation_id,old.channel,old.provider_scope,old.provider_event_id,\n    old.knowledge_turn_id,old.knowledge_sequence,old.knowledge_accepted_at,old.knowledge_expires_at,old.knowledge_max_runs,old.knowledge_max_models)\n  then raise exception 'knowledge_immutable_ingress'; end if;\n  return new;\nend $function$\n",
+      "service_role": true,
+      "authenticated": false
+    },
+    {
+      "acl": [
+        "postgres=X/postgres",
+        "service_role=X/postgres"
+      ],
+      "anon": false,
+      "body": "\ndeclare w jsonb; old_w jsonb; c public.odin_conversations%rowtype; i public.odin_inbox%rowtype;\nbegin\n  if tg_table_name='odin_conversations' then\n    w:=new.aggregate_meta->'knowledge_native_order_v2'; old_w:=old.aggregate_meta->'knowledge_native_order_v2';\n    if old_w is not null or w is not null then\n      if w is null or jsonb_typeof(w) is distinct from 'object' or\n        coalesce(w->>'state','') not in ('ACTIVE','TIED','BLOCKED') or\n        (w->>'ownerSequence')::bigint is distinct from new.knowledge_sequence then raise exception 'ordered_fence_required'; end if;\n      if new.knowledge_sequence<>old.knowledge_sequence then\n        if new.knowledge_sequence<>old.knowledge_sequence+1 then raise exception 'ordered_fence_regression'; end if;\n      elsif w is distinct from old_w then raise exception 'ordered_metadata_requires_fence'; end if;\n      if old_w->>'state'='BLOCKED' and w->>'state'<>'BLOCKED' then raise exception 'ordered_resynchronization_required'; end if;\n    end if;\n  elsif tg_table_name='odin_inbox' then\n    if old.payload->'native_order_v2' is not null and\n      (new.payload is distinct from old.payload or new.turn_sequence is distinct from old.turn_sequence) then\n      raise exception 'ordered_immutable_ingress'; end if;\n  elsif new.knowledge_turn_id is not null then\n    select * into c from public.odin_conversations where business_id=new.business_id and id=new.conversation_id for update;\n    w:=c.aggregate_meta->'knowledge_native_order_v2';\n    if w is not null then\n      select * into i from public.odin_inbox where business_id=new.business_id and id=new.knowledge_inbox_id and conversation_id=new.conversation_id;\n      if w->>'state'<>'ACTIVE' or new.knowledge_sequence<>c.knowledge_sequence or\n        i.knowledge_turn_id is distinct from new.knowledge_turn_id or\n        i.payload->'native_order_v2'->>'disposition' is distinct from 'ACCEPTED' then raise exception 'ordered_task_not_authorized'; end if;\n    end if;\n  end if;\n  return new;\nend ",
+      "name": "odin_guard_native_order_v2",
+      "owner": "postgres",
+      "definer": false,
+      "signature": "",
+      "definition": "CREATE OR REPLACE FUNCTION public.odin_guard_native_order_v2()\n RETURNS trigger\n LANGUAGE plpgsql\n SET search_path TO 'pg_catalog', 'public'\nAS $function$\ndeclare w jsonb; old_w jsonb; c public.odin_conversations%rowtype; i public.odin_inbox%rowtype;\nbegin\n  if tg_table_name='odin_conversations' then\n    w:=new.aggregate_meta->'knowledge_native_order_v2'; old_w:=old.aggregate_meta->'knowledge_native_order_v2';\n    if old_w is not null or w is not null then\n      if w is null or jsonb_typeof(w) is distinct from 'object' or\n        coalesce(w->>'state','') not in ('ACTIVE','TIED','BLOCKED') or\n        (w->>'ownerSequence')::bigint is distinct from new.knowledge_sequence then raise exception 'ordered_fence_required'; end if;\n      if new.knowledge_sequence<>old.knowledge_sequence then\n        if new.knowledge_sequence<>old.knowledge_sequence+1 then raise exception 'ordered_fence_regression'; end if;\n      elsif w is distinct from old_w then raise exception 'ordered_metadata_requires_fence'; end if;\n      if old_w->>'state'='BLOCKED' and w->>'state'<>'BLOCKED' then raise exception 'ordered_resynchronization_required'; end if;\n    end if;\n  elsif tg_table_name='odin_inbox' then\n    if old.payload->'native_order_v2' is not null and\n      (new.payload is distinct from old.payload or new.turn_sequence is distinct from old.turn_sequence) then\n      raise exception 'ordered_immutable_ingress'; end if;\n  elsif new.knowledge_turn_id is not null then\n    select * into c from public.odin_conversations where business_id=new.business_id and id=new.conversation_id for update;\n    w:=c.aggregate_meta->'knowledge_native_order_v2';\n    if w is not null then\n      select * into i from public.odin_inbox where business_id=new.business_id and id=new.knowledge_inbox_id and conversation_id=new.conversation_id;\n      if w->>'state'<>'ACTIVE' or new.knowledge_sequence<>c.knowledge_sequence or\n        i.knowledge_turn_id is distinct from new.knowledge_turn_id or\n        i.payload->'native_order_v2'->>'disposition' is distinct from 'ACCEPTED' then raise exception 'ordered_task_not_authorized'; end if;\n    end if;\n  end if;\n  return new;\nend $function$\n",
+      "service_role": true,
+      "authenticated": false
+    },
+    {
+      "acl": [
+        "postgres=X/postgres",
+        "service_role=X/postgres"
+      ],
+      "anon": false,
+      "body": "\ndeclare c public.odin_conversations%rowtype; t public.odin_tasks%rowtype;\n  d public.odin_outbox%rowtype; n timestamptz; receipt jsonb:=p_args->'authority';\n  owner_id text:=p_args->>'owner'; lease_ms integer; stage integer; previous_stage integer;\n  body text; kind text; valid_authority boolean; result jsonb; key text;\nbegin\n  select * into c from public.odin_conversations where business_id=p_business and id=p_conversation for update;\n  if not found then return null; end if;\n  select * into t from public.odin_tasks where business_id=p_business and conversation_id=p_conversation and id=p_task\n    and knowledge_channel=p_channel and knowledge_account=p_account and task_type='knowledge_async_v1'\n    and knowledge_turn_id is not null for update;\n  if not found then return null; end if;\n  n:=clock_timestamp();\n  if c.knowledge_channel is distinct from p_channel or c.knowledge_account is distinct from p_account then return null; end if;\n  if t.knowledge_sequence<>c.knowledge_sequence then\n    update public.odin_tasks set knowledge_state='SUPERSEDED',knowledge_owner=null,knowledge_lease_until=null where id=t.id and knowledge_state not in ('FAILED','EXPIRED','SUPERSEDED');\n    update public.odin_outbox set knowledge_state='SUPERSEDED' where knowledge_task_id=t.id and knowledge_state in ('PENDING','FAILED');\n    -- An in-flight send cannot be recalled. Preserve it for factual settlement;\n    -- expired sending leases become uncertain below/on the next recovery scan.\n    if p_command<>'settle_delivery' then\n      update public.odin_outbox set knowledge_state='UNCERTAIN',knowledge_owner=null,knowledge_lease_until=null\n        where knowledge_task_id=t.id and knowledge_state='SENDING' and knowledge_lease_until<=n;\n      return null; end if;\n  end if;\n  update public.odin_outbox set knowledge_state='UNCERTAIN',knowledge_owner=null,knowledge_lease_until=null\n    where knowledge_task_id=t.id and knowledge_state='SENDING' and knowledge_lease_until<=n;\n  if t.knowledge_expires_at<=n then\n    update public.odin_tasks set knowledge_state='EXPIRED',knowledge_owner=null,knowledge_lease_until=null\n      where id=t.id and knowledge_state in ('ACCEPTED','RUNNING','VERIFIED');\n    update public.odin_outbox set knowledge_state='EXPIRED' where knowledge_task_id=t.id and knowledge_state in ('PENDING','FAILED');\n    return null;\n  end if;\n  if p_command='recover' then return to_jsonb(t); end if;\n  if p_command in ('claim','renew','claim_delivery') then\n    lease_ms:=(p_args->>'leaseMs')::integer;\n    if owner_id is null or owner_id !~ '^[A-Za-z0-9:_-]{1,160}$' or lease_ms is null or lease_ms not between 1 and 30000 then\n      raise exception 'knowledge_invalid_lease'; end if;\n  end if;\n  if p_command='claim' then\n    if t.knowledge_state not in ('ACCEPTED','RUNNING','VERIFIED') or t.knowledge_lease_until>n then return null; end if;\n    if t.knowledge_run_attempts>=t.knowledge_max_runs then\n      update public.odin_tasks set knowledge_state='FAILED',knowledge_owner=null,knowledge_lease_until=null where id=t.id; return null; end if;\n    update public.odin_tasks set knowledge_state=case when knowledge_state='VERIFIED' then 'VERIFIED' else 'RUNNING' end,\n      knowledge_fence=knowledge_fence+1,knowledge_owner=owner_id,knowledge_lease_until=least(n+lease_ms*interval '1 millisecond',knowledge_expires_at),\n      knowledge_run_attempts=knowledge_run_attempts+1,task_revision=task_revision+1 where id=t.id returning * into t;\n    return to_jsonb(t);\n  end if;\n  if p_command in ('renew','model_attempt','checkpoint','verified','fail','finalize') then\n    if t.knowledge_state not in ('RUNNING','VERIFIED') or t.knowledge_owner is distinct from owner_id or\n       t.knowledge_fence is distinct from (p_args->>'fence')::bigint or t.knowledge_lease_until is null or t.knowledge_lease_until<=n then return null; end if;\n  end if;\n  if p_command='renew' then\n    update public.odin_tasks set knowledge_lease_until=least(n+lease_ms*interval '1 millisecond',knowledge_expires_at),task_revision=task_revision+1 where id=t.id returning * into t;\n  elsif p_command='model_attempt' then\n    if t.knowledge_state<>'RUNNING' or t.knowledge_model_attempts>=t.knowledge_max_models then return null; end if;\n    update public.odin_tasks set knowledge_model_attempts=knowledge_model_attempts+1,task_revision=task_revision+1 where id=t.id returning * into t;\n  elsif p_command='checkpoint' then\n    stage:=array_position(array['planning','retrieval','extraction'],p_args->>'checkpoint');\n    previous_stage:=coalesce(array_position(array['planning','retrieval','extraction'],t.knowledge_checkpoint),0);\n    if stage is null then raise exception 'knowledge_invalid_checkpoint'; end if;\n    if t.knowledge_state<>'RUNNING' or stage<=previous_stage then return null; end if;\n    update public.odin_tasks set knowledge_checkpoint=p_args->>'checkpoint',task_revision=task_revision+1 where id=t.id returning * into t;\n  elsif p_command='verified' then\n    result:=p_args->'result';\n    if t.knowledge_state<>'RUNNING' or result->>'protocol' is distinct from 'evidence-first-v2' or\n       result->'independentlyVerified' is distinct from 'true'::jsonb or result->'completeRequiredFacts' is distinct from 'true'::jsonb or\n       jsonb_typeof(result->'sources') is distinct from 'array' or jsonb_typeof(result->'text') is distinct from 'string' or\n       length(coalesce(result->>'text','')) not between 1 and 6000 or octet_length(result::text)>40000 then raise exception 'knowledge_unverified_result'; end if;\n    if (result-array['protocol','independentlyVerified','completeRequiredFacts','text','sources'])<>'{}'::jsonb then raise exception 'knowledge_result_fields'; end if;\n    if jsonb_array_length(result->'sources') not between 1 and 10 or\n      (select count(*)<>count(distinct s->>'id') from jsonb_array_elements(result->'sources') s) or exists(select 1 from jsonb_array_elements(result->'sources') s\n      where (s-array['id','revision'])<>'{}'::jsonb or coalesce(s->>'id','') !~ '^[A-Za-z0-9:_-]{1,160}$' or coalesce(s->>'revision','') !~ '^[A-Za-z0-9:_-]{1,160}$') then raise exception 'knowledge_source_bounds'; end if;\n    update public.odin_tasks set knowledge_result=result,knowledge_result_digest=encode(sha256(convert_to(\n      (result->>'protocol')||E'\\n'||octet_length(convert_to(result->>'text','UTF8'))::text||':'||(result->>'text')||E'\\n'||\n      jsonb_array_length(result->'sources')::text||E'\\n'||\n      (select string_agg(length(s->>'id')::text||':'||(s->>'id')||length(s->>'revision')::text||':'||(s->>'revision'),E'\\n' order by ord)\n        from jsonb_array_elements(result->'sources') with ordinality as sources(s,ord)), 'UTF8')),'hex'),\n      knowledge_state='VERIFIED',task_revision=task_revision+1 where id=t.id returning * into t;\n  elsif p_command='fail' then\n    update public.odin_tasks set knowledge_state='FAILED',knowledge_owner=null,knowledge_lease_until=null,task_revision=task_revision+1 where id=t.id returning * into t;\n  elsif p_command in ('finalize','progress','claim_delivery','settle_delivery') then\n    valid_authority:=coalesce(receipt->'allowed'='true'::jsonb and receipt->>'taskId'=t.id::text\n      and receipt->>'turnId'=t.knowledge_turn_id::text and (receipt->>'sequence')::bigint=c.knowledge_sequence\n      and (receipt->>'businessId')::bigint=p_business and receipt->>'channel'=p_channel and receipt->>'account'=p_account\n      and receipt->>'conversationId'=p_conversation::text\n      and receipt->>'phase'=case when p_command='finalize' then 'finalize' else 'send' end\n      and (receipt->>'checkedAt')::timestamptz between n-interval '1 second' and n\n      and (receipt->>'resultDigest') is not distinct from t.knowledge_result_digest,false);\n    if p_command='finalize' then\n      if t.knowledge_state<>'VERIFIED' or t.knowledge_result is null or not valid_authority then return null; end if;\n      kind:='final'; body:=t.knowledge_result->>'text';\n    elsif p_command='progress' then\n      if t.knowledge_state not in ('ACCEPTED','RUNNING','VERIFIED') then return null; end if;\n      kind:='progress'; body:=p_args->>'text';\n      if body is null or length(body) not between 1 and 240 then raise exception 'knowledge_progress_bounds'; end if;\n    end if;\n    if p_command in ('finalize','progress') then\n      key:='knowledge:v1:'||t.knowledge_turn_id::text||':'||kind;\n      -- Separate progress/final keys; caller cannot select another recipient.\n      -- Recipient key is a scoped conversation reference, resolved by the future\n      -- transport bridge. Never pass this directly as a provider recipient ID.\n      insert into public.odin_outbox(business_id,conversation_id,schema_version,channel,recipient_key,delivery_key,artifact,status,attempt_count,\n        knowledge_task_id,knowledge_kind,knowledge_state)\n      values(p_business,p_conversation,1,p_channel,c.conversation_key,key,\n        jsonb_build_object('text',body,'requiresLiveAuthorization',true),'pending',0,t.id,kind,'PENDING')\n      on conflict (business_id,knowledge_task_id,knowledge_kind) where knowledge_task_id is not null do nothing;\n      select * into d from public.odin_outbox where business_id=p_business and knowledge_task_id=t.id and knowledge_kind=kind;\n      if p_command='finalize' then\n        if clock_timestamp()>=t.knowledge_expires_at or clock_timestamp()>=t.knowledge_lease_until\n          or (receipt->>'checkedAt')::timestamptz<clock_timestamp()-interval '1 second' then\n          raise exception 'knowledge_authority_expired_during_commit'; end if;\n        update public.odin_tasks set knowledge_state='FINALIZED',knowledge_owner=null,knowledge_lease_until=null,task_revision=task_revision+1 where id=t.id;\n        update public.odin_outbox set knowledge_state='SUPERSEDED' where knowledge_task_id=t.id and knowledge_kind='progress' and knowledge_state in ('PENDING','FAILED');\n      end if;\n      return to_jsonb(d);\n    end if;\n    select * into d from public.odin_outbox where id=(p_args->>'deliveryId')::uuid and business_id=p_business and knowledge_task_id=t.id for update;\n    if not found then return null; end if;\n    if p_command='claim_delivery' then\n      if d.knowledge_state not in ('PENDING','FAILED') or d.attempt_count>=d.knowledge_max_attempts or not valid_authority\n        or t.knowledge_state in ('FAILED','EXPIRED','SUPERSEDED') or (d.knowledge_kind='final' and t.knowledge_state<>'FINALIZED') then return null; end if;\n      update public.odin_outbox set knowledge_state='SENDING',knowledge_fence=knowledge_fence+1,knowledge_owner=owner_id,\n        knowledge_lease_until=least(n+lease_ms*interval '1 millisecond',t.knowledge_expires_at),attempt_count=attempt_count+1,last_attempt_at=n where id=d.id returning * into d;\n    else\n      if d.knowledge_state<>'SENDING' or d.knowledge_owner is distinct from owner_id or d.knowledge_fence is distinct from (p_args->>'fence')::bigint\n        or d.knowledge_lease_until is null or d.knowledge_lease_until<=n then return null; end if;\n      if p_args->>'outcome' not in ('API_ACCEPTED','DEFINITIVELY_UNSENT','AMBIGUOUS') or p_args->>'outcome' is null then raise exception 'knowledge_invalid_delivery_outcome'; end if;\n      if p_args->>'outcome'='API_ACCEPTED' and (length(coalesce(p_args->>'providerMessageId','')) not between 1 and 256 or coalesce(p_args->>'providerMessageId','') !~ '^[A-Za-z0-9:_.=+/-]+$') then raise exception 'knowledge_provider_id'; end if;\n      if p_args->>'outcome'='DEFINITIVELY_UNSENT' and jsonb_typeof(p_args->'retryable') is distinct from 'boolean' then raise exception 'knowledge_retry_outcome'; end if;\n      update public.odin_outbox set knowledge_state=case p_args->>'outcome' when 'API_ACCEPTED' then 'SENT' when 'AMBIGUOUS' then 'UNCERTAIN' else 'FAILED' end,\n        knowledge_max_attempts=case when p_args->>'outcome'='DEFINITIVELY_UNSENT' and p_args->'retryable'='false'::jsonb then attempt_count else knowledge_max_attempts end,\n        provider_message_id=case when p_args->>'outcome'='API_ACCEPTED' then p_args->>'providerMessageId' else provider_message_id end,\n        knowledge_owner=null,knowledge_lease_until=null where id=d.id returning * into d;\n    end if;\n    if p_command='claim_delivery' and (clock_timestamp()>=d.knowledge_lease_until\n      or (receipt->>'checkedAt')::timestamptz<clock_timestamp()-interval '1 second') then\n      raise exception 'knowledge_delivery_authority_expired_during_claim'; end if;\n    return to_jsonb(d);\n  else raise exception 'knowledge_unknown_transition';\n  end if;\n  return to_jsonb(t);\nend ",
+      "name": "odin_transition_knowledge_v1",
+      "owner": "postgres",
+      "definer": false,
+      "signature": "p_business bigint, p_conversation uuid, p_task uuid, p_channel text, p_account text, p_command text, p_args jsonb",
+      "definition": "CREATE OR REPLACE FUNCTION public.odin_transition_knowledge_v1(p_business bigint, p_conversation uuid, p_task uuid, p_channel text, p_account text, p_command text, p_args jsonb DEFAULT '{}'::jsonb)\n RETURNS jsonb\n LANGUAGE plpgsql\n SET search_path TO 'pg_catalog', 'public'\nAS $function$\ndeclare c public.odin_conversations%rowtype; t public.odin_tasks%rowtype;\n  d public.odin_outbox%rowtype; n timestamptz; receipt jsonb:=p_args->'authority';\n  owner_id text:=p_args->>'owner'; lease_ms integer; stage integer; previous_stage integer;\n  body text; kind text; valid_authority boolean; result jsonb; key text;\nbegin\n  select * into c from public.odin_conversations where business_id=p_business and id=p_conversation for update;\n  if not found then return null; end if;\n  select * into t from public.odin_tasks where business_id=p_business and conversation_id=p_conversation and id=p_task\n    and knowledge_channel=p_channel and knowledge_account=p_account and task_type='knowledge_async_v1'\n    and knowledge_turn_id is not null for update;\n  if not found then return null; end if;\n  n:=clock_timestamp();\n  if c.knowledge_channel is distinct from p_channel or c.knowledge_account is distinct from p_account then return null; end if;\n  if t.knowledge_sequence<>c.knowledge_sequence then\n    update public.odin_tasks set knowledge_state='SUPERSEDED',knowledge_owner=null,knowledge_lease_until=null where id=t.id and knowledge_state not in ('FAILED','EXPIRED','SUPERSEDED');\n    update public.odin_outbox set knowledge_state='SUPERSEDED' where knowledge_task_id=t.id and knowledge_state in ('PENDING','FAILED');\n    -- An in-flight send cannot be recalled. Preserve it for factual settlement;\n    -- expired sending leases become uncertain below/on the next recovery scan.\n    if p_command<>'settle_delivery' then\n      update public.odin_outbox set knowledge_state='UNCERTAIN',knowledge_owner=null,knowledge_lease_until=null\n        where knowledge_task_id=t.id and knowledge_state='SENDING' and knowledge_lease_until<=n;\n      return null; end if;\n  end if;\n  update public.odin_outbox set knowledge_state='UNCERTAIN',knowledge_owner=null,knowledge_lease_until=null\n    where knowledge_task_id=t.id and knowledge_state='SENDING' and knowledge_lease_until<=n;\n  if t.knowledge_expires_at<=n then\n    update public.odin_tasks set knowledge_state='EXPIRED',knowledge_owner=null,knowledge_lease_until=null\n      where id=t.id and knowledge_state in ('ACCEPTED','RUNNING','VERIFIED');\n    update public.odin_outbox set knowledge_state='EXPIRED' where knowledge_task_id=t.id and knowledge_state in ('PENDING','FAILED');\n    return null;\n  end if;\n  if p_command='recover' then return to_jsonb(t); end if;\n  if p_command in ('claim','renew','claim_delivery') then\n    lease_ms:=(p_args->>'leaseMs')::integer;\n    if owner_id is null or owner_id !~ '^[A-Za-z0-9:_-]{1,160}$' or lease_ms is null or lease_ms not between 1 and 30000 then\n      raise exception 'knowledge_invalid_lease'; end if;\n  end if;\n  if p_command='claim' then\n    if t.knowledge_state not in ('ACCEPTED','RUNNING','VERIFIED') or t.knowledge_lease_until>n then return null; end if;\n    if t.knowledge_run_attempts>=t.knowledge_max_runs then\n      update public.odin_tasks set knowledge_state='FAILED',knowledge_owner=null,knowledge_lease_until=null where id=t.id; return null; end if;\n    update public.odin_tasks set knowledge_state=case when knowledge_state='VERIFIED' then 'VERIFIED' else 'RUNNING' end,\n      knowledge_fence=knowledge_fence+1,knowledge_owner=owner_id,knowledge_lease_until=least(n+lease_ms*interval '1 millisecond',knowledge_expires_at),\n      knowledge_run_attempts=knowledge_run_attempts+1,task_revision=task_revision+1 where id=t.id returning * into t;\n    return to_jsonb(t);\n  end if;\n  if p_command in ('renew','model_attempt','checkpoint','verified','fail','finalize') then\n    if t.knowledge_state not in ('RUNNING','VERIFIED') or t.knowledge_owner is distinct from owner_id or\n       t.knowledge_fence is distinct from (p_args->>'fence')::bigint or t.knowledge_lease_until is null or t.knowledge_lease_until<=n then return null; end if;\n  end if;\n  if p_command='renew' then\n    update public.odin_tasks set knowledge_lease_until=least(n+lease_ms*interval '1 millisecond',knowledge_expires_at),task_revision=task_revision+1 where id=t.id returning * into t;\n  elsif p_command='model_attempt' then\n    if t.knowledge_state<>'RUNNING' or t.knowledge_model_attempts>=t.knowledge_max_models then return null; end if;\n    update public.odin_tasks set knowledge_model_attempts=knowledge_model_attempts+1,task_revision=task_revision+1 where id=t.id returning * into t;\n  elsif p_command='checkpoint' then\n    stage:=array_position(array['planning','retrieval','extraction'],p_args->>'checkpoint');\n    previous_stage:=coalesce(array_position(array['planning','retrieval','extraction'],t.knowledge_checkpoint),0);\n    if stage is null then raise exception 'knowledge_invalid_checkpoint'; end if;\n    if t.knowledge_state<>'RUNNING' or stage<=previous_stage then return null; end if;\n    update public.odin_tasks set knowledge_checkpoint=p_args->>'checkpoint',task_revision=task_revision+1 where id=t.id returning * into t;\n  elsif p_command='verified' then\n    result:=p_args->'result';\n    if t.knowledge_state<>'RUNNING' or result->>'protocol' is distinct from 'evidence-first-v2' or\n       result->'independentlyVerified' is distinct from 'true'::jsonb or result->'completeRequiredFacts' is distinct from 'true'::jsonb or\n       jsonb_typeof(result->'sources') is distinct from 'array' or jsonb_typeof(result->'text') is distinct from 'string' or\n       length(coalesce(result->>'text','')) not between 1 and 6000 or octet_length(result::text)>40000 then raise exception 'knowledge_unverified_result'; end if;\n    if (result-array['protocol','independentlyVerified','completeRequiredFacts','text','sources'])<>'{}'::jsonb then raise exception 'knowledge_result_fields'; end if;\n    if jsonb_array_length(result->'sources') not between 1 and 10 or\n      (select count(*)<>count(distinct s->>'id') from jsonb_array_elements(result->'sources') s) or exists(select 1 from jsonb_array_elements(result->'sources') s\n      where (s-array['id','revision'])<>'{}'::jsonb or coalesce(s->>'id','') !~ '^[A-Za-z0-9:_-]{1,160}$' or coalesce(s->>'revision','') !~ '^[A-Za-z0-9:_-]{1,160}$') then raise exception 'knowledge_source_bounds'; end if;\n    update public.odin_tasks set knowledge_result=result,knowledge_result_digest=encode(sha256(convert_to(\n      (result->>'protocol')||E'\\n'||octet_length(convert_to(result->>'text','UTF8'))::text||':'||(result->>'text')||E'\\n'||\n      jsonb_array_length(result->'sources')::text||E'\\n'||\n      (select string_agg(length(s->>'id')::text||':'||(s->>'id')||length(s->>'revision')::text||':'||(s->>'revision'),E'\\n' order by ord)\n        from jsonb_array_elements(result->'sources') with ordinality as sources(s,ord)), 'UTF8')),'hex'),\n      knowledge_state='VERIFIED',task_revision=task_revision+1 where id=t.id returning * into t;\n  elsif p_command='fail' then\n    update public.odin_tasks set knowledge_state='FAILED',knowledge_owner=null,knowledge_lease_until=null,task_revision=task_revision+1 where id=t.id returning * into t;\n  elsif p_command in ('finalize','progress','claim_delivery','settle_delivery') then\n    valid_authority:=coalesce(receipt->'allowed'='true'::jsonb and receipt->>'taskId'=t.id::text\n      and receipt->>'turnId'=t.knowledge_turn_id::text and (receipt->>'sequence')::bigint=c.knowledge_sequence\n      and (receipt->>'businessId')::bigint=p_business and receipt->>'channel'=p_channel and receipt->>'account'=p_account\n      and receipt->>'conversationId'=p_conversation::text\n      and receipt->>'phase'=case when p_command='finalize' then 'finalize' else 'send' end\n      and (receipt->>'checkedAt')::timestamptz between n-interval '1 second' and n\n      and (receipt->>'resultDigest') is not distinct from t.knowledge_result_digest,false);\n    if p_command='finalize' then\n      if t.knowledge_state<>'VERIFIED' or t.knowledge_result is null or not valid_authority then return null; end if;\n      kind:='final'; body:=t.knowledge_result->>'text';\n    elsif p_command='progress' then\n      if t.knowledge_state not in ('ACCEPTED','RUNNING','VERIFIED') then return null; end if;\n      kind:='progress'; body:=p_args->>'text';\n      if body is null or length(body) not between 1 and 240 then raise exception 'knowledge_progress_bounds'; end if;\n    end if;\n    if p_command in ('finalize','progress') then\n      key:='knowledge:v1:'||t.knowledge_turn_id::text||':'||kind;\n      -- Separate progress/final keys; caller cannot select another recipient.\n      -- Recipient key is a scoped conversation reference, resolved by the future\n      -- transport bridge. Never pass this directly as a provider recipient ID.\n      insert into public.odin_outbox(business_id,conversation_id,schema_version,channel,recipient_key,delivery_key,artifact,status,attempt_count,\n        knowledge_task_id,knowledge_kind,knowledge_state)\n      values(p_business,p_conversation,1,p_channel,c.conversation_key,key,\n        jsonb_build_object('text',body,'requiresLiveAuthorization',true),'pending',0,t.id,kind,'PENDING')\n      on conflict (business_id,knowledge_task_id,knowledge_kind) where knowledge_task_id is not null do nothing;\n      select * into d from public.odin_outbox where business_id=p_business and knowledge_task_id=t.id and knowledge_kind=kind;\n      if p_command='finalize' then\n        if clock_timestamp()>=t.knowledge_expires_at or clock_timestamp()>=t.knowledge_lease_until\n          or (receipt->>'checkedAt')::timestamptz<clock_timestamp()-interval '1 second' then\n          raise exception 'knowledge_authority_expired_during_commit'; end if;\n        update public.odin_tasks set knowledge_state='FINALIZED',knowledge_owner=null,knowledge_lease_until=null,task_revision=task_revision+1 where id=t.id;\n        update public.odin_outbox set knowledge_state='SUPERSEDED' where knowledge_task_id=t.id and knowledge_kind='progress' and knowledge_state in ('PENDING','FAILED');\n      end if;\n      return to_jsonb(d);\n    end if;\n    select * into d from public.odin_outbox where id=(p_args->>'deliveryId')::uuid and business_id=p_business and knowledge_task_id=t.id for update;\n    if not found then return null; end if;\n    if p_command='claim_delivery' then\n      if d.knowledge_state not in ('PENDING','FAILED') or d.attempt_count>=d.knowledge_max_attempts or not valid_authority\n        or t.knowledge_state in ('FAILED','EXPIRED','SUPERSEDED') or (d.knowledge_kind='final' and t.knowledge_state<>'FINALIZED') then return null; end if;\n      update public.odin_outbox set knowledge_state='SENDING',knowledge_fence=knowledge_fence+1,knowledge_owner=owner_id,\n        knowledge_lease_until=least(n+lease_ms*interval '1 millisecond',t.knowledge_expires_at),attempt_count=attempt_count+1,last_attempt_at=n where id=d.id returning * into d;\n    else\n      if d.knowledge_state<>'SENDING' or d.knowledge_owner is distinct from owner_id or d.knowledge_fence is distinct from (p_args->>'fence')::bigint\n        or d.knowledge_lease_until is null or d.knowledge_lease_until<=n then return null; end if;\n      if p_args->>'outcome' not in ('API_ACCEPTED','DEFINITIVELY_UNSENT','AMBIGUOUS') or p_args->>'outcome' is null then raise exception 'knowledge_invalid_delivery_outcome'; end if;\n      if p_args->>'outcome'='API_ACCEPTED' and (length(coalesce(p_args->>'providerMessageId','')) not between 1 and 256 or coalesce(p_args->>'providerMessageId','') !~ '^[A-Za-z0-9:_.=+/-]+$') then raise exception 'knowledge_provider_id'; end if;\n      if p_args->>'outcome'='DEFINITIVELY_UNSENT' and jsonb_typeof(p_args->'retryable') is distinct from 'boolean' then raise exception 'knowledge_retry_outcome'; end if;\n      update public.odin_outbox set knowledge_state=case p_args->>'outcome' when 'API_ACCEPTED' then 'SENT' when 'AMBIGUOUS' then 'UNCERTAIN' else 'FAILED' end,\n        knowledge_max_attempts=case when p_args->>'outcome'='DEFINITIVELY_UNSENT' and p_args->'retryable'='false'::jsonb then attempt_count else knowledge_max_attempts end,\n        provider_message_id=case when p_args->>'outcome'='API_ACCEPTED' then p_args->>'providerMessageId' else provider_message_id end,\n        knowledge_owner=null,knowledge_lease_until=null where id=d.id returning * into d;\n    end if;\n    if p_command='claim_delivery' and (clock_timestamp()>=d.knowledge_lease_until\n      or (receipt->>'checkedAt')::timestamptz<clock_timestamp()-interval '1 second') then\n      raise exception 'knowledge_delivery_authority_expired_during_claim'; end if;\n    return to_jsonb(d);\n  else raise exception 'knowledge_unknown_transition';\n  end if;\n  return to_jsonb(t);\nend $function$\n",
+      "service_role": true,
+      "authenticated": false
+    }
+  ],
+  "net_queue": null,
+  "constraints": [
+    {
+      "name": "businesses_ai_tone_config_shape",
+      "table": "businesses",
+      "valid": true,
+      "definition": "CHECK (((jsonb_typeof(ai_tone_config) = 'object'::text) AND (ai_tone_config ?& ARRAY['tonePreset'::text, 'responseLength'::text, 'emojiUsage'::text, 'formality'::text, 'customToneInstructions'::text]) AND (jsonb_typeof((ai_tone_config -> 'tonePreset'::text)) = 'string'::text) AND ((ai_tone_config ->> 'tonePreset'::text) = ANY (ARRAY['professional'::text, 'friendly'::text, 'warm'::text, 'casual'::text, 'concise'::text, 'custom'::text])) AND (jsonb_typeof((ai_tone_config -> 'responseLength'::text)) = 'string'::text) AND ((ai_tone_config ->> 'responseLength'::text) = ANY (ARRAY['short'::text, 'balanced'::text, 'detailed'::text])) AND (jsonb_typeof((ai_tone_config -> 'emojiUsage'::text)) = 'string'::text) AND ((ai_tone_config ->> 'emojiUsage'::text) = ANY (ARRAY['none'::text, 'light'::text, 'expressive'::text])) AND (jsonb_typeof((ai_tone_config -> 'formality'::text)) = 'string'::text) AND ((ai_tone_config ->> 'formality'::text) = ANY (ARRAY['formal'::text, 'balanced'::text, 'casual'::text])) AND (jsonb_typeof((ai_tone_config -> 'customToneInstructions'::text)) = 'string'::text) AND (length((ai_tone_config ->> 'customToneInstructions'::text)) <= 500)))"
+    },
+    {
+      "name": "businesses_cancellation_deadline_nonnegative",
+      "table": "businesses",
+      "valid": true,
+      "definition": "CHECK ((cancellation_deadline_minutes >= 0))"
+    },
+    {
+      "name": "businesses_cancellation_fee_nonnegative",
+      "table": "businesses",
+      "valid": true,
+      "definition": "CHECK ((cancellation_fee_amount >= (0)::numeric))"
+    },
+    {
+      "name": "businesses_pkey",
+      "table": "businesses",
+      "valid": true,
+      "definition": "PRIMARY KEY (id)"
+    },
+    {
+      "name": "odin_conversations_aggregate_meta_check",
+      "table": "odin_conversations",
+      "valid": true,
+      "definition": "CHECK ((jsonb_typeof(aggregate_meta) = 'object'::text))"
+    },
+    {
+      "name": "odin_conversations_business_id_conversation_key_key",
+      "table": "odin_conversations",
+      "valid": true,
+      "definition": "UNIQUE (business_id, conversation_key)"
+    },
+    {
+      "name": "odin_conversations_business_id_fkey",
+      "table": "odin_conversations",
+      "valid": true,
+      "definition": "FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE"
+    },
+    {
+      "name": "odin_conversations_business_id_id_key",
+      "table": "odin_conversations",
+      "valid": true,
+      "definition": "UNIQUE (business_id, id)"
+    },
+    {
+      "name": "odin_conversations_conversation_key_check",
+      "table": "odin_conversations",
+      "valid": true,
+      "definition": "CHECK (((length(conversation_key) >= 1) AND (length(conversation_key) <= 1000)))"
+    },
+    {
+      "name": "odin_conversations_fence_epoch_check",
+      "table": "odin_conversations",
+      "valid": true,
+      "definition": "CHECK ((fence_epoch >= 0))"
+    },
+    {
+      "name": "odin_conversations_knowledge_sequence_check",
+      "table": "odin_conversations",
+      "valid": true,
+      "definition": "CHECK ((knowledge_sequence >= 0))"
+    },
+    {
+      "name": "odin_conversations_pkey",
+      "table": "odin_conversations",
+      "valid": true,
+      "definition": "PRIMARY KEY (id)"
+    },
+    {
+      "name": "odin_conversations_revision_check",
+      "table": "odin_conversations",
+      "valid": true,
+      "definition": "CHECK ((revision >= 0))"
+    },
+    {
+      "name": "odin_conversations_schema_version_check",
+      "table": "odin_conversations",
+      "valid": true,
+      "definition": "CHECK ((schema_version = 1))"
+    },
+    {
+      "name": "odin_inbox_business_id_channel_provider_scope_provider_even_key",
+      "table": "odin_inbox",
+      "valid": true,
+      "definition": "UNIQUE (business_id, channel, provider_scope, provider_event_id)"
+    },
+    {
+      "name": "odin_inbox_business_id_conversation_id_fkey",
+      "table": "odin_inbox",
+      "valid": true,
+      "definition": "FOREIGN KEY (business_id, conversation_id) REFERENCES odin_conversations(business_id, id) ON DELETE CASCADE"
+    },
+    {
+      "name": "odin_inbox_business_id_conversation_id_id_key",
+      "table": "odin_inbox",
+      "valid": true,
+      "definition": "UNIQUE (business_id, conversation_id, id)"
+    },
+    {
+      "name": "odin_inbox_business_id_fkey",
+      "table": "odin_inbox",
+      "valid": true,
+      "definition": "FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE"
+    },
+    {
+      "name": "odin_inbox_channel_check",
+      "table": "odin_inbox",
+      "valid": true,
+      "definition": "CHECK ((channel = ANY (ARRAY['whatsapp'::text, 'telegram'::text, 'instagram'::text, 'messenger'::text])))"
+    },
+    {
+      "name": "odin_inbox_payload_check",
+      "table": "odin_inbox",
+      "valid": true,
+      "definition": "CHECK ((jsonb_typeof(payload) = 'object'::text))"
+    },
+    {
+      "name": "odin_inbox_pkey",
+      "table": "odin_inbox",
+      "valid": true,
+      "definition": "PRIMARY KEY (id)"
+    },
+    {
+      "name": "odin_inbox_provider_event_id_check",
+      "table": "odin_inbox",
+      "valid": true,
+      "definition": "CHECK (((length(provider_event_id) >= 1) AND (length(provider_event_id) <= 256)))"
+    },
+    {
+      "name": "odin_inbox_provider_scope_check",
+      "table": "odin_inbox",
+      "valid": true,
+      "definition": "CHECK ((length(provider_scope) <= 160))"
+    },
+    {
+      "name": "odin_inbox_schema_version_check",
+      "table": "odin_inbox",
+      "valid": true,
+      "definition": "CHECK ((schema_version = 1))"
+    },
+    {
+      "name": "odin_inbox_status_check",
+      "table": "odin_inbox",
+      "valid": true,
+      "definition": "CHECK (((length(status) >= 1) AND (length(status) <= 40)))"
+    },
+    {
+      "name": "odin_inbox_turn_sequence_check",
+      "table": "odin_inbox",
+      "valid": true,
+      "definition": "CHECK ((turn_sequence >= 0))"
+    },
+    {
+      "name": "knowledge_notification_shape",
+      "table": "odin_outbox",
+      "valid": true,
+      "definition": "CHECK ((((knowledge_task_id IS NULL) AND (knowledge_kind IS NULL) AND (knowledge_state IS NULL)) OR ((knowledge_task_id IS NOT NULL) AND (conversation_id IS NOT NULL) AND (knowledge_kind IS NOT NULL) AND (knowledge_state IS NOT NULL))))"
+    },
+    {
+      "name": "knowledge_outbox_task_scope",
+      "table": "odin_outbox",
+      "valid": true,
+      "definition": "FOREIGN KEY (business_id, conversation_id, knowledge_task_id) REFERENCES odin_tasks(business_id, conversation_id, id) ON DELETE CASCADE"
+    },
+    {
+      "name": "odin_outbox_artifact_check",
+      "table": "odin_outbox",
+      "valid": true,
+      "definition": "CHECK ((jsonb_typeof(artifact) = 'object'::text))"
+    },
+    {
+      "name": "odin_outbox_attempt_count_check",
+      "table": "odin_outbox",
+      "valid": true,
+      "definition": "CHECK ((attempt_count >= 0))"
+    },
+    {
+      "name": "odin_outbox_business_id_conversation_id_fkey",
+      "table": "odin_outbox",
+      "valid": true,
+      "definition": "FOREIGN KEY (business_id, conversation_id) REFERENCES odin_conversations(business_id, id) ON DELETE CASCADE"
+    },
+    {
+      "name": "odin_outbox_business_id_delivery_key_key",
+      "table": "odin_outbox",
+      "valid": true,
+      "definition": "UNIQUE (business_id, delivery_key)"
+    },
+    {
+      "name": "odin_outbox_business_id_fkey",
+      "table": "odin_outbox",
+      "valid": true,
+      "definition": "FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE"
+    },
+    {
+      "name": "odin_outbox_channel_check",
+      "table": "odin_outbox",
+      "valid": true,
+      "definition": "CHECK ((channel = ANY (ARRAY['whatsapp'::text, 'telegram'::text, 'instagram'::text, 'messenger'::text])))"
+    },
+    {
+      "name": "odin_outbox_delivery_key_check",
+      "table": "odin_outbox",
+      "valid": true,
+      "definition": "CHECK (((length(delivery_key) >= 1) AND (length(delivery_key) <= 500)))"
+    },
+    {
+      "name": "odin_outbox_knowledge_kind_check",
+      "table": "odin_outbox",
+      "valid": true,
+      "definition": "CHECK ((knowledge_kind = ANY (ARRAY['final'::text, 'progress'::text])))"
+    },
+    {
+      "name": "odin_outbox_knowledge_max_attempts_check",
+      "table": "odin_outbox",
+      "valid": true,
+      "definition": "CHECK (((knowledge_max_attempts >= 1) AND (knowledge_max_attempts <= 3)))"
+    },
+    {
+      "name": "odin_outbox_knowledge_state_check",
+      "table": "odin_outbox",
+      "valid": true,
+      "definition": "CHECK ((knowledge_state = ANY (ARRAY['PENDING'::text, 'SENDING'::text, 'SENT'::text, 'FAILED'::text, 'EXPIRED'::text, 'SUPERSEDED'::text, 'UNCERTAIN'::text])))"
+    },
+    {
+      "name": "odin_outbox_pkey",
+      "table": "odin_outbox",
+      "valid": true,
+      "definition": "PRIMARY KEY (id)"
+    },
+    {
+      "name": "odin_outbox_recipient_key_check",
+      "table": "odin_outbox",
+      "valid": true,
+      "definition": "CHECK (((length(recipient_key) >= 1) AND (length(recipient_key) <= 1000)))"
+    },
+    {
+      "name": "odin_outbox_schema_version_check",
+      "table": "odin_outbox",
+      "valid": true,
+      "definition": "CHECK ((schema_version = 1))"
+    },
+    {
+      "name": "odin_outbox_status_check",
+      "table": "odin_outbox",
+      "valid": true,
+      "definition": "CHECK (((length(status) >= 1) AND (length(status) <= 40)))"
+    },
+    {
+      "name": "knowledge_task_bounds",
+      "table": "odin_tasks",
+      "valid": true,
+      "definition": "CHECK (((knowledge_turn_id IS NULL) OR COALESCE(((task_type = 'knowledge_async_v1'::text) AND (knowledge_inbox_id IS NOT NULL) AND (knowledge_channel = ANY (ARRAY['whatsapp'::text, 'telegram'::text, 'instagram'::text, 'messenger'::text])) AND (knowledge_account ~ '^[A-Za-z0-9:_-]{1,160}$'::text) AND (knowledge_sequence > 0) AND (knowledge_expires_at > knowledge_accepted_at) AND (knowledge_expires_at <= (knowledge_accepted_at + '00:02:00'::interval)) AND (knowledge_state = ANY (ARRAY['ACCEPTED'::text, 'RUNNING'::text, 'VERIFIED'::text, 'FINALIZED'::text, 'FAILED'::text, 'EXPIRED'::text, 'SUPERSEDED'::text])) AND ((knowledge_max_runs >= 1) AND (knowledge_max_runs <= 5)) AND ((knowledge_max_models >= 1) AND (knowledge_max_models <= 8)) AND ((knowledge_run_attempts >= 0) AND (knowledge_run_attempts <= knowledge_max_runs)) AND ((knowledge_model_attempts >= 0) AND (knowledge_model_attempts <= knowledge_max_models))), false)))"
+    },
+    {
+      "name": "knowledge_task_inbox_scope",
+      "table": "odin_tasks",
+      "valid": true,
+      "definition": "FOREIGN KEY (business_id, conversation_id, knowledge_inbox_id) REFERENCES odin_inbox(business_id, conversation_id, id) ON DELETE CASCADE"
+    },
+    {
+      "name": "odin_tasks_business_id_conversation_id_fkey",
+      "table": "odin_tasks",
+      "valid": true,
+      "definition": "FOREIGN KEY (business_id, conversation_id) REFERENCES odin_conversations(business_id, id) ON DELETE CASCADE"
+    },
+    {
+      "name": "odin_tasks_business_id_conversation_id_id_key",
+      "table": "odin_tasks",
+      "valid": true,
+      "definition": "UNIQUE (business_id, conversation_id, id)"
+    },
+    {
+      "name": "odin_tasks_business_id_fkey",
+      "table": "odin_tasks",
+      "valid": true,
+      "definition": "FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE"
+    },
+    {
+      "name": "odin_tasks_payload_check",
+      "table": "odin_tasks",
+      "valid": true,
+      "definition": "CHECK ((jsonb_typeof(payload) = 'object'::text))"
+    },
+    {
+      "name": "odin_tasks_pkey",
+      "table": "odin_tasks",
+      "valid": true,
+      "definition": "PRIMARY KEY (id)"
+    },
+    {
+      "name": "odin_tasks_schema_version_check",
+      "table": "odin_tasks",
+      "valid": true,
+      "definition": "CHECK ((schema_version = 1))"
+    },
+    {
+      "name": "odin_tasks_status_check",
+      "table": "odin_tasks",
+      "valid": true,
+      "definition": "CHECK (((length(status) >= 1) AND (length(status) <= 40)))"
+    },
+    {
+      "name": "odin_tasks_task_revision_check",
+      "table": "odin_tasks",
+      "valid": true,
+      "definition": "CHECK ((task_revision >= 0))"
+    },
+    {
+      "name": "odin_tasks_task_type_check",
+      "table": "odin_tasks",
+      "valid": true,
+      "definition": "CHECK (((length(task_type) >= 1) AND (length(task_type) <= 80)))"
+    }
+  ]
+}

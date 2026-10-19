@@ -488,6 +488,13 @@ function documentRevision(source: KnowledgeSource): string {
   ])).digest("hex");
 }
 
+/** Same source-wide revision used by strict foreground validation. */
+export function knowledgeSourceRevision(source: KnowledgeSource): string {
+  return source.type === 'document' ? documentRevision(source) :
+    crypto.createHash('sha256').update(JSON.stringify([source.id, source.businessId, source.type, source.status,
+      source.title, source.content, source.updatedAt, source.metadata])).digest('hex');
+}
+
 export class KnowledgeService {
   private storage: KnowledgeStorage;
   private initialized = false;
@@ -832,7 +839,7 @@ export class KnowledgeService {
         if(!source)return reject(sources.some(s=>s.id===match.sourceId&&s.businessId===businessId)?'SOURCE_NOT_READY':'SOURCE_MISSING_OR_UNAUTHORIZED');
         if (source.type !== "document") {
           if (!options.strictSources) return [match];
-          const revision = crypto.createHash('sha256').update(JSON.stringify([source.id, source.businessId, source.type, source.status, source.title, source.content, source.updatedAt, source.metadata])).digest('hex');
+          const revision = knowledgeSourceRevision(source);
           if (!chunkKnowledgeContent(source.content).some(chunk => chunk.content === String(match.text || '').trim())) return reject('SOURCE_CHUNK');
           if (match.metadata?.sourceRevision !== revision && (!options.captureRevision || match.metadata?.sourceRevision)) return reject('SOURCE_REVISION');
           return [{ ...match, metadata: { ...match.metadata, sourceRevision: revision } }];

@@ -1,3 +1,4 @@
+import { preflightRejected } from './knowledge-preflight-diagnostic';
 import { SmartWaitingCoordinator, smartWaitingControls, type WaitingControls, type WaitingSchedule, type WaitingHandle } from './smart-waiting';
 import { NativeKnowledgeProgressAuthority } from './knowledge-progress-authority';
 import { randomUUID } from 'node:crypto';
@@ -48,7 +49,7 @@ export class NativeKnowledgeRuntime {
     this.waiting=new SmartWaitingCoordinator({controls:waitingControls,authority:progress,schedule:options.waitingSchedule,
       send:(target,text,signal)=>sendNativeKnowledge(target.connection,target.recipient,text,signal,fetcher),diagnostic:event=>this.event(event)});
     this.runner=new KnowledgeRunner(this.repository,async(task,context)=>{
-      if(!await nativeProviderEligible(this.bindings,task,fetcher,context.signal))return null;
+      if(!await nativeProviderEligible(this.bindings,task,fetcher,context.signal,undefined,reason=>preflightRejected(task.turnId,task.scope.channel,'provider',reason)))return null;
       let waiting:WaitingHandle={progress:()=>{},stop:()=>{}};
       try{waiting=this.waiting.begin(task,context.signal);}catch{this.event({stage:'waiting_setup_failed',turnId:task.turnId,channel:task.scope.channel});}
       try{return await options.execute(task,{...context,progress:(stage,labels)=>waiting.progress(stage,labels)},async()=>Boolean(await this.bindings.resolve(task.scope)) && await knowledgeTurnCurrent(db,task,provider));}

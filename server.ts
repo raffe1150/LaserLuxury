@@ -1,3 +1,4 @@
+import { preflightRejected } from './src/p2/knowledge-preflight-diagnostic';
 import { NativeKnowledgeRuntime, nativeAsyncControls, type NativeKnowledgeAdmission } from './src/p2/native-knowledge-runtime';
 import { nativeKnowledgeOrder, type NativeKnowledgeOrder } from './src/p2/native-knowledge-order';
 import { bindBusinessInformationTurnId } from './src/ai/business-information-timing';
@@ -5532,8 +5533,13 @@ export async function executeDurableKnowledgeTask(task: KnowledgeTask,
   context: Parameters<KnowledgeExecutor>[1], businessConfig: any,
   current: () => Promise<boolean>): Promise<VerifiedKnowledge | null> {
   const question = task.input.question.trim();
-  if (Number(getBusinessIdFromConfig(businessConfig)) !== task.scope.businessId ||
-      !evidenceFirstEligible(question) || context.signal.aborted || !await current()) return null;
+  const reject = (reason: 'BUSINESS_SCOPE' | 'EVIDENCE_FIRST_ROUTE' | 'CANCELLED' | 'TURN_CONTEXT') => {
+    preflightRejected(task.turnId, task.scope.channel, 'execution_entry', reason); return null;
+  };
+  if (Number(getBusinessIdFromConfig(businessConfig)) !== task.scope.businessId) return reject('BUSINESS_SCOPE');
+  if (!evidenceFirstEligible(question)) return reject('EVIDENCE_FIRST_ROUTE');
+  if (context.signal.aborted) return reject('CANCELLED');
+  if (!await current()) return reject('TURN_CONTEXT');
   const sessionId = `durable-knowledge:${task.turnId}:${task.fence}`;
   const budget = new DurableKnowledgeBudget(task, context.signal, context.reserveModelAttempt);
   const naturalEnabled = process.env.ODINLINK_GROUNDED_NATURAL_RESPONSES === 'true';

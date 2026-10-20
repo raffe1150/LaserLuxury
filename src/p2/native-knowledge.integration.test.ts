@@ -21,9 +21,9 @@ const config={id:77,businessId:77,businessName:'Synthetic studio',language:'en',
 const secret='synthetic-p2-native-secret-at-least-32-bytes';
 
 test('real four native entries → ordered PostgreSQL admission → real Knowledge executor → guarded fake provider',async t=>{
-  const pg=new DisposableNativeKnowledgeDatabase();t.after(()=>pg.close());const oldFetch=globalThis.fetch;const oldFlags=[process.env.ODINLINK_EVIDENCE_FIRST_KNOWLEDGE,process.env.ODINLINK_GROUNDED_NATURAL_RESPONSES,process.env.META_APP_ID];
-  t.after(()=>{globalThis.fetch=oldFetch;['ODINLINK_EVIDENCE_FIRST_KNOWLEDGE','ODINLINK_GROUNDED_NATURAL_RESPONSES','META_APP_ID'].forEach((k,i)=>{if(oldFlags[i]===undefined)delete process.env[k];else process.env[k]=oldFlags[i];});b.reset();});
-  process.env.ODINLINK_EVIDENCE_FIRST_KNOWLEDGE='true';process.env.ODINLINK_GROUNDED_NATURAL_RESPONSES='false';process.env.META_APP_ID='789';
+  const pg=new DisposableNativeKnowledgeDatabase();t.after(()=>pg.close());const oldFetch=globalThis.fetch;const oldFlags=[process.env.ODINLINK_EVIDENCE_FIRST_KNOWLEDGE,process.env.ODINLINK_GROUNDED_NATURAL_RESPONSES,process.env.META_APP_ID,process.env.META_WHATSAPP_APP_ID];
+  t.after(()=>{globalThis.fetch=oldFetch;['ODINLINK_EVIDENCE_FIRST_KNOWLEDGE','ODINLINK_GROUNDED_NATURAL_RESPONSES','META_APP_ID','META_WHATSAPP_APP_ID'].forEach((k,i)=>{if(oldFlags[i]===undefined)delete process.env[k];else process.env[k]=oldFlags[i];});b.reset();});
+  process.env.ODINLINK_EVIDENCE_FIRST_KNOWLEDGE='true';process.env.ODINLINK_GROUNDED_NATURAL_RESPONSES='false';process.env.META_APP_ID='789';process.env.META_WHATSAPP_APP_ID='789';
   for(const level of ['log','warn','error','info'] as const)t.mock.method(console,level,()=>{});
   let language='en',fact='Parking is nearby.',serial=10000;let controls:NativeAsyncControls={admission:true,processing:true,delivery:true,executionMs:40000};
   let source:KnowledgeSource;let stages:string[]=[];let posts:{channel:string;recipient:string;text:string}[]=[];let diagnostic:any[]=[];

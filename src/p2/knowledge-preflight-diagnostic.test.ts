@@ -26,14 +26,14 @@ const mutations:Record<string,(f:ReturnType<typeof fixture>)=>void>={
   TELEGRAM_CONNECTION_MODE:f=>{f.connection.providerConnectionId='business';},TELEGRAM_BOT_IDENTITY:f=>{f.responses.me={};},
   TELEGRAM_PRIVATE_CHAT:f=>{f.responses.getChat.result.type='group';},TELEGRAM_MEMBERSHIP:f=>{f.responses.getChatMember.result.status='left';},
   RESPONSE_WINDOW:f=>f.time(Date.now()-86400100),WHATSAPP_CONNECTION_OR_SCOPE:f=>{f.connection.grantedScopes=[];},
-  WHATSAPP_APP_CONFIGURATION:()=>{process.env.META_APP_ID='';},WHATSAPP_TOKEN_APP:f=>{f.data.app_id='different';},
+  WHATSAPP_APP_CONFIGURATION:()=>{process.env.META_WHATSAPP_APP_ID='';},WHATSAPP_TOKEN_APP:f=>{f.data.app_id='different';},
   WHATSAPP_TOKEN_VALIDITY:f=>{f.data.is_valid=false;},WHATSAPP_TOKEN_SCOPE:f=>{f.data.scopes=[];},WHATSAPP_TOKEN_EXPIRY:f=>{f.data.expires_at=1;},
   WHATSAPP_GRANULAR_SCOPE:f=>{f.data.granular_scopes=[{scope:'whatsapp_business_messaging',target_ids:[]}];},
   WHATSAPP_PHONE_MEMBERSHIP:f=>{f.responses.phone_numbers.data=[];},WHATSAPP_PHONE_HEALTH_OR_WINDOW:f=>{f.responses.phone.health_status={};},
   META_SAVED_SCOPE:f=>{f.connection.grantedScopes=[];},META_IDENTITY:f=>{f.responses.me={};},META_CONVERSATION_OR_WINDOW:f=>{f.responses.conversations.data=[];},
 };
 for(const reason of providerRejections)test(`provider rejection ${reason}: false, single bounded reason, observer cannot affect requests`,async t=>{
-  const old=process.env.META_APP_ID;process.env.META_APP_ID='999';t.after(()=>{if(old===undefined)delete process.env.META_APP_ID;else process.env.META_APP_ID=old;});
+  const old=process.env.META_WHATSAPP_APP_ID;process.env.META_WHATSAPP_APP_ID='999';t.after(()=>{if(old===undefined)delete process.env.META_WHATSAPP_APP_ID;else process.env.META_WHATSAPP_APP_ID=old;});
   const channel=reason.startsWith('TELEGRAM')?'telegram':reason.startsWith('META_')?'messenger':'whatsapp';
   const f=fixture(channel);mutations[reason](f);const events:string[]=[];
   assert.equal(await f.run(r=>events.push(r)),false);assert.deepEqual(events,[reason]);const calls=f.calls();
@@ -41,10 +41,11 @@ for(const reason of providerRejections)test(`provider rejection ${reason}: false
   assert.equal(await f.run(()=>Promise.reject(Error('optional async observer'))),false);
 });
 for(const channel of ['whatsapp','telegram','instagram','messenger'])test(`${channel}: success has no rejection and identical provider request count`,async t=>{
-  const old=process.env.META_APP_ID;process.env.META_APP_ID='999';t.after(()=>{if(old===undefined)delete process.env.META_APP_ID;else process.env.META_APP_ID=old;});
+  const old=process.env.META_WHATSAPP_APP_ID;process.env.META_WHATSAPP_APP_ID='999';t.after(()=>{if(old===undefined)delete process.env.META_WHATSAPP_APP_ID;else process.env.META_WHATSAPP_APP_ID=old;});
   const f=fixture(channel);assert.equal(await f.run(()=>assert.fail('No rejection')),true);assert.equal(f.calls(),channel==='instagram'||channel==='messenger'?2:3);
 });
-test('provider exceptions preserve original identity rather than becoming false or telemetry',async()=>{
+test('provider exceptions preserve original identity rather than becoming false or telemetry',async t=>{
+  whatsappAppConfig(t,'999');
   const f=fixture();const error=Error('DO_NOT_LOG_PROVIDER_ERROR');
   const fetcher:typeof fetch=async()=>{throw error;};
   await assert.rejects(nativeProviderEligible(f.bindings,f.task,fetcher,new AbortController().signal,undefined,()=>{throw Error('telemetry');}),e=>e===error);
@@ -64,4 +65,35 @@ test('concurrent turns retain distinct correlations, same opaque process identit
   const other='aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';const events:any[]=[];
   await Promise.all([turnId,other].map(async id=>{await Promise.resolve();preflightRejected(id,'whatsapp','provider','EVENT_TIME',e=>events.push(e));}));
   assert.deepEqual(new Set(events.map(e=>e.turnId)),new Set([turnId,other]));assert.equal(events[0].instance,events[1].instance);assert.ok(events.every(e=>e.revision==='99b57d3'));
+});
+function whatsappAppConfig(t:import('node:test').TestContext,expected:string|undefined,shared='1803759420803693') {
+  const old={META_APP_ID:process.env.META_APP_ID,META_WHATSAPP_APP_ID:process.env.META_WHATSAPP_APP_ID};
+  process.env.META_APP_ID=shared;if(expected===undefined)delete process.env.META_WHATSAPP_APP_ID;else process.env.META_WHATSAPP_APP_ID=expected;
+  t.after(()=>{for(const [k,v] of Object.entries(old)){if(v===undefined)delete process.env[k];else process.env[k]=v;}});
+}
+test('verified WhatsApp app accepted independently of shared Meta OAuth app, without extra calls or logging IDs',async t=>{
+  whatsappAppConfig(t,'26871846599183572');const f=fixture();f.data.app_id='26871846599183572';
+  const messages:any[]=[];t.mock.method(console,'info',(...args)=>messages.push(args));
+  assert.equal(await f.run(reason=>preflightRejected(turnId,'whatsapp','provider',reason)),true);
+  assert.equal(f.calls(),3);assert.equal(messages.length,0);assert.equal(process.env.META_APP_ID,'1803759420803693');
+});
+for(const config of [undefined,'',' ','garbage','0','0123','26871846599183572 ','1'.repeat(33)])test(`WhatsApp config ${config===undefined?'missing':JSON.stringify(config)} fails closed before Meta; no shared-app fallback`,async t=>{
+  whatsappAppConfig(t,config,'999');const f=fixture();const reasons:any[]=[];
+  assert.equal(await f.run(r=>reasons.push(r)),false);assert.deepEqual(reasons,['WHATSAPP_APP_CONFIGURATION']);assert.equal(f.calls(),0);
+});
+for(const identity of ['1803759420803693','unknown',26871846599183572,null,undefined])test(`unexpected/malformed WhatsApp app type ${typeof identity} rejected without identity logging`,async t=>{
+  whatsappAppConfig(t,'26871846599183572');const f=fixture();f.data.app_id=identity;
+  const events:any[]=[];assert.equal(await f.run(reason=>preflightRejected(turnId,'whatsapp','provider',reason,e=>events.push(e))),false);
+  assert.equal(events.length,1);assert.equal(events[0].reason,'WHATSAPP_TOKEN_APP');assert.equal(f.calls(),1);
+  const log=JSON.stringify(events);for(const forbidden of ['26871846599183572','1803759420803693','DO_NOT_LOG_TOKEN','DO_NOT_LOG_CUSTOMER_TEXT','https://'])assert.ok(!log.includes(forbidden));
+});
+for(const [status,body] of [[400,{error:{code:190}}],[401,{}],[403,{}],[429,{}],[500,{}],[200,{error:{code:190}}],[200,{}],[200,'malformed']] as const)test(`WhatsApp unavailable/malformed introspection remains rejected (${status})`,async t=>{
+  whatsappAppConfig(t,'26871846599183572');const f=fixture();const reasons:any[]=[];let calls=0;
+  const fetcher:typeof fetch=async()=>{calls++;return new Response(typeof body==='string'?body:JSON.stringify(body),{status});};
+  assert.equal(await nativeProviderEligible(f.bindings,f.task,fetcher,new AbortController().signal,undefined,r=>reasons.push(r)),false);
+  assert.deepEqual(reasons,['WHATSAPP_TOKEN_APP']);assert.equal(calls,1);
+});
+for(const channel of ['instagram','messenger','telegram'])test(`${channel} does not require or consume WhatsApp-specific app configuration`,async t=>{
+  whatsappAppConfig(t,undefined,'1803759420803693');const f=fixture(channel);
+  assert.equal(await f.run(()=>assert.fail('Other channel behavior unchanged')),true);assert.equal(process.env.META_APP_ID,'1803759420803693');
 });

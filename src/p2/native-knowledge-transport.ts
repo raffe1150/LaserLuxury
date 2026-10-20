@@ -40,9 +40,12 @@ export async function nativeProviderEligible(bindings:NativeKnowledgeBindings,ta
   const url=(path:string,params:Record<string,string>={})=>{const u=new URL(`https://${host}/${VERSION}/${path}`);for(const[k,v]of Object.entries(params))u.searchParams.set(k,v);return u;};
   if(b.channel==='whatsapp'){
     if(!c.providerConnectionId || !c.grantedScopes.includes('whatsapp_business_messaging'))return reject('WHATSAPP_CONNECTION_OR_SCOPE');
+    // Trusted server configuration only; never infer an allowed app from a token.
+    // No fallback to the shared OAuth/webhook app identity.
+    const expectedApp=process.env.META_WHATSAPP_APP_ID||'';
+    if(!/^[1-9][0-9]{0,31}$/u.test(expectedApp))return reject('WHATSAPP_APP_CONFIGURATION');
     const debug=await jsonRead(fetcher,url('debug_token',{input_token:token}),token,signal);const d=debug?.data;
-    if(!/^[0-9]+$/u.test(process.env.META_APP_ID||''))return reject('WHATSAPP_APP_CONFIGURATION');
-    if(d?.app_id!==process.env.META_APP_ID)return reject('WHATSAPP_TOKEN_APP');
+    if(d?.app_id!==expectedApp)return reject('WHATSAPP_TOKEN_APP');
     if(d?.is_valid!==true)return reject('WHATSAPP_TOKEN_VALIDITY');
     if(!Array.isArray(d.scopes) || !d.scopes.includes('whatsapp_business_messaging'))return reject('WHATSAPP_TOKEN_SCOPE');
     if(['expires_at','data_access_expires_at'].some(k=>typeof d[k]!=='number' || d[k]!==0 && d[k]*1000<=Date.now()))return reject('WHATSAPP_TOKEN_EXPIRY');

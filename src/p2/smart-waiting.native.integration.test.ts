@@ -23,9 +23,9 @@ const config={id:77,businessId:77,businessName:'Synthetic studio',language:'en',
 const secret='synthetic-p2-native-secret-at-least-32-bytes';
 
 test('Smart Waiting through four actual native entries, PostgreSQL safety and independent verified publication',async t=>{
-  const pg=new DisposableNativeKnowledgeDatabase();t.after(()=>pg.close());const oldFetch=globalThis.fetch;const oldFlags=[process.env.ODINLINK_EVIDENCE_FIRST_KNOWLEDGE,process.env.ODINLINK_GROUNDED_NATURAL_RESPONSES,process.env.META_APP_ID];
-  t.after(()=>{globalThis.fetch=oldFetch;['ODINLINK_EVIDENCE_FIRST_KNOWLEDGE','ODINLINK_GROUNDED_NATURAL_RESPONSES','META_APP_ID'].forEach((k,i)=>{if(oldFlags[i]===undefined)delete process.env[k];else process.env[k]=oldFlags[i];});b.reset();});
-  process.env.ODINLINK_EVIDENCE_FIRST_KNOWLEDGE='true';process.env.ODINLINK_GROUNDED_NATURAL_RESPONSES='false';process.env.META_APP_ID='789';
+  const pg=new DisposableNativeKnowledgeDatabase();t.after(()=>pg.close());const oldFetch=globalThis.fetch;const oldFlags=[process.env.ODINLINK_EVIDENCE_FIRST_KNOWLEDGE,process.env.ODINLINK_GROUNDED_NATURAL_RESPONSES,process.env.META_APP_ID,process.env.META_WHATSAPP_APP_ID];
+  t.after(()=>{globalThis.fetch=oldFetch;['ODINLINK_EVIDENCE_FIRST_KNOWLEDGE','ODINLINK_GROUNDED_NATURAL_RESPONSES','META_APP_ID','META_WHATSAPP_APP_ID'].forEach((k,i)=>{if(oldFlags[i]===undefined)delete process.env[k];else process.env[k]=oldFlags[i];});b.reset();});
+  process.env.ODINLINK_EVIDENCE_FIRST_KNOWLEDGE='true';process.env.ODINLINK_GROUNDED_NATURAL_RESPONSES='false';process.env.META_APP_ID='789';process.env.META_WHATSAPP_APP_ID='789';
   for(const level of ['log','warn','error','info'] as const)t.mock.method(console,level,()=>{});
   const draft=readFileSync('docs/designs/knowledge-progress-safety-v1/progress-safety-v1.sql.draft','utf8');
   assert.equal(createHash('sha256').update(draft).digest('hex'),'d93ee49ec845dcef99abc8e0f5e663b04b32a4338dc83809f85720e394aa8b04');

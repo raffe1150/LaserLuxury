@@ -41,7 +41,7 @@ test('trusted progress authority: real signed bindings, new PostgreSQL claim RPC
     if(u.pathname.endsWith('/me'))return response(channel==='instagram'?{user_id:accounts.instagram}:{id:accounts.messenger});
     return response({data:[{participants:{data:[{id:accounts[channel]},{id:u.searchParams.get('user_id')}]},can_reply:true}]});
   };
-  const oldApp=process.env.META_APP_ID;process.env.META_APP_ID='789';t.after(()=>{if(oldApp===undefined)delete process.env.META_APP_ID;else process.env.META_APP_ID=oldApp;});
+  const oldApp=process.env.META_WHATSAPP_APP_ID;process.env.META_WHATSAPP_APP_ID='789';t.after(()=>{if(oldApp===undefined)delete process.env.META_WHATSAPP_APP_ID;else process.env.META_WHATSAPP_APP_ID=oldApp;});
   const bindings=new NativeKnowledgeBindings(db,secret,resolver);
   // Synthetic final authority only for this SQL fixture; production final
   // source/evidence authority is unchanged and tested in its own regressions.

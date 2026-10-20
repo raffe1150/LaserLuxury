@@ -12,11 +12,11 @@ const root=resolve(import.meta.dirname,'../..');const require=createRequire(impo
 const modules=resolve(root,'node_modules');const tsx=pathToFileURL(require.resolve('tsx')).href;
 const revision='1bee74483edfb37b2c7dbce8e820d86948cd1d47';
 const token='SYNTHETIC_SECRET_TOKEN_NEVER_OUTPUT';const key=Buffer.alloc(32,7);
-function envelope(){const iv=Buffer.alloc(12,5);const cipher=crypto.createCipheriv('aes-256-gcm',key,iv);const data=Buffer.concat([cipher.update(JSON.stringify({accessToken:token})),cipher.final()]);return ['v1',iv.toString('base64url'),cipher.getAuthTag().toString('base64url'),data.toString('base64url')].join('.');}
-function run(kind,overrides={},extraArgs=[],granularFixture){
+function envelope(value=token){const iv=Buffer.alloc(12,5);const cipher=crypto.createCipheriv('aes-256-gcm',key,iv);const data=Buffer.concat([cipher.update(JSON.stringify({accessToken:value})),cipher.final()]);return ['v1',iv.toString('base64url'),cipher.getAuthTag().toString('base64url'),data.toString('base64url')].join('.');}
+function run(kind,overrides={},extraArgs=[],granularFixture,authorizationFixture){
  const dir=mkdtempSync(join(tmpdir(),'odin-manual-cli-'));
  try{
-  for(const file of ['scripts/diagnostics/whatsapp-token-check.sh','scripts/diagnostics/whatsapp-token-check.cjs','scripts/diagnostics/whatsapp-token-check.ts','src/auth/backend-supabase.ts','src/channels/connections/repository.ts','src/channels/connections/credential-crypto.ts']){
+  for(const file of ['scripts/diagnostics/whatsapp-token-check.sh','scripts/diagnostics/whatsapp-token-check.cjs','scripts/diagnostics/whatsapp-token-check.ts','src/auth/backend-supabase.ts','src/channels/connections/repository.ts','src/channels/connections/credential-crypto.ts','src/channels/whatsapp/meta-client.ts']){
    mkdirSync(dirname(join(dir,file)),{recursive:true});cpSync(join(root,file),join(dir,file));
   }
   writeFileSync(join(dir,'package.json'),'{"type":"module"}');mkdirSync(join(dir,'node_modules/tsx'),{recursive:true});symlinkSync(join(modules,'@supabase'),join(dir,'node_modules/@supabase'));
@@ -24,6 +24,30 @@ function run(kind,overrides={},extraArgs=[],granularFixture){
   // Test-only dependency intercept. Production CLI has no mock flag or endpoint override.
   const payload={data:{app_id:'12345',is_valid:true,scopes:['whatsapp_business_messaging','whatsapp_business_management'],expires_at:0,data_access_expires_at:0}};
   const row={id:'synthetic-connection',business_id:3,provider:'whatsapp',provider_account_id:'synthetic-phone',provider_connection_id:'synthetic-waba',status:'connected',reconnect_required:false,token_expires_at:null,credential_ciphertext:envelope(),metadata:{private:'SYNTHETIC_METADATA_NEVER_OUTPUT'}};
+  const principal='987654321',portfolio='987654322',waba='123456789012345',phone='123456789012346';
+  const account={id:waba,owner_business_info:{id:portfolio}};
+  const assignments={data:[{id:principal,tasks:['MANAGE']}]};const phones={data:[{id:phone}]};
+  const currentRow={...row};
+  if(authorizationFixture){
+    payload.data.app_id='26871846599183572';payload.data.user_id=principal;
+    row.provider_account_id=phone;row.provider_connection_id=waba;Object.assign(currentRow,row);
+    if(authorizationFixture.principalMissing)delete payload.data.user_id;
+    if(authorizationFixture.principalNumeric)payload.data.user_id=Number(principal);
+    if(authorizationFixture.ownerMissing)delete account.owner_business_info;
+    if(authorizationFixture.wabaMismatch)account.id='999';
+    if(authorizationFixture.managementScopeMissing)payload.data.scopes=['whatsapp_business_messaging'];
+    if(authorizationFixture.explicitExclusion)payload.data.granular_scopes=[{scope:'whatsapp_business_messaging',target_ids:['999']}];
+    if(authorizationFixture.malformedTargets)payload.data.granular_scopes=[{scope:'whatsapp_business_messaging',target_ids:null}];
+    if(authorizationFixture.omittedTargets)payload.data.granular_scopes=[{scope:'whatsapp_business_messaging'},{scope:'whatsapp_business_management'}];
+    if(authorizationFixture.assignments!==undefined)assignments.data=authorizationFixture.assignments;
+    if(authorizationFixture.assignmentNext)assignments.paging={next:'SYNTHETIC_NEXT_URL_NEVER_FOLLOW'};
+    if(authorizationFixture.phones!==undefined)phones.data=authorizationFixture.phones;
+    if(authorizationFixture.phoneNext)phones.paging={next:'SYNTHETIC_NEXT_URL_NEVER_FOLLOW'};
+    if(authorizationFixture.changedToken)currentRow.credential_ciphertext=envelope('SYNTHETIC_CHANGED_TOKEN_NEVER_OUTPUT');
+    if(authorizationFixture.changedTenant)currentRow.business_id=4;
+    if(authorizationFixture.changedPhone)currentRow.provider_account_id='999';
+    if(authorizationFixture.changedWaba)currentRow.provider_connection_id='999';
+  }
   if(kind==='tenant')row.business_id=4;if(kind==='decrypt')row.credential_ciphertext='invalid';if(kind==='stored-expired')row.token_expires_at='2000-01-01';
   if(kind==='reviewed-match')payload.data.app_id='26871846599183572';
   if(granularFixture){
@@ -38,13 +62,28 @@ function run(kind,overrides={},extraArgs=[],granularFixture){
 import ${JSON.stringify(tsx)};
 import {appendFileSync} from 'node:fs';
 const kind=${JSON.stringify(kind)};const row=${JSON.stringify(row)};const payload=${JSON.stringify(payload)};
+const auth=${JSON.stringify(authorizationFixture??null)};const currentRow=${JSON.stringify(currentRow)};const account=${JSON.stringify(account)};const assignments=${JSON.stringify(assignments)};const phones=${JSON.stringify(phones)};let databaseReads=0;
 globalThis.fetch=async(input,init)=>{
  const r=new Request(input,init);const u=new URL(r.url);
  if(r.method!=='GET')throw Error('WRITE_FORBIDDEN');
  if(u.origin==='https://blknxpoeaqrvvdhixrau.supabase.co' && u.pathname==='/rest/v1/channel_connections'){
-  appendFileSync(${JSON.stringify(join(dir,'calls'))},'DB_GET\\n');
+  databaseReads++;appendFileSync(${JSON.stringify(join(dir,'calls'))},'DB_GET\\n');
   if(kind==='db-error')return new Response('{"message":"SYNTHETIC_RAW_ERROR_NEVER_OUTPUT"}',{status:403});
-  return new Response(JSON.stringify(kind==='no-connection'?[]:[row]),{headers:{'Content-Type':'application/json'}});
+  if(auth && databaseReads===2 && auth.currentReadError)return new Response('{}',{status:403});
+  return new Response(JSON.stringify(kind==='no-connection'||auth&&databaseReads===2&&auth.currentMissing?[]:[auth&&databaseReads===2?currentRow:row]),{headers:{'Content-Type':'application/json'}});
+ }
+ if(auth && u.origin==='https://graph.facebook.com' && u.pathname!=='/v25.0/debug_token'){
+  if(r.headers.get('Authorization')!==${JSON.stringify('Bearer '+token)})throw Error('CREDENTIAL_BOUNDARY');
+  let label,body,fail=false;
+  if(u.pathname==='/v25.0/123456789012345' && u.searchParams.get('fields')==='id,owner_business_info'){label='WABA_GET';body=account;fail=auth.wabaError;}
+  else if(u.pathname==='/v25.0/123456789012345/assigned_users' && u.searchParams.get('business')==='987654322' && u.searchParams.get('fields')==='id,tasks' && u.searchParams.get('limit')==='100'){label='ASSIGNMENT_GET';body=assignments;fail=auth.assignmentError;}
+  else if(u.pathname==='/v25.0/123456789012345/phone_numbers' && u.searchParams.get('fields')==='id' && u.searchParams.get('limit')==='100'){label='PHONE_GET';body=phones;fail=auth.phoneError;}
+  else throw Error('ASSET_ENDPOINT_FORBIDDEN');
+  appendFileSync(${JSON.stringify(join(dir,'calls'))},label+'\\n');
+  if(auth.assetTimeout)throw new DOMException('SYNTHETIC_RAW_TIMEOUT','TimeoutError');
+  if(auth.assetOversize)return new Response('x'.repeat(65537));
+  if(auth.assetMalformed)return new Response('SYNTHETIC_RAW_BODY_NEVER_OUTPUT');
+  return new Response(JSON.stringify(fail?{error:{code:10,message:'SYNTHETIC_RAW_BODY_NEVER_OUTPUT'}}:body),{status:fail?403:200,headers:{'Content-Type':'application/json'}});
  }
  if(u.origin!=='https://graph.facebook.com' || u.pathname!=='/v25.0/debug_token' || u.searchParams.get('input_token')!==${JSON.stringify(token)} || r.headers.get('Authorization')!==${JSON.stringify('Bearer '+token)})throw Error('OUTBOUND_FORBIDDEN');
  appendFileSync(${JSON.stringify(join(dir,'calls'))},'META_GET\\n');
@@ -65,7 +104,7 @@ globalThis.fetch=async(input,init)=>{
   const result=spawnSync('sh',args,{cwd:dir,env,encoding:'utf8',timeout:30000});assert.equal(result.error,undefined);assert.equal(result.status,0);assert.equal(result.stderr,'');
   assert.ok(!/SYNTHETIC_|Bearer|https:|12345|67890|synthetic-phone|26871846599183572|stack/.test(result.stdout),result.stdout);
   const output=JSON.parse(result.stdout);let calls=[];try{calls=readFileSync(join(dir,'calls'),'utf8').trim().split('\n');}catch{}
-  assert.ok(calls.filter(x=>x==='DB_GET').length<=1);assert.ok(calls.filter(x=>x==='META_GET').length<=1);
+  assert.ok(calls.filter(x=>x==='DB_GET').length<=(authorizationFixture?2:1));for(const k of ['WABA_GET','ASSIGNMENT_GET','PHONE_GET'])assert.ok(calls.filter(x=>x===k).length<=1);assert.ok(calls.filter(x=>x==='META_GET').length<=1);
   return {output,calls};
  }finally{rmSync(dir,{recursive:true,force:true});}
 }
@@ -156,4 +195,53 @@ test('granular mode requires explicit reviewed identity and exact option syntax 
 });
 test('inherited granular-mode environment cannot select or change output mode',()=>{
  const {output}=run('valid',{ODIN_DIAGNOSTIC_GRANULAR_SCOPES:'1'});assert.equal(output.error,null);assert.equal(output.messagingEntryCount,undefined);assert.equal(output.appIdMatchesRuntime,true);
+});
+const authorizationArgs=[...reviewedArgs,'--waba-authorization'];
+test('exact authorization entry proves current principal/assignment/MANAGE/phone through shared onboarding reads, omitted targets alone grant nothing',()=>{
+ const {output,calls}=run('valid',{},authorizationArgs,undefined,{omittedTargets:true});assert.equal(output.error,null);
+ assert.deepEqual(calls,['DB_GET','META_GET','WABA_GET','ASSIGNMENT_GET','PHONE_GET','DB_GET']);
+ assert.ok(Object.entries(output).every(([k,v])=>k==='error'?v===null:v===true));
+ assert.equal(output.authorizationEvidenceVerified,true);assert.equal(output.connectionCurrent,true);
+ assert.deepEqual(Object.keys(output).sort(),['error','tenantScoped','appIdentityVerified','tokenValid','expiryValid','messagingScopePresent','managementScopePresent','explicitGranularExclusionAbsent','principalIdentified','wabaIdentityVerified','ownerIdentityVerified','principalAssignedToWaba','managementTaskPresent','phoneBelongsToWaba','connectionCurrent','authorizationEvidenceVerified'].sort());
+});
+const authorizationCases=[
+ [{principalMissing:true},'PRINCIPAL_UNVERIFIED'],[{principalNumeric:true},'PRINCIPAL_UNVERIFIED'],
+ [{managementScopeMissing:true},'MANAGEMENT_SCOPE_MISSING'],[{wabaError:true},'WABA_READ_UNVERIFIED'],
+ [{wabaMismatch:true},'WABA_IDENTITY_UNVERIFIED'],[{ownerMissing:true},'WABA_OWNER_UNVERIFIED'],
+ [{assignmentError:true},'ASSIGNMENT_READ_UNVERIFIED'],[{assignments:[]},'PRINCIPAL_ASSIGNMENT_MISSING'],
+ [{assignments:[],assignmentNext:true},'ASSIGNMENT_PAGINATION_UNVERIFIED'],
+ [{assignments:[{id:'987654321',tasks:['MANAGE']}],assignmentNext:true},'PRINCIPAL_ASSIGNMENT_AMBIGUOUS'],
+ [{assignments:[{id:'987654321',tasks:['MANAGE']},{id:'987654321',tasks:['MANAGE']}]},'PRINCIPAL_ASSIGNMENT_AMBIGUOUS'],
+ [{assignments:[{id:'987654321'}]},'MANAGEMENT_TASK_UNVERIFIED'],
+ [{assignments:[{id:'987654321',tasks:['DEVELOP']}]},'MANAGEMENT_TASK_MISSING'],
+ [{assignments:[{id:'different-principal',tasks:['MANAGE']}]},'ASSIGNMENT_READ_UNVERIFIED'],
+ [{assignments:[{id:'111',tasks:['MANAGE']}]},'PRINCIPAL_ASSIGNMENT_MISSING'],
+ [{phoneError:true},'PHONE_MEMBERSHIP_READ_UNVERIFIED'],[{phones:[]},'PHONE_MEMBERSHIP_MISSING'],
+ [{phones:[],phoneNext:true},'PHONE_MEMBERSHIP_PAGINATION_UNVERIFIED'],
+ [{phones:[{id:'123456789012346'},{id:'123456789012346'}]},'PHONE_MEMBERSHIP_AMBIGUOUS'],
+ [{changedToken:true},'CONNECTION_CHANGED'],[{changedPhone:true},'CONNECTION_CHANGED'],[{changedWaba:true},'CONNECTION_CHANGED'],
+ [{changedTenant:true},'TENANT_SCOPE_REJECTED'],[{currentMissing:true},'TENANT_CONNECTION_NOT_FOUND'],[{currentReadError:true},'TENANT_LOOKUP_FAILED'],
+ [{explicitExclusion:true},'GRANULAR_ASSET_EXCLUSION'],[{malformedTargets:true},'GRANULAR_TARGETS_INVALID'],
+ [{assetTimeout:true},'WABA_READ_UNVERIFIED'],[{assetMalformed:true},'WABA_READ_UNVERIFIED'],[{assetOversize:true},'RESPONSE_TOO_LARGE'],
+];
+for(const [fixture,error]of authorizationCases)test('exact authorization entry fails closed: '+Object.keys(fixture).join(','),()=>{
+ const {output}=run('valid',{},authorizationArgs,undefined,fixture);assert.equal(output.error,error);assert.notEqual(output.authorizationEvidenceVerified,true);
+ assert.ok(Object.entries(output).every(([k,v])=>k==='error'?typeof v==='string':typeof v==='boolean'||v===null));
+ if(error==='PRINCIPAL_ASSIGNMENT_MISSING')assert.equal(output.principalAssignedToWaba,false);
+ if(error==='ASSIGNMENT_PAGINATION_UNVERIFIED')assert.equal(output.principalAssignedToWaba,null);
+ if(error==='PHONE_MEMBERSHIP_MISSING')assert.equal(output.phoneBelongsToWaba,false);
+});
+test('authorization option cannot be selected by environment, combined with granular mode or an arbitrary app',()=>{
+ const legacy=run('valid',{ODIN_DIAGNOSTIC_WABA_AUTHORIZATION:'1'});assert.equal(legacy.output.error,null);assert.equal(legacy.output.authorizationEvidenceVerified,undefined);
+ for(const args of [['--waba-authorization'],['--expected-app','67890','--waba-authorization'],[...authorizationArgs,'--granular-scopes']]){
+  const {output,calls}=run('valid',{},args);assert.equal(output.error,'EXPECTED_APP_NOT_ALLOWLISTED');assert.deepEqual(calls,[]);
+ }
+});
+test('authorization prerequisites, tenant boundaries and output filtering remain active',()=>{
+ for(const [kind,error]of [['graph200','GRAPH_ERROR'],['malformed','INVALID_JSON'],['decrypt','CREDENTIAL_RECOVERY_FAILED'],['tenant','TENANT_SCOPE_REJECTED'],['stdout','CHILD_OUTPUT_REJECTED']]){
+  const {output}=run(kind,{},authorizationArgs,undefined,{});assert.equal(output.error,error);
+ }
+ for(const flag of ['ODINLINK_ASYNC_KNOWLEDGE_ADMISSION','ODINLINK_ASYNC_KNOWLEDGE_PROCESSING','ODINLINK_ASYNC_KNOWLEDGE_DELIVERY','ODINLINK_SMART_WAITING']){
+  const {output,calls}=run('valid',{[flag]:'true'},authorizationArgs,undefined,{});assert.equal(output.error,'CONTROLS_NOT_OFF');assert.deepEqual(calls,[]);
+ }
 });

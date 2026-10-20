@@ -3,11 +3,13 @@ import { resolve } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
 for (const key of ['log','info','warn','error','debug','trace'] as const) console[key]=()=>{};
-type Stage='runtime_configuration'|'imports'|'tenant_lookup'|'credential_recovery'|'http_response'|'json_parsing'|'graph_error'|'app_identity_comparison'|'token_checks'|'granular_scopes';
+type Stage='runtime_configuration'|'imports'|'tenant_lookup'|'credential_recovery'|'http_response'|'json_parsing'|'graph_error'|'app_identity_comparison'|'token_checks'|'granular_scopes'|'waba_authorization';
 const out:{stage:Stage;error:string|null;httpStatus:number|null;graphErrorCode:number|null;credentialRecovered:boolean;validJson:boolean|null;dataPresent:boolean|null;appIdPresent:boolean|null;appIdType:string|null;appIdMatchesRuntime:boolean|null;tokenValid:boolean|null;messagingScopePresent:boolean|null;managementScopePresent:boolean|null;expiresAtPresent:boolean|null;expiresAtAcceptable:boolean|null;dataAccessExpiresAtPresent:boolean|null;dataAccessExpiresAtAcceptable:boolean|null}={
   stage:'runtime_configuration',error:null,httpStatus:null,graphErrorCode:null,credentialRecovered:false,validJson:null,dataPresent:null,appIdPresent:null,appIdType:null,appIdMatchesRuntime:null,tokenValid:null,messagingScopePresent:null,managementScopePresent:null,expiresAtPresent:null,expiresAtAcceptable:null,dataAccessExpiresAtPresent:null,dataAccessExpiresAtAcceptable:null};
 const granularKeys=['messagingTargetIdsPresent','messagingTargetIdsArrays','managementTargetIdsPresent','managementTargetIdsArrays','messagingAnyWabaMatch','messagingAllWabaMatch','managementAnyWabaMatch','normalizedManagementAnyWabaMatch','numericTargetIdsPresent','unsafeNumericTargetIdsPresent','normalizedMessagingAnyWabaMatch','normalizedMessagingAllWabaMatch','normalizedComparisonChangesResult'] as const;
 const granular:Record<string,boolean|number|null>=Object.fromEntries(['messagingEntryCount','managementEntryCount',...granularKeys].map(k=>[k,null]));
+const authorizationMode=process.env.ODIN_DIAGNOSTIC_WABA_AUTHORIZATION==='1';
+const authorization:Record<string,boolean|null>=Object.fromEntries(['tenantScoped','appIdentityVerified','tokenValid','expiryValid','messagingScopePresent','managementScopePresent','explicitGranularExclusionAbsent','principalIdentified','wabaIdentityVerified','ownerIdentityVerified','principalAssignedToWaba','managementTaskPresent','phoneBelongsToWaba','connectionCurrent','authorizationEvidenceVerified'].map(k=>[k,null]));
 const granularMode=process.env.ODIN_DIAGNOSTIC_GRANULAR_SCOPES==='1';
 const stop=(code:string):never=>{out.error ??= code;throw new Error('STOP');};
 const object=(v:any)=>v!==null && typeof v==='object' && !Array.isArray(v);
@@ -26,6 +28,7 @@ try {
   if(comparison!==undefined && comparison!=='26871846599183572')stop('EXPECTED_APP_NOT_ALLOWLISTED');
   const expected=comparison??configured;
   if(process.env.ODIN_DIAGNOSTIC_GRANULAR_SCOPES!==undefined && !granularMode || granularMode && comparison!=='26871846599183572')stop('GRANULAR_MODE_INVALID');
+  if(process.env.ODIN_DIAGNOSTIC_WABA_AUTHORIZATION!==undefined && !authorizationMode || authorizationMode && (comparison!=='26871846599183572' || granularMode))stop('AUTHORIZATION_MODE_INVALID');
   out.stage='imports';
   const {createClient}=await import('@supabase/supabase-js');
   const {getBackendSupabaseConfiguration}=await local('src/auth/backend-supabase.ts');
@@ -36,7 +39,7 @@ try {
   let reads=0;
   const db=createClient(config.url,config.serviceRoleKey,{auth:{persistSession:false,autoRefreshToken:false,detectSessionInUrl:false},global:{fetch:async(input:RequestInfo|URL,init?:RequestInit)=>{
     const r=new Request(input,init);const u=new URL(r.url);
-    if(++reads!==1 || r.method!=='GET' || u.origin!==dbUrl.origin || u.pathname!=='/rest/v1/channel_connections' ||
+    if(++reads>(authorizationMode?2:1) || r.method!=='GET' || u.origin!==dbUrl.origin || u.pathname!=='/rest/v1/channel_connections' ||
       u.searchParams.get('select')!=='*' || u.searchParams.get('business_id')!=='eq.3' || u.searchParams.get('provider')!=='eq.whatsapp' ||
       u.searchParams.get('status')!=='eq.connected' || u.searchParams.get('reconnect_required')!=='eq.false')stop('READ_BOUNDARY_REJECTED');
     return fetch(r,{redirect:'error',signal:lifetime});
@@ -59,8 +62,9 @@ try {
   out.stage='tenant_lookup';const c=await resolveConnectionForBusiness(observed,3,'whatsapp');
   if(!c || c.businessId!==3 || c.provider!=='whatsapp' || c.status!=='connected' || c.reconnectRequired || typeof c.credential?.accessToken!=='string' || !c.credential.accessToken.trim())stop('CREDENTIAL_RECOVERY_FAILED');
   out.credentialRecovered=true;
+  if(authorizationMode)authorization.tenantScoped=true;
   if(c.tokenExpiresAt!==null && (!Number.isFinite(Date.parse(c.tokenExpiresAt)) || Date.parse(c.tokenExpiresAt)<=Date.now()))stop('CREDENTIAL_EXPIRED');
-  if(granularMode && (typeof c.providerConnectionId!=='string' || !/^[1-9][0-9]{0,31}$/.test(c.providerConnectionId)))stop('STORED_WABA_INVALID');
+  if((granularMode||authorizationMode) && (typeof c.providerConnectionId!=='string' || !/^[1-9][0-9]{0,31}$/.test(c.providerConnectionId)))stop('STORED_WABA_INVALID');
   const token=c.credential.accessToken;const url=new URL('https://graph.facebook.com/v25.0/debug_token');url.searchParams.set('input_token',token);
   out.stage='http_response';
   const response=await fetch(url,{method:'GET',redirect:'error',headers:{Authorization:`Bearer ${token}`},signal:lifetime});out.httpStatus=response.status;
@@ -81,6 +85,65 @@ try {
   out.expiresAtAcceptable=expiry(d.expires_at);out.dataAccessExpiresAtAcceptable=expiry(d.data_access_expires_at);
   if(!out.appIdPresent)stop('APP_ID_MISSING');if(out.appIdType!=='string')stop('APP_ID_TYPE_INVALID');if(!out.appIdMatchesRuntime)stop('APP_ID_MISMATCH');
   out.stage='token_checks';if(!out.tokenValid)stop('TOKEN_INVALID');if(!out.messagingScopePresent)stop('TOKEN_SCOPE_MISSING');if(!out.expiresAtAcceptable || !out.dataAccessExpiresAtAcceptable)stop('TOKEN_EXPIRY_INVALID');
+  if(authorizationMode){
+    out.stage='waba_authorization';
+    authorization.appIdentityVerified=out.appIdMatchesRuntime;authorization.tokenValid=out.tokenValid;
+    authorization.expiryValid=out.expiresAtAcceptable===true && out.dataAccessExpiresAtAcceptable===true;
+    authorization.messagingScopePresent=out.messagingScopePresent;authorization.managementScopePresent=out.managementScopePresent;
+    if(!out.managementScopePresent)stop('MANAGEMENT_SCOPE_MISSING');
+    const id=(v:any):v is string=>typeof v==='string' && /^[1-9][0-9]{0,31}$/.test(v);
+    authorization.principalIdentified=id(d.user_id);if(!authorization.principalIdentified)stop('PRINCIPAL_UNVERIFIED');
+    const principal=d.user_id,waba=c.providerConnectionId,phone=c.providerAccountId;
+    if(d.granular_scopes!==undefined){
+      if(!Array.isArray(d.granular_scopes))stop('GRANULAR_SCOPES_INVALID');
+      if(d.granular_scopes.some((g:any)=>!object(g)||typeof g.scope!=='string'))stop('GRANULAR_SCOPE_ENTRY_INVALID');
+      const grants=d.granular_scopes.filter((g:any)=>['whatsapp_business_messaging','whatsapp_business_management'].includes(g.scope));
+      if(grants.some((g:any)=>Object.prototype.hasOwnProperty.call(g,'target_ids') && (!Array.isArray(g.target_ids)||g.target_ids.some((v:any)=>!id(v)))))stop('GRANULAR_TARGETS_INVALID');
+      authorization.explicitGranularExclusionAbsent=!grants.some((g:any)=>Array.isArray(g.target_ids)&&!g.target_ids.includes(waba));
+    }else authorization.explicitGranularExclusionAbsent=true;
+    if(!authorization.explicitGranularExclusionAbsent)stop('GRANULAR_ASSET_EXCLUSION');
+    if(!id(phone))stop('WABA_IDENTITY_UNVERIFIED');
+    const {createWhatsAppMetaClient}=await local('src/channels/whatsapp/meta-client.ts');
+    // Reuse onboarding's GET-only client/contracts, without unrelated provisioning work.
+    const seen=new Set<string>();let owner:string|null=null;
+    const assets=createWhatsAppMetaClient({accessToken:token,graphVersion:'v25.0',fetchImpl:async(input:RequestInfo|URL,init?:RequestInit)=>{
+      const request=new Request(input,init),u=new URL(request.url);const base='/v25.0/'+waba;
+      const query=Object.fromEntries(u.searchParams);
+      const valid=request.method==='GET' && u.origin==='https://graph.facebook.com' && !u.username && !u.password && !u.hash && (
+        u.pathname===base && JSON.stringify(query)===JSON.stringify({fields:'id,owner_business_info'}) ||
+        u.pathname===base+'/assigned_users' && owner!==null && JSON.stringify(query)===JSON.stringify({business:owner,fields:'id,tasks',limit:'100'}) ||
+        u.pathname===base+'/phone_numbers' && JSON.stringify(query)===JSON.stringify({fields:'id',limit:'100'}));
+      if(!valid || seen.has(u.pathname))stop('ASSET_READ_BOUNDARY_REJECTED');seen.add(u.pathname);
+      const response=await fetch(request,{redirect:'error',signal:AbortSignal.any([lifetime,...(request.signal?[request.signal]:[])])});
+      // Preserve the existing client's result handling; bound the body it may consume.
+      const reader=response.body?.getReader();if(!reader)stop('RESPONSE_BODY_UNAVAILABLE');const chunks:Buffer[]=[];let size=0;
+      while(true){const {done,value}=await reader.read();if(done)break;size+=value.byteLength;if(size>65536){await reader.cancel();stop('RESPONSE_TOO_LARGE');}chunks.push(Buffer.from(value));}
+      return new Response(Buffer.concat(chunks),{status:response.status,headers:{'Content-Type':'application/json'}});
+    }});
+    const account=await assets.read(waba,{fields:'id,owner_business_info'});if(!account)stop('WABA_READ_UNVERIFIED');
+    authorization.wabaIdentityVerified=account.id===waba;if(!authorization.wabaIdentityVerified)stop('WABA_IDENTITY_UNVERIFIED');
+    owner=id(account.owner_business_info?.id)?account.owner_business_info.id:null;authorization.ownerIdentityVerified=owner!==null;if(!owner)stop('WABA_OWNER_UNVERIFIED');
+    const users=await assets.read(waba+'/assigned_users',{business:owner,fields:'id,tasks',limit:'100'});
+    if(!users || !Array.isArray(users.data) || users.data.some((u:any)=>!object(u)||!id(u.id)))stop('ASSIGNMENT_READ_UNVERIFIED');
+    const matches=users.data.filter((u:any)=>u.id===principal);
+    if(matches.length===0){if(users.paging?.next)stop('ASSIGNMENT_PAGINATION_UNVERIFIED');authorization.principalAssignedToWaba=false;stop('PRINCIPAL_ASSIGNMENT_MISSING');}
+    if(matches.length!==1 || users.paging?.next)stop('PRINCIPAL_ASSIGNMENT_AMBIGUOUS');authorization.principalAssignedToWaba=true;
+    if(!Array.isArray(matches[0].tasks) || matches[0].tasks.some((v:any)=>typeof v!=='string'))stop('MANAGEMENT_TASK_UNVERIFIED');
+    // Conservative existing onboarding management policy; no claim DEVELOP is universal denial.
+    authorization.managementTaskPresent=matches[0].tasks.includes('MANAGE');if(!authorization.managementTaskPresent)stop('MANAGEMENT_TASK_MISSING');
+    const phones=await assets.read(waba+'/phone_numbers',{fields:'id',limit:'100'});
+    if(!phones || !Array.isArray(phones.data) || phones.data.some((p:any)=>!object(p)||!id(p.id)))stop('PHONE_MEMBERSHIP_READ_UNVERIFIED');
+    const phoneMatches=phones.data.filter((p:any)=>p.id===phone);
+    if(phoneMatches.length===0){if(phones.paging?.next)stop('PHONE_MEMBERSHIP_PAGINATION_UNVERIFIED');authorization.phoneBelongsToWaba=false;stop('PHONE_MEMBERSHIP_MISSING');}
+    if(phoneMatches.length!==1 || phones.paging?.next)stop('PHONE_MEMBERSHIP_AMBIGUOUS');authorization.phoneBelongsToWaba=true;
+    authorization.connectionCurrent=false;const current=await resolveConnectionForBusiness(observed,3,'whatsapp');out.stage='waba_authorization';
+    if(!current)stop('CONNECTION_CURRENT_UNVERIFIED');
+    if(current.businessId!==3 || current.provider!=='whatsapp' || current.status!=='connected' || current.reconnectRequired || current.id!==c.id || current.providerConnectionId!==waba || current.providerAccountId!==phone || current.credential.accessToken!==token || current.tokenExpiresAt!==c.tokenExpiresAt || JSON.stringify(current.grantedScopes)!==JSON.stringify(c.grantedScopes))stop('CONNECTION_CHANGED');
+    authorization.connectionCurrent=true;
+    authorization.expiryValid=expiry(d.expires_at)&&expiry(d.data_access_expires_at) && (current.tokenExpiresAt===null || Number.isFinite(Date.parse(current.tokenExpiresAt))&&Date.parse(current.tokenExpiresAt)>Date.now());
+    if(!authorization.expiryValid || lifetime.aborted)stop('TOKEN_EXPIRY_INVALID');
+    authorization.authorizationEvidenceVerified=true;
+  }
   if(granularMode){
     out.stage='granular_scopes';
     if(!Object.prototype.hasOwnProperty.call(d,'granular_scopes'))stop('GRANULAR_SCOPES_MISSING');
@@ -115,8 +178,8 @@ try {
     granular.normalizedComparisonChangesResult=granular.normalizedMessagingAllWabaMatch===null || granular.messagingAllWabaMatch===null?null:granular.normalizedMessagingAllWabaMatch!==granular.messagingAllWabaMatch;
   }
 }catch(e){
-  if(out.error===null)out.error=out.stage==='http_response' && (lifetime.aborted || (e as any)?.name==='TimeoutError')?'HTTP_TIMEOUT':({runtime_configuration:'RUNTIME_CONFIGURATION_FAILED',imports:'IMPORT_FAILED',tenant_lookup:'TENANT_LOOKUP_FAILED',credential_recovery:'CREDENTIAL_RECOVERY_FAILED',http_response:'HTTP_REQUEST_FAILED',json_parsing:'RESPONSE_READ_FAILED',app_identity_comparison:'APP_COMPARISON_FAILED',graph_error:'GRAPH_ERROR',token_checks:'DIAGNOSTIC_FAILED',granular_scopes:'DIAGNOSTIC_FAILED'} as const)[out.stage];
+  if(out.error===null)out.error=out.stage==='http_response' && (lifetime.aborted || (e as any)?.name==='TimeoutError')?'HTTP_TIMEOUT':({runtime_configuration:'RUNTIME_CONFIGURATION_FAILED',imports:'IMPORT_FAILED',tenant_lookup:'TENANT_LOOKUP_FAILED',credential_recovery:'CREDENTIAL_RECOVERY_FAILED',http_response:'HTTP_REQUEST_FAILED',json_parsing:'RESPONSE_READ_FAILED',app_identity_comparison:'APP_COMPARISON_FAILED',graph_error:'GRAPH_ERROR',token_checks:'DIAGNOSTIC_FAILED',granular_scopes:'DIAGNOSTIC_FAILED',waba_authorization:'DIAGNOSTIC_FAILED'} as const)[out.stage];
 }
-process.stdout.write(JSON.stringify(granularMode?{...out,...granular}:out)+'\n');
+process.stdout.write(JSON.stringify(authorizationMode?{error:out.error,...authorization}:granularMode?{...out,...granular}:out)+'\n');
 
 }

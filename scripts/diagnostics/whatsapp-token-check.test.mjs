@@ -13,7 +13,7 @@ const modules=resolve(root,'node_modules');const tsx=pathToFileURL(require.resol
 const revision='1bee74483edfb37b2c7dbce8e820d86948cd1d47';
 const token='SYNTHETIC_SECRET_TOKEN_NEVER_OUTPUT';const key=Buffer.alloc(32,7);
 function envelope(){const iv=Buffer.alloc(12,5);const cipher=crypto.createCipheriv('aes-256-gcm',key,iv);const data=Buffer.concat([cipher.update(JSON.stringify({accessToken:token})),cipher.final()]);return ['v1',iv.toString('base64url'),cipher.getAuthTag().toString('base64url'),data.toString('base64url')].join('.');}
-function run(kind,overrides={},extraArgs=[]){
+function run(kind,overrides={},extraArgs=[],granularFixture){
  const dir=mkdtempSync(join(tmpdir(),'odin-manual-cli-'));
  try{
   for(const file of ['scripts/diagnostics/whatsapp-token-check.sh','scripts/diagnostics/whatsapp-token-check.cjs','scripts/diagnostics/whatsapp-token-check.ts','src/auth/backend-supabase.ts','src/channels/connections/repository.ts','src/channels/connections/credential-crypto.ts']){
@@ -26,6 +26,11 @@ function run(kind,overrides={},extraArgs=[]){
   const row={id:'synthetic-connection',business_id:3,provider:'whatsapp',provider_account_id:'synthetic-phone',provider_connection_id:'synthetic-waba',status:'connected',reconnect_required:false,token_expires_at:null,credential_ciphertext:envelope(),metadata:{private:'SYNTHETIC_METADATA_NEVER_OUTPUT'}};
   if(kind==='tenant')row.business_id=4;if(kind==='decrypt')row.credential_ciphertext='invalid';if(kind==='stored-expired')row.token_expires_at='2000-01-01';
   if(kind==='reviewed-match')payload.data.app_id='26871846599183572';
+  if(granularFixture){
+    payload.data.app_id=granularFixture.wrongApp?'unreviewed':'26871846599183572';
+    row.provider_connection_id=granularFixture.waba??'123456789012345';
+    if(Object.prototype.hasOwnProperty.call(granularFixture,'scopes'))payload.data.granular_scopes=granularFixture.scopes;
+  }
   if(kind==='wrong-app')payload.data.app_id='67890';if(kind==='revoked')payload.data.is_valid=false;if(kind==='expired')payload.data.expires_at=1;
   if(kind==='scope')payload.data.scopes=[];if(kind==='missing-app')delete payload.data.app_id;if(kind==='numeric-app')payload.data.app_id=12345;
   if(kind==='missing-data')delete payload.data;
@@ -111,4 +116,44 @@ test('reviewed option retains OFF and numeric runtime-app prerequisites',()=>{
  for(const overrides of [{ODINLINK_ASYNC_KNOWLEDGE_ADMISSION:'true'},{META_APP_ID:''}]){
   const {output,calls}=run('reviewed-match',overrides,reviewedArgs);assert.ok(['CONTROLS_NOT_OFF','APP_CONFIGURATION_INVALID'].includes(output.error));assert.deepEqual(calls,[]);
  }
+});
+const granularArgs=[...reviewedArgs,'--granular-scopes'];
+const waba='123456789012345';
+const scope=(target,management=false)=>({scope:management?'whatsapp_business_management':'whatsapp_business_messaging',...(target===undefined?{}:{target_ids:target})});
+const granularCases=[
+ ['matching strings',[scope([waba]),scope([waba],true)],{messagingEntryCount:1,managementEntryCount:1,messagingTargetIdsPresent:true,messagingTargetIdsArrays:true,messagingAnyWabaMatch:true,messagingAllWabaMatch:true,managementAnyWabaMatch:true,numericTargetIdsPresent:false,normalizedComparisonChangesResult:false}],
+ ['explicit different targets',[scope(['999']),scope(['999'],true)],{messagingAnyWabaMatch:false,messagingAllWabaMatch:false,managementAnyWabaMatch:false,normalizedComparisonChangesResult:false}],
+ ['missing target list',[scope(undefined)],{messagingTargetIdsPresent:false,messagingTargetIdsArrays:false,messagingAnyWabaMatch:false,messagingAllWabaMatch:false}],
+ ['null target list',[scope(null)],{messagingTargetIdsPresent:true,messagingTargetIdsArrays:false,messagingAnyWabaMatch:false}],
+ ['non-array target list',[scope({private:'SYNTHETIC_RAW_TARGET_NEVER_OUTPUT'})],{messagingTargetIdsPresent:true,messagingTargetIdsArrays:false}],
+ ['empty target list',[scope([])],{messagingTargetIdsPresent:true,messagingTargetIdsArrays:true,messagingAnyWabaMatch:false}],
+ ['multiple messaging entries, only one includes WABA',[scope([waba]),scope(['999'])],{messagingEntryCount:2,messagingAnyWabaMatch:true,messagingAllWabaMatch:false,normalizedMessagingAllWabaMatch:false}],
+ ['management only references WABA',[scope(undefined),scope([waba],true)],{managementEntryCount:1,managementAnyWabaMatch:true,messagingAnyWabaMatch:false}],
+ ['numeric exact-safe WABA',[scope([Number(waba)]),scope([Number(waba)],true)],{numericTargetIdsPresent:true,unsafeNumericTargetIdsPresent:false,messagingAnyWabaMatch:false,messagingAllWabaMatch:false,normalizedMessagingAnyWabaMatch:true,normalizedMessagingAllWabaMatch:true,normalizedManagementAnyWabaMatch:true,normalizedComparisonChangesResult:true}],
+ ['safe numeric not equal',[scope([123])],{numericTargetIdsPresent:true,normalizedMessagingAnyWabaMatch:false,normalizedComparisonChangesResult:false}],
+ ['unsafe numeric target',[scope([26871846599183572])],{numericTargetIdsPresent:true,unsafeNumericTargetIdsPresent:true,normalizedMessagingAnyWabaMatch:null,normalizedMessagingAllWabaMatch:null,normalizedComparisonChangesResult:null}],
+ ['malformed numeric target',[scope([1.5])],{unsafeNumericTargetIdsPresent:true,normalizedMessagingAnyWabaMatch:null}],
+ ['safe match overrides unrelated unsafe target',[scope([waba,26871846599183572])],{unsafeNumericTargetIdsPresent:true,normalizedMessagingAnyWabaMatch:true,normalizedMessagingAllWabaMatch:true,normalizedComparisonChangesResult:false}],
+ ['no relevant granular entries',[],{messagingEntryCount:0,managementEntryCount:0,messagingAnyWabaMatch:null,messagingAllWabaMatch:null,messagingTargetIdsArrays:null,normalizedComparisonChangesResult:null}],
+ ['management without messaging',[scope([waba],true)],{messagingEntryCount:0,managementAnyWabaMatch:true,messagingAllWabaMatch:null}],
+];
+for(const [name,scopes,expected]of granularCases)test('exact granular CLI: '+name,()=>{
+ const {output,calls}=run('valid',{},granularArgs,{scopes});assert.equal(output.error,null);assert.equal(output.stage,'granular_scopes');assert.deepEqual(calls,['DB_GET','META_GET']);
+ for(const [key,value]of Object.entries(expected))assert.equal(output[key],value,key);
+ for(const forbidden of ['appIdMatchesExpected','tokenValid','appIdType','credentialRecovered','validJson','dataPresent','messagingScopePresent','expiresAtAcceptable'])assert.equal(output[forbidden],undefined);
+ assert.ok(!JSON.stringify(output).includes(waba));
+});
+for(const [fixture,error]of [[{},'GRANULAR_SCOPES_MISSING'],[{scopes:null},'GRANULAR_SCOPES_INVALID'],[{scopes:{}},'GRANULAR_SCOPES_INVALID'],[{scopes:[null]},'GRANULAR_SCOPE_ENTRY_INVALID'],[{scopes:[{scope:123}]},'GRANULAR_SCOPE_ENTRY_INVALID'],[{wrongApp:true},'APP_ID_MISMATCH'],[{waba:'not-an-id'},'STORED_WABA_INVALID']])test('granular CLI sanitizes unknown/malformed shape: '+error,()=>{
+ const {output,calls}=run('valid',{},granularArgs,fixture);assert.equal(output.error,error);assert.equal(calls.filter(x=>x==='META_GET').length,error==='STORED_WABA_INVALID'?0:1);assert.equal(output.messagingEntryCount,null);
+});
+for(const kind of ['graph200','http403','malformed','timeout','tenant','decrypt','logging','stdout'])test('granular CLI preserves security boundary: '+kind,()=>{
+ const {output}=run(kind,{},granularArgs,{scopes:[scope([waba])]});assert.equal(output.error,kind==='logging'?null:cases[kind]);
+});
+test('granular mode requires explicit reviewed identity and exact option syntax before IO',()=>{
+ for(const args of [['--granular-scopes'],['--expected-app','67890','--granular-scopes'],[...reviewedArgs,'--granular-scopes','extra'],[...reviewedArgs,'--granular-scopes=1']]){
+  const {output,calls}=run('valid',{},args);assert.equal(output.error,'EXPECTED_APP_NOT_ALLOWLISTED');assert.deepEqual(calls,[]);
+ }
+});
+test('inherited granular-mode environment cannot select or change output mode',()=>{
+ const {output}=run('valid',{ODIN_DIAGNOSTIC_GRANULAR_SCOPES:'1'});assert.equal(output.error,null);assert.equal(output.messagingEntryCount,undefined);assert.equal(output.appIdMatchesRuntime,true);
 });

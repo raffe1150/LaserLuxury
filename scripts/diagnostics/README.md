@@ -68,3 +68,26 @@ The ID here is an explicit diagnostic input, never a credential or emitted resul
 Comparison mode emits only stage/error, HTTP/numeric Graph error status, `appIdMatchesExpected`, token validity, messaging/management scope booleans and expiry-validity booleans. It omits the legacy credential/data/type detail fields. It never emits either actual app identity. A missing or malformed identity yields a fixed error, not a genuine mismatch verdict. A successful match confirms this introspection's app identity, not permission to activate Async or bypass other product checks.
 
 The existing one-DB-read/at-most-one-provider-GET, clean child environment, output validation, body/output bounds, core-dump/cache suppression, 20-second abort and 25-second hard timeout remain unchanged. Hosting/Meta query logging limitations remain as documented above. No live provider query is performed by development or tests. A separate operator action remains required to execute the command.
+
+## Final granular-scope mode
+
+Use only the existing reviewed-app comparison with this additional explicit flag:
+
+```
+sh scripts/diagnostics/whatsapp-token-check.sh FULL_REVIEWED_DEPLOYED_COMMIT_SHA --expected-app 26871846599183572 --granular-scopes
+```
+
+The option cannot run without the reviewed expected identity. It uses the existing tenant row's provider_connection_id (WABA), requires its canonical numeric-string form, and performs no additional lookup or provider call. The child independently validates the mode and expected-app prerequisites. Inherited environment variables cannot select this mode. App/token/scope/expiry prerequisites still fail closed before analysis. No application provider-gate code changes.
+
+Output contains only sanitized stage/error/HTTP/numeric Graph-error fields plus:
+
+- messagingEntryCount, managementEntryCount: entries whose scope exactly matches the two WhatsApp permissions.
+- messagingTargetIdsPresent/Arrays, managementTargetIdsPresent/Arrays: whether ALL entries of that scope have the property/an array. Zero entries returns null, not a vacuous authorization success.
+- messagingAnyWabaMatch, messagingAllWabaMatch, managementAnyWabaMatch: exact string membership of stored WABA; absent/non-array targets fail that comparison. Zero relevant entries returns null.
+- numericTargetIdsPresent, unsafeNumericTargetIdsPresent: numeric values in the relevant target arrays; unsafe includes nonpositive, fractional or not-safely-representable integers.
+- normalizedMessagingAnyWabaMatch, normalizedMessagingAllWabaMatch, normalizedManagementAnyWabaMatch: diagnostic membership after LOSSLESS conversion of safe positive integer targets to strings. Strings are not trimmed, guessed or coerced. Unsafe numbers produce unknown (null) when a match cannot otherwise be established.
+- normalizedComparisonChangesResult: whether safe normalization changes messaging ALL-match, the current application predicate's effective membership requirement. Null means no entries or unresolved numeric uncertainty. Any-match normalization is separately visible.
+
+A malformed/missing granular_scopes field or malformed entry yields a fixed sanitized error; no raw payload/IDs are emitted. All original body/output/request/time limits remain intact. In this mode no app-ID comparison details, token fields, identifiers, customer content or raw provider data are printed.
+
+**Interpretation is evidence, not authorization.** error:null means the authenticated response was summarized, not that the application's granular gate or a customer send is authorized. A well-formed explicit target set excluding the stored WABA supports an asset-grant/identity investigation, but cannot distinguish genuinely missing provider permission from a wrong stored WABA or different provider target semantics. Missing lists do not by themselves establish permission denial. A lossless numeric normalization that changes membership demonstrates a type-sensitive comparison discrepancy; it never authorizes coercion in the product. Any-match true with all-match false demonstrates why the current some-rejection predicate rejects multiple entries, but whether that predicate is faulty requires the provider's grant-combination contract. Management-only references similarly flag a scope-contract question. Actual missing permission requires independent authoritative asset/assignment or provider denial evidence; this diagnostic makes no such extra requests.

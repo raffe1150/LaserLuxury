@@ -35,7 +35,9 @@ test('trusted progress authority: real signed bindings, new PostgreSQL claim RPC
     if(u.pathname.endsWith('getMe'))return response({ok:true,result:{id:123456,is_bot:true}});
     if(u.pathname.endsWith('getChat'))return response({ok:true,result:{id:Number(u.searchParams.get('chat_id')),type:'private'}});
     if(u.pathname.endsWith('getChatMember'))return response({ok:true,result:{user:{id:123456},status:'member'}});
-    if(u.pathname.endsWith('debug_token'))return response({data:{app_id:'789',is_valid:true,scopes:['whatsapp_business_messaging'],expires_at:0,data_access_expires_at:0}});
+    if(u.pathname.endsWith('debug_token'))return response({data:{app_id:'789',is_valid:true,user_id:'60001',scopes:['whatsapp_business_messaging','whatsapp_business_management'],granular_scopes:[{scope:'whatsapp_business_messaging'},{scope:'whatsapp_business_management'}],expires_at:0,data_access_expires_at:0}});
+    if(u.pathname==='/v25.0/20001')return response({id:'20001',owner_business_info:{id:'50001'}});
+    if(u.pathname.endsWith('/assigned_users'))return response({data:[{id:'60001',tasks:['MANAGE']}]});
     if(u.pathname.endsWith('phone_numbers'))return response({data:[{id:'10001'}]});
     if(channel==='whatsapp')return response({id:'10001',health_status:{can_send_message:'AVAILABLE'}});
     if(u.pathname.endsWith('/me'))return response(channel==='instagram'?{user_id:accounts.instagram}:{id:accounts.messenger});

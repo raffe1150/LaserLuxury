@@ -47,7 +47,9 @@ test('real four native entries → ordered PostgreSQL admission → real Knowled
     if(url.pathname.endsWith('/getMe'))return response({ok:true,result:{id:123456,is_bot:true}});
     if(url.pathname.endsWith('/getChat'))return response({ok:true,result:{id:Number(url.searchParams.get('chat_id')),type:'private'}});
     if(url.pathname.endsWith('/getChatMember'))return response({ok:true,result:{user:{id:123456},status:'member'}});
-    if(url.pathname.endsWith('/debug_token'))return response({data:{is_valid:true,app_id:'789',scopes:['whatsapp_business_messaging'],expires_at:0,data_access_expires_at:0}});
+    if(url.pathname.endsWith('/debug_token'))return response({data:{is_valid:true,app_id:'789',user_id:'60001',scopes:['whatsapp_business_messaging','whatsapp_business_management'],granular_scopes:[{scope:'whatsapp_business_messaging'},{scope:'whatsapp_business_management'}],expires_at:0,data_access_expires_at:0}});
+    if(url.pathname==='/v25.0/20001')return response({id:'20001',owner_business_info:{id:'50001'}});
+    if(url.pathname.endsWith('/assigned_users'))return response({data:[{id:'60001',tasks:['MANAGE']}]});
     if(url.pathname.endsWith('/phone_numbers'))return response({data:[{id:accounts.whatsapp}]});
     if(channel==='whatsapp')return response({id:accounts.whatsapp,health_status:{can_send_message:'AVAILABLE'}});
     if(url.pathname.endsWith('/me'))return response(channel==='instagram'?{user_id:accounts.instagram}:{id:accounts.messenger});

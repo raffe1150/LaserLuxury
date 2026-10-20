@@ -39,7 +39,13 @@ export async function nativeProviderEligible(bindings:NativeKnowledgeBindings,ta
   const host=b.channel==='instagram'?'graph.instagram.com':'graph.facebook.com';
   const url=(path:string,params:Record<string,string>={})=>{const u=new URL(`https://${host}/${VERSION}/${path}`);for(const[k,v]of Object.entries(params))u.searchParams.set(k,v);return u;};
   if(b.channel==='whatsapp'){
-    if(!c.providerConnectionId || !c.grantedScopes.includes('whatsapp_business_messaging'))return reject('WHATSAPP_CONNECTION_OR_SCOPE');
+    const id=(v:unknown):v is string=>typeof v==='string' && /^[1-9][0-9]{0,31}$/u.test(v);
+    const sameConnection=(other:ResolvedChannelConnection)=>other.businessId===c.businessId && other.provider===c.provider && other.id===c.id &&
+      other.providerAccountId===c.providerAccountId && other.providerConnectionId===c.providerConnectionId &&
+      other.credential.accessToken===token && other.status===c.status && other.reconnectRequired===c.reconnectRequired &&
+      other.tokenExpiresAt===c.tokenExpiresAt && JSON.stringify(other.grantedScopes)===JSON.stringify(c.grantedScopes);
+    if(expected && !sameConnection(expected))return reject('CONNECTION_CHANGED');
+    if(!id(c.providerConnectionId) || !id(b.account) || !c.grantedScopes.includes('whatsapp_business_messaging'))return reject('WHATSAPP_CONNECTION_OR_SCOPE');
     // Trusted server configuration only; never infer an allowed app from a token.
     // No fallback to the shared OAuth/webhook app identity.
     const expectedApp=process.env.META_WHATSAPP_APP_ID||'';
@@ -47,14 +53,34 @@ export async function nativeProviderEligible(bindings:NativeKnowledgeBindings,ta
     const debug=await jsonRead(fetcher,url('debug_token',{input_token:token}),token,signal);const d=debug?.data;
     if(d?.app_id!==expectedApp)return reject('WHATSAPP_TOKEN_APP');
     if(d?.is_valid!==true)return reject('WHATSAPP_TOKEN_VALIDITY');
-    if(!Array.isArray(d.scopes) || !d.scopes.includes('whatsapp_business_messaging'))return reject('WHATSAPP_TOKEN_SCOPE');
-    if(['expires_at','data_access_expires_at'].some(k=>typeof d[k]!=='number' || d[k]!==0 && d[k]*1000<=Date.now()))return reject('WHATSAPP_TOKEN_EXPIRY');
-    if(Array.isArray(d.granular_scopes) && d.granular_scopes.some((g:any)=>g.scope==='whatsapp_business_messaging' &&
-      (!Array.isArray(g.target_ids) || !g.target_ids.includes(c.providerConnectionId))))return reject('WHATSAPP_GRANULAR_SCOPE');
+    if(!Array.isArray(d.scopes) || d.scopes.some((s:unknown)=>typeof s!=='string') ||
+      !['whatsapp_business_messaging','whatsapp_business_management'].every(s=>d.scopes.includes(s)))return reject('WHATSAPP_TOKEN_SCOPE');
+    const unexpired=()=>['expires_at','data_access_expires_at'].every(k=>Number.isSafeInteger(d[k]) && d[k]>=0 && (d[k]===0 || d[k]*1000>Date.now()));
+    if(!unexpired())return reject('WHATSAPP_TOKEN_EXPIRY');
+    // Omitted targets are not a grant. Explicit exclusions/malformed entries
+    // fail; live asset/assignment evidence below is required on every check.
+    if(d.granular_scopes!==undefined && (!Array.isArray(d.granular_scopes) || d.granular_scopes.some((g:any)=>
+      !g || typeof g!=='object' || Array.isArray(g) || typeof g.scope!=='string' ||
+      ['whatsapp_business_messaging','whatsapp_business_management'].includes(g.scope) && Object.prototype.hasOwnProperty.call(g,'target_ids') &&
+      (!Array.isArray(g.target_ids) || g.target_ids.some((v:unknown)=>!id(v)) || !g.target_ids.includes(c.providerConnectionId)))))return reject('WHATSAPP_GRANULAR_SCOPE');
+    if(!id(d.user_id))return reject('WHATSAPP_WABA_ASSIGNMENT');
+    // Same read contracts and conservative MANAGE policy as onboarding; avoid
+    // its unrelated provisioning work and never trust a diagnostic snapshot.
+    const waba=await jsonRead(fetcher,url(c.providerConnectionId,{fields:'id,owner_business_info'}),token,signal);
+    if(waba?.id!==c.providerConnectionId || !id(waba.owner_business_info?.id))return reject('WHATSAPP_WABA_IDENTITY');
+    const users=await jsonRead(fetcher,url(`${c.providerConnectionId}/assigned_users`,{business:waba.owner_business_info.id,fields:'id,tasks',limit:'100'}),token,signal);
+    if(!Array.isArray(users?.data) || users.paging?.next || users.data.some((u:any)=>!id(u?.id)))return reject('WHATSAPP_WABA_ASSIGNMENT');
+    const assignments=users.data.filter((u:any)=>u.id===d.user_id);
+    if(assignments.length!==1 || !Array.isArray(assignments[0].tasks) || assignments[0].tasks.some((t:unknown)=>typeof t!=='string') ||
+      !assignments[0].tasks.includes('MANAGE'))return reject('WHATSAPP_WABA_ASSIGNMENT');
     const phones=await jsonRead(fetcher,url(`${encodeURIComponent(c.providerConnectionId)}/phone_numbers`,{fields:'id',limit:'100'}),token,signal);
-    if(!Array.isArray(phones?.data) || !phones.data.some((p:any)=>p.id===b.account))return reject('WHATSAPP_PHONE_MEMBERSHIP');
+    if(!Array.isArray(phones?.data) || phones.paging?.next || phones.data.some((p:any)=>!id(p?.id)) || phones.data.filter((p:any)=>p.id===b.account).length!==1)return reject('WHATSAPP_PHONE_MEMBERSHIP');
     const phone=await jsonRead(fetcher,url(b.account,{fields:'id,health_status'}),token,signal);
-    return phone?.id===b.account && phone.health_status?.can_send_message==='AVAILABLE' && Date.now()-eventAt<86400000 || reject('WHATSAPP_PHONE_HEALTH_OR_WINDOW');
+    if(phone?.id!==b.account || phone.health_status?.can_send_message!=='AVAILABLE' || Date.now()-eventAt>=86400000)return reject('WHATSAPP_PHONE_HEALTH_OR_WINDOW');
+    const current=await bindings.resolve(task.scope);
+    if(!current || !sameConnection(current.connection) || current.binding.recipient!==b.recipient)return reject('CONNECTION_CHANGED');
+    if(!unexpired())return reject('WHATSAPP_TOKEN_EXPIRY');
+    return !signal.aborted && Date.now()-eventAt<86400000 || reject('WHATSAPP_PHONE_HEALTH_OR_WINDOW');
   }
   const required=b.channel==='instagram'?'instagram_business_manage_messages':'pages_messaging';
   if(!c.grantedScopes.includes(required))return reject('META_SAVED_SCOPE');

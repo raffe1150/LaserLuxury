@@ -1,3 +1,6 @@
+import { isExplicitBusinessActionRequest } from './business-information';
+import { hasConversationReference } from './conversation-intent-continuity';
+
 /** A narrow request contract, never evidence or an answer. Unknown/compound
  * wording stays on the semantic planner; full question text remains available
  * to extraction and independent coverage verification. */
@@ -29,6 +32,33 @@ export function deterministicLocationPlan(question: string, businessInformationR
   };
 }
 export const KNOWLEDGE_PLANNING_LIMIT_MS=2500;
+
+/** A literal request container after a planner transport failure, not a semantic
+ * decomposition. It supplies no facts, translations, inferred obligations or
+ * coverage. The independent verifier must still align the FULL question and
+ * establish every material fact; a description container cannot grant permission.
+ */
+export function literalInformationFallback(question: string, businessInformationRecognized: boolean, referenceRequired = false) {
+  const text = question.trim();
+  // Keep the entire request within the existing facet/obligation field bound.
+  // Never truncate a condition or resolve a missing conversational antecedent.
+  if (!businessInformationRecognized || referenceRequired || !text || text.length > 240 ||
+      isExplicitBusinessActionRequest(text) || (text.match(/[?؟]/gu) || []).length > 4) return null;
+  const references = text
+    // Existential "is there" is not a reference to a previous place.
+    .replace(/\b(?:is|are)\s+there\b/giu, '')
+    .replace(/\bfinns\s+det\b/giu, '')
+    // A coordinated predicate stays attached to its literal, in-question subject.
+    // No text is removed from the request passed to extraction/verification.
+    .replace(/\b(?:and|och|und|y)\s+(?:is|are|är|ist|sind|es)\s+(?:it|den|det|das|eso)\b/giu, '');
+  if (hasConversationReference(references)) return null;
+  return {
+    canonicalMeaning: text, queries: [text], queryLanguages: {}, requestKind: 'BUSINESS_INFORMATION',
+    referenceResolution: 'NOT_REQUIRED' as const,
+    requestedFacets: [{ subject: 'customer request', attribute: text, questionType: 'description',
+      obligations: [{ description: text, questionType: 'description' }] }],
+  };
+}
 // Successful production verification took 6123ms and 6963ms. Reserve a
 // conservative six-second admission window; it is not a completion guarantee.
 export const KNOWLEDGE_VERIFICATION_MIN_MS=6000;

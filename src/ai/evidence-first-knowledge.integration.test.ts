@@ -289,7 +289,11 @@ for (const ch of channels) test(`${ch}: oversized question clarifies without gen
 });
 for (const ch of channels) test(`${ch}: transient provider failure cannot start a nested retry`,async()=>{
  configure({geminiGenerate:async p=>{requests.push(p);throw Object.assign(new Error('synthetic service unavailable'),{status:503});}});
- await inbound(ch,q.policy);assert.equal(requests.length,1);assert.equal(published().includes(policy),false);
+ await inbound(ch,q.policy);
+ assert.equal(requests.filter(p=>p.config.systemInstruction.includes('retrieval query planner')).length,1);
+ assert.equal(requests.filter(p=>p.config.systemInstruction.includes('UNIT EXTRACTION')).length,1);
+ assert.equal(requests.length,2,'Distinct extraction may proceed; neither failed stage retries');
+ assert.equal(published().includes(policy),false);
 });
 for (const ch of channels) test(`${ch}: non-document source is revalidated before publication`,async()=>{
  facts=[policy,parking];facetCount=2;configure({knowledgeSearch:async()=>[{businessId:77,sourceId:'synthetic-web',text:policy+'\n'+parking,metadata:{source:'website'}}]});

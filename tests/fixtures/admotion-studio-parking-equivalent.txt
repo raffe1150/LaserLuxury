@@ -1,0 +1,66 @@
+AdMotion Studio – Kundinformation och vanliga frågor
+Testdokument för OdinLink Knowledge Library
+Observera: All information i detta dokument är fiktiv och används enbart för att testa OdinLinks AI-assistent. Uppgifterna ska inte
+betraktas som AdMotion Studios verkliga kundvillkor.
+1. Inför ditt besök
+Vi rekommenderar att alla besökare läser igenom informationen före sitt första besök hos AdMotion Studio.
+Kunder som besöker studion för första gången rekommenderas att komma cirka 10 minuter före sin bokade tid för att hinna förbereda sig
+i lugn och ro.
+Ta gärna med din bokningsbekräftelse, digitalt eller på papper. Om du har fått särskilda förberedelseinstruktioner inför ditt besök ska du
+följa dessa.
+2. Hitta till studion
+För detta test gäller följande fiktiva besöksinformation:
+Studions entré ligger på innergården, inte vid huvudingången mot gatan.
+Besökare ska använda porten märkt Aurora 7 och därefter följa de blå skyltarna till receptionen på andra våningen.
+Det finns hiss i byggnaden. Hissen nås via innergårdens högra sida.
+3. Parkering och kollektivtrafik
+För besökare som kommer med bil finns ett parkeringsgarage som i detta test kallas Nordpark.
+Garagets infart ligger på Stjärngatan 14. Från garaget tar det ungefär fem minuter att gå till studions entré.
+AdMotion Studio erbjuder inte gratis parkering och kan inte reservera parkeringsplatser.
+Cyklar får parkeras vid cykelställen på innergården, men inte framför entrén.
+4. Medföljande personer
+En kund får ta med sig en vuxen medföljande person till receptionens väntrum.
+Medföljande personer får däremot inte automatiskt följa med in i behandlings- eller arbetsrummet. Detta måste godkännas separat av
+personalen.
+Barn under 12 år får inte lämnas utan uppsikt i receptionen.
+5. Om du blir försenad
+Om du riskerar att komma för sent bör du kontakta studion så snart som möjligt via den kontaktkanal där du vanligtvis kommunicerar
+med företaget.
+Vid en försening på mer än 15 minuter kan studion behöva göra en ny bedömning av om besöket kan genomföras enligt plan.
+Detta innebär inte att besöket automatiskt avbokas. Personalen behöver först bedöma situationen.
+6. Tillgänglighet
+Byggnaden har hiss och en tillgänglig entré från innergården.
+Personer som behöver extra hjälp med att hitta rätt eller ta sig in i lokalen rekommenderas att meddela personalen i förväg.
+Det finns en tillgänglig toalett på samma våningsplan som receptionen.
+
+7. Kvarglömda föremål
+Föremål som hittas i studion lämnas till receptionen.
+Kvarglömda föremål förvaras normalt i upp till 21 dagar.
+Värdesaker registreras separat. Kunden behöver beskriva föremålet innan det kan lämnas ut.
+AdMotion Studio ansvarar inte för att skicka kvarglömda föremål med post enligt dessa testvillkor.
+8. Digitala informationssamtal
+AdMotion Studio erbjuder i detta test digitala informationssamtal för kunder som behöver allmän vägledning inför ett första besök.
+Digitala informationssamtal används endast för inledande information.
+De ersätter inte automatiskt ett fysiskt besök, och alla ärenden kan inte hanteras digitalt.
+Tillgängliga tider och eventuella priser för tjänster hanteras separat i studions ordinarie boknings- och serviceinformation.
+9. Särskilda förberedelser
+Kunder bör undvika att använda starkt parfymerade produkter precis före sitt besök, eftersom andra besökare kan vara känsliga för
+dofter.
+Det är tillåtet att ta med en egen vattenflaska.
+Mat får inte förtäras i behandlings- eller arbetsrummen, men enklare mellanmål är tillåtna i väntrummet.
+10. Frågor som dokumentet inte besvarar
+Detta dokument innehåller inte uppgifter om:
+• Priser på studions tjänster
+• Tjänsternas längd
+• Lediga bokningstider
+• Ordinarie öppettider
+• Vilka betalningsmetoder som accepteras
+• Fullständiga avbokningsvillkor
+• Vilka specifika tjänster som erbjuds
+För dessa uppgifter ska OdinLink använda andra relevanta, verifierade informationskällor när sådana finns.
+Om en uppgift inte kan verifieras ska AI-assistenten inte hitta på ett svar.
+Dokumentets syfte: Att testa om OdinLink kan läsa, hitta och återge specifika uppgifter från en uppladdad PDF, förstå villkor och
+undantag samt skilja kompletterande kundinformation från strukturerad service-, pris- och bokningsinformation.
+Testversion: 1.0 – 16 oktober 2026.
+
+Heading

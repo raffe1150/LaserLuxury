@@ -422,11 +422,12 @@ for(const channel of channels)test(`latency-admission/${channel}: no new verifie
  await inbound(channel,question);assert.equal(sent.length,1);assert.equal(published().includes('Nordpark'),false);assert.ok(decisionEvents.some(e=>e.reason==='STAGE_ADMISSION'));assert.equal(reads,0);
 });
 
-for(const slow of [false,true])test(`latency-ambiguous-planning/${slow?'slow':'normal'}: bounded model planning retains fail-closed contract`,async t=>{
- await install(t);const original=deps.geminiGenerate!;let plannerCompleted=false;
- configure({geminiGenerate:async p=>{if(p.config.systemInstruction.includes('retrieval query planner')){if(slow)await new Promise(r=>setTimeout(r,2800));plannerCompleted=true;}return original(p);}});
+for(const slow of [false,true])test(`latency-ambiguous-planning/${slow?'slow':'normal'}: literal fallback retains independent verification`,async t=>{
+ const f=await install(t);const original=deps.geminiGenerate!;let plannerCompleted=false;
+ configure({semanticKnowledgeSearch:async id=>f.service.search(id,'parkering',5),geminiGenerate:async p=>{if(p.config.systemInstruction.includes('retrieval query planner')){if(slow)await new Promise(r=>setTimeout(r,2800));plannerCompleted=true;}return original(p);}});
  const start=performance.now();await inbound('whatsapp','Could you tell me about parking arrangements at AdMotion Studio?');
- assert.equal(sent.length,1);assert.equal(published().includes('Nordpark'),!slow);
+ assert.equal(sent.length,1);assert.equal(published().includes('Nordpark'),true);
+ assert.ok(requests.some(p=>p.config.systemInstruction.includes('BATCH ENTAILMENT')));
  if(slow){assert.equal(plannerCompleted,false);assert.ok(performance.now()-start>=2400&&performance.now()-start<4000);await new Promise(r=>setTimeout(r,400));assert.equal(plannerCompleted,true);assert.equal(sent.length,1,'Late planning cannot publish another answer');}
 });
 
@@ -443,7 +444,7 @@ for(const channel of channels)for(const [language,localizedQuestion,translations
  const vector=(values:number[])=>({provider:'openai',model:'synthetic-multilingual-only',dimensions:2,version:1,values});
  const provider:any={supportsLocalSemanticSearch:true,embedQuery:async()=>vector([1,0]),embedDocuments:async(texts:string[])=>texts.map(text=>vector(texts[0]===normalizedQuestion?[1,0]:text.includes('Nordpark')?[1,0]:text.includes('Kontakta företaget')?[.98,.2]:[0,1]))};
  const semantic=new KnowledgeService(f.storage,f.storage,provider);let semanticCalls=0;
- configure({semanticKnowledgeSearchQueries:async(id,queries,limit)=>{semanticCalls++;assert.equal(queries[0],normalizedQuestion);return semantic.semanticSearchQueries(id,queries,limit);},geminiGenerate:async p=>{
+ configure({completeKnowledgeCorpus:(id,m)=>f.service.completeSmallCorpus(id,m),semanticKnowledgeSearchQueries:async(id,queries,limit)=>{semanticCalls++;assert.equal(queries[0],normalizedQuestion);return semantic.semanticSearchQueries(id,queries,limit);},geminiGenerate:async p=>{
   assert.equal(p.config.systemInstruction.includes('retrieval query planner'),false);
   let result:any;try{result=await original(p);}catch(error){t.diagnostic('Explicit model fixture error: '+String(error));throw error;}if(p.config.systemInstruction.includes('UNIT EXTRACTION')){const data=JSON.parse(result.text);data.units.forEach((u:any,i:number)=>{u.language=language;u.text=translations[i];u.value=translations[i];});return{text:JSON.stringify(data)};}return result;
  }});
@@ -454,20 +455,27 @@ for(const channel of channels)for(const [language,localizedQuestion,translations
 
 
 test('Bounded optional planner abort reaches mocked OpenAI SDK; late completion cannot send',async t=>{
- await install(t);const fixture=deps.geminiGenerate!;
+ const f=await install(t);const fixture=deps.geminiGenerate!;
+ configure({semanticKnowledgeSearch:async id=>f.service.search(id,'parkering',5)});
  const previous={AI_PROVIDER:process.env.AI_PROVIDER,OPENAI_API_KEY:process.env.OPENAI_API_KEY};Object.assign(process.env,{AI_PROVIDER:'openai',OPENAI_API_KEY:'synthetic-only'});
  t.after(()=>{for(const [key,value]of Object.entries(previous)){if(value===undefined)delete process.env[key];else process.env[key]=value;}});
  let aborted=false,completed=false,calls=0;
  t.mock.method(Responses.prototype,'create',async(p:any,options:any)=>{
-  calls++;assert.ok(p.instructions.includes('retrieval query planner'));assert.ok(options.signal);
+  calls++;assert.ok(options.signal);
+  if(!p.instructions.includes('retrieval query planner')){
+   const result=await fixture({config:{systemInstruction:p.instructions,tools:[]},contents:[{parts:[{text:p.input[0].content}]}]});
+   return{output_text:result.text,status:'completed',output:[],usage:{input_tokens:10,output_tokens:10}} as any;
+  }
   options.signal.addEventListener('abort',()=>{aborted=true;},{once:true});
   await new Promise(r=>setTimeout(r,2800));completed=true;
   const result=await fixture({config:{systemInstruction:p.instructions,tools:[]},contents:[{parts:[{text:p.input[0].content}]}]});
   return{output_text:result.text,status:'completed',output:[],usage:{input_tokens:10,output_tokens:10}} as any;
  });
  await inbound('whatsapp','Could you tell me about parking arrangements at AdMotion Studio?');
- assert.equal(aborted,true);assert.equal(completed,false);assert.equal(sent.length,1);assert.equal(published().includes('Nordpark'),false);
- await new Promise(r=>setTimeout(r,400));assert.equal(completed,true);assert.equal(calls,1);assert.equal(sent.length,1);
+ assert.equal(aborted,true);assert.equal(completed,false);assert.equal(sent.length,1);assert.equal(published().includes('Nordpark'),true);
+ assert.ok(calls>=3,'The failed planner is followed by extraction and independent verification');
+ const callsBeforeLatePlanner=calls;
+ await new Promise(r=>setTimeout(r,400));assert.equal(completed,true);assert.equal(calls,callsBeforeLatePlanner);assert.equal(sent.length,1);
 });
 
 for(const channel of channels)for(const variant of ['plain','prefixed','verifier-timeout'] as const)
@@ -902,4 +910,167 @@ for(const ch of channels)test(`intent reference planner failure/${ch}: uncertain
  await inbound(ch,'Can I reserve it there?');
  assert.match(published(),/[?؟]/u);assert.equal(searches,0);assert.equal(reads,0);
  assert.doesNotMatch(published(),/Nordpark|Stjärngatan|Studio cannot reserve|Video Consultation/u);
+});
+
+// Planner recovery acceptance: real extraction/retrieval/current-source guards
+// and native adapters; proposal and independent verdicts below are EXPLICIT
+// MODEL FIXTURES, never evidence of real-provider correctness or latency.
+const recoveryQuestions = {
+ en: 'Is there parking available for customers, and is it free?',
+ sv: 'Finns det parkering för kunder, och är den gratis?',
+};
+const equivalentTxt = documentChunks(await extractInProcess(
+ readFileSync(new URL('../../tests/fixtures/admotion-studio-parking-equivalent.txt', import.meta.url)),
+ 'admotion-equivalent.txt', 'text/plain'), 'admotion-equivalent.txt');
+async function plannerRecovery(t:any, channel:Channel, format:'pdf'|'txt', language:'en'|'sv', failure:'timeout'|'provider', fault='complete', exhaustive=false) {
+ const f=await install(t,fault==='foreign'?'foreign':fault==='delete'?'delete':'complete',channel);
+ if(format==='txt') {
+  await f.storage.delete(77,f.source.id);
+  const source={...f.source,title:'admotion-equivalent.txt',content:equivalentTxt.content,metadata:equivalentTxt.metadata};
+  await f.storage.create(source);
+  await f.storage.replaceChunks(77,source.id,equivalentTxt.chunks.map(c=>({chunkIndex:Number(c.chunk_index),content:String(c.content),metadata:c.metadata as Record<string,unknown>})));
+ }
+ let semanticAborted=false,retrieval:any;const started=performance.now();
+ if(exhaustive) {
+  await f.storage.delete(77,'generic-txt'); // The exact PDF alone has five canonical chunks.
+  configure({completeKnowledgeCorpus:(id,m)=>f.service.completeSmallCorpus(id,m),knowledgeRetrievalDiagnostic:e=>{retrieval=e;},
+   semanticKnowledgeSearchQueries:async(_id,_q,_limit,options)=>new Promise(resolve=>{
+    assert.ok(options?.signal);options.signal.addEventListener('abort',()=>{semanticAborted=true;resolve([]);},{once:true});
+   })});
+ }
+ lang=language;const originalQuestion=recoveryQuestions[language];const epoch=Date.now();let elapsed=0;
+ t.mock.method(Date,'now',()=>epoch+elapsed);
+ const copy=language==='en'?[
+  'Customer parking is at Nordpark garage, with its entrance at Stjärngatan 14, approximately a five-minute walk from the studio.',
+  'AdMotion Studio does not provide free parking.', 'AdMotion Studio cannot reserve parking spaces.',
+ ]:[
+  'Kunder kan parkera i Nordpark med infart på Stjärngatan 14, ungefär fem minuters promenad från studion.',
+  'AdMotion Studio erbjuder inte gratis parkering.', 'AdMotion Studio kan inte reservera parkeringsplatser.',
+ ];
+ let planner=0,extractor=0,verifier=0;
+ configure({geminiGenerate:async p=>{
+  requests.push(p);const instruction=p.config.systemInstruction;
+  if(instruction.includes('retrieval query planner')) {
+   planner++;elapsed+=2500;
+   throw new Error(failure==='timeout'?'synthetic planner timeout':'synthetic network failure');
+  }
+  const data=JSON.parse(p.contents[0].parts[0].text);
+  if(instruction.includes('UNIT EXTRACTION')||instruction.includes('BATCH ENTAILMENT')) {
+   assert.equal(data.question,originalQuestion);
+   assert.equal(data.facets.length,1,'A literal container must not invent a semantic decomposition');
+   assert.equal(data.facets[0].obligations[0].description,originalQuestion);
+  }
+  if(instruction.includes('UNIT EXTRACTION')) {
+   extractor++;const ev=data.evidence.find((e:any)=>e.text.includes('Nordpark'));assert.ok(ev);
+   const garage=ev.text.slice(ev.text.indexOf('För besökare som kommer med bil'),ev.text.indexOf('AdMotion Studio erbjuder inte gratis parkering')).trim();
+   const restriction='AdMotion Studio erbjuder inte gratis parkering och kan inte reservera parkeringsplatser.';
+   return {text:JSON.stringify({units:copy.slice(0,fault==='partial'?1:3).map((text,i)=>({facetIds:['f1'],subject:'parking',predicate:'arrangement',value:text,scope:'fictional studio visitors',qualifiers:[],negation:i>0,modality:'descriptive',language,text:fault==='unsupported'?'The garage costs 25 SEK per hour.':text,evidenceRefs:[{evidenceId:ev.id,exactQuote:i===0?garage:restriction}]}))})};
+  }
+  if(instruction.includes('BATCH ENTAILMENT')) {
+   verifier++;const conflict=fault==='conflict';const ids=conflict?[]:data.units.map((u:any)=>u.id);
+   return {text:JSON.stringify({decisions:data.units.map((u:any)=>({unitId:u.id,relation:conflict?'CONTRADICTED':fault==='unsupported'?'UNKNOWN':'ENTAILED',facetIds:u.facetIds,meaningPreserved:true,modalityPreserved:true,qualifiersPreserved:true,relevant:true,languageCorrect:true,negativeAbsence:u.negation,explicitAbsenceEvidence:true})),coverage:[{facetId:'f1',requestAligned:fault!=='misaligned',materialFactsComplete:fault!=='partial'&&!conflict,incompletenessReason:fault==='partial'?'MISSING_CONDITION':conflict?'UNRESOLVED':'NONE',materialUnitIds:ids,obligations:[{obligationId:'f1.o1',status:fault==='partial'||conflict?'UNRESOLVED':'COVERED',unitIds:ids}]}]})};
+  }
+  if(instruction.includes('VERIFIED-UNIT PRESENTATION'))return {text:JSON.stringify({unitIds:data.units.map((u:any)=>u.id),prefix:'none',addition:false})};
+  assert.fail('No unrestricted generation or planner retry is allowed');
+ }});
+ await inbound(channel,originalQuestion);
+ if(exhaustive) {
+  assert.equal(retrieval.completeCorpusUsed,true);assert.equal(semanticAborted,true);
+  assert.ok(performance.now()-started<1000,'An exhaustive lexical corpus must not wait the 2500ms semantic window');
+  const proposal=requests.find(p=>p.config.systemInstruction.includes('UNIT EXTRACTION'));
+  assert.equal(JSON.parse(proposal.contents[0].parts[0].text).evidence.length,5,'Include the entire corpus, not only positive keyword hits');
+ }
+ assert.equal(planner,1);assert.equal(sent.length,1);assert.equal(reads,0,'Information recovery must not read or mutate Booking');
+ assert.ok(decisionEvents.some(e=>e.stage==='planning'&&e.reason==='LITERAL_REQUEST_FALLBACK'));
+ if(fault==='complete') {
+  assert.equal(extractor,1);assert.equal(verifier,1,'Real orchestration must require a distinct independent verifier');
+  for(const text of copy)assert.ok(published().includes(text),published());
+  assert.equal(metrics.at(-1).completeness[0].status,'VERIFIED');
+  assert.ok(decisionEvents.some(e=>e.admission?.admitted===true&&e.admission.remainingBudgetMs<=17500));
+ }else if(fault==='partial'||fault==='misaligned') {
+  assert.equal(verifier,1);assert.notEqual(metrics.at(-1).completeness[0].status,'VERIFIED');
+  assert.equal(metrics.at(-1).completeness[0].materialFactsComplete,fault!=='partial');
+  if(fault==='misaligned')assert.equal(metrics.at(-1).completeness[0].requestAligned,false);
+ }else {
+  assert.equal(published().includes('Nordpark'),false,'No unsupported, disputed, revoked or foreign fact may publish');
+  assert.equal(published().includes('25 SEK'),false);
+ }
+}
+for(const channel of channels)for(const format of ['pdf','txt']as const)for(const language of ['en','sv']as const)for(const failure of ['timeout','provider']as const)
+ test(`planner-recovery/${channel}/${format}/${language}/${failure}: complete parking inventory, explicit model fixtures`,t=>plannerRecovery(t,channel,format,language,failure));
+for(const channel of channels)for(const fault of ['partial','misaligned','conflict','unsupported','delete','foreign'])
+ test(`planner-recovery/${channel}/safety/${fault}: fallback never grants factual authority`,t=>plannerRecovery(t,channel,'pdf','en','timeout',fault));
+for(const channel of channels)for(const format of ['pdf','txt']as const)for(const language of ['en','sv']as const)
+ test(`complete-corpus/${channel}/${format}/${language}: recover semantic time without omitting conditions`,t=>plannerRecovery(t,channel,format,language,'timeout','complete',true));
+for(const channel of channels)for(const fault of ['partial','misaligned','conflict','unsupported','delete'])
+ test(`complete-corpus/${channel}/${fault}: exhaustive retrieval never grants answer authority`,t=>plannerRecovery(t,channel,'pdf','en','timeout',fault,true));
+for(const channel of channels)for(const fault of ['authentication','safety','malformed','refusal','expired-budget'])
+ test(`planner-recovery/${channel}/guard/${fault}: rejected planning cannot acquire fallback authority`,async t=>{
+  await install(t);lang='en';let elapsed=0;const epoch=Date.now();t.mock.method(Date,'now',()=>epoch+elapsed);
+  configure({geminiGenerate:async p=>{
+   requests.push(p);assert.ok(p.config.systemInstruction.includes('retrieval query planner'));
+   if(fault==='malformed')return{text:'not-json'};
+   if(fault==='refusal')return{text:'',promptFeedback:{blockReason:'SAFETY'}};
+   if(fault==='expired-budget'){elapsed=20001;throw new Error('synthetic planner timeout');}
+   throw fault==='authentication'?Object.assign(new Error('unauthorized'),{status:401}):new Error('safety blocked');
+  }});
+  await inbound(channel,recoveryQuestions.en);
+  assert.equal(requests.length,1);assert.equal(reads,0);
+  assert.equal(decisionEvents.some(e=>e.reason==='LITERAL_REQUEST_FALLBACK'),false);
+  assert.equal(sent.some(s=>JSON.stringify(s.body).includes('Nordpark')),false);
+ });
+
+for(const channel of channels)for(const proof of ['failed','slow'])test(`complete-corpus/${channel}/proof-${proof}: uncertain corpus preserves concurrent semantic retrieval`,async t=>{
+ const f=await install(t,'complete',channel);let retrieval:any,semanticCalls=0,aborted=false;
+ configure({completeKnowledgeCorpus:async()=>{if(proof==='slow')return new Promise(()=>{});throw Error('synthetic source-read failure');},
+  knowledgeRetrievalDiagnostic:e=>{retrieval=e;},semanticKnowledgeSearchQueries:async(id,_queries,limit,options)=>{
+   semanticCalls++;options?.signal?.addEventListener('abort',()=>{aborted=true;},{once:true});
+   return f.service.search(id,'parkering',limit);
+  }});
+ const start=performance.now();await inbound(channel,question);
+ assert.equal(semanticCalls,1);assert.equal(aborted,false);assert.equal(retrieval.completeCorpusUsed,false);
+ assert.ok(performance.now()-start<750,'An inconclusive proof has only a 100ms allowance');
+ for(const fact of parkingFacts)assert.ok(published().includes(fact));
+ assert.equal(reads,0);assert.equal(sent.length,1);
+});
+for(const channel of channels)test(`complete-corpus/${channel}/conflicting-current-documents: entire corpus reaches the independent verifier`,async t=>{
+ const f=await install(t,'conflict',channel);const data=documentChunks([{text:rawQuotes[0]+'\n'+rawQuotes[1],page:1}],'small-policy.txt');
+ await f.storage.create({...f.source,content:data.content,metadata:data.metadata});
+ await f.storage.replaceChunks(77,f.source.id,data.chunks.map(c=>({chunkIndex:Number(c.chunk_index),content:String(c.content),metadata:c.metadata as Record<string,unknown>})));
+ const contradiction='Parking at Nordpark is free for all studio visitors.';
+ await f.storage.create({...f.source,id:'contradictory-policy',content:contradiction,metadata:{segments:[{start:0,end:contradiction.length,page:1}]}});
+ const original=deps.geminiGenerate!;let verified=false,retrieval:any;
+ configure({completeKnowledgeCorpus:(id,m)=>f.service.completeSmallCorpus(id,m),knowledgeRetrievalDiagnostic:e=>{retrieval=e;},
+  geminiGenerate:async p=>{
+   if(p.config.systemInstruction.includes('BATCH ENTAILMENT')){
+    verified=true;const payload=JSON.parse(p.contents[0].parts[0].text);
+    assert.ok(payload.evidence.some((e:any)=>e.text.includes(contradiction)));
+    assert.ok(payload.evidence.some((e:any)=>e.text.includes('erbjuder inte gratis')));
+   }
+   return original(p);
+  }});
+ await inbound(channel,question);assert.equal(retrieval.completeCorpusUsed,true);assert.equal(verified,true);
+ assert.equal(published().includes('Nordpark'),false);assert.equal(sent.length,1);assert.equal(reads,0);
+});
+for(const channel of channels)test(`complete-corpus/${channel}/Persian-without-lexical-anchor: small Swedish corpus still requires semantic retrieval`,async t=>{
+ const f=await install(t,'complete',channel);await f.storage.delete(77,'generic-txt');lang='fa';
+ const localized='کجا می توانم پارکینگ مشتریان را پیدا کنم؟',translations=locationLanguages.find(row=>row[0]==='fa')![2];
+ const original=deps.geminiGenerate!;let semanticCalls=0,aborted=false,retrieval:any;
+ configure({completeKnowledgeCorpus:(id,m)=>f.service.completeSmallCorpus(id,m),knowledgeRetrievalDiagnostic:e=>{retrieval=e;},
+  semanticKnowledgeSearchQueries:async(id,_q,limit,options)=>{
+   semanticCalls++;options?.signal?.addEventListener('abort',()=>{aborted=true;},{once:true});
+   return f.service.search(id,'parkering',limit); // Explicit synthetic semantic result, not real inference.
+  },geminiGenerate:async p=>{
+   assert.equal(p.config.systemInstruction.includes('retrieval query planner'),false);
+   if(p.config.systemInstruction.includes('UNIT EXTRACTION')){
+    const payload=JSON.parse(p.contents[0].parts[0].text),ev=payload.evidence.find((e:any)=>e.text.includes('Nordpark'));assert.ok(ev);
+    return{text:JSON.stringify({units:translations.map((text,i)=>({facetIds:['f1'],subject:'parking',predicate:'arrangement',value:text,scope:'studio visitors',qualifiers:[],negation:i>0,modality:'descriptive',language:'fa',text,evidenceRefs:[{evidenceId:ev.id,exactQuote:rawQuotes[i]}]}))})};
+   }
+   return original(p);
+  }});
+ await inbound(channel,localized);
+ assert.equal(retrieval.lexicalMatchCount,0);assert.equal(retrieval.completeCorpusUsed,false);
+ assert.equal(semanticCalls,1);assert.equal(aborted,false);
+ for(const text of translations)assert.ok(published().includes(text),published());
+ assert.equal(metrics.at(-1).completeness[0].status,'VERIFIED');assert.equal(sent.length,1);assert.equal(reads,0);
 });

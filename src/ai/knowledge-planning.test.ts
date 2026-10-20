@@ -1,9 +1,34 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {deterministicLocationPlan} from './knowledge-planning';
+import {deterministicLocationPlan, literalInformationFallback} from './knowledge-planning';
 import {parseRequestedFacets} from './business-information-answer-plan';
 import {isBusinessInformationQuestion} from './business-information';
 import {naturalLocationCases} from '../../tests/fixtures/knowledge-natural-location';
+
+for (const question of [
+ 'Is there parking available for customers, and is it free?',
+ 'Finns det parkering för kunder, och är den gratis?',
+ 'What are the parking arrangements, restrictions and alternatives?',
+ 'Is parking required, recommended or merely permitted?',
+]) test(`Failed planner retains the whole literal request: ${question}`, () => {
+ const plan=literalInformationFallback(question,true);assert.ok(plan);
+ assert.equal(plan.canonicalMeaning,question);assert.deepEqual(plan.queries,[question]);
+ const {facets}=parseRequestedFacets(plan.requestedFacets);
+ assert.equal(facets.length,1);assert.equal(facets[0].attribute,question);
+ assert.equal(facets[0].obligations[0].description,question);
+ assert.equal(Object.hasOwn(plan,'coverage'),false);assert.equal(JSON.stringify(plan).includes('Nordpark'),false);
+ assert.equal(literalInformationFallback(question,false),null);
+ assert.equal(literalInformationFallback(question,true,true),null);
+});
+for (const question of [
+ 'Could you tell me where that parking is?', 'Can I park there?',
+ 'Is it free?', 'Finns det parkering där?',
+ 'Please cancel my appointment and explain parking.',
+ 'Book a consultation. Is there parking?', 'What about parking at the same place?',
+ 'Is there parking? '+ 'x'.repeat(241),
+]) test(`Planner fallback cannot guess references, actions or truncate: ${question.slice(0,90)}`, () => {
+ assert.equal(literalInformationFallback(question,true),null);
+});
 
 for(const [,question] of naturalLocationCases)test(`Conversational location contract retains original request: ${question}`,()=>{
  const plan=deterministicLocationPlan(question,isBusinessInformationQuestion(question));assert.ok(plan);

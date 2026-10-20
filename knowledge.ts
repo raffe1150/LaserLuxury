@@ -71,6 +71,10 @@ export interface KnowledgeChunkInput {
 export interface KnowledgeStorage {
   initialize(): Promise<void>;
   list(businessId: number): Promise<KnowledgeSource[]>;
+  /** Complete ready-source inventory or null. Ordinary list() does not attest
+   * exhaustiveness. A conservative whole-inventory bound is allowed; backend
+   * caps and partial pages must never imply completeness. */
+  listReadyComplete?(businessId: number, maxSources: number): Promise<KnowledgeSource[] | null>;
   create(source: KnowledgeSource): Promise<KnowledgeSource>;
   replaceChunks(
     businessId: number,
@@ -103,6 +107,12 @@ export class InMemoryKnowledgeStorage implements KnowledgeStorage {
     return Array.from(this.sources.values())
       .filter((source) => source.businessId === businessId)
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  async listReadyComplete(businessId: number, maxSources: number): Promise<KnowledgeSource[] | null> {
+    if (!Number.isSafeInteger(businessId) || businessId <= 0 || !Number.isSafeInteger(maxSources) || maxSources <= 0) return null;
+    const sources = [...this.sources.values()].filter(s => s.businessId === businessId && s.status === 'ready');
+    return sources.length <= maxSources ? sources : null;
   }
 
   async create(source: KnowledgeSource): Promise<KnowledgeSource> {
@@ -216,6 +226,26 @@ export class SupabaseKnowledgeStorage implements KnowledgeStorage {
     }
 
     return (data || []).map(mapKnowledgeSourceRow).filter((source: KnowledgeSource) => source.businessId === businessId && source.status !== "deleted");
+  }
+
+  async listReadyComplete(businessId: number, maxSources: number): Promise<KnowledgeSource[] | null> {
+    if (!Number.isSafeInteger(businessId) || businessId <= 0 || !Number.isSafeInteger(maxSources) || maxSources <= 0) return null;
+    try {
+      // Prove the ALL-status inventory before selecting ready rows. Existing
+      // freshness reads also list all statuses: a ready-only proof could opt in
+      // while later capped reads hide older conditions. One data+exact-count
+      // response detects overflow/truncation without a separate count or paging.
+      const { data, error, count } = await this.client.from(this.tableName)
+        .select('id,business_id,type,title,status,content,created_at,updated_at,metadata', { count: 'exact' })
+        .eq('business_id', businessId)
+        .order('created_at', { ascending: false }).limit(maxSources).retry(false);
+      if (error || !Array.isArray(data) || !Number.isSafeInteger(count) || count < 0 || count > maxSources || count !== data.length ||
+          data.some(row => !row || typeof row.id !== 'string' || !row.id.trim() ||
+            !['pending','processing','ready','failed','deleted','disabled','error'].includes(row.status))) return null;
+      const sources = data.map(mapKnowledgeSourceRow);
+      if (new Set(sources.map(s => s.id)).size !== count || sources.some(s => s.businessId !== businessId)) return null;
+      return sources.filter(s => s.status === 'ready');
+    } catch { return null; } // Unknown inventory must retain semantic retrieval.
   }
 
   async create(source: KnowledgeSource): Promise<KnowledgeSource> {
@@ -772,6 +802,36 @@ export class KnowledgeService {
       }
     }
     return [...languages];
+  }
+
+  /** Retrieval completeness only, never question coverage. If the ENTIRE current
+   * tenant corpus fits the existing evidence envelope, semantic ranking cannot
+   * contribute any additional text. Include unmatched conditions/conflicts too.
+   * Otherwise return null; lexical hit counts/scores cannot prove completeness.
+   * No cache, storage writes or changes to version-1 document reconstruction. */
+  async completeSmallCorpus(businessId: number, lexical: readonly KnowledgeSearchMatch[]): Promise<KnowledgeSearchMatch[] | null> {
+    if (!Number.isSafeInteger(businessId) || businessId <= 0 || !lexical.length) return null;
+    await this.ensureInitialized();
+    const sources = this.storage.listReadyComplete ? await this.storage.listReadyComplete(businessId, 5).catch(() => null) : null;
+    if (!sources?.length || sources.length > 5 || sources.some(s => s.businessId !== businessId || s.status !== 'ready' || !s.content.trim()) ||
+        sources.reduce((sum, s) => sum + s.content.length, 0) > 9000) return null;
+    const corpus: KnowledgeSearchMatch[] = [];
+    for (const source of sources) {
+      const chunks = source.type === 'document' ? documentCorpus(source) : chunkKnowledgeContent(source.content).map(c => ({
+        sourceId: source.id, businessId, text: c.content, metadata: { ...c.metadata, sourceRevision: knowledgeSourceRevision(source) },
+      }));
+      if (!chunks.length || corpus.length + chunks.length > 5) return null;
+      corpus.push(...chunks);
+    }
+    if (corpus.reduce((sum, c) => sum + c.text.length, 0) > 9000) return null;
+    const current = this.filterMatchesFromSources(businessId, [...lexical], sources, { strictSources: true, captureRevision: true });
+    if (!current.length) return null; // Empty, stale/foreign or fabricated hits cannot opt in.
+    const key = (m: KnowledgeSearchMatch) => JSON.stringify([m.sourceId, m.text]);
+    const selected = new Map<string, KnowledgeSearchMatch>();
+    for (const m of [...current, ...corpus]) if (!selected.has(key(m))) selected.set(key(m), m);
+    // Every returned byte must come from the canonical snapshot, even when an
+    // injected/legacy search row claims a high score. Revalidate again downstream.
+    return [...selected.values()];
   }
 
   /** OpenAI: one query batch, one corpus pass, original threshold and authority.

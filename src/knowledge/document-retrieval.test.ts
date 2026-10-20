@@ -71,3 +71,36 @@ test('document index failure preserves existing persisted manual semantic matche
   const service=new KnowledgeService(primary,storage,{embedQuery:async()=>vector('google'),embedDocuments:async()=>{throw Error('synthetic document index outage');}});
   assert.equal((await service.semanticSearch(1,'parking'))[0].sourceId,'manual');
 });
+
+test('complete small corpus retains unmatched conditions and conflicting sources, never asserts question coverage',async()=>{
+ const storage=new InMemoryKnowledgeStorage(), service=new KnowledgeService(storage,storage);
+ await storage.create(document('Customer access is available.','main'));
+ await storage.replaceChunks(1,'main',[{chunkIndex:0,content:'Customer access is available.',metadata:{page:2}}]);
+ await storage.create(document('Except on public holidays; advance approval is required.','conditions'));
+ await storage.create(document('Customer access is not available during building work.','conflict'));
+ await storage.create(document('Foreign confidential policy','foreign',2));
+ const lexical=(await service.search(1,'Customer')).filter(m=>m.sourceId==='main');
+ assert.equal(lexical.length,1);
+ const complete=await service.completeSmallCorpus(1,lexical);assert.ok(complete);
+ assert.deepEqual(new Set(complete.map(m=>m.sourceId)),new Set(['main','conditions','conflict']));
+ assert.ok(complete.every(m=>m.businessId===1&&m.metadata?.documentRevision));
+ assert.equal(Object.hasOwn(complete,'coverage'),false);
+ await storage.delete(1,'main');assert.equal(await service.completeSmallCorpus(1,lexical),null);
+});
+test('unknown, oversized, foreign and malformed corpora cannot suppress semantic retrieval',async()=>{
+ const storage=new InMemoryKnowledgeStorage(), service=new KnowledgeService(storage,storage);
+ await storage.create(document('Customer policy.'));
+ await storage.replaceChunks(1,'doc',[{chunkIndex:0,content:'Customer policy.',metadata:{page:2}}]);
+ const lexical=await service.search(1,'Customer');
+ assert.equal(lexical.length,1);
+ assert.equal(await service.completeSmallCorpus(1,[]),null);
+ assert.equal(await service.completeSmallCorpus(2,lexical),null);
+ assert.equal(await service.completeSmallCorpus(1,lexical.map(m=>({...m,businessId:2}))),null);
+ assert.equal(await service.completeSmallCorpus(1,lexical.map(m=>({...m,text:'fabricated hit',score:999}))),null);
+ await storage.create({...document('Unreconstructable source.','bad'),metadata:{}});
+ assert.equal(await service.completeSmallCorpus(1,lexical),null);await storage.delete(1,'bad');
+ await storage.create(document('x'.repeat(9001),'large'));
+ assert.equal(await service.completeSmallCorpus(1,lexical),null);await storage.delete(1,'large');
+ for(let i=0;i<5;i++)await storage.create(document('Separate condition '+i,'extra'+i));
+ assert.equal(await service.completeSmallCorpus(1,lexical),null,'Even a high lexical score cannot replace omitted sources');
+});

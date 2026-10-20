@@ -6,7 +6,7 @@ import { DurableKnowledgeBudget } from './src/p2/durable-knowledge-budget';
 import { captureVerified, type KnowledgeTask, type VerifiedKnowledge } from './src/p2/knowledge-lifecycle';
 import type { KnowledgeExecutor } from './src/p2/knowledge-runner';
 import { prepareLiteralTurn, type SharedTurnExecutionResult, hasConversationReference, referenceClarificationReply, mixedActionClarificationReply } from './src/ai/conversation-intent-continuity';
-import { deterministicLocationPlan, KNOWLEDGE_PLANNING_LIMIT_MS, KNOWLEDGE_VERIFICATION_MIN_MS } from './src/ai/knowledge-planning';
+import { deterministicLocationPlan, literalInformationFallback, KNOWLEDGE_PLANNING_LIMIT_MS, KNOWLEDGE_VERIFICATION_MIN_MS } from './src/ai/knowledge-planning';
 import { hasBookingInterruption, isBookingResumeRequest, withoutNegatedBookingClauses, bookingPauseReply } from './src/ai/booking-interruption';
 import { numericalConstraintSafe, NUMERICAL_DIRECTION_GUIDANCE } from './src/ai/numerical-constraints';
 import { readCancellationPolicy, hasCancellationSettings, cancellationPolicyFingerprint, cancellationGroundingConfig,
@@ -622,7 +622,21 @@ Required JSON shape:
       ...(informationBudget?{reason:knowledgeFailureReason(error)}:{error:error instanceof Error?error.message:String(error)}),
     });
     if(informationBudget)emitKnowledgeDecision({stage:'planning',reason:error instanceof SyntaxError?'MALFORMED_JSON':knowledgeFailureReason(error)});
-
+    // Foreground transport failure must not erase an explicit customer request.
+    // Keep the same absolute budget, attempts, verifier admission and publication
+    // guards. Refusals/malformed plans and durable Async execution are unchanged.
+    if (informationBudget && !(informationBudget instanceof DurableKnowledgeBudget) && !(error instanceof SyntaxError) &&
+        ['TIMEOUT', 'PROVIDER_UNAVAILABLE', 'NETWORK', 'RATE_LIMIT', 'UNKNOWN'].includes(classifyAiFailure(error)) &&
+        ['DEADLINE', 'PROVIDER_FAILURE'].includes(knowledgeFailureReason(error)) &&
+        informationBudget.remaining() > INFORMATION_PUBLICATION_RESERVE_MS + KNOWLEDGE_VERIFICATION_MIN_MS) {
+      const fallback = literalInformationFallback(customerQuestion,
+        isBusinessInformationQuestion(customerQuestion) && businessInformationTopics(customerQuestion).length > 0,
+        knowledgeTurnScope.getStore()?.requiresReferenceResolution === true);
+      if (fallback) {
+        emitKnowledgeDecision({ stage: 'planning', reason: 'LITERAL_REQUEST_FALLBACK' });
+        return fallback;
+      }
+    }
     return null;
   }
 }
@@ -1421,7 +1435,8 @@ type Priority1hTestDependencies = {
   ) => Promise<any[]> | any[];
   validateKnowledgeMatches?: (businessId: number, matches: any[]) => Promise<any[]>;
   knowledgeSourceLanguages?: (businessId: number) => Promise<SourceLanguage[]>;
-  semanticKnowledgeSearchQueries?: (businessId: number, queries: string[], limit: number) => Promise<any[]>;
+  completeKnowledgeCorpus?: (businessId: number, lexical: KnowledgeSearchMatch[]) => Promise<KnowledgeSearchMatch[] | null>;
+  semanticKnowledgeSearchQueries?: (businessId: number, queries: string[], limit: number, options?: import('./src/ai/embeddings').EmbeddingRequestOptions) => Promise<any[]>;
   semanticKnowledgeSearch?: (
     businessId: number,
     query: string,
@@ -8710,6 +8725,8 @@ async function retrieveBusinessKnowledgeForQuestion(
               limit,
             );
 
+    let cancelSemanticSearch: (() => void) | undefined;
+    let completeCorpusUsed = false;
     const semanticSearchKnowledge = (id: number, planned: string[], limit: number) => {
       // Bound optional semantic work so lexical evidence remains usable. The
       // same signal covers query and cold-corpus embedding calls.
@@ -8726,17 +8743,22 @@ async function retrieveBusinessKnowledgeForQuestion(
       const timeoutMs=Math.min(2_500,remaining);
       const controller=new AbortController();let timer:ReturnType<typeof setTimeout>;
       const work=()=>{
+        if(controller.signal.aborted)return Promise.resolve([]);
         if (process.env.NODE_ENV === 'test') {
-          if (priority1hTestDependencies?.semanticKnowledgeSearchQueries) return priority1hTestDependencies.semanticKnowledgeSearchQueries(id, planned, limit);
+          if (priority1hTestDependencies?.semanticKnowledgeSearchQueries) return priority1hTestDependencies.semanticKnowledgeSearchQueries(id, planned, limit,{signal:controller.signal,timeoutMs});
           if (priority1hTestDependencies?.semanticKnowledgeSearch) return Promise.all(planned.map(query => priority1hTestDependencies!.semanticKnowledgeSearch!(id, query, limit))).then(sets => sets.flat());
         }
         return knowledgeService.semanticSearchQueries(id, planned, limit,{signal:controller.signal,timeoutMs});
       };
-      const deadline=new Promise<KnowledgeSearchMatch[]>(resolve=>{timer=setTimeout(()=>{controller.abort();resolve([]);},timeoutMs);});
+      const deadline=new Promise<KnowledgeSearchMatch[]>(resolve=>{
+        cancelSemanticSearch=()=>{controller.abort();resolve([]);};
+        timer=setTimeout(cancelSemanticSearch,timeoutMs);
+      });
       return Promise.race([Promise.resolve().then(work),deadline]).finally(()=>clearTimeout(timer));
     };
 
-    const search = () => Promise.all([
+    const search = () => {
+      const lexical =
       process.env.ODINLINK_KNOWLEDGE_LEXICAL_BATCH === 'true'
         ? knowledgeService.searchLexicalQueries(businessId, queries, 5,
           metrics => console.log('[KnowledgeLexicalRetrieval]', metrics))
@@ -8756,8 +8778,8 @@ async function retrieveBusinessKnowledgeForQuestion(
 
             return [];
           })
-      )),
-      Promise.resolve()
+      ));
+      const semantic = Promise.resolve()
         .then(() => semanticSearchKnowledge(
           businessId,
           semanticQueries,
@@ -8773,8 +8795,28 @@ async function retrieveBusinessKnowledgeForQuestion(
                 : "unknown",
           });
           return [];
-        }),
-    ]);
+        });
+      const withCompleteCorpus = async () => {
+        const sets = await lexical;
+        if (!state?.budget || state.budget instanceof DurableKnowledgeBudget || !state.facets?.length || state.migrated === false) return sets;
+        // Scores and matching words cannot establish all question conditions.
+        // Only an exhaustive canonical tenant corpus inside the unchanged answer
+        // envelope makes further semantic retrieval redundant. Bound this extra
+        // read; failure/unknown/large corpora keep the concurrent semantic search.
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const complete = await Promise.race([
+          Promise.resolve().then(() => process.env.NODE_ENV === 'test'
+            ? priority1hTestDependencies?.completeKnowledgeCorpus?.(businessId, sets.flat()) || null
+            : knowledgeService.completeSmallCorpus(businessId, sets.flat())).catch(() => null),
+          new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), Math.min(100, state.budget!.remaining())); }),
+        ]).finally(() => { if (timer) clearTimeout(timer); });
+        if (!complete) return sets;
+        completeCorpusUsed = true;
+        cancelSemanticSearch?.();
+        return [complete, ...queries.slice(1).map(() => [])];
+      };
+      return Promise.all([withCompleteCorpus(), semantic]);
+    };
 
     const [resultSets, semanticMatches] = await (state?.budget ? withinInformationDeadline(state.budget, search) : search());
 
@@ -8806,7 +8848,7 @@ async function retrieveBusinessKnowledgeForQuestion(
       )
       .slice(0, 5);
 
-    const rawSemanticMatches = Array.isArray(semanticMatches)
+    const rawSemanticMatches = !completeCorpusUsed && Array.isArray(semanticMatches)
       ? semanticMatches
       : [];
     const scopedSemanticMatches = retainStrictlyScopedSemanticKnowledgeMatches(
@@ -8844,6 +8886,7 @@ async function retrieveBusinessKnowledgeForQuestion(
       questionFingerprint: safeLogFingerprint(normalizedQuestion),
       questionLength: normalizedQuestion.length,
       semanticPlanUsed: Boolean(semanticPlan),
+      completeCorpusUsed,
       queryCount: queries.length,
       semanticQueryCount: semanticQueries.length,
       lexicalQueries: queries.map((query, index) => ({

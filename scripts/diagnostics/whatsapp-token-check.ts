@@ -17,7 +17,11 @@ try {
   for(const k of ['ODINLINK_ASYNC_KNOWLEDGE_ADMISSION','ODINLINK_ASYNC_KNOWLEDGE_PROCESSING','ODINLINK_ASYNC_KNOWLEDGE_DELIVERY','ODINLINK_SMART_WAITING']) {
     if(![undefined,'','false'].includes(process.env[k]))stop('CONTROLS_NOT_OFF');
   }
-  const expected=process.env.META_APP_ID||'';if(!/^[0-9]+$/.test(expected))stop('APP_CONFIGURATION_INVALID');
+  const configured=process.env.META_APP_ID||'';if(!/^[0-9]+$/.test(configured))stop('APP_CONFIGURATION_INVALID');
+  // This reviewed comparison changes no app environment or product authorization.
+  const comparison=process.env.ODIN_DIAGNOSTIC_EXPECTED_APP_ID;
+  if(comparison!==undefined && comparison!=='26871846599183572')stop('EXPECTED_APP_NOT_ALLOWLISTED');
+  const expected=comparison??configured;
   out.stage='imports';
   const {createClient}=await import('@supabase/supabase-js');
   const {getBackendSupabaseConfiguration}=await local('src/auth/backend-supabase.ts');

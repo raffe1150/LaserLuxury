@@ -13,7 +13,7 @@ const modules=resolve(root,'node_modules');const tsx=pathToFileURL(require.resol
 const revision='1bee74483edfb37b2c7dbce8e820d86948cd1d47';
 const token='SYNTHETIC_SECRET_TOKEN_NEVER_OUTPUT';const key=Buffer.alloc(32,7);
 function envelope(){const iv=Buffer.alloc(12,5);const cipher=crypto.createCipheriv('aes-256-gcm',key,iv);const data=Buffer.concat([cipher.update(JSON.stringify({accessToken:token})),cipher.final()]);return ['v1',iv.toString('base64url'),cipher.getAuthTag().toString('base64url'),data.toString('base64url')].join('.');}
-function run(kind,overrides={}){
+function run(kind,overrides={},extraArgs=[]){
  const dir=mkdtempSync(join(tmpdir(),'odin-manual-cli-'));
  try{
   for(const file of ['scripts/diagnostics/whatsapp-token-check.sh','scripts/diagnostics/whatsapp-token-check.cjs','scripts/diagnostics/whatsapp-token-check.ts','src/auth/backend-supabase.ts','src/channels/connections/repository.ts','src/channels/connections/credential-crypto.ts']){
@@ -25,6 +25,7 @@ function run(kind,overrides={}){
   const payload={data:{app_id:'12345',is_valid:true,scopes:['whatsapp_business_messaging','whatsapp_business_management'],expires_at:0,data_access_expires_at:0}};
   const row={id:'synthetic-connection',business_id:3,provider:'whatsapp',provider_account_id:'synthetic-phone',provider_connection_id:'synthetic-waba',status:'connected',reconnect_required:false,token_expires_at:null,credential_ciphertext:envelope(),metadata:{private:'SYNTHETIC_METADATA_NEVER_OUTPUT'}};
   if(kind==='tenant')row.business_id=4;if(kind==='decrypt')row.credential_ciphertext='invalid';if(kind==='stored-expired')row.token_expires_at='2000-01-01';
+  if(kind==='reviewed-match')payload.data.app_id='26871846599183572';
   if(kind==='wrong-app')payload.data.app_id='67890';if(kind==='revoked')payload.data.is_valid=false;if(kind==='expired')payload.data.expires_at=1;
   if(kind==='scope')payload.data.scopes=[];if(kind==='missing-app')delete payload.data.app_id;if(kind==='numeric-app')payload.data.app_id=12345;
   if(kind==='missing-data')delete payload.data;
@@ -55,9 +56,9 @@ globalThis.fetch=async(input,init)=>{
 };`);
   if(kind==='import-missing')rmSync(join(dir,'src/channels/connections/repository.ts'));
   const env={PATH:process.env.PATH,RENDER_GIT_COMMIT:revision,SUPABASE_URL:'https://blknxpoeaqrvvdhixrau.supabase.co',SUPABASE_SERVICE_ROLE_KEY:'sb_secret_synthetic',CHANNEL_CREDENTIAL_ENCRYPTION_KEY:key.toString('base64'),META_APP_ID:'12345',...overrides};
-  const args=['scripts/diagnostics/whatsapp-token-check.sh',kind==='revision'?'0'.repeat(40):revision];
+  const args=['scripts/diagnostics/whatsapp-token-check.sh',kind==='revision'?'0'.repeat(40):revision,...extraArgs];
   const result=spawnSync('sh',args,{cwd:dir,env,encoding:'utf8',timeout:30000});assert.equal(result.error,undefined);assert.equal(result.status,0);assert.equal(result.stderr,'');
-  assert.ok(!/SYNTHETIC_|Bearer|https:|12345|67890|synthetic-phone|stack/.test(result.stdout),result.stdout);
+  assert.ok(!/SYNTHETIC_|Bearer|https:|12345|67890|synthetic-phone|26871846599183572|stack/.test(result.stdout),result.stdout);
   const output=JSON.parse(result.stdout);let calls=[];try{calls=readFileSync(join(dir,'calls'),'utf8').trim().split('\n');}catch{}
   assert.ok(calls.filter(x=>x==='DB_GET').length<=1);assert.ok(calls.filter(x=>x==='META_GET').length<=1);
   return {output,calls};
@@ -84,4 +85,30 @@ test('importing launcher and TS worker is inert: no IO, output or console mutati
  const script=`const old=console.log;globalThis.fetch=()=>{throw Error('NO_NETWORK')};await import(${JSON.stringify(pathToFileURL(join(root,'scripts/diagnostics/whatsapp-token-check.ts')).href)});await import(${JSON.stringify(pathToFileURL(join(root,'scripts/diagnostics/whatsapp-token-check.cjs')).href)});if(console.log!==old)throw Error('CONSOLE_MUTATED');`;
  const result=spawnSync(process.execPath,['--import','tsx','--input-type=module','-e',script],{cwd:root,env:{PATH:process.env.PATH},encoding:'utf8',timeout:10000});
  assert.equal(result.status,0,result.stderr);assert.equal(result.stdout,'');assert.equal(result.stderr,'');
+});
+const reviewedArgs=['--expected-app','26871846599183572'];
+test('explicit reviewed identity matches older app while runtime app remains different',()=>{
+ const {output,calls}=run('reviewed-match',{},reviewedArgs);
+ assert.equal(output.error,null);assert.equal(output.appIdMatchesExpected,true);assert.equal(output.tokenValid,true);
+ assert.equal(output.messagingScopePresent,true);assert.equal(output.managementScopePresent,true);
+ assert.equal(output.expiresAtAcceptable,true);assert.equal(output.dataAccessExpiresAtAcceptable,true);
+ assert.deepEqual(calls,['DB_GET','META_GET']);
+ assert.deepEqual(Object.keys(output).sort(),['stage','error','httpStatus','graphErrorCode','appIdMatchesExpected','tokenValid','messagingScopePresent','managementScopePresent','expiresAtAcceptable','dataAccessExpiresAtAcceptable'].sort());
+});
+for(const kind of ['valid','wrong-app','missing-app','numeric-app','missing-data','graph200','http403','malformed','timeout','decrypt','tenant','logging'])test(`reviewed comparison preserves fail-closed behavior: ${kind}`,()=>{
+ const {output}=run(kind,{},reviewedArgs);
+ const expected=kind==='valid'||kind==='wrong-app'||kind==='logging'?'APP_ID_MISMATCH':cases[kind];
+ assert.equal(output.error,expected);if(['valid','wrong-app','logging'].includes(kind))assert.equal(output.appIdMatchesExpected,false);
+});
+for(const args of [['--expected-app','67890'],['--expected-app',''],['--expected-app','26871846599183572 '],['--other','26871846599183572'],['--expected-app'],['--expected-app','26871846599183572','extra']])test('arbitrary, malformed or extra expected identity arguments reject before IO: '+JSON.stringify(args.map((v,i)=>i===0?v:'redacted')),()=>{
+ const {output,calls}=run('valid',{},args);assert.equal(output.error,'EXPECTED_APP_NOT_ALLOWLISTED');assert.deepEqual(calls,[]);
+});
+test('runtime-supplied diagnostic expected identity is not inherited or accepted',()=>{
+ const {output}=run('valid',{ODIN_DIAGNOSTIC_EXPECTED_APP_ID:'26871846599183572'});
+ assert.equal(output.error,null);assert.equal(output.appIdMatchesRuntime,true);assert.equal(output.appIdMatchesExpected,undefined);
+});
+test('reviewed option retains OFF and numeric runtime-app prerequisites',()=>{
+ for(const overrides of [{ODINLINK_ASYNC_KNOWLEDGE_ADMISSION:'true'},{META_APP_ID:''}]){
+  const {output,calls}=run('reviewed-match',overrides,reviewedArgs);assert.ok(['CONTROLS_NOT_OFF','APP_CONFIGURATION_INVALID'].includes(output.error));assert.deepEqual(calls,[]);
+ }
 });

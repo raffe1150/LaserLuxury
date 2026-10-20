@@ -52,3 +52,19 @@ A matching app/null error is NOT full WhatsApp delivery authorization: current p
 The test file invokes the exact shell launcher and child against a private copied checkout. Its test-only local tsx shim intercepts GETs, uses synthetic encrypted tenant rows with the REAL resolver/decryption, and never performs real network requests. It is not a production test flag or alternate runtime credential path. Test cases cover identity, HTTP/Graph/parse, expiry/revocation/scopes, tenant, decryption, controls, timeout, unexpected logging, output injection, revision/import failures and inert imports.
 
 Review only these five new paths for staging: README.md, whatsapp-token-check.sh, whatsapp-token-check.cjs, whatsapp-token-check.ts, whatsapp-token-check.test.mjs under scripts/diagnostics. Preserve historical untracked reports; do not blanket stage. Run the focused tests and TypeScript, inspect the isolated patch, then obtain separate authorization for commit/push/manual deployment with controls OFF. This Work task executes none of those release steps. Rollback is removal/reversion of this standalone CLI in a separately authorized application release; no schema, credential, task or product behavior rollback is necessary.
+
+## Reviewed older-app comparison (diagnostic only)
+
+The operator independently verified the Dashboard identity for **Laser Luxury Agent test** and authorized this single Business 3 comparison. The explicit option is restricted to that one code-reviewed ID in both launcher and worker; arbitrary runtime arguments or inherited diagnostic environment variables cannot add an app to the allowlist. This does NOT assert that the tenant token belongs to that app until the separately executed read-only comparison succeeds.
+
+After separately approving and deploying this extension, use the NEW reviewed full deployment SHA:
+
+```
+sh scripts/diagnostics/whatsapp-token-check.sh FULL_REVIEWED_DEPLOYED_COMMIT_SHA --expected-app 26871846599183572
+```
+
+The ID here is an explicit diagnostic input, never a credential or emitted result. Do not change `META_APP_ID`, Render settings, credentials or any feature controls. Existing no-option CLI behavior remains compatible and still compares against runtime `META_APP_ID`. Runtime `META_APP_ID` must remain configured/numeric even in reviewed comparison mode.
+
+Comparison mode emits only stage/error, HTTP/numeric Graph error status, `appIdMatchesExpected`, token validity, messaging/management scope booleans and expiry-validity booleans. It omits the legacy credential/data/type detail fields. It never emits either actual app identity. A missing or malformed identity yields a fixed error, not a genuine mismatch verdict. A successful match confirms this introspection's app identity, not permission to activate Async or bypass other product checks.
+
+The existing one-DB-read/at-most-one-provider-GET, clean child environment, output validation, body/output bounds, core-dump/cache suppression, 20-second abort and 25-second hard timeout remain unchanged. Hosting/Meta query logging limitations remain as documented above. No live provider query is performed by development or tests. A separate operator action remains required to execute the command.

@@ -1,3 +1,4 @@
+import { knowledgeDatabaseRead, knowledgeOperation } from './knowledge-operation';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { createP2ConversationKey } from './conversation-key';
 import { snapshot, type KnowledgeScope, type KnowledgeTask } from './knowledge-lifecycle';
@@ -20,9 +21,9 @@ export function validNativeRecipient(channel: KnowledgeScope['channel'], recipie
  */
 export function databaseNativeConnections(db: KnowledgeDatabase): NativeConnectionResolver {
   return async (businessId, channel) => {
-    const c = await resolveConnectionForBusiness(db as any, businessId, channel);
+    const c = await knowledgeOperation(()=>resolveConnectionForBusiness(db as any, businessId, channel));
     if (c || channel !== 'telegram') return c;
-    const { data, error } = await db.from('businesses').select('id,telegram_bot_token').eq('id', businessId).maybeSingle();
+    const { data, error } = await knowledgeDatabaseRead(db.from('businesses').select('id,telegram_bot_token').eq('id', businessId).maybeSingle());
     if (error) throw new Error('knowledge_connection_read_failed');
     const token = data?.telegram_bot_token;
     if (Number(data?.id) !== businessId || typeof token !== 'string' || !/^[1-9][0-9]*:[A-Za-z0-9_-]+$/u.test(token)) return null;
@@ -47,7 +48,7 @@ export class NativeKnowledgeBindings {
       !validNativeRecipient(b.channel,b.recipient) || typeof b.mac !== 'string' || !/^[a-f0-9]{64}$/u.test(b.mac)) return false;
     return timingSafeEqual(Buffer.from(b.mac,'hex'),Buffer.from(this.signature(b),'hex'));
   }
-  private async result(query: PromiseLike<any>) { const {data,error}=await query;if(error)throw new Error('knowledge_binding_storage_failed');return data; }
+  private async result(query: PromiseLike<any>) { const {data,error}=await knowledgeDatabaseRead(query);if(error)throw new Error('knowledge_binding_storage_failed');return data; }
   async ensure(businessId:number,channel:KnowledgeScope['channel'],account:string,recipient:string):Promise<KnowledgeScope> {
     const c=await this.connections(businessId,channel);
     if (!c || c.businessId !== businessId || c.provider !== channel || c.providerAccountId !== account ||
@@ -73,7 +74,7 @@ export class NativeKnowledgeBindings {
   }
   async resolve(scope:KnowledgeScope):Promise<Readonly<{binding:Binding;connection:ResolvedChannelConnection;key:string}>|null> {
     const stored=await this.stored(scope);if(!stored)return null;const b=stored.binding;
-    const c=await this.connections(scope.businessId,scope.channel);
+    const c=await knowledgeOperation(()=>this.connections(scope.businessId,scope.channel));
     if(!c || c.businessId!==b.businessId || c.provider!==b.channel || c.id!==b.connectionId || c.providerAccountId!==b.account ||
       c.status!=='connected' || c.reconnectRequired || !c.credential?.accessToken ||
       c.tokenExpiresAt!==null && (!Number.isFinite(Date.parse(c.tokenExpiresAt)) || Date.parse(c.tokenExpiresAt)<=Date.now()))return null;

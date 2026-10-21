@@ -85,13 +85,14 @@ const coverage = object({ facetId: str, requestAligned: bool, materialFactsCompl
   incompletenessReason: enumeration(['NONE','MISSING_RELEVANT_FACT','MISSING_CONDITION','MISSING_RECOMMENDATION','UNRESOLVED']),
   materialUnitIds: array(str), obligations: array(object({ obligationId: str,
   status: enumeration(['COVERED', 'UNRESOLVED']), unitIds: array(str) })) });
+const extractionUnit = object({ facetIds: array(str), subject: str, predicate: str, value: str,
+  modality: enumeration(MODALITIES), negation: bool, scope: str, qualifiers: array(str), language: str, text: str,
+  evidenceRefs: array(object({ evidenceId: str, exactQuote: str })) });
 const schemas = {
   planning: object({ canonicalMeaning: str, queries: array(str), queryLanguages: array(object({ query: str, language: enumeration(['sv','en','de','es','fa','ar']) })),
     requestKind: enumeration(['BUSINESS_INFORMATION','GENERAL_CONVERSATION']), referenceResolution: enumeration(['RESOLVED','UNRESOLVED','NOT_REQUIRED']), requestedFacets: array(object({ subject: str, attribute: str, questionType,
       obligations: array(object({ description: str, questionType })) })) }),
-  extraction: object({ oversized: bool, units: array(object({ facetIds: array(str), subject: str, predicate: str, value: str,
-    modality: enumeration(MODALITIES), negation: bool, scope: str, qualifiers: array(str), language: str, text: str,
-    evidenceRefs: array(object({ evidenceId: str, exactQuote: str })) })) }),
+  extraction: object({ oversized: bool, units: array(extractionUnit) }),
   verification: object({ decisions: array(object({ unitId: str, relation: enumeration(RELATIONS), facetIds: array(str),
     meaningPreserved: bool, modalityPreserved: bool, qualifiersPreserved: bool, relevant: bool, languageCorrect: bool,
     explicitAbsenceEvidence: bool, negativeAbsence: bool })), coverage: array(coverage) }),
@@ -102,11 +103,24 @@ const naturalValidation = object({contractHash:str,proposalHash:str,
   blocks:array(object({blockId:str,relation:enumeration(RELATIONS),noUnsupportedFacts:bool,meaningPreserved:bool,uncertaintyAccurate:bool})),
   unitCoverage:array(object({unitId:str,blockIds:array(str),complete:bool})),obligationCoverage:array(object({obligationId:str,blockIds:array(str),accurate:bool})),
   flags:object(Object.fromEntries(NATURAL_FLAGS.map(key=>[key,bool])))});
-export function knowledgeStructuredOutput(stage: keyof typeof schemas|'presentation_verification', natural=false): UnifiedAiStructuredOutputRequest {
+export function knowledgeStructuredOutput(stage: keyof typeof schemas|'presentation_verification', natural=false,
+  allowedFacetIds?: readonly string[]): UnifiedAiStructuredOutputRequest {
   if(stage==='verification'&&compactVerificationEnabled())return{name:COMPACT_VERIFICATION_NAME,strict:true,schema:compactVerificationSchema()};
   if(stage==='presentation_verification')return{name:'odinlink_natural_validation_v1',strict:true,schema:naturalValidation};
+  // Request-local enum, never a shared-schema mutation or a parser repair.
+  // Existing callers without a captured facet set retain their wire contract.
+  let extraction = schemas.extraction;
+  if(stage==='extraction' && allowedFacetIds!==undefined) {
+    if(!allowedFacetIds.length || allowedFacetIds.length>4 || new Set(allowedFacetIds).size!==allowedFacetIds.length ||
+      allowedFacetIds.some(id=>typeof id!=='string'||!id.trim()||id.length>8))throw new Error('invalid_allowed_facet_ids');
+    extraction = object({...schemas.extraction.properties,units:array(object({
+      ...extractionUnit.properties,
+      facetIds:{type:'array',items:enumeration(allowedFacetIds),minItems:1,maxItems:4},
+    }))}) as typeof schemas.extraction;
+  }
   if(stage==='extraction'&&natural)return{name:'odinlink_natural_extraction_v1',strict:true,
-    schema:object({...schemas.extraction.properties,naturalProposal:{anyOf:[{type:'null'},naturalProposal]}})};
+    schema:object({...extraction.properties,naturalProposal:{anyOf:[{type:'null'},naturalProposal]}})};
+  if(stage==='extraction')return{name:'odinlink_knowledge_extraction_v2',strict:true,schema:extraction};
   return { name: `odinlink_knowledge_${stage}_v2`, strict: true, schema: schemas[stage] };
 }
 

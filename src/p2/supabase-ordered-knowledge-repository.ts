@@ -8,6 +8,7 @@ import { SupabaseKnowledgeLifecycleRepository } from './supabase-knowledge-lifec
  * Claim/renew/verification/finalization/delivery retain the existing Slice 2 core.
  */
 export class SupabaseOrderedKnowledgeRepository extends SupabaseKnowledgeLifecycleRepository {
+  protected override readonly lifecycleV2:boolean=true;
   async accept(_scope: KnowledgeScope, _eventId: string, _input?: KnowledgeInput,
     _limits?: { executionMs?: number; maxRunAttempts?: number; maxModelAttempts?: number }): Promise<Acceptance> {
     throw new Error('knowledge_native_order_required');
@@ -23,6 +24,26 @@ export class SupabaseOrderedKnowledgeRepository extends SupabaseKnowledgeLifecyc
       p_execution_ms: boundedInteger(limits.executionMs ?? 40000, 1000, 120000),
       p_max_runs: boundedInteger(limits.maxRunAttempts ?? 3, 1, 5), p_max_models: boundedInteger(limits.maxModelAttempts ?? 4, 1, 8),
     }));
+    return this.decodeOrdered(scope, data);
+  }
+  async intake(scope: KnowledgeScope, eventId: string, order: NativeKnowledgeOrder | null,
+    command: 'begin' | 'prepare' | 'reconcile' | 'finish' | 'legacy', owner: string, context = '', input?: KnowledgeInput, executionMs = 20000) {
+    scope = snapshot(scope); requireProviderId(eventId); order = captureNativeOrder(scope.channel, order);
+    if (!await this.scope(scope)) throw new Error('knowledge_conversation_scope_mismatch');
+    const data = await this.result(this.db.rpc('odin_native_intake_v1', {
+      p_business: scope.businessId, p_conversation: scope.conversationId, p_channel: scope.channel,
+      p_account: scope.providerAccount, p_event: eventId, p_key: await this.canonicalKey(scope), p_order: order,
+      p_command: command, p_owner: owner, p_context: context, p_input: input ? captureInput(input) : null,
+      p_execution_ms: boundedInteger(executionMs, 1000, 120000),
+    }));
+    if (!data || !['ROUTING','PREPARED','ATTACHED','TERMINAL'].includes(data.intakeState)) throw new Error('knowledge_intake_response');
+    return snapshot({ result: await this.decodeOrdered(scope, data), state: data.intakeState as 'ROUTING'|'PREPARED'|'ATTACHED'|'TERMINAL',
+      reason: data.intakeReason as string | null, owner: data.intakeOwner as string | undefined });
+  }
+  async recoverIntakes(): Promise<void> {
+    await this.result(this.db.rpc('odin_recover_native_intakes_v1', {p_limit:16}));
+  }
+  protected async decodeOrdered(scope: KnowledgeScope, data: any): Promise<OrderedAdmission> {
     if (!data || !['ACCEPTED', 'DUPLICATE', 'STALE', 'AMBIGUOUS', 'BLOCKED'].includes(data.disposition) ||
       typeof data.mayAttach !== 'boolean' ||
       (data.mayAttach && (!data.inbox || !['ACCEPTED', 'DUPLICATE'].includes(data.disposition))) ||

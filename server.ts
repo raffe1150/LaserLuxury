@@ -1,3 +1,5 @@
+import { TelegramPollerLease } from './src/p2/telegram-poller-lease';
+import { NativeIntakeAcknowledgement } from './src/p2/native-intake-acknowledgement';
 import { preflightRejected } from './src/p2/knowledge-preflight-diagnostic';
 import { NativeKnowledgeRuntime, nativeAsyncControls, type NativeKnowledgeAdmission } from './src/p2/native-knowledge-runtime';
 import { nativeKnowledgeOrder, type NativeKnowledgeOrder } from './src/p2/native-knowledge-order';
@@ -492,7 +494,7 @@ async function resolveSemanticKnowledgeQueries(
   const informationBudget = knowledgeTurnScope.getStore()?.budget;
   const customerQuestion = String(question || "").trim();
   if (!customerQuestion) return null;
-  if (informationBudget && !(informationBudget instanceof DurableKnowledgeBudget) && !knowledgeTurnScope.getStore()?.mixedRequest) {
+  if (informationBudget && !knowledgeTurnScope.getStore()?.mixedRequest) {
     const literal = literalInformationPlan(customerQuestion, isBusinessInformationQuestion(customerQuestion),
       knowledgeTurnScope.getStore()?.requiresReferenceResolution === true);
     if (literal) {
@@ -630,10 +632,10 @@ Required JSON shape:
       ...(informationBudget?{reason:knowledgeFailureReason(error)}:{error:error instanceof Error?error.message:String(error)}),
     });
     if(informationBudget)emitKnowledgeDecision({stage:'planning',reason:error instanceof SyntaxError?'MALFORMED_JSON':knowledgeFailureReason(error)});
-    // Foreground transport failure must not erase an explicit customer request.
+    // A planner transport failure must not erase an explicit customer request.
     // Keep the same absolute budget, attempts, verifier admission and publication
-    // guards. Refusals/malformed plans and durable Async execution are unchanged.
-    if (informationBudget && !(informationBudget instanceof DurableKnowledgeBudget) && !(error instanceof SyntaxError) &&
+    // guards. Refusals and malformed plans do not gain literal fallback authority.
+    if (informationBudget && !(error instanceof SyntaxError) &&
         ['TIMEOUT', 'PROVIDER_UNAVAILABLE', 'NETWORK', 'RATE_LIMIT', 'UNKNOWN'].includes(classifyAiFailure(error)) &&
         ['DEADLINE', 'PROVIDER_FAILURE'].includes(knowledgeFailureReason(error)) &&
         informationBudget.remaining() > INFORMATION_PUBLICATION_RESERVE_MS + KNOWLEDGE_VERIFICATION_MIN_MS) {
@@ -881,8 +883,8 @@ async function generateContentWithFallback(ai: GoogleGenAI | null, options: {
     emitKnowledgeDecision({ stage: 'verification', reason: admission.admitted ? 'ACCEPTED' : 'STAGE_ADMISSION', admission });
     if (!admission.admitted) throw new Error('information_verification_admission');
   }
-  const foregroundProposal = informationBudget && !(informationBudget instanceof DurableKnowledgeBudget) && options.context?.stage === 'knowledge_units_extraction';
-  const proposalAllowance = foregroundProposal ? knowledgeProposalAllowance(informationBudget.generationRemaining()) : null;
+  const knowledgeProposal = informationBudget && options.context?.stage === 'knowledge_units_extraction';
+  const proposalAllowance = knowledgeProposal ? knowledgeProposalAllowance(informationBudget.generationRemaining()) : null;
   if (proposalAllowance === 0) {
     emitKnowledgeDecision({stage:'extraction',reason:'STAGE_ADMISSION',remainingMs:informationBudget!.remaining(),timeoutMs:0});
     throw new Error('information_proposal_admission');
@@ -5315,6 +5317,7 @@ function runUnifiedConversationRequest<T>(work: () => Promise<T>, nativeChannel:
   return withBusinessInformationTiming(() => requestSecurity.run(() => knowledgeTurnScope.run({nativeChannel,nativeEvent,naturalEnabled,...(naturalEnabled?{
     naturalSinglePartial:process.env.ODINLINK_GROUNDED_NATURAL_SINGLE_PARTIAL==='true',naturalTurnId:crypto.randomUUID()}: {})}, work)), nativeChannel);
 }
+const nativeIntakeScope = new AsyncLocalStorage<{runtime:NativeKnowledgeRuntime;admission:NativeKnowledgeAdmission;handoffAttempted?:boolean}>();
 let hostedNativeKnowledge:NativeKnowledgeRuntime|null=null;
 function getNativeKnowledgeRuntime():NativeKnowledgeRuntime|null {
   if (priority1hTestDependencies?.nativeKnowledgeRuntime) return priority1hTestDependencies.nativeKnowledgeRuntime;
@@ -5330,13 +5333,40 @@ function getNativeKnowledgeRuntime():NativeKnowledgeRuntime|null {
     }});
   return hostedNativeKnowledge;
 }
+/** Called only by authenticated native adapters, before their legacy action claim.
+ * Duplicates reconcile stored Knowledge only; never enter the foreground action handler. */
+async function runNativeIntake(channel:'telegram'|'whatsapp'|'messenger'|'instagram', event:any, config:any,
+  account:string, recipient:string, eventId:string, text:string, handler:()=>Promise<boolean>):Promise<boolean> {
+  const runtime=getNativeKnowledgeRuntime();
+  if(!runtime?.admissionEnabled)return handler();
+  let businessId=Number(getBusinessIdFromConfig(config));
+  if(supabase && channel!=='telegram') {
+    const connected=await findBusinessByChannelConnection(channel,account);
+    if(!connected)throw new Error('knowledge_intake_connection_unavailable');
+    businessId=Number(connected.business.id);
+  }
+  const intake=await runtime.beginIntake({businessId,channel,account,recipient,eventId,order:nativeKnowledgeOrder(channel,event)},text);
+  if(!intake)throw new Error('knowledge_intake_unavailable');
+  if(!intake.run)return true;
+  return nativeIntakeScope.run({runtime,admission:intake.admission},async()=>{
+    if(!await handler())throw new Error('knowledge_intake_foreground_claim_unavailable');
+    await runtime.finishIntake(intake.admission,nativeIntakeScope.getStore()?.handoffAttempted?'reconcile':'finish');
+    return true;
+  });
+}
+
 async function prepareNativeKnowledgeIngress(businessConfig:any):Promise<boolean> {
   const state=knowledgeTurnScope.getStore();if(!state?.nativeEvent || !state.nativeChannel || state.nativeAsync)return false;
   let runtime:NativeKnowledgeRuntime|null=null;
   try {
     runtime=getNativeKnowledgeRuntime();if(!runtime)return false;
     const event=state.nativeEvent;
-    const admission=await runtime.accept({businessId:Number(getBusinessIdFromConfig(businessConfig)),channel:state.nativeChannel,
+    const admitted=nativeIntakeScope.getStore()?.admission;
+    if(admitted && (admitted.scope.businessId!==Number(getBusinessIdFromConfig(businessConfig)) ||
+      admitted.scope.channel!==state.nativeChannel || admitted.scope.providerAccount!==event.account || admitted.eventId!==event.eventId)) {
+      throw new Error('knowledge_intake_route_scope_changed');
+    }
+    const admission=admitted || await runtime.accept({businessId:Number(getBusinessIdFromConfig(businessConfig)),channel:state.nativeChannel,
       account:event.account,recipient:event.recipient,eventId:event.eventId,order:event.order});
     if(!admission)return false;
     state.nativeAsync={runtime,admission,failed:false};
@@ -5346,6 +5376,7 @@ async function prepareNativeKnowledgeIngress(businessConfig:any):Promise<boolean
   } catch {
     state.nativeAsync={runtime,admission:null,failed:true};
     runOptionalDiagnostic(()=>console.error('[AsyncKnowledge]',{stage:'admission_unavailable'}));
+    if(nativeIntakeScope.getStore())throw new Error('knowledge_intake_admission_unavailable');
     return false; // Booking retains its existing foreground authority/path.
   }
 }
@@ -5502,8 +5533,11 @@ async function generateSecureConversationContent(sessionId: string, options: any
       const snapshot = buildBusinessGroundingSnapshot(support);
       const manifest = await buildEvidenceFirstAnswer({ question: support.question, language: support.language,
         facets: state.facets || [], evidence: state.snapshot?.evidence || [],
-        omitModelEvidenceVersions: !(state.budget instanceof DurableKnowledgeBudget),
-        foreground: !(state.budget instanceof DurableKnowledgeBudget),
+        // Use the same captured question/facet/evidence contract in both hosts.
+        // Durable budgets, attempt accounting and publication authority stay separate.
+        omitModelEvidenceVersions: true,
+        foreground: true,
+        requireCompleteCoverage: state.budget instanceof DurableKnowledgeBudget,
         // Retrieved text is supplied only through the current source-bound evidence
         // list; a revoked passage must not remain in a second verifier corpus.
         authoritativeEvidence: JSON.stringify({ business_system_prompt: snapshot.sources.business_system_prompt,
@@ -5521,8 +5555,9 @@ async function generateSecureConversationContent(sessionId: string, options: any
           const started = Date.now(); let ok = false;
           try { const pending = generateContentWithFallback(null, { messages: [{ role: 'user', content: JSON.stringify(data) }],
             systemInstruction: instruction, tools: [], informationBudget: state.budget,
-            ...(stage==='extraction' && !(state.budget instanceof DurableKnowledgeBudget) ? {reasoningEffort:'low' as const} : {}),
-            ...(stage!=='composition'?{structuredOutput:knowledgeStructuredOutput(stage,state.naturalEnabled)}:{}),
+            ...(stage==='extraction' ? {reasoningEffort:'low' as const} : {}),
+            ...(stage!=='composition'?{structuredOutput:knowledgeStructuredOutput(stage,state.naturalEnabled,
+              stage==='extraction' ? state.facets?.map(f=>f.id) : undefined)}:{}),
             context: { ...businessInformationTimingContext(sessionId), businessId: state.businessId, channel: 'knowledge-core', stage: `knowledge_units_${stage}`, language: support.language } });
             if(stage==='extraction'||stage==='verification')runOptionalDiagnostic(()=>state.durableProgress?.(stage,(state.facets||[]).map(f=>f.attribute)));
             const result=await pending;
@@ -8817,7 +8852,7 @@ async function retrieveBusinessKnowledgeForQuestion(
         });
       const withCompleteCorpus = async () => {
         const sets = await lexical;
-        if (!state?.budget || state.budget instanceof DurableKnowledgeBudget || !state.facets?.length || state.migrated === false) return sets;
+        if (!state?.budget || !state.facets?.length || state.migrated === false) return sets;
         // Scores and matching words cannot establish all question conditions.
         // Only an exhaustive canonical tenant corpus inside the unchanged answer
         // envelope makes further semantic retrieval redundant. Bound this extra
@@ -15688,11 +15723,33 @@ async function runWithInboundMessageClaim(params: {
   platform: string;
   messageId: string;
   handler: () => Promise<void>;
-}): Promise<void> {
+}): Promise<boolean> {
+  const intake = nativeIntakeScope.getStore();
+  if (intake) {
+    // A pre-Phase-1 claim has no trusted provider-account binding. Never replay
+    // its foreground actions under the new key, even if that claim is expired
+    // or failed. Ambiguous historical collisions require operator review.
+    const legacyKey = crypto.createHash('sha256').update(
+      `inbound_message_claim|${params.tenantScope.trim()}|${normalizePlatformName(params.platform)}|${params.messageId.trim()}`
+    ).digest('hex');
+    let legacyPresent = atomicClaims.has(legacyKey);
+    if (supabase && !legacyPresent) {
+      const {data,error} = await supabase.from('appointments_leads').select('user_id')
+        .eq('user_id',`idem_${legacyKey.slice(0,48)}`)
+        .eq('platform',`idempotency:${normalizePlatformName(params.platform)}`).maybeSingle();
+      if(error)throw new Error('knowledge_intake_legacy_claim_unavailable');
+      legacyPresent=Boolean(data);
+    }
+    if(legacyPresent) {
+      await intake.runtime.finishIntake(intake.admission,'legacy');
+      return true;
+    }
+  }
   const claim = await claimAtomicOperation({
     type: "inbound_message_claim",
-    tenantScope: params.tenantScope,
-    businessId: params.businessId,
+    tenantScope: intake ? JSON.stringify(['native-intake-v1',intake.admission.scope.businessId,
+      intake.admission.scope.channel,intake.admission.scope.providerAccount]) : params.tenantScope,
+    businessId: intake ? String(intake.admission.scope.businessId) : params.businessId,
     platform: params.platform,
     exactId: params.messageId
   });
@@ -15712,11 +15769,15 @@ async function runWithInboundMessageClaim(params: {
       platform: normalizePlatformName(params.platform),
       duplicateStatus: claim.duplicateStatus || "processing"
     });
-    return;
+    return claim.duplicateStatus === "completed";
   }
   try {
     await params.handler();
-    await settleAtomicOperation(claim, "completed");
+    // Channel error handlers may catch an attachment error. Such a return is
+    // never completion authority: an attempted handoff must reconcile from
+    // persisted prepared input, or leave this inbound claim retryable.
+    if(intake)await intake.runtime.finishIntake(intake.admission,intake.handoffAttempted?'reconcile':'finish');
+    return await settleAtomicOperation(claim, "completed");
   } catch (error) {
     await settleAtomicOperation(claim, "failed");
     throw error;
@@ -16477,6 +16538,7 @@ async function startTelegramPolling(
     return;
   }
 
+  if(!supabase)throw new Error('telegram_poller_durable_storage_required');
   const token = normalizeTelegramBotToken(config?.telegramToken);
   if (!token) {
     console.log("[TelegramPollingStopped]", {
@@ -16533,6 +16595,7 @@ async function startTelegramPolling(
   const businessId =
     String(getBusinessIdFromConfig(pollingConfig) || "") || null;
   const instanceId = crypto.randomUUID();
+  const pollLease=new TelegramPollerLease(supabase,Number(businessId),token.split(':')[0],instanceId);
   const existingBusinessPollers = Object.values(telegramPollers).filter(
     (poller) =>
       poller.isPolling &&
@@ -16588,6 +16651,19 @@ async function startTelegramPolling(
     }
   };
   state.stop = stopPoller;
+  pollLease.controller.signal.addEventListener('abort',()=>stopPoller('durable_lease_lost'),{once:true});
+  // Standby instances wait without getUpdates/deleteWebhook. A deployment may
+  // overlap instances even when the configured service size is one.
+  try {
+    while(state.isPolling && !await pollLease.acquire()) {
+      await new Promise<void>(resolve=>{
+        state.pollingDelayResolve=resolve;
+        state.pollingTimeout=setTimeout(()=>{state.pollingTimeout=null;state.pollingDelayResolve=null;resolve();},1000);
+      });
+    }
+    if(!state.isPolling){await pollLease.stop();return;}
+    state.lastUpdateId=pollLease.lastUpdateId;
+  } catch(error){stopPoller('durable_lease_unavailable');await pollLease.stop();throw error;}
   console.log("[TelegramPollerCreated]", pollerContext);
   console.log("[TelegramPollerTokenFingerprint]", {
     telegramBotInstanceId: instanceId,
@@ -16646,7 +16722,7 @@ async function startTelegramPolling(
   const identityOk = Boolean(
     identityResponse?.ok &&
     identityData?.ok &&
-    botIdentity?.id &&
+    String(botIdentity?.id)===token.split(':')[0] && botIdentity?.is_bot===true &&
     botIdentity?.username
   );
   if (identityData) {
@@ -16664,6 +16740,7 @@ async function startTelegramPolling(
   }
   if (!identityOk) {
     stopPoller("bot_identity_not_verified");
+    await pollLease.stop();
     return;
   }
   console.warn("[TelegramBotUsernameVerificationRequired]", {
@@ -16673,6 +16750,8 @@ async function startTelegramPolling(
     botUsername: botIdentity.username
   });
 
+  if(!state.isPolling){await pollLease.stop();return;}
+  await pollLease.current();
   const webhookAbortController = new AbortController();
   state.activeAbortController = webhookAbortController;
   const webhookTimeout = setTimeout(() => webhookAbortController.abort(), 10_000);
@@ -16782,9 +16861,10 @@ async function startTelegramPolling(
     state.phase = "polling";
     try {
       while (state.isPolling) {
+        await pollLease.current();
         state.iteration += 1;
         const iteration = state.iteration;
-        const offset = Math.max(0, state.lastUpdateId + 1);
+        const offset = pollLease.nextOffset;
         const timeoutSeconds = 30;
         const startedAt = Date.now();
         const abortController = new AbortController();
@@ -16818,7 +16898,7 @@ async function startTelegramPolling(
                   "callback_query"
                 ]
               }),
-              signal: abortController.signal
+              signal: AbortSignal.any([abortController.signal,pollLease.controller.signal])
             }
           );
           const responseText = await response.text();
@@ -16923,13 +17003,13 @@ async function startTelegramPolling(
           for (const update of result) {
             const updateId = Number(update?.update_id);
             if (!Number.isFinite(updateId) || updateId < offset) continue;
-            state.lastUpdateId = updateId;
             try {
-              await processTelegramUpdate(
+              await pollLease.dispose(updateId,()=>processTelegramUpdate(
                 update,
                 state.config,
                 "telegram-polling"
-              );
+              ));
+              state.lastUpdateId=pollLease.lastUpdateId;
             } catch (processingError) {
               const safeError = sanitizeTelegramPollingError(
                 processingError,
@@ -16939,8 +17019,10 @@ async function startTelegramPolling(
                 ...pollerContext,
                 ...safeError,
                 iteration,
-                willContinue: true
+                willContinue: false
               });
+              // Never acknowledge this update, or later updates in its batch.
+              throw processingError;
             }
           }
           console.log("[TelegramGetUpdatesOffsetCommitted]", {
@@ -16998,6 +17080,7 @@ async function startTelegramPolling(
       stopPoller("unexpected_loop_failure");
     } finally {
       if (state.isPolling) stopPoller("loop_exited");
+      await pollLease.stop();
     }
   };
 
@@ -17692,9 +17775,13 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
       businessInformationTurns[sessionId]={savedAt:Date.now(),businessConfig,question:informationQuestion,language:informationLanguage,retrievedKnowledge:''};
       if (!nativeAsync.failed && nativeAsync.admission?.result.mayAttach && nativeAsync.runtime) {
         try {
+          const intake=nativeIntakeScope.getStore();if(intake)intake.handoffAttempted=true;
           await nativeAsync.runtime.attach(nativeAsync.admission,{question:informationQuestion,language:informationLanguage,
             history:(knowledgeState?.history || []).filter(h=>['user','assistant'].includes(h.role))});
-        } catch { runOptionalDiagnostic(()=>console.error('[AsyncKnowledge]',{stage:'attachment_outcome_unknown'})); }
+        } catch {
+          runOptionalDiagnostic(()=>console.error('[AsyncKnowledge]',{stage:'attachment_outcome_unknown'}));
+          if(nativeIntakeScope.getStore())throw new Error('knowledge_intake_attachment_uncertain');
+        }
       } else {
         await send(formatBusinessSupportVerificationUnavailable(informationLanguage,businessInformationSubject(informationQuestion,informationLanguage)));
       }
@@ -25437,7 +25524,7 @@ async function processTelegramUpdate(
     businessId &&
     normalizeTelegramBotToken(resolvedConfig?.telegramToken) === telegramToken
   );
-  await runWithInboundMessageClaim({
+  return runNativeIntake('telegram',update,resolvedConfig,telegramToken.split(':')[0],String(update.message.chat?.id||''),updateId,String(update.message.text||''),()=>runWithInboundMessageClaim({
     tenantScope: businessResolved
       ? businessId
       : `unresolved:${telegramTokenFingerprint(telegramToken)}`,
@@ -25471,7 +25558,7 @@ async function processTelegramUpdate(
       }
       await processTelegramUpdateClaimed(update, resolvedConfig, platform);
     }
-  });
+  }));
 }
 
 async function processTelegramUpdateClaimed(update: any, config: any, platform: string = "telegram-polling") {
@@ -29144,14 +29231,14 @@ async function processWhatsAppMessage(message: any, metadata: any, config: any, 
     console.warn("[Idempotency] WhatsApp message refused: exact message id or tenant scope is missing.");
     return;
   }
-  await runWithInboundMessageClaim({
+  return runNativeIntake('whatsapp',message,config,tenantScope,canonicalWhatsAppProviderCustomerId(message.from),messageId,String(message.text?.body||''),()=>runWithInboundMessageClaim({
     tenantScope,
     businessId: String(getBusinessIdFromConfig(config) || ""),
     platform: "whatsapp",
     messageId,
     handler: () => withMetaInboundEventTime("whatsapp", message.from, message.timestamp,
       () => processWhatsAppMessageClaimed(message, metadata, config, platform))
-  });
+  }));
 }
 
 async function processWhatsAppMessageClaimed(message: any, metadata: any, config: any, platform: string = "whatsapp-webhook") {
@@ -30605,14 +30692,14 @@ async function processMessengerUpdate(webhookEvent: any, config: any, platform: 
     console.warn("[Idempotency] Messenger message refused: exact message id or tenant scope is missing.");
     return;
   }
-  await runWithInboundMessageClaim({
+  return runNativeIntake('messenger',webhookEvent,config,tenantScope,String(webhookEvent.sender?.id||''),messageId,String(webhookEvent.message?.text||''),()=>runWithInboundMessageClaim({
     tenantScope,
     businessId: String(getBusinessIdFromConfig(config) || ""),
     platform: "messenger",
     messageId,
     handler: () => withMetaInboundEventTime("messenger", webhookEvent.sender?.id, webhookEvent.timestamp,
       () => processMessengerUpdateClaimed(webhookEvent, config, platform))
-  });
+  }));
 }
 
 async function processMessengerUpdateClaimed(webhookEvent: any, config: any, platform: string = "messenger-webhook") {
@@ -31247,14 +31334,14 @@ async function processInstagramUpdate(webhook_event: any, config: any, platform:
     console.warn("[Idempotency] Instagram message refused: exact message id or tenant scope is missing.");
     return;
   }
-  await runWithInboundMessageClaim({
+  return runNativeIntake('instagram',webhook_event,config,tenantScope,String(webhook_event.sender?.id||''),messageId,String(webhook_event.message?.text||''),()=>runWithInboundMessageClaim({
     tenantScope,
     businessId: String(getBusinessIdFromConfig(config) || ""),
     platform: "instagram",
     messageId,
     handler: () => withMetaInboundEventTime("instagram", webhook_event.sender?.id, webhook_event.timestamp,
       () => processInstagramUpdateClaimed(webhook_event, config, platform))
-  });
+  }));
 }
 
 function isSupportedInstagramConversationalEvent(webhookEvent: any): boolean {
@@ -32356,17 +32443,16 @@ async function startServer() {
 
   app.post("/webhook", verifyMetaWebhookSignature, async (req, res) => {
     const body = req.body;
+    const intakeAck = new NativeIntakeAcknowledgement(nativeAsyncControls().admission,res);
 
     if (body.object === 'instagram') {
-      res.status(200).send('EVENT_RECEIVED');
+      intakeAck.acknowledge();
 
       if (body.entry) {
         for (const entry of body.entry) {
           if (entry.messaging) {
             for (const webhook_event of entry.messaging) {
-              processInstagramUpdate(webhook_event, activeConfig).catch(() =>
-                logWebhookFailure('webhook', 'instagram')
-              );
+              intakeAck.track(processInstagramUpdate(webhook_event, activeConfig), () => logWebhookFailure('webhook', 'instagram'));
             }
           }
           if (entry.changes) {
@@ -32381,13 +32467,11 @@ async function startServer() {
         }
       }
       } else if (body.object === "page") {
-      res.status(200).send("EVENT_RECEIVED");
+      intakeAck.acknowledge();
 
       for (const entry of body.entry || []) {
         for (const webhookEvent of entry.messaging || []) {
-          processMessengerUpdate(webhookEvent, activeConfig).catch(() =>
-            logWebhookFailure('webhook', 'messenger')
-          );
+          intakeAck.track(processMessengerUpdate(webhookEvent, activeConfig), () => logWebhookFailure('webhook', 'messenger'));
         }
         for (const change of entry.changes || []) {
           if (change.field === 'comments' || change.field === 'feed') {
@@ -32402,7 +32486,7 @@ async function startServer() {
         try { await whatsappProvisioning.handleVerifiedWebhook(body); }
         catch { res.sendStatus(503); return; } // Meta may retry; periodic reads are also a fallback.
       }
-      res.status(200).send('EVENT_RECEIVED');
+      intakeAck.acknowledge();
 
       if (body.entry) {
         for (const entry of body.entry) {
@@ -32413,18 +32497,17 @@ async function startServer() {
               const messages = value.messages || [];
 
               for (const message of messages) {
-                processWhatsAppMessage(message, metadata, activeConfig).catch(() =>
-                  logWebhookFailure('webhook', 'whatsapp')
-                );
+                intakeAck.track(processWhatsAppMessage(message, metadata, activeConfig), () => logWebhookFailure('webhook', 'whatsapp'));
               }
             }
           }
         }
       }
     } else {
-      res.sendStatus(404);
+      return res.sendStatus(404);
     }
-  });
+    await intakeAck.complete();
+});
   app.get("/webhook/messenger", (req, res) => {
     const verifyToken = process.env.MESSENGER_VERIFY_TOKEN || process.env.INSTAGRAM_VERIFY_TOKEN;
 
@@ -32442,18 +32525,17 @@ async function startServer() {
 
   app.post("/webhook/messenger", verifyMetaWebhookSignature, async (req, res) => {
     const body = req.body;
+    const intakeAck = new NativeIntakeAcknowledgement(nativeAsyncControls().admission,res);
 
     if (body.object !== "page") {
       return res.sendStatus(404);
     }
 
-    res.status(200).send("EVENT_RECEIVED");
+    intakeAck.acknowledge();
 
     for (const entry of body.entry || []) {
       for (const webhookEvent of entry.messaging || []) {
-        processMessengerUpdate(webhookEvent, activeConfig).catch(() =>
-          logWebhookFailure('webhook_messenger', 'messenger')
-        );
+        intakeAck.track(processMessengerUpdate(webhookEvent, activeConfig), () => logWebhookFailure('webhook_messenger', 'messenger'));
       }
 
       // Facebook Page comments may arrive on the same Page webhook as Messenger.
@@ -32466,7 +32548,8 @@ async function startServer() {
         }
       }
     }
-  });
+    await intakeAck.complete();
+});
 
   app.get("/webhook/facebook", (req, res) => {
     const verifyToken = process.env.FACEBOOK_VERIFY_TOKEN || process.env.MESSENGER_VERIFY_TOKEN || process.env.INSTAGRAM_VERIFY_TOKEN;
@@ -32485,12 +32568,13 @@ async function startServer() {
 
   app.post("/webhook/facebook", verifyMetaWebhookSignature, async (req, res) => {
     const body = req.body;
+    const intakeAck = new NativeIntakeAcknowledgement(nativeAsyncControls().admission,res);
 
     if (body.object !== "page") {
       return res.sendStatus(404);
     }
 
-    res.status(200).send("EVENT_RECEIVED");
+    intakeAck.acknowledge();
 
     for (const entry of body.entry || []) {
       for (const change of entry.changes || []) {
@@ -32503,29 +32587,27 @@ async function startServer() {
 
       // Keep Messenger support here too in case Meta sends messaging events to this callback URL.
       for (const webhookEvent of entry.messaging || []) {
-        processMessengerUpdate(webhookEvent, activeConfig).catch(() =>
-          logWebhookFailure('webhook_facebook', 'messenger')
-        );
+        intakeAck.track(processMessengerUpdate(webhookEvent, activeConfig), () => logWebhookFailure('webhook_facebook', 'messenger'));
       }
     }
-  });
+    await intakeAck.complete();
+});
 
   app.post("/webhook/instagram", verifyMetaWebhookSignature, async (req, res) => {
   const body = req.body;
+  const intakeAck = new NativeIntakeAcknowledgement(nativeAsyncControls().admission,res);
 
   if (body.object !== "instagram") {
     return res.sendStatus(404);
   }
 
-  res.status(200).send("EVENT_RECEIVED");
+  intakeAck.acknowledge();
 
   if (body.entry) {
     for (const entry of body.entry) {
       if (entry.messaging) {
         for (const webhook_event of entry.messaging) {
-          processInstagramUpdate(webhook_event, activeConfig).catch(() =>
-            logWebhookFailure('webhook_instagram', 'instagram')
-          );
+          intakeAck.track(processInstagramUpdate(webhook_event, activeConfig), () => logWebhookFailure('webhook_instagram', 'instagram'));
         }
       }
 
@@ -32546,6 +32628,7 @@ async function startServer() {
       }
     }
   }
+  await intakeAck.complete();
 });
 
   app.post(
@@ -35506,16 +35589,27 @@ Generate the final production-ready system prompt now.
       setupDailyReminders();
       setupBookingResultOutboxWorker();
       try {
-      const nativeControls=nativeAsyncControls();
-      if(nativeControls.processing || nativeControls.delivery) {
-        const runtime=getNativeKnowledgeRuntime();runtime?.start();
+        const nativeControls=nativeAsyncControls();
+        const runtime=(nativeControls.processing || nativeControls.delivery)
+          ? getNativeKnowledgeRuntime()
+          : null;
+        runtime?.start();
+        let shuttingDown=false;
         const shutdown=()=>{
+          if(shuttingDown)return;
+          shuttingDown=true;
+          const pollers=Object.values(telegramPollers);
+          for(const poller of pollers)poller.stop?.('shutdown');
           const closed=new Promise<void>(resolve=>nativeHttpServer.close(()=>resolve()));
+          const loops=pollers.map(poller=>poller.loopPromise).filter((p):p is Promise<void>=>Boolean(p));
           const forced=setTimeout(()=>process.exit(0),5500);
-          void Promise.allSettled([closed,runtime?.stop(5000)]).finally(()=>{clearTimeout(forced);process.exit(0);});
+          void Promise.allSettled([closed,...loops,runtime?.stop(5000)]).finally(()=>{
+            clearTimeout(forced);
+            process.exit(0);
+          });
         };
-        process.once('SIGTERM',shutdown);process.once('SIGINT',shutdown);
-      }
+        process.once('SIGTERM',shutdown);
+        process.once('SIGINT',shutdown);
       } catch { runOptionalDiagnostic(()=>console.error('[AsyncKnowledge]',{stage:'host_configuration_failed'})); }
     } else {
       console.log("[OdinLinkLocalTestMode] All background jobs disabled.");

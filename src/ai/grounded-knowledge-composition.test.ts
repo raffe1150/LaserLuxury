@@ -24,12 +24,12 @@ export function naturalVerdict(data:any) {
 // pure contract tests. No provider, database, transport or Calendar is available.
 async function run(o:{proposal?:any;verdict?:(data:any)=>any;single?:boolean;direct?:boolean;enabled?:boolean;allowSinglePartial?:boolean;
   stageFailure?:string;result?:any;delay?:number;budget?:InformationBudget;fresh?:()=>Promise<any>;current?:()=>Promise<boolean>;
-  languageSafe?:(u:any)=>boolean;scope?:typeof scope;unitReject?:boolean;oversized?:boolean}={}) {
+  languageSafe?:(u:any)=>boolean;scope?:typeof scope;unitReject?:boolean;oversized?:boolean;requireCompleteCoverage?:boolean;incompleteMaterial?:boolean}={}) {
  const calls:string[]=[],events:any[]=[],budget=o.budget||new InformationBudget();
  const units=[rec,...(o.single===false?[arrangement]:[])].map((text,i)=>({facetIds:['f1'],subject:'studio',predicate:'states',value:text,
   modality:i?'descriptive':'recommended',negation:false,scope:'visits',qualifiers:[],language:'en',text,evidenceRefs:[{evidenceId:`e${i+1}`,exactQuote:text}]}));
  const fs=o.direct?parseRequestedFacets([{subject:'visits',attribute:'recommendation',questionType:'recommendation'}]).facets:facets;
- const manifest=await buildEvidenceFirstAnswer({question:scope.question,language:'en',facets:fs,evidence,authoritativeEvidence:'',businessTone:scope.tone,history:[],budget,
+ const manifest=await buildEvidenceFirstAnswer({question:scope.question,language:'en',facets:fs,evidence,authoritativeEvidence:'',businessTone:scope.tone,history:[],budget,requireCompleteCoverage:o.requireCompleteCoverage,
   ...(o.enabled===false?{}:{natural:{scope:o.scope||scope,allowSinglePartial:o.allowSinglePartial!==false}}),
   current:o.current|| (async()=>true),revalidateEvidence:o.fresh,languageSafe:o.languageSafe||(()=>true),diagnostic:e=>events.push(e),
   generate:async(stage,instruction,data:any)=>{
@@ -39,7 +39,7 @@ async function run(o:{proposal?:any;verdict?:(data:any)=>any;single?:boolean;dir
     assert.equal(instruction,UNIT_VERIFICATION_INSTRUCTION,'factual judge instructions unchanged');
     assert.equal(JSON.stringify(data).includes('naturalProposal'),false);assert.equal(JSON.stringify(data).includes('arranging your visit'),false,'unit judge is blind to speculative prose');
     return{text:JSON.stringify({decisions:data.units.map((u:any)=>({unitId:u.id,relation:o.unitReject?'UNKNOWN':'ENTAILED',facetIds:u.facetIds,meaningPreserved:true,modalityPreserved:true,qualifiersPreserved:true,
-     relevant:true,languageCorrect:true,negativeAbsence:false,explicitAbsenceEvidence:false})),coverage:fs.map(f=>({facetId:f.id,requestAligned:true,materialFactsComplete:true,materialUnitIds:data.units.map((u:any)=>u.id),
+     relevant:true,languageCorrect:true,negativeAbsence:false,explicitAbsenceEvidence:false})),coverage:fs.map(f=>({facetId:f.id,requestAligned:true,materialFactsComplete:!o.incompleteMaterial,materialUnitIds:data.units.map((u:any)=>u.id),
       obligations:f.obligations.map(ob=>({obligationId:ob.id,status:ob.questionType==='permission'?'UNRESOLVED':'COVERED',unitIds:ob.questionType==='permission'?[]:['u1']}))}))})};
    }
    if(stage==='composition')return{text:JSON.stringify({unitIds:data.units.map((u:any)=>u.id),prefix:'none',addition:false})};
@@ -157,4 +157,22 @@ test('natural schemas are explicit extensions, OFF unit schema is unchanged',()=
 test('proposal references are immutable, bounded and server assigned',()=>{
  const parsed=parseNaturalProposal(proposal(),facets)!;assert.equal(parsed.blocks[0].id,'b1');assert.deepEqual(parsed.blocks[0].unitIds,['u1']);assert.ok(Object.isFrozen(parsed.blocks[0].unitIds));
  assert.equal(parsed.hash.length,64);assert.equal(naturalContractHash({language:'en',units:[],facets,outcomes:[]},scope).length,64);
+});
+
+for(const incompleteMaterial of [false,true])test(`durable coverage stop: natural path skips optional verification for ${incompleteMaterial?'incomplete material inventory':'unresolved obligation'}`,async()=>{
+ const {manifest,calls,events}=await run({requireCompleteCoverage:true,incompleteMaterial});
+ assert.deepEqual(calls,['extraction','verification']);assert.equal(manifest.outcomes[0].status,'PARTIAL');
+ assert.equal(manifest.outcomes[0].materialFactsComplete,!incompleteMaterial);assert.equal(manifest.outcomes[0].obligations[0].status,'UNRESOLVED');
+ assert.equal(manifest.units[0].verification,'ENTAILED');assert.equal(manifest.naturalAttachment,undefined);
+ assert.equal(events.some(e=>e.stage==='presentation_verification'||e.stage==='composition'),false,'stop before either optional presentation branch');
+});
+test('durable coverage stop: complete natural answer retains independently validated presentation',async()=>{
+ const {manifest,calls}=await run({requireCompleteCoverage:true,direct:true,single:false,proposal:{blocks:[
+  {kind:'fact',text:rec+' '+arrangement,proposedUnitOrdinals:[1,2],obligationIds:[]}]}});
+ assert.deepEqual(calls,['extraction','verification','presentation_verification']);assert.equal(manifest.outcomes[0].status,'VERIFIED');assert.equal(manifest.naturalOutcome,'accepted_natural');
+});
+
+test('durable coverage stop: source revocation still removes complete units before optional presentation',async()=>{
+ let reads=0;const {manifest,calls}=await run({requireCompleteCoverage:true,direct:true,single:false,fresh:async()=>++reads>=3?[]:evidence});
+ assert.deepEqual(calls,['extraction','verification']);assert.equal(manifest.units.length,0);assert.equal(manifest.naturalAttachment,undefined);assert.equal(reads,3);
 });

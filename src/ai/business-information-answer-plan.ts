@@ -155,6 +155,7 @@ export const UNIT_VERIFICATION_INSTRUCTION = `OdinLink EVIDENCE-FIRST BATCH ENTA
 const MATERIAL_ARRANGEMENT_GUIDANCE = ` Coverage has three categories. (1) Direct obligations: every part of the FULL latest question, even when a single literal facet/obligation contains multiple questions. (2) Necessary qualifications: source conditions needed to interpret or use the requested arrangement accurately, including limits on what the named actor provides or can arrange. Practical qualifiers may include the provider/place, access location, distance or duration and restrictions when material to that arrangement. (3) Optional supplements: unrelated services, background and incidental details; their omission is not incomplete coverage. Conjunction or proximity alone does not make a fact material. However, do not drop a coordinated limitation on the SAME relevant offering merely because only its first clause directly matches the question. Keep each relevant conjunct and its exact actor/provider in the actual answer text, not only in a quote or structured qualifiers. Do not require every source detail in every answer. A business not providing a benefit does not establish that an external provider charges for it or that the benefit is unavailable elsewhere. Unknown third-party terms remain unknown. Exact quote matching proves text presence only, never entailment or completeness.
 Modality is independent of negation. descriptive states an offering, availability, ability or factual absence; recommended gives advice; required imposes an obligation; permitted grants permission; prohibited forbids conduct. Not offering a service and being unable to arrange it are descriptive negatives, not prohibitions on the customer. For example, "We do not supply equipment and cannot arrange delivery" contains TWO descriptive negative offering limits with the same actor. Preserve both when they qualify the requested offering; neither says customers are forbidden to obtain equipment or delivery elsewhere. Conversely "Customers must not use equipment unattended" is a prohibition; never turn an explicit ban into a descriptive absence. Classify from source meaning and the subject's role, not the presence of a negative word.`;
 export const FOREGROUND_UNIT_EXTRACTION_INSTRUCTION = UNIT_EXTRACTION_INSTRUCTION + MATERIAL_ARRANGEMENT_GUIDANCE +
+  ` allowedFacetIds is the exhaustive allowed set of question facet IDs. Each unit's facetIds must be a nonempty subset of that set, copied exactly from supplied facets. Never create, rename or number facets for individual facts: multiple units answering the same question reuse the same facet ID. Unit numbering and evidence IDs are separate namespaces. These bindings do not establish support or completeness.` +
   ` Before returning, compare relevant source sentences with your units clause by clause. Include every direct answer and necessary qualification; a partial citation or a bare existence statement must not hide another relevant limitation from the same offering. Use descriptive modality for positive or negative offering/capability facts. You may combine a coherent arrangement and its necessary qualifications into one natural complete unit, or use separate units, with exact evidence for every clause. Keep subjects and negative conditions together. Omit optional supplements; avoid duplicate facts.`;
 export const FOREGROUND_UNIT_VERIFICATION_INSTRUCTION = UNIT_VERIFICATION_INSTRUCTION + MATERIAL_ARRANGEMENT_GUIDANCE +
   ` Independently assess each unit's declared modality against the source and text; do not accept a prohibited tag merely because a descriptive offering statement is negated. If classification differs, set modalityPreserved=false; never repair a proposed field. Evaluate full-question coverage separately from unit entailment. Compare relevant conjunctive source conditions against the ACTUAL answer texts, not just their citations. Missing practical qualifiers make materialFactsComplete=false when necessary to the requested arrangement; use MISSING_CONDITION for a missing material conjunct/qualification. Omitted optional supplements do not make it false. Unsupported direct answers remain unresolved; do not infer unknown third-party terms or use a supported sibling to close a missing obligation. Never rewrite or complete a unit, and never accept an inventory merely because all proposed units are entailed.`;
@@ -256,6 +257,8 @@ export async function buildEvidenceFirstAnswer(input: {
   /** Foreground wire projection only. Other callers retain their existing payload. */
   omitModelEvidenceVersions?: boolean;
   foreground?: boolean;
+  /** Durable callers cannot publish partial coverage; stop before optional model work. */
+  requireCompleteCoverage?: boolean;
   languageSafe?: (unit: AnswerUnit) => boolean;
   revalidateEvidence?: () => Promise<readonly Evidence[]>;
   /** Only native callers which independently revalidate immediately before send. */
@@ -305,7 +308,9 @@ export async function buildEvidenceFirstAnswer(input: {
   };
   try {
     const result = await input.generate('extraction', (input.foreground ? FOREGROUND_UNIT_EXTRACTION_INSTRUCTION : UNIT_EXTRACTION_INSTRUCTION)+(input.natural?'\n'+NATURAL_PROPOSAL_INSTRUCTION:''), {
-      question: input.question, requestedLanguage: language, facets, evidence: wireEvidence(availableEvidence), businessTone: input.businessTone, relevantHistory: input.history,
+      question: input.question, requestedLanguage: language, facets,
+      ...(input.foreground ? {allowedFacetIds:facets.map(f=>f.id)} : {}),
+      evidence: wireEvidence(availableEvidence), businessTone: input.businessTone, relevantHistory: input.history,
     });
     const raw = checked(result,'extraction');
     if(!raw)return empty('UNAVAILABLE',result.structuredFailure||'MALFORMED_JSON');
@@ -379,6 +384,7 @@ export async function buildEvidenceFirstAnswer(input: {
       text => Boolean(input.languageSafe?.({ ...verified[0], text }))),
     presentation: Object.freeze({ unitIds: Object.freeze(verified.map(u => u.id)), prefix: 'none' as const, addition: false }) }), deferFreshness ? availableEvidence : await revalidate(),diagnostic);
   if (!manifest.units.length) return manifest;
+  if (input.requireCompleteCoverage && manifest.outcomes.some(o => o.status !== 'VERIFIED')) return manifest;
   if(input.natural) {
     const finish=async(reason:DecisionReason|null, attachment?:NaturalAttachment):Promise<AnswerManifest>=>{
       if(!await input.current())return empty('UNAVAILABLE','CONTEXT_INVALID');

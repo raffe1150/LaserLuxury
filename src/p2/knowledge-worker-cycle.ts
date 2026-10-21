@@ -1,4 +1,5 @@
-import { deliverKnowledge, KnowledgeRunner, type GuardedKnowledgeTransport } from './knowledge-runner';
+import { knowledgeOperation, KNOWLEDGE_OPERATION_LIMITS } from './knowledge-operation';
+import { deliverKnowledge, KnowledgeRunner, type GuardedKnowledgeTransport, type RunnerEvent } from './knowledge-runner';
 import type { KnowledgeLifecycleRepository, KnowledgeScope } from './knowledge-lifecycle';
 import { requireId } from './knowledge-lifecycle';
 
@@ -22,16 +23,17 @@ export class KnowledgeWorkerCycle {
   private readonly abort = new AbortController();
   constructor(private readonly repository: DiscoverableKnowledgeRepository, private readonly runner: KnowledgeRunner,
     private readonly transport: GuardedKnowledgeTransport, private readonly sender: string,
-    private readonly controls: {processing:()=>boolean;delivery:()=>boolean} = {processing:()=>true,delivery:()=>true}) { requireId(sender); }
+    private readonly controls: {processing:()=>boolean;delivery:()=>boolean} = {processing:()=>true,delivery:()=>true}, private readonly telemetry?:(event:RunnerEvent)=>unknown) { requireId(sender); }
   stop(): void { this.stopped = true; this.abort.abort(); this.runner.stop(); }
   async tick(): Promise<KnowledgeCycleReport> {
     if (this.stopped || this.busy || !this.controls.processing() && !this.controls.delivery()) return { ran: false, deliveries: [] };
     this.busy = true;
     try {
+      return await knowledgeOperation(async()=>{
       const reports: { taskId: string; deliveryId: string; result: NonNullable<Awaited<ReturnType<typeof deliverKnowledge>>> }[] = [];
       const send = async (scope: KnowledgeScope, taskId: string, deliveryId: string) => {
         if (this.stopped || !this.controls.delivery()) return;
-        const result = await deliverKnowledge(this.repository, this.transport, scope, taskId, deliveryId, this.sender, undefined, this.abort.signal);
+        const result = await deliverKnowledge(this.repository, this.transport, scope, taskId, deliveryId, this.sender, this.telemetry, this.abort.signal);
         // Settlement failures remain business-visible without falsifying the
         // provider outcome or causing an automatic duplicate remote send.
         if (result) reports.push({ taskId, deliveryId, result });
@@ -55,16 +57,18 @@ export class KnowledgeWorkerCycle {
           if(failures.length)throw failures[0];
         })(),
         (async () => {
+          const failures:unknown[]=[];
           for (const item of deliveries) {
             if (this.stopped) break;
-            await this.repository.recover(item.scope); // Expired SENDING -> UNCERTAIN.
-            await send(item.scope, item.taskId, item.deliveryId);
+            try { await send(item.scope, item.taskId, item.deliveryId); } catch(error) { failures.push(error); }
           }
+          if(failures.length)throw failures[0];
         })(),
       ]);
       // Keep the reentry guard until every owned branch settles; preserve errors.
       for (const outcome of outcomes) if (outcome.status === 'rejected') throw outcome.reason;
       return { ran: true, deliveries: reports };
+      },{signal:this.abort.signal,timeoutMs:KNOWLEDGE_OPERATION_LIMITS.cycleMs});
     } finally { this.busy = false; }
   }
 }

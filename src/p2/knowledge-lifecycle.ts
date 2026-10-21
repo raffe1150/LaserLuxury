@@ -36,7 +36,7 @@ export type TaskToken = Readonly<{ taskId: string; owner: string; fence: number 
 export type DeliveryToken = Readonly<{ deliveryId: string; owner: string; fence: number }>;
 export type DeliveryOutcome =
   | Readonly<{ kind: 'API_ACCEPTED'; providerMessageId: string }>
-  | Readonly<{ kind: 'DEFINITIVELY_UNSENT'; retryable: boolean }>
+  | Readonly<{ kind: 'DEFINITIVELY_UNSENT'; retryable: boolean; retryAfterMs?:number }>
   | Readonly<{ kind: 'AMBIGUOUS' }>;
 
 /** Trusted server-side reauthorization port, NOT a customer-supplied proof.
@@ -65,6 +65,9 @@ export interface KnowledgeLifecycleRepository {
   checkpoint(scope: KnowledgeScope, token: TaskToken, checkpoint: Checkpoint): Promise<boolean>;
   verified(scope: KnowledgeScope, token: TaskToken, result: VerifiedKnowledge): Promise<boolean>;
   fail(scope: KnowledgeScope, token: TaskToken): Promise<boolean>;
+  interrupt?(scope:KnowledgeScope,token:TaskToken):Promise<boolean>;
+  deferDelivery?(scope: KnowledgeScope, taskId: string, deliveryId: string): Promise<boolean>;
+  rejectDelivery?(scope:KnowledgeScope,taskId:string,deliveryId:string):Promise<boolean>;
   finalize(scope: KnowledgeScope, token: TaskToken): Promise<KnowledgeDelivery | null>;
   enqueueProgress(scope: KnowledgeScope, taskId: string, text: string): Promise<KnowledgeDelivery | null>;
   claimDelivery(scope: KnowledgeScope, deliveryId: string, owner: string, leaseMs: number): Promise<KnowledgeDelivery | null>;

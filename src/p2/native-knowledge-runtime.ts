@@ -1,3 +1,4 @@
+import { knowledgeDatabaseRead, knowledgeOperation, knowledgeOperationSignal, KNOWLEDGE_OPERATION_LIMITS } from './knowledge-operation';
 import { preflightRejected } from './knowledge-preflight-diagnostic';
 import { SmartWaitingCoordinator, smartWaitingControls, type WaitingControls, type WaitingSchedule, type WaitingHandle } from './smart-waiting';
 import { NativeKnowledgeProgressAuthority } from './knowledge-progress-authority';
@@ -22,7 +23,7 @@ export function nativeAsyncControls(env:NodeJS.ProcessEnv=process.env):NativeAsy
     delivery:env.ODINLINK_ASYNC_KNOWLEDGE_DELIVERY==='true',executionMs:ms?Number(ms):20000});
 }
 export type NativeKnowledgeIngress = Readonly<{businessId:number;channel:KnowledgeScope['channel'];account:string;recipient:string;eventId:string;order:NativeKnowledgeOrder|null}>;
-export type NativeKnowledgeAdmission = Readonly<{scope:KnowledgeScope;eventId:string;order:NativeKnowledgeOrder|null;result:OrderedAdmission}>;
+export type NativeKnowledgeAdmission = Readonly<{scope:KnowledgeScope;eventId:string;order:NativeKnowledgeOrder|null;result:OrderedAdmission;intakeOwner?:string}>;
 export class NativeKnowledgeRuntime {
   readonly bindings:NativeKnowledgeBindings;
   readonly repository:SupabaseOrderedKnowledgeRepository;
@@ -36,11 +37,11 @@ export class NativeKnowledgeRuntime {
     execute:(task:KnowledgeTask,context:Parameters<KnowledgeExecutor>[1],current:()=>Promise<boolean>)=>ReturnType<KnowledgeExecutor>;
     connections?:NativeConnectionResolver;sources?:Pick<KnowledgeService,'list'>;fetcher?:typeof fetch;
     waiting?:()=>WaitingControls;waitingSchedule?:WaitingSchedule;
-    diagnostic?:(event:Readonly<{stage:string;turnId?:string;channel?:string}>)=>unknown}) {
+    diagnostic?:(event:Readonly<{stage:string;turnId?:string;channel?:string;fence?:number;attempt?:number;outcome?:string;settled?:boolean;durationMs?:number;customerDelivery?:'UNCONFIRMED'}>)=>unknown}) {
     const db=options.db;const fetcher=options.fetcher||fetch;
     this.bindings=new NativeKnowledgeBindings(db,options.secret,options.connections||databaseNativeConnections(db));
     const provider={canonicalConversationKey:async(task:KnowledgeTask)=>this.bindings.canonicalKey(task.scope),
-      eligible:async(task:KnowledgeTask)=>nativeProviderEligible(this.bindings,task,fetcher)};
+      eligible:async(task:KnowledgeTask)=>nativeProviderEligible(this.bindings,task,fetcher,knowledgeOperationSignal())};
     const authority=options.sources?createKnowledgeAuthority(db,options.sources,provider):createDatabaseKnowledgeAuthority(db,provider);
     this.repository=new SupabaseOrderedKnowledgeRepository(db,s=>this.bindings.canonicalKey(s),authority);
     const waitingControls=()=>{const c=(options.waiting||smartWaitingControls)();return {...c,enabled:c.enabled&&options.controls().processing&&options.controls().delivery&&!this.stopped};};
@@ -55,7 +56,7 @@ export class NativeKnowledgeRuntime {
       try{return await options.execute(task,{...context,progress:(stage,labels)=>waiting.progress(stage,labels)},async()=>Boolean(await this.bindings.resolve(task.scope)) && await knowledgeTurnCurrent(db,task,provider));}
       finally{try{waiting.stop();}catch{this.event({stage:'waiting_cancel_failed',turnId:task.turnId,channel:task.scope.channel});}}
     },
-      `knowledge-${randomUUID()}`,2,event=>this.event({stage:event.stage,turnId:event.turnId,channel:event.channel}));
+      `knowledge-${randomUUID()}`,2,event=>this.event(event));
     const targetScope=(target:TrustedDeliveryTarget):KnowledgeScope|null=>Number.isSafeInteger(target.businessId) && target.conversationId && target.taskId ?
       {businessId:target.businessId!,channel:target.channel,providerAccount:target.providerAccount,conversationId:target.conversationId}:null;
     const matches=(task:KnowledgeTask,target:TrustedDeliveryTarget)=>target.businessId===task.scope.businessId && target.conversationId===task.scope.conversationId &&
@@ -63,16 +64,16 @@ export class NativeKnowledgeRuntime {
     this.transport={authorize:authority,
       resolve:async task=>{const r=await this.bindings.resolve(task.scope);return r?{recipient:r.binding.recipient,channel:task.scope.channel,providerAccount:task.scope.providerAccount,
         businessId:task.scope.businessId,conversationId:task.scope.conversationId,taskId:task.id}:null;},
-      eligible:async(task,target)=>matches(task,target) && (await this.bindings.resolve(task.scope))?.binding.recipient===target.recipient && await nativeProviderEligible(this.bindings,task,fetcher),
+      eligible:async(task,target)=>matches(task,target) && (await this.bindings.resolve(task.scope))?.binding.recipient===target.recipient,
       send:async(target,text,signal)=>{
         const noSend={kind:'DEFINITIVELY_UNSENT' as const,retryable:false};const scope=targetScope(target);
         if(!scope || signal.aborted || !options.controls().delivery || this.stopped)return noSend;
         const task=await this.repository.get(scope,target.taskId!);if(!task || !matches(task,target) || task.result?.text!==text)return noSend;
         const before=await this.bindings.resolve(scope);
-        if(!before || before.binding.recipient!==target.recipient || !await authority(task,'send') ||
-          !await nativeProviderEligible(this.bindings,task,fetcher,signal,before.connection))return noSend;
+        if(!before || before.binding.recipient!==target.recipient || !await authority(task,'send'))return noSend;
         const after=await this.bindings.resolve(scope);
         if(!after || after.connection.id!==before.connection.id || after.connection.credential.accessToken!==before.connection.credential.accessToken ||
+          JSON.stringify(after.connection.grantedScopes)!==JSON.stringify(before.connection.grantedScopes) || after.connection.providerConnectionId!==before.connection.providerConnectionId ||
           after.binding.recipient!==target.recipient || !await knowledgeTurnCurrent(db,task,provider) || signal.aborted ||
           Date.now()>=task.expiresAt || !options.controls().delivery || this.stopped)return noSend;
         this.event({stage:'native_send_attempt',turnId:task.turnId,channel:task.scope.channel});
@@ -81,9 +82,9 @@ export class NativeKnowledgeRuntime {
         return outcome;
       }};
     this.cycle=new KnowledgeWorkerCycle(this.repository,this.runner,this.transport,`delivery-${randomUUID()}`,
-      {processing:()=>options.controls().processing,delivery:()=>options.controls().delivery});
+      {processing:()=>options.controls().processing,delivery:()=>options.controls().delivery},event=>this.event(event));
   }
-  private event(event:{stage:string;turnId?:string;channel?:string}){runOptionalDiagnostic(()=>this.options.diagnostic?.(Object.freeze(event)));}
+  private event(event:Readonly<{stage:string;turnId?:string;channel?:string;fence?:number;attempt?:number;outcome?:string;settled?:boolean;durationMs?:number;customerDelivery?:'UNCONFIRMED'}>){runOptionalDiagnostic(()=>this.options.diagnostic?.(Object.freeze(event)));}
   async accept(ingress:NativeKnowledgeIngress):Promise<NativeKnowledgeAdmission|null>{
     if(this.stopped || !this.options.controls().admission)return null;
     ingress=snapshot(ingress);
@@ -92,9 +93,32 @@ export class NativeKnowledgeRuntime {
     this.event({stage:`native_${result.disposition.toLowerCase()}`,turnId:result.acceptance?.identity.turnId,channel:ingress.channel});
     return snapshot({scope,eventId:ingress.eventId,order:ingress.order,result});
   }
+  get admissionEnabled():boolean { return !this.stopped && this.options.controls().admission; }
+  async beginIntake(ingress:NativeKnowledgeIngress, context:string) {
+    if(this.stopped || !this.options.controls().admission)return null;
+    const scope=await this.bindings.ensure(ingress.businessId,ingress.channel,ingress.account,ingress.recipient);
+    const owner=randomUUID();
+    const accepted=await this.repository.intake(scope,ingress.eventId,ingress.order,'begin',owner,context.slice(0,4000),undefined,this.options.controls().executionMs);
+    const admission:NativeKnowledgeAdmission=snapshot({scope,eventId:ingress.eventId,order:ingress.order,result:accepted.result,intakeOwner:accepted.owner});
+    const run=accepted.result.acceptance?.inserted===true && accepted.state==='ROUTING' && accepted.owner===owner;
+    if(!run && accepted.state!=='TERMINAL' && accepted.state!=='ATTACHED') {
+      const recovered=await this.repository.intake(scope,ingress.eventId,ingress.order,'reconcile',owner);
+      if(!['ATTACHED','TERMINAL'].includes(recovered.state))throw new Error('knowledge_intake_still_routing');
+    }
+    return {admission,run};
+  }
+  async finishIntake(admission:NativeKnowledgeAdmission, command:'finish'|'legacy'|'reconcile'='finish'):Promise<void> {
+    if(!admission.intakeOwner)throw new Error('knowledge_intake_owner_missing');
+    const result=await this.repository.intake(admission.scope,admission.eventId,admission.order,command,admission.intakeOwner);
+    if(!['ATTACHED','TERMINAL'].includes(result.state))throw new Error('knowledge_intake_unfinished');
+  }
   async attach(admission:NativeKnowledgeAdmission,input:KnowledgeInput):Promise<OrderedAdmission|null>{
     if(this.stopped || !this.options.controls().admission || !admission.result.mayAttach)return null;
-    const result=await this.repository.acceptOrdered(admission.scope,admission.eventId,admission.order,input);
+    let result:OrderedAdmission;
+    if(admission.intakeOwner) {
+      await this.repository.intake(admission.scope,admission.eventId,admission.order,'prepare',admission.intakeOwner,'',input);
+      result=(await this.repository.intake(admission.scope,admission.eventId,admission.order,'reconcile',admission.intakeOwner)).result;
+    } else result=await this.repository.acceptOrdered(admission.scope,admission.eventId,admission.order,input);
     this.event({stage:result.mayAttach?'native_attached':'native_attachment_rejected',turnId:result.acceptance?.identity.turnId,channel:admission.scope.channel});
     return result;
   }
@@ -103,13 +127,13 @@ export class NativeKnowledgeRuntime {
       .slice(-4).map(h=>({role:h.role as 'user'|'assistant',content:h.content.slice(0,1200)})));
     const sequence=admission.result.acceptance?.identity.sequence;
     if(!sequence || sequence<2)return keep(foreground);
-    const s=admission.scope;const {data:tasks,error}=await this.options.db.from('odin_tasks').select('id,payload,knowledge_result')
+    const s=admission.scope;const {data:tasks,error}=await knowledgeDatabaseRead(this.options.db.from('odin_tasks').select('id,payload,knowledge_result')
       .eq('business_id',s.businessId).eq('conversation_id',s.conversationId).eq('knowledge_channel',s.channel).eq('knowledge_account',s.providerAccount)
-      .eq('knowledge_sequence',sequence-1).eq('knowledge_state','FINALIZED').limit(1);
+      .eq('knowledge_sequence',sequence-1).eq('knowledge_state','FINALIZED').limit(1));
     if(error)throw new Error('knowledge_history_read_failed');const previous=tasks?.[0];
     if(!previous)return keep(foreground);
-    const {data:out,error:outError}=await this.options.db.from('odin_outbox').select('artifact').eq('business_id',s.businessId).eq('conversation_id',s.conversationId)
-      .eq('knowledge_task_id',previous.id).eq('knowledge_kind','final').eq('knowledge_state','SENT').limit(1);
+    const {data:out,error:outError}=await knowledgeDatabaseRead(this.options.db.from('odin_outbox').select('artifact').eq('business_id',s.businessId).eq('conversation_id',s.conversationId)
+      .eq('knowledge_task_id',previous.id).eq('knowledge_kind','final').eq('knowledge_state','SENT').limit(1));
     if(outError)throw new Error('knowledge_history_read_failed');
     const answer=previous.knowledge_result?.text;const question=previous.payload?.question;
     if(typeof answer!=='string'||typeof question!=='string'||out?.[0]?.artifact?.text!==answer)return keep(foreground);
@@ -119,7 +143,10 @@ export class NativeKnowledgeRuntime {
   async tick():Promise<KnowledgeCycleReport>{
     if(this.stopped)return {ran:false,deliveries:[]};
     if(this.pending)return {ran:false,deliveries:[]};
-    const pending=this.cycle.tick();this.pending=pending;
+    const pending=knowledgeOperation(async()=>{
+      if(this.options.controls().processing)await this.repository.recoverIntakes();
+      return this.cycle.tick();
+    },{timeoutMs:KNOWLEDGE_OPERATION_LIMITS.cycleMs});this.pending=pending;
     try{this.lastReport=await pending;return this.lastReport;}catch(error){this.lastFailure=error;throw error;}finally{if(this.pending===pending)this.pending=undefined;}
   }
   start(intervalMs=1000):void{

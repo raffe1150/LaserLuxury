@@ -1,3 +1,4 @@
+import { knowledgeOperation, KNOWLEDGE_OPERATION_LIMITS } from './knowledge-operation';
 import { runOptionalDiagnostic } from '../ai/business-information-timing';
 import type { ProviderRejection } from './knowledge-preflight-diagnostic';
 import type { ResolvedChannelConnection } from '../channels/connections/contracts';
@@ -6,9 +7,10 @@ import { NativeKnowledgeBindings, validNativeRecipient } from './native-knowledg
 
 const VERSION='v25.0'; // Match existing native send helpers, not a provider-version migration.
 const messageId=(v:unknown):v is string=>typeof v==='string' && /^[A-Za-z0-9:_.=+/-]{1,256}$/u.test(v);
-const unsent=(retryable=false):DeliveryOutcome=>({kind:'DEFINITIVELY_UNSENT',retryable});
+const unsent=(retryable=false,retryAfterMs?:number):DeliveryOutcome=>({kind:'DEFINITIVELY_UNSENT',retryable,...(retryAfterMs!==undefined?{retryAfterMs}:{})});
 const ambiguous=():DeliveryOutcome=>({kind:'AMBIGUOUS'});
 async function jsonRead(fetcher:typeof fetch,url:URL,token:string,signal:AbortSignal):Promise<any|null>{
+  if(signal.aborted)throw new Error('knowledge_operation_stopped');
   const response=await fetcher(url,{method:'GET',redirect:'error',headers:{Authorization:`Bearer ${token}`},signal});
   if(!response.ok)return null;const data=await response.json().catch(()=>null);return data?.error?null:data;
 }
@@ -17,6 +19,9 @@ async function jsonRead(fetcher:typeof fetch,url:URL,token:string,signal:AbortSi
  */
 export async function nativeProviderEligible(bindings:NativeKnowledgeBindings,task:KnowledgeTask,fetcher:typeof fetch=fetch,
   signal:AbortSignal=AbortSignal.timeout(5000), expected?:ResolvedChannelConnection, rejected?:(reason:ProviderRejection)=>unknown):Promise<boolean>{
+  const callerSignal=signal;
+  try { return await knowledgeOperation(async boundedSignal=>{
+  signal=boundedSignal;
   const reject=(reason:ProviderRejection):false=>{runOptionalDiagnostic(()=>rejected?.(reason));return false;};
   const resolved=await bindings.resolve(task.scope);if(!resolved)return reject('BINDING_OR_CONNECTION');
   const {binding:b,connection:c}=resolved;
@@ -95,6 +100,11 @@ export async function nativeProviderEligible(bindings:NativeKnowledgeBindings,ta
     const ids=c.participants?.data?.map((p:any)=>p.id);
     return Array.isArray(ids) && ids.includes(b.recipient) && ids.includes(b.account) && (b.channel!=='messenger' || c.can_reply===true);
   }) && Date.now()-eventAt<86400000 || reject('META_CONVERSATION_OR_WINDOW');
+  },{signal,timeoutMs:KNOWLEDGE_OPERATION_LIMITS.eligibilityMs});
+  } catch(error) {
+    if(callerSignal.aborted || (error as Error)?.message==='knowledge_operation_stopped')return false;
+    throw error;
+  }
 }
 
 /** Exactly one raw provider POST; never call foreground boolean helpers. No
@@ -110,7 +120,8 @@ export async function sendNativeKnowledge(c:ResolvedChannelConnection,recipient:
   else {url=`https://${c.provider==='instagram'?'graph.instagram.com':'graph.facebook.com'}/${VERSION}/${c.provider==='instagram'?'me':c.providerAccountId}/messages`;
     body={recipient:{id:recipient},...(c.provider==='messenger'?{messaging_type:'RESPONSE'}:{}),message:{text}};}
   try{
-    const response=await fetcher(url,{method:'POST',redirect:'error',headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json'},body:JSON.stringify(body),signal});
+    return await knowledgeOperation(async boundedSignal=>{
+    const response=await fetcher(url,{method:'POST',redirect:'error',headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json'},body:JSON.stringify(body),signal:boundedSignal});
     const data:any=await response.json().catch(()=>null);
     if(response.ok && !data?.error){
       if(c.provider==='telegram' && data?.ok===true && Number.isSafeInteger(data.result?.message_id) && data.result.message_id>0 && String(data.result.chat?.id)===recipient)
@@ -121,8 +132,15 @@ export async function sendNativeKnowledge(c:ResolvedChannelConnection,recipient:
         return {kind:'API_ACCEPTED',providerMessageId:data.message_id};
     }
     const code=c.provider==='telegram'?data?.error_code:data?.error?.code;
-    if(response.status>=400 && response.status<500 && response.status!==408 && Number.isInteger(code))return unsent(response.status===429);
-    if(c.provider==='telegram' && data?.ok===false && Number.isInteger(code) && code>=400 && code<500 && code!==408)return unsent(code===429);
+    const retryHeader=response.headers.get('retry-after');
+    const retrySeconds=retryHeader?(Number.isFinite(Number(retryHeader))?Number(retryHeader):(Date.parse(retryHeader)-Date.now())/1000):Number(data?.parameters?.retry_after);
+    // Never shorten a provider-mandated wait to fit our retry cap. A longer
+    // wait is a terminal unsent disposition within this bounded task budget.
+    const retryAllowed=!(Number.isFinite(retrySeconds)&&retrySeconds>60);
+    const retryAfterMs=retryAllowed&&Number.isFinite(retrySeconds)&&retrySeconds>0?Math.max(1000,Math.ceil(retrySeconds*1000)):undefined;
+    if(response.status>=400 && response.status<500 && response.status!==408 && Number.isInteger(code))return unsent(response.status===429&&retryAllowed,response.status===429?retryAfterMs:undefined);
+    if(c.provider==='telegram' && data?.ok===false && Number.isInteger(code) && code>=400 && code<500 && code!==408)return unsent(code===429&&retryAllowed,code===429?retryAfterMs:undefined);
     return ambiguous();
+    },{signal,timeoutMs:KNOWLEDGE_OPERATION_LIMITS.sendMs,factualResult:true});
   }catch{return ambiguous();}
 }

@@ -5,7 +5,7 @@ import { knowledgeSourceRevision, type KnowledgeSource } from '../../knowledge';
 import { resultDigest, type KnowledgeTask } from './knowledge-lifecycle';
 const source: KnowledgeSource = { id: 'doc', businessId: 77, type: 'document', title: 'Synthetic', status: 'ready',
   content: 'Parking nearby.', createdAt: 'synthetic', updatedAt: 'synthetic', metadata: { segments: [{ text: 'Parking nearby.' }] } };
-function fixture() {
+function fixture(duringEligibility?:()=>void) {
   let row: any = { conversation_key: 'canonical', knowledge_channel: 'whatsapp', knowledge_account: 'account', knowledge_sequence: 1 };
   let current = structuredClone(source); let eligible = true;
   const result = { protocol: 'evidence-first-v2' as const, independentlyVerified: true as const, completeRequiredFacts: true as const,
@@ -19,7 +19,7 @@ function fixture() {
       maybeSingle: async () => ({ data: row, error: null }) }; return query;
   } };
   const authority = createKnowledgeAuthority(db, { list: async id => { assert.equal(id, 77); return [current]; } },
-    { canonicalConversationKey: async () => 'canonical', eligible: async () => eligible });
+    { canonicalConversationKey: async () => 'canonical', eligible: async () => {duringEligibility?.();return eligible;} });
   return { task, authority, change: (patch: Partial<KnowledgeSource>) => { current = { ...current, ...patch }; },
     revoke: () => { eligible = false; }, supersede: () => { row.knowledge_sequence++; }, rebind: () => { row.knowledge_account = 'other'; } };
 }
@@ -43,4 +43,9 @@ test('modified stored text with unchanged digest is rejected without source acce
 });
 test('revoked provider eligibility also prevents creation of a final outbound entry', async () => {
   const f = fixture(); f.revoke(); assert.equal(await f.authority(f.task, 'finalize'), false);
+});
+
+test('revocation while provider eligibility is pending is detected by a fresh source read',async()=>{
+  const f=fixture(()=>f.change({status:'disabled'}));
+  assert.equal(await f.authority(f.task,'send'),false);
 });

@@ -619,6 +619,11 @@ for(const ch of channels) for(const outcome of ['complete','refused','truncated'
  t.mock.method(Responses.prototype,'create',async(params:any)=>{
   calls++;assert.equal(params.model,'gpt-5.6-luna');assert.equal(params.text.format.type,'json_schema');assert.equal(params.text.format.strict,true);
   assert.ok(params.text.format.name.startsWith('odinlink_knowledge_'));assert.equal(params.tools?.length||0,0,'no mutation tools offered');
+  if(params.text.format.name==='odinlink_knowledge_extraction_v2') {
+   const data=JSON.parse(params.input[0].content),binding=params.text.format.schema.properties.units.items.properties.facetIds;
+   assert.deepEqual(data.allowedFacetIds,data.facets.map((f:any)=>f.id));
+   assert.deepEqual(binding.items.enum,data.allowedFacetIds);assert.equal(binding.minItems,1);
+  }
   const result=await generate({config:{systemInstruction:params.instructions,tools:[]},contents:[{parts:[{text:params.input[0].content}]}]});
   if(params.instructions.includes('BATCH ENTAILMENT')&&outcome!=='complete')return{output_text:result.text,status:outcome==='truncated'?'incomplete':'completed',output:outcome==='refused'?[{content:[{type:'refusal',refusal:'private refusal'}]}]:[],usage:{input_tokens:10,output_tokens:10}} as any;
   return{output_text:result.text,status:'completed',output:[],usage:{input_tokens:10,output_tokens:10}} as any;
@@ -626,6 +631,16 @@ for(const ch of channels) for(const outcome of ['complete','refused','truncated'
  await inbound(ch,q.policy);assert.equal(calls,3);assert.equal(reads,0);assert.equal(published().includes(policy),outcome==='complete');
  assert.ok(decisionEvents.some(e=>e.provider==='openai'&&e.model==='gpt-5.6-luna'&&e.outputMode==='json_schema'));
  if(outcome!=='complete')assert.ok(decisionEvents.some(e=>e.reason===(outcome==='refused'?'REFUSAL':'TRUNCATED')));
+});
+
+for(const ch of channels)test(`${ch}/invalid-facet-inventory: three invalid units cannot reach independent verification or factual publication`,async()=>{
+ proposed=[2,3,4].map(i=>({...unit(policy),facetIds:[`f${i}`]}));
+ await inbound(ch,q.policy);
+ assert.equal(decisionEvents.filter(e=>e.reason==='INVALID_FACET').length,3);
+ assert.ok(decisionEvents.some(e=>e.stage==='publication'&&e.reason==='NO_PARSED_UNITS'&&e.publishableUnits===0));
+ assert.ok(!decisionEvents.some(e=>e.eventType==='verification_admission'));
+ assert.ok(!requests.some(p=>p.config.systemInstruction.includes('EVIDENCE-FIRST BATCH ENTAILMENT')));
+ assert.equal(published().includes(policy),false);assert.equal(reads,0);
 });
 
 // Retain real timers while advancing only elapsed request time. This exercises

@@ -1,3 +1,4 @@
+import { knowledgeDatabaseRead } from './knowledge-operation';
 import {
   boundedInteger, captureInput, captureVerified, requireId, requireProviderId, snapshot, validateScope,
   type Acceptance, type Checkpoint, type DeliveryOutcome, type DeliveryToken, type KnowledgeAuthority,
@@ -21,12 +22,13 @@ const uuid = (v: string) => {
  * authority is a server composition dependency, not a parameter to finalize/send.
  */
 export class SupabaseKnowledgeLifecycleRepository implements KnowledgeLifecycleRepository {
+  protected readonly lifecycleV2:boolean=false;
   constructor(protected readonly db: KnowledgeDatabase,
     protected readonly canonicalKey: (scope: KnowledgeScope) => Promise<string>,
     private readonly authority: KnowledgeAuthority) {}
 
   protected async result(operation: PromiseLike<any>): Promise<any> {
-    const { data, error } = await operation;
+    const { data, error } = await knowledgeDatabaseRead(operation);
     // Do not surface database exception text: it may include stored input.
     if (error) throw new Error('knowledge_repository_operation_failed');
     return data;
@@ -67,8 +69,16 @@ export class SupabaseKnowledgeLifecycleRepository implements KnowledgeLifecycleR
   private async transition(s: KnowledgeScope, taskId: string, command: string, args: Record<string, unknown> = {}): Promise<any> {
     s = snapshot(s);
     uuid(taskId);
-    if (!await this.scope(s)) return null;
-    return this.result(this.db.rpc('odin_transition_knowledge_v1', { p_business: s.businessId, p_conversation: s.conversationId,
+    if (!(this.lifecycleV2 && ['settle_delivery','reject_delivery','defer_delivery'].includes(command)) && !await this.scope(s)) {
+      // Scope rejection grants no execution authority. Terminalize an unleased
+      // native row so invalid bindings cannot occupy every discovery slot.
+      if(this.lifecycleV2 && command==='claim')await this.result(this.db.rpc('odin_transition_knowledge_v2',{
+        p_business:s.businessId,p_conversation:s.conversationId,p_task:taskId,p_channel:s.channel,p_account:s.providerAccount,
+        p_command:'reject_task',p_args:{},
+      }));
+      return null;
+    }
+    return this.result(this.db.rpc(this.lifecycleV2?'odin_transition_knowledge_v2':'odin_transition_knowledge_v1', { p_business: s.businessId, p_conversation: s.conversationId,
       p_task: taskId, p_channel: s.channel, p_account: s.providerAccount, p_command: command, p_args: args }));
   }
   private token(t: TaskToken | DeliveryToken) { requireId(t.owner); boundedInteger(t.fence, 1, Number.MAX_SAFE_INTEGER); return { owner: t.owner, fence: t.fence }; }
@@ -115,6 +125,15 @@ export class SupabaseKnowledgeLifecycleRepository implements KnowledgeLifecycleR
     return Boolean(await this.transition(s, t.taskId, 'verified', { ...this.token(t), result: captureVerified(result) }));
   }
   async fail(s: KnowledgeScope, t: TaskToken) { return Boolean(await this.transition(s, t.taskId, 'fail', this.token(t))); }
+  async interrupt(s:KnowledgeScope,t:TaskToken) {
+    return this.lifecycleV2?Boolean(await this.transition(s,t.taskId,'interrupt',this.token(t))):false;
+  }
+  async deferDelivery(s:KnowledgeScope,taskId:string,deliveryId:string) {
+    return this.lifecycleV2?Boolean(await this.transition(s,taskId,'defer_delivery',{deliveryId})):false;
+  }
+  async rejectDelivery(s:KnowledgeScope,taskId:string,deliveryId:string) {
+    return this.lifecycleV2?Boolean(await this.transition(s,taskId,'reject_delivery',{deliveryId})):false;
+  }
   async finalize(s: KnowledgeScope, t: TaskToken) {
     s = snapshot(s);
     t = snapshot(t);
@@ -126,9 +145,9 @@ export class SupabaseKnowledgeLifecycleRepository implements KnowledgeLifecycleR
     if (!text.trim() || text.length > 240) throw new Error('knowledge_progress_bounds');
     return this.delivery(await this.transition(s, id, 'progress', { text }));
   }
-  private async deliveryTask(s: KnowledgeScope, id: string): Promise<string | null> {
+  private async deliveryTask(s: KnowledgeScope, id: string, factual=false): Promise<string | null> {
     s = snapshot(s);
-    uuid(id); if (!await this.scope(s)) return null;
+    uuid(id); validateScope(s); if (!factual && !await this.scope(s)) return null;
     const row = await this.result(this.db.from('odin_outbox').select('knowledge_task_id').eq('business_id', s.businessId)
       .eq('conversation_id', s.conversationId).eq('channel', s.channel).eq('id', id).maybeSingle());
     return row?.knowledge_task_id ?? null;
@@ -144,15 +163,16 @@ export class SupabaseKnowledgeLifecycleRepository implements KnowledgeLifecycleR
     s = snapshot(s);
     if (outcome.kind === 'API_ACCEPTED') requireProviderId(outcome.providerMessageId);
     t = snapshot(t); outcome = snapshot(outcome);
-    const taskId = await this.deliveryTask(s, t.deliveryId);
+    const taskId = await this.deliveryTask(s, t.deliveryId,this.lifecycleV2);
     return taskId ? Boolean(await this.transition(s, taskId, 'settle_delivery', { ...this.token(t), deliveryId: t.deliveryId,
       outcome: outcome.kind, ...(outcome.kind === 'API_ACCEPTED' ? { providerMessageId: outcome.providerMessageId } :
-        outcome.kind === 'DEFINITIVELY_UNSENT' ? { retryable: outcome.retryable } : {}) })) : false;
+        outcome.kind === 'DEFINITIVELY_UNSENT' ? { retryable: outcome.retryable, ...(this.lifecycleV2 && outcome.retryAfterMs!==undefined?{retryAfterMs:boundedInteger(outcome.retryAfterMs,0,60000)}:{}) } : {}) })) : false;
   }
   /** Bounded privileged discovery. Returned metadata is not execution authority;
    * every subsequent claim still checks canonical scope and the database fence. */
   async discoverWork(limit = 16): Promise<readonly { scope: KnowledgeScope; taskId: string }[]> {
     boundedInteger(limit, 1, 100);
+    if(this.lifecycleV2)return snapshot(await this.result(this.db.rpc('odin_discover_knowledge_v2',{p_kind:'work',p_limit:limit})));
     const rows = await this.result(this.db.from('odin_tasks')
       .select('id,business_id,conversation_id,knowledge_channel,knowledge_account')
       .eq('task_type', 'knowledge_async_v1').not('knowledge_turn_id', 'is', null).in('knowledge_state', ['ACCEPTED', 'RUNNING', 'VERIFIED'])
@@ -162,6 +182,7 @@ export class SupabaseKnowledgeLifecycleRepository implements KnowledgeLifecycleR
   }
   async discoverDeliveries(limit = 16): Promise<readonly { scope: KnowledgeScope; taskId: string; deliveryId: string }[]> {
     boundedInteger(limit, 1, 100);
+    if(this.lifecycleV2)return snapshot(await this.result(this.db.rpc('odin_discover_knowledge_v2',{p_kind:'delivery',p_limit:limit})));
     const rows = await this.result(this.db.from('odin_outbox').select('id,business_id,conversation_id,channel,knowledge_task_id')
       .eq('knowledge_kind', 'final').in('knowledge_state', ['PENDING', 'FAILED', 'SENDING']).order('created_at', { ascending: true }).limit(limit));
     const work: { scope: KnowledgeScope; taskId: string; deliveryId: string }[] = [];

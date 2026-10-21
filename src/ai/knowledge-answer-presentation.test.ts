@@ -12,13 +12,14 @@ const languages = [
  ['ar','هل يمكنني الحضور بدون حجز مسبق؟','نوصي بحجز موعد مسبقاً.','مسموح'],
 ] as const;
 async function answer(options: { language?: string; question?: string; fact?: string; planner?: any[]; coverage?: (rows: any[]) => any[];
-  languageSafe?: (unit: AnswerUnit) => boolean; composerFails?: boolean; secondFact?: string } = {}) {
+  languageSafe?: (unit: AnswerUnit) => boolean; composerFails?: boolean; secondFact?: string; requireCompleteCoverage?: boolean } = {}) {
  const language=options.language||'en', question=options.question||languages[1][1], fact=options.fact||languages[1][2];
  const facets=parseRequestedFacets(options.planner||[{subject:'visits',attribute:'policy',questionType:'permission',obligations:[{description:'walk-in permission',questionType:'permission'},{description:'booking recommendation',questionType:'recommendation'}]}]).facets;
  const evidence=answerEvidence(77,[{businessId:77,sourceId:'recommendation',text:fact,metadata:{documentRevision:'v1'}},
   ...(options.secondFact?[{businessId:77,sourceId:'independent',text:options.secondFact,metadata:{documentRevision:'v1'}}]:[])]);
  const calls:string[]=[], budget=new InformationBudget();
  const manifest=await buildEvidenceFirstAnswer({question,language,facets,evidence,authoritativeEvidence:'',businessTone:{tonePreset:'warm'},history:[],budget,current:async()=>true,
+  requireCompleteCoverage:options.requireCompleteCoverage,
   languageSafe:options.languageSafe||(()=>true),generate:async(stage,_instruction,data:any)=>{
    budget.attempt();calls.push(stage);
    if(stage==='extraction')return{text:JSON.stringify({units:[fact,...(options.secondFact?[options.secondFact]:[])].map((text,i)=>({facetIds:[facets[Math.min(i,facets.length-1)].id],subject:'studio',predicate:'states',value:text,modality:i?'descriptive':'recommended',negation:false,scope:'business',qualifiers:[],language,text,evidenceRefs:[{evidenceId:`e${i+1}`,exactQuote:text}]}))})};
@@ -132,4 +133,19 @@ test('planner cannot echo the entire question with its terminal punctuation remo
  const facets=parseRequestedFacets([{subject:'parking',attribute:'location',questionType:'description',obligations:[{description:question.slice(0,-1),questionType:'description'}]}]).facets;
  const outcome:any={facetId:'f1',status:'PARTIAL',requestAligned:true,obligations:[{obligationId:'f1.o1',status:'UNRESOLVED'}]};
  assert.equal(uncertaintyReferences(question,'en',facets,[outcome],()=>true).length,0);
+});
+
+for(const durable of [false,true])test(`${durable?'durable coverage stop':'foreground coverage parity'}: incomplete material inventory retains verdict and entailed units`,async()=>{
+ const {manifest,calls}=await answer({requireCompleteCoverage:durable,secondFact:'Visits are arranged by agreement.',
+  planner:[{subject:'visits',attribute:'recommendation',questionType:'recommendation'}],
+  coverage:rows=>rows.map(r=>({...r,materialFactsComplete:false,obligations:r.obligations.map((o:any)=>({...o,status:'UNRESOLVED',unitIds:r.materialUnitIds}))}))});
+ assert.deepEqual(calls,durable?['extraction','verification']:['extraction','verification','composition']);
+ assert.equal(manifest.outcomes[0].status,'PARTIAL');assert.equal(manifest.outcomes[0].requestAligned,true);
+ assert.equal(manifest.outcomes[0].materialFactsComplete,false);assert.equal(manifest.outcomes[0].obligations[0].status,'UNRESOLVED');
+ assert.deepEqual(manifest.outcomes[0].materialUnitIds,['u1','u2']);assert.equal(manifest.units.length,2);
+ assert.ok(manifest.units.every(u=>u.verification==='ENTAILED'));assert.ok(manifest.units.every(u=>u.evidenceRefs[0].version==='v1'));
+});
+test('durable coverage stop: complete multi-unit answer retains successful composition',async()=>{
+ const {manifest,calls}=await answer({requireCompleteCoverage:true,secondFact:'Visits are arranged by agreement.',planner:[{subject:'visits',attribute:'recommendation',questionType:'recommendation'}]});
+ assert.deepEqual(calls,['extraction','verification','composition']);assert.equal(manifest.outcomes[0].status,'VERIFIED');assert.equal(manifest.presentationPath,'composed');
 });

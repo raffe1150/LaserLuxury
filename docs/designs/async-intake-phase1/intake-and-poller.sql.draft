@@ -1,0 +1,158 @@
+-- UNAPPLIED. Phase 1 only. Install separately after reviewing live prerequisites.
+-- Never replay the installed Foundation/Extension/Ordered V2 packages.
+begin;
+set local lock_timeout = '5s';
+set local statement_timeout = '30s';
+alter table public.odin_inbox
+  add column knowledge_intake_state text check (knowledge_intake_state in ('ROUTING','PREPARED','ATTACHED','TERMINAL')),
+  add column knowledge_intake_owner uuid,
+  add column knowledge_intake_context text check (length(knowledge_intake_context)<=4000),
+  add column knowledge_intake_input jsonb,
+  add column knowledge_intake_reason text;
+create index odin_intake_recovery on public.odin_inbox(knowledge_expires_at)
+  where knowledge_intake_state in ('ROUTING','PREPARED');
+
+-- Routing is never replayed. Only the exact input prepared by the existing
+-- foreground Knowledge branch may be attached by recovery. The original
+-- acceptance, ordering fence, expiry, task uniqueness and authority remain V2.
+create function public.odin_native_intake_v1(
+  p_business bigint,p_conversation uuid,p_channel text,p_account text,p_event text,p_key text,
+  p_order jsonb,p_command text,p_owner uuid,p_context text default '',p_input jsonb default null,
+  p_execution_ms integer default 20000
+) returns jsonb language plpgsql security invoker set search_path=pg_catalog,public as $$
+declare c public.odin_conversations%rowtype; i public.odin_inbox%rowtype;
+  t public.odin_tasks%rowtype; r jsonb; reason text;
+begin
+  if p_command is null or p_command not in ('begin','prepare','reconcile','finish','legacy') or p_owner is null
+    or p_context is null or length(p_context)>4000 then raise exception 'intake_invalid_command'; end if;
+  select * into c from public.odin_conversations where business_id=p_business and id=p_conversation for update;
+  if not found or c.conversation_key is distinct from p_key then raise exception 'intake_scope'; end if;
+  if p_command='begin' then
+    r:=public.odin_accept_knowledge_turn_v2(p_business,p_conversation,p_channel,p_account,p_event,p_key,p_order,null,p_execution_ms,3,4);
+    if r->'inbox'='null'::jsonb then return r||jsonb_build_object('intakeState','TERMINAL','intakeReason',r->>'disposition'); end if;
+  end if;
+  select * into i from public.odin_inbox where business_id=p_business and conversation_id=p_conversation
+    and channel=p_channel and provider_scope=p_account and provider_event_id=p_event for update;
+  if not found or i.payload->'native_order_v2'->'order' is distinct from coalesce(p_order,'null'::jsonb) then
+    raise exception 'intake_event_scope'; end if;
+  select * into t from public.odin_tasks where business_id=p_business and knowledge_inbox_id=i.id;
+  if p_command='begin' and i.knowledge_intake_state is null then
+    update public.odin_inbox set knowledge_intake_owner=p_owner,knowledge_intake_context=p_context,
+      knowledge_intake_state=case when t.id is not null then 'ATTACHED' when r->'inserted'='true'::jsonb and r->'mayAttach'='true'::jsonb then 'ROUTING' else 'TERMINAL' end,
+      knowledge_intake_reason=case when t.id is not null then null when r->'inserted'='true'::jsonb and r->'mayAttach'='true'::jsonb then null else 'LEGACY_OR_ORDER_REJECTED' end
+      where id=i.id returning * into i;
+  end if;
+  if i.knowledge_intake_state is null then raise exception 'intake_not_enrolled'; end if;
+  -- Re-read after V2 updated the conversation fence inside this transaction.
+  select * into c from public.odin_conversations where business_id=p_business and id=p_conversation;
+  if i.knowledge_intake_state in ('ROUTING','PREPARED') and
+    (i.knowledge_sequence<>c.knowledge_sequence or i.knowledge_expires_at<=clock_timestamp()) then
+    reason:=case when i.knowledge_sequence<>c.knowledge_sequence then 'SUPERSEDED'
+      when i.knowledge_intake_state='ROUTING' then 'ROUTING_INTERRUPTED' else 'EXPIRED' end;
+    update public.odin_inbox set knowledge_intake_state='TERMINAL',knowledge_intake_reason=reason where id=i.id returning * into i;
+  end if;
+  if p_command='prepare' and i.knowledge_intake_state='ROUTING' then
+    if i.knowledge_intake_owner is distinct from p_owner then raise exception 'intake_owner'; end if;
+    if p_input is null or jsonb_typeof(p_input) is distinct from 'object' or (p_input-array['question','language','history'])<>'{}'::jsonb
+      or jsonb_typeof(p_input->'question') is distinct from 'string' or length(btrim(p_input->>'question')) not between 1 and 4000
+      or coalesce(p_input->>'language','') !~ '^[a-z]{2,3}(-[A-Za-z]{2,8})?$'
+      or jsonb_typeof(p_input->'history') is distinct from 'array' then raise exception 'intake_input'; end if;
+    if jsonb_array_length(p_input->'history')>4 or octet_length(p_input::text)>40000 or exists(
+      select 1 from jsonb_array_elements(p_input->'history') h where jsonb_typeof(h) is distinct from 'object'
+      or (h-array['role','content'])<>'{}'::jsonb or coalesce(h->>'role','') not in ('user','assistant')
+      or jsonb_typeof(h->'content') is distinct from 'string' or length(btrim(h->>'content')) not between 1 and 1200
+    ) then raise exception 'intake_history'; end if;
+    update public.odin_inbox set knowledge_intake_input=p_input,knowledge_intake_state='PREPARED' where id=i.id returning * into i;
+  elsif p_command='prepare' and i.knowledge_intake_state in ('PREPARED','ATTACHED') and
+    (i.knowledge_intake_owner is distinct from p_owner or i.knowledge_intake_input is distinct from p_input) then
+    raise exception 'intake_immutable_input';
+  end if;
+  if p_command in ('reconcile','finish') and i.knowledge_intake_state='PREPARED' then
+    r:=public.odin_accept_knowledge_turn_v2(p_business,p_conversation,p_channel,p_account,p_event,p_key,p_order,i.knowledge_intake_input,p_execution_ms,3,4);
+    select * into t from public.odin_tasks where business_id=p_business and knowledge_inbox_id=i.id;
+    update public.odin_inbox set knowledge_intake_state=case when t.id is null then 'TERMINAL' else 'ATTACHED' end,
+      knowledge_intake_reason=case when t.id is null then 'ATTACHMENT_REJECTED' else null end where id=i.id returning * into i;
+  elsif p_command in ('finish','legacy') and i.knowledge_intake_state='ROUTING' then
+    if i.knowledge_intake_owner is distinct from p_owner then raise exception 'intake_owner'; end if;
+    update public.odin_inbox set knowledge_intake_state='TERMINAL',
+      knowledge_intake_reason=case when p_command='legacy' then 'LEGACY_CLAIM_REQUIRES_REVIEW' else 'FOREGROUND_HANDLED' end
+      where id=i.id returning * into i;
+  end if;
+  return coalesce(r,'{}'::jsonb)||jsonb_build_object('disposition',coalesce(r->>'disposition','DUPLICATE'),
+    'mayAttach',i.knowledge_intake_state in ('ROUTING','PREPARED','ATTACHED'), 'inserted',coalesce(r->'inserted','false'::jsonb),
+    'inbox',to_jsonb(i),'task',case when t.id is null then null else to_jsonb(t) end,
+    'intakeState',i.knowledge_intake_state,'intakeReason',i.knowledge_intake_reason,'intakeOwner',i.knowledge_intake_owner);
+end $$;
+
+create function public.odin_recover_native_intakes_v1(p_limit integer default 16)
+returns jsonb language plpgsql security invoker set search_path=pg_catalog,public as $$
+declare i record; n integer:=0;
+begin
+  if p_limit is null or p_limit not between 1 and 100 then raise exception 'intake_limit'; end if;
+  -- No inbox lock here: retain conversation-before-inbox lock ordering.
+  for i in select x.*,c.conversation_key from public.odin_inbox x join public.odin_conversations c
+    on c.id=x.conversation_id and c.business_id=x.business_id
+    where x.knowledge_intake_state='PREPARED' or x.knowledge_intake_state='ROUTING' and x.knowledge_expires_at<=clock_timestamp()
+    order by x.knowledge_expires_at limit p_limit loop
+    perform public.odin_native_intake_v1(i.business_id,i.conversation_id,i.channel,i.provider_scope,i.provider_event_id,
+      i.conversation_key,i.payload->'native_order_v2'->'order','reconcile',i.knowledge_intake_owner);
+    n:=n+1;
+  end loop;
+  return jsonb_build_object('reconciled',n);
+end $$;
+
+-- One account-wide polling lease (not one lease per conversation or process).
+-- Cursor commits and renewals require the exact live fence. No credentials stored.
+create table public.odin_telegram_pollers (
+  bot_id text primary key check(bot_id ~ '^[1-9][0-9]{0,29}$'),
+  business_id bigint not null references public.businesses(id) on delete cascade,
+  owner uuid not null, fence bigint not null check(fence>0), lease_until timestamptz not null,
+  last_update_id bigint not null default -1 check(last_update_id between -1 and 9007199254740991),
+  last_update_at timestamptz not null default clock_timestamp()
+);
+alter table public.odin_telegram_pollers enable row level security;
+revoke all on public.odin_telegram_pollers from public,anon,authenticated;
+grant select,insert,update,delete on public.odin_telegram_pollers to service_role;
+create function public.odin_telegram_poller_v1(p_business bigint,p_bot text,p_owner uuid,p_command text,
+  p_fence bigint default null,p_update bigint default null)
+returns jsonb language plpgsql security invoker set search_path=pg_catalog,public as $$
+declare r public.odin_telegram_pollers%rowtype; n timestamptz;
+begin
+  if p_business is null or p_business<=0 or p_bot is null or p_bot !~ '^[1-9][0-9]{0,29}$' or p_owner is null
+    or p_command is null or p_command not in ('claim','renew','commit','release') then raise exception 'poller_input'; end if;
+  if p_command='claim' then
+    insert into public.odin_telegram_pollers(bot_id,business_id,owner,fence,lease_until)
+      values(p_bot,p_business,p_owner,1,clock_timestamp()+interval '60 seconds') on conflict do nothing;
+  end if;
+  select * into r from public.odin_telegram_pollers where bot_id=p_bot for update;
+  n:=clock_timestamp();
+  if not found or r.business_id<>p_business then return null; end if;
+  if p_command='claim' then
+    if r.lease_until>n and r.owner<>p_owner then return null; end if;
+    update public.odin_telegram_pollers set owner=p_owner,fence=fence+case when lease_until<=n then 1 else 0 end,
+      lease_until=n+interval '60 seconds' where bot_id=p_bot returning * into r;
+  else
+    if r.owner is distinct from p_owner or r.fence is distinct from p_fence or r.lease_until<=n then return null; end if;
+    if p_command='commit' then
+      if p_update is null or p_update<0 or p_update>9007199254740991 or
+        (p_update<r.last_update_id and r.last_update_at>n-interval '24 hours') then raise exception 'poller_cursor'; end if;
+      update public.odin_telegram_pollers set last_update_id=p_update,last_update_at=n where bot_id=p_bot returning * into r;
+    elsif p_command='renew' then
+      update public.odin_telegram_pollers set lease_until=n+interval '60 seconds' where bot_id=p_bot returning * into r;
+    else
+      update public.odin_telegram_pollers set lease_until=n where bot_id=p_bot returning * into r;
+    end if;
+  end if;
+  -- Telegram retains updates for <=24h and may reset IDs after a week idle.
+  -- Read from offset zero after 24h without a committed disposition, before a
+  -- historical high offset could acknowledge a new lower epoch accidentally.
+  -- The cursor changes only AFTER the returned update is durably disposed.
+  return to_jsonb(r)||jsonb_build_object('cursor_reset_due',r.last_update_at<=clock_timestamp()-interval '24 hours');
+end $$;
+revoke all on function public.odin_native_intake_v1(bigint,uuid,text,text,text,text,jsonb,text,uuid,text,jsonb,integer) from public,anon,authenticated;
+revoke all on function public.odin_recover_native_intakes_v1(integer) from public,anon,authenticated;
+revoke all on function public.odin_telegram_poller_v1(bigint,text,uuid,text,bigint,bigint) from public,anon,authenticated;
+grant execute on function public.odin_native_intake_v1(bigint,uuid,text,text,text,text,jsonb,text,uuid,text,jsonb,integer) to service_role;
+grant execute on function public.odin_recover_native_intakes_v1(integer) to service_role;
+grant execute on function public.odin_telegram_poller_v1(bigint,text,uuid,text,bigint,bigint) to service_role;
+commit;

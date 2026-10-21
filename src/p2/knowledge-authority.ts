@@ -1,3 +1,4 @@
+import { knowledgeDatabaseRead, knowledgeOperation } from './knowledge-operation';
 import { knowledgeSourceRevision, SupabaseKnowledgeStorage, type KnowledgeService } from '../../knowledge';
 import { captureVerified, resultDigest, type KnowledgeAuthority, type KnowledgeTask } from './knowledge-lifecycle';
 import type { KnowledgeDatabase } from './supabase-knowledge-lifecycle-repository';
@@ -12,9 +13,9 @@ export interface KnowledgeProviderAuthority {
 export async function knowledgeTurnCurrent(db: KnowledgeDatabase, task: KnowledgeTask,
   provider: KnowledgeProviderAuthority): Promise<boolean> {
   const scope = task.scope;
-  const { data, error } = await db.from('odin_conversations')
+  const { data, error } = await knowledgeDatabaseRead(db.from('odin_conversations')
     .select('conversation_key,knowledge_channel,knowledge_account,knowledge_sequence')
-    .eq('business_id', scope.businessId).eq('id', scope.conversationId).maybeSingle();
+    .eq('business_id', scope.businessId).eq('id', scope.conversationId).maybeSingle());
   if (error) throw new Error('knowledge_authority_read_failed');
   const key = await provider.canonicalConversationKey(task);
   return Boolean(data && key && key === data.conversation_key && data.knowledge_channel === scope.channel &&
@@ -30,12 +31,13 @@ export function createKnowledgeAuthority(db: KnowledgeDatabase, sources: Pick<Kn
     const scope = task.scope;
     const read = () => knowledgeTurnCurrent(db, task, provider);
     if (!await read()) return false;
-    const live = await sources.list(scope.businessId);
+    if (!await provider.eligible(task)) return false;
+    const live = await knowledgeOperation(()=>sources.list(scope.businessId));
     for (const source of task.result.sources) {
       const matches = live.filter(s => s.id === source.id && s.businessId === scope.businessId && s.status === 'ready');
       if (matches.length !== 1 || knowledgeSourceRevision(matches[0]) !== source.revision) return false;
     }
-    if (!await provider.eligible(task)) return false;
+    // Source checks follow provider I/O; do not reuse a preflight source snapshot.
     // Recheck after async evidence/provider reads. SQL then atomically rechecks
     // current watermark, lease, expiry and digest-bound receipt freshness.
     return await read();

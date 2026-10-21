@@ -148,9 +148,9 @@ test('Smart Waiting through four actual native entries, PostgreSQL safety and in
     held.release();await held.tick;assert.equal(posts[1].text,fact);facetAttribute='parking';
   });
   await t.test('duplicate native event retains one progress identity and one final reply',async()=>{
-    language='en';fact='Parking is nearby.';resetSource(fact);posts=[];configure();const event=++serial,recipient='46709000003';
-    await inbound('whatsapp','Where can I park my car?',recipient,event);const task=latestTask();const held=await heldTick();fire();await waitFor(()=>progress(task.id)[0]?.knowledge_state==='SENT');held.release();await held.tick;
-    configure();await inbound('whatsapp','Where can I park my car?',recipient,event);await runtime.tick();assert.equal(posts.length,2);assert.equal(progress(task.id).length,1);
+    language='en';fact='Parking is nearby.';resetSource(fact);posts=[];configure();const event=++serial,recipient='46709000003',at=Date.now()-60000;
+    await inbound('whatsapp','Where can I park my car?',recipient,event,at);const task=latestTask();const held=await heldTick();fire();await waitFor(()=>progress(task.id)[0]?.knowledge_state==='SENT');held.release();await held.tick;
+    configure();await inbound('whatsapp','Where can I park my car?',recipient,event,at);await runtime.tick();assert.equal(posts.length,2);assert.equal(progress(task.id).length,1);
   });
   await t.test('two host workers cannot create two waiting messages for the same task',async()=>{
     posts=[];configure();await inbound('instagram','Where can I park my car?','46709000004');const task=latestTask();const held=await heldTick();
@@ -175,13 +175,13 @@ test('Smart Waiting through four actual native entries, PostgreSQL safety and in
   await t.test('a slow in-flight progress POST never holds the independently verified final reply',async()=>{
     posts=[];configure();await inbound('telegram','Where can I park my car?','46709000008');const task=latestTask();const held=await heldTick();let releaseHttp!:()=>void;
     progressHttpHold=new Promise<void>(r=>{releaseHttp=r;});fire();await waitFor(()=>posts.length===1);held.release();await held.tick;
-    assert.equal(posts.length,2);assert.equal(posts[1].text,fact);assert.equal(progress(task.id)[0].knowledge_state,'SENDING');releaseHttp();
-    await waitFor(()=>progress(task.id)[0]?.knowledge_state==='SENT');
+    assert.equal(posts.length,2);assert.equal(posts[1].text,fact);assert.equal(progress(task.id)[0].knowledge_state,'UNCERTAIN');releaseHttp();
+    await runtime.tick();assert.equal(progress(task.id)[0].knowledge_state,'UNCERTAIN');assert.equal(posts.length,2);
   });
   await t.test('database/process restart and lease takeover do not resend an accepted acknowledgement',async()=>{
     posts=[];configure();await inbound('instagram','Where can I park my car?','46709000009');const task=latestTask();const held=await heldTick();fire();
-    await waitFor(()=>progress(task.id)[0]?.knowledge_state==='SENT');assert.equal(await runtime.stop(5),false);pg.restart();
-    pg.sql("UPDATE public.odin_tasks SET knowledge_lease_until=clock_timestamp()-interval '1 second' WHERE id='"+task.id+"';");runtime=createRuntime();configure();await runtime.tick();held.release();await held.tick.catch(()=>{});
+    await waitFor(()=>progress(task.id)[0]?.knowledge_state==='SENT');assert.equal(await runtime.stop(1000),true,'shutdown releases the worker despite an uncancellable extraction');pg.restart();
+    pg.sql("UPDATE public.odin_tasks SET knowledge_lease_until=clock_timestamp()-interval '1 second',knowledge_available_at=clock_timestamp()-interval '1 second' WHERE id='"+task.id+"';");runtime=createRuntime();configure();await runtime.tick();held.release();await held.tick.catch(()=>{});
     assert.equal(posts.length,2);assert.equal(posts[1].text,fact);assert.equal(progress(task.id)[0].attempt_count,1);assert.equal(latestTask().knowledge_expires_at,task.knowledge_expires_at);
   });
   await t.test('missing progress migration permission is an optional failure; verified final still succeeds',async()=>{
@@ -199,7 +199,7 @@ test('Smart Waiting through four actual native entries, PostgreSQL safety and in
   await t.test('source revocation after waiting still prevents factual finalization',async()=>{
     posts=[];configure();await inbound('messenger','Where can I park my car?','46709000013');const task=latestTask();const held=await heldTick();fire();
     await waitFor(()=>progress(task.id)[0]?.knowledge_state==='SENT');changeAfterExecution=true;held.release();await held.tick;changeAfterExecution=false;
-    assert.equal(posts.length,1);assert.equal(latestTask().knowledge_state,'VERIFIED');await invalidate(task);resetSource(fact);
+    assert.equal(posts.length,1);assert.equal(latestTask().knowledge_state,'FAILED');assert.equal(pg.sql("SELECT count(*) FROM public.odin_outbox WHERE knowledge_kind='final' AND knowledge_task_id='"+task.id+"';"),'0');await invalidate(task);resetSource(fact);
   });
   await t.test('throwing telemetry cannot change waiting or final transport results',async()=>{
     posts=[];configure();await inbound('whatsapp','Where can I park my car?','46709000014');const task=latestTask();const held=await heldTick();telemetryThrows=true;fire();
@@ -219,8 +219,12 @@ test('Smart Waiting through four actual native entries, PostgreSQL safety and in
       notifyBooking:async()=>true,recordAppointment:async(params:any)=>{rows++;return {id:rows,business_id:77,platform:channel,user_id:recipient,service:params.service,start_time:params.dateTime,end_time:new Date(Date.parse(params.dateTime)+3600000).toISOString(),status:'booked',created_at:new Date().toISOString()};}};
     try{
       configure();const session=`tg:77:${createHash('sha256').update(config.telegramToken).digest('hex').slice(0,12)}:${recipient}`;
-      b.stateAuditConfig(session,config);const day=new Date(Date.now()+172800000).toLocaleDateString('sv-SE',{timeZone:'Europe/Stockholm'});
-      const start=day+'T13:00:00+02:00',end=day+'T14:00:00+02:00';
+      b.stateAuditConfig(session,config);
+      const target=new Date(Date.now()+172800000);
+      while ([0,6].includes(new Date(target.toLocaleString('en-US',{timeZone:'Europe/Stockholm'})).getDay())) target.setDate(target.getDate()+1);
+      const day=target.toLocaleDateString('sv-SE',{timeZone:'Europe/Stockholm'});
+      const offset=new Intl.DateTimeFormat('en-US',{timeZone:'Europe/Stockholm',timeZoneName:'shortOffset'}).formatToParts(new Date(day+'T12:00:00Z')).find(part=>part.type==='timeZoneName')?.value==='GMT+1'?'+01:00':'+02:00';
+      const start=day+'T13:00:00'+offset,end=day+'T14:00:00'+offset;
       b.seedPending(session,{businessConfig:config,bookingStateVersion:CURRENT_BOOKING_STATE_VERSION,businessId:'77',platform:channel,userId:recipient,sessionId:session,
         operation:'new_booking',status:'awaiting_contact',expectedInput:'contact',service:'Video Consultation',durationMinutes:60,selectedDate:day,dateTime:start,selectedSlotEnd:end,language:'en',
         availabilityConstraint:{startDate:day,endDate:day,kind:'exact_time',exactTime:'13:00',rejectedTimes:[]},offeredSlots:[],

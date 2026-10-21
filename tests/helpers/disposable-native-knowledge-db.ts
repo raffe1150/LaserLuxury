@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { mkdtempSync,mkdirSync,readFileSync,rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -26,13 +26,29 @@ export class DisposableNativeKnowledgeDatabase {
         ['docs/designs/knowledge-migration-wrappers/extension.sql.payload','269dfd172d21840b9f610da4697479a8176052d9faafff45e02d5210b365f038']];
       for(const[path,hash]of pins){const bytes=readFileSync(path);assert.equal(createHash('sha256').update(bytes).digest('hex'),hash);this.sql(bytes.toString('utf8'));}
       this.sql("SET odin.approved_ordered_knowledge_v2='yes';\n"+readFileSync('docs/designs/ordered-native-admission/20261019120000_ordered_knowledge_admission_v2.sql.draft','utf8'));
+      this.sql(readFileSync('docs/designs/async-intake-phase1/intake-and-poller.sql.draft','utf8'));
+      this.sql(readFileSync('docs/designs/async-recovery-phase2/recovery-and-settlement.sql.draft','utf8'));
     }catch(error){this.close();throw error;}
+  }
+  async holdConversation(id:string):Promise<()=>Promise<void>> {
+    assert.match(id,/^[0-9a-f-]{36}$/u);
+    const child=spawn(bin+'psql',['-X','-qAt','-v','ON_ERROR_STOP=1','-h',this.socket,'-p','55439','-U','postgres','-d','postgres'],{env:this.env,stdio:'pipe'});
+    const closed=new Promise<void>(resolve=>child.once('close',()=>resolve()));
+    try {
+      await new Promise<void>((resolve,reject)=>{
+        const timer=setTimeout(()=>reject(new Error('isolated lock not acquired')),3000);
+        child.once('error',error=>{clearTimeout(timer);reject(error);});
+        child.stdout.on('data',data=>{if(String(data).includes('LOCK_READY')){clearTimeout(timer);resolve();}});
+        child.stdin.write("BEGIN; SELECT id FROM public.odin_conversations WHERE id='"+id+"' FOR UPDATE; SELECT 'LOCK_READY';\n");
+      });
+    } catch(error) {child.kill();await closed;throw error;}
+    return async()=>{child.stdin.end('ROLLBACK;\n');await closed;};
   }
   restart(){this.run('pg_ctl',['-D',join(this.root,'data'),'-l',join(this.root,'postgres.log'),'-m','fast','-o',"-h '' -k "+this.socket+' -p 55439','-w','restart']);}
   close(){if(this.started){this.run('pg_ctl',['-D',join(this.root,'data'),'-m','immediate','-w','stop']);this.started=false;}rmSync(this.root,{recursive:true,force:true});}
   readonly db={
     rpc:async(name:string,args:Record<string,unknown>)=>{
-      assert.ok(['odin_accept_knowledge_turn_v2','odin_transition_knowledge_v1','odin_claim_knowledge_progress_v1'].includes(name),'No v1 admission or Booking RPC permitted');this.calls.push(name);
+      assert.ok(['odin_accept_knowledge_turn_v2','odin_transition_knowledge_v1','odin_claim_knowledge_progress_v1','odin_native_intake_v1','odin_recover_native_intakes_v1','odin_telegram_poller_v1','odin_transition_knowledge_v2','odin_discover_knowledge_v2'].includes(name),'No v1 admission or Booking RPC permitted');this.calls.push(name);
       try{return {data:JSON.parse(this.sql('SET ROLE service_role; SELECT public.'+identifier(name)+'('+Object.entries(args).map(([k,v])=>identifier(k)+'=>'+literal(v)).join(',')+');')||'null'),error:null};}
       catch(error){return {data:null,error};}
     },

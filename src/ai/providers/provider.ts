@@ -49,6 +49,7 @@ export interface UnifiedAiGenerationRequest {
   systemInstruction?: string;
   model?: string;
   temperature?: number;
+  reasoningEffort?: 'low';
   structuredOutput?: UnifiedAiStructuredOutputRequest;
 }
 

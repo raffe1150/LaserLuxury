@@ -6,7 +6,7 @@ import { DurableKnowledgeBudget } from './src/p2/durable-knowledge-budget';
 import { captureVerified, type KnowledgeTask, type VerifiedKnowledge } from './src/p2/knowledge-lifecycle';
 import type { KnowledgeExecutor } from './src/p2/knowledge-runner';
 import { prepareLiteralTurn, type SharedTurnExecutionResult, hasConversationReference, referenceClarificationReply, mixedActionClarificationReply } from './src/ai/conversation-intent-continuity';
-import { deterministicLocationPlan, literalInformationFallback, KNOWLEDGE_PLANNING_LIMIT_MS, KNOWLEDGE_VERIFICATION_MIN_MS } from './src/ai/knowledge-planning';
+import { deterministicLocationPlan, literalInformationFallback, literalInformationPlan, knowledgeProposalAllowance, KNOWLEDGE_PLANNING_LIMIT_MS, KNOWLEDGE_VERIFICATION_MIN_MS } from './src/ai/knowledge-planning';
 import { hasBookingInterruption, isBookingResumeRequest, withoutNegatedBookingClauses, bookingPauseReply } from './src/ai/booking-interruption';
 import { numericalConstraintSafe, NUMERICAL_DIRECTION_GUIDANCE } from './src/ai/numerical-constraints';
 import { readCancellationPolicy, hasCancellationSettings, cancellationPolicyFingerprint, cancellationGroundingConfig,
@@ -492,6 +492,14 @@ async function resolveSemanticKnowledgeQueries(
   const informationBudget = knowledgeTurnScope.getStore()?.budget;
   const customerQuestion = String(question || "").trim();
   if (!customerQuestion) return null;
+  if (informationBudget && !(informationBudget instanceof DurableKnowledgeBudget) && !knowledgeTurnScope.getStore()?.mixedRequest) {
+    const literal = literalInformationPlan(customerQuestion, isBusinessInformationQuestion(customerQuestion),
+      knowledgeTurnScope.getStore()?.requiresReferenceResolution === true);
+    if (literal) {
+      emitKnowledgeDecision({ stage: 'planning', reason: 'LITERAL_REQUEST_DIRECT' });
+      return literal;
+    }
+  }
   // Reuse the established read-only business intent signal only for a single,
   // self-contained locative request. Cross-language embeddings still use the
   // original question, and coverage must be independently established.
@@ -814,6 +822,7 @@ async function generateContentWithFallback(ai: GoogleGenAI | null, options: {
   model?: string;
   temperature?: number;
   informationBudget?: InformationBudget;
+  reasoningEffort?: 'low';
   structuredOutput?: UnifiedAiStructuredOutputRequest;
   context?: {
     businessId?: string | number | null;
@@ -839,6 +848,7 @@ async function generateContentWithFallback(ai: GoogleGenAI | null, options: {
     systemInstruction: options.systemInstruction,
     model: options.model,
     temperature: options.temperature,
+    ...(options.reasoningEffort ? { reasoningEffort: options.reasoningEffort } : {}),
     ...(provider === 'openai' && options.structuredOutput ? { structuredOutput:options.structuredOutput } : {}),
   };
   const params = provider === "gemini"
@@ -871,9 +881,15 @@ async function generateContentWithFallback(ai: GoogleGenAI | null, options: {
     emitKnowledgeDecision({ stage: 'verification', reason: admission.admitted ? 'ACCEPTED' : 'STAGE_ADMISSION', admission });
     if (!admission.admitted) throw new Error('information_verification_admission');
   }
-  const informationStageLimit = options.context?.stage==='semantic_knowledge_query_resolution' && informationBudget
+  const foregroundProposal = informationBudget && !(informationBudget instanceof DurableKnowledgeBudget) && options.context?.stage === 'knowledge_units_extraction';
+  const proposalAllowance = foregroundProposal ? knowledgeProposalAllowance(informationBudget.generationRemaining()) : null;
+  if (proposalAllowance === 0) {
+    emitKnowledgeDecision({stage:'extraction',reason:'STAGE_ADMISSION',remainingMs:informationBudget!.remaining(),timeoutMs:0});
+    throw new Error('information_proposal_admission');
+  }
+  const informationStageLimit = proposalAllowance ?? (options.context?.stage==='semantic_knowledge_query_resolution' && informationBudget
     ? Math.min(KNOWLEDGE_PLANNING_LIMIT_MS,providerTimeoutMs) : ['knowledge_units_composition','knowledge_units_presentation_verification'].includes(options.context?.stage || '') && informationBudget
-    ? Math.max(1, Math.min(2_000, informationBudget.generationRemaining())) : providerTimeoutMs;
+    ? Math.max(1, Math.min(2_000, informationBudget.generationRemaining())) : providerTimeoutMs);
   const timeoutMs = informationBudget ? Math.min(providerTimeoutMs, informationStageLimit, informationBudget.generationRemaining()) : options.context?.stage === "business_information_completeness_repair"
     ? Math.min(5_000, providerTimeoutMs) : providerTimeoutMs;
   // Temporary verifier-only timings distinguish queue starvation from slow
@@ -5286,7 +5302,7 @@ type BusinessInformationTurn = {
 const businessInformationTurns: Record<string, BusinessInformationTurn> = {};
 // Opt-in shared rollout. No per-channel overrides; no persistent answer/unit cache.
 type NativeKnowledgeEvent = {eventId:string;account:string;recipient:string;order:NativeKnowledgeOrder|null};
-type KnowledgeTurnState = { nativeEvent?: NativeKnowledgeEvent; nativeAsync?: {runtime:NativeKnowledgeRuntime|null;admission:NativeKnowledgeAdmission|null;failed:boolean}; durableCheckpoint?: (stage: 'extraction') => Promise<void>; durableProgress?: Parameters<KnowledgeExecutor>[1]['progress']; durableCurrent?: () => Promise<boolean>; requiresReferenceResolution?: boolean; unresolvedReference?: boolean; migrated?: boolean; budget?: InformationBudget; facets?: Facet[]; oversized?: boolean; evidence?: Evidence[];
+type KnowledgeTurnState = { nativeEvent?: NativeKnowledgeEvent; nativeAsync?: {runtime:NativeKnowledgeRuntime|null;admission:NativeKnowledgeAdmission|null;failed:boolean}; durableCheckpoint?: (stage: 'extraction') => Promise<void>; durableProgress?: Parameters<KnowledgeExecutor>[1]['progress']; durableCurrent?: () => Promise<boolean>; mixedRequest?: boolean; requiresReferenceResolution?: boolean; unresolvedReference?: boolean; migrated?: boolean; budget?: InformationBudget; facets?: Facet[]; oversized?: boolean; evidence?: Evidence[];
   naturalEnabled?: boolean; naturalSinglePartial?: boolean; naturalTurnId?: string;
   businessId?: number; question?: string; manifest?: AnswerManifest; sessionId?: string; history?: any[]; matches?: KnowledgeSearchMatch[];
   snapshot?: Readonly<{ businessId: number; question: string; matches: KnowledgeSearchMatch[]; evidence: Evidence[] }>;
@@ -5486,6 +5502,8 @@ async function generateSecureConversationContent(sessionId: string, options: any
       const snapshot = buildBusinessGroundingSnapshot(support);
       const manifest = await buildEvidenceFirstAnswer({ question: support.question, language: support.language,
         facets: state.facets || [], evidence: state.snapshot?.evidence || [],
+        omitModelEvidenceVersions: !(state.budget instanceof DurableKnowledgeBudget),
+        foreground: !(state.budget instanceof DurableKnowledgeBudget),
         // Retrieved text is supplied only through the current source-bound evidence
         // list; a revoked passage must not remain in a second verifier corpus.
         authoritativeEvidence: JSON.stringify({ business_system_prompt: snapshot.sources.business_system_prompt,
@@ -5503,6 +5521,7 @@ async function generateSecureConversationContent(sessionId: string, options: any
           const started = Date.now(); let ok = false;
           try { const pending = generateContentWithFallback(null, { messages: [{ role: 'user', content: JSON.stringify(data) }],
             systemInstruction: instruction, tools: [], informationBudget: state.budget,
+            ...(stage==='extraction' && !(state.budget instanceof DurableKnowledgeBudget) ? {reasoningEffort:'low' as const} : {}),
             ...(stage!=='composition'?{structuredOutput:knowledgeStructuredOutput(stage,state.naturalEnabled)}:{}),
             context: { ...businessInformationTimingContext(sessionId), businessId: state.businessId, channel: 'knowledge-core', stage: `knowledge_units_${stage}`, language: support.language } });
             if(stage==='extraction'||stage==='verification')runOptionalDiagnostic(()=>state.durableProgress?.(stage,(state.facets||[]).map(f=>f.attribute)));
@@ -17332,6 +17351,8 @@ async function executePreparedLiteralTurn(params: UnifiedBookingEngineParams): P
   const preparation = prepareLiteralTurn(normalizeConversationText(params.text), clause =>
     isExplicitBusinessActionRequest(clause) ||
     (!isBusinessInformationQuestion(clause) && (isRescheduleIntent(clause) || isCancellationIntent(clause))));
+  const knowledgeState=knowledgeTurnScope.getStore();
+  if(knowledgeState && preparation.kind==='mixed')knowledgeState.mixedRequest=true;
   let history = preparation.kind === 'mixed' ? immutable(params.history || []) : params.history;
   const native = knowledgeTurnScope.getStore()?.nativeAsync;
   if (native?.admission && native.runtime) {

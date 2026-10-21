@@ -1,4 +1,4 @@
-import { isExplicitBusinessActionRequest } from './business-information';
+import { businessInformationTopics, isExplicitBusinessActionRequest } from './business-information';
 import { hasConversationReference } from './conversation-intent-continuity';
 
 /** A narrow request contract, never evidence or an answer. Unknown/compound
@@ -59,6 +59,38 @@ export function literalInformationFallback(question: string, businessInformation
       obligations: [{ description: text, questionType: 'description' }] }],
   };
 }
+
+/** Skip a planning round trip only for an explicit, self-contained description
+ * question. This is the same literal contract as transport recovery, not an
+ * answer or coverage decision. Ambiguity and operational wording keep planning.
+ */
+export function literalInformationPlan(question: string, businessInformationRecognized: boolean, referenceRequired = false) {
+  const text = question.trim();
+  if (!businessInformationRecognized || referenceRequired || !text || text.length > 240 || businessInformationTopics(text).length !== 1 ||
+      (text.match(/[?؟]/gu) || []).length !== 1 || !/[?؟]$/u.test(text) ||
+      /[.!;:؛\n\r<>\[\]{}"`\\]/u.test(text)) return null;
+  if (!/^(?:¿?\s*(?:is|are|does|do|what|where|which|how|finns|är|var|vad|hur|vilken|vilka|gibt|ist|sind|wo|wie|welche|hay|es|son|dónde|cómo|qué|cuál)\b|(?:آیا|کجا|چگونه|چه|هل|أين|اين|كيف|ما)(?:\s|$))/iu.test(text)) return null;
+  if (/(?<![\p{L}\p{M}])(?:here|these|those|such|another|other|dieser|diese|dieses|ese|esa|esto|esta|este|این|اینجا|همین|هذا|هذه|هو|هي)(?![\p{L}\p{M}])/iu.test(text)) return null;
+  // Topic recognition is not exhaustive. A second independent clause can name
+  // an unrecognized topic; allow only a single predicative continuation of the
+  // in-question subject, never arbitrary compound clauses or a second noun.
+  const conjunctions=[...text.matchAll(/\b(?:and|och|und|y)\b|(?<![\p{L}\p{M}])و(?![\p{L}\p{M}])/giu)];
+  if (conjunctions.length > 1 || conjunctions.length && !/^(?:and\s+is\s+it\s+(?:not\s+)?[\p{L}\p{M}-]+|och\s+är\s+(?:den|det)\s+(?:inte\s+)?[\p{L}\p{M}-]+|und\s+ist\s+(?:es|das)\s+(?:nicht\s+)?[\p{L}\p{M}-]+|y\s+es\s+(?:no\s+)?[\p{L}\p{M}-]+|و\s+[\p{L}\p{M}]+\s+است)[?؟]$/iu.test(text.slice(conjunctions[0].index))) return null;
+  // Be deliberately conservative: permission/requirements, alternatives,
+  // history-dependent wording and requests to operate tools need model planning.
+  if (/\b(?:can|could|may|should|must|need\w*|require\w*|mandatory|necessary|optional|prohibit\w*|forbid\w*|allowed|permitted|recommend\w*|or|unless|if|previous|earlier|again|instead|book\w*|reserv\w*|schedul\w*|cancel\w*|appointment\w*|boka|avboka|omboka|bokning\w*|måste|behöver|borde|får|rekommend\w*|kräv\w*|krav\w*|förbjud\w*|tillåt\w*|eller|samma|buchen|stornier\w*|verschieb\w*|muss|darf|soll\w*|empfehl\w*|erforderlich|erlaubt|oder|reservar|cancelar|cambiar|permit\w*|debo|deber\w*|recomend\w*|necesit\w*|oblig\w*|o|ignore|override|instruction\w*|rules|system|prompt|tool\w*|function\w*|execute|invoke|call|delete|remove|wipe|send|email|create|update|change|write|run|reveal|pretend|json|api|ignorera|verktyg|radera|skicka|ignorier\w*|werkzeug\w*|löschen|ignora\w*|herramienta\w*|eliminar)\b|\bwhat\s+about\b/iu.test(text) ||
+      /(?<![\p{L}\p{M}])و?(?:رزرو|نوبت|لغو|باید|اجازه|پیشنهاد|مجاز|لازم|توصیه|ضروری|ممنوع|یا|قبلی|همان|دستور|ابزار|نادیده|حذف|ارسال|احجز|حجز|موعد|إلغاء|الغاء|يجب|مسموح|مطلوب|ينبغي|توصي|يحق|أو|ذلك|تعليمات|تجاهل|أداة|احذف|أرسل)(?![\p{L}\p{M}])/u.test(text)) return null;
+  return literalInformationFallback(text, businessInformationRecognized, referenceRequired);
+}
 // Successful production verification took 6123ms and 6963ms. Reserve a
 // conservative six-second admission window; it is not a completion guarantee.
 export const KNOWLEDGE_VERIFICATION_MIN_MS=6000;
+
+/** Two sequential model stages share the remaining generation window. A slow
+ * proposal cannot spend the verifier's half or its existing admission floor.
+ * This is scheduling, not permission to publish after a timeout. */
+export function knowledgeProposalAllowance(generationRemainingMs: number): number {
+  if (!Number.isFinite(generationRemainingMs)) return 0;
+  return Math.max(0, Math.floor(Math.min(generationRemainingMs / 2,
+    generationRemainingMs - KNOWLEDGE_VERIFICATION_MIN_MS)));
+}

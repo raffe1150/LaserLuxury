@@ -20,7 +20,7 @@ export const DECISION_REASONS = [
   'DIRECT_SINGLE_UNIT', 'COMPOSED', 'COMPOSER_FALLBACK', 'COMPOSER_SKIPPED_BUDGET', 'LEGACY_ROUTE', 'PUBLICATION_SUPPRESSED',
   'NATURAL_ACCEPTED', 'NATURAL_PROPOSAL_INVALID', 'NATURAL_CONTRACT_INVALID', 'NATURAL_BINDINGS', 'NATURAL_REPETITION', 'NATURAL_IDENTIFIER',
   'NATURAL_VERDICT_INVALID', 'NATURAL_SEMANTIC_REJECTION', 'NATURAL_COVERAGE_REJECTION', 'NATURAL_SINGLE_PARTIAL_DISABLED', 'NATURAL_TIMEOUT',
-  'PUBLICATION_RESERVE', 'SOURCE_UNAVAILABLE', 'STAGE_ADMISSION', 'LITERAL_REQUEST_FALLBACK',
+  'PUBLICATION_RESERVE', 'SOURCE_UNAVAILABLE', 'STAGE_ADMISSION', 'LITERAL_REQUEST_FALLBACK', 'LITERAL_REQUEST_DIRECT',
 ] as const;
 export type DecisionReason = typeof DECISION_REASONS[number];
 export type KnowledgeDecision = {
@@ -117,7 +117,7 @@ export function knowledgeFailureReason(error: unknown): DecisionReason {
   if (category === 'TIMEOUT' || /^information_deadline$/u.test(message)) return 'DEADLINE';
   if (category === 'MALFORMED_RESPONSE') return 'MALFORMED_RESPONSE';
   if (message === 'information_budget_exhausted') return 'BUDGET_EXHAUSTED';
-  if (message === 'information_verification_admission') return 'STAGE_ADMISSION';
+  if (message === 'information_verification_admission' || message === 'information_proposal_admission') return 'STAGE_ADMISSION';
   if (message === 'information_publication_reserve') return 'PUBLICATION_RESERVE';
   return 'PROVIDER_FAILURE';
 }

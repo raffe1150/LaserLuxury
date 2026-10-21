@@ -71,7 +71,7 @@ beforeEach((t: any) => {
     if (mode === 'revoke-extraction') current = false;
     if (mode === 'extract-error') throw new Error('synthetic failure');
     assert.deepEqual(p.config.tools, [], 'unit extraction cannot offer tools');
-    assert.equal(payload.businessTone.tonePreset, 'warm'); assert.ok(payload.evidence[0].version);
+    assert.equal(payload.businessTone.tonePreset, 'warm'); assert.equal(payload.evidence[0].businessId, 77); assert.equal(Object.hasOwn(payload.evidence[0], 'version'), false);
     return { text: mode === 'malformed' ? 'invalid-json' : JSON.stringify({ units: proposed || facts.map((text,i) => unit(text, i)) }) };
    }
    if (instruction.includes('EVIDENCE-FIRST BATCH ENTAILMENT')) {

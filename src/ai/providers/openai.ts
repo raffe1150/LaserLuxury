@@ -80,8 +80,7 @@ export function resolveOpenAiTextModel(requestedModel?: string): string {
 }
 
 // Only documented non-reasoning Responses models accept temperature in this
-// runtime. Reasoning models can require an explicit reasoning effort; this
-// adapter does not set one, so unknown models and snapshots omit temperature.
+// runtime. Unknown models and snapshots omit temperature and unverified controls.
 const OPENAI_TEMPERATURE_MODELS = new Set([
   "gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano", "gpt-4o", "gpt-4o-mini",
   "gpt-4.1-2025-04-14", "gpt-4.1-mini-2025-04-14", "gpt-4.1-nano-2025-04-14",
@@ -135,6 +134,10 @@ export async function generateWithOpenAi(
     instructions: request.systemInstruction,
     input: toOpenAiInput(request.messages),
     tools,
+    // Explicit proposal-only opt-in; never change verifier, Booking or unknown
+    // model defaults. Low is documented for this exact existing model.
+    ...(request.reasoningEffort === 'low' && model === 'gpt-5.6-luna'
+      ? { reasoning: { effort: 'low' as const } } : {}),
     ...(request.structuredOutput ? {
       text: {
         format: {

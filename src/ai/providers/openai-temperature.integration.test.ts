@@ -160,3 +160,13 @@ for (const relation of ['ENTAILED', 'CONTRADICTED'] as const) {
     assert.equal(failures.length, 0);
   });
 }
+
+for(const model of ['gpt-5.6-luna','gpt-4.1','unknown-model'])test(`explicit proposal low effort stays model-scoped: ${model}`,async t=>{
+ t.mock.method(Responses.prototype,'create',async(params:any)=>{
+  assert.equal(params.model,model);
+  assert.deepEqual(params.reasoning,model==='gpt-5.6-luna'?{effort:'low'}:undefined);
+  assert.equal(Object.hasOwn(params,'temperature'),false);
+  return{output_text:'{}',output:[]}as any;
+ });
+ await generateWithOpenAi({model,reasoningEffort:'low',messages:[{role:'user',content:'Untrusted fixture evidence'}]});
+});

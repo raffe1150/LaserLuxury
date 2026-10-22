@@ -34,6 +34,24 @@ export function hasConversationReference(text: string): boolean {
   return /(?<![\p{L}\p{M}])(?:it|that|there|this|them|same\s+place|det|den|där|samma\s+plats|das|dort|demselben\s+ort|eso|all[ií]|mismo\s+lugar|آنجا|آن|همان\s+مکان|هناك|ذلك|نفس\s+المكان)(?![\p{L}\p{M}])/iu.test(text);
 }
 
+/** A coordinated distance predicate refers to the location named in the same
+ * sentence. Recognize grammar only: never infer an address or a source fact.
+ * Demonstratives, multiple questions and unrelated follow-ups stay unresolved. */
+export function hasExternalConversationReference(text: string): boolean {
+  const clauses = text.split(/\s+(?:and|och|und)\s+/iu);
+  if (clauses.length === 2 && !hasConversationReference(clauses[0]) &&
+      /^(?:where\s+is|var\s+(?:ligger|finns)|wo\s+(?:ist|befindet))/iu.test(clauses[0]) &&
+      /\b(?:garage|car\s*park|parkeringsgarage|parkhaus|tiefgarage)\b/iu.test(clauses[0]) &&
+      !/[?؟]/u.test(clauses[0]) &&
+      /^(?:how\s+far\s+is\s+it\s+from|hur\s+långt\s+är\s+det\s+från|wie\s+weit\s+ist\s+es\s+von)\s+(?:the\s+|your\s+|our\s+|der\s+|dem\s+)?(?:studio|studion|praxis|salon)\s*[?؟]?$/iu.test(clauses[1])) return false;
+  return hasConversationReference(text.replace(/\b(?:is|are)\s+there\b/giu, '').replace(/\bfinns\s+det\b/giu, ''));
+}
+
+export function continuesReferenceClarification(text: string): boolean {
+  return !isBusinessInformationQuestion(text) || hasExternalConversationReference(text) ||
+    /^(?:i\s+mean|jag\s+menar|ich\s+meine|me\s+refiero|منظورم|أقصد)\b/iu.test(text.trim());
+}
+
 /** No factual or booking claims: these are requests for a missing referent. The
  * second attempt gives a concrete instruction instead of repeating the question. */
 export function referenceClarificationReply(language: string, repeated = false): string {

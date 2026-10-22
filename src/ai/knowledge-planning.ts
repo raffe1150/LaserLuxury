@@ -1,5 +1,16 @@
 import { businessInformationTopics, isExplicitBusinessActionRequest } from './business-information';
-import { hasConversationReference } from './conversation-intent-continuity';
+import { hasExternalConversationReference } from './conversation-intent-continuity';
+
+/** A garage's location is document information, not the studio's structured
+ * contact address. Other structured topics retain their existing authority. */
+export function documentKnowledgeTopicsEligible(question: string): boolean {
+  const topics = businessInformationTopics(question);
+  if (topics.some(t => ['services', 'prices', 'company', 'hours'].includes(t))) return false;
+  if (!topics.includes('contact')) return true;
+  return !/\b(?:phone|email|website|telephone|telefon|webbplats|kontaktuppgifter|teléfono|correo|webseite)\b/iu.test(question) && topics.includes('parking') &&
+    /\b(?:garage|car\s*park|parkeringsgarage|parkhaus|tiefgarage|aparcamiento|garaje)\b|پارکینگ|موقف/u.test(question.toLowerCase()) &&
+    !/\b(?:(?:your|our|studio|business)(?:'s)?\s+(?:address|phone|email)|(?:er|studions)\s+adress|adresse\s+(?:des\s+studios|ihrer)|dirección\s+del\s+estudio)\b/iu.test(question);
+}
 
 /** A narrow request contract, never evidence or an answer. Unknown/compound
  * wording stays on the semantic planner; full question text remains available
@@ -51,7 +62,7 @@ export function literalInformationFallback(question: string, businessInformation
     // A coordinated predicate stays attached to its literal, in-question subject.
     // No text is removed from the request passed to extraction/verification.
     .replace(/\b(?:and|och|und|y)\s+(?:is|are|är|ist|sind|es)\s+(?:it|den|det|das|eso)\b/giu, '');
-  if (hasConversationReference(references)) return null;
+  if (hasExternalConversationReference(references)) return null;
   return {
     canonicalMeaning: text, queries: [text], queryLanguages: {}, requestKind: 'BUSINESS_INFORMATION',
     referenceResolution: 'NOT_REQUIRED' as const,
@@ -66,6 +77,28 @@ export function literalInformationFallback(question: string, businessInformation
  */
 export function literalInformationPlan(question: string, businessInformationRecognized: boolean, referenceRequired = false) {
   const text = question.trim();
+  // The same full-question container already used after planner transport
+  // failure can be admitted directly for bounded, self-contained document
+  // requests. It decomposes no meaning and grants no factual authority: the
+  // independent verifier still checks the full request and every qualification.
+  const topics = businessInformationTopics(text);
+  const conjunctions = text.match(/\b(?:and|och|und|y)\b|(?<![\p{L}\p{M}])و(?![\p{L}\p{M}])/giu) || [];
+  const locationAndDistance = /garage|car\s*park|parkeringsgarage|parkplatz|parkhaus|aparcamiento|پارکینگ|موقف/iu.test(text) && /how far|walking|walk|hur långt|wie weit|cuánto|فاصله|چقدر|يبعد/iu.test(text);
+  const companionAndRoom = /bring\s+(?:someone|a\s+companion|one\s+adult)|accompany/iu.test(text) && /treatment\s+room|work\s+room/iu.test(text);
+  const parkingBenefits = /parking/iu.test(text) && /free/iu.test(text) && /studio/iu.test(text) && /reserve\s+a\s+parking/iu.test(text);
+  const boundedDocumentRequest = locationAndDistance || companionAndRoom || parkingBenefits;
+  if (boundedDocumentRequest && topics.length && topics.every(t => ['parking', 'policies', 'contact'].includes(t)) &&
+      documentKnowledgeTopicsEligible(text) && conjunctions.length <= 1 &&
+      (text.match(/[?؟]/gu) || []).length === 1 && /[?؟]$/u.test(text) &&
+      /^(?:¿?\s*(?:is|are|what|where|how|can|may|kan|får|var|vad|hur|wo|wie|kann|darf|dónde|puedo)\b|(?:آیا|ورودی|کجا|هل|أين|اين)(?:\s|$))/iu.test(text) &&
+      !/[.!;:؛\n\r<>\[\]{}"`\\]/u.test(text) &&
+      !/\b(?:book\w*|appointment\w*|calendar\w*|cancel\w*|reschedul\w*|boka|avboka|omboka|buchen|stornier\w*|unless|instead|previous|earlier|ignore|instructions?|system|prompt|tools?|execute|delete|remove|return|json)\b/iu.test(text)) {
+    const literal = literalInformationFallback(text, businessInformationRecognized, referenceRequired);
+    // Commas can attach to a named subject in Arabic ("Nordpark،").
+    // Separate punctuation for lexical lookup only; the complete original
+    // question remains the verifier contract and the semantic query.
+    if (literal) return { ...literal, queries: [text.replace(/[,،]/gu, ' ')] };
+  }
   if (!businessInformationRecognized || referenceRequired || !text || text.length > 240 || businessInformationTopics(text).length !== 1 ||
       (text.match(/[?؟]/gu) || []).length !== 1 || !/[?؟]$/u.test(text) ||
       /[.!;:؛\n\r<>\[\]{}"`\\]/u.test(text)) return null;
@@ -74,8 +107,8 @@ export function literalInformationPlan(question: string, businessInformationReco
   // Topic recognition is not exhaustive. A second independent clause can name
   // an unrecognized topic; allow only a single predicative continuation of the
   // in-question subject, never arbitrary compound clauses or a second noun.
-  const conjunctions=[...text.matchAll(/\b(?:and|och|und|y)\b|(?<![\p{L}\p{M}])و(?![\p{L}\p{M}])/giu)];
-  if (conjunctions.length > 1 || conjunctions.length && !/^(?:and\s+is\s+it\s+(?:not\s+)?[\p{L}\p{M}-]+|och\s+är\s+(?:den|det)\s+(?:inte\s+)?[\p{L}\p{M}-]+|und\s+ist\s+(?:es|das)\s+(?:nicht\s+)?[\p{L}\p{M}-]+|y\s+es\s+(?:no\s+)?[\p{L}\p{M}-]+|و\s+[\p{L}\p{M}]+\s+است)[?؟]$/iu.test(text.slice(conjunctions[0].index))) return null;
+  const boundaries=[...text.matchAll(/\b(?:and|och|und|y)\b|(?<![\p{L}\p{M}])و(?![\p{L}\p{M}])/giu)];
+  if (boundaries.length > 1 || boundaries.length && !/^(?:and\s+is\s+it\s+(?:not\s+)?[\p{L}\p{M}-]+|och\s+är\s+(?:den|det)\s+(?:inte\s+)?[\p{L}\p{M}-]+|und\s+ist\s+(?:es|das)\s+(?:nicht\s+)?[\p{L}\p{M}-]+|y\s+es\s+(?:no\s+)?[\p{L}\p{M}-]+|و\s+[\p{L}\p{M}]+\s+است)[?؟]$/iu.test(text.slice(boundaries[0].index))) return null;
   // Be deliberately conservative: permission/requirements, alternatives,
   // history-dependent wording and requests to operate tools need model planning.
   if (/\b(?:can|could|may|should|must|need\w*|require\w*|mandatory|necessary|optional|prohibit\w*|forbid\w*|allowed|permitted|recommend\w*|or|unless|if|previous|earlier|again|instead|book\w*|reserv\w*|schedul\w*|cancel\w*|appointment\w*|boka|avboka|omboka|bokning\w*|måste|behöver|borde|får|rekommend\w*|kräv\w*|krav\w*|förbjud\w*|tillåt\w*|eller|samma|buchen|stornier\w*|verschieb\w*|muss|darf|soll\w*|empfehl\w*|erforderlich|erlaubt|oder|reservar|cancelar|cambiar|permit\w*|debo|deber\w*|recomend\w*|necesit\w*|oblig\w*|o|ignore|override|instruction\w*|rules|system|prompt|tool\w*|function\w*|execute|invoke|call|delete|remove|wipe|send|email|create|update|change|write|run|reveal|pretend|json|api|ignorera|verktyg|radera|skicka|ignorier\w*|werkzeug\w*|löschen|ignora\w*|herramienta\w*|eliminar)\b|\bwhat\s+about\b/iu.test(text) ||

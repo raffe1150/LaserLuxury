@@ -1,3 +1,6 @@
+import { compactKnowledgeVerifierInput } from './src/ai/knowledge-verifier-input';
+import { hasForeignAddressPreposition } from './src/ai/knowledge-prose-language';
+import { TelegramPollerSupervisor, recoverableTelegramLeaseFailure } from './src/p2/telegram-poller-supervisor';
 import { TelegramPollerLease } from './src/p2/telegram-poller-lease';
 import { NativeIntakeAcknowledgement } from './src/p2/native-intake-acknowledgement';
 import { preflightRejected } from './src/p2/knowledge-preflight-diagnostic';
@@ -7,8 +10,8 @@ import { bindBusinessInformationTurnId } from './src/ai/business-information-tim
 import { DurableKnowledgeBudget } from './src/p2/durable-knowledge-budget';
 import { captureVerified, type KnowledgeTask, type VerifiedKnowledge } from './src/p2/knowledge-lifecycle';
 import type { KnowledgeExecutor } from './src/p2/knowledge-runner';
-import { prepareLiteralTurn, type SharedTurnExecutionResult, hasConversationReference, referenceClarificationReply, mixedActionClarificationReply } from './src/ai/conversation-intent-continuity';
-import { deterministicLocationPlan, literalInformationFallback, literalInformationPlan, knowledgeProposalAllowance, KNOWLEDGE_PLANNING_LIMIT_MS, KNOWLEDGE_VERIFICATION_MIN_MS } from './src/ai/knowledge-planning';
+import { prepareLiteralTurn, type SharedTurnExecutionResult, hasConversationReference, hasExternalConversationReference, continuesReferenceClarification, referenceClarificationReply, mixedActionClarificationReply } from './src/ai/conversation-intent-continuity';
+import { documentKnowledgeTopicsEligible, deterministicLocationPlan, literalInformationFallback, literalInformationPlan, knowledgeProposalAllowance, KNOWLEDGE_PLANNING_LIMIT_MS, KNOWLEDGE_VERIFICATION_MIN_MS } from './src/ai/knowledge-planning';
 import { hasBookingInterruption, isBookingResumeRequest, withoutNegatedBookingClauses, bookingPauseReply } from './src/ai/booking-interruption';
 import { numericalConstraintSafe, NUMERICAL_DIRECTION_GUIDANCE } from './src/ai/numerical-constraints';
 import { readCancellationPolicy, hasCancellationSettings, cancellationPolicyFingerprint, cancellationGroundingConfig,
@@ -1431,6 +1434,7 @@ type BusinessGroundingVerificationRequest = {
 };
 
 type Priority1hTestDependencies = {
+  telegramPollerUpdate?: (update: any) => Promise<boolean>;
   nativeKnowledgeRuntime?: NativeKnowledgeRuntime;
   knowledgeVoiceValidation?: () => Promise<void>;
   messengerVoiceReply?: (text: string) => Promise<{filePath: string; url: string}>;
@@ -5407,7 +5411,7 @@ function emitKnowledgeDecision(event:KnowledgeDecision) {
 }
 function evidenceFirstEligible(question: string): boolean {
   return process.env.ODINLINK_EVIDENCE_FIRST_KNOWLEDGE === 'true' && !cancellationInformationRequested(question) &&
-    !businessInformationTopics(question).some(topic => ['services', 'prices', 'company', 'contact', 'hours'].includes(topic)) && !isServiceCatalogQuestion(question);
+    documentKnowledgeTopicsEligible(question) && !isServiceCatalogQuestion(question);
 }
 const documentEvidenceRegistry = new DocumentEvidenceRegistry();
 const requestSecurity = new RequestSecurity<(BusinessInformationTurn | CompletedBookingSupportTurn) & { cancellationPolicyEpoch?: number }>();
@@ -5553,9 +5557,11 @@ async function generateSecureConversationContent(sessionId: string, options: any
           ? {...event,reason:state.freshnessFailure}:event),
         generate: async (stage, instruction, data) => {
           const started = Date.now(); let ok = false;
-          try { const pending = generateContentWithFallback(null, { messages: [{ role: 'user', content: JSON.stringify(data) }],
+          const wireData = stage === 'verification' && getConfiguredAiProvider() === 'openai' && !(state.budget instanceof DurableKnowledgeBudget)
+            ? compactKnowledgeVerifierInput(data) : data;
+          try { const pending = generateContentWithFallback(null, { messages: [{ role: 'user', content: JSON.stringify(wireData) }],
             systemInstruction: instruction, tools: [], informationBudget: state.budget,
-            ...(stage==='extraction' ? {reasoningEffort:'low' as const} : {}),
+            ...((stage==='extraction' || stage==='verification' && !(state.budget instanceof DurableKnowledgeBudget)) ? {reasoningEffort:'low' as const} : {}),
             ...(stage!=='composition'?{structuredOutput:knowledgeStructuredOutput(stage,state.naturalEnabled,
               stage==='extraction' ? state.facets?.map(f=>f.id) : undefined)}:{}),
             context: { ...businessInformationTimingContext(sessionId), businessId: state.businessId, channel: 'knowledge-core', stage: `knowledge_units_${stage}`, language: support.language } });
@@ -8744,9 +8750,9 @@ async function retrieveBusinessKnowledgeForQuestion(
         : knowledgeService.sourceLanguageHints(businessId)).catch(() => [] as SourceLanguage[]),
     ]);
     const [semanticPlan, sourceLanguages] = await (state?.budget ? withinInformationDeadline(state.budget, plan) : plan());
-    if (state && ((hasConversationReference(normalizedQuestion) && semanticPlan?.referenceResolution === "UNRESOLVED") ||
+    if (state && ((hasExternalConversationReference(normalizedQuestion) && semanticPlan?.referenceResolution === "UNRESOLVED") ||
         (state.requiresReferenceResolution && semanticPlan?.referenceResolution !== "RESOLVED") ||
-        (!semanticPlan && hasConversationReference(normalizedQuestion) && !businessInformationTopics(normalizedQuestion).length))) {
+        (!semanticPlan && hasExternalConversationReference(normalizedQuestion) && !businessInformationTopics(normalizedQuestion).length))) {
       state.unresolvedReference = true;
       return ""; // Resolve customer meaning before any evidence is used as a referent.
     }
@@ -14840,6 +14846,7 @@ function customerReplyLanguageIsIncompatible(prose: string, language: string, st
     );
 
   return (
+    hasForeignAddressPreposition(prose, language) ||
     strongLanguageMismatch ||
     hasOppositeArabicScriptLanguageEvidence ||
     (language === "sv" && hasEnglishStructure) ||
@@ -15093,6 +15100,7 @@ type TelegramPollerState = {
 };
 
 const telegramPollers: Record<string, TelegramPollerState> = {};
+const telegramPollerSupervisors = new Map<string, TelegramPollerSupervisor>();
 
 type CancellationJournal = {
   phase: 'dispatch_intent' | 'manual_resolution' | 'not_deleted' | 'completed';
@@ -15982,7 +15990,6 @@ async function stopStaleTelegramPollersForBusiness(
 }> {
   const staleEntries = Object.entries(telegramPollers).filter(
     ([registeredToken, poller]) =>
-      poller.isPolling &&
       poller.businessId === businessId &&
       normalizeTelegramBotToken(registeredToken) !== authoritativeToken
   );
@@ -15996,6 +16003,8 @@ async function stopStaleTelegramPollersForBusiness(
   );
   for (const [registeredToken, poller] of staleEntries) {
     if (telegramPollers[registeredToken] === poller) {
+      telegramPollerSupervisors.get(registeredToken)?.cancel();
+      telegramPollerSupervisors.delete(registeredToken);
       delete telegramPollers[registeredToken];
     }
   }
@@ -16590,6 +16599,11 @@ async function startTelegramPolling(
     return;
   }
 
+  const supervisor = telegramPollerSupervisors.get(token) || new TelegramPollerSupervisor(undefined, delayMs =>
+    console.info('[TelegramPollerRecovery]', { businessId: businessIdFromConfig, delayMs }));
+  telegramPollerSupervisors.set(token, supervisor); supervisor.activate();
+  const attemptStarted = Date.now();
+  let recoverable = false;
   const pollingConfig = { ...activeConfig, ...config, telegramToken: token };
   const tokenFingerprint = telegramTokenFingerprint(token);
   const businessId =
@@ -16629,6 +16643,11 @@ async function startTelegramPolling(
     source
   );
   const stopPoller = (reason: string) => {
+    if (!state.isPolling) {
+      if (reason !== 'durable_lease_lost' && reason !== 'durable_lease_unavailable') { recoverable = false; supervisor.cancel(); }
+      return;
+    }
+    if (!recoverable) supervisor.cancel();
     state.isPolling = false;
     state.phase = "stopped";
     if (state.pollingTimeout) {
@@ -16651,7 +16670,20 @@ async function startTelegramPolling(
     }
   };
   state.stop = stopPoller;
-  pollLease.controller.signal.addEventListener('abort',()=>stopPoller('durable_lease_lost'),{once:true});
+  pollLease.controller.signal.addEventListener('abort',()=>{
+    if (!state.isPolling) return;
+    recoverable = recoverableTelegramLeaseFailure(pollLease.controller.signal.reason);
+    stopPoller('durable_lease_lost');
+  },{once:true});
+  let retired = false;
+  const retireLease = async () => {
+    if (retired) return; retired = true;
+    await pollLease.stop();
+    if (recoverable && telegramPollers[token] === state) supervisor.recover(async () => {
+      if (telegramPollers[token] !== state) return;
+      await startTelegramPolling(state.config, source);
+    }, Date.now() - attemptStarted);
+  };
   // Standby instances wait without getUpdates/deleteWebhook. A deployment may
   // overlap instances even when the configured service size is one.
   try {
@@ -16661,9 +16693,9 @@ async function startTelegramPolling(
         state.pollingTimeout=setTimeout(()=>{state.pollingTimeout=null;state.pollingDelayResolve=null;resolve();},1000);
       });
     }
-    if(!state.isPolling){await pollLease.stop();return;}
+    if(!state.isPolling){await retireLease();return;}
     state.lastUpdateId=pollLease.lastUpdateId;
-  } catch(error){stopPoller('durable_lease_unavailable');await pollLease.stop();throw error;}
+  } catch(error){stopPoller('durable_lease_unavailable');await retireLease();throw error;}
   console.log("[TelegramPollerCreated]", pollerContext);
   console.log("[TelegramPollerTokenFingerprint]", {
     telegramBotInstanceId: instanceId,
@@ -16739,8 +16771,10 @@ async function startTelegramPolling(
     });
   }
   if (!identityOk) {
-    stopPoller("bot_identity_not_verified");
-    await pollLease.stop();
+    // A lease abort may interrupt getMe; retain that recoverable reason.
+    // Explicit invalid credentials remain terminal even during lease loss.
+    if (state.isPolling || [401, 403].includes(identityResponse?.status || 0)) stopPoller("bot_identity_not_verified");
+    await retireLease();
     return;
   }
   console.warn("[TelegramBotUsernameVerificationRequired]", {
@@ -16750,8 +16784,8 @@ async function startTelegramPolling(
     botUsername: botIdentity.username
   });
 
-  if(!state.isPolling){await pollLease.stop();return;}
-  await pollLease.current();
+  if(!state.isPolling){await retireLease();return;}
+  try { await pollLease.current(); } catch (error) { await retireLease(); throw error; }
   const webhookAbortController = new AbortController();
   state.activeAbortController = webhookAbortController;
   const webhookTimeout = setTimeout(() => webhookAbortController.abort(), 10_000);
@@ -17004,11 +17038,9 @@ async function startTelegramPolling(
             const updateId = Number(update?.update_id);
             if (!Number.isFinite(updateId) || updateId < offset) continue;
             try {
-              await pollLease.dispose(updateId,()=>processTelegramUpdate(
-                update,
-                state.config,
-                "telegram-polling"
-              ));
+              await pollLease.dispose(updateId,()=>process.env.NODE_ENV === 'test' && priority1hTestDependencies?.telegramPollerUpdate
+                ? priority1hTestDependencies.telegramPollerUpdate(update)
+                : processTelegramUpdate(update, state.config, 'telegram-polling'));
               state.lastUpdateId=pollLease.lastUpdateId;
             } catch (processingError) {
               const safeError = sanitizeTelegramPollingError(
@@ -17080,7 +17112,7 @@ async function startTelegramPolling(
       stopPoller("unexpected_loop_failure");
     } finally {
       if (state.isPolling) stopPoller("loop_exited");
-      await pollLease.stop();
+      await retireLease();
     }
   };
 
@@ -17488,7 +17520,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
   const clarification = previousInformation?.referenceClarification &&
     String(getBusinessIdFromConfig(previousInformation.businessConfig)) === String(getBusinessIdFromConfig(businessConfig))
     ? previousInformation : null;
-  const clarifiesReference = Boolean(clarification && !isExplicitBusinessActionRequest(text) &&
+  const clarifiesReference = Boolean(clarification && continuesReferenceClarification(text) && !isExplicitBusinessActionRequest(text) &&
     !isBookingResumeRequest(text) && !isWholeDayAvailabilityRequest(text) &&
     operationFromCurrentIntent(detectNormalizedIntent(text)) === "none" && !isRescheduleIntent(text) && !isCancellationIntent(text));
   const informationQuestion = clarifiesReference && clarification
@@ -17679,7 +17711,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
     return true;
   };
   const noReferenceContext = !(history || []).some(m => m.role === "assistant" && typeof m.content === "string" && m.content.trim());
-  if (currentInformationQuestion && hasConversationReference(text) &&
+  if (currentInformationQuestion && hasExternalConversationReference(text) &&
       ((noReferenceContext && !businessInformationTopics(text).length) ||
         (clarification && normalizeConversationText(text) === normalizeConversationText(clarification.question)))) {
     return clarifyInformationReference();
@@ -35598,6 +35630,7 @@ Generate the final production-ready system prompt now.
         const shutdown=()=>{
           if(shuttingDown)return;
           shuttingDown=true;
+          for (const supervisor of telegramPollerSupervisors.values()) supervisor.cancel();
           const pollers=Object.values(telegramPollers);
           for(const poller of pollers)poller.stop?.('shutdown');
           const closed=new Promise<void>(resolve=>nativeHttpServer.close(()=>resolve()));
@@ -36197,6 +36230,24 @@ export const priority1hUnifiedEngineTestBoundary = {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
     priority1hTestDependencies = dependencies;
     supabase = dependencies.supabaseClient || null;
+  },
+  async startTelegramPoller(config: any) {
+    if (process.env.NODE_ENV !== 'test') throw new Error('Test-only');
+    return startTelegramPolling(config, 'local_p0_regression');
+  },
+  telegramPollerSnapshot(token: string) {
+    if (process.env.NODE_ENV !== 'test') throw new Error('Test-only');
+    const state = telegramPollers[token];
+    return state ? { isPolling: state.isPolling, instanceId: state.instanceId, lastUpdateId: state.lastUpdateId } : null;
+  },
+  async stopTelegramPollers() {
+    if (process.env.NODE_ENV !== 'test') throw new Error('Test-only');
+    for (const supervisor of telegramPollerSupervisors.values()) supervisor.cancel();
+    const states = Object.values(telegramPollers);
+    for (const state of states) state.stop?.('local_test_cleanup');
+    await Promise.allSettled(states.map(s => s.loopPromise));
+    for (const token of Object.keys(telegramPollers)) delete telegramPollers[token];
+    telegramPollerSupervisors.clear();
   },
   async claimAtomic(params: Parameters<typeof claimAtomicOperation>[0]) {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");

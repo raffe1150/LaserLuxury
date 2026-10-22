@@ -134,8 +134,8 @@ export async function generateWithOpenAi(
     instructions: request.systemInstruction,
     input: toOpenAiInput(request.messages),
     tools,
-    // Explicit proposal-only opt-in; never change verifier, Booking or unknown
-    // model defaults. Low is documented for this exact existing model.
+    // Explicit stage-local opt-in. Booking, general conversation and unknown
+    // model defaults remain unchanged. Low is supported by this exact model.
     ...(request.reasoningEffort === 'low' && model === 'gpt-5.6-luna'
       ? { reasoning: { effort: 'low' as const } } : {}),
     ...(request.structuredOutput ? {

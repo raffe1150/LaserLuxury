@@ -181,8 +181,9 @@ async function install(t:any,fault='complete',ch:Channel='whatsapp') {
    return{text:JSON.stringify({units:parkingFacts.map((text,i)=>({facetIds:['f1'],subject:'parking',predicate:'arrangement',value:text,scope:'garage for studio visitors',qualifiers:[],negation:i>0,modality:'descriptive',language:'en',text,evidenceRefs:[{evidenceId:fault==='bad-id'?'absent':ev.id,exactQuote:fault==='address'&&i===0?rawQuotes[i].replace('14','19'):fault==='negation'?rawQuotes[i].replace('inte gratis','gratis'):fault==='whitespace'?rawQuotes[i].replace(/\s+([.,])/gu,'$1').replace(/\s+/gu,' '):fault==='partial'&&i===0?'fabricated source quotation':rawQuotes[i]}]}))})};
   }
   if(instruction.includes('BATCH ENTAILMENT')){
-   assert.ok(data.authoritativeEvidence.includes('Studio Street 99'),'Distinct studio address stays available to the verifier');
-   if(fault==='conflict')assert.ok(data.authoritativeEvidence.includes('Parking at Nordpark is free'),'Applicable authoritative conflict reaches independent verifier');
+   const authority = typeof data.authoritativeEvidence === 'string' ? data.authoritativeEvidence : JSON.stringify(data.authoritativeEvidence);
+   assert.ok(authority.includes('Studio Street 99'),'Distinct studio address stays available to the verifier');
+   if(fault==='conflict')assert.ok(authority.includes('Parking at Nordpark is free'),'Applicable authoritative conflict reaches independent verifier');
    if(fault.startsWith('timing'))advance(6123);
    if(fault==='verification-timeout'){const e:any=new Error('synthetic timeout');e.category='TIMEOUT';throw e;}
    const decisions=data.units.map((u:any)=>({unitId:u.id,relation:fault==='conflict'?'CONTRADICTED':'ENTAILED',facetIds:u.facetIds,meaningPreserved:true,modalityPreserved:true,qualifiersPreserved:true,relevant:true,languageCorrect:true,explicitAbsenceEvidence:true,negativeAbsence:false}));
@@ -1163,7 +1164,7 @@ async function foregroundCoverage(t:any,channel:Channel,language:string,translat
  const fixture=await install(t,fault==='conflict'?'conflict':'complete',channel);lang=language;
  const previous={provider:process.env.AI_PROVIDER,key:process.env.OPENAI_API_KEY,model:process.env.OPENAI_MODEL};
  t.after(()=>{for(const [k,v]of [['AI_PROVIDER',previous.provider],['OPENAI_API_KEY',previous.key],['OPENAI_MODEL',previous.model]]){if(v===undefined)delete process.env[k!];else process.env[k!]=v;}});
- process.env.AI_PROVIDER='openai';process.env.OPENAI_API_KEY='sk-offline-coverage-only';process.env.OPENAI_MODEL='gpt-5.6-luna';
+ process.env.AI_PROVIDER='openai';process.env.OPENAI_API_KEY='sk-synthetic-local-test-only-not-a-real-key';process.env.OPENAI_MODEL='gpt-5.6-luna';
  const epoch=Date.now();let elapsed=0,proposals=0,verifiers=0;
  t.mock.method(Date,'now',()=>epoch+elapsed);
  const normalized=directQuestions[language].replace(/؟/gu,'?');
@@ -1186,7 +1187,7 @@ async function foregroundCoverage(t:any,channel:Channel,language:string,translat
    if(fault==='optional')assert.ok(data.evidence.some((e:any)=>e.text.includes('Cyklar')),'Unrelated source details remain visible without becoming required answer content');
    return{output_text:JSON.stringify({oversized:false,units:copy.map((text,i)=>({facetIds:['f1'],subject:i===0?'Nordpark':i===1&&fault==='scope'?'Nordpark':'AdMotion Studio',predicate:'arrangement',value:text,scope:i===0||fault==='scope'?'garage':'studio offering',qualifiers:[],modality:fault==='modality'&&i===1?'prohibited':'descriptive',negation:i>0,language,text,evidenceRefs:[{evidenceId:ev.id,exactQuote:rawQuotes[i]}]}))}),output:[]}as any;
   }
-  assert.ok(params.instructions.includes('BATCH ENTAILMENT'));assert.equal(params.reasoning,undefined,'Verifier reasoning defaults remain unchanged');verifiers++;elapsed+=7000;
+  assert.ok(params.instructions.includes('BATCH ENTAILMENT'));assert.deepEqual(params.reasoning,{effort:'low'},'Foreground verifier has an explicit stage-local latency setting');verifiers++;elapsed+=7000;
   assert.match(params.instructions,/Missing practical qualifiers make materialFactsComplete=false/);
   const ids=data.units.filter((u:any,i:number)=>fault!=='conflict'&&!(['scope','modality'].includes(fault)&&i===1)).map((u:any)=>u.id);
   const complete=['complete','optional'].includes(fault);
@@ -1212,7 +1213,7 @@ for(const allowance of [0,2])test(`foreground proposal budget boundary/${allowan
  await install(t,'complete','telegram');lang='en';
  const previous={provider:process.env.AI_PROVIDER,key:process.env.OPENAI_API_KEY,model:process.env.OPENAI_MODEL};
  t.after(()=>{for(const [k,v]of [['AI_PROVIDER',previous.provider],['OPENAI_API_KEY',previous.key],['OPENAI_MODEL',previous.model]]){if(v===undefined)delete process.env[k!];else process.env[k!]=v;}});
- process.env.AI_PROVIDER='openai';process.env.OPENAI_API_KEY='sk-offline-boundary-only';process.env.OPENAI_MODEL='gpt-5.6-luna';
+ process.env.AI_PROVIDER='openai';process.env.OPENAI_API_KEY='sk-synthetic-local-test-only-not-a-real-key';process.env.OPENAI_MODEL='gpt-5.6-luna';
  const epoch=Date.now();let elapsed=0,checks=0,calls=0,aborted=false;
  t.mock.method(Date,'now',()=>epoch+elapsed);
  const validate=deps.validateKnowledgeMatches!;

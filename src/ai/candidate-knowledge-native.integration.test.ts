@@ -9,7 +9,7 @@ import {directConditionalQuestions} from '../../tests/fixtures/direct-conditiona
 import {incidentConfig,incidentChannels,incidentInbound,interceptedIncidentSend} from '../../tests/helpers/p0-incident-knowledge';
 import {wholeQuestionInformationPlan} from './knowledge-planning';
 Object.assign(process.env,{NODE_ENV:'test',DOTENV_CONFIG_PATH:'/dev/null',AI_PROVIDER:'openai',OPENAI_API_KEY:'synthetic-offline-only',ODINLINK_EVIDENCE_FIRST_KNOWLEDGE:'true',ODINLINK_GROUNDED_NATURAL_RESPONSES:'false',
- ODINLINK_KNOWLEDGE_RETRIEVAL_POLICY:'candidate-top5-v1',ODINLINK_KNOWLEDGE_TIMING_POLICY:'accuracy-first-v1',ODINLINK_ASYNC_KNOWLEDGE_ADMISSION:'false',ODINLINK_ASYNC_KNOWLEDGE_PROCESSING:'false',ODINLINK_ASYNC_KNOWLEDGE_DELIVERY:'false',ODINLINK_SMART_WAITING:'false'});
+ ODINLINK_KNOWLEDGE_RETRIEVAL_POLICY:'candidate-top5-v1',ODINLINK_KNOWLEDGE_TIMING_POLICY:'accuracy-first-v1',ODINLINK_KNOWLEDGE_TIMING_TENANT_IDS:'77',ODINLINK_ASYNC_KNOWLEDGE_ADMISSION:'false',ODINLINK_ASYNC_KNOWLEDGE_PROCESSING:'false',ODINLINK_ASYNC_KNOWLEDGE_DELIVERY:'false',ODINLINK_SMART_WAITING:'false'});
 const {priority1hUnifiedEngineTestBoundary:b}=await import('../../server');
 const fixture=JSON.parse(readFileSync('tests/fixtures/cedar-repair-knowledge.json','utf8'));
 const storage=new InMemoryKnowledgeStorage();

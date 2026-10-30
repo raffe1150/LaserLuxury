@@ -5374,7 +5374,7 @@ function runUnifiedConversationRequest<T>(work: () => Promise<T>, nativeChannel:
   written?: { text: string; config: any }): Promise<T | undefined> {
   const naturalEnabled=process.env.ODINLINK_EVIDENCE_FIRST_KNOWLEDGE==='true'&&process.env.ODINLINK_GROUNDED_NATURAL_RESPONSES==='true';
   // Reuse existing read-only admission; no new intent classifier or action route.
-  const scoped = accuracyFirstEnabled() && !!written?.text && !isExplicitBusinessActionRequest(written.text) &&
+  const scoped = accuracyFirstEnabled(Number(getBusinessIdFromConfig(written?.config))) && !!written?.text && !isExplicitBusinessActionRequest(written.text) &&
     evidenceFirstEligible(written.text, written.config);
   return withBusinessInformationTiming(() => requestSecurity.run(() => knowledgeTurnScope.run({nativeChannel,nativeEvent,naturalEnabled,...(naturalEnabled?{
     naturalSinglePartial:process.env.ODINLINK_GROUNDED_NATURAL_SINGLE_PARTIAL==='true',naturalTurnId:crypto.randomUUID()}: {})}, () => scoped

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { incidentConfig,incidentChannels,incidentInbound,interceptedIncidentSend } from '../../tests/helpers/p0-incident-knowledge';
 import { nativeKnowledgeTiming } from './knowledge-timing-policy';
 Object.assign(process.env,{NODE_ENV:'test',DOTENV_CONFIG_PATH:'/dev/null',AI_PROVIDER:'gemini',
- ODINLINK_EVIDENCE_FIRST_KNOWLEDGE:'true',ODINLINK_KNOWLEDGE_TIMING_POLICY:'accuracy-first-v1',
+ ODINLINK_EVIDENCE_FIRST_KNOWLEDGE:'true',ODINLINK_KNOWLEDGE_TIMING_POLICY:'accuracy-first-v1',ODINLINK_KNOWLEDGE_TIMING_TENANT_IDS:'77',
  ODINLINK_ASYNC_KNOWLEDGE_ADMISSION:'false',ODINLINK_ASYNC_KNOWLEDGE_PROCESSING:'false',ODINLINK_ASYNC_KNOWLEDGE_DELIVERY:'false',ODINLINK_SMART_WAITING:'false'});
 const {priority1hUnifiedEngineTestBoundary:b}=await import('../../server');
 const questions={

@@ -7,7 +7,7 @@ import{incidentFlags,incidentConfig,incidentInbound,incidentChannels,intercepted
 import{nativeKnowledgeTiming}from'./knowledge-timing-policy';import{getAiProviderAdapter}from'./providers/router';
 import{OPENAI_KNOWLEDGE_EMBEDDING_IDENTITY as identity}from'../knowledge/embedding-backfill';import{documentaryQuotes,documentaryStatements}from'../../tests/fixtures/multilingual-knowledge-acceptance';
 const base='docs/validation/shared-core-2026-10-22',read=(p:string)=>JSON.parse(readFileSync(`${base}/${p}`,'utf8'));
-incidentFlags();Object.assign(process.env,{OPENAI_API_KEY:'synthetic-offline-only',ODINLINK_KNOWLEDGE_TIMING_POLICY:'accuracy-first-v1',ODINLINK_KNOWLEDGE_VERIFIER_PROTOCOL:'v2'});delete process.env.ODINLINK_SHARED_PG;
+incidentFlags();Object.assign(process.env,{OPENAI_API_KEY:'synthetic-offline-only',ODINLINK_KNOWLEDGE_TIMING_POLICY:'accuracy-first-v1',ODINLINK_KNOWLEDGE_TIMING_TENANT_IDS:'77',ODINLINK_KNOWLEDGE_VERIFIER_PROTOCOL:'v2'});delete process.env.ODINLINK_SHARED_PG;
 const network=globalThis.fetch;let unexpectedNetwork=0;globalThis.fetch=async()=>{unexpectedNetwork++;throw Error('OFFLINE_NETWORK_FORBIDDEN');};
 const preparation:any={},pg=await prepareDatabase(preparation),records:any[]=[];
 const{priority1hUnifiedEngineTestBoundary:b}=await import('../../server');

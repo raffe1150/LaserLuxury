@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ACCURACY_FIRST_POLICY as P, NativeKnowledgeTiming, accuracyFirstExtractionAllowance as allowance,
-  knowledgeAdmission, nativeKnowledgeTiming, runAccuracyFirstNative } from './knowledge-timing-policy';
+  accuracyFirstEnabled, knowledgeAdmission, nativeKnowledgeTiming, runAccuracyFirstNative } from './knowledge-timing-policy';
 import { InformationBudget, completeKnowledgeManifest } from './business-information-answer-plan';
 import { knowledgeProposalAllowance } from './knowledge-planning';
 import { verificationAdmissionDiagnostic } from './knowledge-answer-protocol';
@@ -11,6 +11,20 @@ import { runAiProviderRequest } from './reliability';
 const flush = async () => { for (let i=0;i<20;i++) await Promise.resolve(); };
 const deferred = <T=void>() => { let resolve!: (value:T)=>void; const promise=new Promise<T>(r=>{resolve=r;});return{promise,resolve}; };
 const clock = (t:any) => t.mock.timers.enable({apis:['Date','setTimeout'],now:1_000_000});
+
+test('extended timing requires both backend selector and exact tenant enrollment',()=>{
+ const enabled={ODINLINK_KNOWLEDGE_TIMING_POLICY:P.version,ODINLINK_KNOWLEDGE_TIMING_TENANT_IDS:'3'};
+ assert.equal(accuracyFirstEnabled(3,enabled),true);
+ for(const id of [1,2,4,77,0,-3,NaN,Infinity,3.5,'3',undefined,null] as any[])
+  assert.equal(accuracyFirstEnabled(id,enabled),false);
+ assert.equal(accuracyFirstEnabled(3,{...enabled,ODINLINK_KNOWLEDGE_TIMING_POLICY:'off'}),false);
+ assert.equal(accuracyFirstEnabled(3,{ODINLINK_KNOWLEDGE_TIMING_TENANT_IDS:'3'}),false);
+ for(const list of [undefined,'','*','all','03','3,','3,invalid','3,0','3,-1','3,1.5','3,1e2','3,9007199254740992',Array(11).fill('3').join(',')])
+  assert.equal(accuracyFirstEnabled(3,{...enabled,ODINLINK_KNOWLEDGE_TIMING_TENANT_IDS:list}),false,list);
+ assert.equal(accuracyFirstEnabled(3,{...enabled,ODINLINK_KNOWLEDGE_TIMING_TENANT_IDS:' 3, 8 '}),true);
+ // No cached enrollment: changing the backend list affects the next admission.
+ enabled.ODINLINK_KNOWLEDGE_TIMING_TENANT_IDS='4';assert.equal(accuracyFirstEnabled(3,enabled),false);
+});
 
 test('trial settings are immutable and legacy default stays 20s / 1500ms',()=>{
  assert.ok(Object.isFrozen(P));const old=new InformationBudget();assert.equal(old.remaining(),20000);assert.equal(old.publicationReserveMs,1500);
@@ -24,6 +38,27 @@ test('before/after incident allocation leaves mandatory verification and publica
  assert.equal(knowledgeProposalAllowance(19682-1500),9091);
  assert.equal(trial.remaining(),34682);assert.equal(allowance(trial.generationRemaining()),19682);
  assert.equal(trial.remaining()-allowance(trial.generationRemaining()),15000);
+});
+for(const extended of [false,true])test(`measured extraction 6773ms and slow verifier: ${extended?'scoped success':'legacy timeout'}`,async t=>{
+ clock(t);const timing=extended?new NativeKnowledgeTiming():undefined;
+ t.after(()=>timing?.close());const budget=new InformationBudget(undefined,timing);
+ t.mock.timers.tick(1592);
+ const proposal=extended?allowance(budget.generationRemaining()):knowledgeProposalAllowance(budget.generationRemaining());
+ await runAiProviderRequest({timeoutMs:proposal,cancelOnTimeout:true,invoke:async()=>{t.mock.timers.tick(6773);return 'three proposed units';}});
+ t.mock.timers.tick(602);
+ const verifier=deferred<string>();let signal:AbortSignal|undefined;
+ const limit=Math.min(20000,budget.generationRemaining());
+ assert.equal(limit,extended?20000:9533);
+ const pending=runAiProviderRequest({timeoutMs:limit,cancelOnTimeout:true,invoke:async(_,s)=>{signal=s;return verifier.promise;}});
+ const result=extended?pending:assert.rejects(pending,(e:any)=>e.category==='TIMEOUT');
+ await flush();t.mock.timers.tick(9535);await flush();
+ if(extended){
+  assert.equal(signal?.aborted,false);t.mock.timers.tick(2465);verifier.resolve('independent complete verdict');
+  assert.equal(await result,'independent complete verdict');assert.ok(budget.remaining()>budget.publicationReserveMs);
+ }else{
+  await result;assert.equal(signal?.aborted,true);assert.equal(budget.remaining(),1498);
+  verifier.resolve('late verdict cannot replace fallback');await flush();
+ }
 });
 test('absolute deadline includes language/queue work and never resets on repeated access',t=>{
  clock(t);const timing=new NativeKnowledgeTiming();t.after(()=>timing.close());const outer=timing.deadlineAt;
@@ -65,6 +100,18 @@ test('uncooperative provider retains Knowledge admission after caller timeout an
  assert.ok(diagnostic.events.some((e:any)=>e.pending===1));
  late.resolve();await flush();assert.equal(knowledgeAdmission().snapshot().active,0);
  assert.equal(owner?.failure,true);
+});
+test('late uncooperative completion after fallback cannot send a second response',async t=>{
+ clock(t);const late=deferred<string>();let sends=0,owner:NativeKnowledgeTiming|undefined;
+ const turn=runAccuracyFirstNative(async()=>{
+  owner=nativeKnowledgeTiming()!;owner.knowledgeDeadline();
+  const answer=await owner.wait(()=>late.promise);
+  return owner.deliver(async()=>{sends++;return answer;});
+ },async()=>{await owner!.deliver(async()=>{sends++;return 'safe fallback';});});
+ await flush();t.mock.timers.tick(35000);await flush();await turn;
+ assert.equal(sends,1);late.resolve('late verified-looking answer');await flush();
+ assert.equal(sends,1);await assert.rejects(owner!.deliver(async()=>{sends++;}),/closed|deadline|delivery_attempted/);
+ assert.equal(sends,1);assert.equal(knowledgeAdmission().snapshot().active,0);
 });
 test('parent cancellation reaches provider, cannot be retried, and cannot become late success',async()=>{
  const parent=new AbortController(),late=deferred<string>();let calls=0,signal:AbortSignal|undefined;

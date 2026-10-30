@@ -27,17 +27,17 @@ export function incidentFlags() {
     ODINLINK_ASYNC_KNOWLEDGE_ADMISSION: 'false', ODINLINK_ASYNC_KNOWLEDGE_PROCESSING: 'false', ODINLINK_ASYNC_KNOWLEDGE_DELIVERY: 'false',
     ODINLINK_SMART_WAITING: 'false' });
 }
-export async function incidentCorpus(realEmbeddings = false) {
+export async function incidentCorpus(realEmbeddings = false, businessId = 77) {
   const bytes = readFileSync(new URL('../fixtures/admotion-studio-parking.pdf', import.meta.url));
   assert.equal(createHash('sha256').update(bytes).digest('hex'), 'f15ba3a6a1428745edeedd6647fd7d6b61daf139d99311f304e38a2f1a340e9d');
   const extracted = documentChunks(await extractInProcess(bytes, 'admotion studio1.pdf', 'application/pdf'), 'admotion studio1.pdf');
   assert.equal(extracted.chunks.length, 5);
   const storage = new InMemoryKnowledgeStorage();
   const service = new KnowledgeService(storage, storage, realEmbeddings ? new ConfiguredEmbeddingProvider(() => undefined) : null);
-  const source = { id: 'incident-pdf', businessId: 77, type: 'document' as const, title: 'admotion studio1.pdf', status: 'ready' as const,
+  const source = { id: 'incident-pdf', businessId, type: 'document' as const, title: 'admotion studio1.pdf', status: 'ready' as const,
     content: extracted.content, metadata: extracted.metadata, createdAt: '2026', updatedAt: '2026' };
   await storage.create(source);
-  await storage.replaceChunks(77, source.id, extracted.chunks.map(c => ({ chunkIndex: Number(c.chunk_index), content: String(c.content), metadata: c.metadata as any })));
+  await storage.replaceChunks(businessId, source.id, extracted.chunks.map(c => ({ chunkIndex: Number(c.chunk_index), content: String(c.content), metadata: c.metadata as any })));
   // Complete competing parking/contact policy from the incident; unrelated
   // secret-test-code content is excluded from this synthetic tenant fixture.
   const text = `OdinLink testinformation
@@ -60,7 +60,7 @@ Kan jag boka ett digitalt möte? Ja, vissa tjänster erbjuds digitalt.
 Hur får jag information om parkering? Kontakta oss före besöket så hjälper vi dig med tillgänglig information.`;
   await storage.create({ ...source, id: 'incident-txt', title: 'odinlink-test.txt', content: text,
     metadata: { segments: [{ start: 0, end: text.length, section: 'Text' }] } });
-  await storage.replaceChunks(77, 'incident-txt', [{ chunkIndex: 0, content: text, metadata: { source: 'document', section: 'Text' } }]);
+  await storage.replaceChunks(businessId, 'incident-txt', [{ chunkIndex: 0, content: text, metadata: { source: 'document', section: 'Text' } }]);
   return { storage, service, source, chunkCount: 6 };
 }
 

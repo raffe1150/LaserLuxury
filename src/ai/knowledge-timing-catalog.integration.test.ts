@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {incidentConfig,incidentChannels,incidentInbound,interceptedIncidentSend} from '../../tests/helpers/p0-incident-knowledge';
-Object.assign(process.env,{NODE_ENV:'test',AI_PROVIDER:'gemini',DOTENV_CONFIG_PATH:'/dev/null',ODINLINK_EVIDENCE_FIRST_KNOWLEDGE:'true',ODINLINK_KNOWLEDGE_TIMING_POLICY:'accuracy-first-v1',ODINLINK_GROUNDED_NATURAL_RESPONSES:'false',ODINLINK_ASYNC_KNOWLEDGE_ADMISSION:'false',ODINLINK_ASYNC_KNOWLEDGE_PROCESSING:'false',ODINLINK_ASYNC_KNOWLEDGE_DELIVERY:'false',ODINLINK_SMART_WAITING:'false'});
+Object.assign(process.env,{NODE_ENV:'test',AI_PROVIDER:'gemini',DOTENV_CONFIG_PATH:'/dev/null',ODINLINK_EVIDENCE_FIRST_KNOWLEDGE:'true',ODINLINK_KNOWLEDGE_TIMING_POLICY:'accuracy-first-v1',ODINLINK_KNOWLEDGE_TIMING_TENANT_IDS:'77,88',ODINLINK_GROUNDED_NATURAL_RESPONSES:'false',ODINLINK_ASYNC_KNOWLEDGE_ADMISSION:'false',ODINLINK_ASYNC_KNOWLEDGE_PROCESSING:'false',ODINLINK_ASYNC_KNOWLEDGE_DELIVERY:'false',ODINLINK_SMART_WAITING:'false'});
 const {priority1hUnifiedEngineTestBoundary:b}=await import('../../server');
 const cedar=JSON.parse(readFileSync(new URL('../../tests/fixtures/cedar-repair-knowledge.json',import.meta.url),'utf8'));
 const tenants=[{id:77,name:'Video Consultation',price:300,currency:'SEK',durationMinutes:60},{id:88,...cedar.services[0]}];

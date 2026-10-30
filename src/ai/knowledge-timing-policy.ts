@@ -15,7 +15,15 @@ export class KnowledgeTimingError extends Error {
 }
 const context = new AsyncLocalStorage<NativeKnowledgeTiming>();
 export const nativeKnowledgeTiming = () => context.getStore();
-export const accuracyFirstEnabled = () => process.env.ODINLINK_KNOWLEDGE_TIMING_POLICY === ACCURACY_FIRST_POLICY.version;
+/** Backend configuration only. The global selector alone never enrolls a tenant.
+ * Invalid/absent lists fail closed; language and customer/model text confer no authority. */
+export function accuracyFirstEnabled(businessId: number, env: NodeJS.ProcessEnv = process.env): boolean {
+  if (env.ODINLINK_KNOWLEDGE_TIMING_POLICY !== ACCURACY_FIRST_POLICY.version ||
+      !Number.isSafeInteger(businessId) || businessId <= 0) return false;
+  const tenants = (env.ODINLINK_KNOWLEDGE_TIMING_TENANT_IDS ?? '').split(',').map(id => id.trim());
+  return tenants.length <= 10 && tenants.every(id => /^[1-9]\d*$/u.test(id) && Number.isSafeInteger(Number(id))) &&
+    tenants.includes(String(businessId));
+}
 export const accuracyFirstExtractionAllowance = (generationMs: number) => Number.isFinite(generationMs)
   ? Math.max(0, Math.floor(Math.min(ACCURACY_FIRST_POLICY.extractionMs, generationMs - ACCURACY_FIRST_POLICY.verificationReserveMs))) : 0;
 

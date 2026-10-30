@@ -15,7 +15,7 @@ import {diagnosticProviderStage,assertDiagnosticDispatch,optionalQueryEmbeddingC
 const base='docs/validation/shared-core-2026-10-22/native-four-language-revalidation-20261027';
 const saved=(id:string)=>JSON.parse(readFileSync(`${base}/${id}/result.json`,'utf8'));
 const record:any={};let unexpectedNetwork=0;
-incidentFlags();Object.assign(process.env,{OPENAI_API_KEY:'synthetic-offline-only',ODINLINK_KNOWLEDGE_TIMING_POLICY:'accuracy-first-v1',ODINLINK_KNOWLEDGE_VERIFIER_PROTOCOL:'v2',ODINLINK_KNOWLEDGE_EXTRACTION_PROTOCOL:'v2'});
+incidentFlags();Object.assign(process.env,{OPENAI_API_KEY:'synthetic-offline-only',ODINLINK_KNOWLEDGE_TIMING_POLICY:'accuracy-first-v1',ODINLINK_KNOWLEDGE_TIMING_TENANT_IDS:'77',ODINLINK_KNOWLEDGE_VERIFIER_PROTOCOL:'v2',ODINLINK_KNOWLEDGE_EXTRACTION_PROTOCOL:'v2'});
 delete process.env.ODINLINK_SHARED_PG;delete process.env.ODINLINK_KNOWLEDGE_RETRIEVAL_POLICY;
 const network=globalThis.fetch;globalThis.fetch=async()=>{unexpectedNetwork++;throw Error('OFFLINE: network disabled');};
 const prepared=await prepareDatabase(record),results:unknown[]=[];

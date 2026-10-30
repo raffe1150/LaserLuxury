@@ -7,7 +7,7 @@ import {sharedCorpus} from '../../tests/helpers/shared-core-incident';
 import {incidentConfig,incidentInbound,interceptedIncidentSend} from '../../tests/helpers/p0-incident-knowledge';
 import {preliminaryAcceptancePlan,documentaryQuotes,documentaryStatements} from '../../tests/fixtures/multilingual-knowledge-acceptance';
 import {wholeQuestionInformationPlan} from './knowledge-planning';
-Object.assign(process.env,{NODE_ENV:'test',DOTENV_CONFIG_PATH:'/dev/null',AI_PROVIDER:'gemini',ODINLINK_EVIDENCE_FIRST_KNOWLEDGE:'true',ODINLINK_KNOWLEDGE_TIMING_POLICY:'accuracy-first-v1',ODINLINK_GROUNDED_NATURAL_RESPONSES:'false',ODINLINK_ASYNC_KNOWLEDGE_ADMISSION:'false',ODINLINK_ASYNC_KNOWLEDGE_PROCESSING:'false',ODINLINK_ASYNC_KNOWLEDGE_DELIVERY:'false',ODINLINK_SMART_WAITING:'false'});
+Object.assign(process.env,{NODE_ENV:'test',DOTENV_CONFIG_PATH:'/dev/null',AI_PROVIDER:'gemini',ODINLINK_EVIDENCE_FIRST_KNOWLEDGE:'true',ODINLINK_KNOWLEDGE_TIMING_POLICY:'accuracy-first-v1',ODINLINK_KNOWLEDGE_TIMING_TENANT_IDS:'77',ODINLINK_GROUNDED_NATURAL_RESPONSES:'false',ODINLINK_ASYNC_KNOWLEDGE_ADMISSION:'false',ODINLINK_ASYNC_KNOWLEDGE_PROCESSING:'false',ODINLINK_ASYNC_KNOWLEDGE_DELIVERY:'false',ODINLINK_SMART_WAITING:'false'});
 delete process.env.ODINLINK_SHARED_PG;
 const {priority1hUnifiedEngineTestBoundary:b}=await import('../../server');
 const normalizeBoundary=(s:string)=>s.replace(/؟/gu,'?').replace(/،/gu,',').replace(/‌/gu,' ');

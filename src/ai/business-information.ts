@@ -49,7 +49,8 @@ export function isBusinessAddressQuestion(text: string): boolean {
 }
 
 export function isBusinessRecommendationQuestion(text: string): boolean {
-  return /\b(?:recommend(?:ation|ed|ing)?|suggest(?:ion|ed|ing)?|best\s+(?:service|option|choice)|first[- ]time|first\s+visit|new\s+customer|what\s+(?:service|option)\s+(?:should|would)\s+(?:i|you)|what\s+(?:should|would)\s+(?:i|you)\s+(?:choose|pick|book|try|get)|empfehl\w*|erstbesuch|zum\s+ersten\s+mal|rekommend\w*|första\s+gången|förstagångsbesök|recomiend\w*|recomend\w*|primera\s+vez)\b|پیشنهاد|توصیه|بار اول|لأول مرة|توصي|اقتراح/iu.test(String(text || ''));
+  // A first-visit introduction supplies context, not a request to choose a service.
+  return /\b(?:recommend(?:ation|ed|ing)?|suggest(?:ion|ed|ing)?|best\s+(?:service|option|choice)|what\s+(?:service|option)\s+(?:should|would)\s+(?:i|you)|what\s+(?:should|would)\s+(?:i|you)\s+(?:choose|pick|book|try|get)|empfehl\w*|rekommend\w*|recomiend\w*|recomend\w*)\b|پیشنهاد|توصیه|توصي|اقتراح/iu.test(String(text || ''));
 }
 
 export function isBusinessInformationQuestion(text: string): boolean {

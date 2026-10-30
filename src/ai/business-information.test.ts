@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { documentKnowledgeTopicsEligible, wholeQuestionInformationPlan } from './knowledge-planning';
 import {
   buildConfiguredServiceCatalogPlan,
   formatConfiguredServiceCatalogPlan,
@@ -21,6 +22,9 @@ for (const text of [
   'What would you recommend for a first-time visitor?',
   'Vad rekommenderar ni för någon som kommer första gången?',
   'Welche Leistung empfehlen Sie beim ersten Besuch?',
+  '¿Qué servicio recomiendan para mi primera visita?',
+  'برای اولین مراجعه چه خدمتی پیشنهاد می‌کنید؟',
+  'ما الخدمة التي توصي بها لأول مرة؟',
   'Recommend a service for a first-time visitor',
 ]) {
   assert.equal(isBusinessRecommendationQuestion(text), true, text);
@@ -39,6 +43,33 @@ for (const text of [
   'Alex Testsson, 0701234567',
 ]) assert.equal(isBusinessInformationQuestion(text), false, text);
 console.log('19 informational-routing boundary cases passed');
+
+for (const text of [
+ 'I am visiting for the first time. Where is the entrance and is there an elevator?',
+ 'Jag ska besöka er för första gången. Var är entrén och finns det hiss?',
+ 'Ich besuche Sie zum ersten Mal. Wo ist der Eingang und gibt es einen Aufzug?',
+ 'Voy por primera vez. ¿Dónde está la entrada y hay ascensor?',
+ 'برای بار اول مراجعه می‌کنم. ورودی کجاست و آیا آسانسور هست؟',
+ 'سأزوركم لأول مرة. أين المدخل وهل يوجد مصعد؟',
+]) {
+ assert.equal(isBusinessRecommendationQuestion(text),false,text);
+ assert.equal(isBusinessInformationQuestion(text),true,text);
+ assert.equal(documentKnowledgeTopicsEligible(text),true,text);
+}
+for (const text of ['What is your address?', 'Vad är er adress?', 'Was ist Ihre Adresse?', '¿Cuál es su dirección?', 'آدرس شما چیست؟', 'ما عنوانكم؟',
+ 'Where is the entrance and what is your email?', 'Var är entrén och vad är er adress?'])
+ assert.equal(documentKnowledgeTopicsEligible(text),false,text);
+for (const text of [
+ 'What happens if I arrive more than 15 minutes late? Is my appointment automatically cancelled?',
+ 'Vad händer om jag kommer mer än 15 minuter sent? Avbokas besöket automatiskt?',
+ 'Was passiert, wenn ich mehr als 15 Minuten zu spät komme? Wird mein Termin automatisch storniert?',
+ '¿Qué ocurre si llego más de 15 minutos tarde? ¿Se cancela la cita automáticamente?',
+ 'اگر بیش از 15 دقیقه دیر برسم چه می‌شود؟ آیا مراجعه خودکار لغو می‌شود؟',
+ 'ماذا يحدث إذا تأخرت أكثر من 15 دقيقة عن الزيارة؟ هل يتم إلغاء الموعد تلقائيًا؟',
+]) {
+ const plan=wholeQuestionInformationPlan(text,isBusinessInformationQuestion(text));
+ assert.ok(plan,text);assert.equal(plan.requestedFacets[0].obligations[0].description,text);
+}
 
 
 for (const text of [

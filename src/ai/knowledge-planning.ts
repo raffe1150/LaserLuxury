@@ -1,5 +1,5 @@
 import { businessInformationTopics, isExplicitBusinessActionRequest } from './business-information';
-import {withoutExplicitParkingFeeTerms} from './information-request-contract';
+import {withoutExplicitParkingFeeTerms, hasDocumentaryVisitAccess, isArrivalInformationQuestion} from './information-request-contract';
 import { hasConversationReference, hasExternalConversationReference } from './conversation-intent-continuity';
 import { documentAttributeQuestions } from './knowledge-answer-presentation';
 import { hasServiceName } from './source-aware-service-proposal';
@@ -13,6 +13,7 @@ export function documentKnowledgeTopicsEligible(question: string): boolean {
   // that explicit attachment from this topic probe, never from the request.
   if (topics.includes('prices') && businessInformationTopics(withoutExplicitParkingFeeTerms(question)).includes('prices')) return false;
   if (!topics.includes('contact')) return true;
+  if (hasDocumentaryVisitAccess(question)) return true;
   return !/\b(?:phone|email|website|telephone|telefon|webbplats|kontaktuppgifter|teléfono|correo|webseite)\b/iu.test(question) && topics.includes('parking') &&
     /\b(?:garage|car\s*park|parkeringsgarage|parkhaus|tiefgarage|aparcamiento|garaje)\b|پارکینگ|موقف/u.test(question.toLowerCase()) &&
     !/\b(?:(?:your|our|studio|business)(?:'s)?\s+(?:address|phone|email)|(?:er|studions)\s+adress|adresse\s+(?:des\s+studios|ihrer)|dirección\s+del\s+estudio)\b/iu.test(question);
@@ -245,6 +246,18 @@ export function knowledgeProposalAllowance(generationRemainingMs: number): numbe
 /** Preserve an already recognized read-only question as one complete request.
  * The literal container establishes no facet coverage or factual authority. */
 export function wholeQuestionInformationPlan(question: string, recognized: boolean, referenceRequired = false, services?:unknown) {
+  // Preserve a self-contained hypothetical arrival consequence and its explicit
+  // automatic-cancellation subquestion as ONE complete verifier obligation.
+  // This skips planning, never extraction, entailment, coverage or freshness.
+  const arrivalQuestions=question.trim().match(/[^?؟]+[?؟]/gu);
+  if (isArrivalInformationQuestion(question) && documentKnowledgeTopicsEligible(question) &&
+      !/[.!;:؛\n\r<>\[\]{}"`\\]/u.test(question) &&
+      arrivalQuestions && arrivalQuestions.length===2 && arrivalQuestions.join('').replace(/\s/gu,'')===question.replace(/\s/gu,'') &&
+      /(?<![\p{L}\p{M}])(?:if|om|wenn|falls|si|اگر|إذا|اذا)(?![\p{L}\p{M}])/iu.test(arrivalQuestions[0]) &&
+      /automatic\p{L}*|automatisk\p{L}*|automatisch\p{L}*|automátic\p{L}*|خودکار|تلقائ/iu.test(arrivalQuestions[1])) {
+    const arrival=literalInformationFallback(question,recognized,referenceRequired);
+    if(arrival)return arrival;
+  }
   const checklist=directVisitPolicyChecklistPlan(question,recognized,referenceRequired);
   if(checklist)return checklist;
   const conditional=directConditionalDocumentPlan(question,recognized,referenceRequired);

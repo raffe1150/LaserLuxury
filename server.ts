@@ -1029,7 +1029,9 @@ async function generateContentWithFallback(ai: GoogleGenAI | null, options: {
     onAttemptComplete: (event) => {
       recordKnowledgePolicyStage('settled', Math.max(0, stageDeadlineAt - Date.now()));
       if(informationBudget) emitKnowledgeDecision({stage:knowledgeProviderStage(options.context?.stage),reason:event.ok?'ACCEPTED':knowledgeFailureReason({category:event.category}),
-        ...(event.category?{failureCategory:event.category}:{}),providerAttempted:attemptTimings.get(event.attempt)?.providerInvoked===true,
+        ...(event.category?{failureCategory:event.category}:{}),
+        ...(event.category==='TIMEOUT'?{timeoutScope:informationBudget.generationRemaining()>0?'stage' as const:'request' as const}:{}),
+        providerAttempted:attemptTimings.get(event.attempt)?.providerInvoked===true,
         correlationId,durationMs:event.durationMs,transportSuccess:event.ok,remainingMs:informationBudget.remaining(),
         timeoutMs,deadlineAt:informationBudget.deadlineAt,outputMode:request.structuredOutput?'json_schema':'validated_text'});
       logVerifierTiming(event.attempt, event.category === "TIMEOUT" ? "attempt_timeout" : "attempt_complete");

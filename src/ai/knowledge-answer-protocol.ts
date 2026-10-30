@@ -60,6 +60,7 @@ export type KnowledgeDecision = {
   correlationId?: string; durationMs?: number; transportSuccess?: boolean; inputTokens?: number | null; outputTokens?: number | null;
   outputMode?: 'json_schema' | 'validated_text';
   failureCategory?: string;
+  timeoutScope?: 'stage' | 'request';
   citationSubtype?: import('./knowledge-citation').CitationSubtype; typographyHint?: boolean;
   blockId?: string; blockKind?: 'fact'|'uncertainty'|'courtesy'; requestedLanguage?: string;
   semanticVerifiedUnits?: number; publishableUnits?: number; deadlineAt?: number; timeoutMs?: number;

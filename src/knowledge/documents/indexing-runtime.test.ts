@@ -5,7 +5,60 @@ import { embedWithOpenAi } from '../../ai/providers/openai';
 import { OPENAI_KNOWLEDGE_EMBEDDING_IDENTITY as openai, KNOWLEDGE_BACKFILL_EMBEDDING_IDENTITY as google } from '../embedding-backfill';
 import { createSourceIndexProvider } from './indexing-provider';
 import { SourceIndexCoordinator, SupabaseSourceIndexRepository } from './indexing';
-import { documentServiceForClient, startDocumentRecovery } from './runtime';
+import { documentServiceForClient, startDocumentRecovery, newDocumentIndexingOptions, createDocumentRuntime } from './runtime';
+
+const newUploadPolicy={version:'new-documents-v1',notBefore:'2026-11-01T00:00:00.000Z',allowedBusinessIds:[77],maxSources:2,maxRequests:2,maxInputChars:9000,maxInputBytes:36000};
+test('existing production runtime entry installs only explicitly configured new-upload recovery',async t=>{
+ const original={...process.env},beforeTerm=new Set(process.listeners('SIGTERM')),beforeInt=new Set(process.listeners('SIGINT'));
+ Object.assign(process.env,{KNOWLEDGE_DOCUMENT_UPLOADS_ENABLED:'true',SUPABASE_URL:'https://offline.invalid',SUPABASE_SERVICE_ROLE_KEY:'sb_secret_offline'});
+ const requests:URL[]=[];
+ t.mock.method(globalThis,'fetch',async(input)=>{
+  const url=new URL(String(input));assert.equal(url.hostname,'offline.invalid');assert.match(url.pathname,/knowledge_sources$/u);
+  requests.push(url);return new Response('[]',{status:200,headers:{'Content-Type':'application/json'}});
+ });
+ try{
+  delete process.env.ODINLINK_DOCUMENT_INDEXING_POLICY;
+  assert.deepEqual(await createDocumentRuntime().recoverIndex(),[]);assert.equal(requests.length,0);
+  process.env.ODINLINK_DOCUMENT_INDEXING_POLICY=JSON.stringify(newUploadPolicy);
+  const service=createDocumentRuntime();assert.deepEqual(await service.recoverIndex(),[]);service.stopIndexing();
+  assert.equal(requests.length,1);assert.equal(requests[0].searchParams.get('created_at'),'gte.'+newUploadPolicy.notBefore);
+  assert.equal(requests[0].searchParams.get('type'),'eq.document');assert.equal(requests[0].searchParams.get('business_id'),'eq.77');
+ }finally{
+  for(const listener of process.listeners('SIGTERM'))if(!beforeTerm.has(listener))process.removeListener('SIGTERM',listener);
+  for(const listener of process.listeners('SIGINT'))if(!beforeInt.has(listener))process.removeListener('SIGINT',listener);
+  for(const key of Object.keys(process.env))if(!(key in original))delete process.env[key];Object.assign(process.env,original);
+ }
+});
+test('new-upload indexing is default-off and requires explicit bounded policy without provider calls',()=>{
+ const signal=new AbortController().signal;
+ assert.equal(newDocumentIndexingOptions(undefined,signal),undefined);
+ const options=newDocumentIndexingOptions(JSON.stringify(newUploadPolicy),signal)!;
+ assert.equal(options.newDocumentsSince,newUploadPolicy.notBefore);assert.deepEqual(options.identity,openai);
+ for(const invalid of [{}, {...newUploadPolicy,notBefore:''},{...newUploadPolicy,allowedBusinessIds:[]},{...newUploadPolicy,maxRequests:0},
+  {...newUploadPolicy,maxInputChars:1_000_001},{...newUploadPolicy,maxSources:Infinity}])
+  assert.throws(()=>newDocumentIndexingOptions(JSON.stringify(invalid),signal));
+});
+
+test('new-upload recovery survives restart with the same cutoff and excludes historical ready sources',async()=>{
+ const id='77000000-0000-4000-8000-000000000001',calls:any[]=[];
+ const row={id,business_id:77,type:'document',status:'ready',created_at:newUploadPolicy.notBefore};
+ let returned:any[]= [row];
+ const client={from:(table:string)=>{
+  assert.equal(table,'knowledge_sources');
+  const q:any={};for(const method of ['select','eq','order','limit','gte','gt'])q[method]=(...args:any[])=>{calls.push([method,...args]);return q;};
+  q.then=(resolve:any)=>Promise.resolve({data:returned,error:null}).then(resolve);return q;
+ }};
+ for(let restart=0;restart<2;restart++){
+  const repo=new SupabaseSourceIndexRepository(client,newUploadPolicy.notBefore);
+  assert.deepEqual(await repo.scan(77,null,new AbortController().signal),[row]);
+  assert.ok(calls.some(c=>c[0]==='gte'&&c[1]==='created_at'&&c[2]===newUploadPolicy.notBefore));
+  assert.ok(calls.some(c=>c[0]==='eq'&&c[1]==='type'&&c[2]==='document'));
+ }
+ const repo=new SupabaseSourceIndexRepository(client,newUploadPolicy.notBefore);
+ for(const bad of [{...row,created_at:'2026-10-16T00:00:00.000Z'},{...row,type:'text'},{...row,business_id:88},{...row,created_at:undefined}]){
+  returned=[bad];await assert.rejects(repo.scan(77,null,new AbortController().signal),/configuration/);
+ }
+});
 
 test('provider construction pins explicit identities without reading a key or calling a provider',()=>{
   let reads=0;const key=()=>{reads++;throw new Error('No key access allowed');};

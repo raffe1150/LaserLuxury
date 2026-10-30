@@ -1,3 +1,9 @@
+/** Documentary access directions, distinct from structured business contact details. */
+export function hasDocumentaryVisitAccess(text: string): boolean {
+  if (/\b(?:address|adresse|adress|direcci[oó]n|phone|email|e-mail|website|telephone|telefon|webbplats|kontaktuppgifter|teléfono|correo|webseite)\b|آدرس|تلفن|ایمیل|وب.?سایت|عنوان|هاتف|بريد|موقع\s+إلكتروني/iu.test(text)) return false;
+  return /(?<![\p{L}\p{M}])(?:entrance\p{L}*|entry|elevator\p{L}*|lift|accessib\p{L}*|ingång\p{L}*|entré\p{L}*|kundentré\p{L}*|hiss\p{L}*|tillgänglig\p{L}*|eingang\p{L}*|kundeneingang\p{L}*|aufzug\p{L}*|fahrstuhl\p{L}*|barrierefrei\p{L}*|entrada\p{L}*|ascensor\p{L}*|accesib\p{L}*)(?![\p{L}\p{M}])|ورودی|آسانسور|دسترس.?پذیر|مدخل|مصعد|إمكانية\s+الوصول/iu.test(text);
+}
+
 /** Classify the policy workflow, never a policy fact or permission to act. */
 export function isArrivalInformationQuestion(text: string): boolean {
   const late = /\b(?:late|lateness|tardy|delays?|delayed|försen\p{L}*|sen|sent|verspät\p{L}*|spät|tarde|retras\p{L}*)\b|دیر|تاخیر|تأخیر|تأخر|تأخير/iu.test(text);

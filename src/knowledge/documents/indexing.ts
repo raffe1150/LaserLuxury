@@ -8,7 +8,7 @@ import { runKnowledgeEmbeddingBackfill, SupabaseKnowledgeEmbeddingBackfillReposi
   type KnowledgeBackfillPayloadChunk } from '../embedding-backfill';
 
 export type IndexScope = { businessId: number; sourceId: string };
-type SourceRow = { id: string; business_id: number; type: string; title: string; status: string; content: string; metadata: Record<string, any> };
+type SourceRow = { id: string; business_id: number; type: string; title: string; status: string; content: string; metadata: Record<string, any>; created_at?: string };
 type IndexClaim = { admitted: boolean; reason?: string; lease_token: string; content_revision: string;
   identity: KnowledgeBackfillEmbeddingIdentity; canonical_version: number; snapshot_token: string;
   chunks: any[]; job_deadline: string };
@@ -28,7 +28,14 @@ async function abortable<T>(promise: PromiseLike<T>, signal: AbortSignal): Promi
 
 /** Supabase transport only; every read/write remains tenant/source-scoped. */
 export class SupabaseSourceIndexRepository {
-  constructor(private readonly client: any) {}
+  constructor(private readonly client: any, private readonly newDocumentsSince?: string) {
+    if (newDocumentsSince !== undefined && (!Number.isFinite(Date.parse(newDocumentsSince)) || new Date(newDocumentsSince).toISOString() !== newDocumentsSince))
+      throw new IndexFault('configuration');
+  }
+  private inUploadScope(row: SourceRow): boolean {
+    return !this.newDocumentsSince || row.type === 'document' &&
+      Number.isFinite(Date.parse(row.created_at || '')) && Date.parse(row.created_at!) >= Date.parse(this.newDocumentsSince);
+  }
   private async request(query: any, signal: AbortSignal): Promise<any> {
     const bounded = AbortSignal.any([signal, AbortSignal.timeout(30_000)]);
     try {
@@ -50,11 +57,12 @@ export class SupabaseSourceIndexRepository {
     return (await this.request(this.client.rpc(name, args), signal)).data;
   }
   async scan(businessId: number, after: string | null, signal: AbortSignal): Promise<SourceRow[]> {
-    let q = this.client.from('knowledge_sources').select('id,business_id,type,title,status,content,metadata')
+    let q = this.client.from('knowledge_sources').select('id,business_id,type,title,status,content,metadata,created_at')
       .eq('business_id', businessId).eq('status', 'ready').order('id').limit(20);
+    if (this.newDocumentsSince) q = q.eq('type', 'document').gte('created_at', this.newDocumentsSince);
     if (after) q = q.gt('id', after);
     const rows = (await this.request(q, signal)).data;
-    if (!Array.isArray(rows) || rows.length > 20 || rows.some((r, i) => Number(r.business_id) !== businessId || r.status !== 'ready' || !uuid.test(r.id) ||
+    if (!Array.isArray(rows) || rows.length > 20 || rows.some((r, i) => !this.inUploadScope(r) || Number(r.business_id) !== businessId || r.status !== 'ready' || !uuid.test(r.id) ||
       (after && r.id <= after) || (i > 0 && r.id <= rows[i - 1].id))) throw new IndexFault('configuration');
     return rows;
   }
@@ -76,12 +84,12 @@ export class SupabaseSourceIndexRepository {
     // Fence the separate source read between identical full database snapshots.
     // Parallel source/chunk reads could otherwise falsely block a legitimate edit.
     const snapshot = await backfill.readReadySourceForWrite(scope.businessId, scope.sourceId);
-    const result = await this.request(this.client.from('knowledge_sources').select('id,business_id,type,title,status,content,metadata')
+    const result = await this.request(this.client.from('knowledge_sources').select('id,business_id,type,title,status,content,metadata,created_at')
       .eq('business_id', scope.businessId).eq('id', scope.sourceId).eq('status', 'ready').maybeSingle(), signal);
     const after = await backfill.readReadySourceForWrite(scope.businessId, scope.sourceId);
     const source = result.data;
     if (!source || !snapshot || !after || after.snapshotToken !== snapshot.snapshotToken ||
-      source.id !== scope.sourceId || Number(source.business_id) !== scope.businessId || source.status !== 'ready') throw new IndexFault('stale');
+      source.id !== scope.sourceId || Number(source.business_id) !== scope.businessId || source.status !== 'ready' || !this.inUploadScope(source)) throw new IndexFault('stale');
     return { source, snapshot };
   }
   claim(scope: IndexScope, identity: KnowledgeBackfillEmbeddingIdentity, signal: AbortSignal): Promise<IndexClaim> {

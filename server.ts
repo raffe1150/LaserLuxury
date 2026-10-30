@@ -1,3 +1,14 @@
+import {installControlledTrial,trialModeOn,trialEnforced,trialHttpAllowed,trialBusinessId,
+  controlledTrialBinding,runControlledTrialInbound,withVerifiedTrialMeta,withVerifiedTrialTelegram,trialSendAllowed,
+  denyTrialAction,assertTrialProvider,trialSha,trialPollerCurrent,trialCurrent} from './src/runtime/controlled-knowledge-trial';
+import { installConfiguredKnowledgeBudgetOwner } from './src/ai/durable-knowledge-budget-owner';
+import { accuracyFirstEnabled, ACCURACY_FIRST_POLICY, accuracyFirstExtractionAllowance, nativeKnowledgeTiming, runAccuracyFirstNative } from './src/ai/knowledge-timing-policy';
+import { directServiceInformationPlan } from './src/ai/direct-service-planning';
+import { selectCandidateRetrievalPolicy, type CandidateFallback, type RetrievalObservation } from './src/knowledge/candidate-retrieval';
+import { directMixedSourceInformationPlan, mixedSourceInformationQuestion } from './src/ai/mixed-source-planning';
+import { SOURCE_LANGUAGE_QUERY_INSTRUCTION, SOURCE_LANGUAGE_QUERY_SCHEMA, parseSourceLanguageQuery } from './src/ai/source-language-query';
+import { configuredServiceEvidence } from './src/ai/configured-service-evidence';
+import { isArrivalInformationQuestion,isConditionalArrivalInformationQuestion } from './src/ai/information-request-contract';
 import { compactKnowledgeVerifierInput } from './src/ai/knowledge-verifier-input';
 import { hasForeignAddressPreposition } from './src/ai/knowledge-prose-language';
 import { TelegramPollerSupervisor, recoverableTelegramLeaseFailure } from './src/p2/telegram-poller-supervisor';
@@ -11,18 +22,19 @@ import { DurableKnowledgeBudget } from './src/p2/durable-knowledge-budget';
 import { captureVerified, type KnowledgeTask, type VerifiedKnowledge } from './src/p2/knowledge-lifecycle';
 import type { KnowledgeExecutor } from './src/p2/knowledge-runner';
 import { prepareLiteralTurn, type SharedTurnExecutionResult, hasConversationReference, hasExternalConversationReference, continuesReferenceClarification, referenceClarificationReply, mixedActionClarificationReply } from './src/ai/conversation-intent-continuity';
-import { documentKnowledgeTopicsEligible, deterministicLocationPlan, literalInformationFallback, literalInformationPlan, knowledgeProposalAllowance, KNOWLEDGE_PLANNING_LIMIT_MS, KNOWLEDGE_VERIFICATION_MIN_MS } from './src/ai/knowledge-planning';
+import { wholeQuestionInformationPlan, documentKnowledgeTopicsEligible, deterministicLocationPlan, literalInformationFallback, literalInformationPlan, knowledgeProposalAllowance, KNOWLEDGE_PLANNING_LIMIT_MS, KNOWLEDGE_VERIFICATION_MIN_MS } from './src/ai/knowledge-planning';
 import { hasBookingInterruption, isBookingResumeRequest, withoutNegatedBookingClauses, bookingPauseReply } from './src/ai/booking-interruption';
 import { numericalConstraintSafe, NUMERICAL_DIRECTION_GUIDANCE } from './src/ai/numerical-constraints';
-import { readCancellationPolicy, hasCancellationSettings, cancellationPolicyFingerprint, cancellationGroundingConfig,
+import { isCancellationInformationRequested, readCancellationPolicy, hasCancellationSettings, cancellationPolicyFingerprint, cancellationGroundingConfig,
   cancellationFee, cancellationConfirmationCurrent, cancellationConsentAfter, cancellationMessageTime, renderCancellationConfirmation, CANCELLATION_POLICY_GUIDANCE,
   withCancellationDelivery, pendingCancellationDelivery, cancellationDeliveryTextComplete, cancellationProviderAcknowledged,
   validCancellationEtag, cancellationUncertainReply,
   type CancellationConfirmation, type CancellationSubject } from './src/ai/cancellation-policy';
 import { selectSemanticQueries, retainPlannedQueryLanguages, explicitlyWrongWorkflow, type PlannedQueryLanguages, type SourceLanguage } from './src/knowledge/semantic-queries';
 import { RequestSecurity, immutable } from './src/knowledge/request-security';
-import { InformationBudget, INFORMATION_PUBLICATION_RESERVE_MS, parseRequestedFacets, answerEvidence, buildEvidenceFirstAnswer, narrowInformationRequest, withinInformationDeadline, pruneAnswerManifest, type Facet, type Evidence, type AnswerManifest } from './src/ai/business-information-answer-plan';
-import { KNOWLEDGE_SCHEMA_VERSION, verificationAdmissionDiagnostic, knowledgeDiagnosticFailure, knowledgeStructuredOutput, knowledgeFailureReason, safeModelIdentifier, type KnowledgeDecision, type DecisionReason, type KnowledgeStage } from './src/ai/knowledge-answer-protocol';
+import { InformationBudget, INFORMATION_PUBLICATION_RESERVE_MS, parseRequestedFacets, answerEvidence, buildEvidenceFirstAnswer, narrowInformationRequest, withinInformationDeadline, pruneAnswerManifest, publishableKnowledgeManifest, type Facet, type Evidence, type AnswerManifest } from './src/ai/business-information-answer-plan';
+import { KNOWLEDGE_SCHEMA_VERSION, verificationAdmissionDiagnostic, knowledgeDiagnosticFailure, knowledgeStructuredOutput, knowledgeFailureReason, safeModelIdentifier, selectKnowledgeVerificationProtocol, selectKnowledgeExtractionProtocol, type KnowledgeExtractionProtocol, type KnowledgeVerificationProtocol, type KnowledgeDecision, type DecisionReason, type KnowledgeStage } from './src/ai/knowledge-answer-protocol';
+import { captureKnowledgeModelProfile, knowledgeStageOptions, type KnowledgeModelProfile, type KnowledgeExecutionPermit } from './src/ai/knowledge-model-policy';
 import { resolveOpenAiTextModel } from './src/ai/providers/openai';
 import { mapWebsiteInstallation, websiteInstallationRouter } from './src/knowledge/website-installations';
 import { DocumentEvidenceRegistry, revalidateKnowledgeSourceIds } from './src/knowledge/evidence-registry';
@@ -65,11 +77,10 @@ import {
   isBusinessRecommendationQuestion,
   isServiceCatalogQuestion,
   isSimpleCatalogLocationQuestion,
-  isGenericRecommendationClarificationQuestion,
   isRecommendationInformationRequest,
 } from './src/ai/business-information';
 import { beginBusinessInformationTiming, businessInformationTimingContext, clearBusinessInformationTiming,
-  markBusinessInformationTiming, timeBusinessInformationDelivery, withBusinessInformationTiming, recordBusinessInformationSendResult, runOptionalDiagnostic } from './src/ai/business-information-timing';
+  markBusinessInformationTiming, timeBusinessInformationDelivery, withBusinessInformationTiming, recordBusinessInformationSendResult, runOptionalDiagnostic, recordKnowledgePolicyStage } from './src/ai/business-information-timing';
 import "dotenv/config";
 import { extractExplicitArabicCustomerName, extractStandaloneArabicScriptCustomerName, stripCustomerNameDiagnosticSuffix } from './src/ai/arabic-customer-name';
 import express from "express";
@@ -152,6 +163,8 @@ import { AiRequestQueue } from "./src/ai/request-queue";
 import {
   classifyMessagingIntent,
   detectExplicitLanguageSwitch,
+  languageInstructionText,
+  languageSwitchDecision,
   hasStrongLatinPersianEvidence,
   isSlotListRepeatRequest,
   parseNormalizedTimeRange,
@@ -362,6 +375,9 @@ function verifyMetaWebhookSignature(req: express.Request, res: express.Response,
     return;
   }
 
+  if(trialModeOn()) {
+    try{return withVerifiedTrialMeta(rawBody!,()=>next());}catch{return res.sendStatus(403);}
+  }
   next();
 }
 
@@ -476,8 +492,15 @@ if (process.env.NODE_ENV === 'test' && !process.env.SUPABASE_URL
   console.log('[BackendSupabase] Privileged client configured; user sessions disabled.');
 }
 
+// Explicit backend-only monetary bootstrap. No customer keys, numeric defaults
+// or activation. Missing/revoked authority keeps the selected Sol path blocked.
+const monetaryBootstrap = supabase && (process.env.ODINLINK_AI_MONEY_ACCOUNT || process.env.ODINLINK_AI_MONEY_APPROVAL)
+  ? installConfiguredKnowledgeBudgetOwner(supabase).catch(() => {
+    console.error('[KnowledgeBudget]', { status: 'blocked', reason: 'financial_authority_unavailable' });
+  }) : Promise.resolve();
+
 const p2StructuredUnderstandingProviderRuntime =
-  createConfiguredUnderstandingProvider();
+  createConfiguredUnderstandingProvider(trialModeOn()?{...process.env,STRUCTURED_UNDERSTANDING_ENABLED:'false'}:process.env);
 
 
 type SemanticKnowledgeQueryPlan = {
@@ -488,6 +511,8 @@ type SemanticKnowledgeQueryPlan = {
   requestKind?: string;
   referenceResolution?: "RESOLVED" | "UNRESOLVED" | "NOT_REQUIRED";
 };
+// Backend provenance only; model output cannot opt itself into candidate retrieval.
+const directKnowledgePlans = new WeakSet<SemanticKnowledgeQueryPlan>();
 
 async function resolveSemanticKnowledgeQueries(
   question: string,
@@ -498,10 +523,15 @@ async function resolveSemanticKnowledgeQueries(
   const customerQuestion = String(question || "").trim();
   if (!customerQuestion) return null;
   if (informationBudget && !knowledgeTurnScope.getStore()?.mixedRequest) {
-    const literal = literalInformationPlan(customerQuestion, isBusinessInformationQuestion(customerQuestion),
-      knowledgeTurnScope.getStore()?.requiresReferenceResolution === true);
+    const catalog = directConfiguredServicePlan(customerQuestion, businessConfig, knowledgeTurnScope.getStore()?.requiresReferenceResolution === true);
+    if (catalog) { directKnowledgePlans.add(catalog); emitKnowledgeDecision({ stage: 'planning', reason: 'LITERAL_REQUEST_DIRECT' }); return catalog; }
+    const mixed = directConfiguredMixedPlan(customerQuestion,businessConfig,knowledgeTurnScope.getStore()?.requiresReferenceResolution === true);
+    if (mixed) { directKnowledgePlans.add(mixed); emitKnowledgeDecision({ stage: 'planning', reason: 'LITERAL_REQUEST_DIRECT' }); return mixed; }
+    const literal = wholeQuestionInformationPlan(customerQuestion, isBusinessInformationQuestion(customerQuestion),
+      knowledgeTurnScope.getStore()?.requiresReferenceResolution === true,businessConfig?.services);
     if (literal) {
       emitKnowledgeDecision({ stage: 'planning', reason: 'LITERAL_REQUEST_DIRECT' });
+      directKnowledgePlans.add(literal);
       return literal;
     }
   }
@@ -643,7 +673,7 @@ Required JSON shape:
         ['DEADLINE', 'PROVIDER_FAILURE'].includes(knowledgeFailureReason(error)) &&
         informationBudget.remaining() > INFORMATION_PUBLICATION_RESERVE_MS + KNOWLEDGE_VERIFICATION_MIN_MS) {
       const fallback = literalInformationFallback(customerQuestion,
-        isBusinessInformationQuestion(customerQuestion) && businessInformationTopics(customerQuestion).length > 0,
+        isBusinessInformationQuestion(customerQuestion),
         knowledgeTurnScope.getStore()?.requiresReferenceResolution === true);
       if (fallback) {
         emitKnowledgeDecision({ stage: 'planning', reason: 'LITERAL_REQUEST_FALLBACK' });
@@ -829,6 +859,7 @@ async function generateContentWithFallback(ai: GoogleGenAI | null, options: {
   informationBudget?: InformationBudget;
   reasoningEffort?: 'low';
   structuredOutput?: UnifiedAiStructuredOutputRequest;
+  knowledgeExecution?: KnowledgeExecutionPermit;
   context?: {
     businessId?: string | number | null;
     channel?: string;
@@ -840,7 +871,11 @@ async function generateContentWithFallback(ai: GoogleGenAI | null, options: {
     businessInfoTurnId?: string;
   };
 }): Promise<any> {
+  const scopedTiming = nativeKnowledgeTiming();
+  scopedTiming?.assertProcessing();
   const provider = getConfiguredAiProvider();
+  assertTrialProvider(provider,options.context?.stage);
+  if (options.knowledgeExecution && provider !== 'openai') throw new Error('knowledge_sol_provider_changed');
   const allKeys = provider === "gemini" ? getApiKeys() : [];
   let activeAi = provider === "gemini"
     ? ai || new GoogleGenAI({ apiKey: allKeys[currentKeyIndex] || process.env.GEMINI_API_KEY })
@@ -848,13 +883,15 @@ async function generateContentWithFallback(ai: GoogleGenAI | null, options: {
   const correlationId = crypto.randomUUID();
   const request = {
     diagnosticContext: { correlationId },
+    ...(trialEnforced()&&options.context?.stage==='semantic_language_resolution'?{controlledTrialStage:'language' as const}:{}),
     messages: options.messages,
-    tools: options.tools,
+    tools: scopedTiming ? [] : options.tools,
     systemInstruction: options.systemInstruction,
     model: options.model,
     temperature: options.temperature,
     ...(options.reasoningEffort ? { reasoningEffort: options.reasoningEffort } : {}),
     ...(provider === 'openai' && options.structuredOutput ? { structuredOutput:options.structuredOutput } : {}),
+    ...(options.knowledgeExecution ? { knowledgeExecution: options.knowledgeExecution } : {}),
   };
   const params = provider === "gemini"
     ? buildGeminiGenerationParams(request)
@@ -881,13 +918,8 @@ async function generateContentWithFallback(ai: GoogleGenAI | null, options: {
   }
   if (informationBudget && !informationBudget.remaining()) throw new Error("information_deadline");
   if(informationBudget && !informationBudget.generationRemaining()) throw new Error('information_publication_reserve');
-  if (informationBudget && options.context?.stage === 'knowledge_units_verification') {
-    const admission = verificationAdmissionDiagnostic(informationBudget.remaining(), INFORMATION_PUBLICATION_RESERVE_MS, KNOWLEDGE_VERIFICATION_MIN_MS, 'before_queue');
-    emitKnowledgeDecision({ stage: 'verification', reason: admission.admitted ? 'ACCEPTED' : 'STAGE_ADMISSION', admission });
-    if (!admission.admitted) throw new Error('information_verification_admission');
-  }
   const knowledgeProposal = informationBudget && options.context?.stage === 'knowledge_units_extraction';
-  const proposalAllowance = knowledgeProposal ? knowledgeProposalAllowance(informationBudget.generationRemaining()) : null;
+  const proposalAllowance = knowledgeProposal ? (informationBudget.nativeTiming ? accuracyFirstExtractionAllowance(informationBudget.generationRemaining()) : knowledgeProposalAllowance(informationBudget.generationRemaining())) : null;
   if (proposalAllowance === 0) {
     emitKnowledgeDecision({stage:'extraction',reason:'STAGE_ADMISSION',remainingMs:informationBudget!.remaining(),timeoutMs:0});
     throw new Error('information_proposal_admission');
@@ -897,6 +929,13 @@ async function generateContentWithFallback(ai: GoogleGenAI | null, options: {
     ? Math.max(1, Math.min(2_000, informationBudget.generationRemaining())) : providerTimeoutMs);
   const timeoutMs = informationBudget ? Math.min(providerTimeoutMs, informationStageLimit, informationBudget.generationRemaining()) : options.context?.stage === "business_information_completeness_repair"
     ? Math.min(5_000, providerTimeoutMs) : providerTimeoutMs;
+  const stageDeadlineAt = Date.now() + timeoutMs;
+  recordKnowledgePolicyStage('queued', timeoutMs);
+  if (informationBudget && options.context?.stage === 'knowledge_units_verification') {
+    const admission = verificationAdmissionDiagnostic(informationBudget.nativeTiming ? Math.min(informationBudget.remaining(), timeoutMs + informationBudget.publicationReserveMs) : informationBudget.remaining(), informationBudget.publicationReserveMs, informationBudget.nativeTiming ? ACCURACY_FIRST_POLICY.verificationDispatchMs : KNOWLEDGE_VERIFICATION_MIN_MS, 'before_queue');
+    emitKnowledgeDecision({ stage: 'verification', reason: admission.admitted ? 'ACCEPTED' : 'STAGE_ADMISSION', admission });
+    if (!admission.admitted) throw new Error('information_verification_admission');
+  }
   // Temporary verifier-only timings distinguish queue starvation from slow
   // transport, including late completion after the reliability deadline.
   const verifierTimingEnabled = provider === "openai" && (
@@ -926,16 +965,18 @@ async function generateContentWithFallback(ai: GoogleGenAI | null, options: {
   };
   const response = await runAiProviderRequest({
     timeoutMs,
-    cancelOnTimeout: provider === "openai",
+    cancelOnTimeout: provider === "openai" || !!scopedTiming,
+    ...(scopedTiming ? { signal: scopedTiming.signal, deadlineAt: Math.min(informationBudget?.deadlineAt ?? scopedTiming.deadlineAt - 7_000, stageDeadlineAt) } : {}),
     retryDelayMs: 500,
     invoke: (attempt, signal) => {
       informationBudget?.attempt();
       attemptTimings.set(attempt, { queuedAt: Date.now() });
       return runWithAiQueue(async () => {
+        scopedTiming?.assertProcessing();
         if (informationBudget && !informationBudget.remaining()) throw new Error("information_deadline");
         if (informationBudget && !informationBudget.generationRemaining()) throw new Error("information_publication_reserve");
         if (informationBudget && options.context?.stage === 'knowledge_units_verification') {
-          const admission = verificationAdmissionDiagnostic(informationBudget.remaining(), INFORMATION_PUBLICATION_RESERVE_MS, KNOWLEDGE_VERIFICATION_MIN_MS, 'after_queue');
+          const admission = verificationAdmissionDiagnostic(informationBudget.nativeTiming ? Math.min(informationBudget.remaining(), Math.max(0, stageDeadlineAt - Date.now()) + informationBudget.publicationReserveMs) : informationBudget.remaining(), informationBudget.publicationReserveMs, informationBudget.nativeTiming ? ACCURACY_FIRST_POLICY.verificationDispatchMs : KNOWLEDGE_VERIFICATION_MIN_MS, 'after_queue');
           emitKnowledgeDecision({ stage: 'verification', reason: admission.admitted ? 'ACCEPTED' : 'STAGE_ADMISSION', admission });
           if (!admission.admitted) throw new Error('information_verification_admission');
         }
@@ -947,7 +988,7 @@ async function generateContentWithFallback(ai: GoogleGenAI | null, options: {
           // Durable reservation is an async database boundary. Reapply the same
           // admission floor after it, before any verifier request is submitted.
           if (options.context?.stage === 'knowledge_units_verification') {
-            const admission = verificationAdmissionDiagnostic(informationBudget.remaining(), INFORMATION_PUBLICATION_RESERVE_MS, KNOWLEDGE_VERIFICATION_MIN_MS, 'after_queue');
+            const admission = verificationAdmissionDiagnostic(informationBudget.nativeTiming ? Math.min(informationBudget.remaining(), Math.max(0, stageDeadlineAt - Date.now()) + informationBudget.publicationReserveMs) : informationBudget.remaining(), informationBudget.publicationReserveMs, informationBudget.nativeTiming ? ACCURACY_FIRST_POLICY.verificationDispatchMs : KNOWLEDGE_VERIFICATION_MIN_MS, 'after_queue');
             emitKnowledgeDecision({ stage: 'verification', reason: admission.admitted ? 'ACCEPTED' : 'STAGE_ADMISSION', admission });
             if (!admission.admitted) throw new Error('information_verification_admission');
           }
@@ -955,16 +996,18 @@ async function generateContentWithFallback(ai: GoogleGenAI | null, options: {
         }
         try {
           attemptTimings.get(attempt)!.providerInvoked = true;
-          return await (provider === "gemini"
+          const pending = (provider === "gemini"
             ? process.env.NODE_ENV === "test" && priority1hTestDependencies?.geminiGenerate
-              ? priority1hTestDependencies.geminiGenerate(params)
-              : activeAi!.models.generateContent(params)
+              ? priority1hTestDependencies.geminiGenerate(scopedTiming ? { ...params, config: { ...params.config, abortSignal: signal } } : params)
+              : activeAi!.models.generateContent(scopedTiming ? { ...params, config: { ...params.config, abortSignal: signal } } : params)
             : generateWithConfiguredProvider({ ...request, signal }));
+          return await (scopedTiming ? scopedTiming.observe(pending) : pending);
         } finally {
           logVerifierTiming(attempt, "provider_complete");
         }
       }, () => {
         attemptTimings.get(attempt)!.executionStartedAt = Date.now();
+        recordKnowledgePolicyStage('dispatch', Math.max(0, stageDeadlineAt - Date.now()), Date.now() - attemptTimings.get(attempt)!.queuedAt);
         logVerifierTiming(attempt, "provider_start");
         if (options.context?.businessInfoTurnId) {
           runOptionalDiagnostic(() => console.info('[BusinessInformationProviderTiming]', {
@@ -977,13 +1020,14 @@ async function generateContentWithFallback(ai: GoogleGenAI | null, options: {
     },
     beforeRetry: () => {
       // Evidence-first turns spend their allowance on distinct stages, never nested retries.
-      if (informationBudget) throw new Error("information_retry_not_permitted");
+      if (trialEnforced() || informationBudget || scopedTiming) throw new Error("information_retry_not_permitted");
       if (provider === "gemini" && allKeys.length > 1) {
         rotateKey(allKeys);
         activeAi = new GoogleGenAI({ apiKey: allKeys[currentKeyIndex] });
       }
     },
     onAttemptComplete: (event) => {
+      recordKnowledgePolicyStage('settled', Math.max(0, stageDeadlineAt - Date.now()));
       if(informationBudget) emitKnowledgeDecision({stage:knowledgeProviderStage(options.context?.stage),reason:event.ok?'ACCEPTED':knowledgeFailureReason({category:event.category}),
         ...(event.category?{failureCategory:event.category}:{}),providerAttempted:attemptTimings.get(event.attempt)?.providerInvoked===true,
         correlationId,durationMs:event.durationMs,transportSuccess:event.ok,remainingMs:informationBudget.remaining(),
@@ -1009,6 +1053,8 @@ async function generateContentWithFallback(ai: GoogleGenAI | null, options: {
     },
   });
 
+  scopedTiming?.assertProcessing();
+
   const normalizedResponse = provider === "gemini"
     ? normalizeGeminiGenerationResponse(response)
     : response;
@@ -1016,7 +1062,10 @@ async function generateContentWithFallback(ai: GoogleGenAI | null, options: {
   if (informationBudget) {
     const usage=normalizedResponse?.usage;
     informationBudget.usage(usage?.promptTokenCount??usage?.inputTokens,usage?.candidatesTokenCount??usage?.outputTokens,
-      process.env.AI_KNOWLEDGE_INPUT_USD_PER_MILLION,process.env.AI_KNOWLEDGE_OUTPUT_USD_PER_MILLION);
+      options.knowledgeExecution ? undefined : process.env.AI_KNOWLEDGE_INPUT_USD_PER_MILLION,
+      options.knowledgeExecution ? undefined : process.env.AI_KNOWLEDGE_OUTPUT_USD_PER_MILLION);
+    if (options.knowledgeExecution && normalizedResponse.knowledgeUsage)
+      informationBudget.estimatedCostUsd = (informationBudget.estimatedCostUsd ?? 0) + normalizedResponse.knowledgeUsage.estimatedNanoUsd / 1e9;
     emitKnowledgeDecision({stage:knowledgeProviderStage(options.context?.stage),reason:normalizedResponse.structuredFailure||'ACCEPTED',correlationId,
       inputTokens:usage?.inputTokens??usage?.promptTokenCount??null,outputTokens:usage?.outputTokens??usage?.candidatesTokenCount??null});
     if(normalizedResponse.structuredFailure)return normalizedResponse;
@@ -1434,6 +1483,8 @@ type BusinessGroundingVerificationRequest = {
 };
 
 type Priority1hTestDependencies = {
+  controlledTrialConnection?: (channel:string,account:string)=>Promise<{businessId:number;tokenSha:string}|null>;
+  knowledgeServiceCatalog?: (businessId: number) => Promise<unknown>;
   telegramPollerUpdate?: (update: any) => Promise<boolean>;
   nativeKnowledgeRuntime?: NativeKnowledgeRuntime;
   knowledgeVoiceValidation?: () => Promise<void>;
@@ -1458,7 +1509,7 @@ type Priority1hTestDependencies = {
   validateKnowledgeMatches?: (businessId: number, matches: any[]) => Promise<any[]>;
   knowledgeSourceLanguages?: (businessId: number) => Promise<SourceLanguage[]>;
   completeKnowledgeCorpus?: (businessId: number, lexical: KnowledgeSearchMatch[]) => Promise<KnowledgeSearchMatch[] | null>;
-  semanticKnowledgeSearchQueries?: (businessId: number, queries: string[], limit: number, options?: import('./src/ai/embeddings').EmbeddingRequestOptions) => Promise<any[]>;
+  semanticKnowledgeSearchQueries?: (businessId: number, queries: string[], limit: number, options?: import('./src/knowledge/persistent-search').KnowledgeSemanticOptions) => Promise<any[]>;
   semanticKnowledgeSearch?: (
     businessId: number,
     query: string,
@@ -3371,6 +3422,7 @@ function normalizeCalendarOAuthRefresh(
 }
 
 function getCalendarAdapter(config: any): CalendarAdapter {
+  denyTrialAction();
   if (priority1hTestDependencies?.calendarAdapter) {
     return priority1hTestDependencies.calendarAdapter;
   }
@@ -5308,7 +5360,7 @@ type BusinessInformationTurn = {
 const businessInformationTurns: Record<string, BusinessInformationTurn> = {};
 // Opt-in shared rollout. No per-channel overrides; no persistent answer/unit cache.
 type NativeKnowledgeEvent = {eventId:string;account:string;recipient:string;order:NativeKnowledgeOrder|null};
-type KnowledgeTurnState = { nativeEvent?: NativeKnowledgeEvent; nativeAsync?: {runtime:NativeKnowledgeRuntime|null;admission:NativeKnowledgeAdmission|null;failed:boolean}; durableCheckpoint?: (stage: 'extraction') => Promise<void>; durableProgress?: Parameters<KnowledgeExecutor>[1]['progress']; durableCurrent?: () => Promise<boolean>; mixedRequest?: boolean; requiresReferenceResolution?: boolean; unresolvedReference?: boolean; migrated?: boolean; budget?: InformationBudget; facets?: Facet[]; oversized?: boolean; evidence?: Evidence[];
+type KnowledgeTurnState = { readonly modelProfile?: KnowledgeModelProfile; readonly extractionProtocol?: KnowledgeExtractionProtocol; readonly verificationProtocol?: KnowledgeVerificationProtocol; nativeEvent?: NativeKnowledgeEvent; nativeAsync?: {runtime:NativeKnowledgeRuntime|null;admission:NativeKnowledgeAdmission|null;failed:boolean}; durableCheckpoint?: (stage: 'extraction') => Promise<void>; durableProgress?: Parameters<KnowledgeExecutor>[1]['progress']; durableCurrent?: () => Promise<boolean>; mixedRequest?: boolean; requiresReferenceResolution?: boolean; unresolvedReference?: boolean; migrated?: boolean; budget?: InformationBudget; facets?: Facet[]; oversized?: boolean; evidence?: Evidence[];
   naturalEnabled?: boolean; naturalSinglePartial?: boolean; naturalTurnId?: string;
   businessId?: number; question?: string; manifest?: AnswerManifest; sessionId?: string; history?: any[]; matches?: KnowledgeSearchMatch[];
   snapshot?: Readonly<{ businessId: number; question: string; matches: KnowledgeSearchMatch[]; evidence: Evidence[] }>;
@@ -5316,11 +5368,22 @@ type KnowledgeTurnState = { nativeEvent?: NativeKnowledgeEvent; nativeAsync?: {r
   freshnessFailure?:DecisionReason; sourceValidationUnavailable?:boolean; freshnessChecks?:number; freshnessDurationMs?:number; semanticVerifiedUnits?:number;
   diagnosticCount?:number; unitCounts?:KnowledgeDecision['counts'] };
 const knowledgeTurnScope = new AsyncLocalStorage<KnowledgeTurnState>();
-function runUnifiedConversationRequest<T>(work: () => Promise<T>, nativeChannel:KnowledgeTurnState['nativeChannel'], nativeEvent?:NativeKnowledgeEvent): Promise<T> {
+function runUnifiedConversationRequest<T>(work: () => Promise<T>, nativeChannel:KnowledgeTurnState['nativeChannel'], nativeEvent?:NativeKnowledgeEvent,
+  written?: { text: string; config: any }): Promise<T | undefined> {
   const naturalEnabled=process.env.ODINLINK_EVIDENCE_FIRST_KNOWLEDGE==='true'&&process.env.ODINLINK_GROUNDED_NATURAL_RESPONSES==='true';
+  // Reuse existing read-only admission; no new intent classifier or action route.
+  const scoped = accuracyFirstEnabled() && !!written?.text && !isExplicitBusinessActionRequest(written.text) &&
+    evidenceFirstEligible(written.text, written.config);
   return withBusinessInformationTiming(() => requestSecurity.run(() => knowledgeTurnScope.run({nativeChannel,nativeEvent,naturalEnabled,...(naturalEnabled?{
-    naturalSinglePartial:process.env.ODINLINK_GROUNDED_NATURAL_SINGLE_PARTIAL==='true',naturalTurnId:crypto.randomUUID()}: {})}, work)), nativeChannel);
+    naturalSinglePartial:process.env.ODINLINK_GROUNDED_NATURAL_SINGLE_PARTIAL==='true',naturalTurnId:crypto.randomUUID()}: {})}, () => scoped
+      ? runAccuracyFirstNative(work, async () => {
+          // An overloaded/unresolved intake has not established session authority.
+          if (!requestSecurity.current() || !nativeEvent || !nativeChannel || !written) return;
+          const language=requestSecurity.evidence?.support ? capturedSupportLanguage(requestSecurity.evidence.support) : written.config.language || 'en';
+          await sendCustomerMessage(nativeChannel,nativeEvent.recipient,knowledgeUnavailableReply(language),written.config,'conversation');
+        }, event => runOptionalDiagnostic(() => console.info('[KnowledgeTimingPolicy]', event))) : work())), nativeChannel);
 }
+
 const nativeIntakeScope = new AsyncLocalStorage<{runtime:NativeKnowledgeRuntime;admission:NativeKnowledgeAdmission;handoffAttempted?:boolean}>();
 let hostedNativeKnowledge:NativeKnowledgeRuntime|null=null;
 function getNativeKnowledgeRuntime():NativeKnowledgeRuntime|null {
@@ -5341,6 +5404,23 @@ function getNativeKnowledgeRuntime():NativeKnowledgeRuntime|null {
  * Duplicates reconcile stored Knowledge only; never enter the foreground action handler. */
 async function runNativeIntake(channel:'telegram'|'whatsapp'|'messenger'|'instagram', event:any, config:any,
   account:string, recipient:string, eventId:string, text:string, handler:()=>Promise<boolean>):Promise<boolean> {
+  if(trialModeOn()) {
+    if(isExplicitBusinessActionRequest(text))return true;
+    const connection=async()=>{
+      if(process.env.NODE_ENV==='test'&&priority1hTestDependencies?.controlledTrialConnection)return priority1hTestDependencies.controlledTrialConnection(channel,account);
+      if(!supabase)return null;
+      if(channel==='telegram'){
+        const token=String(config?.telegramToken||'');
+        const fresh=await loadFreshBusinessConfigByTelegramToken(token);
+        return fresh.telegramBusinessResolved&&String(fresh.telegramToken||'')===token?
+          {businessId:Number(getBusinessIdFromConfig(fresh)),tokenSha:trialSha(token)}:null;
+      }
+      const found=await findBusinessByChannelConnection(channel,account);
+      return found?{businessId:Number(found.business.id),tokenSha:trialSha(found.connection.credential.accessToken)}:null;
+    };
+    await runControlledTrialInbound({channel,account,recipient,eventId,text,event},connection,handler);
+    return true; // Denied traffic is acknowledged without any legacy handler/action/send.
+  }
   const runtime=getNativeKnowledgeRuntime();
   if(!runtime?.admissionEnabled)return handler();
   let businessId=Number(getBusinessIdFromConfig(config));
@@ -5404,14 +5484,28 @@ function emitKnowledgeDecision(event:KnowledgeDecision) {
       businessId:state.businessId||null,nativeChannel:state.nativeChannel||'internal',provider:state.provider||'unresolved',model:state.model||'unresolved',
       naturalEnabled:state.naturalEnabled===true,naturalSinglePartial:state.naturalSinglePartial===true,
       revision:/^[a-f0-9]{7,40}$/u.test(process.env.RENDER_GIT_COMMIT||'')?process.env.RENDER_GIT_COMMIT:'local-unversioned',
+      ...(nativeKnowledgeTiming()?{timingPolicyVersion:nativeKnowledgeTiming()!.policy.version,timingPolicyTurnId:nativeKnowledgeTiming()!.turnId}:{}),
       ...event,failureKind:knowledgeDiagnosticFailure(event),remainingMs:state.budget.remaining()});
     runOptionalDiagnostic(() => priority1hTestDependencies?.evidenceFirstDecisionDiagnostic?.(diagnostic));
     return console.info('[EvidenceFirstDecision]',JSON.stringify(diagnostic));
   });
 }
-function evidenceFirstEligible(question: string): boolean {
-  return process.env.ODINLINK_EVIDENCE_FIRST_KNOWLEDGE === 'true' && !cancellationInformationRequested(question) &&
-    documentKnowledgeTopicsEligible(question) && !isServiceCatalogQuestion(question);
+function isMixedSourceInformationQuestion(question: string,businessConfig?:any): boolean {
+  return mixedSourceInformationQuestion(question,Number(getBusinessIdFromConfig(businessConfig)),businessConfig?.services);
+}
+function directConfiguredServicePlan(question:string,businessConfig:any,referenceRequired=false) {
+  return directServiceInformationPlan(question, Number(getBusinessIdFromConfig(businessConfig)), businessConfig?.services, referenceRequired);
+}
+function directConfiguredMixedPlan(question:string,businessConfig:any,referenceRequired=false) {
+  return directMixedSourceInformationPlan(question,Number(getBusinessIdFromConfig(businessConfig)),businessConfig?.services,referenceRequired);
+}
+function isCurrentBusinessInformationRequest(question:string,businessConfig:any) {
+  return isBusinessInformationQuestion(question) ||
+    (process.env.ODINLINK_EVIDENCE_FIRST_KNOWLEDGE === 'true' && Boolean(directConfiguredServicePlan(question,businessConfig)||directConfiguredMixedPlan(question,businessConfig)));
+}
+function evidenceFirstEligible(question: string, businessConfig?:any): boolean {
+  return process.env.ODINLINK_EVIDENCE_FIRST_KNOWLEDGE === 'true' && (!cancellationInformationRequested(question) || isArrivalInformationQuestion(question)) &&
+    (documentKnowledgeTopicsEligible(question) || isMixedSourceInformationQuestion(question,businessConfig) || Boolean(directConfiguredServicePlan(question,businessConfig))) && !isServiceCatalogQuestion(question);
 }
 const documentEvidenceRegistry = new DocumentEvidenceRegistry();
 const requestSecurity = new RequestSecurity<(BusinessInformationTurn | CompletedBookingSupportTurn) & { cancellationPolicyEpoch?: number }>();
@@ -5431,6 +5525,7 @@ async function requestEvidenceCurrent(): Promise<boolean> {
 }
 
 async function knowledgeContextCurrent(): Promise<boolean> {
+  if (nativeKnowledgeTiming()?.failure) return false;
   const state = knowledgeTurnScope.getStore();
   const captured = requestSecurity.evidence;
   const support = captured?.support;
@@ -5459,9 +5554,26 @@ async function currentAnswerEvidence(): Promise<readonly Evidence[]> {
   try {
     valid = await withinInformationDeadline(state.budget, async () => {
       if (!await knowledgeContextCurrent()) throw new Error('knowledge_context_invalid');
-      return revalidateKnowledgeSourceIds(snapshot.businessId, snapshot.matches,
-        priority1hTestDependencies?.validateKnowledgeMatches || ((id, matches) => knowledgeService.validateMatches(id, matches, { strictSources: true,onRejected:(id,reason)=>reasons.set(id,reason) })),
+      const documents = await revalidateKnowledgeSourceIds(snapshot.businessId, snapshot.matches,
+        priority1hTestDependencies?.validateKnowledgeMatches || ((id, matches) => knowledgeService.validateMatches(id, matches, { signal: state.budget?.nativeTiming?.signal, strictSources: true,onRejected:(id,reason)=>reasons.set(id,reason) })),
         (id,reason)=>{if(!reasons.has(id))reasons.set(id,reason);});
+      const valid = new Set(documents);
+      const serviceEvidence = snapshot.evidence.find(e => e.sourceId === `configured-services:${snapshot.businessId}`);
+      if (serviceEvidence) {
+        let catalog: unknown;
+        if (process.env.NODE_ENV === 'test') catalog = priority1hTestDependencies?.knowledgeServiceCatalog
+          ? await priority1hTestDependencies.knowledgeServiceCatalog(snapshot.businessId) : requestSecurity.evidence?.support?.businessConfig.services;
+        else {
+          let lookup = supabase!.from('businesses').select('id,services').eq('id',snapshot.businessId).maybeSingle();
+          if (state.budget?.nativeTiming) lookup = lookup.abortSignal(state.budget.nativeTiming.signal);
+          const {data,error} = await lookup;
+          if (error || Number(data?.id) !== snapshot.businessId) throw new Error('knowledge_service_catalog_unavailable');
+          catalog = data.services;
+        }
+        const current = configuredServiceEvidence(snapshot.businessId, catalog);
+        if (current?.version === serviceEvidence.version) valid.add(serviceEvidence.sourceId);
+      }
+      return valid;
     });
     // A Promise.race timeout does not cancel its read. Commit no source state
     // from work that completed after authority expired, or from validator errors.
@@ -5476,7 +5588,7 @@ async function currentAnswerEvidence(): Promise<readonly Evidence[]> {
     emitKnowledgeDecision({stage:'freshness',reason:state.freshnessFailure,durationMs:Date.now()-started});
     return [];
   } finally {state.freshnessDurationMs=(state.freshnessDurationMs||0)+Date.now()-started;}
-  for (const sourceId of new Set(snapshot.matches.map(m => m.sourceId))) if (!valid.has(sourceId)) state.invalidSourceIds.add(sourceId);
+  for (const sourceId of new Set(snapshot.evidence.map(m => m.sourceId))) if (!valid.has(sourceId)) state.invalidSourceIds.add(sourceId);
   emitKnowledgeDecision({stage:'freshness',reason:valid.size?'SOURCE_CURRENT':'SOURCE_INVALID',durationMs:Date.now()-started,sources:[...new Set(snapshot.matches.map(m=>m.sourceId))].slice(0,5).map((id,index)=>({
     index,valid:valid.has(id)&&!state.invalidSourceIds!.has(id),reason:state.invalidSourceIds!.has(id)?reasons.get(id)==='SOURCE_CURRENT'?'SOURCE_QUARANTINED':reasons.get(id)||'SOURCE_INVALID':'SOURCE_CURRENT'}))});
   return requestSecurity.current() ? snapshot.evidence.filter(e => valid.has(e.sourceId) && !state.invalidSourceIds!.has(e.sourceId)) : [];
@@ -5509,6 +5621,8 @@ async function knowledgeEvidenceCurrent(): Promise<boolean> {
 }
 
 function knowledgeUnavailableReply(language:string):string {
+  if (nativeKnowledgeTiming()) return formatBusinessSupportVerificationUnavailable(language,
+    ({en:'the requested details',sv:'de efterfrågade uppgifterna',de:'die angefragten Einzelheiten',es:'los detalles solicitados',fa:'جزئیات درخواست‌شده',ar:'التفاصيل المطلوبة'} as Record<string,string>)[language] || 'the requested details');
   const support=requestSecurity.evidence?.support;
   return formatBusinessSupportVerificationUnavailable(language,businessInformationSubject(support&&'question' in support?support.question:'',language));
 }
@@ -5519,23 +5633,45 @@ async function generateSecureConversationContent(sessionId: string, options: any
   requestSecurity.capture(support ? { ...support, cancellationPolicyEpoch: cancellationPolicyEpoch(support.businessConfig) } : null, required, support && required
     ? documentEvidenceRegistry.capture(Number(getBusinessIdFromConfig(support.businessConfig)), support.retrievedKnowledge || '') : null);
   // Capture the exact schema for this invocation. State can only subtract permission later.
-  const tools = requestSecurity.evidence?.required ? [] : structuredClone(options.tools || []);
+  const tools = requestSecurity.evidence?.required || nativeKnowledgeTiming() ? [] : structuredClone(options.tools || []);
   requestSecurity.offer(tools.flatMap((group: any) => (group.functionDeclarations || []).map((declaration: any) => declaration.name)));
   if (!requestSecurity.current()) throw new Error('request_superseded_or_expired');
   const state = knowledgeTurnScope.getStore();
   if (support && 'question' in support && state?.budget && state.migrated !== false &&
       state.businessId === Number(getBusinessIdFromConfig(support.businessConfig)) && state.question === support.question) {
-    state.snapshot ||= immutable({ businessId: state.businessId, question: state.question, matches: state.matches || [], evidence: state.evidence || [] });
+    state.snapshot ||= immutable({ businessId: state.businessId, question: state.question, matches: state.matches || [], evidence: [...(state.evidence || []), ...((isMixedSourceInformationQuestion(support.question,support.businessConfig) || directConfiguredServicePlan(support.question,support.businessConfig)) ? [configuredServiceEvidence(state.businessId, support.businessConfig.services)].filter((e): e is Evidence => Boolean(e)) : [])] });
   }
   const available = await (state?.budget ? knowledgeEvidenceCurrent() : requestEvidenceCurrent());
   if (!requestSecurity.current()) throw new Error('request_superseded_or_expired');
   if (!available) return { text: state?.budget&&state.migrated!==false?knowledgeUnavailableReply(capturedSupportLanguage(support)):formatBusinessSupportKnowledgeGap(capturedSupportLanguage(support)), functionCalls: null };
-  if (support && 'question' in support && evidenceFirstEligible(support.question) && state?.budget && state.migrated !== false &&
+  if (support && 'question' in support && evidenceFirstEligible(support.question,support.businessConfig) && state?.budget && state.migrated !== false &&
       state.businessId === Number(getBusinessIdFromConfig(support.businessConfig)) && state.question === support.question) {
     state.sessionId = sessionId;
     if (!state.manifest) {
+      const verificationProtocol = state.verificationProtocol ?? selectKnowledgeVerificationProtocol();
+      if (state.verificationProtocol === undefined) Object.defineProperty(state, 'verificationProtocol', { value: verificationProtocol, enumerable: true });
+      const extractionProtocol = state.extractionProtocol ?? selectKnowledgeExtractionProtocol();
+      if (state.extractionProtocol === undefined) Object.defineProperty(state, 'extractionProtocol', { value: extractionProtocol, enumerable: true });
+      const modelBinding = controlledTrialBinding() ?? Object.freeze({ businessId: state.businessId, turnId: nativeKnowledgeTiming()?.turnId ?? '',
+        requestKey: crypto.createHash('sha256').update(JSON.stringify([sessionId, state.nativeEvent?.eventId ?? null, support.question])).digest('hex') });
+      const modelEvidenceSnapshot = state.snapshot?.evidence ?? [];
+      if (state.modelProfile === undefined) Object.defineProperty(state, 'modelProfile', { enumerable: true, value: captureKnowledgeModelProfile({
+        ...modelBinding, provider: getConfiguredAiProvider(), nativeForeground: !!nativeKnowledgeTiming() && !!state.nativeChannel && !!state.nativeEvent?.eventId,
+        natural: !!state.naturalEnabled, durable: state.budget instanceof DurableKnowledgeBudget, extractionProtocol, verificationProtocol,
+        documentary: modelEvidenceSnapshot.some(e => !e.sourceId.startsWith('configured-services:')) &&
+          (!directConfiguredServicePlan(support.question, support.businessConfig) || isMixedSourceInformationQuestion(support.question, support.businessConfig)),
+        operational: isExplicitBusinessActionRequest(support.question),
+        current: async () => {
+          if (trialEnforced()&&!await trialCurrent()) return false;
+          if (!await knowledgeOwnershipCurrent()) return false;
+          const fresh = await currentAnswerEvidence();
+          const identity = (items: readonly Evidence[]) => JSON.stringify(items.map(e => [e.businessId, e.sourceId, e.chunkId, e.version]).sort());
+          return !state.freshnessFailure && identity(fresh) === identity(modelEvidenceSnapshot) && await knowledgeOwnershipCurrent();
+        },
+      }) });
       const snapshot = buildBusinessGroundingSnapshot(support);
       const manifest = await buildEvidenceFirstAnswer({ question: support.question, language: support.language,
+        verificationProtocol, extractionProtocol, businessId: state.businessId,
         facets: state.facets || [], evidence: state.snapshot?.evidence || [],
         // Use the same captured question/facet/evidence contract in both hosts.
         // Durable budgets, attempt accounting and publication authority stay separate.
@@ -5549,21 +5685,26 @@ async function generateSecureConversationContent(sessionId: string, options: any
         businessTone: normalizeBusinessToneConfig(support.businessConfig?.toneConfig), history: state.history || (options.messages || []).slice(-3), budget: state.budget,
         ...(state.naturalEnabled?{natural:{scope:immutable({turnId:state.naturalTurnId!,businessId:state.businessId!,question:support.question,
           tone:normalizeBusinessToneConfig(support.businessConfig?.toneConfig)}),allowSinglePartial:state.naturalSinglePartial===true}}:{}),
-        languageSafe: unit => !customerReplyLanguageIsIncompatible(unit.text, support.language),
+        languageSafe: unit => !customerReplyLanguageIsIncompatible(removeConfiguredEntitiesFromLanguageEvidence(unit.text, support.businessConfig), support.language),
         current: knowledgeOwnershipCurrent,
         revalidateEvidence: currentAnswerEvidence,
         finalPublicationRevalidates: options.knowledgePublication === 'guarded_text',
         diagnostic:event=>emitKnowledgeDecision(event.stage==='freshness'&&event.reason==='SOURCE_INVALID'&&state.freshnessFailure
           ? {...event,reason:state.freshnessFailure}:event),
-        generate: async (stage, instruction, data) => {
+        generate: async (stage, instruction, data, contract) => {
           const started = Date.now(); let ok = false;
           const wireData = stage === 'verification' && getConfiguredAiProvider() === 'openai' && !(state.budget instanceof DurableKnowledgeBudget)
             ? compactKnowledgeVerifierInput(data) : data;
-          try { const pending = generateContentWithFallback(null, { messages: [{ role: 'user', content: JSON.stringify(wireData) }],
+          try {
+            const profileOptions = knowledgeStageOptions(state.modelProfile!, stage, modelBinding, Date.now() +
+              (stage === 'extraction' ? accuracyFirstExtractionAllowance(state.budget!.generationRemaining()) : Math.min(19999, state.budget!.generationRemaining())));
+            const pending = generateContentWithFallback(null, { messages: [{ role: 'user', content: JSON.stringify(wireData) }],
             systemInstruction: instruction, tools: [], informationBudget: state.budget,
+            ...profileOptions,
             ...((stage==='extraction' || stage==='verification' && !(state.budget instanceof DurableKnowledgeBudget)) ? {reasoningEffort:'low' as const} : {}),
             ...(stage!=='composition'?{structuredOutput:knowledgeStructuredOutput(stage,state.naturalEnabled,
-              stage==='extraction' ? state.facets?.map(f=>f.id) : undefined)}:{}),
+              stage==='extraction' ? state.facets?.map(f=>f.id) : undefined,
+              stage==='extraction'&&(data as {authorityScope?:unknown})?.authorityScope==='document_only'?5:6,verificationProtocol,contract?.extractionProtocol)}:{}),
             context: { ...businessInformationTimingContext(sessionId), businessId: state.businessId, channel: 'knowledge-core', stage: `knowledge_units_${stage}`, language: support.language } });
             if(stage==='extraction'||stage==='verification')runOptionalDiagnostic(()=>state.durableProgress?.(stage,(state.facets||[]).map(f=>f.attribute)));
             const result=await pending;
@@ -5594,7 +5735,7 @@ async function generateSecureConversationContent(sessionId: string, options: any
         return console.info('[EvidenceFirstKnowledge]', JSON.stringify(diagnostic));
       });
     }
-    return { text: state.manifest.text, functionCalls: [] };
+    return { text: nativeKnowledgeTiming() && !publishableKnowledgeManifest(state.manifest,state.businessId) ? knowledgeUnavailableReply(support.language) : state.manifest.text, functionCalls: [] };
   }
   return generateContentWithFallback(null, { ...options, tools });
 }
@@ -5612,7 +5753,7 @@ export async function executeDurableKnowledgeTask(task: KnowledgeTask,
     preflightRejected(task.turnId, task.scope.channel, 'execution_entry', reason); return null;
   };
   if (Number(getBusinessIdFromConfig(businessConfig)) !== task.scope.businessId) return reject('BUSINESS_SCOPE');
-  if (!evidenceFirstEligible(question)) return reject('EVIDENCE_FIRST_ROUTE');
+  if (!evidenceFirstEligible(question,businessConfig)) return reject('EVIDENCE_FIRST_ROUTE');
   if (context.signal.aborted) return reject('CANCELLED');
   if (!await current()) return reject('TURN_CONTEXT');
   const sessionId = `durable-knowledge:${task.turnId}:${task.fence}`;
@@ -5657,6 +5798,10 @@ async function securePublicationReply(reply: string, language?: string): Promise
   const publicationStartedAt=Date.now();
   const publicationStartingBudgetMs=knowledgeTurnScope.getStore()?.budget?.remaining();
   const publicationTiming=()=>({startedAtMs:publicationStartedAt,startingBudgetMs:publicationStartingBudgetMs,durationMs:Date.now()-publicationStartedAt});
+  const scopedTiming = nativeKnowledgeTiming();
+  if (scopedTiming?.deliveryAttempted || scopedTiming && scopedTiming.remaining() <= scopedTiming.policy.cleanupMs) return null;
+  if (scopedTiming && (scopedTiming.failure || !requestSecurity.evidence))
+    return knowledgeUnavailableReply(language || capturedSupportLanguage(requestSecurity.evidence?.support));
   if (!requestSecurity.evidence) return reply; // Existing deterministic booking sends precede AI capture.
   const state = knowledgeTurnScope.getStore();
   if (!requestSecurity.current()) {emitKnowledgeDecision({stage:'publication',...publicationTiming(),reason:'PUBLICATION_SUPPRESSED',route:'suppressed'});return null;}
@@ -5667,10 +5812,11 @@ async function securePublicationReply(reply: string, language?: string): Promise
   if (!requestSecurity.current()) {emitKnowledgeDecision({stage:'publication',...publicationTiming(),reason:'PUBLICATION_SUPPRESSED',route:'suppressed'});return null;}
   // Re-render the immutable manifest after downstream concision/identity/CTA guards.
   // Freshness and request ownership above remain mandatory for every send.
-  const publishable = current;
+  const publishable = current && (!scopedTiming || !scopedTiming.failure && publishableKnowledgeManifest(state?.manifest,state?.businessId));
+  const publicationFailure = scopedTiming?.failure ? 'DEADLINE' : current && scopedTiming && !publishableKnowledgeManifest(state?.manifest,state?.businessId) ? 'MATERIAL_FACTS_MISSING' : state?.freshnessFailure || 'CONTEXT_INVALID';
   if (!requestSecurity.current()) return null;
   const outputLanguage=language || capturedSupportLanguage(requestSecurity.evidence.support);
-  const text = publishable ? state?.manifest?.text || reply : state?.budget&&state.migrated!==false?knowledgeUnavailableReply(outputLanguage):formatBusinessSupportKnowledgeGap(outputLanguage);
+  const text = publishable ? state?.manifest?.text || reply : scopedTiming || state?.budget&&state.migrated!==false?knowledgeUnavailableReply(outputLanguage):formatBusinessSupportKnowledgeGap(outputLanguage);
   if (state?.manifest) {
     // Only the last assistant entry for this owned turn can be corrected. Never
     // retain unpublished revoked prose as the next turn's conversation context.
@@ -5679,7 +5825,7 @@ async function securePublicationReply(reply: string, language?: string): Promise
     if (last?.role === 'assistant' && (last.content === previousText || last.content === reply)) last.content = text;
     runOptionalDiagnostic(() => priority1hTestDependencies?.evidenceFirstPublicationDiagnostic?.({ phase: 'publication_result', units: state.manifest.units.length,
       facets: state.manifest.outcomes.map(o => ({ status: o.status, units: o.unitIds.length })), invalidSources: state.invalidSourceIds?.size || 0 }));
-    emitKnowledgeDecision({stage:'publication',...publicationTiming(),reason:!publishable?state.freshnessFailure||'CONTEXT_INVALID':state.manifest.fallbackReason||'ACCEPTED',
+    emitKnowledgeDecision({stage:'publication',...publicationTiming(),reason:!publishable?publicationFailure:state.manifest.fallbackReason||'ACCEPTED',
       semanticVerifiedUnits:state.semanticVerifiedUnits||0,publishableUnits:publishable?state.manifest.units.length:0,
       counts:{proposed:state.unitCounts?.proposed||0,parsed:state.unitCounts?.parsed||0,verified:publishable?state.manifest.units.length:0,
         rejected:(state.unitCounts?.proposed||0)-(publishable?state.manifest.units.length:0)},
@@ -5954,10 +6100,10 @@ function isDeterministicActiveNewBookingContinuation(chatId: string, text: strin
   return false;
 }
 
-function shouldDispatchWhatsAppUnifiedBooking(chatId: string, text: string, intent = classifyMessagingIntent(text)): boolean {
+function shouldDispatchWhatsAppUnifiedBooking(chatId: string, text: string, intent = classifyMessagingIntent(text), businessConfig?:any): boolean {
   if (intent === "language_repair") return false;
   if (getRecentCompletedBooking(chatId)?.bookingOperation?.ok) return true;
-  if (isBusinessInformationQuestion(text)) return true;
+  if (isCurrentBusinessInformationRequest(text,businessConfig)) return true;
   if (intent === "ambiguous") return isDeterministicActiveNewBookingContinuation(chatId, text);
   const clearlyNonBooking = intent === "normal" &&
     !pendingBookings[chatId] && !hasAppointmentConversationState(chatId) &&
@@ -5974,10 +6120,11 @@ function shouldReturnWhatsAppAmbiguousClarification(
   chatId: string,
   intent: ReturnType<typeof classifyMessagingIntent>,
   text: string,
+  businessConfig?:any,
 ): boolean {
   return intent === "ambiguous" &&
     !getRecentCompletedBooking(chatId)?.bookingOperation?.ok &&
-    !isBusinessInformationQuestion(text);
+    !isCurrentBusinessInformationRequest(text,businessConfig);
 }
 
 async function planWhatsAppStateFirstRouting(chatId: string, text: string, businessConfig: any): Promise<{
@@ -5996,16 +6143,16 @@ async function planWhatsAppStateFirstRouting(chatId: string, text: string, busin
   const intent = classifyMessagingIntent(text);
   if (authoritativeStatePresent) return { intent, authoritativeStatePresent, route: "unified_first" };
   if (intent === "language_repair") return { intent, authoritativeStatePresent, route: "language_repair" };
-  if (shouldReturnWhatsAppAmbiguousClarification(chatId, intent, text)) {
+  if (shouldReturnWhatsAppAmbiguousClarification(chatId, intent, text, businessConfig)) {
     return { intent, authoritativeStatePresent, route: "ambiguous_clarification" };
   }
-  if (isBusinessInformationQuestion(text)) {
+  if (isCurrentBusinessInformationRequest(text,businessConfig)) {
     return { intent, authoritativeStatePresent, route: "support" };
   }
   return {
     intent,
     authoritativeStatePresent,
-    route: shouldDispatchWhatsAppUnifiedBooking(chatId, text, intent) ? "unified" : "support",
+    route: shouldDispatchWhatsAppUnifiedBooking(chatId, text, intent, businessConfig) ? "unified" : "support",
   };
 }
 
@@ -6602,7 +6749,7 @@ async function loadCurrentCancellationConfig(config: any): Promise<any | null> {
   } catch { return null; }
 }
 function cancellationInformationRequested(text: string): boolean {
-  return /cancel|avbok|stornier|absag|\bfees?\b|avgift|gebühr|cargo|لغو|هزینه|إلغاء|الغاء|رسوم/iu.test(text);
+  return isCancellationInformationRequested(text);
 }
 async function cancellationInformationCurrent(support: BusinessInformationTurn | CompletedBookingSupportTurn,
   epoch?: number): Promise<boolean> {
@@ -7644,6 +7791,7 @@ function isRecentCompletionRequirementsQuestion(text?: string): boolean {
 }
 
 function hasRecentCompletedBookingStatusSemantics(text?: string): boolean {
+  if (isConditionalArrivalInformationQuestion(String(text||'')) && !isExplicitBusinessActionRequest(String(text||''))) return false;
   const normalized = normalizeConfirmationReply(text);
   if (!normalized) return false;
   return (
@@ -8727,6 +8875,8 @@ async function retrieveBusinessKnowledgeForQuestion(
   timingContext: { businessInfoTurnId?: string } = {},
 ): Promise<string> {
   const retrievalStartedAt = Date.now();
+  const timing = nativeKnowledgeTiming();
+  const retrievalOptions = timing ? {signal:timing.signal,observe:<T>(promise:Promise<T>)=>timing.observe(promise)} : undefined;
   const businessId = Number(getBusinessIdFromConfig(businessConfig));
   const normalizedQuestion = String(question || "").trim();
 
@@ -8739,15 +8889,28 @@ async function retrieveBusinessKnowledgeForQuestion(
   }
 
   const state = knowledgeTurnScope.getStore();
-  if (state && evidenceFirstEligible(normalizedQuestion)) {
-    state.budget ||= new InformationBudget(); state.businessId = businessId; state.question = normalizedQuestion;
+  if (state && evidenceFirstEligible(normalizedQuestion,businessConfig)) {
+    state.budget ||= new InformationBudget(undefined, nativeKnowledgeTiming()); state.businessId = businessId; state.question = normalizedQuestion;
+  }
+  // Exact named-service attributes already have a distinct configured authority.
+  // Preserve the full request in the same evidence-first contract; no document
+  // lookup or model planner is needed to discover this known catalog source.
+  const directCatalog = state?.budget && !state.mixedRequest
+    ? directConfiguredServicePlan(normalizedQuestion,businessConfig,state.requiresReferenceResolution===true) : null;
+  if (directCatalog && state) {
+    const planned=parseRequestedFacets(directCatalog.requestedFacets);
+    state.facets=planned.facets;state.oversized=planned.oversized;state.migrated=true;
+    state.matches=[];state.evidence=[];
+    documentEvidenceRegistry.register(businessId,'',[]);
+    emitKnowledgeDecision({stage:'planning',reason:'LITERAL_REQUEST_DIRECT'});
+    return ''; // Catalog is captured and revalidated by the existing answer path.
   }
   try {
     const plan = () => Promise.all([
       resolveSemanticKnowledgeQueries(normalizedQuestion, businessConfig, timingContext),
       (process.env.NODE_ENV === 'test'
         ? priority1hTestDependencies?.knowledgeSourceLanguages?.(businessId) || Promise.resolve([])
-        : knowledgeService.sourceLanguageHints(businessId)).catch(() => [] as SourceLanguage[]),
+        : knowledgeService.sourceLanguageHints(businessId,retrievalOptions)).catch(() => [] as SourceLanguage[]),
     ]);
     const [semanticPlan, sourceLanguages] = await (state?.budget ? withinInformationDeadline(state.budget, plan) : plan());
     if (state && ((hasExternalConversationReference(normalizedQuestion) && semanticPlan?.referenceResolution === "UNRESOLVED") ||
@@ -8762,6 +8925,11 @@ async function retrieveBusinessKnowledgeForQuestion(
       emitKnowledgeDecision({stage:'planning',reason:planned.oversized?'LIMIT_EXCEEDED':planned.facets.length?'ACCEPTED':state.migrated?'INVALID_FIELDS':'LEGACY_ROUTE',facets:planned.facets.map(f=>({type:f.questionType,obligations:f.obligations.length}))});
     }
     const semanticQueries = selectSemanticQueries(normalizedQuestion, semanticPlan?.queries || [], sourceLanguages, semanticPlan?.queryLanguages);
+    const candidatePolicy = selectCandidateRetrievalPolicy(process.env.ODINLINK_KNOWLEDGE_RETRIEVAL_POLICY);
+    const candidateEligible = !!candidatePolicy && getConfiguredAiProvider()==='openai' && !!state?.nativeChannel && !!state.budget && state.migrated === true &&
+      !state.oversized && !state.mixedRequest && !state.requiresReferenceResolution && !isExplicitBusinessActionRequest(normalizedQuestion) &&
+      !!semanticPlan && directKnowledgePlans.has(semanticPlan) && semanticPlan.referenceResolution === 'NOT_REQUIRED' &&
+      !!state.facets?.length && state.facets.every(f => f.questionType === 'description' && f.obligations.every(o => o.questionType === 'description'));
 
     const queries = buildBusinessKnowledgeQueries(
       normalizedQuestion,
@@ -8783,32 +8951,43 @@ async function retrieveBusinessKnowledgeForQuestion(
               scopedBusinessId,
               query,
               limit,
+              undefined,
+              retrievalOptions,
             );
 
     let cancelSemanticSearch: (() => void) | undefined;
+    let semanticIndexStatus: Record<string,unknown> = { status: 'not_requested' };
+    const recordSemanticStatus = (outcome: import('./src/knowledge/persistent-search').SemanticStatus) => {
+      semanticIndexStatus = outcome.status === 'unavailable' ? {status:outcome.status,reason:outcome.reason} : {
+        status:outcome.status,sourceCount:outcome.coverage.sourceCount,readySourceCount:outcome.coverage.readySourceCount,
+        textReadySourceCount:outcome.coverage.textReadySourceCount,
+      };
+    };
     let completeCorpusUsed = false;
-    const semanticSearchKnowledge = (id: number, planned: string[], limit: number) => {
+    const semanticRetrieval: {origin: RetrievalObservation['origin']} = {origin:'strict-semantic'};
+    const recordRetrieval = (event: RetrievalObservation) => { semanticRetrieval.origin = event.origin; };
+    const semanticSearchKnowledge = (id: number, planned: string[], limit: number, candidateFallback?: CandidateFallback) => {
       // Bound optional semantic work so lexical evidence remains usable. The
-      // same signal covers query and cold-corpus embedding calls.
-      // Legacy retrieval retains its existing provider timeout and cache behavior.
+      // same signal covers query embeddings and persistent database search.
+      // Google retains its existing retrieval behavior.
       if (!state?.budget) {
         if (process.env.NODE_ENV === 'test') {
           if (priority1hTestDependencies?.semanticKnowledgeSearchQueries) return priority1hTestDependencies.semanticKnowledgeSearchQueries(id, planned, limit);
           if (priority1hTestDependencies?.semanticKnowledgeSearch) return Promise.all(planned.map(query => priority1hTestDependencies!.semanticKnowledgeSearch!(id, query, limit))).then(sets => sets.flat());
         }
-        return knowledgeService.semanticSearchQueries(id, planned, limit);
+        return knowledgeService.semanticSearchQueries(id, planned, limit,{onStatus:recordSemanticStatus});
       }
       const remaining=state.budget.generationRemaining();
       if(remaining<=0)return Promise.resolve([]);
       const timeoutMs=Math.min(2_500,remaining);
-      const controller=new AbortController();let timer:ReturnType<typeof setTimeout>;
+      const controller=new AbortController();const semanticSignal=state.budget.nativeTiming ? AbortSignal.any([controller.signal,state.budget.nativeTiming.signal]) : controller.signal;let timer:ReturnType<typeof setTimeout>;
       const work=()=>{
-        if(controller.signal.aborted)return Promise.resolve([]);
+        if(semanticSignal.aborted)return Promise.resolve([]);
         if (process.env.NODE_ENV === 'test') {
-          if (priority1hTestDependencies?.semanticKnowledgeSearchQueries) return priority1hTestDependencies.semanticKnowledgeSearchQueries(id, planned, limit,{signal:controller.signal,timeoutMs});
+          if (priority1hTestDependencies?.semanticKnowledgeSearchQueries) return priority1hTestDependencies.semanticKnowledgeSearchQueries(id, planned, limit,{...retrievalOptions,signal:semanticSignal,timeoutMs,candidateFallback,onRetrieval:recordRetrieval,onStatus:recordSemanticStatus});
           if (priority1hTestDependencies?.semanticKnowledgeSearch) return Promise.all(planned.map(query => priority1hTestDependencies!.semanticKnowledgeSearch!(id, query, limit))).then(sets => sets.flat());
         }
-        return knowledgeService.semanticSearchQueries(id, planned, limit,{signal:controller.signal,timeoutMs});
+        return knowledgeService.semanticSearchQueries(id, planned, limit,{...retrievalOptions,signal:semanticSignal,timeoutMs,onStatus:recordSemanticStatus,candidateFallback,onRetrieval:recordRetrieval});
       };
       const deadline=new Promise<KnowledgeSearchMatch[]>(resolve=>{
         cancelSemanticSearch=()=>{controller.abort();resolve([]);};
@@ -8817,16 +8996,21 @@ async function retrieveBusinessKnowledgeForQuestion(
       return Promise.race([Promise.resolve().then(work),deadline]).finally(()=>clearTimeout(timer));
     };
 
-    const search = () => {
+    const search = async () => {
+      let lexicalFailed = false;
       const lexical =
       process.env.ODINLINK_KNOWLEDGE_LEXICAL_BATCH === 'true'
         ? knowledgeService.searchLexicalQueries(businessId, queries, 5,
-          metrics => console.log('[KnowledgeLexicalRetrieval]', metrics))
+          metrics => {
+            if (metrics.searchFailures || metrics.sourceListFailures || metrics.validationFailures) lexicalFailed = true;
+            console.log('[KnowledgeLexicalRetrieval]', metrics);
+          },retrievalOptions)
         : Promise.all(queries.map((query) =>
         Promise.resolve(
           searchKnowledge(businessId, query, 5)
         )
           .catch((error) => {
+            lexicalFailed = true;
             console.error("[KnowledgeRetrieval] Query failed:", {
               businessId,
               queryLength: query.length,
@@ -8839,43 +9023,41 @@ async function retrieveBusinessKnowledgeForQuestion(
             return [];
           })
       ));
+      // A complete canonical corpus makes ranking redundant, not the answer
+      // verified. Reuse the existing 100ms proof window BEFORE starting optional
+      // semantic work: aborting a speculative embedding wastes a real request.
+      // This total window includes lexical lookup; a slow/unknown/large inventory
+      // cannot serialize semantic startup behind an unbounded lexical read.
+      if (state?.budget && state.facets?.length && state.migrated !== false) {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        let proofClosed = false;
+        let complete: KnowledgeSearchMatch[] | null = null;
+        try {
+          const proof = Promise.resolve(lexical).then(sets => proofClosed ? null : process.env.NODE_ENV === 'test'
+              ? priority1hTestDependencies?.completeKnowledgeCorpus?.(businessId, sets.flat()) || null
+              : knowledgeService.completeSmallCorpus(businessId, sets.flat(),retrievalOptions)).catch(() => null);
+          complete = await Promise.race([
+            timing ? timing.observe(proof) : proof,
+            new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), Math.min(100, state.budget!.remaining())); }),
+          ]);
+        } finally { proofClosed = true; if (timer) clearTimeout(timer); }
+        if (complete) {
+          completeCorpusUsed = true;
+          return [[complete, ...queries.slice(1).map(() => [])], [] as KnowledgeSearchMatch[]] as const;
+        }
+      }
       const semantic = Promise.resolve()
-        .then(() => semanticSearchKnowledge(
-          businessId,
-          semanticQueries,
-          5,
-        ))
+        .then(() => semanticSearchKnowledge(businessId, semanticQueries, 5, candidateEligible ? Object.freeze({policy:candidatePolicy!,
+          lexicalEmpty:Promise.resolve(lexical).then(sets => !lexicalFailed && sets.every(set => Array.isArray(set) && set.length === 0), () => false)}) : undefined))
         .catch((error) => {
           console.error("[KnowledgeRetrieval] Semantic query failed:", {
             businessId,
             queryLength: normalizedQuestion.length,
-            errorType:
-              error instanceof Error
-                ? error.name
-                : "unknown",
+            errorType: error instanceof Error ? error.name : "unknown",
           });
           return [];
         });
-      const withCompleteCorpus = async () => {
-        const sets = await lexical;
-        if (!state?.budget || !state.facets?.length || state.migrated === false) return sets;
-        // Scores and matching words cannot establish all question conditions.
-        // Only an exhaustive canonical tenant corpus inside the unchanged answer
-        // envelope makes further semantic retrieval redundant. Bound this extra
-        // read; failure/unknown/large corpora keep the concurrent semantic search.
-        let timer: ReturnType<typeof setTimeout> | undefined;
-        const complete = await Promise.race([
-          Promise.resolve().then(() => process.env.NODE_ENV === 'test'
-            ? priority1hTestDependencies?.completeKnowledgeCorpus?.(businessId, sets.flat()) || null
-            : knowledgeService.completeSmallCorpus(businessId, sets.flat())).catch(() => null),
-          new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), Math.min(100, state.budget!.remaining())); }),
-        ]).finally(() => { if (timer) clearTimeout(timer); });
-        if (!complete) return sets;
-        completeCorpusUsed = true;
-        cancelSemanticSearch?.();
-        return [complete, ...queries.slice(1).map(() => [])];
-      };
-      return Promise.all([withCompleteCorpus(), semantic]);
+      return Promise.all([lexical, semantic]);
     };
 
     const [resultSets, semanticMatches] = await (state?.budget ? withinInformationDeadline(state.budget, search) : search());
@@ -8922,9 +9104,28 @@ async function retrieveBusinessKnowledgeForQuestion(
       5,
     );
 
+    // A direct full-question contract must not erase cross-language retrieval.
+    // Retry empty retrieval once in a language confirmed from current source
+    // content, inside the existing planning and foreground budget. This hint
+    // cannot resolve references or change the question given to verification.
+    if (!candidateEligible && state?.budget && state.facets?.length && !matches.length && sourceLanguages.length &&
+        semanticPlan?.referenceResolution === 'NOT_REQUIRED' &&
+        state.budget.generationRemaining() > KNOWLEDGE_PLANNING_LIMIT_MS + KNOWLEDGE_VERIFICATION_MIN_MS) {
+      try {
+        const response = await generateContentWithFallback(null, {messages:[{role:'user',content:JSON.stringify({question:normalizedQuestion,targetLanguage:sourceLanguages[0]})}],
+          systemInstruction:SOURCE_LANGUAGE_QUERY_INSTRUCTION,tools:[],reasoningEffort:'low',structuredOutput:SOURCE_LANGUAGE_QUERY_SCHEMA,
+          informationBudget:state.budget,context:{...timingContext,businessId,channel:'knowledge-core',stage:'semantic_knowledge_query_resolution'}});
+        const query = !response.structuredFailure && !response.functionCalls?.length ? parseSourceLanguageQuery(response.text) : null;
+        if (query) {
+          const [lexical, semantic] = await Promise.all([searchKnowledge(businessId,query,5),semanticSearchKnowledge(businessId,[normalizedQuestion,query],5)]);
+          matches = mergeKnowledgeMatchesByRank(retainScopedKnowledgeMatches(lexical.filter(m=>!explicitlyWrongWorkflow(String(m.text||''),normalizedQuestion)),businessId),retainStrictlyScopedSemanticKnowledgeMatches(semantic.filter(m=>!explicitlyWrongWorkflow(String(m.text||''),normalizedQuestion)),businessId),5);
+        }
+      } catch(error) {emitKnowledgeDecision({stage:'planning',reason:knowledgeFailureReason(error)});}
+    }
+
     if (state?.budget) {
       if (state.migrated !== false && matches.some(m => m.metadata?.source !== 'document')) {
-        const bind = priority1hTestDependencies?.validateKnowledgeMatches || ((id, found) => knowledgeService.validateMatches(id, found, { strictSources: true, captureRevision: true }));
+        const bind = priority1hTestDependencies?.validateKnowledgeMatches || ((id, found) => knowledgeService.validateMatches(id, found, { signal: timing?.signal, strictSources: true, captureRevision: true }));
         matches = await withinInformationDeadline(state.budget, () => bind(businessId, matches as KnowledgeSearchMatch[]));
       }
       state.matches = structuredClone(matches) as KnowledgeSearchMatch[];
@@ -8947,6 +9148,11 @@ async function retrieveBusinessKnowledgeForQuestion(
       questionLength: normalizedQuestion.length,
       semanticPlanUsed: Boolean(semanticPlan),
       completeCorpusUsed,
+      semanticIndexStatus,
+      retrievalPolicy: candidatePolicy || 'strict-default',
+      candidateEligible,
+      retrievalOrigins: {lexical:lexicalMatches.length,strictSemantic:semanticRetrieval.origin==='strict-semantic'?scopedSemanticMatches.length:0,
+        candidate:semanticRetrieval.origin==='candidate'?scopedSemanticMatches.length:0},
       queryCount: queries.length,
       semanticQueryCount: semanticQueries.length,
       lexicalQueries: queries.map((query, index) => ({
@@ -12899,6 +13105,34 @@ type MessengerReminderAuthorization = {
   windowOpen: () => boolean;
 };
 
+/** Bound text dispatch and response-body consumption; abort is ambiguous, never retried. */
+async function fetchNativeKnowledgeText(input: string, init: RequestInit): Promise<Response> {
+  if(trialEnforced())init={...init,redirect:'error'};
+  const timing=nativeKnowledgeTiming();
+  if (!timing) {if(!await trialSendAllowed(input,init))throw Error('controlled_trial_delivery_denied');return fetch(input,init);}
+  const state=knowledgeTurnScope.getStore();
+  let authorizationDeadlineAt=Infinity;
+  if(state?.nativeChannel && state.nativeChannel!=='telegram') {
+    const inbound=metaInboundEventTime.getStore();
+    const eventAt=inbound?.providerEventAt ? Date.parse(inbound.providerEventAt) : NaN;
+    if(!inbound || inbound.platform!==state.nativeChannel || !inbound.businessId ||
+      state.businessId!==undefined && String(state.businessId)!==inbound.businessId ||
+      inbound.customerId!==normalizePlatformUserId(state.nativeChannel,state.nativeEvent?.recipient || '') ||
+      !Number.isFinite(eventAt) || eventAt>Date.now()) throw new Error('knowledge_delivery_authority_expired');
+    // Same standard-response bound as the existing durable native transport.
+    authorizationDeadlineAt=eventAt+86_400_000;
+  }
+  return timing.deliver(async signal => {
+    if (!requestSecurity.current()) throw new Error('knowledge_delivery_authority_expired');
+    if(!await trialSendAllowed(input,init))throw Error('controlled_trial_delivery_denied');
+    signal.throwIfAborted();
+    const response=await fetch(input,{...init,signal});
+    const body=await response.arrayBuffer();
+    signal.throwIfAborted();
+    return new Response(body,{status:response.status,statusText:response.statusText,headers:response.headers});
+  },authorizationDeadlineAt);
+}
+
 async function sendCustomerMessage(
   platform: string,
   recipientId: string,
@@ -12908,6 +13142,7 @@ async function sendCustomerMessage(
   reminderDelivery: boolean = false,
   messengerReminderAuthorization?: MessengerReminderAuthorization,
 ): Promise<boolean> {
+  if(trialEnforced()&&outboundContext!=='conversation')return false;
   if (outboundContext === 'conversation') {
     const secured = await securePublicationReply(message);
     if (secured === null) return false;
@@ -12943,7 +13178,7 @@ async function sendCustomerMessage(
       return false;
     }
     try {
-      const res = await timeBusinessInformationDelivery(outboundContext === "conversation" ? recipient : "", () => fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      const res = await timeBusinessInformationDelivery(outboundContext === "conversation" ? recipient : "", () => fetchNativeKnowledgeText(`https://api.telegram.org/bot${token}/sendMessage`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -15016,43 +15251,15 @@ function guardCustomerFacingReply(sessionId: string, reply: string, fallbackLang
 }
 
 function localizeServiceName(service: string, language: string): string {
-  const raw = String(service || "").toLowerCase();
-  const isBikini = raw.includes("bikini");
-  const isFullBody = raw.includes("helkropp") || raw.includes("fullbody") || raw.includes("full body");
-  const isConsultation = raw.includes("konsultation") || raw.includes("consultation") || raw.includes("مشاوره");
-  if (language === "fa") {
-    if (isConsultation) return "مشاوره";
-    if (isBikini) return "بیکینی";
-    if (isFullBody) return "لیزر فول بادی";
-    if (raw.includes("laser")) return "لیزر";
-    return service || "وقت";
-  }
-  if (language === "en") {
-    if (isConsultation) return "consultation";
-    if (isBikini) return "bikini treatment";
-    if (isFullBody) return "full body laser treatment";
-    return service || "appointment";
-  }
-  if (language === "sv") return service || "bokning";
-  if (language === "de") {
-    if (isConsultation) return "Beratung";
-    if (isBikini) return "Bikini-Behandlung";
-    if (isFullBody) return "Ganzkörper-Laserbehandlung";
-    return service || "Termin";
-  }
-  if (language === "es") {
-    if (isConsultation) return "consulta";
-    if (isBikini) return "tratamiento de bikini";
-    if (isFullBody) return "tratamiento láser de cuerpo completo";
-    return service || "cita";
-  }
-  if (language === "ar") {
-    if (isConsultation) return "الاستشارة";
-    if (isBikini) return "علاج البكيني";
-    if (isFullBody) return "ليزر الجسم الكامل";
-    return service || "موعد";
-  }
-  return service || "appointment";
+  // Selected/stored service labels are identities, not translatable prose.
+  // Localize only the identity-free fallback; never invent a service alias.
+  if (service) return service;
+  if (language === "fa") return "وقت";
+  if (language === "sv") return "bokning";
+  if (language === "de") return "Termin";
+  if (language === "es") return "cita";
+  if (language === "ar") return "موعد";
+  return "appointment";
 }
 
 function formatLocalizedDateTime(dateTime: string, language: string, timeZone: string = "Europe/Stockholm", dateOptions: Intl.DateTimeFormatOptions = {}) {
@@ -16164,7 +16371,7 @@ function p2ShadowConversationKey(
 function mirrorP2InboundTextShadow(
   params: P2InboundShadowMirrorParams,
 ): void {
-  if (p2LiveShadowRuntime.status !== "ready") return;
+  if (trialModeOn() || p2LiveShadowRuntime.status !== "ready") return;
 
   const businessId = Number(
     getBusinessIdFromConfig(
@@ -16547,6 +16754,7 @@ async function startTelegramPolling(
     return;
   }
 
+  if(!await trialPollerCurrent(Number(getBusinessIdFromConfig(config)),String(config?.telegramToken||'').split(':')[0]))return;
   if(!supabase)throw new Error('telegram_poller_durable_storage_required');
   const token = normalizeTelegramBotToken(config?.telegramToken);
   if (!token) {
@@ -16713,6 +16921,7 @@ async function startTelegramPolling(
     telegramBotInstanceId: instanceId
   });
 
+  if(!await trialPollerCurrent(Number(businessId),token.split(':')[0])){stopPoller('controlled_trial_revoked');await retireLease();return;}
   const identityAbortController = new AbortController();
   state.activeAbortController = identityAbortController;
   const identityTimeout = setTimeout(
@@ -16786,6 +16995,7 @@ async function startTelegramPolling(
 
   if(!state.isPolling){await retireLease();return;}
   try { await pollLease.current(); } catch (error) { await retireLease(); throw error; }
+  if(!trialModeOn()){
   const webhookAbortController = new AbortController();
   state.activeAbortController = webhookAbortController;
   const webhookTimeout = setTimeout(() => webhookAbortController.abort(), 10_000);
@@ -16815,6 +17025,7 @@ async function startTelegramPolling(
     }
   }
 
+  } // Controlled trials never delete or replace an existing Telegram webhook.
   const webhookInfoAbortController = new AbortController();
   state.activeAbortController = webhookInfoAbortController;
   const webhookInfoTimeout = setTimeout(
@@ -16822,6 +17033,7 @@ async function startTelegramPolling(
     10_000
   );
   let webhookInfoResponse: Response | null = null;
+  let trialWebhookClear=false;
   try {
     webhookInfoResponse = await fetch(
       `https://api.telegram.org/bot${token}/getWebhookInfo`,
@@ -16830,6 +17042,7 @@ async function startTelegramPolling(
     const webhookInfoText = await webhookInfoResponse.text();
     const webhookInfoData = JSON.parse(webhookInfoText);
     const webhookInfo = webhookInfoData?.result || {};
+    trialWebhookClear=Boolean(webhookInfoResponse.ok&&webhookInfoData?.ok&&webhookInfo.url==='');
     const sanitizedLastError = webhookInfo?.last_error_message
       ? sanitizeTelegramPollingError(
           new Error(String(webhookInfo.last_error_message)),
@@ -16866,6 +17079,7 @@ async function startTelegramPolling(
     }
   }
 
+  if(trialModeOn()&&!trialWebhookClear){stopPoller('controlled_trial_existing_or_unverified_webhook');await retireLease();return;}
   const waitBeforeRetry = async (delayMs: number) => {
     if (!state.isPolling || delayMs <= 0) return;
     await new Promise<void>((resolve) => {
@@ -16895,6 +17109,7 @@ async function startTelegramPolling(
     state.phase = "polling";
     try {
       while (state.isPolling) {
+        if(!await trialPollerCurrent(Number(getBusinessIdFromConfig(state.config)),token.split(':')[0])){state.isPolling=false;break;}
         await pollLease.current();
         state.iteration += 1;
         const iteration = state.iteration;
@@ -17040,7 +17255,7 @@ async function startTelegramPolling(
             try {
               await pollLease.dispose(updateId,()=>process.env.NODE_ENV === 'test' && priority1hTestDependencies?.telegramPollerUpdate
                 ? priority1hTestDependencies.telegramPollerUpdate(update)
-                : processTelegramUpdate(update, state.config, 'telegram-polling'));
+                : withVerifiedTrialTelegram(update,token.split(':')[0],token,()=>processTelegramUpdate(update, state.config, 'telegram-polling')));
               state.lastUpdateId=pollLease.lastUpdateId;
             } catch (processingError) {
               const safeError = sanitizeTelegramPollingError(
@@ -17127,6 +17342,15 @@ async function startTelegramPolling(
 }
 
 async function startAllBusinessTelegramPollers() {
+  if(trialModeOn()){
+    const businessId=trialBusinessId();if(!businessId||!supabase)return;
+    const {data,error}=await supabase.from('businesses').select('*').eq('id',businessId).maybeSingle();
+    if(error||!data)return;const token=normalizeTelegramBotToken(data.telegram_bot_token);
+    if(!token||!await trialPollerCurrent(businessId,token.split(':')[0]))return;
+    const config=await loadFreshBusinessConfigByTelegramToken(token);
+    if(config.telegramBusinessResolved)await startTelegramPolling(config,'controlled_trial_owned_business');
+    return;
+  }
   const startedTokens = new Set<string>();
 
   if (supabase) {
@@ -17685,7 +17909,7 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
   };
   const bookingInterrupted = hasBookingInterruption(text) &&
     !isExplicitBusinessActionRequest(withoutNegatedBookingClauses(text));
-  const currentInformationQuestion = clarifiesReference || isBusinessInformationQuestion(text);
+  const currentInformationQuestion = clarifiesReference || isCurrentBusinessInformationRequest(text,businessConfig);
   const pausePendingContinuation = async () => {
     if (pending && getBookingPhase(pending) !== "finalizing" && !pending.continuationPaused) {
       pending.continuationPaused = true;
@@ -17797,11 +18021,11 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
     markBusinessInformationTiming(sessionId, 'retrieval_start');
     const configuredOnly = Boolean(catalog && configuredAddress);
     const knowledgeState = knowledgeTurnScope.getStore();
-    if (knowledgeState && evidenceFirstEligible(informationQuestion)) knowledgeState.sessionId=sessionId;
+    if (knowledgeState && evidenceFirstEligible(informationQuestion,businessConfig)) knowledgeState.sessionId=sessionId;
     if (knowledgeState) knowledgeState.requiresReferenceResolution = clarifiesReference;
     if (knowledgeState) knowledgeState.history = (history || []).filter(m => typeof m.content === 'string').slice(-4).map(m => ({ role: m.role, content: m.content.slice(0, 1200) }));
     const nativeAsync=knowledgeState?.nativeAsync;
-    if (nativeAsync && evidenceFirstEligible(informationQuestion) && !configuredOnly) {
+    if (nativeAsync && evidenceFirstEligible(informationQuestion,businessConfig) && !configuredOnly) {
       lockConversationFlowLanguage(sessionId,informationLanguage,'booking_support');
       nonMutatingSupportTurns[sessionId]=Date.now();
       businessInformationTurns[sessionId]={savedAt:Date.now(),businessConfig,question:informationQuestion,language:informationLanguage,retrievedKnowledge:''};
@@ -25429,7 +25653,7 @@ async function sendTelegramPreferredReply(params: {
   if (turnSequence !== undefined && !isCurrentConversationTurn(sessionId, turnSequence)) return { sent: false, delivery: "none" };
   const preference = telegramReplyPreferences[sessionId] ||
     updateTelegramReplyPreference(sessionId, inputMode, "");
-  const delivery = selectTelegramDeliveryMode(preference, inputMode);
+  const delivery = nativeKnowledgeTiming() || trialEnforced() ? "text" : selectTelegramDeliveryMode(preference, inputMode);
   if (delivery === "text") {
     const sent = await sendCustomerMessage("telegram", chatId, reply, config, "conversation");
     if (sent && turnSequence !== undefined) {
@@ -25594,7 +25818,7 @@ async function processTelegramUpdate(
 }
 
 async function processTelegramUpdateClaimed(update: any, config: any, platform: string = "telegram-polling") {
-  return runUnifiedConversationRequest(() => processTelegramUpdateClaimedInternal(update, config, platform), 'telegram', {eventId:String(update.update_id),account:String(config?.telegramToken||'').split(':')[0],recipient:String(update.message?.chat?.id||''),order:nativeKnowledgeOrder('telegram',update)});
+  return runUnifiedConversationRequest(() => processTelegramUpdateClaimedInternal(update, config, platform), 'telegram', {eventId:String(update.update_id),account:String(config?.telegramToken||'').split(':')[0],recipient:String(update.message?.chat?.id||''),order:nativeKnowledgeOrder('telegram',update)}, !update.message?.voice && !update.message?.audio && typeof update.message?.text==='string' ? {text:update.message.text,config} : undefined);
 }
 
 async function processTelegramUpdateClaimedInternal(
@@ -26325,7 +26549,8 @@ function detectGrammaticalLatinLanguage(text?: string): string | null {
     if (matches) scores[language] += matches.length * weight;
   };
 
-  add("sv", /\b(vilka?|finns|jag|mig|du|den|det|för|någon|några)\b/gu, 2);
+  // "den" is also a German article; it cannot independently prove Swedish.
+  add("sv", /\b(vilka?|finns|jag|mig|du|det|för|någon|några)\b/gu, 2);
   add("sv", /\bjag\s+(?:vill|behöver|ska)\b/gu, 2);
   add("sv", /\b(lediga?|tider?)\b/gu, 2);
   // Complete question frames provide language evidence when the provider is unavailable.
@@ -26340,8 +26565,13 @@ function detectGrammaticalLatinLanguage(text?: string): string | null {
   add("es", /\b(horas?|disponibles?|citas?)\b/gu, 2);
   // Avoid cross-language pronouns/prepositions as standalone evidence.
   // For example, "me" is common Spanish and must not make a Spanish sentence English.
-  add("en", /\b(what|which|i|are\s+there)\b/gu, 2);
-  add("en", /\bi\s+(?:want|would\s+like)\b/gu, 2);
+  add("en", /\b(what|which|are\s+there)\b/gu, 2);
+  // Standalone "i" is also a Swedish preposition. Require English grammar
+  // around the first-person pronoun rather than counting Swedish occurrences.
+  add("en", /\bi\s+(?:am|have|will|need|can|could|should|was)\b/gu, 2);
+  // A complete first-person verb frame is grammatical evidence, like jag vill
+  // or ich möchte. Standalone Swedish preposition "i" still contributes nothing.
+  add("en", /\bi\s+(?:want|would\s+like)\b/gu, 4);
   add("en", /\b(available|times?|appointments?)\b/gu, 2);
 
   const ranked = Object.entries(scores).sort((a, b) => b[1] - a[1]);
@@ -26486,6 +26716,7 @@ function hasStrongLanguageEvidence(language: string, text?: string): boolean {
 
 function shouldAllowLatestLanguageOverride(chatId: string, previous: string | undefined, detected: string, latestText?: string): boolean {
   const text = String(latestText || "").trim();
+  if(languageSwitchDecision(text).blocksImplicit)return false;
   if (!previous || !detected || detected === previous || !text) return false;
   if (isAmbiguousShortReply(text)) return false;
   if (isThanksOnlyText(text)) return false;
@@ -26799,7 +27030,7 @@ function resolveActiveBookingLanguage(params: {
 }
 
 function getConversationLanguage(chatId: string, latestText?: string, businessConfig?: any): string {
-  const text = String(latestText || "").trim();
+  const text = languageInstructionText(String(latestText || "")).trim();
   const previous = chatLanguages[chatId];
   const storedFlowLanguage = getStoredFlowLanguage(chatId);
   const explicitSwitch = isExplicitLanguageSwitch(text);
@@ -26821,6 +27052,11 @@ function getConversationLanguage(chatId: string, latestText?: string, businessCo
           : /^(?:ar|arabic|العربية)/u.test(businessLanguageRaw) ? "ar"
             : /^(?:en|english)/.test(businessLanguageRaw) ? "en"
               : null;
+  if(languageSwitchDecision(text).blocksImplicit) {
+    const retained=storedFlowLanguage||previous||businessLanguage||'en';
+    chatLanguages[chatId]=retained;
+    return retained;
+  }
   // The customer's actual message must be evaluated before the business default.
   // Business language is only a fallback when the latest message provides no usable
   // language evidence. Otherwise a Spanish/Swedish/etc. business default can override
@@ -26882,7 +27118,7 @@ async function resolveConversationLanguageForTurn(
   latestText: string,
   businessConfig?: any,
 ): Promise<string> {
-  const text = String(latestText || "").trim();
+  const text = languageInstructionText(String(latestText || "")).trim();
 
   if (!text) {
     return getConversationLanguage(chatId, "", businessConfig);
@@ -26899,6 +27135,8 @@ async function resolveConversationLanguageForTurn(
     getStoredFlowLanguage(chatId) ||
     chatLanguages[chatId] ||
     null;
+
+  if(languageSwitchDecision(text).blocksImplicit)return getConversationLanguage(chatId,text,businessConfig);
 
   const strongDeterministic =
     detectStrongLatestLanguage(text, businessConfig);
@@ -26939,6 +27177,10 @@ async function resolveConversationLanguageForTurn(
   // A message can be written in one language while requesting replies
   // in another. A language-name mention only triggers semantic analysis;
   // it does not itself count as a switch.
+  // Invocation-local only: the later resolver asks the same semantic question.
+  // Keep its deterministic/history guards ahead of reuse, never cache by text.
+  let currentTurnSemantic: SemanticLanguageDecision | undefined;
+  const semanticBusinessId = getBusinessIdFromConfig(businessConfig);
   if (isMeaningfulLanguageMessage(text)) {
     const semantic = await resolveSemanticConversationLanguage(
       text,
@@ -26956,6 +27198,13 @@ async function resolveConversationLanguageForTurn(
       normalizeSupportedConversationLanguage(
         semantic?.language,
       );
+
+    if (typeof semantic?.confidence === "number" &&
+        Number.isFinite(semantic.confidence) && semantic.confidence >= 0.85 && semantic.confidence <= 1 &&
+        (requestedReplyLanguage || semanticCurrentLanguage)) {
+      currentTurnSemantic = Object.freeze({ language: semanticCurrentLanguage,
+        requestedReplyLanguage, confidence: semantic.confidence });
+    }
 
     if (
       requestedReplyLanguage &&
@@ -27041,7 +27290,12 @@ async function resolveConversationLanguageForTurn(
     preservePrevious: false,
     semanticEligible: true,
     semanticResolver: (candidateText) =>
-      resolveSemanticConversationLanguage(
+      currentTurnSemantic && candidateText === text &&
+      getBusinessIdFromConfig(businessConfig) === semanticBusinessId &&
+      (getStoredFlowLanguage(chatId) || chatLanguages[chatId] || null) === previous &&
+      !nativeKnowledgeTiming()?.failure
+        ? Promise.resolve(currentTurnSemantic)
+        : resolveSemanticConversationLanguage(
         candidateText,
         previous,
         businessConfig,
@@ -27274,6 +27528,7 @@ async function recordAppointmentFromBooking(params: {
   durationMinutes?: number;
   language: string;
 }): Promise<any | null> {
+  denyTrialAction();
   if (priority1hTestDependencies?.recordAppointment) return priority1hTestDependencies.recordAppointment(params);
   if (!supabase) {
     console.error("Appointment DB insert skipped: Supabase client is not configured.");
@@ -28428,6 +28683,7 @@ async function sendAppointmentReminder(
   reminderType: "24h" | "2h",
   suppliedBusinessConfig?: any
 ): Promise<ReminderDeliveryResult> {
+  denyTrialAction();
   let businessConfig = suppliedBusinessConfig || await loadBusinessConfigById(appointment.business_id);
   const businessId = String(appointment.business_id || "").trim();
   const platform = normalizePlatformName(String(appointment.platform || ""));
@@ -28881,6 +29137,7 @@ async function sendInstagramMessage(
   outboundContext: MetaOutboundContext,
   reminderDelivery: boolean = false,
 ) {
+  if(trialEnforced()&&outboundContext!=='conversation')return false;
   if (outboundContext === 'conversation') {
     const secured = await securePublicationReply(text);
     if (secured === null) return false;
@@ -28902,7 +29159,7 @@ async function sendInstagramMessage(
 
   try {
     const endpoint = 'https://graph.instagram.com/v25.0/me/messages';
-    const response = await timeBusinessInformationDelivery(outboundContext === "conversation" ? sessionId || "" : "", () => fetch(`${endpoint}?access_token=${encodeURIComponent(token)}`, {
+    const response = await timeBusinessInformationDelivery(outboundContext === "conversation" ? sessionId || "" : "", () => fetchNativeKnowledgeText(`${endpoint}?access_token=${encodeURIComponent(token)}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
@@ -28943,6 +29200,7 @@ function getPublicBaseUrl() {
 }
 
 async function createInstagramVoiceReplyFile(text: string) {
+  denyTrialAction();
   const EdgeTTS = (await import('node-edge-tts')).EdgeTTS;
   const voiceCode = detectTtsVoiceCode(text);
   const audioDir = '/tmp/clinicpilot_ig_audio';
@@ -29022,6 +29280,7 @@ async function downloadInstagramAudio(audioUrl: string, accessToken?: string) {
 
 
 async function sendInstagramAudioMessage(recipientId: string, audioUrl: string, accessToken?: string) {
+  denyTrialAction();
   if (requestSecurity.evidence && (!requestSecurity.current() || !await requestEvidenceCurrent() || !requestSecurity.current())) return false;
   const token = cleanInstagramToken(accessToken);
   if (!token) {
@@ -29186,6 +29445,7 @@ async function sendWhatsAppMessage(
   businessConfig: any,
   outboundContext: MetaOutboundContext,
 ) {
+  if(trialEnforced()&&outboundContext!=='conversation')return false;
   if (outboundContext === 'conversation') {
     const secured = await securePublicationReply(text);
     if (secured === null) return false;
@@ -29218,7 +29478,7 @@ async function sendWhatsAppMessage(
   };
 
   try {
-    const response = await timeBusinessInformationDelivery(outboundContext === "conversation" ? getScopedChannelSessionId("whatsapp", recipient, businessConfig, phoneNumberId) : "", () => fetch(`https://graph.facebook.com/v25.0/${phoneNumberId}/messages`, {
+    const response = await timeBusinessInformationDelivery(outboundContext === "conversation" ? getScopedChannelSessionId("whatsapp", recipient, businessConfig, phoneNumberId) : "", () => fetchNativeKnowledgeText(`https://graph.facebook.com/v25.0/${phoneNumberId}/messages`, {
       method: "POST",
       headers: {
         "Authorization": `Bearer ${token}`,
@@ -29274,7 +29534,7 @@ async function processWhatsAppMessage(message: any, metadata: any, config: any, 
 }
 
 async function processWhatsAppMessageClaimed(message: any, metadata: any, config: any, platform: string = "whatsapp-webhook") {
-  return runUnifiedConversationRequest(() => processWhatsAppMessageClaimedInternal(message, metadata, config, platform), 'whatsapp', {eventId:String(message.id||''),account:String(metadata.phone_number_id||''),recipient:canonicalWhatsAppProviderCustomerId(message.from),order:nativeKnowledgeOrder('whatsapp',message)});
+  return runUnifiedConversationRequest(() => processWhatsAppMessageClaimedInternal(message, metadata, config, platform), 'whatsapp', {eventId:String(message.id||''),account:String(metadata.phone_number_id||''),recipient:canonicalWhatsAppProviderCustomerId(message.from),order:nativeKnowledgeOrder('whatsapp',message)}, message.type==='text' && typeof message.text?.body==='string' ? {text:message.text.body,config} : undefined);
 }
 
 async function processWhatsAppMessageClaimedInternal(message: any, metadata: any, config: any, platform: string = "whatsapp-webhook") {
@@ -29591,14 +29851,14 @@ async function processWhatsAppMessageClaimedInternal(message: any, metadata: any
       return;
     }
     if (
-      shouldReturnWhatsAppAmbiguousClarification(chatId, whatsappIntent, textMessage) &&
+      shouldReturnWhatsAppAmbiguousClarification(chatId, whatsappIntent, textMessage, businessConfig) &&
       !isDeterministicActiveNewBookingContinuation(chatId, textMessage)
     ) {
       await replyWhatsAppOnce(formatAmbiguousBookingIntentClarification(userLanguage));
       return;
     }
 
-    const clearlyNonBookingTurn = !shouldDispatchWhatsAppUnifiedBooking(chatId, textMessage, whatsappIntent);
+    const clearlyNonBookingTurn = !shouldDispatchWhatsAppUnifiedBooking(chatId, textMessage, whatsappIntent, businessConfig);
 
     if (!clearlyNonBookingTurn && !whatsappUnifiedAttempted) {
       const unifiedHandled = await handleUnifiedBookingEngine({
@@ -29949,6 +30209,7 @@ async function sendMessengerMessage(
   reminderDelivery: boolean = false,
   reminderAuthorization?: MessengerReminderAuthorization,
 ) {
+  if(trialEnforced()&&outboundContext!=='conversation')return false;
   if (outboundContext === 'conversation') {
     const secured = await securePublicationReply(text);
     if (secured === null) return false;
@@ -29998,7 +30259,7 @@ async function sendMessengerMessage(
     const endpoint = reminderDelivery
       ? `https://graph.facebook.com/v25.0/${encodeURIComponent(pageId)}/messages`
       : `https://graph.facebook.com/v25.0/me/messages?access_token=${encodeURIComponent(token)}`;
-    const response = await timeBusinessInformationDelivery(outboundContext === "conversation" ? getScopedChannelSessionId("messenger", recipientId, businessConfig, getBusinessMessengerPageId(businessConfig)) : "", () => fetch(endpoint, {
+    const response = await timeBusinessInformationDelivery(outboundContext === "conversation" ? getScopedChannelSessionId("messenger", recipientId, businessConfig, getBusinessMessengerPageId(businessConfig)) : "", () => fetchNativeKnowledgeText(endpoint, {
       method: "POST",
       ...(reminderDelivery ? { redirect: "error" as const } : {}),
       headers: { "Content-Type": "application/json", ...(reminderDelivery ? { Authorization: `Bearer ${token}` } : {}) },
@@ -30116,6 +30377,7 @@ async function debugPublicAudioUrl(audioUrl: string) {
 }
 
 async function createMessengerVoiceReplyFile(text: string) {
+  denyTrialAction();
   if (process.env.NODE_ENV === 'test' && priority1hTestDependencies?.messengerVoiceReply) return priority1hTestDependencies.messengerVoiceReply(text);
   const EdgeTTS = (await import("node-edge-tts")).EdgeTTS;
   const voiceCode = detectTtsVoiceCode(text);
@@ -30172,6 +30434,7 @@ async function messengerAudioTextCurrent(text: string): Promise<boolean> {
 
 async function sendMessengerAudioMessage(recipientId: string, audioUrl: string, businessConfig: any,
   authorization?: { text: string; onAttempt: () => void }) {
+  denyTrialAction();
   // Knowledge audio must carry the exact text used for TTS, never legacy document-only authority.
   if (knowledgeTurnScope.getStore()?.budget && !authorization) return false;
   if (authorization && !await messengerAudioTextCurrent(authorization.text)) return false;
@@ -30494,6 +30757,7 @@ function getCommentAccessTokens(source: "instagram" | "facebook", businessConfig
 }
 
 async function sendMetaCommentReply(commentId: string, text: string, tokens: string[] | string, source: "instagram" | "facebook") {
+  denyTrialAction();
   const tokenList = Array.isArray(tokens) ? tokens : uniqueNonEmpty([tokens]);
   if (!commentId || !text || tokenList.length === 0) {
     console.error("[CommentReply] skipped", {
@@ -30735,7 +30999,7 @@ async function processMessengerUpdate(webhookEvent: any, config: any, platform: 
 }
 
 async function processMessengerUpdateClaimed(webhookEvent: any, config: any, platform: string = "messenger-webhook") {
-  return runUnifiedConversationRequest(() => processMessengerUpdateClaimedInternal(webhookEvent, config, platform), 'messenger', {eventId:String(webhookEvent.message?.mid||''),account:String(webhookEvent.recipient?.id||''),recipient:String(webhookEvent.sender?.id||''),order:nativeKnowledgeOrder('messenger',webhookEvent)});
+  return runUnifiedConversationRequest(() => processMessengerUpdateClaimedInternal(webhookEvent, config, platform), 'messenger', {eventId:String(webhookEvent.message?.mid||''),account:String(webhookEvent.recipient?.id||''),recipient:String(webhookEvent.sender?.id||''),order:nativeKnowledgeOrder('messenger',webhookEvent)}, typeof webhookEvent.message?.text==='string' && !webhookEvent.message?.attachments?.length ? {text:webhookEvent.message.text,config} : undefined);
 }
 
 async function processMessengerUpdateClaimedInternal(webhookEvent: any, config: any, platform: string = "messenger-webhook") {
@@ -31392,7 +31656,7 @@ function isSupportedInstagramConversationalEvent(webhookEvent: any): boolean {
 }
 
 async function processInstagramUpdateClaimed(webhook_event: any, config: any, platform: string = "instagram-webhook") {
-  return runUnifiedConversationRequest(() => processInstagramUpdateClaimedInternal(webhook_event, config, platform), 'instagram', {eventId:String(webhook_event.message?.mid||''),account:String(webhook_event.recipient?.id||''),recipient:String(webhook_event.sender?.id||''),order:nativeKnowledgeOrder('instagram',webhook_event)});
+  return runUnifiedConversationRequest(() => processInstagramUpdateClaimedInternal(webhook_event, config, platform), 'instagram', {eventId:String(webhook_event.message?.mid||''),account:String(webhook_event.recipient?.id||''),recipient:String(webhook_event.sender?.id||''),order:nativeKnowledgeOrder('instagram',webhook_event)}, typeof webhook_event.message?.text==='string' && !webhook_event.message?.attachments?.length ? {text:webhook_event.message.text,config} : undefined);
 }
 
 async function processInstagramUpdateClaimedInternal(webhook_event: any, config: any, platform: string = "instagram-webhook") {
@@ -32357,9 +32621,12 @@ Never translate unless requested.
 
 async function startServer() {
 
+  await monetaryBootstrap;
+  if(trialModeOn()) {try{await installControlledTrial(supabase??undefined);}catch{console.error('[ControlledTrial]',{status:'blocked'});}}
   const PORT = Number(process.env.PORT) || 3000;
   const app = express();
   registerHealthEndpoint(app);
+  app.use((req,res,next)=>trialHttpAllowed(req.path)?next():res.sendStatus(403));
   app.use('/api/businesses/:businessId/knowledge/documents', documentRouter(documentService, createRequireAuth(), createRequireBusinessPermission('business.read'), createRequireBusinessPermission('settings.manage')));
   app.use('/api', createWebsiteKnowledgeRouter({
     chat: processWebChat,
@@ -32391,7 +32658,7 @@ async function startServer() {
       resolveBusinessId: (request) => request.body?.businessId ?? request.body?.business_id,
     });
 
-  const whatsappProvisioning = supabase && process.env.WHATSAPP_TEMPLATE_PROVISIONING_ENABLED === 'true'
+  const whatsappProvisioning = !trialModeOn() && supabase && process.env.WHATSAPP_TEMPLATE_PROVISIONING_ENABLED === 'true'
     ? createWhatsAppProvisioningRuntime(supabase) : null;
   if (whatsappProvisioning) {
     cron.schedule('* * * * *', () => {
@@ -32794,7 +33061,7 @@ app.get('/api/businesses', requireAuth, async (req, res) => {
 });
 
 
-startDocumentRecovery(documentService);
+if(!trialModeOn())startDocumentRecovery(documentService);
 
 // Tenant-safe Knowledge API for dashboard-managed business information.
 app.get(
@@ -35618,11 +35885,10 @@ Generate the final production-ready system prompt now.
       });
 
       // Setup cron
-      setupDailyReminders();
-      setupBookingResultOutboxWorker();
+      if(!trialModeOn()){setupDailyReminders();setupBookingResultOutboxWorker();}
       try {
         const nativeControls=nativeAsyncControls();
-        const runtime=(nativeControls.processing || nativeControls.delivery)
+        const runtime=!trialModeOn() && (nativeControls.processing || nativeControls.delivery)
           ? getNativeKnowledgeRuntime()
           : null;
         runtime?.start();
@@ -36275,6 +36541,10 @@ export const priority1hUnifiedEngineTestBoundary = {
   formatReminder(appointment: any, businessConfig: any, reminderType: "24h" | "2h") {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
     return formatReminderMessage(appointment, businessConfig, reminderType);
+  },
+  formatServiceDuration(language: string, service: string, durationMinutes: number | null) {
+    if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");
+    return formatServiceDurationReply(language, service, durationMinutes);
   },
   resolveBookingContactPhrase(params: {
     text: string;

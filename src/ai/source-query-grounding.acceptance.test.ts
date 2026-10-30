@@ -19,6 +19,8 @@ test('shared Website information path uses original + measured source query, act
  for(const [i,e] of entries.filter(e=>e.input.kind==='document').entries()){
   const d=documentChunks([{text:e.input.text,section:'SavedCalibration'}],e.input.filename||e.input.role);
   await storage.create({id:'source-'+i,businessId:77,type:'document',status:'ready',title:e.input.filename||e.input.role,content:d.content,metadata:d.metadata,createdAt:'2026',updatedAt:'2026'});
+  await storage.replaceChunks(77,'source-'+i,d.chunks.map(c=>({chunkIndex:Number(c.chunk_index),content:String(c.content),metadata:c.metadata as any})));
+  storage.completeSemanticIndex(77,'source-'+i,storage.indexSnapshot(77,'source-'+i)!,d.chunks.map(()=>e.vector));
  }
  const service=new KnowledgeService(storage,storage,{supportsLocalSemanticSearch:true,embedQuery:async()=>{throw Error('Use batched query path');},embedDocuments:async texts=>texts.map(text=>{const e=entries.find(e=>e.input.text===text);assert.ok(e);return e.vector;})});
  const retrieval:any[]=[];const requests:any[]=[];const forbidden=async()=>{assert.fail('Information turns cannot execute tools');};

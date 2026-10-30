@@ -55,15 +55,15 @@ test('compound answer names only the unresolved literal aspect',async()=>{
  assert.ok(manifest.text.includes('Regarding “digital meetings”'));assert.ok(manifest.text.includes('Parking is nearby.'));assert.equal(manifest.text.includes('1. '),false);
  assert.equal(manifest.text.includes('Regarding “recommendation”'),false);assert.equal(calls.length,3);
 });
-test('composer failure retains immutable facts and the same uncertainty',async()=>{
+test('direct multi-unit presentation skips an unnecessary failing composer and retains facts and uncertainty',async()=>{
  const {manifest,calls}=await answer({secondFact:'Visits are arranged by agreement.',composerFails:true});
  assert.ok(manifest.text.includes(languages[1][2]));assert.ok(manifest.text.includes('Visits are arranged by agreement.'));assert.ok(manifest.text.includes('permitted'));
- assert.equal(manifest.presentationFallback,true);assert.equal(calls.length,3);
+ assert.equal(manifest.presentationFallback,false);assert.equal(manifest.presentationPath,'direct_verified_units');assert.equal(manifest.fallbackReason,null);assert.deepEqual(calls,['extraction','verification']);
 });
 test('partial source revocation rerenders without stale prose or another provider call',async()=>{
  const {manifest,calls,evidence}=await answer({secondFact:'Visits are arranged by agreement.'});
  const pruned=pruneAnswerManifest(manifest,evidence.filter(e=>e.sourceId==='recommendation'));
- assert.ok(pruned.text.includes(languages[1][2]));assert.equal(pruned.text.includes('Visits are arranged by agreement.'),false);assert.ok(pruned.text.includes('permitted'));assert.equal(calls.length,3);
+ assert.ok(pruned.text.includes(languages[1][2]));assert.equal(pruned.text.includes('Visits are arranged by agreement.'),false);assert.ok(pruned.text.includes('permitted'));assert.deepEqual(calls,['extraction','verification']);assert.equal(manifest.outcomes[0].status,'PARTIAL');assert.equal(pruned.outcomes[0].status,'PARTIAL');assert.equal(pruned.units.length,1);assert.equal(pruned.units[0].verification,'ENTAILED');assert.equal(pruned.units[0].evidenceRefs[0].version,'v1');
 });
 test('missing material facts do not create a fictitious unresolved permission',async()=>{
  const {manifest}=await answer({planner:[{subject:'visits',attribute:'recommendation',questionType:'recommendation'}],coverage:rows=>rows.map(r=>({...r,materialFactsComplete:false}))});
@@ -139,13 +139,14 @@ for(const durable of [false,true])test(`${durable?'durable coverage stop':'foreg
  const {manifest,calls}=await answer({requireCompleteCoverage:durable,secondFact:'Visits are arranged by agreement.',
   planner:[{subject:'visits',attribute:'recommendation',questionType:'recommendation'}],
   coverage:rows=>rows.map(r=>({...r,materialFactsComplete:false,obligations:r.obligations.map((o:any)=>({...o,status:'UNRESOLVED',unitIds:r.materialUnitIds}))}))});
- assert.deepEqual(calls,durable?['extraction','verification']:['extraction','verification','composition']);
+ assert.deepEqual(calls,['extraction','verification']);
+ assert.equal(manifest.presentationPath,durable?'fallback':'direct_verified_units');
  assert.equal(manifest.outcomes[0].status,'PARTIAL');assert.equal(manifest.outcomes[0].requestAligned,true);
  assert.equal(manifest.outcomes[0].materialFactsComplete,false);assert.equal(manifest.outcomes[0].obligations[0].status,'UNRESOLVED');
  assert.deepEqual(manifest.outcomes[0].materialUnitIds,['u1','u2']);assert.equal(manifest.units.length,2);
  assert.ok(manifest.units.every(u=>u.verification==='ENTAILED'));assert.ok(manifest.units.every(u=>u.evidenceRefs[0].version==='v1'));
 });
-test('durable coverage stop: complete multi-unit answer retains successful composition',async()=>{
+test('durable coverage stop: complete one-facet multi-unit answer retains direct verified presentation',async()=>{
  const {manifest,calls}=await answer({requireCompleteCoverage:true,secondFact:'Visits are arranged by agreement.',planner:[{subject:'visits',attribute:'recommendation',questionType:'recommendation'}]});
- assert.deepEqual(calls,['extraction','verification','composition']);assert.equal(manifest.outcomes[0].status,'VERIFIED');assert.equal(manifest.presentationPath,'composed');
+ assert.deepEqual(calls,['extraction','verification']);assert.equal(manifest.outcomes[0].status,'VERIFIED');assert.equal(manifest.presentationPath,'direct_verified_units');assert.equal(manifest.presentationFallback,false);assert.equal(manifest.fallbackReason,null);assert.equal(manifest.units.length,2);assert.ok(manifest.text.includes(languages[1][2]));assert.ok(manifest.text.includes('Visits are arranged by agreement.'));assert.ok(manifest.units.every(u=>u.verification==='ENTAILED'&&u.evidenceRefs[0].version==='v1'));
 });

@@ -39,21 +39,26 @@ function sdkMocks(t: any) {
   });
   return { inputs, googleCalls: () => googleCalls };
 }
+async function seedCompleted(storage:InMemoryKnowledgeStorage,s:KnowledgeSource,axis=0){
+ await storage.create(s);await storage.replaceChunks(s.businessId,s.id,[{chunkIndex:0,content:s.content,metadata:{}}]);
+ storage.completeSemanticIndex(s.businessId,s.id,storage.indexSnapshot(s.businessId,s.id)!,[{provider:'openai',model:'text-embedding-3-small',dimensions:768,version:1,values:values(axis)}]);
+}
 async function fixture() {
   const storage = new InMemoryKnowledgeStorage();
   const provider = new ConfiguredEmbeddingProvider(() => "google-test-secret");
   const service = new KnowledgeService(storage, storage, provider);
-  await storage.create(source("parking")); // Pre-existing corpus, with no OpenAI index.
-  await storage.replaceChunks(77, "parking", [{ chunkIndex: 0, content: source("parking").content, metadata: {} }]);
+  await storage.create(source("parking"));
+  await seedCompleted(storage,source("parking"));
   return { storage, service, provider };
 }
 
-test("OpenAI semantic search works on pre-existing knowledge, preserves evidence, never calls Gemini", async (t) => {
+test("OpenAI semantic search uses a completed persistent generation, preserves evidence, never calls Gemini", async (t) => {
   const sdk = sdkMocks(t);
   const { service } = await fixture();
   const matches = await service.semanticSearch(77, "Where can I leave my car?");
-  assert.deepEqual(matches, [{ sourceId: "parking", businessId: 77, text: "Customer parking is behind the studio.", metadata: {}, score: 1 }]);
-  assert.deepEqual(sdk.inputs, [["Where can I leave my car?"], ["Customer parking is behind the studio."]]);
+  assert.deepEqual(matches.map(({sourceId,businessId,text,score})=>({sourceId,businessId,text,score})), [{ sourceId: "parking", businessId: 77, text: "Customer parking is behind the studio.", score: 1 }]);
+  assert.ok(matches[0].metadata?.sourceRevision);assert.ok(matches[0].indexProof?.source.ready);
+  assert.deepEqual(sdk.inputs, [["Where can I leave my car?"]]);
   assert.equal(sdk.googleCalls(), 0);
 });
 
@@ -78,15 +83,17 @@ test("OpenAI tenant isolation rejects foreign and unready sources even from malf
   assert.equal(sdk.googleCalls(), 0);
 });
 
-test("compatible cache is tenant scoped, reused, and invalidated on source changes/deletion", async (t) => {
+test("completed index is tenant scoped, reused, and invalidated on source changes/deletion", async (t) => {
   const sdk = sdkMocks(t);
   const { service, storage } = await fixture();
-  await storage.create(source("business-b", 88, "ready", "Business B parking is outside."));
+  await seedCompleted(storage,source("business-b", 88, "ready", "Business B parking is outside."));
   await service.semanticSearch(77, "parking");
   await service.semanticSearch(77, "parking");
-  assert.equal(sdk.inputs.length, 3); // Two queries, one corpus embedding.
+  assert.equal(sdk.inputs.length, 2); // Two query requests, zero corpus embedding.
   assert.equal((await service.semanticSearch(88, "parking"))[0].sourceId, "business-b");
   await storage.create(source("parking", 77, "ready", "Parking changed to courtyard."));
+  assert.deepEqual(await service.semanticSearch(77, "parking"), [],'Changed source waits for off-request indexing');
+  await seedCompleted(storage,source("parking",77,"ready","Parking changed to courtyard."));
   assert.match((await service.semanticSearch(77, "parking"))[0].text!, /courtyard/);
   await storage.delete(77, "parking");
   assert.deepEqual(await service.semanticSearch(77, "parking"), []);
@@ -103,23 +110,24 @@ test("source disabled during embedding is never returned as evidence", async (t)
 test("cosine threshold filters unrelated chunks and respects result limit", async (t) => {
   sdkMocks(t);
   const { service, storage } = await fixture();
-  await storage.create(source("unrelated", 77, "ready", "unrelated knowledge"));
-  await storage.create(source("second", 77, "ready", "Parking available outside."));
+  await seedCompleted(storage,source("unrelated", 77, "ready", "unrelated knowledge"),1);
+  await seedCompleted(storage,source("second", 77, "ready", "Parking available outside."));
   assert.deepEqual((await service.semanticSearch(77, "parking", 1)).map((match) => match.sourceId), ["parking"]);
   assert.equal((await service.semanticSearch(77, "parking", 10)).length, 2);
 });
 
-for (const stage of ["query", "documents"] as const) {
+for (const stage of ["query", "persistent search"] as const) {
   test(`OpenAI ${stage} failure preserves lexical fallback, never invokes Gemini, and logs no payload`, async (t) => {
     const sdk = sdkMocks(t);
-    const { service } = await fixture();
+    const { service,storage } = await fixture();
     const logs: unknown[][] = [];
     t.mock.method(console, "warn", (...args: unknown[]) => logs.push(args));
     let count = 0;
     t.mock.method(Embeddings.prototype, "create", async () => {
-      if (++count === (stage === "query" ? 1 : 2)) throw new Error("sk-test-secret customer-prompt business-private-knowledge");
+      if (++count === 1 && stage === "query") throw new Error("sk-test-secret customer-prompt business-private-knowledge");
       return { data: [{ index: 0, embedding: values() }] };
     });
+    if(stage==='persistent search')t.mock.method(storage,'persistentSemanticSearch',async()=>{throw new Error('synthetic storage failure');});
     assert.deepEqual(await service.semanticSearch(77, "customer-prompt"), []);
     assert.equal((await service.search(77, "parking"))[0].sourceId, "parking");
     assert.equal(sdk.googleCalls(), 0);
@@ -202,7 +210,7 @@ for (const compound of [false, true]) {
   test(`OpenAI semantic evidence preserves grounded ${compound ? "compound service/recommendation" : "factual service"} behavior`, async (t) => {
     const sdk = sdkMocks(t);
     const { service, storage } = await fixture();
-    await storage.create(source("service-policy", 77, "ready", "Bring photo ID for Intro Facial."));
+    await seedCompleted(storage,source("service-policy", 77, "ready", "Bring photo ID for Intro Facial."));
     t.mock.method(Responses.prototype, "create", async () => ({ output_text: '{"canonicalMeaning":"services","queries":["facial"]}' }));
     boundary.configure({
       knowledgeSearch: (businessId: number, query: string, limit: number) => service.search(businessId, query, limit),

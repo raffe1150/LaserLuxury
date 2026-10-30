@@ -168,7 +168,9 @@ for(const kind of ['complete','optional-omitted','material-conjunct-missing','co
     if(stage==='extraction'||stage==='verification'){
      assert.equal(data.question,equipmentQuestion);assert.equal(data.facets[0].obligations[0].description,equipmentQuestion);
      assert.equal(data.evidence[0].text,equipmentEvidence[0].text,'No source clause is dropped or replaced');
-     assert.match(instruction,/Direct obligations:/);assert.match(instruction,/Necessary qualifications:/);assert.match(instruction,/Optional supplements:/);
+     // Behavior below checks direct obligations, conditions and optional details.
+     // The two stage contracts need not repeat the same editorial headings.
+     assert.equal(instruction,stage==='extraction'?FOREGROUND_UNIT_EXTRACTION_INSTRUCTION:FOREGROUND_UNIT_VERIFICATION_INSTRUCTION);
     }
     if(stage==='extraction')return{text:JSON.stringify({oversized:false,units})};
     if(stage==='composition')return{text:JSON.stringify({unitIds:data.units.map((u:any)=>u.id),prefix:'none',addition:false})};

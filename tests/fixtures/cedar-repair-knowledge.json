@@ -1,0 +1,17 @@
+{
+  "businessId": 88,
+  "businessName": "Cedar Repair Lab",
+  "services": [
+    {"name": "Remote Assessment", "price": 145, "currency": "EUR", "durationMinutes": 25, "active": true}
+  ],
+  "documents": [
+    {
+      "sourceId": "cedar-visitor-guide",
+      "text": "Photo briefings provide initial orientation only. A photo briefing does not automatically replace a workshop inspection. Safety-critical faults cannot be assessed from photographs. Visitors should bring the device serial number if one is available."
+    },
+    {
+      "sourceId": "cedar-loan-policy",
+      "text": "Loan equipment must be returned within 3 days. Extensions require prior staff approval. The laboratory does not offer courier collection."
+    }
+  ]
+}

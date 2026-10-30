@@ -1,6 +1,30 @@
 import type { UnifiedAiStructuredOutputRequest } from './providers/provider';
 import { NATURAL_FLAGS } from './grounded-knowledge-composition';
 import { compactVerificationEnabled, compactVerificationSchema, COMPACT_VERIFICATION_NAME } from './knowledge-compact-verification';
+import { COVERAGE_WITNESS_PROTOCOL, COVERAGE_WITNESS_SCHEMA_NAME, coverageWitnessSchema, type CoverageWitnessAssessment } from './knowledge-coverage-witness';
+
+export type KnowledgeVerificationProtocol = 'v2' | 'compact-v1' | typeof COVERAGE_WITNESS_PROTOCOL;
+export type KnowledgeExtractionProtocol = 'v2' | 'literal-evidence-v1';
+export function assertKnowledgeExtractionProtocol(value:unknown):asserts value is KnowledgeExtractionProtocol {
+  if(value!=='v2'&&value!=='literal-evidence-v1')throw Error('unsupported_knowledge_extraction_protocol');
+}
+/** Backend configuration, captured once; never selected by a model or customer. */
+export function selectKnowledgeExtractionProtocol():KnowledgeExtractionProtocol {
+  const value=process.env.ODINLINK_KNOWLEDGE_EXTRACTION_PROTOCOL??'v2';
+  assertKnowledgeExtractionProtocol(value);return value;
+}
+/** Backend configuration only. Capture once before request work; never select
+ * from model output, customer text, or a later environment read. */
+export function selectKnowledgeVerificationProtocol(): KnowledgeVerificationProtocol {
+  const configured = process.env.ODINLINK_KNOWLEDGE_VERIFIER_PROTOCOL;
+  if (configured === undefined) return compactVerificationEnabled() ? 'compact-v1' : 'v2';
+  if (configured !== 'v2' && configured !== COVERAGE_WITNESS_PROTOCOL) throw new Error('unsupported_knowledge_verifier_protocol');
+  if (compactVerificationEnabled()) throw new Error('conflicting_knowledge_verifier_protocols');
+  return configured;
+}
+export function assertKnowledgeVerificationProtocol(protocol: KnowledgeVerificationProtocol): void {
+  if (!['v2','compact-v1',COVERAGE_WITNESS_PROTOCOL].includes(protocol)) throw new Error('unsupported_knowledge_verifier_protocol');
+}
 
 export const KNOWLEDGE_SCHEMA_VERSION = 'evidence-first-v2';
 export const QUESTION_TYPES = ['description', 'recommendation', 'requirement', 'permission', 'prohibition'] as const;
@@ -17,10 +41,11 @@ export const DECISION_REASONS = [
   'NO_EVIDENCE', 'NO_PARSED_UNITS', 'NO_VERIFIED_UNITS', 'CONTEXT_INVALID', 'SOURCE_INVALID', 'SOURCE_CURRENT', 'SOURCE_CHANGED', 'SOURCE_SCOPE',
   'SOURCE_MISSING_OR_UNAUTHORIZED', 'SOURCE_NOT_READY', 'SOURCE_REVISION', 'SOURCE_CHUNK', 'SOURCE_QUARANTINED', 'VALIDATOR_ERROR',
   'REFUSAL', 'TRUNCATED', 'BLOCKED', 'MALFORMED_RESPONSE', 'PROVIDER_FAILURE', 'DEADLINE', 'BUDGET_EXHAUSTED', 'TOOL_OUTPUT',
-  'DIRECT_SINGLE_UNIT', 'COMPOSED', 'COMPOSER_FALLBACK', 'COMPOSER_SKIPPED_BUDGET', 'LEGACY_ROUTE', 'PUBLICATION_SUPPRESSED',
+  'DIRECT_SINGLE_UNIT', 'DIRECT_VERIFIED_UNITS', 'COMPOSED', 'COMPOSER_FALLBACK', 'COMPOSER_SKIPPED_BUDGET', 'LEGACY_ROUTE', 'PUBLICATION_SUPPRESSED',
   'NATURAL_ACCEPTED', 'NATURAL_PROPOSAL_INVALID', 'NATURAL_CONTRACT_INVALID', 'NATURAL_BINDINGS', 'NATURAL_REPETITION', 'NATURAL_IDENTIFIER',
   'NATURAL_VERDICT_INVALID', 'NATURAL_SEMANTIC_REJECTION', 'NATURAL_COVERAGE_REJECTION', 'NATURAL_SINGLE_PARTIAL_DISABLED', 'NATURAL_TIMEOUT',
   'PUBLICATION_RESERVE', 'SOURCE_UNAVAILABLE', 'STAGE_ADMISSION', 'LITERAL_REQUEST_FALLBACK', 'LITERAL_REQUEST_DIRECT',
+  'COVERAGE_WITNESS_VALID', 'COVERAGE_WITNESS_UNKNOWN', 'COVERAGE_WITNESS_INVALID',
 ] as const;
 export type DecisionReason = typeof DECISION_REASONS[number];
 export type KnowledgeDecision = {
@@ -42,6 +67,8 @@ export type KnowledgeDecision = {
   route?: 'verified_manifest' | 'partial_manifest' | 'unavailable' | 'suppressed' | 'legacy';
   providerAttempted?: boolean;
   admission?: ReturnType<typeof verificationAdmissionDiagnostic>;
+  verificationProtocol?: KnowledgeVerificationProtocol;
+  coverageWitness?: CoverageWitnessAssessment;
 };
 
 /** Snapshot the existing remaining-minus-reserve guard and trace atomically. */
@@ -62,7 +89,7 @@ export function knowledgeDiagnosticFailure(event: KnowledgeDecision) {
   if (['MALFORMED_JSON', 'MALFORMED_ARRAY', 'MALFORMED_RESPONSE', 'INVALID_FIELDS',
     'MISSING_VERDICT', 'DUPLICATE_VERDICT', 'WRONG_VERDICT_ID', 'INVALID_RELATION', 'INVALID_FLAGS', 'NATURAL_VERDICT_INVALID'].includes(event.reason)) return 'decoder_failure';
   if (['MISSING_COVERAGE', 'INVALID_COVERAGE', 'REQUEST_OBLIGATIONS_MISSING', 'MATERIAL_FACTS_MISSING',
-    'OBLIGATION_UNRESOLVED', 'NATURAL_COVERAGE_REJECTION'].includes(event.reason)) return 'incomplete_coverage';
+    'OBLIGATION_UNRESOLVED', 'NATURAL_COVERAGE_REJECTION', 'COVERAGE_WITNESS_UNKNOWN', 'COVERAGE_WITNESS_INVALID'].includes(event.reason)) return 'incomplete_coverage';
   if (['SOURCE_INVALID', 'SOURCE_CHANGED', 'SOURCE_SCOPE', 'SOURCE_MISSING_OR_UNAUTHORIZED', 'SOURCE_NOT_READY',
     'SOURCE_REVISION', 'SOURCE_CHUNK', 'SOURCE_QUARANTINED', 'VALIDATOR_ERROR', 'SOURCE_UNAVAILABLE'].includes(event.reason)) return 'source_invalidation';
   if (event.stage === 'verification' && ['UNKNOWN', 'CONTRADICTED', 'NOT_APPLICABLE', 'MEANING_CHANGED',
@@ -104,23 +131,39 @@ const naturalValidation = object({contractHash:str,proposalHash:str,
   unitCoverage:array(object({unitId:str,blockIds:array(str),complete:bool})),obligationCoverage:array(object({obligationId:str,blockIds:array(str),accurate:bool})),
   flags:object(Object.fromEntries(NATURAL_FLAGS.map(key=>[key,bool])))});
 export function knowledgeStructuredOutput(stage: keyof typeof schemas|'presentation_verification', natural=false,
-  allowedFacetIds?: readonly string[]): UnifiedAiStructuredOutputRequest {
-  if(stage==='verification'&&compactVerificationEnabled())return{name:COMPACT_VERIFICATION_NAME,strict:true,schema:compactVerificationSchema()};
+  allowedFacetIds?: readonly string[], maximumUnits=6, verificationProtocol?: KnowledgeVerificationProtocol,
+  extractionProtocol:KnowledgeExtractionProtocol='v2'): UnifiedAiStructuredOutputRequest {
+  assertKnowledgeExtractionProtocol(extractionProtocol);
+  if(stage==='verification') {
+    const protocol = verificationProtocol ?? selectKnowledgeVerificationProtocol();
+    assertKnowledgeVerificationProtocol(protocol);
+    if(protocol==='compact-v1')return{name:COMPACT_VERIFICATION_NAME,strict:true,schema:compactVerificationSchema()};
+    if(protocol===COVERAGE_WITNESS_PROTOCOL)return{name:COVERAGE_WITNESS_SCHEMA_NAME,strict:true,schema:coverageWitnessSchema(schemas.verification)};
+  }
   if(stage==='presentation_verification')return{name:'odinlink_natural_validation_v1',strict:true,schema:naturalValidation};
   // Request-local enum, never a shared-schema mutation or a parser repair.
   // Existing callers without a captured facet set retain their wire contract.
-  let extraction = schemas.extraction;
+  const literal=extractionProtocol==='literal-evidence-v1';
+  let extraction:ReturnType<typeof object> = schemas.extraction;
+  if(stage==='extraction'&&literal)extraction=object({...schemas.extraction.properties,units:array(object({
+    ...extractionUnit.properties,evidenceRefs:array(object({evidenceId:str})),
+  }))});
   if(stage==='extraction' && allowedFacetIds!==undefined) {
     if(!allowedFacetIds.length || allowedFacetIds.length>4 || new Set(allowedFacetIds).size!==allowedFacetIds.length ||
       allowedFacetIds.some(id=>typeof id!=='string'||!id.trim()||id.length>8))throw new Error('invalid_allowed_facet_ids');
-    extraction = object({...schemas.extraction.properties,units:array(object({
+    if(!Number.isInteger(maximumUnits)||maximumUnits<1||maximumUnits>6)throw new Error('invalid_unit_limit');
+    const bounded=(maxLength:number)=>({type:'string',minLength:1,maxLength});
+    extraction = object({...schemas.extraction.properties,units:{...array(object({
       ...extractionUnit.properties,
+      subject:bounded(240),predicate:bounded(240),value:bounded(600),scope:bounded(400),text:bounded(800),
+      qualifiers:{...array(bounded(300)),maxItems:8},
+      evidenceRefs:{...array(object(literal?{evidenceId:str}:{evidenceId:str,exactQuote:bounded(2400)})),minItems:1,maxItems:4},
       facetIds:{type:'array',items:enumeration(allowedFacetIds),minItems:1,maxItems:4},
-    }))}) as typeof schemas.extraction;
+    })),maxItems:maximumUnits}});
   }
-  if(stage==='extraction'&&natural)return{name:'odinlink_natural_extraction_v1',strict:true,
+  if(stage==='extraction'&&natural)return{name:literal?'odinlink_natural_extraction_literal_v1':'odinlink_natural_extraction_v1',strict:true,
     schema:object({...extraction.properties,naturalProposal:{anyOf:[{type:'null'},naturalProposal]}})};
-  if(stage==='extraction')return{name:'odinlink_knowledge_extraction_v2',strict:true,schema:extraction};
+  if(stage==='extraction')return{name:literal?'odinlink_knowledge_extraction_literal_v1':'odinlink_knowledge_extraction_v2',strict:true,schema:extraction};
   return { name: `odinlink_knowledge_${stage}_v2`, strict: true, schema: schemas[stage] };
 }
 

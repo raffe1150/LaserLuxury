@@ -753,7 +753,8 @@ for (const type of ["24h", "2h"]) {
   assert.deepEqual(sends[0].body, {
     messaging_product: "whatsapp", recipient_type: "individual", to: "46701234567", type: "template",
     template: { name: entry.name, language: { code: "de" }, components: [{ type: "body", parameters: [
-      { type: "text", text: "Sensitive Customer" }, { type: "text", text: "Beratung" },
+      // The stored service identity is preserved; only template prose is localized.
+      { type: "text", text: "Sensitive Customer" }, { type: "text", text: "Consultation" },
       { type: "text", text: "Montag, 5. Oktober" }, { type: "text", text: "14:00" },
       { type: "text", text: "Business 7" },
     ] }] },

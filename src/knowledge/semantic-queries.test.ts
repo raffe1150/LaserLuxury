@@ -15,10 +15,11 @@ async function fixture(mutate?: (s:InMemoryKnowledgeStorage)=>Promise<void>){
   const data=documentChunks([{text:e.input.text,section:'Calibration'}],e.input.filename||e.input.role);
   await storage.create({id:'doc-'+i,businessId:77,type:'document',status:'ready',title:e.input.filename||e.input.role,createdAt:'2026-10-13',updatedAt:'2026-10-13',content:data.content,metadata:data.metadata});
   await storage.replaceChunks(77,'doc-'+i,data.chunks.map(c=>({chunkIndex:Number(c.chunk_index),content:String(c.content),metadata:c.metadata as any})));
+  storage.completeSemanticIndex(77,'doc-'+i,storage.indexSnapshot(77,'doc-'+i)!,data.chunks.map(()=>structuredClone(e.vector)));
  }
  let count=0;
  const provider={supportsLocalSemanticSearch:true,embedQuery:async()=>{throw Error('Must use bounded query batch');},embedDocuments:async(texts:string[])=>{
-  calls.push(texts);if(++count===2&&mutate)await mutate(storage);
+  calls.push(texts);if(++count===1&&mutate)await mutate(storage);
   return texts.map(text=>{const e=entries.find(e=>e.input.text===text);assert.ok(e,`Unexpected input: ${text}`);return structuredClone(e.vector);});
  }};
  return{storage,calls,provider,service:new KnowledgeService(storage,storage,provider)};
@@ -32,7 +33,7 @@ for(const language of ['sv','en','de','es','fa','ar'])test(`saved real ${languag
  assert.ok(matches.every(m=>m.businessId===77&&Number(m.score)>=.55&&m.metadata?.documentRevision));
  assert.ok(matches.every(m=>!explicitlyWrongWorkflow(m.text!,original)));
  assert.equal(new Set(matches.map(m=>`${m.sourceId}:${m.text}`)).size,matches.length);assert.ok(matches.length<=5);
- assert.equal(f.calls.length,2,'One query API batch + one cold corpus batch; no repeated corpus embedding per query');
+ assert.equal(f.calls.length,1,'One query API batch; completed corpus was seeded off-request');
  assert.deepEqual(f.calls[0],selected);
 });
 test('hard negatives above .55 are excluded for customers, but remain eligible for their own workflow',async()=>{
@@ -62,11 +63,12 @@ test('mixed current sources yield content-confirmed hints; spoofed metadata, for
  await add('mixed',de+'\n'+en);await add('foreign','ساعت قبل نوبت پارکینگ مشتریان',88);await add('failed','ساعة قبل الموعد العملاء سيارات',77,'failed');
  const langs=await f.service.sourceLanguageHints(77);assert.deepEqual(new Set(langs),new Set(['sv','de','en']));
 });
-for(const change of ['delete','revise','failed'] as const)test(`source ${change} during shared corpus embedding rejects the whole planned result`,async()=>{
+for(const change of ['delete','revise','failed'] as const)test(`source ${change} during query embedding cannot return that source`,async()=>{
  const f=await fixture(async storage=>{
   if(change==='delete')await storage.delete(77,'doc-0');else {const src=(await storage.list(77)).find(s=>s.id==='doc-0')!;await storage.create({...src,status:change==='failed'?'failed':'ready',content:src.content+' Changed revision.'});}
  });
- assert.deepEqual(await f.service.semanticSearchQueries(77,[query('fa').input.text,query('fa',true).input.text]),[]);
+ const matches=await f.service.semanticSearchQueries(77,[query('fa').input.text,query('fa',true).input.text]);
+ assert.ok(matches.every(m=>m.sourceId!=='doc-0'),'A revoked or changed source must never return; independent current sources may survive');
 });
 test('foreign source results and stale captured document revisions are rejected',async()=>{
  const f=await fixture();const matches=await f.service.semanticSearchQueries(77,[query('fa').input.text,query('fa',true).input.text]);
@@ -77,8 +79,8 @@ test('foreign source results and stale captured document revisions are rejected'
 test('batch bound, query deduplication, cache reuse and oversized extras fail closed',async()=>{
  const f=await fixture();const q=query('fa').input.text;const planned=query('fa',true).input.text;
  await f.service.semanticSearchQueries(77,[q,planned,planned,planned]);assert.equal(f.calls[0].length,2);
- await f.service.semanticSearchQueries(77,[q,planned]);assert.equal(f.calls.length,3,'Warm corpus reused; one further query batch only');
- assert.deepEqual(await f.service.semanticSearchQueries(77,[q,'x'.repeat(121)]),[]);assert.equal(f.calls.length,3);
+ await f.service.semanticSearchQueries(77,[q,planned]);assert.equal(f.calls.length,2,'Persistent corpus reused; one further query batch only');
+ assert.deepEqual(await f.service.semanticSearchQueries(77,[q,'x'.repeat(121)]),[]);assert.equal(f.calls.length,2);
 });
 test('mixed customer and staff content remains available for atomic workflow grounding',()=>{
  const mixed='Staff training requires at least 37 hours notice; this is not for customers. Customer parking is behind the studio.';

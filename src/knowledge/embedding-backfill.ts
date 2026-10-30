@@ -15,8 +15,12 @@ export const KNOWLEDGE_BACKFILL_EMBEDDING_IDENTITY = {
   version: DEFAULT_EMBEDDING_VERSION,
 } as const;
 
+export const OPENAI_KNOWLEDGE_EMBEDDING_IDENTITY = {
+  provider: 'openai', model: 'text-embedding-3-small', dimensions: 768, version: 1,
+} as const;
+
 export type KnowledgeBackfillEmbeddingIdentity =
-  typeof KNOWLEDGE_BACKFILL_EMBEDDING_IDENTITY;
+  typeof KNOWLEDGE_BACKFILL_EMBEDDING_IDENTITY | typeof OPENAI_KNOWLEDGE_EMBEDDING_IDENTITY;
 
 export interface KnowledgeBackfillChunkSnapshot {
   id: string;

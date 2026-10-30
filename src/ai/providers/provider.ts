@@ -1,5 +1,6 @@
 import type { EmbeddingVector } from "../embeddings";
 import type { UnifiedAudioInput } from "./audio";
+import type { KnowledgeExecutionPermit, KnowledgeUsage } from '../knowledge-model-policy';
 
 export type AiProviderName = "gemini" | "openai";
 
@@ -43,6 +44,8 @@ export interface UnifiedAiStructuredOutputRequest {
 
 export interface UnifiedAiGenerationRequest {
   signal?: AbortSignal;
+  /** Backend stage hint only; private trial scope + durable lease remain mandatory. */
+  controlledTrialStage?: 'language';
   diagnosticContext?: { correlationId?: string };
   messages: any[];
   tools?: any[];
@@ -51,12 +54,15 @@ export interface UnifiedAiGenerationRequest {
   temperature?: number;
   reasoningEffort?: 'low';
   structuredOutput?: UnifiedAiStructuredOutputRequest;
+  /** Opaque backend-owned strict Knowledge permission; absent on all defaults. */
+  knowledgeExecution?: KnowledgeExecutionPermit;
 }
 
 export interface UnifiedAiGenerationResponse {
   text: string;
   structuredFailure?: 'REFUSAL' | 'TRUNCATED' | 'BLOCKED';
   usage?: { inputTokens: number; outputTokens: number };
+  knowledgeUsage?: KnowledgeUsage;
   functionCalls: Array<{
     id: string;
     function: {

@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Responses } from 'openai/resources/responses';
-import { buildConfiguredServiceCatalogPlan, formatRecommendationClarification, formatRecommendationServiceSummary, isGenericRecommendationClarificationQuestion, isRecommendationInformationRequest } from './business-information';
+import { buildConfiguredServiceCatalogPlan, formatRecommendationClarification, formatRecommendationServiceSummary, isBusinessInformationQuestion, isBusinessRecommendationQuestion, isExplicitBusinessActionRequest, isRecommendationInformationRequest } from './business-information';
 process.env.NODE_ENV = 'test';
 const { priority1hUnifiedEngineTestBoundary: b } = await import(process.env.REMAINING_LATENCY_BASELINE === '1' ? '../../.remaining-baseline-server.ts' : '../../server');
 const fixture = JSON.parse(readFileSync(new URL('../../tests/fixtures/business-information-tenant3.json', import.meta.url), 'utf8'));
@@ -463,7 +463,7 @@ for (const question of [
   'نمی‌دانم کدام خدمت برای من مناسب است. پیش از پیشنهاد یک خدمت چه اطلاعاتی نیاز دارید؟',
   'لا أعرف أي خدمة تناسبني. ما الذي تحتاجون إلى معرفته قبل التوصية بخدمة؟',
 ]) test(`uncertain service-fit clarification is recognized: ${question}`, () => {
-  assert.equal(isGenericRecommendationClarificationQuestion(question), true);
+  assert.equal(isRecommendationInformationRequest(question), true);
 });
 
 for (const question of [
@@ -501,13 +501,16 @@ for (const question of [
   '¿Qué servicios ofrecen y qué recomiendan para alguien que viene por primera vez?',
   'چه خدماتی دارید و برای بار اول چه پیشنهادی دارید؟',
   'ما الخدمات التي تقدمونها وماذا توصي به لزيارة أولى؟',
-]) test(`generic catalog plus recommendation is recognized: ${question}`, () => {
-  assert.equal(isGenericRecommendationClarificationQuestion(question), true);
+]) test(`catalog recommendation retains shared factual grounding: ${question}`, () => {
+  assert.equal(isRecommendationInformationRequest(question), false);
+  assert.equal(isBusinessInformationQuestion(question), true);
+  assert.equal(isBusinessRecommendationQuestion(question), true);
+  assert.equal(isExplicitBusinessActionRequest(question), false);
 });
 for (const [language, question] of cases) {
   for (const suffix of [' I want a wedding video.', ' What is your address?', ' Please book it tomorrow.']) {
     test(`${language}: extra goals/facts/actions do not qualify for scaffolding: ${suffix}`, () => {
-      assert.equal(isGenericRecommendationClarificationQuestion(`${question} ${suffix}`), false);
+      assert.equal(isRecommendationInformationRequest(`${question} ${suffix}`), false);
     });
   }
 }
@@ -515,7 +518,7 @@ for (const question of [
   'I am not sure which service suits me for a wedding video. What do you need to know before recommending one?',
   'I am not sure which service suits me. Tell me about your company and what do you need to know before recommending one?',
 ]) test(`structured clarification with specific context retains grounding: ${question}`, () => {
-  assert.equal(isGenericRecommendationClarificationQuestion(question), false);
+  assert.equal(isRecommendationInformationRequest(question), false);
 });
 
 for (const question of [
@@ -529,7 +532,7 @@ for (const question of [
   'What would you recommend for a first-time visitor and where are you located?',
   'What is the difference between your services?',
 ]) test(`specific or compound question retains grounding: ${question}`, () => {
-  assert.equal(isGenericRecommendationClarificationQuestion(question), false);
+  assert.equal(isRecommendationInformationRequest(question), false);
 });
 for (const channel of ['whatsapp', 'telegram', 'messenger', 'instagram'] as const) {
   test(`${channel}: recommendation delegates through shared grounded business context`, async t => {
@@ -606,12 +609,28 @@ for (const channel of ['whatsapp', 'telegram', 'messenger', 'instagram'] as cons
   });
 }
 
+function assertReadOnlyDetourState(before:any,after:any,sessionId:string) {
+  assert.ok(after);
+  const maintenance=new Set(['continuationPaused','serviceId','serviceResolution','sessionId','updatedAt']);
+  for(const key of new Set([...Object.keys(before),...Object.keys(after)]))
+    if(!maintenance.has(key))assert.deepEqual(after[key],before[key],`detour must preserve ${key}`);
+  assert.equal(after.continuationPaused,true,'Information detour pauses, never confirms the booking');
+  assert.equal(after.sessionId,sessionId);
+  const catalog=before.businessConfig.services.find((s:any)=>s.name===before.service);
+  assert.ok(catalog,'Authoritative service metadata must bind to the existing configured service');
+  assert.equal(after.serviceId,catalog.id||null);
+  assert.equal(after.serviceResolution,'authoritative');
+  assert.ok(after.updatedAt>=(before.updatedAt||before.createdAt)&&after.updatedAt<=Date.now());
+}
+
 for (const scenario of ['prior_goal', 'active_booking', 'no_catalog', 'inactive_catalog', 'specific_goal'] as const) {
   test(`${scenario}: existing read-only retrieval path remains active`, async t => {
     b.reset(); t.after(() => b.reset());
     for (const method of ['log', 'warn', 'info', 'error'] as const) t.mock.method(console, method, () => {});
-    let searches = 0;
-    b.configure({ postProcess: async () => {}, knowledgeSearch: async () => { searches++; return []; },
+    let searches = 0, forbiddenActions = 0;
+    const forbidden=async()=>{forbiddenActions++;throw Error('read_only_detour_action_forbidden');};
+    b.configure({ calendarAdapter:{getCalendarId:()=> 'synthetic',getEvents:forbidden,checkSlots:forbidden,insertAppointment:forbidden,cancelAppointment:forbidden},recordAppointment:forbidden,cancelAppointmentRow:forbidden,notifyBooking:forbidden,
+      postProcess: async () => {}, knowledgeSearch: async () => { searches++; return []; },
       semanticKnowledgeSearch: async () => [],
       geminiGenerate: async () => ({ text: JSON.stringify({ canonicalMeaning: 'recommendation', queries: [] }) }),
     });
@@ -630,7 +649,8 @@ for (const scenario of ['prior_goal', 'active_booking', 'no_catalog', 'inactive_
     const r = await b.turn({ sessionId: id, platformName: 'whatsapp', recipientUserId: id,
       text: scenario === 'specific_goal' ? 'Which service would you recommend for a wedding video?' : cases[0][1], businessConfig: config });
     assert.equal(r.handled, false); assert.ok(searches > 0);
-    if (before) assert.deepEqual(r.pending, before);
+    assert.equal(forbiddenActions,0);
+    if (before) assertReadOnlyDetourState(before,r.pending,id);
   });
 }
 

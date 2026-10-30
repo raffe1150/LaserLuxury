@@ -32,7 +32,7 @@ export type EmbeddingRequestOptions = { signal?: AbortSignal; timeoutMs?: number
 export interface EmbeddingProvider {
   readonly supportsLocalSemanticSearch?: boolean;
   embedDocuments(texts: string[], options?: EmbeddingRequestOptions): Promise<EmbeddingVector[]>;
-  embedQuery(text: string): Promise<EmbeddingVector>;
+  embedQuery(text: string, options?: EmbeddingRequestOptions): Promise<EmbeddingVector>;
 }
 
 export interface GoogleEmbeddingProviderOptions {
@@ -65,7 +65,8 @@ export class GoogleEmbeddingProvider implements EmbeddingProvider {
       ((apiKey) => new GoogleGenAI({ apiKey }));
   }
 
-  async embedDocuments(texts: string[]): Promise<EmbeddingVector[]> {
+  async embedDocuments(texts: string[], options?: EmbeddingRequestOptions): Promise<EmbeddingVector[]> {
+    options?.signal?.throwIfAborted();
     const normalized = texts.map((value) => String(value || "").trim());
 
     if (
@@ -92,6 +93,8 @@ export class GoogleEmbeddingProvider implements EmbeddingProvider {
       })),
       config: {
         outputDimensionality: this.dimensions,
+        ...(options?.signal ? { abortSignal: options.signal } : {}),
+        ...(options?.timeoutMs !== undefined ? { httpOptions: { timeout: Math.max(1, Math.min(20_000, options.timeoutMs)), retryOptions: { attempts: 1 } } } : {}),
       },
     });
 

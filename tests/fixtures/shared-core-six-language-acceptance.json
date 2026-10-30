@@ -1,0 +1,31 @@
+{
+  "status": "Acceptance specification only; new questions have not run against the provider",
+  "languages": ["en", "de", "sv", "fa", "es", "ar"],
+  "channels": ["telegram", "whatsapp", "instagram", "messenger"],
+  "reviewContract": {
+    "appliesEquallyToEveryCombination": true,
+    "required": [
+      "Review the actual delivered prose, not only unit metadata, quotes, numbers or keywords",
+      "Trace every delivered material claim to its exact tenant-bound current evidence and independent verdict",
+      "Preserve source modality, negation, exceptions, quantities and all material conditions",
+      "Verify response language, naturalness, proper names, and no mixed-language connective prose",
+      "Reject missing material facts, false completeness, invented service relationships and generic fallback when verified facts are available",
+      "Check fresh and sequential conversations, contextual follow-ups, unrelated-turn replacement, language continuity and zero external actions",
+      "Repeat representative cases before accepting stability; one favorable sample cannot establish it"
+    ],
+    "A": ["First-visit recommendation: approximately 10 minutes before booked time", "Confirmation recommended, digital or paper", "Special preparation instructions must be followed IF received; not an unconditional requirement"],
+    "B": ["Actual current configured service price, currency and duration", "Document's digital information calls used ONLY for introductory information", "No automatic replacement of a physical visit", "Not all matters can be handled digitally", "No asserted equivalence or difference between independently named offerings; explicitly cannot confirm applicability when unverified"],
+    "C": ["More than 15 minutes late", "Appointment does NOT automatically cancel", "Staff may need to reassess whether visit can proceed", "Contact studio promptly via usual channel; no cancellation operation"],
+    "D": ["Normally up to 21 days, not an unconditional guarantee", "Valuables registered separately", "Customer must describe item before release"],
+    "E": ["Courtyard entrance rather than main street entrance", "Reception on second floor", "Lift on right side of courtyard; no inferred accessibility guarantee"],
+    "F": ["Own water bottle allowed", "Food not allowed in treatment/work room", "Simple snacks allowed in waiting room; preserve room distinction"]
+  },
+  "previouslyUntestedQuestions": {
+    "en": ["Which entrance should I use, where is reception, and how can I reach it by lift?", "Can I bring my own water bottle and eat a snack in the treatment room or waiting room?"],
+    "de": ["Welchen Eingang soll ich benutzen, wo ist die Rezeption und wie erreiche ich sie mit dem Aufzug?", "Darf ich meine eigene Wasserflasche mitbringen und im Behandlungsraum oder Wartezimmer einen Snack essen?"],
+    "sv": ["Vilken ingång ska jag använda, var finns receptionen och hur tar jag mig dit med hiss?", "Får jag ta med en egen vattenflaska och äta ett mellanmål i behandlingsrummet eller väntrummet?"],
+    "fa": ["از کدام ورودی باید وارد شوم، پذیرش کجاست و چگونه با آسانسور به آن برسم؟", "آیا می‌توانم بطری آب خودم را بیاورم و در اتاق درمان یا اتاق انتظار میان‌وعده بخورم؟"],
+    "es": ["¿Qué entrada debo usar, dónde está la recepción y cómo puedo llegar en ascensor?", "¿Puedo traer mi propia botella de agua y comer un tentempié en la sala de tratamiento o en la sala de espera?"],
+    "ar": ["أي مدخل ينبغي أن أستخدم، وأين الاستقبال، وكيف أصل إليه بالمصعد؟", "هل يمكنني إحضار زجاجة الماء الخاصة بي وتناول وجبة خفيفة في غرفة العلاج أو غرفة الانتظار؟"]
+  }
+}

@@ -299,3 +299,67 @@ test("production regression: short Persian address question must resolve as Pers
 
   boundary.reset();
 });
+
+const offlineLanguageBodies = [
+  ['en','Hello, I want to continue in English.','I want to know more about the services.'],
+  ['sv','Hej, jag vill fortsätta på svenska.','Jag vill veta mer om tjänsterna.'],
+  ['de','Hallo, ich möchte auf Deutsch weitersprechen.','Ich möchte mehr über die Dienstleistungen wissen.'],
+  ['es','Hola, quiero continuar en español.','Quiero saber qué servicios ofrecen.'],
+  ['fa','سلام، می‌خواهم به فارسی ادامه بدهم.','برای اولین مراجعه چقدر زودتر باید برسم؟'],
+  ['ar','مرحبا، أريد أن أستمر باللغة العربية.','أريد معرفة المزيد عن الخدمات التي تقدمونها.'],
+] as const;
+for(const [language,start,body] of offlineLanguageBodies)test(`offline mixed-message lock and natural switch: ${language}`,()=>{
+  const session=`offline-prefix-lock-${language}`;
+  assert.equal(resolve(session,start),language);
+  for(const prefix of ['Hej','Hej tack','Hej tack hola'])assert.equal(resolve(session,`${prefix}, ${body}`),language);
+  const target=language==='en'?'sv':'en';
+  const targetBody=offlineLanguageBodies.find(([code])=>code===target)![2];
+  assert.equal(resolve(session,targetBody),target,'A meaningful full message can still switch language');
+});
+test('Swedish preposition i stays neutral and explicit switches still override English verb frames',()=>{
+ const session='offline-preposition-switch';
+ assert.equal(resolve(session,'Hej, jag vill fortsätta på svenska.'),'sv');
+ assert.equal(resolve(session,'Jag vill boka en tid i studion i morgon.'),'sv');
+ assert.equal(resolve(session,'Please reply in German from now on.'),'de');
+ assert.equal(resolve(session,'Please reply in Persian from now on.'),'fa');
+ assert.equal(resolve(session,'Please reply in Arabic from now on.'),'ar');
+});
+
+// Keep this discovered limitation visible; do not broaden switch parsing to
+// arbitrary mentions or hide it with an expected-failure assertion.
+test('compound explicit switch request overrides the language of its preamble',()=>{
+ const session='offline-compound-switch';
+ resolve(session,'Hej, jag vill fortsätta på svenska.');
+ assert.equal(resolve(session,'I want to continue, but please reply in German from now on.'),'de');
+});
+
+for(const [target,request]of [
+ ['en','Please reply in English from now on'],['de','Bitte antworten Sie auf Deutsch'],
+ ['sv','Svara på svenska tack'],['es','Por favor responde en español'],
+ ['fa','لطفاً به فارسی پاسخ بده'],['ar','من فضلك أجب باللغة العربية'],
+]as const)test(`six-language compound switch continuity: ${target}`,()=>{
+ for(const[position,text]of [`${request}; I need help.`,`I need help; ${request}; I want to continue.`,`I want to continue, but ${request}.`].entries()){
+  const session=`compound-continuity-${target}-${position}`;
+  resolve(session,target==='en'?'Bitte antworten Sie auf Deutsch.':'Please reply in English.');
+  assert.equal(resolve(session,text),target);
+  assert.equal(resolve(session,'OK.'),target);
+  const back=target==='en'?'de':'en';
+  assert.equal(resolve(session,back==='en'?'Please reply in English.':'Bitte antworten Sie auf Deutsch.'),back);
+ }
+});
+test('quoted requests and language questions preserve the established conversation language',()=>{
+ const session='quoted-request-continuity';
+ resolve(session,'Please reply in English.');
+ for(const text of ['What does "Bitte antworten Sie auf Deutsch" mean?','What does “لطفاً به فارسی پاسخ بده” mean?','Can you speak German?','What does the phrase `Svara på svenska` mean?'])
+  assert.equal(resolve(session,text),'en',text);
+});
+test('semantic language resolution receives unquoted instruction context only',async()=>{
+ boundary.reset();let evaluated=false;
+ boundary.configure({semanticLanguageResolver:async(text:string)=>{
+  evaluated=true;assert.doesNotMatch(text,/فارسی|لطفاً/);
+  return{language:'en',confidence:.99};
+ }});
+ const session='semantic-quoted-switch';resolve(session,'Please reply in English.');
+ assert.equal(await boundary.prepareConversationLanguageForTest(session,'What does “لطفاً به فارسی پاسخ بده” mean?',businessConfig),'en');
+ assert.equal(evaluated,true);boundary.reset();
+});

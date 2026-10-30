@@ -1,7 +1,8 @@
 import type { Facet, FacetOutcome } from './business-information-answer-plan';
+import {isExplicitBusinessActionRequest} from './business-information';
 
 /** Request-local references, never new business facts or model-authored prose. */
-export type UncertaintyReference = Readonly<{ facetId: string; obligationId: string; text: string }>;
+export type UncertaintyReference = Readonly<{ facetId: string; obligationId: string; text: string; kind?:'requested-attribute' }>;
 type Copy = { about: (text: string) => string; description: string; recommendation: string; requirement: string; permission: string; prohibition: string; conflict: string };
 const copy: Record<string, Copy> = {
   sv: { about: t => `När det gäller ”${t}”:`, description: 'Jag kan bara bekräfta de här uppgifterna just nu.', recommendation: 'Jag kan däremot inte bekräfta vilken rekommendation som gäller.', requirement: 'Jag kan däremot inte bekräfta vilka krav som gäller.', permission: 'Jag kan däremot inte bekräfta vad som är tillåtet.', prohibition: 'Jag kan däremot inte bekräfta vad som är förbjudet.', conflict: 'Uppgifterna behöver klargöras innan jag kan ge ett säkert svar.' },
@@ -22,15 +23,88 @@ const userSpan = (question: string, label: string) => {
     !(at+label.length < question.length && token.test(question[at+label.length]));
 };
 
+// Bounded request grammar, never a source fact or an absence assertion. Keep
+// exact spans; unknown, conditional, compound and referential labels stay generic.
+const documentAttributeForms:Record<string,RegExp>={
+ en:/^Do the documents (?:state|specify|give) (.+)\?$/iu,
+ sv:/^Anger dokumenten (.+)\?$/iu,
+ de:/^Nennen die Dokumente (.+)\?$/iu,
+ es:/^¿?Indican los documentos (.+)\?$/iu,
+ fa:/^آیا اسناد (.+) را مشخص می(?:‌| )کنند[؟?]$/u,
+ ar:/^هل تحدد المستندات (.+)[؟?]$/u,
+};
+const descriptiveQuestion:Record<string,RegExp>={
+ en:/^(?:Does|Do|Is|Are)\b/iu,sv:/^(?:Erbjuder|Har|Finns|Är)\b/iu,
+ de:/^(?:Bietet|Gibt|Ist|Sind|Hat|Haben)\b/iu,es:/^¿?(?:Ofrece|Hay|Es|Son|Tiene)\b/iu,
+ fa:/^آیا\s/u,ar:/^هل\s/u,
+};
+const unsafeAttribute=/(?<![\p{L}\p{M}])(?:and|or|if|unless|when|not|no|it|this|that|these|those|them|their|previous|earlier|other|another|some|how|can|must|should|ignore|instructions?|system|prompt|execute|delete|remove|create|update|return|json|tools?|book|cancel|send|och|eller|om|inte|det|den|dessa|und|oder|wenn|falls|nicht|das|es|jene|y|o|si|eso|esa|esos|esas|و|یا|اگر|آن|این|قبلی|أو|او|إذا|اذا|ذلك|هذا|هذه|هو|هي)(?![\p{L}\p{M}])/iu;
+function documentAttributeSpan(question:string,language:string):string|undefined {
+ const value=documentAttributeForms[language]?.exec(question.trim())?.[1];
+ return value && safeReference(value,90) && userSpan(question,value) && !/[\d,.!?؟،;؛]/u.test(value) &&
+   value.trim().split(/\s+/u).length>=2 && value.trim().split(/\s+/u).length<=8 && !unsafeAttribute.test(value) ? value : undefined;
+}
+
+/** Partition only an existing whole-question descriptive obligation. Both exact
+ * questions remain in coverage; the original facet/question is unchanged. The
+ * verifier, not clause order or missing lexical matches, decides which is unknown.
+ */
+export function requestUncertaintyFacets(question:string,language:string,facets:readonly Facet[]):readonly Facet[] {
+ if(facets.length!==1 || facets[0].questionType!=='description' || facets[0].attribute!==question ||
+   facets[0].obligations.length!==1 || facets[0].obligations[0].description!==question ||
+   facets[0].obligations[0].questionType!=='description' || facets[0].obligations[0].catalogRequirement ||
+   facets[0].obligations[0].id!==`${facets[0].id}.o1`)return facets;
+ const clauses=documentAttributeQuestions(question,language);
+ if(!clauses)return facets;
+ const f=facets[0],base=f.obligations[0];
+ return Object.freeze([Object.freeze({...f,obligations:Object.freeze([
+   Object.freeze({...base,description:clauses[0]}),
+   Object.freeze({id:`${f.id}.o2`,description:clauses[1],questionType:'description' as const}),
+ ])})]);
+}
+
+/** Shared syntax check only; supplies no source, answer or coverage decision. */
+export function documentAttributeQuestions(question:string,language:string):readonly [string,string]|undefined {
+ if(question.length>240 || /[.!;:؛\n\r<>\[\]{}"`\\]/u.test(question) || isExplicitBusinessActionRequest(question))return;
+ const clauses=/^([^?؟]+[?؟])\s+([^?؟]+[?؟])$/u.exec(question);
+ if(!clauses || !documentAttributeSpan(clauses[1],language) || !descriptiveQuestion[language]?.test(clauses[2]) ||
+   /\b(?:if|unless|when|om|wenn|falls|si)\b|اگر|(?<![\p{L}\p{M}])(?:إذا|اذا)(?![\p{L}\p{M}])/iu.test(question))return;
+ return Object.freeze([clauses[1],clauses[2]] as const);
+}
+
+const unknownAttribute:Record<string,(text:string)=>string>={
+ en:t=>`I cannot verify “${t}” from the available information.`,
+ sv:t=>`Jag kan inte verifiera ”${t}” utifrån den tillgängliga informationen.`,
+ de:t=>`Ich kann „${t}“ anhand der verfügbaren Informationen nicht verifizieren.`,
+ es:t=>`No puedo verificar «${t}» con la información disponible.`,
+ fa:t=>`نمی‌توانم «${t}» را بر اساس اطلاعات موجود تأیید کنم.`,
+ ar:t=>`لا أستطيع التحقق من «${t}» استناداً إلى المعلومات المتاحة.`,
+};
+
 export function uncertaintyReferences(question: string, language: string, facets: readonly Facet[], outcomes: readonly FacetOutcome[],
-  languageSafe: (text: string) => boolean): readonly UncertaintyReference[] {
+  languageSafe: (text: string) => boolean, contextTexts: readonly string[] = []): readonly UncertaintyReference[] {
   if (!copy[language]) return Object.freeze([]);
   const refs: UncertaintyReference[] = [];
+  const requestedAttribute=documentAttributeSpan(question.split(/(?<=[?؟])\s+/u)[0],language);
   for (const facet of facets) {
     const outcome = outcomes.find(o => o.facetId === facet.id);
     if (!outcome?.requestAligned) continue;
     for (const obligation of facet.obligations) {
       const label = obligation.description.trim();
+      const attribute=obligation.questionType==='description'
+        ?documentAttributeSpan(label,language)||(label===requestedAttribute?requestedAttribute:undefined):undefined;
+      try {
+        // A source/entailed unit literally discussing this attribute makes a
+        // precise absence-of-verification label unsafe to infer from coverage
+        // alone. This veto establishes no support and never changes a verdict.
+        const normalize=(s:string)=>s.normalize('NFKC').toLowerCase().replace(/\s+/gu,' ').trim();
+        const mentioned=attribute&&contextTexts.some(t=>userSpan(normalize(t),normalize(attribute)));
+        if(mentioned)continue;
+        if(attribute && !mentioned && userSpan(question,label) && languageSafe(attribute)) {
+          refs.push(Object.freeze({facetId:facet.id,obligationId:obligation.id,text:attribute,kind:'requested-attribute'}));
+          continue;
+        }
+      } catch { /* Keep the same generic fallback on a failed language check. */ }
       // A planner label alone is not approved customer-facing language. Require a
       // literal user span and the existing local language guard before quoting it.
       const reference = safeReference(label, 90) && userSpan(question, label) ? label : '';
@@ -51,5 +125,7 @@ export function uncertaintyNotice(language: string, facet: Facet | undefined, ou
   const type = types.size === 1 ? unresolved[0].questionType : 'description';
   const reference = unresolved.length === 1 ? references.find(r => r.facetId === facet?.id && r.obligationId === unresolved[0].id) : undefined;
   const notice = outcome.status === 'CONFLICT' ? wording.conflict : wording[type];
+  if(reference?.kind==='requested-attribute')return type==='description' && outcome.status==='PARTIAL' &&
+    outcome.materialFactsComplete===false ? unknownAttribute[language]?.(reference.text)||notice : notice;
   return reference ? `${wording.about(reference.text)} ${notice}` : notice;
 }

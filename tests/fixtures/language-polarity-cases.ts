@@ -1,0 +1,9 @@
+/** Synthetic language controls. No business facts, provider behavior or actions. */
+export const languagePolarityCases = [
+ {language:'en',positive:['Please reply in English.','Speak English.','Write in English.','Use English.'],negative:['Please do not reply in English.','Never speak English.','Do not write in English.','Do not use English.','Please reply not in English.'],uncertain:'Maybe reply in English.'},
+ {language:'de',positive:['Bitte antworten Sie auf Deutsch.','Sprich Deutsch.','Bitte schreiben Sie auf Deutsch.','Verwenden Sie Deutsch.'],negative:['Bitte antworten Sie nicht auf Deutsch.','Sprich niemals Deutsch.','Schreiben Sie nie auf Deutsch.','Verwenden Sie kein Deutsch.'],uncertain:'Vielleicht antworten Sie auf Deutsch.'},
+ {language:'sv',positive:['Svara på svenska.','Prata svenska.','Skriv på svenska.','Använd svenska.'],negative:['Svara aldrig på svenska.','Prata inte svenska.','Skriv ej på svenska.','Använd aldrig svenska.'],uncertain:'Kanske svara på svenska.'},
+ {language:'fa',positive:['لطفاً به فارسی پاسخ بده.','لطفاً به فارسی صحبت کن.','به فارسی بنویس.','لطفاً از فارسی استفاده کن.'],negative:['لطفاً به فارسی پاسخ نده.','لطفاً به فارسی صحبت نکن.','لطفاً به فارسی ننویس.','لطفاً از فارسی استفاده نکن.','هرگز به فارسی پاسخ ندهید.'],uncertain:'شاید به فارسی پاسخ بده.'},
+ {language:'es',positive:['Por favor responde en español.','Habla español.','Escribe en español.','Usa español.'],negative:['Por favor no respondas en español.','Nunca hables español.','No escribas en español.','No uses español.'],uncertain:'Quizás responde en español.'},
+ {language:'ar',positive:['من فضلك أجب باللغة العربية.','تحدث العربية.','اكتب باللغة العربية.','استخدم العربية.'],negative:['لا تجب باللغة العربية.','من فضلك لا تتحدث باللغة العربية.','لا تكتب باللغة العربية.','لا تستخدم العربية.'],uncertain:'ربما أجب باللغة العربية.'},
+] as const;

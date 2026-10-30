@@ -1,7 +1,11 @@
 import type { EmbeddingProvider, EmbeddingVector } from "./src/ai/embeddings";
 import crypto from "crypto";
+import { PERSISTENT_SEARCH_RPC, assertPersistentRequest, compatibleQuery, parsePersistentSearch, sameSourceProof, semanticBudget, semanticStatus, abortable,
+  type IndexMatchProof, type IndexCoverage, type PersistentSearchRequest, type PersistentSearchResult, type KnowledgeSemanticOptions } from './src/knowledge/persistent-search';
+import { OPENAI_KNOWLEDGE_EMBEDDING_IDENTITY } from './src/knowledge/embedding-backfill';
 import { CompatibleSemanticIndex, semanticCorpusFingerprint, type SemanticChunk } from "./src/knowledge/semantic-index";
 import { confirmedTextLanguage, normalizeSemanticQuery, explicitlyWrongWorkflow, MAX_SEMANTIC_QUERIES, type SourceLanguage } from './src/knowledge/semantic-queries';
+import { CANDIDATE_RETRIEVAL_POLICY } from './src/knowledge/candidate-retrieval';
 
 export const KNOWLEDGE_SOURCE_TYPES = ["faq", "pdf", "website", "text", "document"] as const;
 
@@ -33,11 +37,13 @@ export interface CreateKnowledgeSourceInput {
 export interface KnowledgeSearchMatch {
   sourceId: string;
   businessId: number;
+  /** Backend proof only; independently revalidated at publication. */
+  indexProof?: IndexMatchProof;
   score?: number;
   text?: string;
   metadata?: KnowledgeSourceMetadata;
 }
-type KnowledgeValidationOptions = { strictSources?: boolean; captureRevision?: boolean;
+type KnowledgeValidationOptions = { signal?: AbortSignal; strictSources?: boolean; captureRevision?: boolean;
   onRejected?: (sourceId:string,reason:'SOURCE_SCOPE'|'SOURCE_MISSING_OR_UNAUTHORIZED'|'SOURCE_NOT_READY'|'SOURCE_REVISION'|'SOURCE_CHUNK')=>void };
 
 /** Operation counts and wall-clock durations only; never query/source contents. */
@@ -70,11 +76,11 @@ export interface KnowledgeChunkInput {
 
 export interface KnowledgeStorage {
   initialize(): Promise<void>;
-  list(businessId: number): Promise<KnowledgeSource[]>;
+  list(businessId: number, options?: KnowledgeSemanticOptions): Promise<KnowledgeSource[]>;
   /** Complete ready-source inventory or null. Ordinary list() does not attest
    * exhaustiveness. A conservative whole-inventory bound is allowed; backend
    * caps and partial pages must never imply completeness. */
-  listReadyComplete?(businessId: number, maxSources: number): Promise<KnowledgeSource[] | null>;
+  listReadyComplete?(businessId: number, maxSources: number, options?: KnowledgeSemanticOptions): Promise<KnowledgeSource[] | null>;
   create(source: KnowledgeSource): Promise<KnowledgeSource>;
   replaceChunks(
     businessId: number,
@@ -85,8 +91,10 @@ export interface KnowledgeStorage {
   search(
     businessId: number,
     query: string,
-    limit?: number
+    limit?: number,
+    options?: KnowledgeSemanticOptions
   ): Promise<KnowledgeSearchMatch[]>;
+  persistentSemanticSearch?(request: PersistentSearchRequest, options?: KnowledgeSemanticOptions): Promise<PersistentSearchResult>;
   semanticSearch?(
     businessId: number,
     embedding: EmbeddingVector,
@@ -98,6 +106,53 @@ export interface KnowledgeStorage {
 export class InMemoryKnowledgeStorage implements KnowledgeStorage {
   private readonly sources = new Map<string, KnowledgeSource>();
   private readonly chunks = new Map<string, KnowledgeChunkInput[]>();
+  private readonly completedIndexes = new Map<string,{revision:string;generation:string;vectorDigest:string}>();
+
+  /** Explicit off-request publication for the local store/test double. No implicit adoption. */
+  indexSnapshot(businessId:number,sourceId:string):string | null {
+    const source=this.sources.get(sourceId);
+    if(!source||source.businessId!==businessId||source.status!=='ready')return null;
+    return crypto.createHash('sha256').update(JSON.stringify([source.id,source.businessId,source.type,source.title,source.status,
+      source.content,source.metadata,(this.chunks.get(sourceId)||[]).map(c=>[c.chunkIndex,c.content,c.metadata])])).digest('hex');
+  }
+  completeSemanticIndex(businessId:number,sourceId:string,snapshot:string,embeddings:EmbeddingVector[]):void {
+    const chunks=this.chunks.get(sourceId)||[];
+    if(this.indexSnapshot(businessId,sourceId)!==snapshot||!snapshot||!chunks.length||chunks.length>200||
+      chunks.some((c,i)=>c.chunkIndex!==i||c.embedding!=null)||embeddings.length!==chunks.length||embeddings.some(e=>!compatibleQuery(e)))
+      throw new Error('knowledge_index_invalid_completion');
+    chunks.forEach((c,i)=>Object.assign(c,{embedding:[...embeddings[i].values],embeddingProvider:embeddings[i].provider,
+      embeddingModel:embeddings[i].model,embeddingDimensions:embeddings[i].dimensions,embeddingVersion:embeddings[i].version}));
+    this.completedIndexes.set(sourceId,{revision:snapshot,generation:crypto.randomUUID(),vectorDigest:this.vectorDigest(sourceId)});
+  }
+  private vectorDigest(sourceId:string):string {
+    return crypto.createHash('sha256').update(JSON.stringify((this.chunks.get(sourceId)||[]).map(c=>
+      [c.embedding,c.embeddingProvider,c.embeddingModel,c.embeddingDimensions,c.embeddingVersion]))).digest('hex');
+  }
+  async persistentSemanticSearch(request:PersistentSearchRequest,options?:KnowledgeSemanticOptions):Promise<PersistentSearchResult> {
+    options?.signal?.throwIfAborted();
+    assertPersistentRequest(request);
+    if(request.embeddings.some(e=>!compatibleQuery(e)))throw new Error('knowledge_index_invalid_query_vector');
+    const sources=(await this.list(request.businessId)).filter(s=>s.businessId===request.businessId&&s.status!=='deleted').sort((a,b)=>a.id.localeCompare(b.id)).map(s=>{
+      const done=this.completedIndexes.get(s.id);const revision=this.indexSnapshot(request.businessId,s.id);
+      const chunks=this.chunks.get(s.id)||[];
+      const compatible=chunks.filter(c=>compatibleQuery({values:c.embedding!,provider:c.embeddingProvider!,model:c.embeddingModel!,dimensions:c.embeddingDimensions!,version:c.embeddingVersion!})).length;
+      return {sourceId:s.id,businessId:s.businessId,sourceStatus:s.status,
+        ready:!!done&&revision===done.revision&&done.vectorDigest===this.vectorDigest(s.id)&&chunks.length>0&&compatible===chunks.length,
+        revision,state:done?'ready':'unknown',indexStatus:(!done?'missing':revision===done.revision&&done.vectorDigest===this.vectorDigest(s.id)&&chunks.length>0&&compatible===chunks.length?'ready':'incomplete') as 'ready'|'missing'|'incomplete',expectedChunks:chunks.length,compatibleChunks:compatible,
+        generation:done?.generation||null,vectorDigest:done?.vectorDigest||null};
+    });
+    const count=sources.filter(s=>s.sourceStatus==='ready').length;
+    const inventoryToken=crypto.createHash('sha256').update(JSON.stringify([request.businessId,sources])).digest('hex');
+    const coverage:IndexCoverage={businessId:request.businessId,sources,sourceCount:sources.length,textReadySourceCount:count,readySourceCount:sources.filter(s=>s.ready).length,
+      complete:count>0&&sources.filter(s=>s.ready).length===count,inventoryToken,identity:OPENAI_KNOWLEDGE_EMBEDDING_IDENTITY,canonicalVersion:1};
+    const matches=request.embeddings.map(q=>sources.filter(s=>s.ready).flatMap(source=>(this.chunks.get(source.sourceId)||[])
+      .filter(c=>!request.excludedChunks.some(e=>e.source_id===source.sourceId&&e.content===c.content)).map(c=>{
+        const norm=(v:number[])=>Math.sqrt(v.reduce((sum,x)=>sum+x*x,0));
+        const score=q.values.reduce((sum,x,i)=>sum+x*c.embedding![i],0)/(norm(q.values)*norm(c.embedding!));
+        return {sourceId:source.sourceId,businessId:request.businessId,text:c.content,metadata:c.metadata||{},score,indexProof:{source,inventoryToken}};
+      })).filter(m=>m.score>=request.minSimilarity).sort((a,b)=>b.score-a.score||a.sourceId.localeCompare(b.sourceId)).slice(0,request.limit));
+    return parsePersistentSearch({coverage,matches},request);
+  }
 
   async initialize(): Promise<void> {
     // No setup is required for the in-memory fallback.
@@ -109,7 +164,7 @@ export class InMemoryKnowledgeStorage implements KnowledgeStorage {
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }
 
-  async listReadyComplete(businessId: number, maxSources: number): Promise<KnowledgeSource[] | null> {
+  async listReadyComplete(businessId: number, maxSources: number, options?: KnowledgeSemanticOptions): Promise<KnowledgeSource[] | null> {
     if (!Number.isSafeInteger(businessId) || businessId <= 0 || !Number.isSafeInteger(maxSources) || maxSources <= 0) return null;
     const sources = [...this.sources.values()].filter(s => s.businessId === businessId && s.status === 'ready');
     return sources.length <= maxSources ? sources : null;
@@ -133,9 +188,8 @@ export class InMemoryKnowledgeStorage implements KnowledgeStorage {
     this.chunks.set(
       sourceId,
       chunks.map((chunk) => ({
-        chunkIndex: chunk.chunkIndex,
-        content: chunk.content,
-        metadata: chunk.metadata || {},
+        ...structuredClone(chunk),
+        metadata: structuredClone(chunk.metadata || {}),
       }))
     );
   }
@@ -151,7 +205,8 @@ export class InMemoryKnowledgeStorage implements KnowledgeStorage {
   async search(
     businessId: number,
     query: string,
-    limit = 5
+    limit = 5,
+    options?: KnowledgeSemanticOptions
   ): Promise<KnowledgeSearchMatch[]> {
     const normalized = String(query || "").trim().toLowerCase();
     if (!normalized) return [];
@@ -214,12 +269,14 @@ export class SupabaseKnowledgeStorage implements KnowledgeStorage {
     }
   }
 
-  async list(businessId: number): Promise<KnowledgeSource[]> {
-    const { data, error } = await this.client
+  async list(businessId: number, options?: KnowledgeSemanticOptions): Promise<KnowledgeSource[]> {
+    let query = this.client
       .from(this.tableName)
       .select("id,business_id,type,title,status,content,created_at,updated_at,metadata")
       .eq("business_id", businessId)
       .order("created_at", { ascending: false });
+    if(options?.signal && typeof query.abortSignal==='function')query=query.abortSignal(options.signal);
+    const {data,error}=await abortable<any>(query,options?.signal);
 
     if (error) {
       throw new Error(error.message || "Unable to list knowledge sources.");
@@ -228,17 +285,19 @@ export class SupabaseKnowledgeStorage implements KnowledgeStorage {
     return (data || []).map(mapKnowledgeSourceRow).filter((source: KnowledgeSource) => source.businessId === businessId && source.status !== "deleted");
   }
 
-  async listReadyComplete(businessId: number, maxSources: number): Promise<KnowledgeSource[] | null> {
+  async listReadyComplete(businessId: number, maxSources: number, options?: KnowledgeSemanticOptions): Promise<KnowledgeSource[] | null> {
     if (!Number.isSafeInteger(businessId) || businessId <= 0 || !Number.isSafeInteger(maxSources) || maxSources <= 0) return null;
     try {
       // Prove the ALL-status inventory before selecting ready rows. Existing
       // freshness reads also list all statuses: a ready-only proof could opt in
       // while later capped reads hide older conditions. One data+exact-count
       // response detects overflow/truncation without a separate count or paging.
-      const { data, error, count } = await this.client.from(this.tableName)
+      let query = this.client.from(this.tableName)
         .select('id,business_id,type,title,status,content,created_at,updated_at,metadata', { count: 'exact' })
         .eq('business_id', businessId)
         .order('created_at', { ascending: false }).limit(maxSources).retry(false);
+      if (options?.signal && typeof query.abortSignal==='function') query=query.abortSignal(options.signal);
+      const {data,error,count}=await abortable<any>(query,options?.signal);
       if (error || !Array.isArray(data) || !Number.isSafeInteger(count) || count < 0 || count > maxSources || count !== data.length ||
           data.some(row => !row || typeof row.id !== 'string' || !row.id.trim() ||
             !['pending','processing','ready','failed','deleted','disabled','error'].includes(row.status))) return null;
@@ -334,7 +393,8 @@ export class SupabaseKnowledgeStorage implements KnowledgeStorage {
   async search(
     businessId: number,
     query: string,
-    limit = 5
+    limit = 5,
+    options?: KnowledgeSemanticOptions
   ): Promise<KnowledgeSearchMatch[]> {
     const normalizedQuery = String(query || "").trim();
     if (!normalizedQuery) return [];
@@ -346,11 +406,13 @@ export class SupabaseKnowledgeStorage implements KnowledgeStorage {
 
     const normalizedLimit = Math.max(1, Math.min(Number(limit) || 5, 10));
 
-    const { data, error } = await this.client.rpc("search_knowledge_chunks", {
+    let queryRequest = this.client.rpc("search_knowledge_chunks", {
       p_business_id: normalizedBusinessId,
       p_query: normalizedQuery,
       p_limit: normalizedLimit,
     });
+    if (options?.signal && typeof queryRequest.abortSignal==='function') queryRequest=queryRequest.abortSignal(options.signal);
+    const {data,error}=await abortable<any>(queryRequest,options?.signal);
 
     if (error) {
       throw new Error(error.message || "Unable to search business knowledge.");
@@ -363,6 +425,21 @@ export class SupabaseKnowledgeStorage implements KnowledgeStorage {
       text: String(row.content || ""),
       metadata: row.metadata && typeof row.metadata === "object" ? row.metadata : {},
     }));
+  }
+
+  async persistentSemanticSearch(request: PersistentSearchRequest, options?: KnowledgeSemanticOptions): Promise<PersistentSearchResult> {
+    options?.signal?.throwIfAborted();
+    assertPersistentRequest(request);
+    let query = this.client.rpc(PERSISTENT_SEARCH_RPC, {
+      p_business_id: request.businessId, p_identity: OPENAI_KNOWLEDGE_EMBEDDING_IDENTITY,
+      p_queries: request.embeddings.map(e=>e.values), p_limit: request.limit,
+      p_min_similarity: request.minSimilarity, p_excluded_chunks: request.excludedChunks,
+    });
+    if (typeof query.retry === 'function') query = query.retry(false);
+    if (options?.signal && typeof query.abortSignal === 'function') query = query.abortSignal(options.signal);
+    const { data, error } = await abortable<any>(query, options?.signal);
+    if (error) throw new Error('knowledge_index_search_unavailable');
+    return parsePersistentSearch(data,request);
   }
 
   async semanticSearch(
@@ -668,11 +745,12 @@ export class KnowledgeService {
     query: string,
     limit = 5,
     diagnostic?: LexicalDiagnostic,
+    options?: KnowledgeSemanticOptions,
   ): Promise<KnowledgeSearchMatch[]> {
     const started = performance.now();
     const metrics = diagnostic ? lexicalMetrics('legacy', 1) : undefined;
     try {
-      await this.ensureInitialized();
+      await abortable(this.ensureInitialized(),options?.signal);
       const normalizedBusinessId = Number(businessId);
       const normalizedQuery = String(query || "").trim();
       if (!Number.isSafeInteger(normalizedBusinessId) || normalizedBusinessId <= 0 || !normalizedQuery) return [];
@@ -680,10 +758,10 @@ export class KnowledgeService {
       const searchStarted = performance.now();
       let matches: KnowledgeSearchMatch[];
       if (metrics) metrics.storageSearchCalls++;
-      try { matches = await this.storage.search(normalizedBusinessId, normalizedQuery, Math.max(1, Math.min(Number(limit) || 5, 10))); }
+      try { matches = await this.storage.search(normalizedBusinessId, normalizedQuery, Math.max(1, Math.min(Number(limit) || 5, 10)),options); }
       catch (error) { if (metrics) metrics.searchFailures++; throw error; }
       finally { if (metrics) metrics.lexicalSearchMs = performance.now() - searchStarted; }
-      return await this.filterCurrentMatches(normalizedBusinessId, matches, {}, metrics);
+      return await this.filterCurrentMatches(normalizedBusinessId, matches, {}, metrics, options);
     } finally { reportLexicalMetrics(metrics, started, diagnostic); }
   }
 
@@ -691,7 +769,7 @@ export class KnowledgeService {
    * Read current sources AFTER all searches; this snapshot expires on return.
    * Subsequent verification/publication must use their existing fresh reads. */
   async searchLexicalQueries(businessId: number, queries: readonly string[], limit = 5,
-    diagnostic?: LexicalDiagnostic): Promise<KnowledgeSearchMatch[][]> {
+    diagnostic?: LexicalDiagnostic, options?: KnowledgeSemanticOptions): Promise<KnowledgeSearchMatch[][]> {
     const started = performance.now(), metrics = lexicalMetrics('batch', queries.length);
     try {
       await this.ensureInitialized();
@@ -702,13 +780,13 @@ export class KnowledgeService {
       const sets = await Promise.all(normalized.map(async query => {
         if (!query) return [];
         metrics.storageSearchCalls++;
-        try { return await this.storage.search(id, query, boundedLimit); }
+        try { return await this.storage.search(id, query, boundedLimit,options); }
         catch { metrics.searchFailures++; return []; }
       }));
       metrics.lexicalSearchMs = performance.now() - searchStarted;
       const listStarted = performance.now(); metrics.sourceListReads++;
       let sources: KnowledgeSource[];
-      try { sources = await this.storage.list(id); }
+      try { sources = await this.storage.list(id,options); }
       catch { metrics.sourceListFailures++; return queries.map(() => []); }
       finally { metrics.sourceListMs = performance.now() - listStarted; }
       const documents = new Map<string, { revision: string; corpus: SemanticChunk[] }>();
@@ -723,8 +801,12 @@ export class KnowledgeService {
     businessId: number,
     query: string,
     limit = 5,
-    minSimilarity = 0.55
+    minSimilarity = 0.55,
+    options?: KnowledgeSemanticOptions
   ): Promise<KnowledgeSearchMatch[]> {
+    if (this.embeddingProvider?.supportsLocalSemanticSearch) {
+      return this.openAiSemanticSearch(businessId,[String(query || '').trim()],limit,minSimilarity,options,false);
+    }
     await this.ensureInitialized();
 
     const normalizedBusinessId = Number(businessId);
@@ -747,15 +829,7 @@ export class KnowledgeService {
 
       const safeLimit = Math.max(1, Math.min(Number(limit) || 5, 10));
       if (embedding.provider === "openai") {
-        // Existing Google vectors are incompatible. Search a read-only, tenant-scoped
-        // OpenAI index instead; source text/IDs and the cosine threshold stay intact.
-        const chunks = await this.semanticCorpus(normalizedBusinessId);
-        const matches = await this.compatibleSemanticIndex.search(
-          normalizedBusinessId, chunks, embedding, this.embeddingProvider, safeLimit, minSimilarity,
-        );
-        // Do not return evidence that changed or was disabled/deleted during embedding.
-        const currentChunks = await this.semanticCorpus(normalizedBusinessId);
-        return semanticCorpusFingerprint(chunks) === semanticCorpusFingerprint(currentChunks) ? this.filterCurrentMatches(normalizedBusinessId, matches) : [];
+        return this.openAiSemanticSearch(normalizedBusinessId,[normalizedQuery],safeLimit,minSimilarity,options,false,[embedding]);
       }
       // Documents deliberately have no ingestion-time vectors. Use the same configured
       // provider's existing read-only index for them, retaining persisted manual search.
@@ -783,21 +857,29 @@ export class KnowledgeService {
     }
   }
 
-  async sourceLanguageHints(businessId: number): Promise<SourceLanguage[]> {
+  async sourceLanguageHints(businessId: number, options?: KnowledgeSemanticOptions): Promise<SourceLanguage[]> {
     await this.ensureInitialized();
     if (!Number.isSafeInteger(businessId) || businessId <= 0) return [];
     const languages = new Set<SourceLanguage>(); let samples = 0;
     let timer: ReturnType<typeof setTimeout>;
     const listed = await Promise.race([
-      this.storage.list(businessId).catch(() => [] as KnowledgeSource[]),
+      (options?.observe || (p=>p))(this.storage.list(businessId,options)).catch(() => [] as KnowledgeSource[]),
       new Promise<KnowledgeSource[]>(resolve => { timer = setTimeout(() => resolve([]), 500); }),
     ]).finally(() => clearTimeout(timer));
     const sources = listed.filter(s => s.businessId === businessId && s.status === 'ready').slice(0, 50);
     for (const source of sources) {
       const texts = source.type === 'document' ? documentCorpus(source).slice(0, 2).map(c => c.text) : [source.content];
+      let sourceHint = false;
       for (const text of texts) for (const paragraph of String(text).slice(0, 4000).split(/\n+/u).slice(0, 4)) {
         if (++samples > 100) return [...languages];
         const language = confirmedTextLanguage(paragraph.slice(0, 1600));
+        if (language) { languages.add(language); sourceHint = true; }
+      }
+      // Title/disclaimer lines alone can hide a source's actual language.
+      // Fall back to the same distinctive-token classifier over a bounded
+      // sample of canonical source text, never locale or editable metadata.
+      if (!sourceHint) {
+        const language = confirmedTextLanguage(texts.join('\n').slice(0,4000));
         if (language) languages.add(language);
       }
     }
@@ -809,10 +891,10 @@ export class KnowledgeService {
    * contribute any additional text. Include unmatched conditions/conflicts too.
    * Otherwise return null; lexical hit counts/scores cannot prove completeness.
    * No cache, storage writes or changes to version-1 document reconstruction. */
-  async completeSmallCorpus(businessId: number, lexical: readonly KnowledgeSearchMatch[]): Promise<KnowledgeSearchMatch[] | null> {
+  async completeSmallCorpus(businessId: number, lexical: readonly KnowledgeSearchMatch[], options?: KnowledgeSemanticOptions): Promise<KnowledgeSearchMatch[] | null> {
     if (!Number.isSafeInteger(businessId) || businessId <= 0 || !lexical.length) return null;
     await this.ensureInitialized();
-    const sources = this.storage.listReadyComplete ? await this.storage.listReadyComplete(businessId, 5).catch(() => null) : null;
+    const sources = this.storage.listReadyComplete ? await this.storage.listReadyComplete(businessId, 5, options).catch(() => null) : null;
     if (!sources?.length || sources.length > 5 || sources.some(s => s.businessId !== businessId || s.status !== 'ready' || !s.content.trim()) ||
         sources.reduce((sum, s) => sum + s.content.length, 0) > 9000) return null;
     const corpus: KnowledgeSearchMatch[] = [];
@@ -834,11 +916,8 @@ export class KnowledgeService {
     return [...selected.values()];
   }
 
-  /** OpenAI: one query batch, one corpus pass, original threshold and authority.
-   * Other providers retain their existing single-query behavior/request shape.
-   */
-  async semanticSearchQueries(businessId: number, queries: string[], limit = 5, options?: import("./src/ai/embeddings").EmbeddingRequestOptions): Promise<KnowledgeSearchMatch[]> {
-    await this.ensureInitialized();
+  /** OpenAI query embeddings only; corpus generations are prepared off-request. */
+  async semanticSearchQueries(businessId: number, queries: string[], limit = 5, options?: KnowledgeSemanticOptions): Promise<KnowledgeSearchMatch[]> {
     const seen = new Set<string>();
     const bounded = queries.slice(0, MAX_SEMANTIC_QUERIES).map(q => String(q).trim()).filter(q => {
       const key = normalizeSemanticQuery(q);
@@ -846,42 +925,107 @@ export class KnowledgeService {
       seen.add(key); return true;
     });
     if (!Number.isSafeInteger(businessId) || businessId <= 0 || !bounded.length || bounded[0].length > 4000 || bounded.slice(1).some(q => q.length > 120) || !this.embeddingProvider) return [];
-    if (!this.embeddingProvider.supportsLocalSemanticSearch) return this.semanticSearch(businessId, bounded[0], limit);
+    if (!this.embeddingProvider.supportsLocalSemanticSearch) return this.semanticSearch(businessId,bounded[0],limit,0.55,options);
+    return this.openAiSemanticSearch(businessId,bounded,limit,0.55,options,true);
+  }
+
+  private async openAiSemanticSearch(businessId: number, queries: string[], limit: number, threshold: number,
+    options: KnowledgeSemanticOptions | undefined, batch: boolean, supplied?: EmbeddingVector[]): Promise<KnowledgeSearchMatch[]> {
+    if (!Number.isSafeInteger(businessId) || businessId<=0 || !queries.length || !queries[0] || queries[0].length>4000 || !this.embeddingProvider) return [];
     try {
-      const embeddings = await this.embeddingProvider.embedDocuments(bounded, options);
-      if (embeddings.length !== bounded.length || embeddings.some(e => e.provider !== 'openai')) return [];
-      const corpus = await this.semanticCorpus(businessId);
-      const chunks = corpus.filter(chunk => !explicitlyWrongWorkflow(chunk.text, bounded[0]));
-      const safeLimit = Math.max(1, Math.min(Number(limit) || 5, 10));
-      const sets = await this.compatibleSemanticIndex.searchQueries(businessId, chunks, embeddings, this.embeddingProvider, safeLimit, 0.55, options);
-      if (semanticCorpusFingerprint(corpus) !== semanticCorpusFingerprint(await this.semanticCorpus(businessId))) return [];
-      const ranked = new Map<string, { match: KnowledgeSearchMatch; rank: number }>();
-      for (const set of sets) for (const [position, match] of set.entries()) {
-        const key = `${match.sourceId}:${match.text}`;
-        const prior = ranked.get(key);
-        ranked.set(key, { match: prior && Number(prior.match.score) > Number(match.score) ? prior.match : match,
-          rank: (prior?.rank || 0) + 1 / (60 + position + 1) });
-      }
-      return this.filterCurrentMatches(businessId, [...ranked.values()].sort((a, b) => b.rank - a.rank).slice(0, safeLimit).map(e => e.match));
-    } catch {
-      console.warn('Planned semantic Knowledge unavailable; lexical fallback remains available.');
+      return await semanticBudget(options,async current=>{
+        const trial = current.candidateFallback && Object.freeze({...current.candidateFallback,
+          lexicalEmpty:Promise.resolve(current.candidateFallback.lexicalEmpty).catch(() => false)});
+        if (trial && (trial.policy !== CANDIDATE_RETRIEVAL_POLICY || threshold !== 0.55)) throw new Error('knowledge_candidate_policy_invalid');
+        await abortable(this.ensureInitialized(),current.signal);
+        if (!this.storage.persistentSemanticSearch) throw new Error('knowledge_index_search_unavailable');
+        const observe = current.observe || (<T>(promise:Promise<T>) => promise);
+        const embeddings = supplied || (batch ? await abortable(observe(this.embeddingProvider!.embedDocuments(queries,current)),current.signal) :
+          [await abortable(observe(this.embeddingProvider!.embedQuery(queries[0],current)),current.signal)]);
+        if (embeddings.length !== queries.length || embeddings.some(e=>!compatibleQuery(e))) {
+          semanticStatus(options,{status:'unavailable',reason:'invalid_vector'});return [];
+        }
+        // Text reconstruction only: workflow exclusion happens BEFORE top-N ranking.
+        const corpus = batch || trial ? await abortable(this.semanticCorpus(businessId,false,current),current.signal) : [];
+        const request: PersistentSearchRequest = {businessId,embeddings,limit:Math.max(1,Math.min(Number(limit)||5,10)),
+          minSimilarity:Number.isFinite(Number(threshold))?Math.max(-1,Math.min(Number(threshold),1)):0.55,
+          excludedChunks:corpus.filter(c=>explicitlyWrongWorkflow(c.text,queries[0])).map(c=>({source_id:c.sourceId,content:c.text}))};
+        let result = parsePersistentSearch(await this.storage.persistentSemanticSearch(request,current),request);
+        let origin: 'strict-semantic' | 'candidate' = 'strict-semantic';
+        if (trial && result.coverage.complete && result.matches.every(set => set.length === 0) &&
+          await abortable(trial.lexicalEmpty,current.signal) === true) {
+          const candidates: PersistentSearchRequest = {...request,limit:Math.min(request.limit,5),minSimilarity:-1};
+          const fallback = parsePersistentSearch(await this.storage.persistentSemanticSearch(candidates,current),candidates);
+          if (!fallback.coverage.complete || fallback.coverage.inventoryToken !== result.coverage.inventoryToken) {
+            semanticStatus(options,{status:'unavailable',reason:'source_changed'});return [];
+          }
+          result = fallback;
+          origin = 'candidate';
+        }
+        // A newly completed revision can race the text-only exclusion read. Do
+        // not let that revision bypass the existing workflow filter/top-N guard.
+        if((batch || trial) && result.matches.some(set=>set.some(m=>explicitlyWrongWorkflow(String(m.text),queries[0])))) {
+          semanticStatus(options,{status:'unavailable',reason:'source_changed'});return [];
+        }
+        const ranked = new Map<string,{match:KnowledgeSearchMatch;rank:number}>();
+        for (const set of result.matches) for (const [position,match] of set.entries()) {
+          const key=JSON.stringify([match.sourceId,match.text]);const prior=ranked.get(key);
+          ranked.set(key,{match:prior&&Number(prior.match.score)>Number(match.score)?prior.match:match,rank:(prior?.rank||0)+1/(60+position+1)});
+        }
+        const selected=[...ranked.values()].sort((a,b)=>b.rank-a.rank).slice(0,origin==='candidate'?Math.min(request.limit,5):request.limit)
+          .map(e=>origin==='candidate'?{...e.match,indexProof:{...e.match.indexProof!,candidatePolicy:CANDIDATE_RETRIEVAL_POLICY}}:e.match);
+        const valid=await abortable(this.filterCurrentMatches(businessId,selected,{strictSources:true,captureRevision:true},undefined,current),current.signal);
+        if(valid.length!==selected.length) semanticStatus(options,{status:'unavailable',reason:'source_changed'});
+        else semanticStatus(options,{status:result.coverage.complete?'complete':'incomplete',coverage:result.coverage});
+        try { options?.onRetrieval?.({origin,count:valid.length,...(origin==='candidate'?{policy:CANDIDATE_RETRIEVAL_POLICY}:{})}); } catch { /* Observability has no authority. */ }
+        return valid;
+      });
+    } catch(error) {
+      semanticStatus(options,{status:'unavailable',reason: options?.signal?.aborted || String(error).includes('timeout') ? 'timeout':'storage_unavailable'});
       return [];
     }
   }
 
+  /** Index coverage is NOT question completeness. Callers relying on inventory must recheck it. */
+  async validateSemanticCoverage(businessId:number, coverage:IndexCoverage, options?:KnowledgeSemanticOptions):Promise<boolean> {
+    if(coverage.businessId!==businessId)return false;
+    try { return await semanticBudget(options,async current=>{
+      if(!this.storage.persistentSemanticSearch)return false;
+      const request:PersistentSearchRequest={businessId,embeddings:[],limit:1,minSimilarity:0.55,excludedChunks:[]};
+      const result=parsePersistentSearch(await this.storage.persistentSemanticSearch(request,current),request);
+      return result.coverage.inventoryToken===coverage.inventoryToken;
+    }); } catch { return false; }
+  }
+
   async validateMatches(businessId: number, matches: KnowledgeSearchMatch[], options: KnowledgeValidationOptions = {}): Promise<KnowledgeSearchMatch[]> {
-    await this.ensureInitialized();
-    return this.filterCurrentMatches(businessId, matches, options);
+    await abortable(this.ensureInitialized(), options.signal);
+    return this.filterCurrentMatches(businessId, matches, options, undefined, options.signal ? {signal:options.signal} : undefined);
   }
 
   private async filterCurrentMatches(businessId: number, matches: KnowledgeSearchMatch[], options: KnowledgeValidationOptions = {},
-    metrics?: LexicalRetrievalMetrics): Promise<KnowledgeSearchMatch[]> {
+    metrics?: LexicalRetrievalMetrics, semanticOptions?: KnowledgeSemanticOptions): Promise<KnowledgeSearchMatch[]> {
     const listStarted = performance.now();
     if (metrics) metrics.sourceListReads++;
     let sources: KnowledgeSource[];
-    try { sources = await this.storage.list(businessId); }
+    try { sources = await this.storage.list(businessId,semanticOptions); }
     catch (error) { if (metrics) metrics.sourceListFailures++; throw error; }
     finally { if (metrics) metrics.sourceListMs += performance.now() - listStarted; }
+    if (matches.some(m=>m.indexProof)) {
+      let current: PersistentSearchResult | undefined;
+      try { current=await semanticBudget(semanticOptions,async opts=>{
+        const request:PersistentSearchRequest={businessId,embeddings:[],limit:1,minSimilarity:0.55,excludedChunks:[]};
+        return parsePersistentSearch(await this.storage.persistentSemanticSearch!(request,opts),request);
+      }); } catch { /* Fail closed for semantic proofs, retain lexical siblings. */ }
+      matches=matches.filter(m=>{
+        if(!m.indexProof)return true;
+        const source=current?.coverage.sources.find(s=>s.sourceId===m.sourceId&&s.businessId===businessId);
+        const valid=!!source&&sameSourceProof(source,m.indexProof.source) &&
+          (m.indexProof.candidatePolicy===undefined || m.indexProof.candidatePolicy===CANDIDATE_RETRIEVAL_POLICY &&
+            current?.coverage.complete===true && current.coverage.inventoryToken===m.indexProof.inventoryToken);
+        if(!valid)options.onRejected?.(m.sourceId,'SOURCE_REVISION');
+        return valid;
+      });
+    }
     try { return this.filterMatchesFromSources(businessId, matches, sources, options, metrics); }
     catch (error) { if (metrics) metrics.validationFailures++; throw error; }
   }
@@ -919,14 +1063,15 @@ export class KnowledgeService {
         if (match.metadata?.documentRevision && match.metadata.documentRevision !== revision) return reject('SOURCE_REVISION');
         const canonical = corpus.find((chunk) => chunk.text === String(match.text || "").trim() &&
           (match.metadata?.page === undefined || match.metadata.page === chunk.metadata?.page) &&
-          (match.metadata?.sheet === undefined || match.metadata.sheet === chunk.metadata?.sheet));
+          (match.metadata?.sheet === undefined || match.metadata.sheet === chunk.metadata?.sheet) &&
+          (!match.indexProof || ['page','sheet','section'].every(key=>match.metadata?.[key]===chunk.metadata?.[key])));
         return canonical ? [{ ...match, text: canonical.text, metadata: { ...canonical.metadata, documentRevision: revision } }] : reject('SOURCE_CHUNK');
       });
     } finally { if (metrics) metrics.validationMs += performance.now() - validationStarted; }
   }
 
-  private async semanticCorpus(businessId: number, documentsOnly = false): Promise<SemanticChunk[]> {
-    const sources = await this.storage.list(businessId);
+  private async semanticCorpus(businessId: number, documentsOnly = false, options?:KnowledgeSemanticOptions): Promise<SemanticChunk[]> {
+    const sources = await this.storage.list(businessId,options);
     return sources.filter((source) => source.businessId === businessId && source.status === "ready" && (!documentsOnly || source.type === "document"))
       .flatMap((source) => source.type === "document" ? documentCorpus(source) : chunkKnowledgeContent(source.content).map((chunk) => ({
         sourceId: source.id, businessId, text: chunk.content, metadata: chunk.metadata,

@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
+import {withoutExplicitParkingFeeTerms} from './information-request-contract';
 
 /** Dashboard cancellation settings describe automatic cancellation and fees,
  * not a hard prohibition on cancelling later. No document can grant a mutation. */
@@ -6,6 +7,15 @@ export type CancellationPolicy = Readonly<{
   allowCancellation: boolean; deadlineMinutes: number; feeEnabled: boolean;
   feeAmount: number; currency: string;
 }>;
+
+/** Keep cancellation/unspecified-fee handling conservative, but a fee explicitly
+ * attached to parking is not itself cancellation evidence. This projection is
+ * classification-only: the original question and every amount remain intact. */
+export function isCancellationInformationRequested(text:string):boolean {
+ if(/cancel|avbok|stornier|absag|لغو|إلغاء|الغاء/iu.test(text))return true;
+ const otherFees=withoutExplicitParkingFeeTerms(text);
+ return /\bfees?\b|avgift|gebühr|cargo|هزینه|رسوم/iu.test(otherFees);
+}
 
 const pick = (config: any, camel: string, snake: string) =>
   config?.[camel] !== undefined ? config[camel] : config?.[snake];

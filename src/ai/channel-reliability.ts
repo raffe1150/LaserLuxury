@@ -83,14 +83,53 @@ export function hasStrongLatinPersianEvidence(text: string): boolean {
   return scoreLatinPersianEvidence(text) >= 3;
 }
 
+/** Only top-level communication instructions authorize an explicit switch.
+ * Keep clause-local target binding; quoted instructions are data, not requests. */
+export function languageInstructionText(text: string): string {
+  return text.normalize('NFKC')
+    .replace(/```[\s\S]*?```|`[^`]*`/gu,' ')
+    .replace(/"[^"]*"|“[^”]*”|«[^»]*»|‘[^’]*’|(?<![\p{L}\p{N}])'[^']*'(?![\p{L}\p{N}])/gu,' ');
+}
+
+// Recognition-only projections never edit the customer message used by other flows.
+const LANGUAGE_NEGATION = /\b(?:do\s+not|don['’]t|not|never|no|nicht|nie|niemals|kein(?:e[nrms]?)?|inte|ej|aldrig|icke|nunca|jam[aá]s)\b|(?:^|[^\p{L}\p{N}])(?:هرگز|هیچ[‌\s]?وقت|نکن(?:ید|یم)?|مکن(?:ید)?|نده(?:ید)?|ننویس(?:ید)?|نگو(?:یید)?|نزن(?:ید)?|لا|ليس|أبدا|أبدًا)(?=$|[^\p{L}\p{N}])/iu;
+const LANGUAGE_UNCERTAINTY = /\b(?:maybe|perhaps|possibly|vielleicht|eventuell|kanske|möjligen|quiz[aá]s?|tal\s+vez)\b|(?:^|[^\p{L}\p{N}])(?:شاید|ممکن\s+است|ربما|لعل)(?=$|[^\p{L}\p{N}])/iu;
+type DirectLanguageInstruction = {targets:string[];polarity:'positive'|'negative'|'uncertain'};
+
+/** Rejection is distinct from absence: implicit/model language detection must
+ * not turn a rejected communication instruction into an authorized switch. */
+export function languageSwitchDecision(text:string): {language:string|null;blocksImplicit:boolean} {
+  if(text.length>4000)return {language:null,blocksImplicit:true};
+  const unquoted=languageInstructionText(text);
+  const positive=new Set<string>(),negative=new Set<string>();let uncertain=false,recognized=false;
+  const clauses=unquoted.split(/[.!?؟,،;؛\n]+|\s+(?:and|but|und|aber|och|men|y|pero|اما|ولی|لكن|و)\s+/iu).map(c=>c.trim()).filter(Boolean);
+  for(const clause of clauses) {
+    const direct=clause.replace(/^(?:and|but|und|aber|och|men|y|pero|اما|ولی|لكن|و)\s+/iu,'');
+    const instruction=detectDirectLanguageSwitch(direct,clauses.length===1);
+    if(!instruction)continue;
+    recognized=true;
+    if(instruction.polarity==='uncertain')uncertain=true;
+    else for(const target of instruction.targets)(instruction.polarity==='negative'?negative:positive).add(target);
+  }
+  const selected=positive.size===1?[...positive][0]:null;
+  const language=selected&&!negative.has(selected)&&!uncertain?selected:null;
+  return {language,blocksImplicit:recognized&&!language};
+}
 export function detectExplicitLanguageSwitch(text: string): string | null {
+  return languageSwitchDecision(text).language;
+}
+
+function detectDirectLanguageSwitch(text: string, allowSelection: boolean): DirectLanguageInstruction | null {
   const raw = String(text || '').normalize('NFKC').trim().toLowerCase();
   if (!raw) return null;
 
   // A language name mentioned in ordinary prose must not change the active
   // conversation language. Accept only a short language selection or a clear
   // communication request addressed to the assistant.
-  const selection = raw
+  const negative=LANGUAGE_NEGATION.test(raw),uncertain=LANGUAGE_UNCERTAINTY.test(raw);
+  const recognition=raw.replace(new RegExp(LANGUAGE_NEGATION.source,'giu'),' ')
+    .replace(new RegExp(LANGUAGE_UNCERTAINTY.source,'giu'),' ').replace(/\s+/gu,' ').trim();
+  const selection = recognition
     .replace(/[.!?؟]+$/u, '')
     .trim()
     .replace(/^(?:please|bitte|por favor|snälla|لطفاً?|من فضلك)\s+/u, '')
@@ -105,7 +144,8 @@ export function detectExplicitLanguageSwitch(text: string): string | null {
     ['ar', /(?:^|[^\p{L}\p{N}])(?:arabic|عربي|العربية|بالعربية|عربی|arabiska|arabisch|árabe|arabe)(?=$|[^\p{L}\p{N}])/u],
   ];
 
-  const selectedLanguage = languageAliases.find(([, pattern]) => pattern.test(selection))?.[0] || null;
+  const matches=languageAliases.filter(([,pattern])=>pattern.test(selection));
+  const selectedLanguage = matches.length===1?matches[0][0]:null;
 
   const languageOnly = Boolean(
     selectedLanguage &&
@@ -113,19 +153,35 @@ export function detectExplicitLanguageSwitch(text: string): string | null {
   );
 
   const request =
-    /^(?:(?:please|bitte|por favor|snälla)[,\s]+)?(?:(?:can|could|would)\s+(?:you|we)\s+)?(?:reply|respond|answer|speak|continue|switch|use|antworten|antworte|sprechen|sprich|wechsle|wechseln|svara|prata|fortsätt|byt|responde|responder|habla|hablar|contesta|cambia)\b/u.test(raw) ||
-    /^(?:kan\s+du|kan\s+ni)\s+(?:svara|prata|fortsätta|byta)\b/u.test(raw) ||
-    /^(?:bitte\s+)?(?:antworten|sprechen)\s+sie\b/u.test(raw) ||
-    /^(?:por favor[,\s]+)?(?:responde|respóndeme|contesta|habla|continúa|continua|cambia)\b/u.test(raw) ||
-    /^(?:لطفاً?\s+)?(?:از\s+این\s+به\s+بعد\s+)?(?:به\s+[\p{L}\p{M}]+\s+)?(?:پاسخ|جواب|صحبت)(?=$|[^\p{L}\p{N}])/u.test(raw) ||
-    /^(?:لطفاً?\s+)?(?:از\s+این\s+به\s+بعد\s+)?به\s+[\p{L}\p{M}]+(?:\s+با\s+من)?\s+(?:پاسخ\s+(?:بده|دهید)|جواب\s+(?:بده|دهید)|صحبت\s+(?:کن|کنید))/u.test(raw) ||
-    /^(?:لطفاً?\s+)?فارسی(?:\s+با\s+من)?\s+صحبت(?:\s+کنیم|\s+کن|\s+کنید)?/u.test(raw) ||
-    /^(?:(?:من فضلك|رجاءً?)\s+)?(?:أجب|اجب|تحدث|تكلم)(?=$|[^\p{L}\p{N}])/u.test(raw) ||
-    /^(?:(?:من فضلك|رجاءً?)\s+)?(?:أجب|اجب|تحدث|تكلم)\s+(?:ب)?العربية/u.test(raw);
+    /^(?:(?:please|bitte|por favor|snälla)[,\s]+)?(?:(?:can|could|would)\s+(?:you|we)\s+)?(?:reply|respond|answer|speak|write|continue|switch|use|antworten|antworte|sprechen|sprich|wechsle|wechseln|schreib|schreiben|verwende|verwenden|benutze|benutzen|svara|prata|skriv|använd|fortsätt|byt|responde|responder|habla|hablar|contesta|cambia|escribe|escriba|usa|use|utiliza|utilice)\b/u.test(recognition) ||
+    /^(?:kan\s+du|kan\s+ni)\s+(?:svara|prata|skriva|använda|fortsätta|byta)\b/u.test(recognition) ||
+    /^(?:bitte\s+)?(?:antworten|sprechen)\s+sie\b/u.test(recognition) ||
+    /^(?:por favor[,\s]+)?(?:responde|respóndeme|contesta|habla|continúa|continua|cambia)\b/u.test(recognition) ||
+    /^(?:لطفاً?\s+)?(?:از\s+این\s+به\s+بعد\s+)?(?:به\s+[\p{L}\p{M}]+\s+)?(?:پاسخ|جواب|صحبت|حرف|بنویس(?:ید)?|ننویس(?:ید)?)(?=$|[^\p{L}\p{N}])/u.test(recognition) ||
+    /^(?:لطفاً?\s+)?(?:از\s+این\s+به\s+بعد\s+)?به\s+[\p{L}\p{M}]+(?:\s+با\s+من)?\s+(?:پاسخ\s+(?:بده|دهید)|جواب\s+(?:بده|دهید)|صحبت\s+(?:کن|کنید))/u.test(recognition) ||
+    /^(?:لطفاً?\s+)?فارسی(?:\s+با\s+من)?\s+صحبت(?:\s+کنیم|\s+کن|\s+کنید)?/u.test(recognition) ||
+    /^(?:(?:من فضلك|رجاءً?)\s+)?(?:أجب|اجب|تحدث|تكلم|اكتب|أكتب|استخدم)(?=$|[^\p{L}\p{N}])/u.test(recognition) ||
+    /^(?:(?:من فضلك|رجاءً?)\s+)?(?:أجب|اجب|تحدث|تكلم|اكتب|أكتب|استخدم)\s+(?:ب)?العربية/u.test(recognition) ||
+    /^(?:لطفاً?\s+)?از\s+(?:زبان\s+)?[\p{L}\p{M}]+\s+استفاده/u.test(recognition) ||
+    negative&&(/^(?:(?:من فضلك|رجاءً?)\s+)?(?:تجب|تتحدث|تتكلم|تكتب|تستخدم)(?=$|[^\p{L}\p{N}])/u.test(recognition)||
+      /^(?:por favor\s+)?(?:respondas|hables|escribas|uses|utilices)\b/u.test(recognition));
 
-  if (!selectedLanguage || (!languageOnly && !request)) return null;
+  if (!matches.length || (!languageOnly && !request) || (!allowSelection && !request && !(languageOnly&&(negative||uncertain)))) return null;
+  if(matches.length!==1)return {targets:matches.map(([code])=>code),polarity:'uncertain'};
+  if(request&&!languageOnly) {
+    const target=matches[0][1].exec(recognition);
+    if(!target)return null;
+    const before=recognition.slice(0,target.index+target[0].search(/[\p{L}\p{M}]/u));
+    // A language in an explanation/topic is not the requested reply language.
+    const boundTarget=/(?:\b(?:in|auf|på|en|to|till|a)|به(?: زبان)?|از(?: زبان)?|باللغة|ب)\s*$/u.test(before)||
+      /(?:\b(?:speak|write|use|habla|hablar|escribe|escriba|usa|use|utiliza|utilice|prata|skriv|använd|sprich|schreib|schreiben(?: sie)?|verwende|verwenden(?: sie)?|benutze|benutzen(?: sie)?)|(?:^|\s)(?:تحدث|تكلم|أجب|اجب|اكتب|أكتب|استخدم|تجب|تتحدث|تتكلم|تكتب|تستخدم))\s+$/u.test(before)||
+      /^(?:لطفاً?\s+)?فارسی(?:\s+با\s+من)?\s+صحبت/u.test(raw)||
+      negative&&/\b(?:respondas|hables|escribas|uses|utilices)\s+$/u.test(before);
+    if(!boundTarget)return null;
+    if(/^(?:can|could)\s+you\s+speak\b/u.test(raw))return {targets:[selectedLanguage!],polarity:'uncertain'};
+  }
 
-  return selectedLanguage;
+  return {targets:[selectedLanguage!],polarity:uncertain?'uncertain':negative?'negative':'positive'};
 }
 
 export function resolveStableConversationLanguage(

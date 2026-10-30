@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { nativeKnowledgeTiming } from './knowledge-timing-policy';
 
 // Temporary, business-info-only diagnostics. Never retain message contents,
 // recipients, evidence, tokens, or factual verdicts here.
@@ -71,6 +72,18 @@ export function markBusinessInformationTiming(sessionId: string, stage: string, 
   details: { language?: string; disposition?: string; success?: boolean; httpStatus?: number } = {}) {
   const timing = currentTiming(sessionId);
   markTiming(timing, stage, durationMs, details);
+}
+
+/** Scoped scheduling metrics only: no prompts, evidence, identifiers or verdict prose. */
+export function recordKnowledgePolicyStage(stage: 'queued' | 'dispatch' | 'settled', allowanceMs: number, queueWaitMs = 0) {
+  const timing = nativeKnowledgeTiming();
+  if (!timing) return;
+  timing.record(`provider_${stage}`);
+  runOptionalDiagnostic(() => console.info('[KnowledgeTimingPolicyStage]', {
+    policyVersion: timing.policy.version, policyTurnId: timing.turnId, stage, allowanceMs: elapsed(allowanceMs), queueWaitMs: elapsed(queueWaitMs),
+    turnElapsedMs: elapsed(Date.now() - timing.startedAt), turnRemainingMs: elapsed(timing.remaining()),
+    publicationReserveMs: timing.policy.publicationMs, verificationReserveMs: timing.policy.verificationReserveMs,
+  }));
 }
 function markTiming(timing: Timing | undefined, stage: string, durationMs = 0,
   details: { language?: string; disposition?: string; success?: boolean; httpStatus?: number } = {}) {

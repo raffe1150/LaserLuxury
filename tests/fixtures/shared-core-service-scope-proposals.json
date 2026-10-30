@@ -1,0 +1,119 @@
+{
+  "note": "Sanitized real-provider proposed units that incorrectly equated two offerings; not authoritative answers.",
+  "evidence": [
+    {
+      "id": "e1",
+      "businessId": 77,
+      "text": "7. Kvarglömda föremål \nFöremål som hittas i studion lämnas till receptionen. \nKvarglömda föremål förvaras normalt i upp till 21 dagar . \nVärdesaker registreras separat. Kunden behöver beskriva föremålet innan det kan lämnas ut. \nAdMotion Studio ansvarar inte för att skicka kvarglömda föremål med post enligt dessa testvillkor. \n8. Digitala informationssamtal \nAdMotion Studio erbjuder i detta test digitala informationssamtal för kunder som behöver allmän vägledning inför ett första besök. \nDigitala informationssamtal används endast för inledande information. \nDe ersätter inte automatiskt ett fysiskt besök, och alla ärenden kan inte hanteras digitalt. \nTillgängliga tider och eventuella priser för tjänster hanteras separat i studions ordinarie boknings- och serviceinformation. \n9. Särskilda förberedelser \nKunder bör undvika att använda starkt parfymerade produkter precis före sitt besök, eftersom andra besökare kan vara känsliga för\ndofter. \nDet är tillåtet att ta med en egen vatten fl aska. \nMat får inte förtäras i behandlings- eller arbetsrummen, men enklare mellanmål är tillåtna i väntrummet. \n10. Frågor som dokumentet inte besvarar \nDetta dokument innehåller inte uppgifter om: \n• Priser på studions tjänster \n• Tjänsternas längd \n• Lediga bokningstider \n• Ordinarie öppettider \n• Vilka betalningsmetoder som accepteras \n• Fullständiga avbokningsvillkor \n• Vilka speci fi ka tjänster som erbjuds \nFör dessa uppgifter ska OdinLink använda andra relevanta, veri fi erade informationskällor när sådana fi nns. \nOm en uppgift inte kan veri fi eras ska AI-assistenten inte hitta på ett svar. \nDokumentets syfte: Att testa om OdinLink kan läsa, hitta och återge speci fi ka uppgifter från en uppladdad PDF, förstå villkor och\nundantag samt skilja kompletterande kundinformation från struk",
+      "sourceId": "fixture-e1",
+      "chunkId": "fixture-e1",
+      "version": "fixture"
+    },
+    {
+      "id": "e2",
+      "businessId": 77,
+      "text": "AdMotion Studio – Kundinformation och vanliga frågor \nTestdokument för OdinLink Knowledge Library \nObservera: All information i detta dokument är fi ktiv och används enbart för att testa OdinLinks AI-assistent. Uppgifterna ska inte\nbetraktas som AdMotion Studios verkliga kundvillkor. \n1. Inför ditt besök \nVi rekommenderar att alla besökare läser igenom informationen före sitt första besök hos AdMotion Studio. \nKunder som besöker studion för första gången rekommenderas att komma cirka 10 minuter före sin bokade tid för att hinna förbereda sig\ni lugn och ro. \nTa gärna med din bokningsbekräftelse, digitalt eller på papper. Om du har fått särskilda förberedelseinstruktioner inför ditt besök ska du\nfölja dessa. \n2. Hitta till studion \nFör detta test gäller följande fi ktiva besöksinformation: \nStudions entré ligger på innergården, inte vid huvudingången mot gatan. \nBesökare ska använda porten märkt Aurora 7 och därefter följa de blå skyltarna till receptionen på andra våningen. \nDet fi nns hiss i byggnaden. Hissen nås via innergårdens högra sida. \n3. Parkering och kollektivtra fi k \nFör besökare som kommer med bil fi nns ett parkeringsgarage som i detta test kallas Nordpark . \nGaragets infart ligger på Stjärngatan 14 . Från garaget tar det ungefär fem minuter att gå till studions entré. \nAdMotion Studio erbjuder inte gratis parkering och kan inte reservera parkeringsplatser. \nCyklar får parkeras vid cykelställen på innergården, men inte framför entrén. \n4. Medföljande personer \nEn kund får ta med sig en vuxen medföljande person till receptionens väntrum. \nMedföljande personer får däremot inte automatiskt följa med in i behandlings- eller arbetsrummet. Detta måste godkännas separat av\npersonalen. \nBarn under 12 år får inte lämnas utan uppsikt i receptionen. \n5. Om du blir för",
+      "sourceId": "fixture-e2",
+      "chunkId": "fixture-e2",
+      "version": "fixture"
+    },
+    {
+      "id": "configured-services",
+      "businessId": 77,
+      "text": "{\"authority\":\"structured_services\",\"services\":[{\"name\":\"Video Consultation\",\"price\":300,\"currency\":\"SEK\",\"durationMinutes\":60}]}",
+      "sourceId": "configured-services:77",
+      "chunkId": "fixture-configured-services",
+      "version": "fixture"
+    }
+  ],
+  "proposal": {
+    "oversized": false,
+    "units": [
+      {
+        "facetIds": [
+          "f1"
+        ],
+        "subject": "AdMotion Studio",
+        "predicate": "bietet Video Consultation an",
+        "value": "Video Consultation",
+        "modality": "descriptive",
+        "negation": false,
+        "scope": "digitale Erstinformation vor einem ersten Besuch",
+        "qualifiers": [
+          "für allgemeine Orientierung",
+          "nicht alle Anliegen können digital bearbeitet werden"
+        ],
+        "language": "de",
+        "text": "AdMotion Studio bietet Video Consultation zur allgemeinen Orientierung vor einem ersten Besuch an.",
+        "evidenceRefs": [
+          {
+            "evidenceId": "e1",
+            "exactQuote": "AdMotion Studio erbjuder i detta test digitala informationssamtal för kunder som behöver allmän vägledning inför ett första besök."
+          }
+        ]
+      },
+      {
+        "facetIds": [
+          "f1"
+        ],
+        "subject": "Video Consultation",
+        "predicate": "kostet",
+        "value": "300 SEK",
+        "modality": "descriptive",
+        "negation": false,
+        "scope": "konfigurierte Dienstleistung",
+        "qualifiers": [],
+        "language": "de",
+        "text": "Die Video Consultation kostet 300 SEK.",
+        "evidenceRefs": [
+          {
+            "evidenceId": "configured-services",
+            "exactQuote": "\"name\":\"Video Consultation\",\"price\":300,\"currency\":\"SEK\""
+          }
+        ]
+      },
+      {
+        "facetIds": [
+          "f1"
+        ],
+        "subject": "Video Consultation",
+        "predicate": "dauert",
+        "value": "60 Minuten",
+        "modality": "descriptive",
+        "negation": false,
+        "scope": "konfigurierte Dienstleistung",
+        "qualifiers": [],
+        "language": "de",
+        "text": "Die Video Consultation dauert 60 Minuten.",
+        "evidenceRefs": [
+          {
+            "evidenceId": "configured-services",
+            "exactQuote": "\"name\":\"Video Consultation\",\"price\":300,\"currency\":\"SEK\",\"durationMinutes\":60"
+          }
+        ]
+      },
+      {
+        "facetIds": [
+          "f1"
+        ],
+        "subject": "Video Consultation",
+        "predicate": "ersetzt nicht automatisch",
+        "value": "einen Besuch vor Ort",
+        "modality": "descriptive",
+        "negation": false,
+        "scope": "digitale Informationsgespräche",
+        "qualifiers": [
+          "alle Anliegen können nicht digital bearbeitet werden"
+        ],
+        "language": "de",
+        "text": "Die Video Consultation ersetzt einen Besuch vor Ort nicht automatisch, und nicht alle Anliegen können digital bearbeitet werden.",
+        "evidenceRefs": [
+          {
+            "evidenceId": "e1",
+            "exactQuote": "De ersätter inte automatiskt ett fysiskt besök, och alla ärenden kan inte hanteras digitalt."
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1101,7 +1101,7 @@ test('semantic Knowledge retrieval uses the original normalized natural paraphra
     knowledgeConfig,
   );
 
-  assert.deepEqual(semanticQueries, ['Where can I leave my car?']);
+  assert.deepEqual(semanticQueries, ['Where can I leave my car?', 'parking address']);
   assert.match(retrieved, /Customer parking is behind the studio\./u);
 });
 

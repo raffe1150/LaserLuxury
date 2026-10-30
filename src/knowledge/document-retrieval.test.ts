@@ -16,14 +16,20 @@ function document(content: string, id='doc', businessId=1, status:KnowledgeSourc
   return {id,businessId,type:'document',title:'Synthetic policy.pdf',status,content,createdAt:'2026-10-13',updatedAt:'2026-10-13',
     metadata:{segments:[{start:0,end:content.length,page:2}]}};
 }
-const vector=(provider:string, axis=0)=>({provider,model:'synthetic-multilingual',dimensions:2,version:1,values:axis?[0,1]:[1,0]});
+const vector=(provider:string, axis=0)=>({provider,model:provider==='openai'?'text-embedding-3-small':'synthetic-multilingual',dimensions:provider==='openai'?768:2,version:1,values:Array.from({length:provider==='openai'?768:2},(_,i)=>i===axis?1:0)});
 for(const provider of ['openai','gemini']) test(`${provider}: six question languages retrieve all six document languages (simulated embeddings)`,async()=>{
   const storage=new InMemoryKnowledgeStorage();const calls:string[]=[];
-  const embeddings={supportsLocalSemanticSearch:true,
+  const embeddings={supportsLocalSemanticSearch:provider==='openai',
     embedQuery:async(q:string)=>vector(provider,Object.values(questions).includes(q)?0:1),
     embedDocuments:async(batch:string[])=>{calls.push(...batch);return batch.map(text=>vector(provider,Object.values(texts).includes(text)?0:1));}};
   const service=new KnowledgeService(storage,storage,embeddings);
-  for(const [language,text] of Object.entries(texts))await storage.create(document(text,language));
+  for(const [language,text] of Object.entries(texts)){
+    await storage.create(document(text,language));
+    if(provider==='openai'){
+      await storage.replaceChunks(1,language,[{chunkIndex:0,content:text,metadata:{source:'document',page:2}}]);
+      storage.completeSemanticIndex(1,language,storage.indexSnapshot(1,language)!,[vector(provider)]);
+    }
+  }
   await storage.create(document('Foreign private policy','foreign',2));
   for(const question of Object.values(questions)) {
     const matches=await service.semanticSearch(1,question,10);
@@ -32,6 +38,7 @@ for(const provider of ['openai','gemini']) test(`${provider}: six question langu
   }
   assert.deepEqual(await service.semanticSearch(1,'Unrelated question about Bitcoin payments'),[]);
   assert.equal(calls.includes('Foreign private policy'),false);
+  if(provider==='openai')assert.equal(calls.length,0,'Single query method embeds no corpus');
 });
 test('current document publication rejects stale text, forged provenance and every non-ready/foreign state',async()=>{
   const storage=new InMemoryKnowledgeStorage();const service=new KnowledgeService(storage,storage);
@@ -103,4 +110,14 @@ test('unknown, oversized, foreign and malformed corpora cannot suppress semantic
  assert.equal(await service.completeSmallCorpus(1,lexical),null);await storage.delete(1,'large');
  for(let i=0;i<5;i++)await storage.create(document('Separate condition '+i,'extra'+i));
  assert.equal(await service.completeSmallCorpus(1,lexical),null,'Even a high lexical score cannot replace omitted sources');
+});
+
+test('persistent match provenance must exactly match canonical page, sheet and section',async()=>{
+ const storage=new InMemoryKnowledgeStorage(),s=document(texts.en);await storage.create(s);
+ await storage.replaceChunks(1,s.id,[{chunkIndex:0,content:s.content,metadata:{source:'document',page:2}}]);
+ storage.completeSemanticIndex(1,s.id,storage.indexSnapshot(1,s.id)!,[vector('openai')]);
+ const service=new KnowledgeService(storage,storage,{supportsLocalSemanticSearch:true,embedQuery:async()=>vector('openai'),embedDocuments:async qs=>qs.map(()=>vector('openai'))});
+ const matches=await service.semanticSearch(1,'Cancellation notice?');assert.equal(matches.length,1);
+ for(const metadata of [{...matches[0].metadata,page:99},{...matches[0].metadata,sheet:'forged'},{...matches[0].metadata,section:'forged'},{source:'document'}])
+  assert.deepEqual(await service.validateMatches(1,[{...matches[0],metadata}],{strictSources:true}),[]);
 });

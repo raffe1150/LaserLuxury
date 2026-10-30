@@ -149,8 +149,9 @@ test('compound services + recommendation fallback presents verified services and
   assert.match(reply, /Intro Facial/);
   assert.match(reply, /45 minutes/);
   assert.match(reply, /650 SEK/);
-  assert.match(reply, /\?$/);
-  assert.match(reply, /(?:help|goal|looking for|choose)/i);
+  assert.match(reply, /(?:what you want to achieve|what.*goal|what.*looking for|how.*help)/i);
+  assert.match(reply, /preferences|constraints|budget|timing/i);
+  assert.match(reply, /(?:help|goal|looking for|choose|achieve)/i);
   assert.doesNotMatch(reply, /Premium/);
   assert.doesNotMatch(reply, /can't find a specific answer/i);
 });
@@ -249,7 +250,8 @@ test('unsafe factual or booking clarification candidate is not preserved', async
   );
 
   assert.match(reply, /Intro Facial/);
-  assert.match(reply, /\?$/);
+  assert.match(reply, /(?:what you want to achieve|what.*goal|what.*looking for|how.*help)/i);
+  assert.match(reply, /preferences|constraints|budget|timing/i);
   assert.doesNotMatch(reply, /book our Premium|Premium treatment|best choice|999/i);
 });
 
@@ -297,7 +299,8 @@ test('localized deterministic clarification is used when no safe clarification s
   );
 
   assert.match(reply, /Intro Facial tar 45 minuter/);
-  assert.match(reply, /(?:Vad|Vilken|Hur).+\?$/u);
+  assert.match(reply, /vad du vill uppnå/u);
+  assert.match(reply, /önskemål|begränsningar/u);
   assert.doesNotMatch(reply, /definitivt|bäst för alla/i);
 });
 

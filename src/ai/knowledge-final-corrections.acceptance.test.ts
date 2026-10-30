@@ -115,7 +115,12 @@ for (const language of ['sv', 'en', 'de', 'es', 'fa', 'ar']) test(`short ${langu
   for (const [id, businessId, status] of [['A',8801,'ready'],['B',8802,'ready'],['failed',8801,'failed']] as const) {
     await storage.create({id,businessId,status,type:'document',title:'Synthetic.txt',content:parsed.content,metadata:parsed.metadata,createdAt:'2026',updatedAt:'2026'});
   }
-  const vectors = (texts: string[]) => texts.map(() => ({ values: Array.from({length:768}, (_,i)=>i===0?1:0), model:'synthetic', provider:'openai', dimensions:768 }));
+  const vectors = (texts: string[]) => texts.map(() => ({ values: Array.from({length:768}, (_,i)=>i===0?1:0), model:'text-embedding-3-small', provider:'openai', dimensions:768,version:1 }));
+  for(const id of ['A','B']){
+    const businessId=id==='A'?8801:8802;
+    await storage.replaceChunks(businessId,id,parsed.chunks.map(c=>({chunkIndex:Number(c.chunk_index),content:String(c.content),metadata:c.metadata as any})));
+    storage.completeSemanticIndex(businessId,id,storage.indexSnapshot(businessId,id)!,vectors(parsed.chunks.map(c=>String(c.content))));
+  }
   const service = new KnowledgeService(storage,storage,{supportsLocalSemanticSearch:true,embedQuery:async()=>{throw Error('Must batch');},embedDocuments:async texts=>vectors(texts) as any});
   const original = ({sv:'Vilken avbokningsfrist gäller?',en:'What cancellation deadline applies?',de:'Welche Stornierungsfrist gilt?',es:'¿Qué plazo de cancelación aplica?',fa:'مهلت لغو نوبت چیست؟',ar:'ما مهلة إلغاء الموعد؟'} as any)[language];
   const selected: string[][] = [];

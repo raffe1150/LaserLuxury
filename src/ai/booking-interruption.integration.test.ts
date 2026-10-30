@@ -121,9 +121,10 @@ for (const mode of ['semantic', 'lexical', 'missing', 'failure'] as const) {
     await storage.create(doc); await storage.create({ ...doc, id: 'foreign', businessId: 88, content: 'FOREIGN-CODE' });
     await storage.replaceChunks(77, doc.id, extracted.chunks.map((c: any, i: number) => ({ chunkIndex: i, content: c.content, metadata: c.metadata })));
     let embedded = 0;
-    const vector = { provider: 'openai', model: 'synthetic-only', dimensions: 2, version: 1, values: [1, 0] };
+    const vector = { provider: 'openai', model: 'text-embedding-3-small', dimensions: 768, version: 1, values: Array.from({length:768},(_,i)=>i===0?1:0) };
+    storage.completeSemanticIndex(77,doc.id,storage.indexSnapshot(77,doc.id)!,extracted.chunks.map(()=>vector));
     const service = new KnowledgeService(storage, storage, { supportsLocalSemanticSearch: true,
-      embedQuery: async () => { if (mode === 'failure') throw Error('synthetic offline outage'); return vector; },
+      embedQuery: async () => { if (mode === 'failure') throw Error('synthetic offline outage'); embedded++; return vector; },
       embedDocuments: async texts => { embedded += texts.length; assert.ok(texts.every(t => !t.includes('FOREIGN'))); return texts.map(() => vector); } });
     const diagnostics: any[] = [];
     b.configure({
@@ -148,7 +149,7 @@ for (const mode of ['semantic', 'lexical', 'missing', 'failure'] as const) {
     assert.equal(d.semanticMatchCount, mode === 'semantic' ? 1 : 0);
     assert.equal(d.lexicalMatchCount, mode === 'lexical' ? 1 : 0);
     assert.equal(d.mergeStrategy, mode === 'semantic' ? 'reciprocal_rank_fusion' : 'lexical_fallback');
-    if (mode === 'semantic') assert.equal(embedded, 1, 'real local cosine search over stub vectors; never paid semantics');
+    if (mode === 'semantic') assert.equal(embedded, 1, 'query-only embedding over a completed synthetic index; no corpus call');
     const answer = await b.finalizeGeneralAiReply(id, matrix[0].question, 'Testkoden är BLÅ-RÄV-742.', 'sv');
     assert.equal(answer.includes('BLÅ-RÄV-742'), found, answer);
     if (found) assert.deepEqual(b.geminiToolNames(id), [], 'document evidence grants no tools');
@@ -241,3 +242,16 @@ for (const row of matrix) for (const channel of channels) {
     });
   }
 }
+
+for(const row of matrix)for(const channel of channels)test(`${channel}/${row.lang}: read-only detour preserves collected contact and confirmation state`,async()=>{
+ const id=`contact-detour-${channel}-${row.lang}`;seed(id,channel,row.lang,'awaiting_confirmation');
+ const seeded=b.pendingStateSnapshot(id);
+ b.seedPending(id,{...seeded,customerName:'Mira Synthetic',customerPhone:'0701234567',contactPhoneSource:'explicit_customer_message'});
+ const before=b.pendingStateSnapshot(id);
+ for(const text of [row.question,`${row.negative} ${row.question}`]){
+  const r=await turn(id,channel,text);
+  assert.equal(r.handled,false);assert.equal(r.pending.continuationPaused,true);
+  for(const key of ['businessId','platform','userId','service','serviceId','status','dateTime','selectedSlotEnd','ownedOfferedSlots','customerName','customerPhone','contactPhoneSource'])assert.deepEqual(r.pending[key],before[key],key);
+ }
+ assert.equal(b.pendingStateSnapshot('another-customer'),null);
+});

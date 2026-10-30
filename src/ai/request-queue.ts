@@ -10,7 +10,9 @@ export class AiRequestQueue {
   private active = 0;
   private waiting: WaitingRequest[] = [];
 
-  constructor(private readonly concurrency: number) {}
+  constructor(private readonly concurrency: number, private readonly maxWaiting = Infinity) {}
+
+  snapshot() { return Object.freeze({ active: this.active, waiting: this.waiting.length, concurrency: this.concurrency, maxWaiting: this.maxWaiting }); }
 
   private acquire(signal?: AbortSignal): Promise<void> {
     if (signal?.aborted) return Promise.reject(signal.reason);
@@ -18,6 +20,7 @@ export class AiRequestQueue {
       this.active++;
       return Promise.resolve();
     }
+    if (this.waiting.length >= this.maxWaiting) return Promise.reject(new Error('knowledge_admission_overload'));
     return new Promise<void>((resolve, reject) => {
       const entry: WaitingRequest = {
         signal,

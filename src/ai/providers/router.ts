@@ -1,3 +1,4 @@
+import {denyTrialAction} from '../../runtime/controlled-knowledge-trial';
 import type { EmbeddingProvider, EmbeddingVector } from "../embeddings";
 import type {
   AiProviderAdapter,
@@ -114,7 +115,7 @@ export async function embedWithConfiguredProvider(
   options?: import("../embeddings").EmbeddingRequestOptions,
 ): Promise<EmbeddingVector[]> {
   const provider = getConfiguredAiProvider();
-  if (provider === "gemini") return gemini.embedDocuments(texts);
+  if (provider === "gemini") {denyTrialAction();return gemini.embedDocuments(texts);}
   const adapter = getAiProviderAdapter(provider);
   if (!adapter?.embed) throw new Error("Configured provider does not support embeddings.");
   return adapter.embed(texts, options);

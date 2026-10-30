@@ -1,7 +1,10 @@
+import {trialEnforced,assertTrialProvider,denyTrialAction,controlledTrialSource,controlledTrialSignal} from '../../runtime/controlled-knowledge-trial';
+import {executeTrialRequest} from '../controlled-trial-admission';
 import OpenAI, { toFile } from "openai";
 import type { EmbeddingVector } from "../embeddings";
 import { buildOpenAiFailureDiagnostic } from "./openai-diagnostic";
 import { normalizeOpenAiToolSchema } from "./openai-tool-schema";
+import { executeKnowledgeGeneration, type KnowledgeUsage } from '../knowledge-model-policy';
 import type {
   UnifiedAiGenerationRequest,
   UnifiedAiGenerationResponse,
@@ -116,6 +119,9 @@ export function normalizeOpenAiGenerationResponse(
 export async function generateWithOpenAi(
   request: UnifiedAiGenerationRequest,
 ): Promise<UnifiedAiGenerationResponse> {
+  if(trialEnforced())assertTrialProvider('openai',request.knowledgeExecution ? (request.knowledgeExecution.stage==='extraction'?'knowledge_units_extraction':'knowledge_units_verification') : request.controlledTrialStage==='language'?'semantic_language_resolution':undefined);
+  const trialSignal=controlledTrialSignal();
+  if(trialSignal)request={...request,signal:AbortSignal.any([trialSignal,...(request.signal?[request.signal]:[])])};
   const apiKey = process.env.OPENAI_API_KEY;
 
   if (!apiKey) {
@@ -125,6 +131,7 @@ export async function generateWithOpenAi(
   const client = new OpenAI({
     apiKey,
     maxRetries: 0,
+    ...(request.knowledgeExecution || trialEnforced() ? { baseURL: 'https://api.openai.com/v1' } : {}),
   });
 
   const model = resolveOpenAiTextModel(request.model);
@@ -134,9 +141,12 @@ export async function generateWithOpenAi(
     instructions: request.systemInstruction,
     input: toOpenAiInput(request.messages),
     tools,
-    // Explicit stage-local opt-in. Booking, general conversation and unknown
-    // model defaults remain unchanged. Low is supported by this exact model.
-    ...(request.reasoningEffort === 'low' && model === 'gpt-5.6-luna'
+    // Keep Luna and the verifier unchanged. Extraction additionally requires
+    // an explicit canonical Sol request; an inherited model is not an opt-in.
+    ...(request.reasoningEffort === 'low' && (model === 'gpt-5.6-luna' ||
+      model === 'gpt-6.1-sol' && request.structuredOutput?.strict === true &&
+      (request.structuredOutput.name === 'odinlink_knowledge_verification_v2' ||
+        request.model === 'gpt-6.1-sol' && request.structuredOutput.name === 'odinlink_knowledge_extraction_v2'))
       ? { reasoning: { effort: 'low' as const } } : {}),
     ...(request.structuredOutput ? {
       text: {
@@ -158,8 +168,18 @@ export async function generateWithOpenAi(
       : {}),
   };
   let response;
+  let knowledgeUsage: KnowledgeUsage | undefined;
   try {
-    response = await client.responses.create(params as any, request.signal ? { signal: request.signal } : undefined);
+    if (request.knowledgeExecution) {
+      if (process.env.OPENAI_BASE_URL && process.env.OPENAI_BASE_URL.replace(/\/$/u, '') !== 'https://api.openai.com/v1')
+        throw new Error('knowledge_sol_endpoint_mismatch');
+      const result = await executeKnowledgeGeneration(request, params, (wire, signal, timeout, projectId) =>
+        client.responses.create(wire as unknown as OpenAI.Responses.ResponseCreateParamsNonStreaming, { signal, timeout, maxRetries: 0,
+          ...(projectId ? { headers: { 'OpenAI-Project': projectId } } : {}) }));
+      response = result.response; knowledgeUsage = result.usage;
+    } else if(trialEnforced()) response=await executeTrialRequest('language',params,{signal:request.signal,timeoutMs:20000},
+      (wire,signal,timeout,project)=>client.responses.create(wire as unknown as OpenAI.Responses.ResponseCreateParamsNonStreaming,{signal,timeout,maxRetries:0,headers:{'OpenAI-Project':project}}));
+    else response = await client.responses.create(params as any, request.signal ? { signal: request.signal } : undefined);
   } catch (error) {
     console.error("[OpenAIProviderFailure]", buildOpenAiFailureDiagnostic(error, {
       model,
@@ -169,7 +189,7 @@ export async function generateWithOpenAi(
     throw error;
   }
 
-  return normalizeOpenAiGenerationResponse(response);
+  return { ...normalizeOpenAiGenerationResponse(response), ...(knowledgeUsage ? { knowledgeUsage } : {}) };
 }
 
 const transcriptionPrompt =
@@ -227,6 +247,7 @@ export function normalizeOpenAiTranscriptionResponse(
 export async function transcribeWithOpenAi(
   request: UnifiedAiTranscriptionRequest,
 ): Promise<UnifiedAiTranscriptionResponse> {
+  denyTrialAction();
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) throw new Error("OPENAI_API_KEY is not configured");
 
@@ -245,13 +266,16 @@ export async function embedWithOpenAi(texts: string[], options?: import("../embe
   }
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) throw new Error("OPENAI_API_KEY is not configured");
-  const client = new OpenAI({ apiKey, maxRetries: 0, timeout: 20_000 });
+  const client = new OpenAI({ apiKey, maxRetries: 0, timeout: 20_000, ...(trialEnforced()?{baseURL:'https://api.openai.com/v1'}:{}) });
   const model = "text-embedding-3-small";
   const dimensions = 768;
   options?.signal?.throwIfAborted();
-  const response = await client.embeddings.create({
-    model, input: texts, dimensions, encoding_format: "float",
-  }, { signal: options?.signal, timeout: Math.min(20_000, options?.timeoutMs ?? 20_000) });
+  const wire={model,input:texts,dimensions,encoding_format:'float' as const};
+  const send=(body:Record<string,unknown>,signal:AbortSignal,timeout:number,project:string)=>client.embeddings.create(
+    body as unknown as OpenAI.EmbeddingCreateParams,{signal,timeout,maxRetries:0,headers:{'OpenAI-Project':project}});
+  const response=trialEnforced()? await executeTrialRequest(controlledTrialSource()?'source_index':'query_embedding',wire,
+    {signal:options?.signal,timeoutMs:Math.min(20000,options?.timeoutMs??20000)},send)
+    : await client.embeddings.create(wire,{signal:options?.signal,timeout:Math.min(20000,options?.timeoutMs??20000)});
   if (!Array.isArray(response.data) || response.data.length !== texts.length) {
     throw new Error("Embedding provider returned an unexpected result count.");
   }

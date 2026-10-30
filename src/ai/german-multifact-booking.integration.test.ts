@@ -37,7 +37,7 @@ function providerUnderstanding(includeContact = true): CanonicalStructuredUnders
   };
 }
 
-function fixture(providerOutput = providerUnderstanding()) {
+function fixture(providerOutput = providerUnderstanding(), groundedContact = true) {
   let availabilityReads = 0;
   const adoptionDecisions: any[] = [];
   boundary.reset();
@@ -51,7 +51,15 @@ function fixture(providerOutput = providerUnderstanding()) {
     postProcess: async () => undefined,
     incrementUsage: async () => ({ allowed: true, count: 1, limit: 100 }),
     structuredUnderstandingAdoptionRuntime: {
-      async evaluate() { return providerOutput; },
+      async evaluate(input: {message:string}) {
+        const result=structuredClone(providerOutput);
+        if(groundedContact)for(const field of ['name','phone'] as const) {
+          const fact=result.entities[field];
+          const start=fact?input.message.indexOf(fact.value):-1;
+          if(fact&&start>=0)fact.evidence=[{start:field==='phone'?input.message.lastIndexOf('.',start)+1:start,end:start+fact.value.length,explicit:true}];
+        }
+        return result;
+      },
       emitDecisions(_correlationId: string, decisions: readonly any[]) {
         adoptionDecisions.push(...decisions);
       },
@@ -140,5 +148,46 @@ for (const [sessionId, text, expectedDateDisposition] of [
   );
 }
 
+// Provider contact claims without exact current-turn evidence must stay rejected.
+{
+ const state=fixture(providerUnderstanding(),false);
+ const result=await run('german-ungrounded-contact','14 Uhr morgen passt. Alex Testsson hier, 0701234567. Bitte buchen.');
+ assert.equal(result.pending?.customerName??null,null);
+ assert.equal(state.adoptionDecisions.find(d=>d.field==='name')?.disposition,'provider_rejected_validation');
+}
 boundary.reset();
-console.log('German multi-fact first-turn booking regression tests passed');
+
+// Equivalent real booking-state paths with synthetic provider understanding.
+// Grounded proposals never authorize calendar insertion or skip confirmation.
+for(const [language,request,contact,correction]of [
+ ['en','I want to book tomorrow at 14.','My name is Alex Testsson and my phone is 0701234567.','My name is Mira Testsson.'],
+ ['sv','Jag vill boka en tid imorgon klockan 14.','Mitt namn är Alex Testsson och mitt nummer är 0701234567.','Mitt namn är Mira Testsson.'],
+ ['de','Ich möchte morgen um 14 Uhr einen Termin buchen.','Mein Name ist Alex Testsson und meine Handynummer ist 0701234567.','Mein Name ist Mira Testsson.'],
+ ['es','Quiero reservar una cita mañana a las 14.','Mi nombre es Alex Testsson y mi número es 0701234567.','Mi nombre es Mira Testsson.'],
+ ['fa','برای فردا ساعت 14 یک نوبت می‌خواهم.','نام من Alex Testsson است و شماره من 0701234567 است.','نام من Mira Testsson است.'],
+ ['ar','أريد حجز موعد غدًا الساعة 14.','اسمي Alex Testsson ورقمي 0701234567.','اسمي Mira Testsson.'],
+]as const){
+ const output=providerUnderstanding();output.language.primary.value=language;
+ fixture(output);
+ const session=`six-contact-${language}`;
+ const first=await run(session,`${request} ${contact}`);
+ assert.equal(first.pending?.customerName,'Alex Testsson',`${language}: grounded first-turn name`);
+ assert.equal(first.pending?.customerPhone,'0701234567');
+ assert.equal(first.pending?.status,'awaiting_confirmation');
+ const corrected=await run(session,correction);
+ assert.equal(corrected.pending?.customerName,'Mira Testsson',`${language}: current correction replaces old name`);
+ assert.equal(corrected.pending?.customerPhone,'0701234567');
+ const foreign=await boundary.turn({sessionId:session,platformName:'telegram',recipientUserId:session,text:request,
+  businessConfig:{...businessConfig,id:'8',businessName:'Other Synthetic Clinic'},now,shadowEligibleCustomerTurn:true});
+ assert.equal(foreign.pending?.customerName??null,null,`${language}: another tenant cannot borrow the contact name`);
+ assert.equal(foreign.pending?.customerPhone??null,null,`${language}: another tenant cannot borrow the contact phone`);
+ fixture(output);
+ const missing=await run(session,request);
+ assert.equal(missing.pending?.customerName??null,null,`${language}: absent name cannot be filled by an ungrounded model`);
+ const submitted=await run(session,contact);
+ assert.equal(submitted.pending?.customerName,'Alex Testsson',`${language}: sequential contact`);
+ assert.equal(submitted.pending?.customerPhone,'0701234567');
+}
+boundary.reset();
+
+console.log('Multilingual grounded booking contact regression tests passed');

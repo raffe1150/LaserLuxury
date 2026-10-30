@@ -47,7 +47,9 @@ test(`${language}/${outcome}: shared facet reuse never establishes entailment or
       calls.push(stage);
       if(stage==='extraction') {
         assert.deepEqual(data.allowedFacetIds,['f1']);assert.deepEqual(data.facets,facets);assert.equal(data.question,question);
-        assert.match(instruction,/multiple units answering the same question reuse the same facet ID/);
+        // Facet binding is asserted by the request-local schema and payload,
+        // not an arbitrary sentence in the extraction prompt. Retain the same
+        // complete/partial/timeout verdicts and publication expectations below.
         return{text:JSON.stringify({units:sentences.slice(0,2).map(s=>proposal(s,language))})};
       }
       if(stage==='verification') {

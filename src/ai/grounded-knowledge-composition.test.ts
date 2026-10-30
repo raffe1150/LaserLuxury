@@ -62,8 +62,8 @@ test('single PARTIAL has an explicit default-off admission gate',async()=>{
  const {manifest,calls}=await run({allowSinglePartial:false});assert.equal(manifest.naturalOutcome,'canonical_fallback');assert.equal(manifest.naturalReason,'NATURAL_SINGLE_PARTIAL_DISABLED');
  assert.ok(manifest.text.includes(rec));assert.equal(calls.length,2);
 });
-test('feature OFF keeps original reference composer and canonical wording',async()=>{
- const {manifest,calls}=await run({enabled:false,single:false});assert.deepEqual(calls,['extraction','verification','composition']);assert.equal(manifest.naturalOutcome,undefined);assert.ok(manifest.text.includes(rec));assert.ok(manifest.text.includes(arrangement));
+test('feature OFF uses direct single-facet presentation and preserves canonical wording',async()=>{
+ const {manifest,calls}=await run({enabled:false,single:false});assert.deepEqual(calls,['extraction','verification']);assert.equal(manifest.presentationPath,'direct_verified_units');assert.equal(manifest.presentationFallback,false);assert.equal(manifest.fallbackReason,null);assert.equal(manifest.naturalOutcome,undefined);assert.ok(manifest.text.includes(rec));assert.ok(manifest.text.includes(arrangement));
 });
 for(const field of NATURAL_FLAGS)test(`final verifier rejects ${field}=false without erasing a verified fact`,async()=>{
  const {manifest}=await run({verdict:d=>{const v=naturalVerdict(d);v.flags[field]=false;return v;}});

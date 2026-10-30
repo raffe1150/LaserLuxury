@@ -1,3 +1,4 @@
+import { withoutTemporalBookingAttribute } from './booking-operation-reference';
 // Remove only the local predicate of an explicit modal/non-success form from
 // the detection copy. Never exempt a sentence or change the published text:
 // another completed predicate, even in the same sentence, remains detectable.
@@ -31,7 +32,7 @@ function assertedOperationProse(sentence: string): string {
 export function containsWebOperationSuccess(text: string): boolean {
   const normalized = String(text || '').normalize('NFKC');
   return normalized.split(/[.!?\n؟。]+/u).some(original => {
-    const sentence = assertedOperationProse(original);
+    const sentence = withoutTemporalBookingAttribute(assertedOperationProse(original));
     // Positive booking predicates are checked locally here; the shared guard's
     // sentence-wide negation exemption could hide a second affirmative claim.
     return /\b(?:appointment|booking|slot|time)\b.{0,40}\b(?:booked|confirmed|reserved|created|secured)\b|\b(?:booked|confirmed|reserved|created|secured)\b.{0,40}\b(?:appointment|booking|slot|time)\b/iu.test(sentence) ||

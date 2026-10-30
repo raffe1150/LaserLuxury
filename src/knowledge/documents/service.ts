@@ -20,7 +20,10 @@ export function documentChunks(sections: ExtractedSection[], filename: string) {
 }
 export class DocumentService {
   private active = false;
-  constructor(private client: SupabaseClient | null, private extract = extractInProcess) {}
+  constructor(private client: SupabaseClient | null, private extract = extractInProcess,
+    private readonly indexing?: { recover(): Promise<unknown>; stop(): void }) {}
+  recoverIndex() { return this.indexing?.recover() ?? Promise.resolve([]); }
+  stopIndexing() { this.indexing?.stop(); }
   private db(): SupabaseClient {
     if (!this.client) throw new DocumentError('document_unavailable', 503);
     return this.client;

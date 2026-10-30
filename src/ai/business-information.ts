@@ -1,4 +1,5 @@
 import { withoutNegatedBookingClauses } from './booking-interruption';
+import {hasVisitInformationContext} from './information-request-contract';
 
 /** Read-only topic recognition. It does not choose services or authorize bookings. */
 export type BusinessInformationTopic = 'company' | 'services' | 'contact' | 'hours' | 'prices' | 'policies' | 'parking' | 'meetings';
@@ -31,14 +32,14 @@ const topicPatterns: Record<BusinessInformationTopic, RegExp> = {
   services: /\b(?:services?|offer(?:ings?)?|dienstleistungen?|leistungen?|angebot\w*|serviceportfolio|leistungskatalog|pakete?|tjänst\w*|utbud|servicios?|ofrecen|paquetes?)\b|خدمات|سرویس|الخدمات|خدمة/iu,
   contact: /(?<![\p{L}\p{M}\p{N}_])(?:contact\w*|reach|website|location|located|entrance\w*|entry|übersichtsseite|standort\w*|kundeneingang\w*|eingang\w*|zugang\w*|erreichen|kontakt\w*|address|adresse|adress|ingång\w*|entré\w*|kundentré\w*|ubicaci[oó]n|ubicad\w*|direcci[oó]n|entrada\w*|acceso\w*|befind\w*)(?![\p{L}\p{M}\p{N}_])|\bvar\s+ligger\b|تماس|آدرس|ورودی|محل|موقع|عنوان|اتصال|مدخل|المدخل|مكان|کجا\s+هست/iu,
   hours: /(?<![\p{L}\p{M}\p{N}_])(?:opening hours|hours|öffnungszeiten|öppettider|horarios?)(?![\p{L}\p{M}\p{N}_])|ساعات کاری|ساعات العمل/iu,
-  prices: /\b(?:prices?|costs?|pricing|preisen?|preise?|kosten|pris\w*|kostar|precios?|cuesta)\b|قیمت|هزینه|السعر|أسعار/iu,
+  prices: /\b(?:prices?|costs?|pricing|preisen?|preise?|kost(?:en|et)|pris\w*|kostar|precios?|cuesta)\b|قیمت|هزینه|(?:ال)?سعر(?:ها|ه|كم)?|أسعار/iu,
   policies: /\b(?:polic\w*|conditions|requirements|preparation|prepare|bring|payment|documents?|cancel(?:lation|lations)?|deadline|notice period|stornier\w*|stornierung\w*|absagefrist|bedingungen|geschäftsbedingungen|vorbereit\w*|mitbringen|betalning|villkor|avboka|avbokning\w*|förbereda|ta med|condiciones|preparar|llevar|pago|cancelar|cancelaci[oó]n)\b|شرایط|آماده|پرداخت|لغو|شروط|تحضير|دفع|إلغاء|الغاء/iu,
   meetings: /\b(?:digitala?\s+m(?:ö|o)ten|digitalt|digital(?:e[nr]?|es)?\s+(?:meetings?|treffen|besprechungen)|digitally|online|remote\s+(?:meetings?|services?)|reuniones?\s+(?:digitales|virtuales))\b|(?:جلسات|خدمات)\s+(?:آنلاین|دیجیتال)|اجتماعات\s+(?:رقمية|افتراضية)|عن\s+بعد/iu,
   parking: /(?<![\p{L}\p{M}\p{N}_])(?:park(?:ing|er[\p{L}\p{M}]*|en|pl[\p{L}\p{M}]*)?|aparca[\p{L}\p{M}]*)(?![\p{L}\p{M}\p{N}_])|پارکینگ|پارک\s+کن|موقف(?:ات)?|مواقف|ركن\s+سيار/iu,
 };
 export function businessInformationTopics(text: string): BusinessInformationTopic[] {
   return (Object.entries(topicPatterns) as [BusinessInformationTopic, RegExp][])
-    .filter(([topic, pattern]) => pattern.test(text) || (topic === 'policies' && isAdvanceBookingPolicyQuestion(text)) || (topic === 'contact' && isBusinessAddressQuestion(text)))
+    .filter(([topic, pattern]) => pattern.test(topic==='contact'?text.replace(/تحل\s+محل/gu,''):text) || (topic === 'policies' && (isAdvanceBookingPolicyQuestion(text)||hasVisitInformationContext(text))) || (topic === 'contact' && isBusinessAddressQuestion(text)))
     .map(([topic]) => topic);
 }
 
@@ -196,78 +197,6 @@ export function isSimpleCatalogLocationQuestion(text: string): boolean {
     /^ما الخدمات التي تقدمونها وأين (?:موقعكم|يقع مكانكم)$/u,
     /^چه خدماتی دارید و (?:کجا هستین|کجا هستید|آدرستون کجاست)$/u,
   ].some(pattern => pattern.test(question));
-}
-
-/** Whole-question recognition only: no goal, named service, comparison, extra
- * fact or booking instruction. Unknown wording retains normal grounding. */
-export function isGenericRecommendationClarificationQuestion(text: string): boolean {
-  if (!isBusinessRecommendationQuestion(text)) return false;
-
-  const question = text.normalize('NFKC')
-    .replace(/[\u064b-\u065f]/gu, '')
-    .trim()
-    .replace(/^[¡¿]*(?:hello|hi|hej|hallo|hola|مرحبا|سلام)(?=[\s!,،.])[\s!,،.]+/iu, '')
-    .replace(/^[¿¡]+|[?!؟.]+$/gu, '')
-    .trim();
-
-  // Never use the deterministic shortcut for compound factual requests.
-  if (businessInformationTopics(question).some(topic =>
-    ['company', 'prices', 'contact', 'hours', 'policies', 'parking'].includes(topic)
-  )) return false;
-
-  // Never consume an actual booking instruction here.
-  if (
-    /\b(?:please\s+(?:book|reserve)|i\s+(?:want|would like)\s+to\s+(?:book|reserve)|boka|buche?n|reservar|reserva)\b|(?:رزرو\s+کن|احجز|أحجز)/iu
-      .test(question)
-  ) return false;
-
-  // Existing conservative first-visit / catalog recommendation forms.
-  const existingGeneric = [
-    /^(?:what (?:would|do) you recommend|which service (?:would|do) you recommend(?: for me)?)(?: for (?:a first[- ]time visitor|someone visiting for the first time))?$/iu,
-    /^what services do you offer and what (?:would|do) you recommend(?: for a first[- ]time visitor)?$/iu,
-    /^(?:can you )?tell me (?:a little )?about your services and what you (?:would )?recommend for someone visiting for the first time$/iu,
-    /^vad rekommenderar ni(?: för (?:mig|någon som kommer första gången))?$/iu,
-    /^vilka tjänster (?:har|erbjuder) ni och vad rekommenderar ni(?: för första gången)?$/iu,
-    /^(?:kan ni )?berätta lite om era tjänster och vad ni rekommenderar för någon som kommer första gången$/iu,
-    /^welche (?:leistung|dienstleistung) (?:empfehlen sie|würden sie (?:mir )?empfehlen)(?: beim ersten besuch)?$/iu,
-    /^welche dienstleistungen bieten sie an und was empfehlen sie(?: beim ersten besuch)?$/iu,
-    /^können sie mir etwas über ihre dienstleistungen erzählen und was sie für einen ersten besuch empfehlen$/iu,
-    /^qué servicio recomendarían(?: para (?:mí|alguien que viene por primera vez))?$/iu,
-    /^qué servicios ofrecen y qué (?:recomiendan|recomendarían)(?: para alguien que viene por primera vez)?$/iu,
-    /^pueden contarme un poco sobre sus servicios y qué recomendarían para alguien que viene por primera vez$/iu,
-    /^(?:برای بار اول )?چه خدماتی پیشنهاد می[‌\s]?کنید$/u,
-    /^چه خدماتی دارید و برای بار اول چه پیشنهادی دارید$/u,
-    /^می[‌\s]?توانید کمی درباره خدماتتان بگویید و برای کسی که بار اول می[‌\s]?آید چه پیشنهادی دارید$/u,
-    /^ما الخدمة التي توصي بها(?: لزيارة أولى)?$/u,
-    /^ما الخدمات التي تقدمونها وماذا توصي به(?: لزيارة أولى)?$/u,
-    /^هل يمكنك إخباري قليلا عن خدماتكم وما الذي توصي به لشخص يزوركم لأول مرة$/u,
-  ].some(pattern => pattern.test(question));
-
-  if (existingGeneric) return true;
-
-  // Structural clarification pattern:
-  // A) customer says they do not know which service fits them
-  // B) customer asks what information is needed before a recommendation
-  const uncertainServiceFit = [
-    /\b(?:i(?:'m| am)? not sure|i do not know|i don't know|unsure).{0,80}\b(?:which|what).{0,30}\b(?:service|option).{0,40}\b(?:suit(?:s|ed|able)?|fit(?:s)?|right|appropriate|best)(?:\s+me)?(?=\s*[.!?]|$)/iu,
-    /\b(?:jag vet inte|jag är osäker).{0,80}\b(?:vilken|vilka).{0,30}\b(?:tjänst|tjänster|alternativ).{0,40}\b(?:passar|lämplig)(?:\s+(?:mig|för mig))?(?=\s*[.!?]|$)/iu,
-    /\b(?:ich weiß nicht|ich weiss nicht|ich bin unsicher).{0,80}\b(?:welche|welcher).{0,30}\b(?:dienstleistung|leistung|option).{0,40}\b(?:passt|geeignet)(?=\s*[.!?]|$)/iu,
-    /\b(?:no sé|no se|no estoy seguro|no estoy segura).{0,80}\b(?:qué|que|cuál|cual).{0,30}\b(?:servicio|opción|opcion).{0,40}\b(?:conviene|adecuad[oa]?|encaja)(?:\s+(?:para mí|para mi))?(?=\s*[.!?]|$)/iu,
-    /(?:نمی[‌\s]?دانم|مطمئن نیستم).{0,80}(?:کدام|چه).{0,30}(?:خدمت|سرویس|گزینه).{0,40}(?:مناسب|بهتر)(?:\s+(?:است|هست))?(?=\s*[.!؟?]|$)/u,
-    /(?:لا أعرف|لست متأكدا|لست متأكدة).{0,80}(?:أي|ما).{0,30}(?:خدمة|خدمات|خيار).{0,40}(?:تناسب(?:ني)?|مناسب(?:ة)?)(?=\s*[.!؟?]|$)/u,
-  ].some(pattern => pattern.test(question));
-
-  const asksWhatIsNeeded = [
-    /\bwhat.{0,40}(?:do you need to know|information do you need).{0,60}(?:before|to).{0,30}(?:recommend|suggest)/iu,
-    /\bvad.{0,40}(?:behöver ni veta|behöver du veta|behöver ni för information).{0,60}(?:innan|för att).{0,30}rekommend/iu,
-    /\bwas.{0,40}(?:müssen sie wissen|muessen sie wissen|brauchen sie).{0,60}(?:bevor|um).{0,30}empfehl/iu,
-    /\bqué.{0,40}(?:necesitan saber|información necesitan|informacion necesitan).{0,60}(?:antes de|para).{0,30}recomend/iu,
-    /(?:چه|چقدر).{0,40}(?:اطلاعات|چیزی).{0,40}(?:نیاز دارید|لازم دارید).{0,60}(?:پیش از|قبل از|برای).{0,30}پیشنهاد/u,
-    /(?:پیش از|قبل از).{0,20}پیشنهاد.{0,40}(?:چه|چقدر).{0,30}(?:اطلاعات|چیزی).{0,30}(?:نیاز دارید|لازم دارید)/u,
-    /(?:ما|ماذا).{0,40}(?:تحتاجون إلى معرفته|تحتاج أن تعرف|المعلومات التي تحتاج).{0,60}(?:قبل|لأجل|من أجل).{0,30}(?:التوصية|توصي)/u,
-  ].some(pattern => pattern.test(question));
-
-  return uncertainServiceFit && asksWhatIsNeeded;
 }
 
 export function isRecommendationInformationRequest(text: string): boolean {

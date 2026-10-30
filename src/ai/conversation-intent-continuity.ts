@@ -1,3 +1,4 @@
+import { hasIntroducedReferent } from './information-request-contract';
 import { isBusinessInformationQuestion, isExplicitBusinessActionRequest } from './business-information';
 
 /** Only separate independently understood literal clauses. Never synthesize an
@@ -38,6 +39,7 @@ export function hasConversationReference(text: string): boolean {
  * sentence. Recognize grammar only: never infer an address or a source fact.
  * Demonstratives, multiple questions and unrelated follow-ups stay unresolved. */
 export function hasExternalConversationReference(text: string): boolean {
+  if (hasIntroducedReferent(text) && !/\b(?:there|där|dort|all[ií]|same\s+place)\b|آنجا/iu.test(text)) return false;
   const clauses = text.split(/\s+(?:and|och|und)\s+/iu);
   if (clauses.length === 2 && !hasConversationReference(clauses[0]) &&
       /^(?:where\s+is|var\s+(?:ligger|finns)|wo\s+(?:ist|befindet))/iu.test(clauses[0]) &&

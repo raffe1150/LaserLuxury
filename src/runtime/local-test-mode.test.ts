@@ -96,8 +96,8 @@ function verifyServerIntegration(): void {
   );
   const chatRoute = sourceSection(
     serverSource,
-    'app.post("/api/chat"',
-    'app.post("/api/transcribe"',
+    'async function processWebChatInternal(',
+    'async function startServer()',
   );
   const listenCallback = sourceSection(
     serverSource,
@@ -119,13 +119,19 @@ function verifyServerIntegration(): void {
     /if \(odinLinkStartupPolicy\.backgroundJobsEnabled\)[\s\S]*startAllBusinessTelegramPollers\(\)[\s\S]*setupDailyReminders\(\)/,
   );
 
-  assert.match(chatRoute, /const \{ chatId: clientChatId \} = req\.body/);
-  assert.match(chatRoute, /res\.json\(\{ text: textPart, audioData: audioDataOut, mimeType: outMimeType, chatId \}\)/);
+  // Website chat moved behind the authenticated installation/visitor router.
+  // Verify the current authority boundary rather than the removed legacy route.
+  assert.match(serverSource, /app\.use\('\/api', createWebsiteKnowledgeRouter\(\{/);
+  assert.match(chatRoute, /const businessConfig = scoped\.websiteBusinessConfig;/);
+  assert.match(chatRoute, /getBusinessIdFromConfig\(scoped\.websiteBusinessConfig\)\) !== scoped\.websiteVisitor\.businessId/);
+  assert.match(chatRoute, /const conversationId = scoped\.websiteVisitor\.visitorId;/);
+  assert.match(chatRoute, /const \{ messageId: clientMessageId \} = req\.body/);
+  assert.match(chatRoute, /generateSecureConversationContent\(chatId, \{/);
+  assert.match(chatRoute, /tools: \[\]/);
+  assert.match(chatRoute, /publishWebsiteReply\(scoped, res, publication\)/);
   assert.doesNotMatch(chatRoute, /apiKey\s*\}\s*=\s*req\.body/);
-  assert.match(
-    chatRoute,
-    /new GoogleGenAI\(\{ apiKey: process\.env\.GEMINI_API_KEY \}\)/,
-  );
+  assert.doesNotMatch(chatRoute, /new GoogleGenAI\(/);
+
 }
 
 await verifyHealthEndpoint();

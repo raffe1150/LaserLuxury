@@ -1,0 +1,466 @@
+{
+  "sourceArtifact": "docs/validation/shared-core-2026-10-22/real-source-aware-routing-focus-one.json",
+  "sourceArtifactSha256": "0f49e7caae815ce8f976eb4e74d3f2f43faa32030808fb770a4e75c87a38342f",
+  "provenanceNote": "Selected real-provider outputs and wire evidence, copied unchanged. Questions/facets reconstructed from the unchanged run fixture; historical complete verifier input and private source/revision identifiers were not captured. Replay uses new synthetic bindings, not historical private IDs.",
+  "cases": [
+    {
+      "language": "en",
+      "questionIndex": 1,
+      "questionFromRunFixture": "I am considering booking a Video Consultation. What does it cost, how long does it last, and can it replace an in-person visit?",
+      "facetsReconstructed": [
+        {
+          "subject": "customer request",
+          "attribute": "I am considering booking a Video Consultation. What does it cost, how long does it last, and can it replace an in-person visit?",
+          "questionType": "description",
+          "obligations": [
+            {
+              "description": "I am considering booking a Video Consultation. What does it cost, how long does it last, and can it replace an in-person visit?",
+              "questionType": "description"
+            }
+          ]
+        }
+      ],
+      "wireDocumentEvidence": [
+        {
+          "id": "e1",
+          "businessId": 77,
+          "text": "AdMotion Studio – Kundinformation och vanliga frågor \nTestdokument för OdinLink Knowledge Library \nObservera: All information i detta dokument är fi ktiv och används enbart för att testa OdinLinks AI-assistent. Uppgifterna ska inte\nbetraktas som AdMotion Studios verkliga kundvillkor. \n1. Inför ditt besök \nVi rekommenderar att alla besökare läser igenom informationen före sitt första besök hos AdMotion Studio. \nKunder som besöker studion för första gången rekommenderas att komma cirka 10 minuter före sin bokade tid för att hinna förbereda sig\ni lugn och ro. \nTa gärna med din bokningsbekräftelse, digitalt eller på papper. Om du har fått särskilda förberedelseinstruktioner inför ditt besök ska du\nfölja dessa. \n2. Hitta till studion \nFör detta test gäller följande fi ktiva besöksinformation: \nStudions entré ligger på innergården, inte vid huvudingången mot gatan. \nBesökare ska använda porten märkt Aurora 7 och därefter följa de blå skyltarna till receptionen på andra våningen. \nDet fi nns hiss i byggnaden. Hissen nås via innergårdens högra sida. \n3. Parkering och kollektivtra fi k \nFör besökare som kommer med bil fi nns ett parkeringsgarage som i detta test kallas Nordpark . \nGaragets infart ligger på Stjärngatan 14 . Från garaget tar det ungefär fem minuter att gå till studions entré. \nAdMotion Studio erbjuder inte gratis parkering och kan inte reservera parkeringsplatser. \nCyklar får parkeras vid cykelställen på innergården, men inte framför entrén. \n4. Medföljande personer \nEn kund får ta med sig en vuxen medföljande person till receptionens väntrum. \nMedföljande personer får däremot inte automatiskt följa med in i behandlings- eller arbetsrummet. Detta måste godkännas separat av\npersonalen. \nBarn under 12 år får inte lämnas utan uppsikt i receptionen. \n5. Om du blir för"
+        },
+        {
+          "id": "e2",
+          "businessId": 77,
+          "text": "senad \nOm du riskerar att komma för sent bör du kontakta studion så snart som möjligt via den kontaktkanal där du vanligtvis kommunicerar\nmed företaget. \nVid en försening på mer än 15 minuter kan studion behöva göra en ny bedömning av om besöket kan genomföras enligt plan. \nDetta innebär inte att besöket automatiskt avbokas. Personalen behöver först bedöma situationen. \n6. Tillgänglighet \nByggnaden har hiss och en tillgänglig entré från innergården. \nPersoner som behöver extra hjälp med att hitta rätt eller ta sig in i lokalen rekommenderas att meddela personalen i förväg. \nDet fi nns en tillgänglig toalett på samma våningsplan som receptionen."
+        },
+        {
+          "id": "e3",
+          "businessId": 77,
+          "text": "7. Kvarglömda föremål \nFöremål som hittas i studion lämnas till receptionen. \nKvarglömda föremål förvaras normalt i upp till 21 dagar . \nVärdesaker registreras separat. Kunden behöver beskriva föremålet innan det kan lämnas ut. \nAdMotion Studio ansvarar inte för att skicka kvarglömda föremål med post enligt dessa testvillkor. \n8. Digitala informationssamtal \nAdMotion Studio erbjuder i detta test digitala informationssamtal för kunder som behöver allmän vägledning inför ett första besök. \nDigitala informationssamtal används endast för inledande information. \nDe ersätter inte automatiskt ett fysiskt besök, och alla ärenden kan inte hanteras digitalt. \nTillgängliga tider och eventuella priser för tjänster hanteras separat i studions ordinarie boknings- och serviceinformation. \n9. Särskilda förberedelser \nKunder bör undvika att använda starkt parfymerade produkter precis före sitt besök, eftersom andra besökare kan vara känsliga för\ndofter. \nDet är tillåtet att ta med en egen vatten fl aska. \nMat får inte förtäras i behandlings- eller arbetsrummen, men enklare mellanmål är tillåtna i väntrummet. \n10. Frågor som dokumentet inte besvarar \nDetta dokument innehåller inte uppgifter om: \n• Priser på studions tjänster \n• Tjänsternas längd \n• Lediga bokningstider \n• Ordinarie öppettider \n• Vilka betalningsmetoder som accepteras \n• Fullständiga avbokningsvillkor \n• Vilka speci fi ka tjänster som erbjuds \nFör dessa uppgifter ska OdinLink använda andra relevanta, veri fi erade informationskällor när sådana fi nns. \nOm en uppgift inte kan veri fi eras ska AI-assistenten inte hitta på ett svar. \nDokumentets syfte: Att testa om OdinLink kan läsa, hitta och återge speci fi ka uppgifter från en uppladdad PDF, förstå villkor och\nundantag samt skilja kompletterande kundinformation från struk"
+        }
+      ],
+      "documentMapping": [
+        {
+          "wireId": "e1",
+          "sha256": "286807470cba04e65b020367cc30f2e40f185e30dabb9aecfcca0de885d2b660",
+          "productionFixtureChunkIndices": [
+            0
+          ]
+        },
+        {
+          "wireId": "e2",
+          "sha256": "6e4449dc239094569a159be529aff08e95d00e99f3c49c4cc909905a03891413",
+          "productionFixtureChunkIndices": [
+            1
+          ]
+        },
+        {
+          "wireId": "e3",
+          "sha256": "44fb6d8ce4d7f56f545110b516c2540796259cf1aec30e957b1bf84c7d131a5c",
+          "productionFixtureChunkIndices": [
+            2
+          ]
+        }
+      ],
+      "extractionOutput": {
+        "oversized": false,
+        "units": [
+          {
+            "facetIds": [
+              "f1"
+            ],
+            "subject": "AdMotion Studio digital informational conversations",
+            "predicate": "purpose and suitability",
+            "value": "provide general initial guidance before a first visit, but not automatically replace a physical visit",
+            "modality": "descriptive",
+            "negation": false,
+            "scope": "AdMotion Studio",
+            "qualifiers": [
+              "They are intended only for initial information.",
+              "Not all matters can be handled digitally."
+            ],
+            "language": "en",
+            "text": "AdMotion Studio offers digital informational conversations for customers who need general guidance before a first visit. They are used only for initial information, do not automatically replace a physical visit, and cannot handle every matter digitally.",
+            "evidenceRefs": [
+              {
+                "evidenceId": "e3",
+                "exactQuote": "AdMotion Studio erbjuder i detta test digitala informationssamtal för kunder som behöver allmän vägledning inför ett första besök. Digitala informationssamtal används endast för inledande information. De ersätter inte automatiskt ett fysiskt besök, och alla ärenden kan inte hanteras digitalt."
+              }
+            ]
+          }
+        ]
+      },
+      "verifierUnits": [
+        {
+          "id": "u1",
+          "facetIds": [
+            "f1"
+          ],
+          "subject": "Video Consultation",
+          "predicate": "configured price and duration",
+          "value": "300 SEK; 60 minutes",
+          "modality": "descriptive",
+          "negation": false,
+          "scope": "configured service only",
+          "qualifiers": [],
+          "language": "en",
+          "text": "Video Consultation costs 300 SEK and lasts 60 minutes.",
+          "evidenceRefs": [
+            {
+              "evidenceId": "configured-services",
+              "exactQuote": "{\"name\":\"Video Consultation\",\"price\":300,\"currency\":\"SEK\",\"durationMinutes\":60}"
+            }
+          ]
+        },
+        {
+          "id": "u2",
+          "facetIds": [
+            "f1"
+          ],
+          "subject": "AdMotion Studio digital informational conversations",
+          "predicate": "purpose and suitability",
+          "value": "provide general initial guidance before a first visit, but not automatically replace a physical visit",
+          "modality": "descriptive",
+          "negation": false,
+          "scope": "AdMotion Studio",
+          "qualifiers": [
+            "They are intended only for initial information.",
+            "Not all matters can be handled digitally."
+          ],
+          "language": "en",
+          "text": "AdMotion Studio offers digital informational conversations for customers who need general guidance before a first visit. They are used only for initial information, do not automatically replace a physical visit, and cannot handle every matter digitally.",
+          "evidenceRefs": [
+            {
+              "evidenceId": "e3",
+              "exactQuote": "AdMotion Studio erbjuder i detta test digitala informationssamtal för kunder som behöver allmän vägledning inför ett första besök. \nDigitala informationssamtal används endast för inledande information. \nDe ersätter inte automatiskt ett fysiskt besök, och alla ärenden kan inte hanteras digitalt."
+            }
+          ]
+        }
+      ],
+      "verifierOutput": {
+        "decisions": [
+          {
+            "unitId": "u1",
+            "relation": "ENTAILED",
+            "facetIds": [
+              "f1"
+            ],
+            "meaningPreserved": true,
+            "modalityPreserved": true,
+            "qualifiersPreserved": true,
+            "relevant": true,
+            "languageCorrect": true,
+            "explicitAbsenceEvidence": false,
+            "negativeAbsence": false
+          },
+          {
+            "unitId": "u2",
+            "relation": "UNKNOWN",
+            "facetIds": [
+              "f1"
+            ],
+            "meaningPreserved": false,
+            "modalityPreserved": true,
+            "qualifiersPreserved": true,
+            "relevant": true,
+            "languageCorrect": true,
+            "explicitAbsenceEvidence": true,
+            "negativeAbsence": true
+          }
+        ],
+        "coverage": [
+          {
+            "facetId": "f1",
+            "requestAligned": true,
+            "materialFactsComplete": false,
+            "incompletenessReason": "MISSING_RELEVANT_FACT",
+            "materialUnitIds": [
+              "u1"
+            ],
+            "obligations": [
+              {
+                "obligationId": "f1.o1",
+                "status": "UNRESOLVED",
+                "unitIds": [
+                  "u1"
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "deliveredReplies": [
+        "Video Consultation costs 300 SEK and lasts 60 minutes.\n\nI cannot confirm whether the document's information applies to Video Consultation."
+      ],
+      "observedTimings": {
+        "endToEndMs": 12645,
+        "extractionMs": 4311,
+        "verificationMs": 6554
+      }
+    },
+    {
+      "language": "de",
+      "questionIndex": 0,
+      "questionFromRunFixture": "Ich besuche Sie zum ersten Mal. Wie früh sollte ich kommen und muss ich etwas mitbringen?",
+      "facetsReconstructed": [
+        {
+          "subject": "customer request",
+          "attribute": "Ich besuche Sie zum ersten Mal. Wie früh sollte ich kommen und muss ich etwas mitbringen?",
+          "questionType": "description",
+          "obligations": [
+            {
+              "description": "Ich besuche Sie zum ersten Mal. Wie früh sollte ich kommen und muss ich etwas mitbringen?",
+              "questionType": "description"
+            }
+          ]
+        }
+      ],
+      "wireDocumentEvidence": [
+        {
+          "id": "e1",
+          "businessId": 77,
+          "text": "7. Kvarglömda föremål \nFöremål som hittas i studion lämnas till receptionen. \nKvarglömda föremål förvaras normalt i upp till 21 dagar . \nVärdesaker registreras separat. Kunden behöver beskriva föremålet innan det kan lämnas ut. \nAdMotion Studio ansvarar inte för att skicka kvarglömda föremål med post enligt dessa testvillkor. \n8. Digitala informationssamtal \nAdMotion Studio erbjuder i detta test digitala informationssamtal för kunder som behöver allmän vägledning inför ett första besök. \nDigitala informationssamtal används endast för inledande information. \nDe ersätter inte automatiskt ett fysiskt besök, och alla ärenden kan inte hanteras digitalt. \nTillgängliga tider och eventuella priser för tjänster hanteras separat i studions ordinarie boknings- och serviceinformation. \n9. Särskilda förberedelser \nKunder bör undvika att använda starkt parfymerade produkter precis före sitt besök, eftersom andra besökare kan vara känsliga för\ndofter. \nDet är tillåtet att ta med en egen vatten fl aska. \nMat får inte förtäras i behandlings- eller arbetsrummen, men enklare mellanmål är tillåtna i väntrummet. \n10. Frågor som dokumentet inte besvarar \nDetta dokument innehåller inte uppgifter om: \n• Priser på studions tjänster \n• Tjänsternas längd \n• Lediga bokningstider \n• Ordinarie öppettider \n• Vilka betalningsmetoder som accepteras \n• Fullständiga avbokningsvillkor \n• Vilka speci fi ka tjänster som erbjuds \nFör dessa uppgifter ska OdinLink använda andra relevanta, veri fi erade informationskällor när sådana fi nns. \nOm en uppgift inte kan veri fi eras ska AI-assistenten inte hitta på ett svar. \nDokumentets syfte: Att testa om OdinLink kan läsa, hitta och återge speci fi ka uppgifter från en uppladdad PDF, förstå villkor och\nundantag samt skilja kompletterande kundinformation från struk"
+        },
+        {
+          "id": "e2",
+          "businessId": 77,
+          "text": "AdMotion Studio – Kundinformation och vanliga frågor \nTestdokument för OdinLink Knowledge Library \nObservera: All information i detta dokument är fi ktiv och används enbart för att testa OdinLinks AI-assistent. Uppgifterna ska inte\nbetraktas som AdMotion Studios verkliga kundvillkor. \n1. Inför ditt besök \nVi rekommenderar att alla besökare läser igenom informationen före sitt första besök hos AdMotion Studio. \nKunder som besöker studion för första gången rekommenderas att komma cirka 10 minuter före sin bokade tid för att hinna förbereda sig\ni lugn och ro. \nTa gärna med din bokningsbekräftelse, digitalt eller på papper. Om du har fått särskilda förberedelseinstruktioner inför ditt besök ska du\nfölja dessa. \n2. Hitta till studion \nFör detta test gäller följande fi ktiva besöksinformation: \nStudions entré ligger på innergården, inte vid huvudingången mot gatan. \nBesökare ska använda porten märkt Aurora 7 och därefter följa de blå skyltarna till receptionen på andra våningen. \nDet fi nns hiss i byggnaden. Hissen nås via innergårdens högra sida. \n3. Parkering och kollektivtra fi k \nFör besökare som kommer med bil fi nns ett parkeringsgarage som i detta test kallas Nordpark . \nGaragets infart ligger på Stjärngatan 14 . Från garaget tar det ungefär fem minuter att gå till studions entré. \nAdMotion Studio erbjuder inte gratis parkering och kan inte reservera parkeringsplatser. \nCyklar får parkeras vid cykelställen på innergården, men inte framför entrén. \n4. Medföljande personer \nEn kund får ta med sig en vuxen medföljande person till receptionens väntrum. \nMedföljande personer får däremot inte automatiskt följa med in i behandlings- eller arbetsrummet. Detta måste godkännas separat av\npersonalen. \nBarn under 12 år får inte lämnas utan uppsikt i receptionen. \n5. Om du blir för"
+        }
+      ],
+      "documentMapping": [
+        {
+          "wireId": "e1",
+          "sha256": "44fb6d8ce4d7f56f545110b516c2540796259cf1aec30e957b1bf84c7d131a5c",
+          "productionFixtureChunkIndices": [
+            2
+          ]
+        },
+        {
+          "wireId": "e2",
+          "sha256": "286807470cba04e65b020367cc30f2e40f185e30dabb9aecfcca0de885d2b660",
+          "productionFixtureChunkIndices": [
+            0
+          ]
+        }
+      ],
+      "extractionOutput": {
+        "oversized": false,
+        "units": [
+          {
+            "facetIds": [
+              "f1"
+            ],
+            "subject": "Besucher",
+            "predicate": "sollte vor der gebuchten Zeit eintreffen",
+            "value": "circa 10 Minuten vorher",
+            "modality": "recommended",
+            "negation": false,
+            "scope": "erster Besuch bei AdMotion Studio",
+            "qualifiers": [
+              "damit genügend Zeit zur Vorbereitung bleibt"
+            ],
+            "language": "de",
+            "text": "Bei einem ersten Besuch bei AdMotion Studio sollten Sie etwa 10 Minuten vor Ihrer gebuchten Zeit eintreffen, damit Sie sich in Ruhe vorbereiten können.",
+            "evidenceRefs": [
+              {
+                "evidenceId": "e2",
+                "exactQuote": "Kunder som besöker studion för första gången rekommenderas att komma cirka 10 minuter före sin bokade tid för att hinna förbereda sig i lugn och ro."
+              }
+            ]
+          },
+          {
+            "facetIds": [
+              "f1"
+            ],
+            "subject": "Besucher",
+            "predicate": "sollte mitbringen",
+            "value": "Buchungsbestätigung",
+            "modality": "recommended",
+            "negation": false,
+            "scope": "Besuch bei AdMotion Studio",
+            "qualifiers": [
+              "digital oder auf Papier"
+            ],
+            "language": "de",
+            "text": "Sie sollten Ihre Buchungsbestätigung digital oder auf Papier mitbringen.",
+            "evidenceRefs": [
+              {
+                "evidenceId": "e2",
+                "exactQuote": "Ta gärna med din bokningsbekräftelse, digitalt eller på papper."
+              }
+            ]
+          },
+          {
+            "facetIds": [
+              "f1"
+            ],
+            "subject": "Besucher",
+            "predicate": "muss befolgen",
+            "value": "besondere Vorbereitungsanweisungen",
+            "modality": "required",
+            "negation": false,
+            "scope": "falls solche Anweisungen für den Besuch erhalten wurden",
+            "qualifiers": [
+              "gilt nur bei erhaltenen besonderen Vorbereitungsanweisungen"
+            ],
+            "language": "de",
+            "text": "Falls Sie besondere Vorbereitungsanweisungen für Ihren Besuch erhalten haben, müssen Sie diese befolgen.",
+            "evidenceRefs": [
+              {
+                "evidenceId": "e2",
+                "exactQuote": "Om du har fått särskilda förberedelseinstruktioner inför ditt besök ska du följa dessa."
+              }
+            ]
+          }
+        ]
+      },
+      "verifierUnits": [
+        {
+          "id": "u1",
+          "facetIds": [
+            "f1"
+          ],
+          "subject": "Besucher",
+          "predicate": "sollte vor der gebuchten Zeit eintreffen",
+          "value": "circa 10 Minuten vorher",
+          "modality": "recommended",
+          "negation": false,
+          "scope": "erster Besuch bei AdMotion Studio",
+          "qualifiers": [
+            "damit genügend Zeit zur Vorbereitung bleibt"
+          ],
+          "language": "de",
+          "text": "Bei einem ersten Besuch bei AdMotion Studio sollten Sie etwa 10 Minuten vor Ihrer gebuchten Zeit eintreffen, damit Sie sich in Ruhe vorbereiten können.",
+          "evidenceRefs": [
+            {
+              "evidenceId": "e2",
+              "exactQuote": "Kunder som besöker studion för första gången rekommenderas att komma cirka 10 minuter före sin bokade tid för att hinna förbereda sig\ni lugn och ro."
+            }
+          ]
+        },
+        {
+          "id": "u2",
+          "facetIds": [
+            "f1"
+          ],
+          "subject": "Besucher",
+          "predicate": "sollte mitbringen",
+          "value": "Buchungsbestätigung",
+          "modality": "recommended",
+          "negation": false,
+          "scope": "Besuch bei AdMotion Studio",
+          "qualifiers": [
+            "digital oder auf Papier"
+          ],
+          "language": "de",
+          "text": "Sie sollten Ihre Buchungsbestätigung digital oder auf Papier mitbringen.",
+          "evidenceRefs": [
+            {
+              "evidenceId": "e2",
+              "exactQuote": "Ta gärna med din bokningsbekräftelse, digitalt eller på papper."
+            }
+          ]
+        },
+        {
+          "id": "u3",
+          "facetIds": [
+            "f1"
+          ],
+          "subject": "Besucher",
+          "predicate": "muss befolgen",
+          "value": "besondere Vorbereitungsanweisungen",
+          "modality": "required",
+          "negation": false,
+          "scope": "falls solche Anweisungen für den Besuch erhalten wurden",
+          "qualifiers": [
+            "gilt nur bei erhaltenen besonderen Vorbereitungsanweisungen"
+          ],
+          "language": "de",
+          "text": "Falls Sie besondere Vorbereitungsanweisungen für Ihren Besuch erhalten haben, müssen Sie diese befolgen.",
+          "evidenceRefs": [
+            {
+              "evidenceId": "e2",
+              "exactQuote": "Om du har fått särskilda förberedelseinstruktioner inför ditt besök ska du\nfölja dessa."
+            }
+          ]
+        }
+      ],
+      "verifierOutput": {
+        "decisions": [
+          {
+            "unitId": "u1",
+            "relation": "ENTAILED",
+            "facetIds": [
+              "f1"
+            ],
+            "meaningPreserved": true,
+            "modalityPreserved": true,
+            "qualifiersPreserved": true,
+            "relevant": true,
+            "languageCorrect": true,
+            "explicitAbsenceEvidence": false,
+            "negativeAbsence": false
+          },
+          {
+            "unitId": "u2",
+            "relation": "ENTAILED",
+            "facetIds": [
+              "f1"
+            ],
+            "meaningPreserved": true,
+            "modalityPreserved": true,
+            "qualifiersPreserved": true,
+            "relevant": true,
+            "languageCorrect": true,
+            "explicitAbsenceEvidence": false,
+            "negativeAbsence": false
+          },
+          {
+            "unitId": "u3",
+            "relation": "ENTAILED",
+            "facetIds": [
+              "f1"
+            ],
+            "meaningPreserved": true,
+            "modalityPreserved": true,
+            "qualifiersPreserved": true,
+            "relevant": true,
+            "languageCorrect": true,
+            "explicitAbsenceEvidence": false,
+            "negativeAbsence": false
+          }
+        ],
+        "coverage": [
+          {
+            "facetId": "f1",
+            "requestAligned": true,
+            "materialFactsComplete": false,
+            "incompletenessReason": "MISSING_RELEVANT_FACT",
+            "materialUnitIds": [
+              "u1",
+              "u2",
+              "u3"
+            ],
+            "obligations": [
+              {
+                "obligationId": "f1.o1",
+                "status": "UNRESOLVED",
+                "unitIds": [
+                  "u1",
+                  "u2",
+                  "u3"
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "deliveredReplies": [
+        "Bei einem ersten Besuch bei AdMotion Studio sollten Sie etwa 10 Minuten vor Ihrer gebuchten Zeit eintreffen, damit Sie sich in Ruhe vorbereiten können. Sie sollten Ihre Buchungsbestätigung digital oder auf Papier mitbringen. Falls Sie besondere Vorbereitungsanweisungen für Ihren Besuch erhalten haben, müssen Sie diese befolgen.\n\nIch kann derzeit nur diese Angaben bestätigen."
+      ],
+      "observedTimings": {
+        "endToEndMs": 15670,
+        "extractionMs": 6894,
+        "verificationMs": 7300
+      }
+    }
+  ]
+}

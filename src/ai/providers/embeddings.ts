@@ -1,3 +1,4 @@
+import {denyTrialAction} from '../../runtime/controlled-knowledge-trial';
 import { GoogleEmbeddingProvider, type EmbeddingProvider, type EmbeddingVector } from "../embeddings";
 import { getConfiguredAiProvider } from "./provider";
 import { embedWithConfiguredProvider } from "./router";
@@ -14,9 +15,9 @@ export class ConfiguredEmbeddingProvider implements EmbeddingProvider {
   embedDocuments(texts: string[], options?: import("../embeddings").EmbeddingRequestOptions): Promise<EmbeddingVector[]> {
     return embedWithConfiguredProvider(texts, this.gemini, options);
   }
-  async embedQuery(text: string): Promise<EmbeddingVector> {
+  async embedQuery(text: string, options?: import("../embeddings").EmbeddingRequestOptions): Promise<EmbeddingVector> {
     // Preserve Gemini's original query request shape.
-    if (getConfiguredAiProvider() === "gemini") return this.gemini.embedQuery(text);
-    return (await this.embedDocuments([text]))[0];
+    if (getConfiguredAiProvider() === "gemini") {denyTrialAction();return this.gemini.embedQuery(text);}
+    return (await this.embedDocuments([text], options))[0];
   }
 }

@@ -1,3 +1,4 @@
+import { isArrivalInformationQuestion } from './information-request-contract';
 /** A conservative literal grammar, not a translator or an entailment substitute.
  * It can veto temporal inequalities; it never grants factual support. Unknown
  * quantified constraints fail closed. Ordinary unqualified durations still use
@@ -83,7 +84,7 @@ export function numericalConstraintSafe(candidateQuote: string, atomicClaim: str
     candidateQuote.includes(service.name) && atomicClaim.includes(service.name)) &&
     checks.every(check => check.constraints.length === 1 && check.constraints[0].bound === null && check.constraints[0].side === 'none') &&
     /lasts|duration|varar|längd|dauert|dauer|dura|duración|مدت|مدة/iu.test(candidateQuote + ' ' + atomicClaim);
-  const policyClaim = !namedServiceDuration && cancellationClaim.test(candidateQuote + ' ' + atomicClaim);
+  const policyClaim = !namedServiceDuration && !isArrivalInformationQuestion(candidateQuote + ' ' + atomicClaim) && cancellationClaim.test(candidateQuote + ' ' + atomicClaim);
   if (typedPolicy && policyClaim) {
     if (policy.available === false) return false;
     // A configured fee boundary cannot support a mandatory cancellation notice
@@ -132,7 +133,12 @@ export function numericalConstraintSafe(candidateQuote: string, atomicClaim: str
     configuredDeadline = value * 60;
   }
   return checks.every(check => check.constraints.length === 1 && check.constraints.every(c => {
-    if (c.ambiguous || !c.bound || !Number.isFinite(c.seconds) || c.seconds <= 0) return false;
+    if (c.ambiguous || !Number.isFinite(c.seconds) || c.seconds <= 0) return false;
+    // An ordinary relative time is not an inequality. Match its exact value
+    // and temporal anchor against equally unbounded explicit source wording.
+    if (!c.bound) return !policyClaim && configuredDeadline === null &&
+      authoritative.some(a => !a.ambiguous && a.bound === null && a.seconds === c.seconds && a.side === c.side) &&
+      authoritative.filter(a => a.seconds === c.seconds).every(a => !a.ambiguous && a.bound === null && a.side === c.side);
     if (configuredDeadline !== null && (c.seconds !== configuredDeadline || c.bound !== 'minimum' || c.side !== 'before')) return false;
     const sameValue = authoritative.filter(a => a.seconds === c.seconds);
     return sameValue.length > 0 && sameValue.every(a => !a.ambiguous && a.bound === c.bound && a.side === c.side);

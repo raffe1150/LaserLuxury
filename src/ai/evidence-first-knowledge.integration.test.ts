@@ -438,7 +438,7 @@ for(const ch of channels) for(const [language,question,text] of translations) fo
 const arrangements = ['Besök sker efter överenskommelse.','Visits are arranged by agreement.','Besuche erfolgen nach Vereinbarung.',
  'Las visitas se realizan con cita acordada.','بازدیدها با هماهنگی انجام می‌شود.','تتم الزيارات بالاتفاق المسبق.'];
 for(const ch of channels) for(const [i,[language,question,text]] of translations.entries()) for(const failComposer of [false,true])
- test(`${ch}/${language}/natural-partial/composer-${failComposer?'failed':'valid'}: two immutable facts, specific uncertainty, no extra request`,async()=>{
+ test(`${ch}/${language}/direct-partial/composer-${failComposer?'would-fail':'available'}: two immutable facts, specific uncertainty, no optional request`,async()=>{
   lang=language;composer=failComposer?'error':'natural';
   proposed=[{...unit(text),modality:'recommended',evidenceRefs:[{evidenceId:'e1',exactQuote:policy}]},
    {...unit(arrangements[i]),modality:'descriptive',evidenceRefs:[{evidenceId:'e1',exactQuote:policy}]}];
@@ -451,8 +451,9 @@ for(const ch of channels) for(const [i,[language,question,text]] of translations
   }});
   await inbound(ch,question);const answer=published();assert.ok(answer.includes(text),'recommendation preserved');assert.ok(answer.includes(arrangements[i]),'independent arrangement preserved');assert.equal(answer.includes(normalizeConversationText(question)),false,'partial uncertainty must not repeat the whole question');
   assert.doesNotMatch(answer,/Den delen|that part|diesen Teil|esa parte|آن بخش|هذا الجزء/iu);
-  assert.equal(metrics.at(-1).units,2);assert.equal(metrics.at(-1).facets[0].status,'PARTIAL');assert.equal(metrics.at(-1).presentationFallback,failComposer);
-  assert.equal(requests.length,4);assert.equal(reads,0);assert.ok(decisionEvents.some(e=>e.stage==='publication'&&e.route==='partial_manifest'&&e.nativeChannel===ch));
+  assert.equal(metrics.at(-1).units,2);assert.equal(metrics.at(-1).facets[0].status,'PARTIAL');assert.equal(metrics.at(-1).presentationFallback,false);
+  assert.equal(metrics.at(-1).presentationPath,'direct_verified_units');assert.equal(metrics.at(-1).fallbackReason,null);
+  assert.equal(requests.length,3);assert.equal(requests.filter(p=>p.config.systemInstruction.includes('VERIFIED-UNIT PRESENTATION')).length,0);assert.equal(reads,0);assert.ok(decisionEvents.some(e=>e.stage==='publication'&&e.route==='partial_manifest'&&e.nativeChannel===ch));
  });
 
 const fluent = [

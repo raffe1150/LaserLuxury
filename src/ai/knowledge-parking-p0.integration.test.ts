@@ -1,7 +1,7 @@
 import { readFileSync,writeFileSync,mkdirSync } from 'node:fs';
 import { extractInProcess } from '../knowledge/documents/extraction-process';
 import { documentChunks } from '../knowledge/documents/service';
-import { InMemoryKnowledgeStorage,KnowledgeService } from '../../knowledge';
+import { InMemoryKnowledgeStorage,KnowledgeService,chunkKnowledgeContent } from '../../knowledge';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { beforeEach, afterEach, test } from 'node:test';
@@ -143,7 +143,11 @@ async function install(t:any,fault='complete',ch:Channel='whatsapp') {
  const txt='Det finns möjlighet till parkering i närheten. Kontakta företaget för information om parkeringsalternativ.';
  await storage.create({...source,id:'generic-txt',title:'odinlink-test.txt',content:txt,metadata:{segments:[{start:0,end:txt.length,section:'Text'}]}});
  await storage.replaceChunks(77,'generic-txt',[{chunkIndex:0,content:txt,metadata:{section:'Text'}}]);
- assert.deepEqual(await service.sourceLanguageHints(77),[]);
+ // The complete PDF now yields its content-confirmed Swedish hint. The
+ // citation-ambiguity variant replaces part of the source and may lack a hint.
+ const hints=await service.sourceLanguageHints(77);
+ if(fault==='ambiguous')assert.ok(hints.every(language=>language==='sv'));
+ else assert.deepEqual(hints,['sv']);
  if(fault==='conflict'){(config as any).systemPrompt='Parking policy: Parking at Nordpark is free for all studio visitors.';t.after(()=>delete (config as any).systemPrompt);}
  lang='en';let phase='building',validation=0,searched=false;let elapsed=0;const epoch=Date.now();
  if(fault.startsWith('timing')||fault==='publication-timeout')t.mock.method(Date,'now',()=>epoch+elapsed);
@@ -237,7 +241,8 @@ for(const ch of channels)test(`P0 parking/${ch}/OpenAI SDK protocol: explicit mo
   return{output_text:r.text,status:'completed',output:[],usage:{input_tokens:10,output_tokens:10}} as any;
  });
  await inbound(ch,question);assert.equal(sent.length,1);for(const fact of parkingFacts)assert.ok(published().includes(fact));
- assert.equal(published().includes(question),false);assert.equal(calls,3);assert.equal(reads,0);
+ assert.equal(published().includes(question),false);assert.equal(calls,2,'Only extraction and independent verification need the mocked SDK');assert.equal(reads,0);
+ assert.equal(metrics.at(-1).presentationPath,'direct_verified_units');assert.equal(metrics.at(-1).presentationFallback,false);
  const final=decisionEvents.filter(e=>e.stage==='publication').at(-1);assert.equal(final.provider,'openai');assert.equal(final.publishableUnits,3);assert.equal(final.naturalEnabled,false);
 });
 
@@ -432,6 +437,18 @@ for(const slow of [false,true])test(`latency-ambiguous-planning/${slow?'slow':'n
  if(slow){assert.equal(plannerCompleted,false);assert.ok(performance.now()-start>=2400&&performance.now()-start<4000);await new Promise(r=>setTimeout(r,400));assert.equal(plannerCompleted,true);assert.equal(sent.length,1,'Late planning cannot publish another answer');}
 });
 
+// Persist controlled vectors outside the customer turn; preserve exact canonical text/provenance.
+async function preparePersistentSemanticFixture(storage:InMemoryKnowledgeStorage,vector:(v:number[])=>any){
+ for(const source of await storage.list(77)){
+  if(source.status!=='ready'||source.type!=='document')continue;
+  const chunks=(source.metadata.segments as any[]).flatMap(segment=>chunkKnowledgeContent(source.content.slice(segment.start,segment.end)).map(c=>({
+   chunkIndex:0,content:c.content,metadata:{source:'document',filename:source.title,untrusted:true,...(segment.page?{page:segment.page}:{}),...(segment.sheet?{sheet:segment.sheet}:{}),...(segment.section?{section:segment.section}:{})},
+  }))).map((c,i)=>({...c,chunkIndex:i}));
+  await storage.replaceChunks(77,source.id,chunks);
+  storage.completeSemanticIndex(77,source.id,storage.indexSnapshot(77,source.id)!,chunks.map(c=>vector(c.content.includes('Nordpark')?[1,0]:c.content.includes('Kontakta företaget')?[.98,.2]:[0,1])));
+ }
+}
+
 const locationLanguages=[
  ['sv','Var finns kundparkering vid AdMotion Studio?',['Du kan parkera i Nordpark med infart på Stjärngatan 14, ungefär fem minuters promenad från studion.','Parkeringen är inte gratis.','AdMotion Studio kan inte reservera parkeringsplatser.']],
  ['en',question,parkingFacts],
@@ -442,8 +459,9 @@ const locationLanguages=[
 ] as const;
 for(const channel of channels)for(const [language,localizedQuestion,translations]of locationLanguages)test(`latency-location/${channel}/${language}: actual semantic index, explicitly synthetic embeddings and model translations`,async t=>{
  const f=await install(t);lang=language;const normalizedQuestion=localizedQuestion.replace(/؟/gu,'?');const original=deps.geminiGenerate!;
- const vector=(values:number[])=>({provider:'openai',model:'synthetic-multilingual-only',dimensions:2,version:1,values});
+ const vector=(values:number[])=>({provider:'openai',model:'text-embedding-3-small',dimensions:768,version:1,values:[...values,...Array(766).fill(0)]});
  const provider:any={supportsLocalSemanticSearch:true,embedQuery:async()=>vector([1,0]),embedDocuments:async(texts:string[])=>texts.map(text=>vector(texts[0]===normalizedQuestion?[1,0]:text.includes('Nordpark')?[1,0]:text.includes('Kontakta företaget')?[.98,.2]:[0,1]))};
+ await preparePersistentSemanticFixture(f.storage,vector);
  const semantic=new KnowledgeService(f.storage,f.storage,provider);let semanticCalls=0;
  configure({completeKnowledgeCorpus:(id,m)=>f.service.completeSmallCorpus(id,m),semanticKnowledgeSearchQueries:async(id,queries,limit)=>{semanticCalls++;assert.equal(queries[0],normalizedQuestion);return semantic.semanticSearchQueries(id,queries,limit);},geminiGenerate:async p=>{
   assert.equal(p.config.systemInstruction.includes('retrieval query planner'),false);
@@ -508,7 +526,11 @@ for(const channel of channels)for(const variant of ['plain','prefixed','verifier
   }else{
    for(const fact of parkingFacts)assert.ok(output.includes(fact),output);
    assert.equal(publication.facets[0].status,'VERIFIED');
-   if(variant==='prefixed')assert.ok(output.startsWith('Hello!'),output);
+   // The inbound greeting remains in both authority-stage inputs above. A
+   // model-injected greeting is optional and must not require another request.
+   assert.equal(output,parkingFacts.join(' '));
+   assert.equal(metrics.at(-1).presentationPath,'direct_verified_units');
+   assert.equal(requests.some(p=>p.config.systemInstruction.includes('VERIFIED-UNIT PRESENTATION')),false);
   }
  });
 
@@ -561,8 +583,9 @@ async function compactNativeCase(t:any, ch:Channel, compact:boolean, fault='comp
  const f=await install(t,custom?'complete':fault,ch);lang=language;
  if(language!=='en'){
   const normalizedQuestion=localizedQuestion.replace(/؟/gu,'?');
-  const vector=(values:number[])=>({provider:'openai',model:'synthetic-multilingual-only',dimensions:2,version:1,values});
+  const vector=(values:number[])=>({provider:'openai',model:'text-embedding-3-small',dimensions:768,version:1,values:[...values,...Array(766).fill(0)]});
   const embeddings:any={supportsLocalSemanticSearch:true,embedQuery:async()=>vector([1,0]),embedDocuments:async(texts:string[])=>texts.map(text=>vector(texts[0]===normalizedQuestion?[1,0]:text.includes('Nordpark')?[1,0]:text.includes('Kontakta företaget')?[.98,.2]:[0,1]))};
+  await preparePersistentSemanticFixture(f.storage,vector);
   const semantic=new KnowledgeService(f.storage,f.storage,embeddings);
   configure({semanticKnowledgeSearchQueries:async(id,queries,limit)=>semantic.semanticSearchQueries(id,queries,limit)});
  }
@@ -932,12 +955,12 @@ async function plannerRecovery(t:any, channel:Channel, format:'pdf'|'txt', langu
   await f.storage.create(source);
   await f.storage.replaceChunks(77,source.id,equivalentTxt.chunks.map(c=>({chunkIndex:Number(c.chunk_index),content:String(c.content),metadata:c.metadata as Record<string,unknown>})));
  }
- let semanticAborted=false,retrieval:any;const started=performance.now();
+ let semanticAborted=false,semanticRequests=0,retrieval:any;const started=performance.now();
  if(exhaustive) {
   await f.storage.delete(77,'generic-txt'); // The exact PDF alone has five canonical chunks.
   configure({completeKnowledgeCorpus:(id,m)=>f.service.completeSmallCorpus(id,m),knowledgeRetrievalDiagnostic:e=>{retrieval=e;},
    semanticKnowledgeSearchQueries:async(_id,_q,_limit,options)=>new Promise(resolve=>{
-    assert.ok(options?.signal);options.signal.addEventListener('abort',()=>{semanticAborted=true;resolve([]);},{once:true});
+    semanticRequests++;assert.ok(options?.signal);options.signal.addEventListener('abort',()=>{semanticAborted=true;resolve([]);},{once:true});
    })});
  }
  lang=language;const originalQuestion=(direct?recoveryQuestions:recoveryPlannerQuestions)[language];const epoch=Date.now();let elapsed=0;
@@ -978,7 +1001,7 @@ async function plannerRecovery(t:any, channel:Channel, format:'pdf'|'txt', langu
  const eventId=String(++sequence);
  await inbound(channel,originalQuestion,undefined,eventId);
  if(exhaustive) {
-  assert.equal(retrieval.completeCorpusUsed,true);assert.equal(semanticAborted,true);
+  assert.equal(retrieval.completeCorpusUsed,true);assert.equal(semanticRequests,0,'A proven complete corpus must not start optional semantic requests');assert.equal(semanticAborted,false);
   assert.ok(performance.now()-started<1000,'An exhaustive lexical corpus must not wait the 2500ms semantic window');
   const proposal=requests.find(p=>p.config.systemInstruction.includes('UNIT EXTRACTION'));
   assert.equal(JSON.parse(proposal.contents[0].parts[0].text).evidence.length,5,'Include the entire corpus, not only positive keyword hits');
@@ -1044,8 +1067,9 @@ for(const channel of channels)for(const [language,,translations]of locationLangu
  test(`literal-direct-multilingual/${channel}/${language}: Swedish PDF, separate verifier, no planning or booking tools`,async t=>{
   const f=await install(t,'complete',channel);lang=language;const original=deps.geminiGenerate!;
   const normalized=directQuestions[language].replace(/؟/gu,'?');let semanticCalls=0;
-  const vector=(values:number[])=>({provider:'openai',model:'synthetic-multilingual-only',dimensions:2,version:1,values});
+  const vector=(values:number[])=>({provider:'openai',model:'text-embedding-3-small',dimensions:768,version:1,values:[...values,...Array(766).fill(0)]});
   const embedding:any={supportsLocalSemanticSearch:true,embedQuery:async()=>vector([1,0]),embedDocuments:async(texts:string[])=>texts.map(text=>vector(texts[0]===normalized?[1,0]:text.includes('Nordpark')?[1,0]:text.includes('Kontakta företaget')?[.98,.2]:[0,1]))};
+  await preparePersistentSemanticFixture(f.storage,vector);
   const semantic=new KnowledgeService(f.storage,f.storage,embedding);
   configure({semanticKnowledgeSearchQueries:async(id,queries,limit,options)=>{semanticCalls++;assert.equal(queries[0],normalized);return semantic.semanticSearchQueries(id,queries,limit,options);},geminiGenerate:async p=>{
    assert.equal(p.config.systemInstruction.includes('retrieval query planner'),false);
@@ -1168,8 +1192,9 @@ async function foregroundCoverage(t:any,channel:Channel,language:string,translat
  const epoch=Date.now();let elapsed=0,proposals=0,verifiers=0;
  t.mock.method(Date,'now',()=>epoch+elapsed);
  const normalized=directQuestions[language].replace(/؟/gu,'?');
- const vector=(values:number[])=>({provider:'openai',model:'synthetic-coverage-only',dimensions:2,version:1,values});
+ const vector=(values:number[])=>({provider:'openai',model:'text-embedding-3-small',dimensions:768,version:1,values:[...values,...Array(766).fill(0)]});
  const embedding:any={supportsLocalSemanticSearch:true,embedQuery:async()=>vector([1,0]),embedDocuments:async(texts:string[])=>texts.map(text=>vector(text===normalized||text.includes('Nordpark')?[1,0]:text.includes('Kontakta företaget')?[.98,.2]:[0,1]))};
+ await preparePersistentSemanticFixture(fixture.storage,vector);
  const semantic=new KnowledgeService(fixture.storage,fixture.storage,embedding);
  configure({semanticKnowledgeSearchQueries:async(id,queries,limit,options)=>{elapsed+=2500;return semantic.semanticSearchQueries(id,queries,limit,options);}});
  t.mock.method(Responses.prototype,'create',async(params:any)=>{

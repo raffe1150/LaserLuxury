@@ -1,4 +1,5 @@
 import { APIError } from 'openai';
+import { withoutTemporalBookingAttribute } from './booking-operation-reference';
 
 export type AiFailureCategory =
   | 'TIMEOUT'
@@ -60,6 +61,8 @@ export async function runAiProviderRequest<T>(options: {
   invoke: (attempt: number, signal?: AbortSignal) => Promise<T>;
   timeoutMs: number;
   cancelOnTimeout?: boolean;
+  signal?: AbortSignal;
+  deadlineAt?: number;
   retryDelayMs?: number;
   beforeRetry?: (category: AiFailureCategory) => void | Promise<void>;
   onAttemptComplete?: (event: {
@@ -71,9 +74,14 @@ export async function runAiProviderRequest<T>(options: {
 }): Promise<T> {
   const timeoutMs = Math.max(1, options.timeoutMs);
   for (let attempt = 1; attempt <= 2; attempt++) {
+    options.signal?.throwIfAborted();
+    if (options.deadlineAt !== undefined && Date.now() >= options.deadlineAt)
+      throw new AiReliabilityError('TIMEOUT', 'AI provider request timed out');
     const startedAt = Date.now();
-    const controller = options.cancelOnTimeout ? new AbortController() : undefined;
+    const controller = options.cancelOnTimeout || options.signal ? new AbortController() : undefined;
+    const signal = options.signal && controller ? AbortSignal.any([options.signal, controller.signal]) : controller?.signal;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let abort: (() => void) | undefined;
     try {
       const timeout = new Promise<never>((_, reject) => {
         timer = setTimeout(() => {
@@ -82,15 +90,25 @@ export async function runAiProviderRequest<T>(options: {
           // retryable network failure, or allow a late result to become success.
           reject(error);
           controller?.abort(error);
-        }, timeoutMs);
+        }, Math.min(timeoutMs, options.deadlineAt === undefined ? timeoutMs : Math.max(0, options.deadlineAt - Date.now())));
       });
-      const result = await Promise.race([options.invoke(attempt, controller?.signal), timeout]);
+      const cancelled = new Promise<never>((_, reject) => {
+        if (!options.signal) return;
+        abort = () => reject(options.signal!.reason);
+        options.signal.addEventListener('abort', abort, { once: true });
+      });
+      const result = await Promise.race([options.invoke(attempt, signal), timeout, cancelled]);
+      // Absolute ownership is authoritative even if an event-loop stall delayed the timer.
+      if (options.deadlineAt !== undefined && Date.now() >= options.deadlineAt) {
+        const error = new AiReliabilityError('TIMEOUT', 'AI provider request timed out');
+        controller?.abort(error); throw error;
+      }
       options.onAttemptComplete?.({ attempt, durationMs: Date.now() - startedAt, ok: true });
       return result;
     } catch (error) {
       const category = classifyAiFailure(error);
       options.onAttemptComplete?.({ attempt, durationMs: Date.now() - startedAt, ok: false, category });
-      if (attempt === 2 || !isRetryableAiFailure(category)) {
+      if (options.signal?.aborted || attempt === 2 || !isRetryableAiFailure(category)) {
         throw error instanceof AiReliabilityError
           ? error
           : new AiReliabilityError(category, `AI provider request failed (${category})`, error);
@@ -100,6 +118,7 @@ export async function runAiProviderRequest<T>(options: {
       if (retryDelayMs) await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
     } finally {
       if (timer) clearTimeout(timer);
+      if (abort) options.signal?.removeEventListener('abort', abort);
     }
   }
   throw new AiReliabilityError('UNKNOWN', 'AI provider request failed');
@@ -114,9 +133,13 @@ export function containsUnverifiedBookingSuccessClaim(text: string): boolean {
     /(?:تأیید نشده|رزرو نشده|ثبت نشد|نتوانستم.{0,25}(?:تأیید|ثبت|رزرو))/u.test(value) ||
     /(?:لم يتم.{0,25}(?:الحجز|التأكيد)|تعذر.{0,25}(?:الحجز|التأكيد|التحقق))/u.test(value);
   if (explicitNonSuccess) return false;
+  // A temporal reference to an existing appointment is not a claim that this
+  // turn booked it. Remove only the attributive state word, retaining the noun
+  // so an independent assertion ("your appointment is confirmed") still vetoes.
+  const operationProbe = withoutTemporalBookingAttribute(lower);
   return (
-    /\b(?:appointment|booking|slot|time)\b.{0,40}\b(?:booked|confirmed|reserved|created|secured)\b/i.test(lower) ||
-    /\b(?:booked|confirmed|reserved|created|secured)\b.{0,40}\b(?:appointment|booking|slot|time)\b/i.test(lower) ||
+    /\b(?:appointment|booking|slot|time)\b.{0,40}\b(?:booked|confirmed|reserved|created|secured)\b/i.test(operationProbe) ||
+    /\b(?:booked|confirmed|reserved|created|secured)\b.{0,40}\b(?:appointment|booking|slot|time)\b/i.test(operationProbe) ||
     /\b(?:din\s+)?(?:tid|bokning)\b.{0,35}\b(?:bokad|bekräftad|reserverad)\b/i.test(lower) ||
     /\b(?:termin|buchung)\b.{0,35}\b(?:gebucht|bestätigt|reserviert)\b/i.test(lower) ||
     /\b(?:cita|reserva)\b.{0,35}\b(?:reservada|confirmada|creada)\b/i.test(lower) ||

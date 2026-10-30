@@ -9,7 +9,13 @@ export function isArrivalInformationQuestion(text: string): boolean {
   const late = /\b(?:late|lateness|tardy|delays?|delayed|försen\p{L}*|sen|sent|verspät\p{L}*|spät|tarde|retras\p{L}*)\b|دیر|تاخیر|تأخیر|تأخر|تأخير/iu.test(text);
   const arrival = /\b(?:arriv\p{L}*|come|coming|visit|kom\p{L}*|besök\p{L}*|anländ\p{L}*|ankomm\p{L}*|besuch\p{L}*|lleg\p{L}*|visita\p{L}*|cita)\b|برس|مراجعه|رسید|زيار|الوصول|أصل|موعد/iu.test(text);
   const feeOrNotice = /\b(?:fees?|free|notice|deadline|avgift\p{L}*|gratis|varsel|frist|gebühr\p{L}*|kostenlos|cargo\p{L}*|tarifa\p{L}*|aviso|antelación|plazo)\b|هزینه|رایگان|مهلت|رسوم|غرامة|إشعار|اشعار|مهلة/iu.test(text);
-  return late && arrival && !feeOrNotice;
+  // Relative arrival wording need not contain a literal "late" word. Match a
+  // duration AFTER an appointment, never an actual date/time to operate on.
+  const appointment = /\b(?:appointments?|bookings?|scheduled\s+time|bokning\p{L}*|bokade\s+tid|termin\p{L}*|buchung\p{L}*|citas?|reservas?)\b|نوبت|وقت|رزرو|موعد|حجز/iu;
+  const relative = /\b(?:minutes?|hours?|minuter|halvtimme|timme|timmar|minuten|stunden?)\b[^.!?؟\n]{0,25}\b(?:after|efter|nach)\b[^.!?؟\n]{0,45}(?:appointment\p{L}*|booking\p{L}*|scheduled\s+time|bokning\p{L}*|bokade\s+tid|termin\p{L}*|buchung\p{L}*)\b|\b(?:minutos?|horas?)\b[^.!?؟\n]{0,25}después\s+de[^.!?؟\n]{0,35}\b(?:cita|reserva)\b|(?:دقیقه|ساعت)[^.!?؟\n]{0,20}بعد\s+از[^.!?؟\n]{0,25}(?:نوبت|وقت|رزرو)|(?:دقيقة|دقائق|ساعة|ساعات)[^.!?؟\n]{0,20}بعد[^.!?؟\n]{0,25}(?:موعد|حجز)/iu.test(text);
+  const consequence = /\b(?:automatic\p{L}*|automatisk\p{L}*|automatisch\p{L}*|automátic\p{L}*|staff|personalen|personal|employees|mitarbeiter\p{L}*|what\s+happens|vad\s+händer|was\s+(?:passiert|geschieht)|qué\s+(?:pasa|ocurre))\b|خودکار|کارکنان|چه\s+می|تلقائ|الموظف|ماذا\s+يحدث/iu.test(text);
+  const recordLookup = /\b(?:check|look\s+up|status|already|bereits|prüf\p{L}*|kontrollera|redan|verifica\p{L}*|ya\s+(?:está|se))\b|استعلام|قبلاً|بالفعل|تحقق/iu.test(text);
+  return !feeOrNotice && (late && arrival || !recordLookup && appointment.test(text) && consequence && (late || relative));
 }
 
 /** Bounded visit-policy context, not a question/action classifier or authority

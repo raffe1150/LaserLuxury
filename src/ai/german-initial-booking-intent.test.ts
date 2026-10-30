@@ -55,10 +55,17 @@ assert.equal(
   detectNormalizedIntent('Jag vill boka en tid på fredag.'),
   'new_booking',
 );
+// An explicit Spanish creation request has the same intent contract as
+// English, Swedish and German. Intent is not booking confirmation/write authority.
 assert.equal(
   detectNormalizedIntent('Quiero reservar Video Consultation mañana.'),
-  'clarification',
+  'new_booking',
 );
+const spanish = normalize('Quiero reservar Video Consultation mañana.', 'es');
+assert.equal(spanish.intent, 'new_booking');
+assert.equal(spanish.language, 'es');
+assert.equal(spanish.date?.value, '2026-08-29');
+assert.equal(detectNormalizedIntent('Video Consultation'), 'clarification');
 
 const originalLog = console.log;
 const originalError = console.error;

@@ -5363,7 +5363,7 @@ const businessInformationTurns: Record<string, BusinessInformationTurn> = {};
 // Opt-in shared rollout. No per-channel overrides; no persistent answer/unit cache.
 type NativeKnowledgeEvent = {eventId:string;account:string;recipient:string;order:NativeKnowledgeOrder|null};
 type KnowledgeTurnState = { readonly modelProfile?: KnowledgeModelProfile; readonly extractionProtocol?: KnowledgeExtractionProtocol; readonly verificationProtocol?: KnowledgeVerificationProtocol; nativeEvent?: NativeKnowledgeEvent; nativeAsync?: {runtime:NativeKnowledgeRuntime|null;admission:NativeKnowledgeAdmission|null;failed:boolean}; durableCheckpoint?: (stage: 'extraction') => Promise<void>; durableProgress?: Parameters<KnowledgeExecutor>[1]['progress']; durableCurrent?: () => Promise<boolean>; mixedRequest?: boolean; requiresReferenceResolution?: boolean; unresolvedReference?: boolean; migrated?: boolean; budget?: InformationBudget; facets?: Facet[]; oversized?: boolean; evidence?: Evidence[];
-  naturalEnabled?: boolean; naturalSinglePartial?: boolean; naturalTurnId?: string;
+  naturalEnabled?: boolean; naturalSinglePartial?: boolean; naturalTurnId?: string; replyLanguage?: string;
   businessId?: number; question?: string; manifest?: AnswerManifest; sessionId?: string; history?: any[]; matches?: KnowledgeSearchMatch[];
   snapshot?: Readonly<{ businessId: number; question: string; matches: KnowledgeSearchMatch[]; evidence: Evidence[] }>;
   invalidSourceIds?: Set<string>; nativeChannel?: 'telegram'|'instagram'|'whatsapp'|'messenger'; provider?:string; model?:string;
@@ -5374,14 +5374,14 @@ function runUnifiedConversationRequest<T>(work: () => Promise<T>, nativeChannel:
   written?: { text: string; config: any }): Promise<T | undefined> {
   const naturalEnabled=process.env.ODINLINK_EVIDENCE_FIRST_KNOWLEDGE==='true'&&process.env.ODINLINK_GROUNDED_NATURAL_RESPONSES==='true';
   // Reuse existing read-only admission; no new intent classifier or action route.
-  const scoped = accuracyFirstEnabled(Number(getBusinessIdFromConfig(written?.config))) && !!written?.text && !isExplicitBusinessActionRequest(written.text) &&
-    evidenceFirstEligible(written.text, written.config);
+  const scoped = accuracyFirstEnabled(Number(getBusinessIdFromConfig(written?.config))) && !!written?.text &&
+    verifiedKnowledgeInformationRequest(written.text, written.config);
   return withBusinessInformationTiming(() => requestSecurity.run(() => knowledgeTurnScope.run({nativeChannel,nativeEvent,naturalEnabled,...(naturalEnabled?{
     naturalSinglePartial:process.env.ODINLINK_GROUNDED_NATURAL_SINGLE_PARTIAL==='true',naturalTurnId:crypto.randomUUID()}: {})}, () => scoped
       ? runAccuracyFirstNative(work, async () => {
           // An overloaded/unresolved intake has not established session authority.
           if (!requestSecurity.current() || !nativeEvent || !nativeChannel || !written) return;
-          const language=requestSecurity.evidence?.support ? capturedSupportLanguage(requestSecurity.evidence.support) : written.config.language || 'en';
+          const language=knowledgeTurnScope.getStore()?.replyLanguage || (requestSecurity.evidence?.support ? capturedSupportLanguage(requestSecurity.evidence.support) : written.config.language || 'en');
           await sendCustomerMessage(nativeChannel,nativeEvent.recipient,knowledgeUnavailableReply(language),written.config,'conversation');
         }, event => runOptionalDiagnostic(() => console.info('[KnowledgeTimingPolicy]', event))) : work())), nativeChannel);
 }
@@ -5502,6 +5502,9 @@ function directConfiguredMixedPlan(question:string,businessConfig:any,referenceR
   return directMixedSourceInformationPlan(question,Number(getBusinessIdFromConfig(businessConfig)),businessConfig?.services,referenceRequired);
 }
 function isCurrentBusinessInformationRequest(question:string,businessConfig:any) {
+  // Confirmation/status is an appointment operation, not documentary policy.
+  // Reuse the same exclusion before native timing and actual Knowledge intake.
+  if (isRecentCompletedBookingStatusQuestion(question)) return false;
   return isBusinessInformationQuestion(question) ||
     (process.env.ODINLINK_EVIDENCE_FIRST_KNOWLEDGE === 'true' && Boolean(directConfiguredServicePlan(question,businessConfig)||directConfiguredMixedPlan(question,businessConfig)));
 }
@@ -5509,11 +5512,17 @@ function evidenceFirstEligible(question: string, businessConfig?:any): boolean {
   return process.env.ODINLINK_EVIDENCE_FIRST_KNOWLEDGE === 'true' && (!cancellationInformationRequested(question) || isArrivalInformationQuestion(question)) &&
     (documentKnowledgeTopicsEligible(question) || isMixedSourceInformationQuestion(question,businessConfig) || Boolean(directConfiguredServicePlan(question,businessConfig))) && !isServiceCatalogQuestion(question);
 }
+/** One read-only admission contract for native timing and Knowledge budgeting. */
+function verifiedKnowledgeInformationRequest(question:string,businessConfig:any):boolean {
+  return !isExplicitBusinessActionRequest(question) && !isExistingAppointmentLookupIntent(question) &&
+    isCurrentBusinessInformationRequest(question,businessConfig) &&
+    evidenceFirstEligible(question,businessConfig);
+}
 const documentEvidenceRegistry = new DocumentEvidenceRegistry();
 const requestSecurity = new RequestSecurity<(BusinessInformationTurn | CompletedBookingSupportTurn) & { cancellationPolicyEpoch?: number }>();
 
 function capturedSupportLanguage(support: BusinessInformationTurn | CompletedBookingSupportTurn | null | undefined) {
-  return support && ('language' in support ? support.language : support.completed.language) || 'en';
+  return knowledgeTurnScope.getStore()?.replyLanguage || support && ('language' in support ? support.language : support.completed.language) || 'en';
 }
 
 async function requestEvidenceCurrent(): Promise<boolean> {
@@ -5672,7 +5681,7 @@ async function generateSecureConversationContent(sessionId: string, options: any
         },
       }) });
       const snapshot = buildBusinessGroundingSnapshot(support);
-      const manifest = await buildEvidenceFirstAnswer({ question: support.question, language: support.language,
+      const manifest = await buildEvidenceFirstAnswer({ question: support.question, language: capturedSupportLanguage(support),
         verificationProtocol, extractionProtocol, businessId: state.businessId,
         facets: state.facets || [], evidence: state.snapshot?.evidence || [],
         // Use the same captured question/facet/evidence contract in both hosts.
@@ -5687,7 +5696,7 @@ async function generateSecureConversationContent(sessionId: string, options: any
         businessTone: normalizeBusinessToneConfig(support.businessConfig?.toneConfig), history: state.history || (options.messages || []).slice(-3), budget: state.budget,
         ...(state.naturalEnabled?{natural:{scope:immutable({turnId:state.naturalTurnId!,businessId:state.businessId!,question:support.question,
           tone:normalizeBusinessToneConfig(support.businessConfig?.toneConfig)}),allowSinglePartial:state.naturalSinglePartial===true}}:{}),
-        languageSafe: unit => !customerReplyLanguageIsIncompatible(removeConfiguredEntitiesFromLanguageEvidence(unit.text, support.businessConfig), support.language),
+        languageSafe: unit => !customerReplyLanguageIsIncompatible(removeConfiguredEntitiesFromLanguageEvidence(unit.text, support.businessConfig), capturedSupportLanguage(support)),
         current: knowledgeOwnershipCurrent,
         revalidateEvidence: currentAnswerEvidence,
         finalPublicationRevalidates: options.knowledgePublication === 'guarded_text',
@@ -5707,7 +5716,7 @@ async function generateSecureConversationContent(sessionId: string, options: any
             ...(stage!=='composition'?{structuredOutput:knowledgeStructuredOutput(stage,state.naturalEnabled,
               stage==='extraction' ? state.facets?.map(f=>f.id) : undefined,
               stage==='extraction'&&(data as {authorityScope?:unknown})?.authorityScope==='document_only'?5:6,verificationProtocol,contract?.extractionProtocol)}:{}),
-            context: { ...businessInformationTimingContext(sessionId), businessId: state.businessId, channel: 'knowledge-core', stage: `knowledge_units_${stage}`, language: support.language } });
+            context: { ...businessInformationTimingContext(sessionId), businessId: state.businessId, channel: 'knowledge-core', stage: `knowledge_units_${stage}`, language: capturedSupportLanguage(support) } });
             if(stage==='extraction'||stage==='verification')runOptionalDiagnostic(()=>state.durableProgress?.(stage,(state.facets||[]).map(f=>f.attribute)));
             const result=await pending;
             if (stage === 'extraction' && state.durableCheckpoint) await state.durableCheckpoint('extraction');
@@ -5720,7 +5729,7 @@ async function generateSecureConversationContent(sessionId: string, options: any
       });
       const unavailable=state.freshnessFailure?{...manifest,fallbackReason:state.freshnessFailure,
         ...(state.naturalEnabled?{naturalOutcome:'canonical_fallback' as const,naturalReason:state.freshnessFailure}:{})}:manifest;
-      state.manifest = state.oversized ? { ...unavailable, text: narrowInformationRequest(support.language) } : unavailable;
+      state.manifest = state.oversized ? { ...unavailable, text: narrowInformationRequest(capturedSupportLanguage(support)) } : unavailable;
       runOptionalDiagnostic(() => {
         const diagnostic = immutable({ businessInfoTurnId: businessInformationTimingContext(sessionId).businessInfoTurnId,
           nativeChannel:state.nativeChannel||'internal',schemaVersion:KNOWLEDGE_SCHEMA_VERSION,provider:state.provider,model:state.model,
@@ -5737,7 +5746,7 @@ async function generateSecureConversationContent(sessionId: string, options: any
         return console.info('[EvidenceFirstKnowledge]', JSON.stringify(diagnostic));
       });
     }
-    return { text: nativeKnowledgeTiming() && !publishableKnowledgeManifest(state.manifest,state.businessId) ? knowledgeUnavailableReply(support.language) : state.manifest.text, functionCalls: [] };
+    return { text: nativeKnowledgeTiming() && !publishableKnowledgeManifest(state.manifest,state.businessId) ? knowledgeUnavailableReply(capturedSupportLanguage(support)) : state.manifest.text, functionCalls: [] };
   }
   return generateContentWithFallback(null, { ...options, tools });
 }
@@ -5797,6 +5806,9 @@ export async function executeDurableKnowledgeTask(task: KnowledgeTask,
 }
 
 async function securePublicationReply(reply: string, language?: string): Promise<string | null> {
+  // Delivery can recheck publication multiple times without a support object.
+  // The current turn's resolved language remains authoritative at every check.
+  language = knowledgeTurnScope.getStore()?.replyLanguage || language;
   const publicationStartedAt=Date.now();
   const publicationStartingBudgetMs=knowledgeTurnScope.getStore()?.budget?.remaining();
   const publicationTiming=()=>({startedAtMs:publicationStartedAt,startingBudgetMs:publicationStartingBudgetMs,durationMs:Date.now()-publicationStartedAt});
@@ -7802,7 +7814,7 @@ function hasRecentCompletedBookingStatusSemantics(text?: string): boolean {
     /\b(?:termin|buchung)\b.{0,50}\b(?:bestatigt|gebucht|reserviert)\b|\b(?:bestatigt|gebucht|reserviert)\b.{0,50}\b(?:termin|buchung)\b/u.test(normalized) ||
     /\b(?:cita|reserva|reservacion)\b.{0,50}\b(?:confirmada|confirmado|reservada|reservado)\b|\b(?:confirmada|confirmado|reservada|reservado)\b.{0,50}\b(?:cita|reserva|reservacion)\b/u.test(normalized) ||
     /(?:وقت|نوبت|رزرو|قرار).{0,45}(?:تایید|تأیید|قطعی|ثبت|رزرو\s+شده)|(?:تایید|تأیید|قطعی|ثبت).{0,45}(?:وقت|نوبت|رزرو|قرار)/u.test(normalized) ||
-    /(?:موعد|حجز).{0,45}(?:مؤ[كک]د|مو[كک]د|مؤ[كک]دة|مو[كک]دة|(?<![\p{L}\p{M}])تم(?![\p{L}\p{M}])|محجوز)|(?:تأ[كک]يد|تا[كک]يد|مؤ[كک]د|مو[كک]د|(?<![\p{L}\p{M}])تم(?![\p{L}\p{M}])).{0,45}(?:موعد|حجز)/u.test(normalized)
+    /(?:موعد|حجز).{0,45}(?:مؤ[كک]د|مو[كک]د|مؤ[كک]دة|مو[كک]دة|(?<![\p{L}\p{M}])تم(?![\p{L}\p{M}])|محجوز)|(?:تأ[كک][يی]د|تا[كک][يی]د|مؤ[كک]د|مو[كک]د|(?<![\p{L}\p{M}])تم(?![\p{L}\p{M}])).{0,45}(?:موعد|حجز)/u.test(normalized)
   );
 }
 
@@ -8891,7 +8903,7 @@ async function retrieveBusinessKnowledgeForQuestion(
   }
 
   const state = knowledgeTurnScope.getStore();
-  if (state && evidenceFirstEligible(normalizedQuestion,businessConfig)) {
+  if (state && verifiedKnowledgeInformationRequest(normalizedQuestion,businessConfig)) {
     state.budget ||= new InformationBudget(undefined, nativeKnowledgeTiming()); state.businessId = businessId; state.question = normalizedQuestion;
   }
   // Exact named-service attributes already have a distinct configured authority.
@@ -27111,7 +27123,12 @@ async function prepareConversationLanguageForTurn(chatId: string, latestText: st
   if (info) beginBusinessInformationTiming(chatId, latestText, getBusinessIdFromConfig(businessConfig));
   else clearBusinessInformationTiming(chatId);
   const started = Date.now();
-  try { return await resolveConversationLanguageForTurn(chatId, latestText, businessConfig); }
+  try {
+    const language=await resolveConversationLanguageForTurn(chatId, latestText, businessConfig);
+    const state=knowledgeTurnScope.getStore();
+    if(state)state.replyLanguage=language;
+    return language;
+  }
   finally { if (info) markBusinessInformationTiming(chatId, 'language_complete', Date.now() - started); }
 }
 

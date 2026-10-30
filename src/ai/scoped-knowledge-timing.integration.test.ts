@@ -1,9 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Responses } from 'openai/resources/responses';
-import { incidentFlags, incidentConfig, incidentCorpus, incidentChannels, incidentInbound, interceptedIncidentSend } from '../../tests/helpers/p0-incident-knowledge';
+import { incidentFlags, incidentConfig, incidentCorpus, incidentChannels, incidentInbound, incidentSession, interceptedIncidentSend } from '../../tests/helpers/p0-incident-knowledge';
+import {arrivalPolicyQuestions,mixedArrivalPolicyQuestions} from '../../tests/fixtures/arrival-policy-questions';
+import {formatBusinessSupportVerificationUnavailable} from './business-information';
 import { nativeKnowledgeTiming } from './knowledge-timing-policy';
-import { wholeQuestionInformationPlan } from './knowledge-planning';
+import { wholeQuestionInformationPlan,deterministicLocationPlan } from './knowledge-planning';
 import { AiReliabilityError } from './reliability';
 
 // Actual native handlers + SDK adapter; all provider results and sends are offline.
@@ -30,6 +32,15 @@ const questions={
   ar:'إذا تأخرت أكثر من 15 دقيقة عن زيارتي المحجوزة، فهل تُلغى تلقائيًا؟',
 };
 type Language=keyof typeof questions;
+const fallbackSubjects:Record<Language,string>={sv:'de efterfrågade uppgifterna',en:'the requested details',de:'die angefragten Einzelheiten',es:'los detalles solicitados',fa:'جزئیات درخواست‌شده',ar:'التفاصيل المطلوبة'};
+const entrance:Record<Language,string>={
+  sv:'Entrén ligger på innergården, inte vid huvudingången mot gatan. Använd porten Aurora 7 och följ de blå skyltarna till receptionen på andra våningen.',
+  en:'The entrance is in the courtyard, not at the main street entrance. Use gate Aurora 7 and follow the blue signs to reception on the second floor.',
+  de:'Der Eingang liegt im Innenhof, nicht am Haupteingang zur Straße. Benutzen Sie das Tor Aurora 7 und folgen Sie den blauen Schildern zur Rezeption im zweiten Stock.',
+  es:'La entrada está en el patio, no en la entrada principal de la calle. Use la puerta Aurora 7 y siga los letreros azules hasta la recepción en el segundo piso.',
+  fa:'ورودی در حیاط است، نه در ورودی اصلی خیابان. از در Aurora 7 وارد شوید و تابلوهای آبی را تا پذیرش در طبقه دوم دنبال کنید.',
+  ar:'المدخل في الفناء وليس عند المدخل الرئيسي في الشارع. استخدم بوابة Aurora 7 واتبع اللافتات الزرقاء إلى الاستقبال في الطابق الثاني.',
+};
 const statements:Record<Language,string[]>={
   sv:['Kontakta studion så snart som möjligt om du riskerar att bli sen.',
     'Vid mer än 15 minuters försening behöver personalen bedöma situationen.', 'Besöket avbokas inte automatiskt.'],
@@ -47,12 +58,14 @@ const statements:Record<Language,string[]>={
 type Mode='success'|'verifier_timeout'|'malformed'|'conflict'|'foreign'|'foreign_retrieval'|'revoked'|'incomplete'|'late_completion'|'legacy';
 
 async function exercise(t:any,channel:typeof incidentChannels[number],language:Language,mode:Mode,
-  question=questions[language],businessId=3,allowlist:string|null='3') {
+  question=questions[language],businessId=3,allowlist:string|null='3',switchLanguage=false) {
   b.reset();const saved={...incidentConfig};const previous=process.env.ODINLINK_KNOWLEDGE_TIMING_TENANT_IDS;
   if(allowlist===null)delete process.env.ODINLINK_KNOWLEDGE_TIMING_TENANT_IDS;
   else process.env.ODINLINK_KNOWLEDGE_TIMING_TENANT_IDS=allowlist;
   Object.assign(incidentConfig,{id:businessId,businessId,language:'sv'});
   const corpus=mode==='conflict'?conflictingCorpus:corpora.get(businessId)!;
+  const combined=Object.values(mixedArrivalPolicyQuestions).includes(question as any);
+  const admissionFixture=combined||Object.values(arrivalPolicyQuestions).some(qs=>qs.includes(question as never));
   const replies:string[]=[],stages:string[]=[],events:any[]=[],summaries:any[]=[],policies:any[]=[];
   const providerErrors:string[]=[];
   let now=1_800_000_000_000,knowledgeStart:number|undefined,extracted=false,verificationOverhead=false,actions=0;
@@ -76,11 +89,12 @@ async function exercise(t:any,channel:typeof incidentChannels[number],language:L
       return result({query:'försening minuter personalen bedöma situationen entré innergården'});
     if(instruction.includes('retrieval query planner')){
       stages.push('planning');
-      return result({canonicalMeaning:d.question,queries:[d.question],queryLanguages:{},requestKind:'BUSINESS_INFORMATION',
+      return result({canonicalMeaning:d.question,queries:[d.question,'försening minuter personalen bedöma situationen entré innergården'],queryLanguages:{},requestKind:'BUSINESS_INFORMATION',
         referenceResolution:'NOT_REQUIRED',requestedFacets:[{subject:'customer request',attribute:d.question,questionType:'description',
           obligations:[{description:d.question,questionType:'description'}]}]});
     }
-    const normalized=(text:string)=>text.replace(/؟/gu,'?').replace(/،/gu,',').replace(/‌/gu,' ');
+    const normalized=(text:string)=>text.replace(/؟/gu,'?').replace(/،/gu,',').replace(/‌/gu,' ')
+      .replace(/[۰-۹]/gu,c=>String(c.charCodeAt(0)-1776)).replace(/[٠-٩]/gu,c=>String(c.charCodeAt(0)-1632));
     assert.equal(normalized(d.question),normalized(question),'Both stages retain the whole request through existing punctuation normalization');
     assert.equal(d.requestedLanguage,language);
     assert.ok(d.evidence.every((e:any)=>e.businessId===businessId));
@@ -96,9 +110,9 @@ async function exercise(t:any,channel:typeof incidentChannels[number],language:L
       const facts=statements[language].map((text,i)=>({text,quote:i===0?
         contactQuote.text.match(/Om du riskerar[^]+?med företaget\./u)[0]:
         arrivalQuote.text.match(/Vid en försening[^]+?bedöma situationen\./u)[0],evidence:i===0?contactQuote:arrivalQuote}));
-      if(question.startsWith('Wo ist der Eingang')){
+      if(combined){
         const e=d.evidence.find((e:any)=>/Studions entré/u.test(e.text));assert.ok(e);
-        facts.push({text:'Der Eingang liegt im Innenhof, nicht am Haupteingang zur Straße. Benutzen Sie das Tor Aurora 7 und folgen Sie den blauen Schildern zur Rezeption im zweiten Stock.',
+        facts.push({text:entrance[language],
           quote:e.text.match(/Studions entré[^]+?andra våningen\./u)[0],evidence:e});
       }
       return result({oversized:false,units:facts.map((fact,i)=>({facetIds:['f1'],subject:'documented visitor policy',predicate:'states',
@@ -127,9 +141,23 @@ async function exercise(t:any,channel:typeof incidentChannels[number],language:L
   try {
     b.configure({semanticLanguageResolver:async()=>{assert.equal(!!nativeKnowledgeTiming(),extended);now+=1762;return{language,confidence:1};},
       postProcess:async()=>{},incrementUsage:async()=>({allowed:true,count:1,limit:100}),
-      knowledgeSearch:(id,q,limit)=>{
+      knowledgeSearch:async(id,q,limit)=>{
         assert.equal(id,businessId);assert.ok(knowledgeStart!==undefined);now=knowledgeStart!+1592;
+        if(extended){
+          // Before support/manifest capture, repeated publication still has the
+          // authoritative current language and cannot release ordinary prose.
+          const expected=formatBusinessSupportVerificationUnavailable(language,fallbackSubjects[language]);
+          assert.equal(await b.securePublication('UNVERIFIED ORDINARY CONVERSATION FACT'),expected);
+          assert.equal(await b.securePublication(expected),expected);
+        }
         if(mode==='foreign_retrieval')return corpora.get(4)!.service.search(4,q,limit);
+        // Admission/language cases use scripted retrieval of current PDF
+        // passages. No vector/model call or claim of multilingual ranking.
+        if(admissionFixture){
+          const matches=await corpus.service.search(id,'15',limit);
+          if(combined)matches.push(...await corpus.service.search(id,'entré innergården',limit));
+          return [...new Map(matches.map(m=>[`${m.sourceId}:${m.text}`,m])).values()];
+        }
         return corpus.service.search(id,q,limit);
       },
       knowledgeSourceLanguages:id=>corpus.service.sourceLanguageHints(id),semanticKnowledgeSearchQueries:async()=>[],
@@ -143,19 +171,24 @@ async function exercise(t:any,channel:typeof incidentChannels[number],language:L
       },
       calendarAdapter:{getCalendarId:()=>'',getEvents:forbidden,checkSlots:forbidden,insertAppointment:forbidden,
         cancelAppointment:forbidden,updateAppointment:forbidden},recordAppointment:forbidden,cancelAppointmentRow:forbidden,updateAppointmentRow:forbidden});
+    if(switchLanguage){
+      const previous=language==='en'?'sv':'en';
+      assert.equal(await b.prepareConversationLanguage(incidentSession(b,channel,'46700000001'),
+        previous==='en'?'Please reply in English.':'Svara på svenska.',incidentConfig),previous);
+    }
     await incidentInbound(b,channel,question);
     assert.equal(actions,0,actionStacks.join('\n'));assert.equal(replies.length,1,'One customer delivery maximum');
     assert.equal(policies.length,extended?1:0);assert.equal(summaries.length,1);
     assert.equal(events.find(e=>e.stage==='planning')?.remainingMs,extended?35000:20000);
-    if(mode!=='foreign_retrieval')assert.ok(events.some(e=>e.stage==='extraction'&&e.eventType==='transport'&&e.durationMs===6773));
+    if(mode!=='foreign_retrieval')assert.ok(events.some(e=>e.stage==='extraction'&&e.eventType==='transport'&&e.durationMs===6773),providerErrors.join('\n')||JSON.stringify(events));
     assert.doesNotMatch(replies[0],/Video Consultation|300 SEK|bokningsbara tjänster/u);
-    const direct=!!wholeQuestionInformationPlan(question,true,false,incidentConfig.services);
+    const direct=!!(wholeQuestionInformationPlan(question,true,false,incidentConfig.services)||deterministicLocationPlan(question,true));
     assert.equal(stages.includes('planning'),!direct,'Existing routing is unchanged');
     if(mode==='success'&&extended){
-      assert.equal(summaries[0].semanticVerifiedUnits,question.startsWith('Wo ist der Eingang')?4:3,providerErrors.join('\n')||JSON.stringify(events));
+      assert.equal(summaries[0].semanticVerifiedUnits,combined?4:3,providerErrors.join('\n')||JSON.stringify(events));
       assert.ok(summaries[0].facets.every((f:any)=>f.status==='VERIFIED'));
       for(const text of statements[language])assert.ok(replies[0].includes(text),replies[0]);
-      if(question.startsWith('Wo ist der Eingang'))assert.ok(replies[0].includes('Aurora 7'));
+      if(combined)assert.ok(replies[0].includes(entrance[language]));
       const admission=events.find(e=>e.stage==='verification'&&e.admission?.checkpoint==='before_queue');
       assert.ok(admission.admission.effectiveAllowanceMs>9533);
       assert.equal(policies[0].policyVersion,'accuracy-first-v1');
@@ -164,13 +197,14 @@ async function exercise(t:any,channel:typeof incidentChannels[number],language:L
       if(mode!=='incomplete')assert.equal(summaries[0].units,0);
       assert.ok(summaries[0].facets.every((f:any)=>f.status!=='VERIFIED'));
       for(const text of statements[language])assert.equal(replies[0].includes(text),false,'Unverified facts must not escape');
+      if(extended)assert.equal(replies[0],formatBusinessSupportVerificationUnavailable(language,fallbackSubjects[language]));
       if(mode==='legacy'){
         assert.ok(events.some(e=>e.stage==='verification'&&e.admission?.effectiveAllowanceMs===9533));
         assert.ok(events.some(e=>e.stage==='verification'&&e.timeoutScope==='request'&&e.durationMs===9535));
       }
       if(mode==='foreign'||mode==='foreign_retrieval'||mode==='revoked')assert.equal(stages.includes('verification'),false);
       if(mode==='foreign_retrieval')assert.equal(stages.includes('extraction'),false);
-      if(mode==='conflict')assert.ok(events.some(e=>e.relation==='CONTRADICTED'));
+      if(mode==='conflict')assert.ok(events.some(e=>e.relation==='CONTRADICTED'),providerErrors.join('\n')||JSON.stringify(events));
       if(mode==='verifier_timeout'||mode==='late_completion')assert.ok(events.some(e=>e.stage==='verification'&&e.failureCategory==='TIMEOUT'));
     }
   } finally {
@@ -197,3 +231,10 @@ for(const question of [
   'Wo ist der Eingang und was passiert, wenn ich zu spät komme?',
 ])for(const channel of incidentChannels)
   test(`German variant retains complete obligations ${channel}/${question}`,t=>exercise(t,channel,'de','success',question));
+
+for(const language of Object.keys(questions) as Language[])for(const channel of incidentChannels){
+  for(const question of [...arrivalPolicyQuestions[language],mixedArrivalPolicyQuestions[language]])
+    test(`shared policy admission and language switch ${language}/${channel}/${question}`,t=>exercise(t,channel,language,'success',question,3,'3',true));
+  for(const mode of ['verifier_timeout','malformed','conflict','foreign','foreign_retrieval','revoked','incomplete','late_completion'] as Mode[])
+    test(`resolved fallback language ${language}/${channel}/${mode}`,t=>exercise(t,channel,language,mode,arrivalPolicyQuestions[language][0]));
+}

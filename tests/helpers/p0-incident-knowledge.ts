@@ -66,7 +66,7 @@ Hur får jag information om parkering? Kontakta oss före besöket så hjälper 
 
 let serial = 0;
 export function incidentSession(b: any, channel: IncidentChannel, recipient: string) {
-  return channel === 'telegram' ? `tg:77:${createHash('sha256').update(incidentConfig.telegramToken).digest('hex').slice(0, 12)}:${recipient}` :
+  return channel === 'telegram' ? `tg:${incidentConfig.id}:${createHash('sha256').update(incidentConfig.telegramToken).digest('hex').slice(0, 12)}:${recipient}` :
     b.channelSessionId(channel, recipient, incidentConfig, channel === 'whatsapp' ? '10001' : channel === 'instagram' ? '30001' : '40001');
 }
 export async function incidentInbound(b: any, channel: IncidentChannel, text: string, recipient = '46700000001') {

@@ -58,7 +58,9 @@ export function isBusinessInformationQuestion(text: string): boolean {
   // Documents can contain arbitrary business facts, beyond the catalog of UI
   // topics. Recognize read-only questions without treating scheduling input as
   // a Knowledge request (e.g. "what time can I book?").
-  const openQuestion = /[?؟]|\b(?:what|where|who|why|how|tell me|question about|fråga om|frage zu|pregunta sobre|vad|varför|vilken|vilket|berätta|was|wo|wie|welche|qué|cuál|dónde|cómo)\b|(?:سوال|سؤال|چیست|چیه|کجاست|ما هو|ما هي|أين)/iu.test(text);
+  // Coordinated question clauses may precede the sentence's question mark.
+  // Recognize their interrogatives independently of terminal punctuation.
+  const openQuestion = /[?؟]|\b(?:what|where|who|why|how|tell me|question about|fråga om|frage zu|pregunta sobre|vad|varför|hur|vilken|vilket|berätta|was|wo|wie|welche|qué|cuál|cu[aá]nt[oa]s?|dónde|cómo)\b|(?:سوال|سؤال|چیست|چیه|کجاست|چند|چقدر|ما هو|ما هي|أين|كم)/iu.test(text);
   const schedulingInput = /\b(?:book|booking|appointment|reserve|schedule|reschedule|cancel|available|availability|slots?|times?|appointment\w*|tid|tider|vaght|vaghtam|rezerv|boka|bokning\w*|avboka|omboka|ledig\w*|termin\w*|buchen|reservieren|stornieren|verschieben|reservar|reserva|cita|cancelar)\b|رزرو|نوبت|وقت|حجز|موعد|مواعيد|أوقات|الأوقات/iu.test(text);
   // Possibility/permission is a speech act, not authority to execute the verb.
   // Do not require a topic noun: "there/that/it" is resolved from both speakers'

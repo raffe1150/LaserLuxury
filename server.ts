@@ -6737,6 +6737,10 @@ function clearRescheduleContext(sessionId: string) {
 function isCancellationIntent(text?: string): boolean {
   const raw = withoutNegatedBookingClauses(String(text || "")).trim().toLowerCase().normalize("NFKC");
   if (!raw) return false;
+  // Cancellation vocabulary is a topic, not operation authority. Honor the
+  // shared information/action distinction before the legacy intent fallback.
+  // Explicit action clauses in mixed requests remain actionable there.
+  if (isBusinessInformationQuestion(raw)) return false;
   if (detectNormalizedIntent(raw) === "cancellation") return true;
   return /(?:^|\s)(?:avboka|avbokning|avboka den|avboka tiden|cancel|cancel it|cancel my appointment|cancel the appointment|cancell?ation|laghv|لغو|کنسل)(?=\s|$)/iu.test(raw);
 }
@@ -14751,14 +14755,16 @@ function isExistingAppointmentLookupIntent(text?: string): boolean {
   if (isDirectAppointmentLookupPhrase(raw)) return true;
 
   const lookupPatterns = [
-    /\b(do i|did i|have i|can you check|check if i).*(appointment|booking|booked)\b/i,
+    // Require an existence/verification predicate. Auxiliary words alone also
+    // occur in policy questions ("do I need to cancel my appointment?").
+    /\b(do i (?:already )?have|did i (?:already )?(?:book|reserve|schedule)|have i (?:already )?(?:booked|reserved|scheduled|got)|can you check|check if i).*(appointment|booking|booked)\b/i,
     /\b(when is|what time is).*(appointment|booking)\b/i,
     /\b(jag har|har jag|kan du kolla|kan du kontrollera).*(tid|bokning|bokat)\b/i,
     /\b(har jag en tid|har jag bokat|när är min tid|när är min bokning)\b/i,
     /\b(aya|آیا|میشه|می‌شود|میتونی|می‌تونی|mitoni|mishe).*(vaght|وقت|رزرو|booking|boka).*(daram|دارم|kardam|کردم|ya na|یا نه)\b/i,
     /\b(nemidonam|نمی.?دونم|motmaen nistam|مطمئن نیستم).*(vaght|وقت|رزرو|booking|boka)\b/i,
     /\b(habe ich|kannst du prüfen|wann ist).*(termin|buchung)\b/i,
-    /\b(tengo|puedes comprobar|cuándo es).*(cita|reserva)\b/i,
+    /\b(tengo(?!\s+que\b)|puedes comprobar|cuándo es).*(cita|reserva)\b/i,
     /(?:هل لدي(?=\s|$)|هل حجزت|متى موعدي|تحقق من موعدي)/i
   ];
 

@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
@@ -9,7 +10,10 @@ import ts from 'typescript';
 const source = readFileSync(new URL('../../server.ts', import.meta.url), 'utf8');
 const parsed = ts.createSourceFile('server.ts', source, ts.ScriptTarget.Latest, true);
 const functionNames = [
-  'processWhatsAppMessageClaimed', 'getBusinessIdFromConfig',
+  'processWhatsAppMessageClaimed',
+  'resolveVerifiedMetaTenantWhatsApp',
+  'processWhatsAppMessageClaimedInternal',
+  'getBusinessIdFromConfig',
   'getAppointmentBusinessScope', 'getScopedChannelSessionId',
   'normalizePlatformName', 'normalizePlatformUserId',
   'canonicalWhatsAppProviderCustomerId', 'prepareConversationLanguageForTurn',
@@ -93,9 +97,39 @@ function fixture(options: {
   const generations: GenerationOptions[] = [];
   const languages = new Map<string, string>();
   const history: Record<string, { role: string; content: string }[]> = {};
+  const recoveryRequestScope = new AsyncLocalStorage<{
+    boundSession: string | null;
+  }>();
+
   const context = vm.createContext({
     process: { env: {} }, // Neither real credentials nor environment files enter this fixture.
     supabase: null, activeConfig: {}, chatSessions: history,
+    resolveConnectionByIdentity: async () => null,
+    // Timing admission is covered by dedicated integration tests.
+    // Preserve real WhatsApp handler, recovery and request-local isolation.
+    runUnifiedConversationRequest: (work: () => Promise<unknown>) =>
+      recoveryRequestScope.run({ boundSession: null }, work),
+    nativeKnowledgeOrder: () => 0,
+    // Recovery tests exercise the legacy foreground conversation path.
+    // Native Knowledge intake is validated in separate integration tests.
+    prepareNativeKnowledgeIngress: async () => false,
+    trialEnforced: () => false,
+    securePublicationReply: async (text: string) => text,
+    cancellationDeliveryTextComplete: () => true,
+    pendingCancellationDelivery: () => false,
+    recordBusinessInformationSendResult: () => undefined,
+    fetchNativeKnowledgeText: (url: string, init: RequestInit) =>
+      (context as any).fetch(url, init),
+    requestSecurity: {
+      bind: (sessionId: string) => {
+        const state = recoveryRequestScope.getStore();
+        assert.ok(state, 'Recovery handler requires a request context');
+        state.boundSession = sessionId;
+      },
+      current: () => Boolean(recoveryRequestScope.getStore()?.boundSession),
+    },
+    verifiedTenantRequestScope: new AsyncLocalStorage(),
+    knowledgeTurnScope: new AsyncLocalStorage(),
     nonMutatingSupportTurns: {}, languageEngine: '',
     console: { log: (...args: unknown[]) => logs.push(args), error: (...args: unknown[]) => logs.push(args) },
     bindMetaInboundEventBusiness: () => undefined,
@@ -127,8 +161,17 @@ function fixture(options: {
     businessInformationTimingContext: () => ({}),
     minimizeBusinessSupportMessages: (_sessionId: string, messages: unknown[]) => messages,
     getGeminiSupportTools: () => [],
-    generateContentWithFallback: async (_ai: null, request: GenerationOptions) => {
-      assert.ok(accepted.some((event) => event.businessId === request.context.businessId), 'inbound scope is established before injected failure');
+    // Exercise the current WhatsApp generation call boundary.
+    // Secure generation internals have their own contract tests.
+    generateSecureConversationContent: async (
+      sessionId: string, request: GenerationOptions
+    ) => {
+      assert.ok(
+        accepted.some((event) =>
+          event.businessId === request.context.businessId &&
+          event.sessionId === sessionId),
+        'verified inbound session must exist before generation'
+      );
       generations.push(request);
       if (options.generate) return options.generate(request.context.businessId);
       return { text: 'Existing normal reply.' };

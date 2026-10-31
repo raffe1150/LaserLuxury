@@ -461,7 +461,7 @@ async function hydrateBusinessChannelConfig(config: any, provider: ChannelProvid
   return config;
 }
 
-async function hasExplicitMetaConnection(businessId: number, provider: 'messenger' | 'instagram'): Promise<boolean> {
+async function hasExplicitMetaConnection(businessId: number, provider: 'messenger' | 'instagram' | 'whatsapp'): Promise<boolean> {
   if (!supabase) return false;
   const { data, error } = await supabase.from('channel_connections').select('id')
     .eq('business_id', businessId).eq('provider', provider).maybeSingle();
@@ -5369,20 +5369,70 @@ type KnowledgeTurnState = { readonly modelProfile?: KnowledgeModelProfile; reado
   invalidSourceIds?: Set<string>; nativeChannel?: 'telegram'|'instagram'|'whatsapp'|'messenger'; provider?:string; model?:string;
   freshnessFailure?:DecisionReason; sourceValidationUnavailable?:boolean; freshnessChecks?:number; freshnessDurationMs?:number; semanticVerifiedUnits?:number;
   diagnosticCount?:number; unitCounts?:KnowledgeDecision['counts'] };
+type VerifiedTenantRequestState = {
+  businessId: number;
+  channel: 'whatsapp' | 'instagram' | 'messenger';
+  providerAccountId: string;
+  businessConfig: any;
+};
+
+const verifiedTenantRequestScope = new AsyncLocalStorage<VerifiedTenantRequestState>();
+
+function verifiedTenantTimingBusinessId(
+  channel: 'whatsapp' | 'instagram' | 'messenger',
+  providerAccountId: string,
+): number | null {
+  const state = verifiedTenantRequestScope.getStore();
+  if (!state) return null;
+  if (state.channel !== channel || state.providerAccountId !== providerAccountId) return null;
+  if (!Number.isSafeInteger(state.businessId) || state.businessId <= 0) return null;
+  if (Number(getBusinessIdFromConfig(state.businessConfig)) !== state.businessId) return null;
+  return state.businessId;
+}
+
+
 const knowledgeTurnScope = new AsyncLocalStorage<KnowledgeTurnState>();
 function runUnifiedConversationRequest<T>(work: () => Promise<T>, nativeChannel:KnowledgeTurnState['nativeChannel'], nativeEvent?:NativeKnowledgeEvent,
   written?: { text: string; config: any }): Promise<T | undefined> {
   const naturalEnabled=process.env.ODINLINK_EVIDENCE_FIRST_KNOWLEDGE==='true'&&process.env.ODINLINK_GROUNDED_NATURAL_RESPONSES==='true';
   // Reuse existing read-only admission; no new intent classifier or action route.
-  const scoped = accuracyFirstEnabled(Number(getBusinessIdFromConfig(written?.config))) && !!written?.text &&
-    verifiedKnowledgeInformationRequest(written.text, written.config);
+  // Preserve the existing standalone adapter contract. Database-backed Meta
+  // traffic must use a tenant resolved from its registered channel connection.
+  const standaloneMetaTenantId = !supabase && nativeEvent && written?.config
+    && Number.isSafeInteger(Number(getBusinessIdFromConfig(written.config)))
+    && Number(getBusinessIdFromConfig(written.config)) > 0
+    && (nativeChannel === 'instagram'
+      ? String(written.config.instagramAccountId || written.config.instagram_account_id || '') === nativeEvent.account
+      : nativeChannel === 'messenger'
+        ? getBusinessMessengerPageId(written.config) === nativeEvent.account
+        : nativeChannel === 'whatsapp'
+          ? String(written.config.whatsappPhoneNumberId || written.config.whatsapp_phone_number_id || '') === nativeEvent.account
+          : false)
+      ? Number(getBusinessIdFromConfig(written.config)) : null;
+
+  const verifiedMetaTenantId =
+    nativeChannel === 'whatsapp' || nativeChannel === 'instagram' || nativeChannel === 'messenger'
+      ? verifiedTenantTimingBusinessId(nativeChannel, String(nativeEvent?.account || '')) ?? standaloneMetaTenantId
+      : null;
+
+  const timingBusinessId =
+    nativeChannel === 'whatsapp' || nativeChannel === 'instagram' || nativeChannel === 'messenger'
+      ? verifiedMetaTenantId
+      : Number(getBusinessIdFromConfig(written?.config));
+
+  const verifiedMetaState =
+    verifiedMetaTenantId !== null ? verifiedTenantRequestScope.getStore() : null;
+  const timingConfig = verifiedMetaState?.businessConfig || written?.config;
+
+  const scoped = accuracyFirstEnabled(Number(timingBusinessId)) && !!written?.text &&
+    verifiedKnowledgeInformationRequest(written.text, timingConfig);
   return withBusinessInformationTiming(() => requestSecurity.run(() => knowledgeTurnScope.run({nativeChannel,nativeEvent,naturalEnabled,...(naturalEnabled?{
     naturalSinglePartial:process.env.ODINLINK_GROUNDED_NATURAL_SINGLE_PARTIAL==='true',naturalTurnId:crypto.randomUUID()}: {})}, () => scoped
       ? runAccuracyFirstNative(work, async () => {
           // An overloaded/unresolved intake has not established session authority.
           if (!requestSecurity.current() || !nativeEvent || !nativeChannel || !written) return;
           const language=knowledgeTurnScope.getStore()?.replyLanguage || (requestSecurity.evidence?.support ? capturedSupportLanguage(requestSecurity.evidence.support) : written.config.language || 'en');
-          await sendCustomerMessage(nativeChannel,nativeEvent.recipient,knowledgeUnavailableReply(language),written.config,'conversation');
+          await sendCustomerMessage(nativeChannel,nativeEvent.recipient,knowledgeUnavailableReply(language),timingConfig,'conversation');
         }, event => runOptionalDiagnostic(() => console.info('[KnowledgeTimingPolicy]', event))) : work())), nativeChannel);
 }
 
@@ -29552,11 +29602,172 @@ async function processWhatsAppMessage(message: any, metadata: any, config: any, 
   }));
 }
 
-async function processWhatsAppMessageClaimed(message: any, metadata: any, config: any, platform: string = "whatsapp-webhook") {
-  return runUnifiedConversationRequest(() => processWhatsAppMessageClaimedInternal(message, metadata, config, platform), 'whatsapp', {eventId:String(message.id||''),account:String(metadata.phone_number_id||''),recipient:canonicalWhatsAppProviderCustomerId(message.from),order:nativeKnowledgeOrder('whatsapp',message)}, message.type==='text' && typeof message.text?.body==='string' ? {text:message.text.body,config} : undefined);
+async function resolveVerifiedMetaTenantWhatsApp(config: any, phoneNumberId: string) {
+  let businessConfig: any = { ...activeConfig, ...(config || {}) };
+  let whatsappBusinessScopeVerified = !supabase && Boolean(
+    getBusinessIdFromConfig(businessConfig) &&
+    String(businessConfig?.whatsappPhoneNumberId || businessConfig?.whatsapp_phone_number_id || "") === String(phoneNumberId)
+  );
+
+  try {
+    if (supabase) {
+      let data: any = null;
+      let lookupError: any = null;
+      let connection: ResolvedChannelConnection | null = null;
+
+      try {
+        const connected = await findBusinessByChannelConnection('whatsapp', phoneNumberId);
+        if (connected) {
+          data = connected.business;
+          connection = connected.connection;
+        }
+      } catch (connectionError) {
+        lookupError = connectionError;
+      }
+
+      // Self-service registration takes precedence over legacy configuration.
+      // Inactive or reconnect-required connections must fail closed.
+      if (!data && !lookupError) {
+        for (const identityField of ['provider_account_id', 'provider_connection_id'] as const) {
+          const { data: registeredConnection, error: registrationError } = await supabase
+            .from('channel_connections')
+            .select('id,status,reconnect_required')
+            .eq('provider', 'whatsapp')
+            .eq(identityField, phoneNumberId)
+            .maybeSingle();
+
+          if (registrationError) {
+            lookupError = registrationError;
+            break;
+          }
+
+          if (registeredConnection) {
+            lookupError = new Error('whatsapp_self_service_connection_inactive');
+            break;
+          }
+        }
+      }
+
+      for (let attempt = 1; !data && !lookupError && attempt <= 2; attempt++) {
+        const result = await supabase
+          .from("businesses")
+          .select("*")
+          .eq("whatsapp_phone_number_id", phoneNumberId)
+          .maybeSingle();
+
+        data = result.data;
+        lookupError = result.error;
+
+        // A registered WhatsApp connection supersedes legacy phone mappings.
+        // A failed registration query must also deny legacy verification.
+        if (data && !lookupError &&
+            await hasExplicitMetaConnection(Number(data.id), 'whatsapp')) {
+          lookupError = new Error('whatsapp_legacy_connection_superseded');
+          data = null;
+          break;
+        }
+
+        if (!lookupError) break;
+
+        const errorText = JSON.stringify(lookupError);
+        const transientLookupError =
+          /gateway timeout|timed?\s*out|\b502\b|\b503\b|\b504\b|connection|fetch failed/i.test(errorText);
+
+        console.error(
+          `WhatsApp business lookup error (attempt ${attempt}/2):`,
+          errorText
+        );
+
+        if (!transientLookupError || attempt === 2) break;
+
+        await new Promise(resolve => setTimeout(resolve, 300));
+      }
+
+      if (data) {
+        whatsappBusinessScopeVerified = Boolean(data.id);
+        // Use the same complete business normalization as every other channel so newly
+        // added settings (especially cancellation policy) cannot be silently dropped.
+        businessConfig = {
+          ...businessConfig,
+          ...normalizeBusinessConfig(data),
+          id: data.id,
+          businessId: data.id,
+          businessRecordId: data.id,
+          business_id: data.id,
+          whatsappAccessToken: cleanMetaToken(data.whatsapp_access_token),
+          whatsappPhoneNumberId: data.whatsapp_phone_number_id,
+          whatsappBusinessAccountId: data.whatsapp_business_account_id,
+          whatsappEnabled: data.whatsapp_enabled,
+          calendarProvider: "google"
+        };
+        businessConfig.channelConnectionSource = connection ? 'self_service' : 'legacy_manual';
+        if (connection) businessConfig = applyChannelConnectionToConfig(businessConfig, connection);
+        businessConfig = await hydrateBusinessCalendarConfig(businessConfig);
+        console.log(
+          `[WhatsAppConfig] business=${data.business_name} (${data.id}), ` +
+          `allowCancellation=${businessConfig.allowCancellation}, ` +
+          `deadlineMinutes=${businessConfig.cancellationDeadlineMinutes}`
+        );
+      } else if (!lookupError) {
+        console.error("No business found for WhatsApp phone_number_id:", phoneNumberId);
+      }
+    }
+  } catch (tenantErr) {
+    console.error("WhatsApp tenant config injection failed:", tenantErr);
+  }
+
+  return { businessConfig, whatsappBusinessScopeVerified };
 }
 
-async function processWhatsAppMessageClaimedInternal(message: any, metadata: any, config: any, platform: string = "whatsapp-webhook") {
+async function processWhatsAppMessageClaimed(message: any, metadata: any, config: any, platform: string = "whatsapp-webhook") {
+  const account = String(metadata?.phone_number_id || '');
+  const recipient = canonicalWhatsAppProviderCustomerId(message?.from);
+  const text = message?.type === 'text' && typeof message.text?.body === 'string'
+    ? message.text.body : undefined;
+
+  // Preserve existing handling for unsupported payloads.
+  if (!account || !recipient || (!text && message?.type !== 'audio')) {
+    return runUnifiedConversationRequest(
+      () => processWhatsAppMessageClaimedInternal(message, metadata, config, platform),
+      'whatsapp',
+      {eventId:String(message?.id || ''),account,recipient,order:nativeKnowledgeOrder('whatsapp',message)},
+      text ? {text,config} : undefined,
+    );
+  }
+
+  // Resolve once, after the existing inbound claim and before timing selection.
+  const resolved = await resolveVerifiedMetaTenantWhatsApp(config, account);
+  const trustedId = resolved.whatsappBusinessScopeVerified
+    ? Number(getBusinessIdFromConfig(resolved.businessConfig)) : null;
+
+  const verified = trustedId !== null && Number.isSafeInteger(trustedId) && trustedId > 0
+    && String(resolved.businessConfig?.whatsappPhoneNumberId ||
+      resolved.businessConfig?.whatsapp_phone_number_id || '') === account;
+
+  const execute = () => runUnifiedConversationRequest(
+    () => processWhatsAppMessageClaimedInternal(message, metadata, config, platform, resolved),
+    'whatsapp',
+    {eventId:String(message?.id || ''),account,recipient,order:nativeKnowledgeOrder('whatsapp',message)},
+    text ? {text,config:verified ? resolved.businessConfig : config} : undefined,
+  );
+
+  if (!verified) return execute();
+
+  return verifiedTenantRequestScope.run({
+    businessId: trustedId!,
+    channel: 'whatsapp',
+    providerAccountId: account,
+    businessConfig: resolved.businessConfig,
+  }, execute);
+}
+
+async function processWhatsAppMessageClaimedInternal(
+  message: any,
+  metadata: any,
+  config: any,
+  platform: string = "whatsapp-webhook",
+  preResolved?: Awaited<ReturnType<typeof resolveVerifiedMetaTenantWhatsApp>>,
+) {
   const from = canonicalWhatsAppProviderCustomerId(message?.from);
   let textMessage = message?.text?.body || "";
   const whatsappAudio = message?.type === "audio" ? message?.audio : null;
@@ -29586,82 +29797,16 @@ async function processWhatsAppMessageClaimedInternal(message: any, metadata: any
   let chatId = `wa_${from}`;
   let userLanguage = "en";
 
-  let businessConfig: any = { ...activeConfig, ...(config || {}) };
-  let whatsappBusinessScopeVerified = !supabase && Boolean(
-    getBusinessIdFromConfig(businessConfig) &&
-    String(businessConfig?.whatsappPhoneNumberId || businessConfig?.whatsapp_phone_number_id || "") === String(phoneNumberId)
+  const verifiedState = verifiedTenantRequestScope.getStore();
+  const resolved = preResolved ?? (
+    verifiedState?.channel === 'whatsapp' &&
+    verifiedState.providerAccountId === String(phoneNumberId)
+      ? {businessConfig:verifiedState.businessConfig,whatsappBusinessScopeVerified:true}
+      : await resolveVerifiedMetaTenantWhatsApp(config, String(phoneNumberId))
   );
 
-  try {
-    if (supabase) {
-      let data: any = null;
-      let lookupError: any = null;
-      let connection: ResolvedChannelConnection | null = null;
-
-      try {
-        const connected = await findBusinessByChannelConnection('whatsapp', phoneNumberId);
-        if (connected) {
-          data = connected.business;
-          connection = connected.connection;
-        }
-      } catch (connectionError) {
-        lookupError = connectionError;
-      }
-
-      for (let attempt = 1; !data && !lookupError && attempt <= 2; attempt++) {
-        const result = await supabase
-          .from("businesses")
-          .select("*")
-          .eq("whatsapp_phone_number_id", phoneNumberId)
-          .maybeSingle();
-
-        data = result.data;
-        lookupError = result.error;
-
-        if (!lookupError) break;
-
-        const errorText = JSON.stringify(lookupError);
-        const transientLookupError =
-          /gateway timeout|timed?\s*out|\b502\b|\b503\b|\b504\b|connection|fetch failed/i.test(errorText);
-
-        console.error(
-          `WhatsApp business lookup error (attempt ${attempt}/2):`,
-          errorText
-        );
-
-        if (!transientLookupError || attempt === 2) break;
-
-        await new Promise(resolve => setTimeout(resolve, 300));
-      }
-
-      if (data) {
-        whatsappBusinessScopeVerified = Boolean(data.id);
-        // Use the same complete business normalization as every other channel so newly
-        // added settings (especially cancellation policy) cannot be silently dropped.
-        businessConfig = {
-          ...businessConfig,
-          ...normalizeBusinessConfig(data),
-          whatsappAccessToken: cleanMetaToken(data.whatsapp_access_token),
-          whatsappPhoneNumberId: data.whatsapp_phone_number_id,
-          whatsappBusinessAccountId: data.whatsapp_business_account_id,
-          whatsappEnabled: data.whatsapp_enabled,
-          calendarProvider: "google"
-        };
-        businessConfig.channelConnectionSource = connection ? 'self_service' : 'legacy_manual';
-        if (connection) businessConfig = applyChannelConnectionToConfig(businessConfig, connection);
-        businessConfig = await hydrateBusinessCalendarConfig(businessConfig);
-        console.log(
-          `[WhatsAppConfig] business=${data.business_name} (${data.id}), ` +
-          `allowCancellation=${businessConfig.allowCancellation}, ` +
-          `deadlineMinutes=${businessConfig.cancellationDeadlineMinutes}`
-        );
-      } else if (!lookupError) {
-        console.error("No business found for WhatsApp phone_number_id:", phoneNumberId);
-      }
-    }
-  } catch (tenantErr) {
-    console.error("WhatsApp tenant config injection failed:", tenantErr);
-  }
+  let businessConfig = resolved.businessConfig;
+  let whatsappBusinessScopeVerified = resolved.whatsappBusinessScopeVerified;
 
   if (!whatsappBusinessScopeVerified) {
     clearAppointmentConversationState(chatId);
@@ -30538,6 +30683,23 @@ async function findMessengerBusinessByPageId(pageId: string) {
         _channelConnection: connected.connection,
       };
     }
+    // An existing self-service identity overrides any legacy Page mapping.
+    // Inactive or reconnect-required registrations must fail closed.
+    for (const identityField of ['provider_account_id', 'provider_connection_id'] as const) {
+      const { data: registration, error: registrationError } = await supabase
+        .from('channel_connections')
+        .select('id,status,reconnect_required')
+        .eq('provider', 'messenger')
+        .eq(identityField, pageId)
+        .maybeSingle();
+
+      if (registrationError) throw registrationError;
+      if (registration) {
+        console.error('[MessengerConfig] Inactive self-service Page refused.');
+        return null;
+      }
+    }
+
     // We select all rows and match in JS so this works even if your column name is
     // messenger_page_id, facebook_page_id, or page_id.
     const { data, error } = await supabase.from("businesses").select("*");
@@ -31017,37 +31179,10 @@ async function processMessengerUpdate(webhookEvent: any, config: any, platform: 
   }));
 }
 
-async function processMessengerUpdateClaimed(webhookEvent: any, config: any, platform: string = "messenger-webhook") {
-  return runUnifiedConversationRequest(() => processMessengerUpdateClaimedInternal(webhookEvent, config, platform), 'messenger', {eventId:String(webhookEvent.message?.mid||''),account:String(webhookEvent.recipient?.id||''),recipient:String(webhookEvent.sender?.id||''),order:nativeKnowledgeOrder('messenger',webhookEvent)}, typeof webhookEvent.message?.text==='string' && !webhookEvent.message?.attachments?.length ? {text:webhookEvent.message.text,config} : undefined);
-}
-
-async function processMessengerUpdateClaimedInternal(webhookEvent: any, config: any, platform: string = "messenger-webhook") {
-  const senderId = webhookEvent.sender?.id;
-  const recipientId = webhookEvent.recipient?.id;
-
-  if (webhookEvent.message?.is_echo) {
-    console.log("Messenger echo ignored.");
-    return;
-  }
-
-  const textMessage = webhookEvent.message?.text || "";
-  const audioAttachment = webhookEvent.message?.attachments?.find((attachment: any) => attachment.type === "audio");
-  const audioUrl = audioAttachment?.payload?.url;
-  const isVoiceMessage = Boolean(audioUrl && !textMessage);
-
-  if (!senderId || !recipientId || (!textMessage && !audioUrl)) {
-    console.log("Messenger webhook ignored: no supported text/audio message payload.");
-    return;
-  }
-
-  console.log(
-    `[MessengerWebhook] inputType=${isVoiceMessage ? "voice" : "text"} ` +
-    `senderPresent=${Boolean(senderId)} businessPagePresent=${Boolean(recipientId)}`
-  );
-
-  let chatId = `ms_${senderId}`;
-  let userLanguage = "en";
-
+async function resolveVerifiedMetaTenantMessenger(
+  config: any,
+  recipientId: string,
+) {
   let businessConfig: any = { ...activeConfig, ...(config || {}) };
   let messengerBusinessScopeVerified = !supabase && Boolean(
     getBusinessIdFromConfig(businessConfig) &&
@@ -31064,6 +31199,10 @@ async function processMessengerUpdateClaimedInternal(webhookEvent: any, config: 
       businessConfig = {
         ...businessConfig,
         ...normalizeBusinessConfig(data),
+        id: data.id,
+        businessId: data.id,
+        businessRecordId: data.id,
+        business_id: data.id,
         messengerPageId: data.messenger_page_id || data.facebook_page_id || data.page_id || data.instagram_page_id,
         messengerPageAccessToken: cleanMetaToken(
           data.messenger_page_access_token ||
@@ -31094,6 +31233,100 @@ async function processMessengerUpdateClaimedInternal(webhookEvent: any, config: 
   }
 
   businessConfig.messengerBusinessScopeVerified = messengerBusinessScopeVerified;
+  return { businessConfig, messengerBusinessScopeVerified };
+}
+
+async function processMessengerUpdateClaimed(
+  webhookEvent: any,
+  config: any,
+  platform: string = "messenger-webhook",
+) {
+  const account = String(webhookEvent?.recipient?.id || '');
+  const recipient = String(webhookEvent?.sender?.id || '');
+  const message = webhookEvent?.message;
+  const text = typeof message?.text === 'string' &&
+    !message?.attachments?.length ? message.text : undefined;
+
+  const event = {
+    eventId: String(message?.mid || ''),
+    account,
+    recipient,
+    order: nativeKnowledgeOrder('messenger', webhookEvent),
+  };
+
+  if (!account || !recipient || !text) {
+    return runUnifiedConversationRequest(
+      () => processMessengerUpdateClaimedInternal(webhookEvent, config, platform),
+      'messenger',
+      event,
+      text ? { text, config } : undefined,
+    );
+  }
+
+  const resolved = await resolveVerifiedMetaTenantMessenger(config, account);
+  const tenantId = resolved.messengerBusinessScopeVerified
+    ? Number(getBusinessIdFromConfig(resolved.businessConfig))
+    : null;
+
+  const verified = tenantId !== null &&
+    Number.isSafeInteger(tenantId) && tenantId > 0 &&
+    getBusinessMessengerPageId(resolved.businessConfig) === account;
+
+  const execute = () => runUnifiedConversationRequest(
+    () => processMessengerUpdateClaimedInternal(
+      webhookEvent, config, platform, resolved,
+    ),
+    'messenger',
+    event,
+    { text, config: verified ? resolved.businessConfig : config },
+  );
+
+  if (!verified) return execute();
+
+  return verifiedTenantRequestScope.run({
+    businessId: tenantId,
+    channel: 'messenger',
+    providerAccountId: account,
+    businessConfig: resolved.businessConfig,
+  }, execute);
+}
+
+async function processMessengerUpdateClaimedInternal(
+  webhookEvent: any,
+  config: any,
+  platform: string = "messenger-webhook",
+  preResolved?: Awaited<ReturnType<typeof resolveVerifiedMetaTenantMessenger>>,
+) {
+  const senderId = webhookEvent.sender?.id;
+  const recipientId = webhookEvent.recipient?.id;
+
+  if (webhookEvent.message?.is_echo) {
+    console.log("Messenger echo ignored.");
+    return;
+  }
+
+  const textMessage = webhookEvent.message?.text || "";
+  const audioAttachment = webhookEvent.message?.attachments?.find((attachment: any) => attachment.type === "audio");
+  const audioUrl = audioAttachment?.payload?.url;
+  const isVoiceMessage = Boolean(audioUrl && !textMessage);
+
+  if (!senderId || !recipientId || (!textMessage && !audioUrl)) {
+    console.log("Messenger webhook ignored: no supported text/audio message payload.");
+    return;
+  }
+
+  console.log(
+    `[MessengerWebhook] inputType=${isVoiceMessage ? "voice" : "text"} ` +
+    `senderPresent=${Boolean(senderId)} businessPagePresent=${Boolean(recipientId)}`
+  );
+
+  let chatId = `ms_${senderId}`;
+  let userLanguage = "en";
+
+  const resolved = preResolved ??
+    await resolveVerifiedMetaTenantMessenger(config, String(recipientId));
+  let businessConfig = resolved.businessConfig;
+  let messengerBusinessScopeVerified = resolved.messengerBusinessScopeVerified;
   if (!messengerBusinessScopeVerified) {
     clearAppointmentConversationState(chatId);
     console.error(`[MessengerConfig] Refusing unscoped message for recipient/page id=${recipientId}`);
@@ -31674,11 +31907,154 @@ function isSupportedInstagramConversationalEvent(webhookEvent: any): boolean {
   return Boolean(text || hasAudio);
 }
 
-async function processInstagramUpdateClaimed(webhook_event: any, config: any, platform: string = "instagram-webhook") {
-  return runUnifiedConversationRequest(() => processInstagramUpdateClaimedInternal(webhook_event, config, platform), 'instagram', {eventId:String(webhook_event.message?.mid||''),account:String(webhook_event.recipient?.id||''),recipient:String(webhook_event.sender?.id||''),order:nativeKnowledgeOrder('instagram',webhook_event)}, typeof webhook_event.message?.text==='string' && !webhook_event.message?.attachments?.length ? {text:webhook_event.message.text,config} : undefined);
+async function resolveVerifiedMetaTenantInstagram(
+  config: any,
+  recipientId: string,
+) {
+  let businessConfig: any = { ...activeConfig, ...(config || {}) };
+  let businessRecord: any = null;
+  let instagramBusinessScopeVerified = !supabase && Boolean(
+    getBusinessIdFromConfig(businessConfig) &&
+    String(businessConfig?.instagramAccountId || businessConfig?.instagram_account_id || "") === String(recipientId)
+  );
+
+  try {
+    if (supabase) {
+      const connected = await findBusinessByChannelConnection('instagram', recipientId);
+
+      // Registered self-service identity takes precedence over legacy.
+      // Inactive, reconnect-required or unreadable registrations fail closed.
+      if (!connected) {
+        for (const identityField of ['provider_account_id', 'provider_connection_id'] as const) {
+          const { data: registration, error: registrationError } = await supabase
+            .from('channel_connections')
+            .select('id,status,reconnect_required')
+            .eq('provider', 'instagram')
+            .eq(identityField, recipientId)
+            .maybeSingle();
+
+          if (registrationError) throw registrationError;
+          if (registration) {
+            throw new Error('instagram_self_service_connection_inactive');
+          }
+        }
+      }
+
+      const legacyResult = connected ? null : await supabase
+        .from('businesses').select('*').eq('instagram_account_id', recipientId).maybeSingle();
+      const legacyBusiness = legacyResult?.data;
+      const data = connected?.business || (legacyBusiness && !await hasExplicitMetaConnection(Number(legacyBusiness.id), 'instagram')
+        ? legacyBusiness : null);
+      const error = legacyResult?.error;
+
+      if (error) {
+        console.error('Instagram business lookup error:', JSON.stringify(error));
+      }
+
+      if (data) {
+        businessRecord = data;
+        instagramBusinessScopeVerified = Boolean(data.id);
+        // Normalize the full database row so Instagram receives exactly the same
+        // cancellation policy and business settings as Messenger, WhatsApp and Telegram.
+        businessConfig = {
+          ...businessConfig,
+          ...normalizeBusinessConfig(data),
+          id: data.id,
+          businessId: data.id,
+          businessRecordId: data.id,
+          business_id: data.id,
+          instagramAccessToken: cleanInstagramToken(data.instagram_access_token),
+          instagramToken: cleanInstagramToken(data.instagram_access_token),
+          instagramAccountId: data.instagram_account_id,
+          calendarProvider: 'google'
+        };
+        businessConfig.channelConnectionSource = connected ? 'self_service' : 'legacy_manual';
+        if (connected) businessConfig = applyChannelConnectionToConfig(businessConfig, connected.connection);
+        businessConfig = await hydrateBusinessCalendarConfig(businessConfig);
+        console.log(
+          `[InstagramConfig] business=${data.business_name} (${data.id}), ` +
+          `allowCancellation=${businessConfig.allowCancellation}, ` +
+          `deadlineMinutes=${businessConfig.cancellationDeadlineMinutes}`
+        );
+      } else {
+        console.error('No business found for Instagram recipient id:', recipientId);
+      }
+    }
+  } catch (tenantErr) {
+    console.error('Instagram tenant config injection failed:', tenantErr);
+  }
+
+  return {
+    businessConfig,
+    businessRecord,
+    instagramBusinessScopeVerified,
+  };
 }
 
-async function processInstagramUpdateClaimedInternal(webhook_event: any, config: any, platform: string = "instagram-webhook") {
+async function processInstagramUpdateClaimed(
+  webhook_event: any,
+  config: any,
+  platform: string = "instagram-webhook",
+) {
+  const account = String(webhook_event?.recipient?.id || '');
+  const recipient = String(webhook_event?.sender?.id || '');
+  const message = webhook_event?.message;
+  const text = typeof message?.text === 'string' &&
+    !message?.attachments?.length ? message.text : undefined;
+
+  const event = {
+    eventId: String(message?.mid || ''),
+    account,
+    recipient,
+    order: nativeKnowledgeOrder('instagram', webhook_event),
+  };
+
+  if (!account || !recipient || !text) {
+    return runUnifiedConversationRequest(
+      () => processInstagramUpdateClaimedInternal(webhook_event, config, platform),
+      'instagram',
+      event,
+      text ? {text, config} : undefined,
+    );
+  }
+
+  const resolved = await resolveVerifiedMetaTenantInstagram(config, account);
+  const tenantId = resolved.instagramBusinessScopeVerified
+    ? Number(getBusinessIdFromConfig(resolved.businessConfig))
+    : null;
+
+  const verified = tenantId !== null &&
+    Number.isSafeInteger(tenantId) && tenantId > 0 &&
+    String(
+      resolved.businessConfig.instagramAccountId ||
+      resolved.businessConfig.instagram_account_id || ''
+    ) === account;
+
+  const execute = () => runUnifiedConversationRequest(
+    () => processInstagramUpdateClaimedInternal(
+      webhook_event, config, platform, resolved,
+    ),
+    'instagram',
+    event,
+    {text, config: verified ? resolved.businessConfig : config},
+  );
+
+  if (!verified) return execute();
+
+  return verifiedTenantRequestScope.run({
+    businessId: tenantId,
+    channel: 'instagram',
+    providerAccountId: account,
+    businessConfig: resolved.businessConfig,
+  }, execute);
+}
+
+async function processInstagramUpdateClaimedInternal(
+  webhook_event: any,
+  config: any,
+  platform: string = "instagram-webhook",
+  preResolved?: Awaited<ReturnType<typeof resolveVerifiedMetaTenantInstagram>>,
+) {
   const senderId = webhook_event.sender?.id;
   const recipientId = webhook_event.recipient?.id;
   if (webhook_event.message?.is_echo) {
@@ -31702,55 +32078,11 @@ async function processInstagramUpdateClaimedInternal(webhook_event: any, config:
   let chatId = `ig_${senderId}`;
   let userLanguage = "en";
 
-  let businessConfig: any = { ...activeConfig, ...(config || {}) };
-  let businessRecord: any = null;
-  let instagramBusinessScopeVerified = !supabase && Boolean(
-    getBusinessIdFromConfig(businessConfig) &&
-    String(businessConfig?.instagramAccountId || businessConfig?.instagram_account_id || "") === String(recipientId)
-  );
-
-  try {
-    if (supabase) {
-      const connected = await findBusinessByChannelConnection('instagram', recipientId);
-      const legacyResult = connected ? null : await supabase
-        .from('businesses').select('*').eq('instagram_account_id', recipientId).maybeSingle();
-      const legacyBusiness = legacyResult?.data;
-      const data = connected?.business || (legacyBusiness && !await hasExplicitMetaConnection(Number(legacyBusiness.id), 'instagram')
-        ? legacyBusiness : null);
-      const error = legacyResult?.error;
-
-      if (error) {
-        console.error('Instagram business lookup error:', JSON.stringify(error));
-      }
-
-      if (data) {
-        businessRecord = data;
-        instagramBusinessScopeVerified = Boolean(data.id);
-        // Normalize the full database row so Instagram receives exactly the same
-        // cancellation policy and business settings as Messenger, WhatsApp and Telegram.
-        businessConfig = {
-          ...businessConfig,
-          ...normalizeBusinessConfig(data),
-          instagramAccessToken: cleanInstagramToken(data.instagram_access_token),
-          instagramToken: cleanInstagramToken(data.instagram_access_token),
-          instagramAccountId: data.instagram_account_id,
-          calendarProvider: 'google'
-        };
-        businessConfig.channelConnectionSource = connected ? 'self_service' : 'legacy_manual';
-        if (connected) businessConfig = applyChannelConnectionToConfig(businessConfig, connected.connection);
-        businessConfig = await hydrateBusinessCalendarConfig(businessConfig);
-        console.log(
-          `[InstagramConfig] business=${data.business_name} (${data.id}), ` +
-          `allowCancellation=${businessConfig.allowCancellation}, ` +
-          `deadlineMinutes=${businessConfig.cancellationDeadlineMinutes}`
-        );
-      } else {
-        console.error('No business found for Instagram recipient id:', recipientId);
-      }
-    }
-  } catch (tenantErr) {
-    console.error('Instagram tenant config injection failed:', tenantErr);
-  }
+  const resolved = preResolved ??
+    await resolveVerifiedMetaTenantInstagram(config, String(recipientId));
+  let businessConfig = resolved.businessConfig;
+  let businessRecord = resolved.businessRecord;
+  let instagramBusinessScopeVerified = resolved.instagramBusinessScopeVerified;
 
   if (!instagramBusinessScopeVerified) {
     clearAppointmentConversationState(chatId);
@@ -36509,6 +36841,25 @@ export const priority1hUnifiedEngineTestBoundary = {
     const adapter = Object.create(GoogleCalendarAdapter.prototype);
     adapter.calendar = client; adapter.calendarId = calendarId;
     return adapter as GoogleCalendarAdapter;
+  },
+
+  inspectWhatsAppTimingForTest(account: string, text: string, config: any) {
+    if (process.env.NODE_ENV !== 'test') throw new Error('Test-only');
+    const state = verifiedTenantRequestScope.getStore();
+    const tenantId = verifiedTenantTimingBusinessId('whatsapp', account);
+    return {
+      contextPresent: Boolean(state),
+      contextChannelMatches: state?.channel === 'whatsapp',
+      accountMatches: state?.providerAccountId === account,
+      tenantId,
+      enabled: accuracyFirstEnabled(Number(tenantId)),
+      admitted: verifiedKnowledgeInformationRequest(text, config),
+    };
+  },
+
+  async resolveWhatsAppTenantForTest(config: any, account: string) {
+    if (process.env.NODE_ENV !== 'test') throw new Error('Test-only');
+    return resolveVerifiedMetaTenantWhatsApp(config, account);
   },
 
   configure(dependencies: Priority1hTestDependencies) {

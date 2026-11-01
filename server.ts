@@ -9653,7 +9653,7 @@ const BUSINESS_CLAIM_COVERAGE_GLUE = new Set([
   "a", "absolutely", "an", "and", "also", "but", "certainly", "for", "hello", "hey",
   "hi", "however", "if", "of", "or", "please", "so", "sure",
   "the", "then", "to", "your", "och", "också", "men", "för", "om", "eller", "så",
-  "gerne", "gern", "danke", "hallo", "bitte", "natürlich", "gracias", "hola", "سلام", "حتماً", "شکرا", "و",
+  "gerne", "gern", "danke", "hallo", "bitte", "natürlich", "und", "y", "gracias", "hola", "سلام", "حتماً", "شکرا", "و",
   "vänligen", "din", "ditt", "dina", "den", "det", "ett", "en", "absolut", "självklart",
 ]);
 
@@ -10093,6 +10093,7 @@ type BusinessClaimEntailmentResults = Map<string, Promise<BusinessClaimEntailmen
   // Operation-local failure status, never a cached factual verdict.
   verificationUnavailable?: boolean;
   verifiedPropositions?: GroundedCancellationProposition[];
+  completenessRepairAttempted?: boolean;
 };
 
 async function assessBusinessClaimEntailmentWithReuse(
@@ -10654,12 +10655,16 @@ async function recoverSinglePolicyFact(
     const ordinary = await assessmentClaimsAreEntailed(single, request,
       support.completed?.bookingOperation?.serviceName, entailmentResults);
     if (!ordinary.entailed || ordinary.deterministicReply) { rejected.add(claim); continue; }
-    if (claim.claimKind === 'OTHER') checked.push({ claim, quote });
+    // Ordinary entailment above requires explicit absence evidence for negative
+    // facts too. A verified absence is not an unsupported inference from silence.
+    checked.push({ claim, quote });
   }
   // Extraction is atomic; publication is a complete, unchanged sentence. A
   // sentence can contain several verified clauses. No policy keyword is needed:
   // requested-fact entailment establishes relevance, never lexical overlap.
   let relevanceChecks = 0;
+  const sentences: string[] = [];
+  const retained = new Set<BusinessGroundingAssessment['claims'][number]>();
   for (const match of request.candidateReply.matchAll(/(?:^|(?<=[.!?؟。！？])\s+)([^.!?؟。！？\n]+[.!。！])(?=\s|$)/gu)) {
     const sentence = match[1].trim();
     if (sentence.length < 8 || request.candidateReply.indexOf(sentence) !== request.candidateReply.lastIndexOf(sentence)) continue;
@@ -10671,8 +10676,10 @@ async function recoverSinglePolicyFact(
     if (!group.some(item => sentence.startsWith(item.quote)) ||
         !assessmentHasVerifiedEvidence({ hasBusinessFactualClaims: true, allBusinessClaimsSupported: true,
           claims: group.map(item => item.claim) }, snapshot, sentence)) continue;
+    let requested = false;
     for (const item of group) {
-      if (relevanceChecks++ >= 3) return '';
+      if (relevanceChecks >= 3) break;
+      relevanceChecks++;
       const relevance = await assessBusinessClaimEntailmentWithReuse({
         ...(request.businessInfoTurnId ? { businessInfoTurnId: request.businessInfoTurnId } : {}),
         customerMessage: request.customerMessage, atomicClaim: item.claim.claim,
@@ -10682,13 +10689,27 @@ async function recoverSinglePolicyFact(
         workflow: support.completed?.bookingOperation?.serviceName ? 'post_completion_business_support' : 'business_information',
         language: request.language, businessId: request.businessId, requireRequestedFact: true,
       }, entailmentResults);
-      if (relevance?.relation !== 'ENTAILED' || relevance.claimKind !== 'OTHER') continue;
-      console.info('[SinglePolicyFactRecovery]', { businessId: request.businessId,
-        disposition: 'verified_requested_sentence', verifiedAtomicClaims: group.length, relevanceChecks });
-      return sentence;
+      if (relevance?.relation !== 'ENTAILED' ||
+          ((item.claim.claimKind === 'NEGATIVE_ABSENCE' || relevance.claimKind === 'NEGATIVE_ABSENCE') &&
+            relevance.explicitAbsenceEvidence !== true)) continue;
+      requested = true;
+      break;
     }
+    if (!requested) continue;
+    sentences.push(sentence);
+    for (const item of group) retained.add(item.claim);
   }
-  return '';
+  // Exact, verified atoms can authorize the existing bounded repair when their
+  // original sentence also contains rejected material. They cannot authorize
+  // stripping that material or publishing an isolated fragment themselves.
+  if (checked.some(({ claim }) => !retained.has(claim))) {
+    const repaired = await recoverIncompleteSingleBusinessInformation(support, assessment, snapshot, request, entailmentResults);
+    if (repaired) sentences.push(...repaired.split('\n'));
+  }
+  const reply = [...new Set(sentences)].join('\n');
+  if (reply) console.info('[SinglePolicyFactRecovery]', { businessId: request.businessId,
+    disposition: 'verified_requested_sentence', verifiedAtomicClaims: retained.size, relevanceChecks });
+  return reply;
 }
 
 // Newly recovered single-topic prose must be a whole independent sentence,
@@ -10715,8 +10736,10 @@ async function recoverMissingBusinessInformation(
   const singlePolicyFact = requestedTopics.length === 1 && requestedTopics[0] === 'policies';
   // A policy recommendation need not contain a policy/category noun. It still
   // needs positive evidence and the stricter requested-fact check below.
-  if (missingTopics.length > 3 || !snapshot.sources.retrieved_knowledge.trim() ||
+  if (entailmentResults.completenessRepairAttempted || missingTopics.length > 3 ||
+      (!snapshot.sources.retrieved_knowledge.trim() && !singlePolicyFact) ||
       (!missingTopics.some(topic => relevant.includes(topic)) && !singlePolicyFact)) return [];
+  entailmentResults.completenessRepairAttempted = true;
   try {
     const response = await generateContentWithFallback(null, {
       messages: [{ role: "user", content: request.customerMessage }],
@@ -10749,7 +10772,9 @@ async function recoverMissingBusinessInformation(
           serviceName: support.completed?.bookingOperation?.serviceName, workflow: 'business_information',
           language: request.language, businessId: request.businessId, requireRequestedFact: true,
         }, entailmentResults);
-        if (relevance?.relation !== 'ENTAILED' || relevance.claimKind !== 'OTHER') { rejected.add(claim); continue; }
+        if (relevance?.relation !== 'ENTAILED' ||
+            ((claim.claimKind === 'NEGATIVE_ABSENCE' || relevance.claimKind === 'NEGATIVE_ABSENCE') &&
+              relevance.explicitAbsenceEvidence !== true)) { rejected.add(claim); continue; }
         topics.push('policies');
       }
       checked.push({ claim, quote, topics });
@@ -11471,7 +11496,7 @@ async function guardBusinessSupportGroundingImpl(
   );
   if (compoundReply) return verified(compoundReply);
 
-  if (!assessmentCoverageOk) {
+  if (!assessmentCoverageOk || singlePolicyRecoveryQuestion) {
     const repairedReply = await recoverIncompleteSingleBusinessInformation(
       support, assessment, snapshot, verificationRequest, entailmentResults,
     );

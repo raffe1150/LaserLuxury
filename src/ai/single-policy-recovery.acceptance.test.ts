@@ -123,11 +123,11 @@ async function pipeline(t:any,mode:'manual'|'delete'|'revise'|'foreign'|'failed'
 }
 for(const mode of ['manual','delete','revise','foreign','failed'] as const)test(`shared information publication: ${mode} evidence and tool safety`,t=>pipeline(t,mode));
 
-test('requested-fact provider prompt requires complete question coverage and no quote rewrite',async t=>{
+test('requested-fact provider prompt requires a complete requested aspect and no quote rewrite',async t=>{
  quiet(t);const instructions:string[]=[];
  b.configure({assessBusinessSupportGrounding:async()=>({hasBusinessFactualClaims:true,allBusinessClaimsSupported:true,claims:recorded()}),geminiGenerate:async(p:any)=>{
   const instruction=p.config.systemInstruction;instructions.push(instruction);const data=JSON.parse(p.contents[0].parts[0].text);
-  if(instruction.includes('REQUESTED-FACT RECOVERY CHECK')){assert.equal(data.exactCandidateQuote,requested);assert.equal(data.relevantContext.customerQuestion,question);assert.match(instruction,/fully answers the actual customer question/u);assert.match(instruction,/sharing a topic is insufficient/u);assert.match(instruction,/Do not rewrite or complete the quote/u);return{text:'{"relation":"ENTAILED","claimKind":"OTHER","explicitAbsenceEvidence":false}'};}
+  if(instruction.includes('REQUESTED-FACT RECOVERY CHECK')){assert.equal(data.exactCandidateQuote,requested);assert.equal(data.relevantContext.customerQuestion,question);assert.match(instruction,/directly answers at least one explicitly requested aspect/u);assert.match(instruction,/complete-question coverage is checked separately/u);assert.match(instruction,/sharing a topic is insufficient/u);assert.match(instruction,/Do not rewrite or complete the quote/u);return{text:'{"relation":"ENTAILED","claimKind":"OTHER","explicitAbsenceEvidence":false}'};}
   return{text:JSON.stringify({relation:data.atomicClaim===recorded()[0].claim?'ENTAILED':'UNKNOWN',claimKind:data.atomicClaim==='Exceptions are not automatic.'?'NEGATIVE_ABSENCE':'OTHER',explicitAbsenceEvidence:false})};
  }});
  b.businessInformationState('prompt',config,question,'en',source);

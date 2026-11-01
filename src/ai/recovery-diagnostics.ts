@@ -8,7 +8,7 @@ export type RecoveryReason = 'accepted' | 'eligible' | 'malformed_response' | 'p
   'overlapping_quotes' | 'unsafe_quote' | 'entailment_rejected' | 'absence_evidence_missing' | 'numerical_constraint' |
   'requested_aspect_rejected' | 'relevance_limit' | 'no_safe_sentence' | 'no_verified_seed' | 'repair_already_attempted' |
   'topic_limit' | 'evidence_missing' | 'topic_mismatch' | 'empty_candidate' | 'candidate_limit' | 'tool_calls' |
-  'no_factual_claims' | 'claim_count_limit' | 'no_accepted_facts' | 'freshness_failure' | 'source_conflict' |
+  'cached_verdict_reused' | 'verified_result_reused' | 'verification_limit' | 'no_factual_claims' | 'claim_count_limit' | 'no_accepted_facts' | 'freshness_failure' | 'source_conflict' |
   'verification_unavailable' | 'fallback' | 'exception';
 type Counts = Partial<Record<'claimCount' | 'attemptedFacts' | 'acceptedFacts' | 'candidateLength' | 'relevanceChecks', number>>;
 type Entry = { stage: RecoveryStage; reason: RecoveryReason; count: number };
@@ -20,7 +20,7 @@ const failureRank = (stage: RecoveryStage, reason: RecoveryReason) =>
   ({ original_extraction: 10, candidate_quote_repair: 10, evidence_quote_repair: 10, original_entailment: 10, single_policy: 20, repair_seed: 20, compound: 20,
     requested_fact: 40, repair_requested_fact: 50, repair_extraction: 50, completeness_repair: 50, coverage: 60, guard: 70 }[stage]) +
   (reason === 'parser_failure' || reason === 'provider_failure' ? 9 : 0);
-const terminalReasons = new Set<RecoveryReason>(['accepted', 'eligible', 'ineligible', 'repair_already_attempted', 'no_safe_sentence',
+const terminalReasons = new Set<RecoveryReason>(['accepted', 'eligible', 'cached_verdict_reused', 'verified_result_reused', 'ineligible', 'repair_already_attempted', 'no_safe_sentence',
   'no_verified_seed', 'no_accepted_facts', 'assessment_missing', 'fallback']);
 
 /** Request-local counters only. No text, citations, sessions, provider payloads or customer identifiers. */
@@ -38,7 +38,7 @@ export function recoveryDiagnostic(stage: RecoveryStage, reason: RecoveryReason,
     }
     state.counts[stage] = { ...state.counts[stage], ...safe };
     // A repeated once-only skip or an outer empty return must not hide the actual repair rejection.
-    if ((!terminalReasons.has(reason) || !state.failure && reason !== 'accepted' && reason !== 'eligible') &&
+    if ((!terminalReasons.has(reason) || !state.failure && reason !== 'accepted' && reason !== 'eligible' && reason !== 'cached_verdict_reused' && reason !== 'verified_result_reused') &&
         (!state.failure || failureRank(stage, reason) >= failureRank(state.failure.recoveryStage, state.failure.recoveryReason)))
       state.failure = { recoveryStage: stage, recoveryReason: reason };
   });

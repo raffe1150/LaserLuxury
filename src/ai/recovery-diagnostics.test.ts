@@ -31,6 +31,21 @@ test('accepted recovery has no terminal failure status despite rejected siblings
   assert.equal('recoveryReason' in events[0], false);
 });
 
+test('cache-hit diagnostics are informational and cannot hide a rejection', async t => {
+  const events: any[] = [];
+  t.mock.method(console, 'info', (_tag, event) => events.push(JSON.parse(event)));
+  await withRecoveryDiagnostics({}, async () => {
+    recoveryDiagnostic('repair_entailment', 'verified_result_reused');
+    recoveryDiagnostic('repair_entailment', 'cached_verdict_reused');
+    assert.deepEqual(recoveryFailureFields(), {});
+    recoveryDiagnostic('repair_entailment', 'entailment_rejected');
+    recoveryDiagnostic('repair_requested_fact', 'cached_verdict_reused');
+    recoveryOutcome('fallback');
+  });
+  assert.equal(events[0].recoveryReason, 'entailment_rejected');
+  assert.equal(events[0].outcome, 'fallback');
+});
+
 test('diagnostics aggregate and whitelist metadata without content or unsafe identifiers', async t => {
   const events: any[] = [];
   t.mock.method(console, 'info', (_tag, event) => events.push(JSON.parse(event)));

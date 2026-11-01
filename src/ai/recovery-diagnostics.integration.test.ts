@@ -18,7 +18,7 @@ const bad = 'No advance notice is required.', extra = 'There are no cancellation
 const candidate = `${chat} ${fee} ${bad} ${extra}`;
 const repairedChat = 'You can cancel automatically through chat.', repairedFee = 'There is no late cancellation fee.';
 const repaired = `${repairedChat} ${repairedFee}`;
-const scenarios = ['claim_count_limit', 'sentence_boundary', 'invalid_citation', 'requested_aspect_rejected', 'entailment_rejected',
+const scenarios = ['bounded_selection', 'sentence_boundary', 'invalid_citation', 'requested_aspect_rejected', 'entailment_rejected',
   'assessment_missing', 'no_factual_claims', 'quote_missing', 'overlapping_quotes', 'absence_evidence_missing', 'malformed_response', 'candidate_limit', 'tool_calls', 'success', 'freshness_failure'] as const;
 for (const channel of ['whatsapp', 'telegram', 'instagram', 'messenger'] as const) for (const scenario of scenarios)
 test(`recovery diagnostic/${channel}/${scenario}`, async t => {
@@ -55,7 +55,8 @@ test(`recovery diagnostic/${channel}/${scenario}`, async t => {
         if (p.config.systemInstruction.includes('retrieval query planner')) return { text: JSON.stringify({ canonicalMeaning: question, queries: ['studio information'] }) };
         if (!p.config.systemInstruction.includes('COMPLETENESS REPAIR')) return { text: candidate };
         repairs++;
-        return { text: scenario === 'malformed_response' ? '' : scenario === 'candidate_limit' ? 'x'.repeat(1201) : repaired,
+        return { text: scenario === 'malformed_response' ? '' : scenario === 'candidate_limit' ? 'x'.repeat(1201)
+          : scenario === 'bounded_selection' ? `${repaired} ${bad} ${extra}` : repaired,
           ...(scenario === 'tool_calls' ? { functionCalls: [{ name: 'not_allowed', args: {} }] } : {}) };
       },
       assessBusinessSupportGrounding: async r => {
@@ -64,7 +65,7 @@ test(`recovery diagnostic/${channel}/${scenario}`, async t => {
           claims: [chat, fee, bad, extra].map(text => makeClaim(text)) } as any;
         if (scenario === 'assessment_missing') return null;
         if (scenario === 'no_factual_claims') return { hasBusinessFactualClaims: false, allBusinessClaimsSupported: true, claims: [] };
-        const facts = scenario === 'claim_count_limit' ? [repairedChat, repairedFee, bad, extra] : scenario === 'absence_evidence_missing' ? [repairedFee] : [repairedChat, repairedFee];
+        const facts = scenario === 'bounded_selection' ? [repairedChat, repairedFee, bad, extra] : scenario === 'absence_evidence_missing' ? [repairedFee] : [repairedChat, repairedFee];
         return { hasBusinessFactualClaims: true, allBusinessClaimsSupported: true, claims: facts.map(text => makeClaim(text,
           scenario === 'sentence_boundary' ? text.slice(3) : scenario === 'quote_missing' ? '' : scenario === 'overlapping_quotes' ? repaired : text, scenario === 'invalid_citation' ? 'uncited invented source' : undefined)) } as any;
       },
@@ -94,16 +95,16 @@ test(`recovery diagnostic/${channel}/${scenario}`, async t => {
         assert.equal(fallbacks[0].recoveryStage, events[0].recoveryStage);
         assert.equal(fallbacks[0].recoveryReason, events[0].recoveryReason);
       }
-      if (scenario === 'success') {
+      if (scenario === 'success' || scenario === 'bounded_selection') {
         assert.equal(events[0].outcome, 'accepted'); assert.equal(events[0].recoveryReason, undefined);
         assert.ok(replies[0].includes(repairedChat)); assert.ok(replies[0].includes(repairedFee));
+        if (scenario === 'bounded_selection') {
+          assert.equal(events[0].counts.repair_extraction.claimCount, 4);
+          assert.ok(events[0].counts.completeness_repair.attemptedFacts <= 3);
+        }
       } else {
         assert.ok(events[0].decisions.some((e: any) => e.reason === scenario), JSON.stringify(events));
         assert.notEqual(events[0].outcome, 'accepted');
-        if (scenario === 'claim_count_limit') {
-          assert.equal(events[0].recoveryReason, 'claim_count_limit');
-          assert.equal(events[0].counts.repair_extraction.claimCount, 4);
-        }
       }
       assert.doesNotMatch(JSON.stringify(events), /Chat cancellation|advance notice|synthetic-policy|46700000001|uncited invented/u);
     }

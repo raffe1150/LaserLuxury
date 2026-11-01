@@ -69,6 +69,22 @@ function parse(input: string): { constraints: Constraint[]; unsupported: boolean
   return { constraints, unsupported: marked && !quantities.length };
 }
 
+/** Literal identity for completeness checks, never authority to publish a fact. */
+export function temporalConstraintSignature(text: string): string | null {
+  const result = parse(text);
+  const constraint = result.constraints[0];
+  return !result.unsupported && result.constraints.length === 1 && !constraint.ambiguous &&
+    constraint.bound !== null && constraint.side !== 'none'
+    ? JSON.stringify([constraint.seconds, constraint.bound, constraint.side]) : null;
+}
+
+export function literalDurationSeconds(text: string): number | null {
+  const { constraints, unsupported } = parse(text);
+  const constraint = constraints[0];
+  return !unsupported && constraints.length === 1 && !constraint.ambiguous && constraint.bound === null && constraint.side === 'none'
+    ? constraint.seconds : null;
+}
+
 export function numericalConstraintSafe(candidateQuote: string, atomicClaim: string, evidence: Array<string | { quote: string; source: string }>, structuredBusinessConfig?: string): boolean {
   const cancellationClaim = /cancel|avbok|absag|stornier|لغو|إلغاء|الغاء/iu;
   const freeClaim = /\b(?:free|gratis|avgiftsfri\w*|kostenlos\w*|gratuit\w*)\b|رایگان|مجاني|المجاني/iu;
@@ -76,7 +92,9 @@ export function numericalConstraintSafe(candidateQuote: string, atomicClaim: str
   if (structuredBusinessConfig) {
     try { const config = JSON.parse(structuredBusinessConfig); policy = config?.cancellation; services = Array.isArray(config?.services) ? config.services : []; } catch { return false; }
   }
-  const typedPolicy = policy && ('freeCancellationDeadlineMinutes' in policy || policy.available === false);
+  const typedPolicy = policy?.available === true;
+  const structuredPolicyCitation = evidence.some(item => typeof item !== 'string' && item.source === 'structured_business_config' &&
+    /"(?:freeCancellationDeadlineMinutes|lateFeeEnabled|automaticCancellationEnabled)"\s*:/u.test(item.quote));
   const checks = [parse(candidateQuote), parse(atomicClaim)];
   // A verified service name can itself contain "Cancellation". Its ordinary
   // duration remains a service attribute, not a cancellation-policy interval.
@@ -85,16 +103,15 @@ export function numericalConstraintSafe(candidateQuote: string, atomicClaim: str
     checks.every(check => check.constraints.length === 1 && check.constraints[0].bound === null && check.constraints[0].side === 'none') &&
     /lasts|duration|varar|längd|dauert|dauer|dura|duración|مدت|مدة/iu.test(candidateQuote + ' ' + atomicClaim);
   const policyClaim = !namedServiceDuration && !isArrivalInformationQuestion(candidateQuote + ' ' + atomicClaim) && cancellationClaim.test(candidateQuote + ' ' + atomicClaim);
-  if (typedPolicy && policyClaim) {
-    if (policy.available === false) return false;
+  if (typedPolicy && policyClaim && structuredPolicyCitation) {
     // A configured fee boundary cannot support a mandatory cancellation notice
     // or prohibition. Both the original quotation and extracted claim must
     // name the free-cancellation attribute; the model cannot drop that qualifier.
     if (checks.some(c => c.constraints.length > 0) &&
       (!freeClaim.test(candidateQuote) || !freeClaim.test(atomicClaim))) return false;
-    if ((!policy.lateFeeEnabled || policy.freeCancellationDeadlineMinutes === 0) &&
+    if ((!policy.lateFeeEnabled || typeof policy.freeCancellationDeadlineMinutes !== 'number' || policy.freeCancellationDeadlineMinutes <= 0) &&
       checks.some(c => c.constraints.length > 0)) return false;
-    if (policy.hardCancellationCutoffMinutes === null) {
+    if (policy.hardCancellationCutoffMinutes === null || policy.hardCancellationCutoffMinutes === undefined) {
       const text = canonical(candidateQuote + ' ' + atomicClaim);
       const automaticScope = /automatic|automatis|automátic|خودکار|تلقائي/iu;
       const disabledAutomation = policy.automaticCancellationEnabled === false &&
@@ -127,7 +144,8 @@ export function numericalConstraintSafe(candidateQuote: string, atomicClaim: str
   if (!relevant) return true;
   if (sources.some(s => s.unsupported) || !authoritative.length) return false;
   let configuredDeadline: number | null = null;
-  if (typedPolicy && policyClaim) {
+  if (typedPolicy && policyClaim && freeClaim.test(candidateQuote + ' ' + atomicClaim) &&
+      (typeof policy.freeCancellationDeadlineMinutes === 'number' || policy.lateFeeEnabled === false)) {
     const value = policy.freeCancellationDeadlineMinutes;
     if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return false;
     configuredDeadline = value * 60;

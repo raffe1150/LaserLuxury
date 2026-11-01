@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import {withoutExplicitParkingFeeTerms} from './information-request-contract';
+import { cancellationInformationEvidence, hasCancellationInformationTopic } from './cancellation-information';
 
 /** Dashboard cancellation settings describe automatic cancellation and fees,
  * not a hard prohibition on cancelling later. No document can grant a mutation. */
@@ -12,7 +13,7 @@ export type CancellationPolicy = Readonly<{
  * attached to parking is not itself cancellation evidence. This projection is
  * classification-only: the original question and every amount remain intact. */
 export function isCancellationInformationRequested(text:string):boolean {
- if(/cancel|avbok|stornier|absag|لغو|إلغاء|الغاء/iu.test(text))return true;
+ if(hasCancellationInformationTopic(text))return true;
  const otherFees=withoutExplicitParkingFeeTerms(text);
  return /\bfees?\b|avgift|gebühr|cargo|هزینه|رسوم/iu.test(otherFees);
 }
@@ -50,16 +51,7 @@ export function cancellationPolicyFingerprint(config: any): string | null {
 }
 
 export function cancellationGroundingConfig(config: any) {
-  if (!hasCancellationSettings(config)) return undefined;
-  const policy = readCancellationPolicy(config);
-  if (!policy) return { available: false };
-  return {
-    available: true, automaticCancellationEnabled: policy.allowCancellation,
-    freeCancellationDeadlineMinutes: policy.deadlineMinutes,
-    lateFeeEnabled: policy.feeEnabled, lateFeeAmount: policy.feeAmount, lateFeeCurrency: policy.currency,
-    hardCancellationCutoffMinutes: null,
-    meaning: 'The window only determines an optional late-cancellation fee. It is not a hard cancellation cutoff. Fees are not collected by this chat.',
-  };
+  return cancellationInformationEvidence(config);
 }
 
 export type CancellationSubject = Readonly<{
@@ -164,4 +156,4 @@ export function renderCancellationConfirmation(subject: CancellationSubject, pol
   return prompts[language];
 }
 
-export const CANCELLATION_POLICY_GUIDANCE = `CANCELLATION POLICY AUTHORITY: automaticCancellationEnabled controls cancellation through chat, not whether the business can help manually. freeCancellationDeadlineMinutes is only the free-cancellation/optional late-fee boundary, never a hard cutoff or mandatory advance-notice requirement. When automatic cancellation is enabled, current dashboard policy overrides conflicting Knowledge cancellation/fee prose. Late fees apply only when enabled with a positive amount and inside the configured window; a stored amount alone does not enable a fee. With fees disabled or a zero window, do not invent a 24-hour restriction on free cancellation. hardCancellationCutoffMinutes=null means no hard prohibition has been established by these settings; never infer one from the free window. Preserve this distinction in every claim, source quotation and published answer. Missing or unavailable authoritative settings require uncertainty. Ordinary independent factual verification is still required; matching a number never proves policy meaning.`;
+export const CANCELLATION_POLICY_GUIDANCE = `CANCELLATION POLICY AUTHORITY: automaticCancellationEnabled controls cancellation through chat, not whether the business can help manually. freeCancellationDeadlineMinutes is only the free-cancellation/optional late-fee boundary, never a hard cutoff or mandatory advance-notice requirement. Current explicit dashboard settings override conflicting Knowledge only for the same attribute and scope; an automatic-chat permission or optional free-fee window is not a mandatory notice requirement or a global prohibition. Late fees apply only when enabled with a positive amount and inside the configured window; a stored amount alone does not enable a fee. With fees disabled or a zero window, do not invent a 24-hour restriction on free cancellation. hardCancellationCutoffMinutes=null means no hard prohibition has been established by these settings; never infer one from the free window. Preserve this distinction in every claim, source quotation and published answer. Missing, null, malformed or operationally defaulted settings establish no policy facts. They require uncertainty for settings-derived claims, but do not invalidate current authorized document evidence. Documents may independently establish business permission, mandatory notice, explicit no-cancellation rules and fee terms when no genuine same-attribute authoritative conflict exists. A document notice period is not contradicted merely because it differs from an optional free-cancellation window. Ordinary independent verification and exact current source evidence remain mandatory. Ordinary independent factual verification is still required; matching a number never proves policy meaning.`;

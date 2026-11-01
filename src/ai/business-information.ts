@@ -1,5 +1,6 @@
 import { withoutNegatedBookingClauses } from './booking-interruption';
 import {hasVisitInformationContext} from './information-request-contract';
+import { hasCancellationInformationTopic, cancellationInformationSubject } from './cancellation-information';
 
 /** Read-only topic recognition. It does not choose services or authorize bookings. */
 export type BusinessInformationTopic = 'company' | 'services' | 'contact' | 'hours' | 'prices' | 'policies' | 'parking' | 'meetings';
@@ -115,6 +116,7 @@ export function businessInformationSubject(
 ): string {
   const labels = topicLabels[language] || topicLabels.en;
   return (topics || businessInformationTopics(text)).map(topic => {
+    if (topic === 'policies' && hasCancellationInformationTopic(text)) return cancellationInformationSubject(language);
     if (topics && topic === 'contact' && isBusinessAddressQuestion(text)) {
       const addressLabels: Record<string, string> = {
         en: 'the location/address', de: 'den Standort/die Adresse', sv: 'platsen/adressen',

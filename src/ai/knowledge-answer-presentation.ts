@@ -1,8 +1,10 @@
 import type { Facet, FacetOutcome } from './business-information-answer-plan';
 import {isExplicitBusinessActionRequest} from './business-information';
+import {hasCancellationInformationTopic} from './cancellation-information';
 
 /** Request-local references, never new business facts or model-authored prose. */
 export type UncertaintyReference = Readonly<{ facetId: string; obligationId: string; text: string; kind?:'requested-attribute' }>;
+export type RequirementNotice = Readonly<{ facetId: string; obligationId: string; text: string }>;
 type Copy = { about: (text: string) => string; description: string; recommendation: string; requirement: string; permission: string; prohibition: string; conflict: string };
 const copy: Record<string, Copy> = {
   sv: { about: t => `När det gäller ”${t}”:`, description: 'Jag kan bara bekräfta de här uppgifterna just nu.', recommendation: 'Jag kan däremot inte bekräfta vilken rekommendation som gäller.', requirement: 'Jag kan däremot inte bekräfta vilka krav som gäller.', permission: 'Jag kan däremot inte bekräfta vad som är tillåtet.', prohibition: 'Jag kan däremot inte bekräfta vad som är förbjudet.', conflict: 'Uppgifterna behöver klargöras innan jag kan ge ett säkert svar.' },
@@ -17,9 +19,13 @@ const copy: Record<string, Copy> = {
 // An exact user span is a question reference, never evidence for a business policy.
 const safeReference = (text: string, limit: number) => text.length >= 8 && text.length <= limit &&
   /^[\p{L}\p{M}\p{N}\u200c .,;،؛'’\-!?؟¿()]+$/u.test(text) && !/\d{4}|[?!؟].+[?!؟]/u.test(text);
-const userSpan = (question: string, label: string) => {
+const userSpan = (question: string, label: string, allowArabicConjunction = false) => {
   const at = question.indexOf(label), token = /[\p{L}\p{M}\p{N}_-]/u;
-  return at >= 0 && !(at > 0 && token.test(question[at-1])) &&
+  // Arabic joins the conjunction waw to the following word. Admit that single
+  // bounded prefix, never an arbitrary suffix of a longer word or identifier.
+  const arabicConjunction = allowArabicConjunction && at > 0 && question[at-1] === 'و' && /^\p{Script=Arabic}/u.test(label) &&
+    (at === 1 || !token.test(question[at-2]));
+  return at >= 0 && (!(at > 0 && token.test(question[at-1])) || arabicConjunction) &&
     !(at+label.length < question.length && token.test(question[at+label.length]));
 };
 
@@ -107,7 +113,8 @@ export function uncertaintyReferences(question: string, language: string, facets
       } catch { /* Keep the same generic fallback on a failed language check. */ }
       // A planner label alone is not approved customer-facing language. Require a
       // literal user span and the existing local language guard before quoting it.
-      const reference = safeReference(label, 90) && userSpan(question, label) ? label : '';
+      const requirementGap = obligation.questionType === 'requirement' && outcome.obligations?.some(d => d.obligationId === obligation.id && d.status === 'UNRESOLVED');
+      const reference = safeReference(label, 90) && userSpan(question, label, requirementGap) ? label : '';
       try {
         if (reference && reference.trim().replace(/[?؟？.!。]+$/u,'') !== question.trim().replace(/[?؟？.!。]+$/u,'') && !/[?؟？]/u.test(reference) && languageSafe(reference)) refs.push(Object.freeze({ facetId: facet.id, obligationId: obligation.id, text: reference }));
       } catch { /* Optional presentation references must never discard verified facts. */ }
@@ -128,4 +135,56 @@ export function uncertaintyNotice(language: string, facet: Facet | undefined, ou
   if(reference?.kind==='requested-attribute')return type==='description' && outcome.status==='PARTIAL' &&
     outcome.materialFactsComplete===false ? unknownAttribute[language]?.(reference.text)||notice : notice;
   return reference ? `${wording.about(reference.text)} ${notice}` : notice;
+}
+
+// A localized uncertainty label, never a cancellation rule or evidence of
+// absence. Require both the independently unresolved typed obligation and a
+// matching user request. Unknown/scoped/conditional labels retain literal copy.
+const cancellationNoticeCopy:Record<string,string>={
+ en:'The required advance notice for cancelling an appointment could not be confirmed.',
+ sv:'Det gick inte att bekräfta hur långt i förväg en tid måste avbokas.',
+ de:'Die erforderliche Vorankündigungsfrist für die Absage eines Termins konnte nicht bestätigt werden.',
+ es:'No se pudo confirmar con cuánta antelación es obligatorio cancelar una cita.',
+ fa:'مشخص نشد که لغو نوبت باید از چه مدت قبل اعلام شود.',
+ ar:'تعذّر تأكيد مهلة الإشعار المسبق المطلوبة لإلغاء الموعد.',
+};
+const noticeLabels=/^(?:(?:mandatory|required|cancellation) )?advance notice$|^framförhållning$|^(?:obligatorisk )?förvarning$|^Vorankündigung$|^Vorankündigungsfrist$|^antelación necesaria$|^مهلت اطلاع قبلی$|^مهلة الإشعار المسبق$/iu;
+const noticeRequest:Record<string,RegExp>={
+ en:/\bhow (?:far|long|much)[^.!?؟\n]{0,50}(?:in advance|notice)[^.!?؟\n]{0,65}(?:need|must|have to|required)[^.!?؟\n]{0,60}cancel\p{L}*[^.!?؟\n]{0,20}\bappointments?\b/iu,
+ sv:/\bhur (?:långt|länge)[^.!?؟\n]{0,35}(?:förväg|innan|före)[^.!?؟\n]{0,35}(?:måste|behöver)[^.!?؟\n]{0,35}avboka[^.!?؟\n]{0,15}\btid\b/iu,
+ de:/\bwie (?:weit|lange)[^.!?؟\n]{0,35}(?:Voraus|vorher)[^.!?؟\n]{0,35}muss[^.!?؟\n]{0,55}\bTermin\b[^.!?؟\n]{0,15}(?:stornieren|absagen)/iu,
+ es:/(?:con cu[aá]nta antelación|cu[aá]ntas? horas antes)[^.!?؟\n]{0,45}(?:debo|tengo que|es obligatorio)[^.!?؟\n]{0,35}cancelar[^.!?؟\n]{0,15}\bcita\b/iu,
+ fa:/(?:چند|چه مدت|چقدر)[^.!?؟\n]{0,30}(?:قبل|پیش)[^.!?؟\n]{0,25}باید[^.!?؟\n]{0,35}نوبت[^.!?؟\n]{0,20}لغو/iu,
+ ar:/(?:كم|ما)[^.!?؟\n]{0,35}(?:قبل|مسبق)[^.!?؟\n]{0,30}يجب[^.!?؟\n]{0,35}(?:إلغاء|الغاء)[^.!?؟\n]{0,15}(?:الحجز|الموعد)/iu,
+};
+function cancellationNoticeBound(question:string,language:string,label:string,reference:UncertaintyReference|undefined):boolean {
+ if(!hasCancellationInformationTopic(question)||!noticeLabels.test(label.trim())||!cancellationNoticeCopy[language])return false;
+ // A generic sentence must not erase a requested condition/service scope.
+ if(/\b(?:if|unless|when|only|specific|for|om|endast|bara|wenn|falls|nur|für|si|solo|sólo)\b|اگر|فقط|برای|إذا|اذا|فقط/iu.test(question))return false;
+ return noticeRequest[language]?.test(question)===true || !!reference && noticeLabels.test(reference.text.trim());
+}
+
+/** Backend uncertainty only, never a missing business rule. Multiple requirements
+ * need distinct safe literal request references; a single requested requirement
+ * can use the localized generic requirement notice without inventing a label. */
+export function unresolvedRequirementNotices(language: string, facets: readonly Facet[], outcomes: readonly FacetOutcome[],
+  references: readonly UncertaintyReference[], question = ''): readonly RequirementNotice[] | null {
+  const wording = copy[language];
+  if (!wording) return null;
+  const requirements = facets.flatMap(f => f.obligations.filter(o => o.questionType === 'requirement').map(o => ({ f, o })));
+  const unresolved = requirements.filter(({ f, o }) => outcomes.some(outcome => outcome.facetId === f.id && outcome.requestAligned &&
+    outcome.obligations.some(d => d.obligationId === o.id && d.status === 'UNRESOLVED' && !d.unitIds.length)));
+  if (!unresolved.length) return null;
+  const labels = new Set<string>(), notices: RequirementNotice[] = [];
+  for (const { f, o } of unresolved) {
+    const reference = references.find(r => r.facetId === f.id && r.obligationId === o.id && !r.kind);
+    const cancellationNotice=cancellationNoticeBound(question,language,o.description,reference);
+    if (!reference && requirements.length !== 1) return null;
+    const label = cancellationNotice ? 'cancellation-advance-notice' : reference?.text.normalize('NFKC').toLowerCase();
+    if (label && labels.has(label)) return null;
+    if (label) labels.add(label);
+    notices.push(Object.freeze({ facetId: f.id, obligationId: o.id,
+      text: cancellationNotice ? cancellationNoticeCopy[language] : reference ? `${wording.about(reference.text)} ${wording.requirement}` : wording.requirement }));
+  }
+  return Object.freeze(notices);
 }

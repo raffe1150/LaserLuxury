@@ -8,7 +8,9 @@ import { configuredServiceScopeSupported } from './configured-service-evidence';
 import { independentServiceProposal, DOCUMENT_AUTHORITY_EXTRACTION, serviceRelationshipUnresolved, verifiedServiceRelationshipWitness, serviceScopeUncertainty,documentQuestionProjection } from './source-aware-service-proposal';
 import { QUESTION_TYPES, MODALITIES, RELATIONS, knowledgeFailureReason, selectKnowledgeVerificationProtocol, assertKnowledgeVerificationProtocol, assertKnowledgeExtractionProtocol,
   type KnowledgeExtractionProtocol, type KnowledgeVerificationProtocol, type KnowledgeDecision, type DecisionReason } from './knowledge-answer-protocol';
-import { uncertaintyNotice, uncertaintyReferences, requestUncertaintyFacets, type UncertaintyReference } from './knowledge-answer-presentation';
+import { uncertaintyNotice, uncertaintyReferences, requestUncertaintyFacets, unresolvedRequirementNotices, type UncertaintyReference, type RequirementNotice } from './knowledge-answer-presentation';
+import { isBusinessInformationQuestion, isExplicitBusinessActionRequest } from './business-information';
+import { detectNormalizedIntent } from './booking-intelligence';
 import { compactVerificationInstruction, decodeCompactVerification } from './knowledge-compact-verification';
 import { COVERAGE_WITNESS_PROTOCOL, coverageWitnessInstruction, parseCoverageWitnessResponse, assessCoverageWitnesses } from './knowledge-coverage-witness';
 import { NATURAL_LIMITS, NATURAL_PROPOSAL_INSTRUCTION, NATURAL_VALIDATION_INSTRUCTION, NATURAL_SCHEMA_VERSION, naturalContract, naturalContractHash,
@@ -55,6 +57,8 @@ export type AnswerManifest = Readonly<{ language: string; presentation: AnswerPr
   /** Internal publication dependency; never supplied by the model. */
   documentaryInventoryIds?: readonly string[];
   uncertaintyReferences?: readonly UncertaintyReference[];
+  /** Backend disclosures bound to the current native partial-publication proof. */
+  unresolvedRequirements?: readonly RequirementNotice[];
   naturalScope?: NaturalScope; naturalAttachment?: NaturalAttachment; naturalOutcome?: NaturalOutcome; naturalReason?: DecisionReason | null;
   presentationPath: 'direct_single_unit' | 'direct_verified_units' | 'composed' | 'fallback' | 'validated_natural'; fallbackReason: DecisionReason | null }>;
 type Stage = 'planning' | 'extraction' | 'verification' | 'composition' | 'presentation_verification';
@@ -111,7 +115,7 @@ export function completeKnowledgeManifest(manifest: AnswerManifest | undefined):
 
 type PartialAuthority = Readonly<{ businessId: number; owner: NativeKnowledgeTiming; evidenceHash: string; contractHash: string }>;
 const partialAuthorities = new WeakMap<object, PartialAuthority>();
-const partialContractHash = (m: AnswerManifest) => hash(JSON.stringify([m.language,m.facets,m.units,m.outcomes,m.sourceScopeNotice,m.uncertaintyReferences]));
+const partialContractHash = (m: AnswerManifest) => hash(JSON.stringify([m.language,m.facets,m.units,m.outcomes,m.sourceScopeNotice,m.uncertaintyReferences,m.unresolvedRequirements]));
 const partialEvidenceHash = (evidence: readonly Evidence[]) => hash(JSON.stringify([...evidence].sort((a,b)=>a.id.localeCompare(b.id))));
 // Additional subtraction-only admission for the new PARTIAL permission. Matching
 // numerals never establishes entailment; an absent cited numeral cannot acquire
@@ -125,7 +129,7 @@ const citedNumeralsPresent = (unit: AnswerUnit) => {
 
 /** Publication only: never upgrades coverage or verifies a proposed fact. */
 export function publishableKnowledgeManifest(manifest: AnswerManifest | undefined, businessId: number | undefined): boolean {
-  if (completeKnowledgeManifest(manifest)) return true;
+  if (!manifest?.qualifiedPartial && !manifest?.unresolvedRequirements && completeKnowledgeManifest(manifest)) return true;
   if (!manifest?.qualifiedPartial || manifest.naturalAttachment || !Number.isSafeInteger(businessId) || !manifest.units.length) return false;
   const proof = partialAuthorities.get(manifest.qualifiedPartial);
   if (!proof || proof.businessId !== businessId || proof.owner !== nativeKnowledgeTiming() || proof.owner.failure || proof.contractHash !== partialContractHash(manifest) ||
@@ -314,7 +318,9 @@ function renderVerifiedManifest(manifest: Omit<AnswerManifest, 'text'>): AnswerM
   if (!manifest.units.length) return Object.freeze({ ...manifest, text: notices.unavailable });
   const ordered = manifest.presentation.unitIds.map(id => manifest.units.find(u => u.id === id)).filter((u): u is AnswerUnit => Boolean(u));
   const lines = ordered.map((u, i) => i === 1 && manifest.presentation.addition ? `${notices.addition} ${u.text}` : u.text);
-  const uncertainty = [...new Set(manifest.outcomes.filter(o => o.status !== 'VERIFIED').map(outcome => manifest.sourceScopeNotice ||
+  const uncertainty = manifest.unresolvedRequirements ? [...new Set([
+    ...(manifest.sourceScopeNotice ? [manifest.sourceScopeNotice] : []), ...manifest.unresolvedRequirements.map(n => n.text),
+  ])] : [...new Set(manifest.outcomes.filter(o => o.status !== 'VERIFIED').map(outcome => manifest.sourceScopeNotice ||
     uncertaintyNotice(manifest.language, manifest.facets.find(f => f.id === outcome.facetId), outcome, manifest.uncertaintyReferences)))];
   const prefix = manifest.presentation.prefix === 'none' ? '' : notices[manifest.presentation.prefix];
   return Object.freeze({ ...manifest, text: [[prefix, ...lines].filter(Boolean).join(' '), uncertainty.join(' ')].filter(Boolean).join('\n\n') });
@@ -665,7 +671,7 @@ export async function buildEvidenceFirstAnswer(input: {
     uncertaintyReferences: uncertaintyReferences(input.question, language, facets, outcomes,
       text => Boolean(input.languageSafe?.({ ...verified[0], text })),[...verified.map(u=>u.text),...manifestEvidence.map(e=>e.text)]),
     presentation: Object.freeze({ unitIds: Object.freeze(verified.map(u => u.id)), prefix: 'none' as const, addition: false }) }), manifestEvidence,diagnostic);
-  // A narrow current-run eligibility record for qualified descriptive answers.
+  // A narrow current-run eligibility record for qualified partial answers.
   // Missing conditions/recommendations, rejected proposals, failed extraction,
   // malformed coverage, lost authority and operational/modality gaps stay closed.
   // Legacy qualified PARTIAL rendering and all independent verdicts are unchanged.
@@ -680,15 +686,43 @@ export async function buildEvidenceFirstAnswer(input: {
     o.requestAligned && o.unitIds.length>0 && (o.status==='VERIFIED' || o.status==='PARTIAL' && !o.materialFactsComplete && o.obligations.some(d=>d.status==='UNRESOLVED'))) &&
     manifest.facets.every(f=>f.obligations.every(o=>o.questionType==='description')) &&
     manifest.units.every(u=>u.verification==='ENTAILED' && u.modality==='descriptive');
+  // New permission is limited to genuine requirement uncertainty, not rejected
+  // facts or a missing known condition/recommendation. Preserve obligation types
+  // and statuses, including an unresolved-only facet with no factual unit.
+  const requirementNotices=unresolvedRequirementNotices(language,manifest.facets,manifest.outcomes,manifest.uncertaintyReferences||[],input.question);
+  const operationalClause=(text:string)=>isExplicitBusinessActionRequest(text) || detectNormalizedIntent(text)==='booking_lookup' ||
+    !isBusinessInformationQuestion(text) && ['cancellation','reschedule','new_booking'].includes(detectNormalizedIntent(text));
+  // Veto every literal clause, including turns with multiple actions which the
+  // single-action splitter intentionally leaves to existing orchestration.
+  const clauses=requirementNotices?input.question.split(/(?<=[.!?؟؛;])\s+|\n+|\s+(?:and|och|und|y|و)\s+/giu):[];
+  const requirementPartial=!!requirementNotices && input.businessId===businessId &&
+    isBusinessInformationQuestion(input.question) && !operationalClause(input.question) && clauses.length<=6 && clauses.every(text=>!operationalClause(text)) &&
+    manifest.outcomes.some(o=>o.obligations.some(d=>d.status==='COVERED')) &&
+    manifest.facets.every(f=>{
+      const o=manifest.outcomes.find(o=>o.facetId===f.id)!;
+      const c=parsed.coverage?.find((c:any)=>c?.facetId===f.id);
+      const unresolved=f.obligations.filter(obligation=>o.obligations.some(d=>d.obligationId===obligation.id&&d.status==='UNRESOLVED'));
+      return o.requestAligned && (unresolved.length ? !o.materialFactsComplete && c?.incompletenessReason==='UNRESOLVED' &&
+        ['PARTIAL','UNAVAILABLE'].includes(o.status) && unresolved.every(obligation=>obligation.questionType==='requirement' &&
+          c.obligations.some((d:any)=>d.obligationId===obligation.id && d.status==='UNRESOLVED' && Array.isArray(d.unitIds)&&!d.unitIds.length)) : o.status==='VERIFIED') &&
+        JSON.stringify([...o.materialUnitIds].sort())===JSON.stringify([...o.unitIds].sort());
+    }) && new Set(input.evidence.map(e=>e.id)).size===input.evidence.length;
   if (input.foreground && budget.nativeTiming && !input.natural && !input.requireCompleteCoverage &&
-      proposalParseComplete && !extractionIncomplete && !conflicts.size && catalogComplete && validPartialCoverage && descriptivePartial &&
+      proposalParseComplete && !extractionIncomplete && !conflicts.size && catalogComplete && validPartialCoverage && (descriptivePartial||requirementPartial) &&
       (!relationshipRequest || Boolean(sourceScopeNotice)) &&
       parsed.decisions.length===proposed.units.length && verified.length===proposed.units.length && manifest.units.length===verified.length && manifest.units.every(citedNumeralsPresent) &&
       Number.isSafeInteger(businessId) && businessId>0 && availableEvidence.every(e=>e.businessId===businessId) &&
       partialEvidenceHash(availableEvidence)===partialEvidenceHash(input.evidence) && partialEvidenceHash(manifestEvidence)===partialEvidenceHash(availableEvidence)) {
+    if(requirementPartial)manifest=renderVerifiedManifest({...manifest,unresolvedRequirements:requirementNotices!});
     const token=Object.freeze({});
     partialAuthorities.set(token,Object.freeze({businessId,owner:budget.nativeTiming,evidenceHash:partialEvidenceHash(manifestEvidence),contractHash:partialContractHash(manifest)}));
     manifest=Object.freeze({...manifest,qualifiedPartial:token});
+  }
+  // This new permission needs no model-authored transitions. Retain every exact
+  // verified sentence and its mandatory backend notices in canonical order.
+  if(manifest.unresolvedRequirements) {
+    if(!await input.current())return empty('UNAVAILABLE','CONTEXT_INVALID');
+    return renderVerifiedManifest({...manifest,presentationFallback:false,presentationPath:manifest.units.length===1?'direct_single_unit':'direct_verified_units',fallbackReason:null});
   }
   if (!manifest.units.length) return manifest;
   if (input.requireCompleteCoverage && manifest.outcomes.some(o => o.status !== 'VERIFIED')) return manifest;

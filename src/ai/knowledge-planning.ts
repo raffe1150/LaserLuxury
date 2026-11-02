@@ -45,6 +45,7 @@ export function deterministicLocationPlan(question: string, businessInformationR
   const keywords=(locationQuestion.slice(location.index).match(/[\p{L}\p{M}\p{N}]+/gu)||[]).filter(w=>w.length>=3&&!stop.has(w.toLocaleLowerCase())).slice(0,2);
   return {
     canonicalMeaning:text,queries:[...new Set([text,...keywords])],queryLanguages:{},requestKind:'BUSINESS_INFORMATION',
+    referenceResolution:'NOT_REQUIRED' as const,
     requestedFacets:[{subject:'business',attribute:text,questionType:'description',
       obligations:[{description:text,questionType:'description'}]}],
   };

@@ -7,8 +7,9 @@ import {sharedCorpus} from '../../tests/helpers/shared-core-incident';
 import {incidentConfig,incidentChannels,incidentInbound,interceptedIncidentSend} from '../../tests/helpers/p0-incident-knowledge';
 import {preliminaryAcceptancePlan,documentaryQuotes,documentaryStatements,type AcceptanceFamily} from '../../tests/fixtures/multilingual-knowledge-acceptance';
 import {serviceFactText} from '../../tests/fixtures/direct-service-questions';
+import {nativeKnowledgeTiming} from './knowledge-timing-policy';
 import {serviceScopeUncertainty} from './source-aware-service-proposal';
-Object.assign(process.env,{NODE_ENV:'test',DOTENV_CONFIG_PATH:'/dev/null',AI_PROVIDER:'gemini',ODINLINK_EVIDENCE_FIRST_KNOWLEDGE:'true',ODINLINK_GROUNDED_NATURAL_RESPONSES:'false',ODINLINK_ASYNC_KNOWLEDGE_ADMISSION:'false',ODINLINK_ASYNC_KNOWLEDGE_PROCESSING:'false',ODINLINK_ASYNC_KNOWLEDGE_DELIVERY:'false',ODINLINK_SMART_WAITING:'false'});
+Object.assign(process.env,{NODE_ENV:'test',DOTENV_CONFIG_PATH:'/dev/null',AI_PROVIDER:'gemini',ODINLINK_EVIDENCE_FIRST_KNOWLEDGE:'true',ODINLINK_GROUNDED_NATURAL_RESPONSES:'false',ODINLINK_KNOWLEDGE_TIMING_POLICY:'accuracy-first-v1',ODINLINK_KNOWLEDGE_TIMING_TENANT_IDS:'77',ODINLINK_ASYNC_KNOWLEDGE_ADMISSION:'false',ODINLINK_ASYNC_KNOWLEDGE_PROCESSING:'false',ODINLINK_ASYNC_KNOWLEDGE_DELIVERY:'false',ODINLINK_SMART_WAITING:'false'});
 delete process.env.ODINLINK_SHARED_PG;
 const {priority1hUnifiedEngineTestBoundary:b}=await import('../../server');
 const corpus=await sharedCorpus(false,true),records:any[]=[];
@@ -36,7 +37,7 @@ for(const spec of incidentChannels.map(channel=>({...preliminaryAcceptancePlan.f
    evidenceFirstDiagnostic:e=>inputs.push({stage:'manifest',data:e}),evidenceFirstDecisionDiagnostic:e=>events.push(e),
    geminiGenerate:async p=>{
     const instruction=p.config.systemInstruction;
-    if(instruction.includes('language-routing classifier')){stages.push('language');return{text:JSON.stringify({language:spec.language,requestedReplyLanguage:null,confidence:.99})};}
+    if(instruction.includes('language-routing classifier')){assert.equal(!!nativeKnowledgeTiming(),true,'Partial publication fixture requires the native owner');stages.push('language');return{text:JSON.stringify({language:spec.language,requestedReplyLanguage:null,confidence:.99})};}
     if(!/retrieval query planner|UNIT EXTRACTION|BATCH ENTAILMENT|VERIFIED-UNIT PRESENTATION/u.test(instruction)){
      unhandled={instruction,contents:p.contents};throw Error('Preparation requires reviewed independent evidence-first execution, not an unsupported scripted legacy response');
     }

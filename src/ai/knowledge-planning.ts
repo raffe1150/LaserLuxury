@@ -52,8 +52,43 @@ export function deterministicLocationPlan(question: string, businessInformationR
 }
 export const KNOWLEDGE_PLANNING_LIMIT_MS=2500;
 
-/** A literal request container after a planner transport failure, not a semantic
- * decomposition. It supplies no facts, translations, inferred obligations or
+/** Syntax-only recovery for an explicit policy question coordinated with a
+ * cancellation-notice question. No policy, deadline or coverage is inferred.
+ * Qualified, operational, referential and additional clauses keep the old route. */
+export function cancellationPolicyNoticePlan(question: string, recognized: boolean, referenceRequired = false) {
+  const text = question.trim();
+  if (!recognized || referenceRequired || !text || text.length > 240 || isExplicitBusinessActionRequest(text) ||
+      /[.!;:؛\n\r<>\[\]{}"`\\]/u.test(text) || (text.match(/[?؟]/gu) || []).length !== 1 || !/[?؟]$/u.test(text)) return null;
+  const profiles = [
+    { join: /\s*,?\s+and\s+/iu, policy: /^(?:what(?: is| are|'s)|tell me about|explain|can you explain)\s+(?:(?:your|the)\s+)?cancellation\s+(?:policy|rules|terms)$/iu,
+      notice: /^how\s+(?:far|long|much)\b[^?]{0,50}\b(?:in advance|notice)\b[^?]{0,40}\b(?:need|must|have to|required)\b[^?]{0,35}\bcancel\b[^?]{0,25}\bappointments?$/iu },
+    { join: /\s*,?\s+och\s+/iu, policy: /^vad\s+är\s+(?:(?:er|din|era)\s+)?avboknings(?:policy|villkor)$/iu,
+      notice: /^hur\s+(?:långt|länge)\b[^?]{0,25}\bförväg\b[^?]{0,25}\b(?:måste|behöver)\b[^?]{0,25}\bavboka\b[^?]{0,15}\btid$/iu },
+    { join: /\s*,?\s+und\s+/iu, policy: /^was\s+ist\s+(?:Ihre|die)\s+Stornierungs(?:richtlinie|bedingungen)$/iu,
+      notice: /^wie\s+(?:weit|lange)\b[^?]{0,25}\bVoraus\b[^?]{0,25}\bmuss\b[^?]{0,25}\bTermin\b[^?]{0,15}\b(?:stornieren|absagen)$/iu },
+    { join: /\s*,?\s+y\s+/iu, policy: /^¿?cu[aá]l\s+es\s+(?:su|la)\s+política\s+de\s+cancelación$/iu,
+      notice: /^(?:con cu[aá]nta antelación|cu[aá]ntas? horas antes)[^?]{0,25}\b(?:debo|tengo que)\b[^?]{0,20}\bcancelar\b[^?]{0,15}\bcita$/iu },
+    { join: /\s+و\s+/u, policy: /^سیاست لغو (?:شما|تان) چیست$/u,
+      notice: /^(?:چند ساعت|چه مدت) قبل باید نوبت را لغو کنم$/u },
+    { join: /\s+و(?=كم)/u, policy: /^ما هي سياسة (?:الإلغاء|الالغاء) لديكم$/u,
+      notice: /^كم ساعة قبل الموعد يجب (?:إلغاء|الغاء) الحجز$/u },
+  ];
+  const body = text.slice(0, -1);
+  const parts = profiles.map(p => ({ p, clauses: body.split(p.join) })).find(({ p, clauses }) =>
+    clauses.length === 2 && p.policy.test(clauses[0]) && p.notice.test(clauses[1]));
+  if (!parts || /\b(?:if|unless|when|only|for|om|endast|wenn|falls|für|si|solo)\b|اگر|فقط|برای|إذا|اذا/iu.test(text)) return null;
+  return { canonicalMeaning: text, queries: [text], queryLanguages: {}, requestKind: 'BUSINESS_INFORMATION',
+    referenceResolution: 'NOT_REQUIRED' as const, requestedFacets: [
+      { subject: 'cancellation policy', attribute: parts.clauses[0], questionType: 'description',
+        obligations: [{ description: parts.clauses[0], questionType: 'description' }] },
+      { subject: 'cancellation policy', attribute: 'mandatory advance notice', questionType: 'requirement',
+        obligations: [{ description: 'mandatory advance notice', questionType: 'requirement' }] },
+    ] };
+}
+
+/** A literal request container after a planner transport failure. The bounded
+ * coordinated policy/notice grammar retains two explicit typed obligations;
+ * other requests remain whole-question containers. It supplies no facts or
  * coverage. The independent verifier must still align the FULL question and
  * establish every material fact; a description container cannot grant permission.
  */
@@ -71,6 +106,8 @@ export function literalInformationFallback(question: string, businessInformation
     // No text is removed from the request passed to extraction/verification.
     .replace(/\b(?:and|och|und|y)\s+(?:is|are|är|ist|sind|es)\s+(?:it|den|det|das|eso)\b/giu, '');
   if (hasExternalConversationReference(references)) return null;
+  const cancellation = cancellationPolicyNoticePlan(text, businessInformationRecognized, referenceRequired);
+  if (cancellation) return cancellation;
   return {
     canonicalMeaning: text, queries: [text], queryLanguages: {}, requestKind: 'BUSINESS_INFORMATION',
     referenceResolution: 'NOT_REQUIRED' as const,

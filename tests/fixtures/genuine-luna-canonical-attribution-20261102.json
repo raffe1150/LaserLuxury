@@ -1,0 +1,385 @@
+{
+  "provenance": {
+    "capture": "docs/validation/p0-genuine-canonical-config-acceptance-20261102/result.json",
+    "sha256": "612664bfbb5c3a520d66f7ed9099a59c9d226b03c99d1f96cd50b448f8ff2866"
+  },
+  "extraction": {
+    "oversized": false,
+    "units": [
+      {
+        "facetIds": [
+          "f1"
+        ],
+        "subject": "business cancellation configuration",
+        "predicate": "automatic chat cancellation",
+        "value": "enabled",
+        "modality": "descriptive",
+        "negation": false,
+        "scope": "chat automation and this optional late fee only",
+        "qualifiers": [],
+        "language": "en",
+        "text": "Automatic appointment cancellation through chat is enabled.",
+        "evidenceRefs": [
+          {
+            "evidenceId": "e1"
+          }
+        ]
+      },
+      {
+        "facetIds": [
+          "f1"
+        ],
+        "subject": "business cancellation configuration",
+        "predicate": "optional late fee",
+        "value": "disabled",
+        "modality": "descriptive",
+        "negation": true,
+        "scope": "chat automation and this optional late fee only",
+        "qualifiers": [],
+        "language": "en",
+        "text": "The optional late cancellation fee is disabled.",
+        "evidenceRefs": [
+          {
+            "evidenceId": "e1"
+          }
+        ]
+      }
+    ]
+  },
+  "verification": {
+    "input": {
+      "question": "What is your cancellation policy, and how far in advance do I need to cancel my appointment?",
+      "requestedLanguage": "en",
+      "facets": [
+        {
+          "id": "f1",
+          "subject": "cancellation policy",
+          "attribute": "What is your cancellation policy",
+          "questionType": "description",
+          "obligations": [
+            {
+              "id": "f1.o1",
+              "description": "What is your cancellation policy",
+              "questionType": "description"
+            }
+          ]
+        },
+        {
+          "id": "f2",
+          "subject": "cancellation policy",
+          "attribute": "mandatory advance notice",
+          "questionType": "requirement",
+          "obligations": [
+            {
+              "id": "f2.o1",
+              "description": "mandatory advance notice",
+              "questionType": "requirement"
+            }
+          ]
+        }
+      ],
+      "units": [
+        {
+          "id": "u1",
+          "facetIds": [
+            "f1"
+          ],
+          "subject": "business cancellation configuration",
+          "predicate": "automatic chat cancellation",
+          "value": "enabled",
+          "modality": "descriptive",
+          "negation": false,
+          "scope": "chat automation and this optional late fee only",
+          "qualifiers": [],
+          "language": "en",
+          "text": "Automatic appointment cancellation through chat is enabled.",
+          "evidenceRefs": [
+            {
+              "evidenceId": "e1",
+              "exactQuote": "7. Kvarglömda föremål \nFöremål som hittas i studion lämnas till receptionen. \nKvarglömda föremål förvaras normalt i upp till 21 dagar . \nVärdesaker registreras separat. Kunden behöver beskriva föremålet innan det kan lämnas ut. \nAdMotion Studio ansvarar inte för att skicka kvarglömda föremål med post enligt dessa testvillkor. \n8. Digitala informationssamtal \nAdMotion Studio erbjuder i detta test digitala informationssamtal för kunder som behöver allmän vägledning inför ett första besök. \nDigitala informationssamtal används endast för inledande information. \nDe ersätter inte automatiskt ett fysiskt besök, och alla ärenden kan inte hanteras digitalt. \nTillgängliga tider och eventuella priser för tjänster hanteras separat i studions ordinarie boknings- och serviceinformation. \n9. Särskilda förberedelser \nKunder bör undvika att använda starkt parfymerade produkter precis före sitt besök, eftersom andra besökare kan vara känsliga för\ndofter. \nDet är tillåtet att ta med en egen vatten fl aska. \nMat får inte förtäras i behandlings- eller arbetsrummen, men enklare mellanmål är tillåtna i väntrummet. \n10. Frågor som dokumentet inte besvarar \nDetta dokument innehåller inte uppgifter om: \n• Priser på studions tjänster \n• Tjänsternas längd \n• Lediga bokningstider \n• Ordinarie öppettider \n• Vilka betalningsmetoder som accepteras \n• Fullständiga avbokningsvillkor \n• Vilka speci fi ka tjänster som erbjuds \nFör dessa uppgifter ska OdinLink använda andra relevanta, veri fi erade informationskällor när sådana fi nns. \nOm en uppgift inte kan veri fi eras ska AI-assistenten inte hitta på ett svar. \nDokumentets syfte: Att testa om OdinLink kan läsa, hitta och återge speci fi ka uppgifter från en uppladdad PDF, förstå villkor och\nundantag samt skilja kompletterande kundinformation från struk"
+            }
+          ]
+        },
+        {
+          "id": "u2",
+          "facetIds": [
+            "f1"
+          ],
+          "subject": "business cancellation configuration",
+          "predicate": "optional late fee",
+          "value": "disabled",
+          "modality": "descriptive",
+          "negation": true,
+          "scope": "chat automation and this optional late fee only",
+          "qualifiers": [],
+          "language": "en",
+          "text": "The optional late cancellation fee is disabled.",
+          "evidenceRefs": [
+            {
+              "evidenceId": "e1",
+              "exactQuote": "7. Kvarglömda föremål \nFöremål som hittas i studion lämnas till receptionen. \nKvarglömda föremål förvaras normalt i upp till 21 dagar . \nVärdesaker registreras separat. Kunden behöver beskriva föremålet innan det kan lämnas ut. \nAdMotion Studio ansvarar inte för att skicka kvarglömda föremål med post enligt dessa testvillkor. \n8. Digitala informationssamtal \nAdMotion Studio erbjuder i detta test digitala informationssamtal för kunder som behöver allmän vägledning inför ett första besök. \nDigitala informationssamtal används endast för inledande information. \nDe ersätter inte automatiskt ett fysiskt besök, och alla ärenden kan inte hanteras digitalt. \nTillgängliga tider och eventuella priser för tjänster hanteras separat i studions ordinarie boknings- och serviceinformation. \n9. Särskilda förberedelser \nKunder bör undvika att använda starkt parfymerade produkter precis före sitt besök, eftersom andra besökare kan vara känsliga för\ndofter. \nDet är tillåtet att ta med en egen vatten fl aska. \nMat får inte förtäras i behandlings- eller arbetsrummen, men enklare mellanmål är tillåtna i väntrummet. \n10. Frågor som dokumentet inte besvarar \nDetta dokument innehåller inte uppgifter om: \n• Priser på studions tjänster \n• Tjänsternas längd \n• Lediga bokningstider \n• Ordinarie öppettider \n• Vilka betalningsmetoder som accepteras \n• Fullständiga avbokningsvillkor \n• Vilka speci fi ka tjänster som erbjuds \nFör dessa uppgifter ska OdinLink använda andra relevanta, veri fi erade informationskällor när sådana fi nns. \nOm en uppgift inte kan veri fi eras ska AI-assistenten inte hitta på ett svar. \nDokumentets syfte: Att testa om OdinLink kan läsa, hitta och återge speci fi ka uppgifter från en uppladdad PDF, förstå villkor och\nundantag samt skilja kompletterande kundinformation från struk"
+            }
+          ]
+        },
+        {
+          "id": "u3",
+          "facetIds": [
+            "f1"
+          ],
+          "subject": "business cancellation configuration",
+          "predicate": "automatic chat cancellation",
+          "value": "enabled",
+          "modality": "descriptive",
+          "negation": false,
+          "scope": "chat automation and this optional late fee only",
+          "qualifiers": [],
+          "language": "en",
+          "text": "Automatic appointment cancellation through chat is enabled.",
+          "evidenceRefs": [
+            {
+              "evidenceId": "configured-cancellation:77",
+              "exactQuote": "Automatic appointment cancellation through chat is enabled in the business configuration."
+            }
+          ]
+        },
+        {
+          "id": "u4",
+          "facetIds": [
+            "f1"
+          ],
+          "subject": "business cancellation configuration",
+          "predicate": "optional late fee",
+          "value": "disabled",
+          "modality": "descriptive",
+          "negation": true,
+          "scope": "chat automation and this optional late fee only",
+          "qualifiers": [],
+          "language": "en",
+          "text": "The optional late cancellation fee is disabled.",
+          "evidenceRefs": [
+            {
+              "evidenceId": "configured-cancellation:77",
+              "exactQuote": "The optional late cancellation fee is disabled in the business configuration."
+            }
+          ]
+        }
+      ],
+      "evidence": [
+        {
+          "id": "e1",
+          "businessId": 77,
+          "text": "7. Kvarglömda föremål \nFöremål som hittas i studion lämnas till receptionen. \nKvarglömda föremål förvaras normalt i upp till 21 dagar . \nVärdesaker registreras separat. Kunden behöver beskriva föremålet innan det kan lämnas ut. \nAdMotion Studio ansvarar inte för att skicka kvarglömda föremål med post enligt dessa testvillkor. \n8. Digitala informationssamtal \nAdMotion Studio erbjuder i detta test digitala informationssamtal för kunder som behöver allmän vägledning inför ett första besök. \nDigitala informationssamtal används endast för inledande information. \nDe ersätter inte automatiskt ett fysiskt besök, och alla ärenden kan inte hanteras digitalt. \nTillgängliga tider och eventuella priser för tjänster hanteras separat i studions ordinarie boknings- och serviceinformation. \n9. Särskilda förberedelser \nKunder bör undvika att använda starkt parfymerade produkter precis före sitt besök, eftersom andra besökare kan vara känsliga för\ndofter. \nDet är tillåtet att ta med en egen vatten fl aska. \nMat får inte förtäras i behandlings- eller arbetsrummen, men enklare mellanmål är tillåtna i väntrummet. \n10. Frågor som dokumentet inte besvarar \nDetta dokument innehåller inte uppgifter om: \n• Priser på studions tjänster \n• Tjänsternas längd \n• Lediga bokningstider \n• Ordinarie öppettider \n• Vilka betalningsmetoder som accepteras \n• Fullständiga avbokningsvillkor \n• Vilka speci fi ka tjänster som erbjuds \nFör dessa uppgifter ska OdinLink använda andra relevanta, veri fi erade informationskällor när sådana fi nns. \nOm en uppgift inte kan veri fi eras ska AI-assistenten inte hitta på ett svar. \nDokumentets syfte: Att testa om OdinLink kan läsa, hitta och återge speci fi ka uppgifter från en uppladdad PDF, förstå villkor och\nundantag samt skilja kompletterande kundinformation från struk"
+        },
+        {
+          "id": "configured-cancellation:77",
+          "businessId": 77,
+          "text": "{\"authority\":\"business_cancellation_configuration\",\"contractVersion\":1,\"scope\":\"Chat automation settings and this optional late fee only; business-wide permission, other fees and mandatory advance notice are outside this source.\",\"facts\":{\"automaticCancellationEnabled\":true,\"lateFeeEnabled\":false},\"statements\":[\"Automatic appointment cancellation through chat is enabled in the business configuration.\",\"The optional late cancellation fee is disabled in the business configuration.\"]}"
+        }
+      ],
+      "authoritativeEvidence": {
+        "business_system_prompt": "",
+        "structured_business_config": "{\n  \"businessName\": \"AdMotion Studio\",\n  \"timezone\": \"Europe/Stockholm\",\n  \"address\": \"Studio Street 99\",\n  \"services\": [\n    {\n      \"name\": \"Video Consultation\",\n      \"durationMinutes\": 60\n    }\n  ],\n  \"workingHours\": {\n    \"monday\": [\n      {\n        \"start\": \"09:00\",\n        \"end\": \"17:00\"\n      }\n    ],\n    \"tuesday\": [\n      {\n        \"start\": \"09:00\",\n        \"end\": \"17:00\"\n      }\n    ],\n    \"wednesday\": [\n      {\n        \"start\": \"09:00\",\n        \"end\": \"17:00\"\n      }\n    ],\n    \"thursday\": [\n      {\n        \"start\": \"09:00\",\n        \"end\": \"17:00\"\n      }\n    ],\n    \"friday\": [\n      {\n        \"start\": \"09:00\",\n        \"end\": \"17:00\"\n      }\n    ]\n  },\n  \"cancellation\": {\n    \"available\": true,\n    \"automaticCancellationEnabled\": true,\n    \"lateFeeEnabled\": false,\n    \"meaning\": \"Only explicitly present, valid settings are evidence. The free window concerns optional late fees, not mandatory notice or a hard prohibition. Missing fields establish no fact.\"\n  }\n}",
+        "verified_booking_state": ""
+      }
+    },
+    "citationBindings": [
+      {
+        "evidenceId": "e1",
+        "sourceId": "incident-pdf",
+        "chunkId": "1e1aee452ef1f178f6aa2e4b2e6db9e6f3c167c2a57e64e07b997875a0987d21",
+        "version": "250c78c6d3c9198997b8c2b9f52bd79d2470084b1f5aa8a85331ba803ca5f967",
+        "exactQuote": "7. Kvarglömda föremål \nFöremål som hittas i studion lämnas till receptionen. \nKvarglömda föremål förvaras normalt i upp till 21 dagar . \nVärdesaker registreras separat. Kunden behöver beskriva föremålet innan det kan lämnas ut. \nAdMotion Studio ansvarar inte för att skicka kvarglömda föremål med post enligt dessa testvillkor. \n8. Digitala informationssamtal \nAdMotion Studio erbjuder i detta test digitala informationssamtal för kunder som behöver allmän vägledning inför ett första besök. \nDigitala informationssamtal används endast för inledande information. \nDe ersätter inte automatiskt ett fysiskt besök, och alla ärenden kan inte hanteras digitalt. \nTillgängliga tider och eventuella priser för tjänster hanteras separat i studions ordinarie boknings- och serviceinformation. \n9. Särskilda förberedelser \nKunder bör undvika att använda starkt parfymerade produkter precis före sitt besök, eftersom andra besökare kan vara känsliga för\ndofter. \nDet är tillåtet att ta med en egen vatten fl aska. \nMat får inte förtäras i behandlings- eller arbetsrummen, men enklare mellanmål är tillåtna i väntrummet. \n10. Frågor som dokumentet inte besvarar \nDetta dokument innehåller inte uppgifter om: \n• Priser på studions tjänster \n• Tjänsternas längd \n• Lediga bokningstider \n• Ordinarie öppettider \n• Vilka betalningsmetoder som accepteras \n• Fullständiga avbokningsvillkor \n• Vilka speci fi ka tjänster som erbjuds \nFör dessa uppgifter ska OdinLink använda andra relevanta, veri fi erade informationskällor när sådana fi nns. \nOm en uppgift inte kan veri fi eras ska AI-assistenten inte hitta på ett svar. \nDokumentets syfte: Att testa om OdinLink kan läsa, hitta och återge speci fi ka uppgifter från en uppladdad PDF, förstå villkor och\nundantag samt skilja kompletterande kundinformation från struk",
+        "unitId": "u1",
+        "textSha256": "44fb6d8ce4d7f56f545110b516c2540796259cf1aec30e957b1bf84c7d131a5c"
+      },
+      {
+        "evidenceId": "e1",
+        "sourceId": "incident-pdf",
+        "chunkId": "1e1aee452ef1f178f6aa2e4b2e6db9e6f3c167c2a57e64e07b997875a0987d21",
+        "version": "250c78c6d3c9198997b8c2b9f52bd79d2470084b1f5aa8a85331ba803ca5f967",
+        "exactQuote": "7. Kvarglömda föremål \nFöremål som hittas i studion lämnas till receptionen. \nKvarglömda föremål förvaras normalt i upp till 21 dagar . \nVärdesaker registreras separat. Kunden behöver beskriva föremålet innan det kan lämnas ut. \nAdMotion Studio ansvarar inte för att skicka kvarglömda föremål med post enligt dessa testvillkor. \n8. Digitala informationssamtal \nAdMotion Studio erbjuder i detta test digitala informationssamtal för kunder som behöver allmän vägledning inför ett första besök. \nDigitala informationssamtal används endast för inledande information. \nDe ersätter inte automatiskt ett fysiskt besök, och alla ärenden kan inte hanteras digitalt. \nTillgängliga tider och eventuella priser för tjänster hanteras separat i studions ordinarie boknings- och serviceinformation. \n9. Särskilda förberedelser \nKunder bör undvika att använda starkt parfymerade produkter precis före sitt besök, eftersom andra besökare kan vara känsliga för\ndofter. \nDet är tillåtet att ta med en egen vatten fl aska. \nMat får inte förtäras i behandlings- eller arbetsrummen, men enklare mellanmål är tillåtna i väntrummet. \n10. Frågor som dokumentet inte besvarar \nDetta dokument innehåller inte uppgifter om: \n• Priser på studions tjänster \n• Tjänsternas längd \n• Lediga bokningstider \n• Ordinarie öppettider \n• Vilka betalningsmetoder som accepteras \n• Fullständiga avbokningsvillkor \n• Vilka speci fi ka tjänster som erbjuds \nFör dessa uppgifter ska OdinLink använda andra relevanta, veri fi erade informationskällor när sådana fi nns. \nOm en uppgift inte kan veri fi eras ska AI-assistenten inte hitta på ett svar. \nDokumentets syfte: Att testa om OdinLink kan läsa, hitta och återge speci fi ka uppgifter från en uppladdad PDF, förstå villkor och\nundantag samt skilja kompletterande kundinformation från struk",
+        "unitId": "u2",
+        "textSha256": "44fb6d8ce4d7f56f545110b516c2540796259cf1aec30e957b1bf84c7d131a5c"
+      },
+      {
+        "evidenceId": "configured-cancellation:77",
+        "sourceId": "business-cancellation-configuration:77",
+        "chunkId": "f1dde7e9f588af5232bece2b49d57fed7dc503994df7793de65a240b832cf1e9",
+        "version": "f1dde7e9f588af5232bece2b49d57fed7dc503994df7793de65a240b832cf1e9",
+        "exactQuote": "Automatic appointment cancellation through chat is enabled in the business configuration.",
+        "unitId": "u3",
+        "textSha256": "8dfedfeb6c09abddf73b388f9f16705019f542b940c677b5bdf729f17418632e"
+      },
+      {
+        "evidenceId": "configured-cancellation:77",
+        "sourceId": "business-cancellation-configuration:77",
+        "chunkId": "f1dde7e9f588af5232bece2b49d57fed7dc503994df7793de65a240b832cf1e9",
+        "version": "f1dde7e9f588af5232bece2b49d57fed7dc503994df7793de65a240b832cf1e9",
+        "exactQuote": "The optional late cancellation fee is disabled in the business configuration.",
+        "unitId": "u4",
+        "textSha256": "8dfedfeb6c09abddf73b388f9f16705019f542b940c677b5bdf729f17418632e"
+      }
+    ],
+    "raw": {
+      "decisions": [
+        {
+          "unitId": "u1",
+          "relation": "UNKNOWN",
+          "facetIds": [
+            "f1"
+          ],
+          "meaningPreserved": false,
+          "modalityPreserved": true,
+          "qualifiersPreserved": false,
+          "relevant": true,
+          "languageCorrect": true,
+          "explicitAbsenceEvidence": false,
+          "negativeAbsence": false
+        },
+        {
+          "unitId": "u2",
+          "relation": "UNKNOWN",
+          "facetIds": [
+            "f1"
+          ],
+          "meaningPreserved": false,
+          "modalityPreserved": true,
+          "qualifiersPreserved": false,
+          "relevant": true,
+          "languageCorrect": true,
+          "explicitAbsenceEvidence": false,
+          "negativeAbsence": false
+        },
+        {
+          "unitId": "u3",
+          "relation": "ENTAILED",
+          "facetIds": [
+            "f1"
+          ],
+          "meaningPreserved": true,
+          "modalityPreserved": true,
+          "qualifiersPreserved": true,
+          "relevant": true,
+          "languageCorrect": true,
+          "explicitAbsenceEvidence": false,
+          "negativeAbsence": false
+        },
+        {
+          "unitId": "u4",
+          "relation": "ENTAILED",
+          "facetIds": [
+            "f1"
+          ],
+          "meaningPreserved": true,
+          "modalityPreserved": true,
+          "qualifiersPreserved": true,
+          "relevant": true,
+          "languageCorrect": true,
+          "explicitAbsenceEvidence": true,
+          "negativeAbsence": false
+        }
+      ],
+      "coverage": [
+        {
+          "facetId": "f1",
+          "requestAligned": true,
+          "materialFactsComplete": false,
+          "incompletenessReason": "MISSING_RELEVANT_FACT",
+          "materialUnitIds": [
+            "u3",
+            "u4"
+          ],
+          "obligations": [
+            {
+              "obligationId": "f1.o1",
+              "status": "UNRESOLVED",
+              "unitIds": [
+                "u3",
+                "u4"
+              ]
+            }
+          ]
+        },
+        {
+          "facetId": "f2",
+          "requestAligned": true,
+          "materialFactsComplete": false,
+          "incompletenessReason": "UNRESOLVED",
+          "materialUnitIds": [],
+          "obligations": [
+            {
+              "obligationId": "f2.o1",
+              "status": "UNRESOLVED",
+              "unitIds": []
+            }
+          ]
+        }
+      ],
+      "sourceCoverage": {
+        "protocol": "source-exhaustive-v2",
+        "requestAligned": true,
+        "availableMaterialFactsComplete": true,
+        "conditionsPreserved": true,
+        "conflictsAbsent": true,
+        "evidenceIdsReviewed": [
+          "e1",
+          "configured-cancellation:77"
+        ],
+        "acceptedUnitIdsReviewed": [
+          "u1",
+          "u2",
+          "u3",
+          "u4"
+        ],
+        "obligations": [
+          {
+            "facetId": "f1",
+            "obligationId": "f1.o1",
+            "state": "REQUESTED_INFORMATION_NOT_VERIFIED"
+          },
+          {
+            "facetId": "f2",
+            "obligationId": "f2.o1",
+            "state": "REQUESTED_INFORMATION_NOT_VERIFIED"
+          }
+        ]
+      }
+    },
+    "assessment": {
+      "state": "DENIED",
+      "unavailable": []
+    }
+  },
+  "plannerFallback": {
+    "providerDispatched": false,
+    "durationMs": 2503.451417,
+    "typedObligations": [
+      {
+        "id": "f1",
+        "subject": "cancellation policy",
+        "attribute": "What is your cancellation policy",
+        "questionType": "description",
+        "obligations": [
+          {
+            "id": "f1.o1",
+            "description": "What is your cancellation policy",
+            "questionType": "description"
+          }
+        ]
+      },
+      {
+        "id": "f2",
+        "subject": "cancellation policy",
+        "attribute": "mandatory advance notice",
+        "questionType": "requirement",
+        "obligations": [
+          {
+            "id": "f2.o1",
+            "description": "mandatory advance notice",
+            "questionType": "requirement"
+          }
+        ]
+      }
+    ]
+  }
+}

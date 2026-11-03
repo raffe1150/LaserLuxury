@@ -2,8 +2,11 @@ import type { UnifiedAiStructuredOutputRequest } from './providers/provider';
 import { NATURAL_FLAGS } from './grounded-knowledge-composition';
 import { compactVerificationEnabled, compactVerificationSchema, COMPACT_VERIFICATION_NAME } from './knowledge-compact-verification';
 import { COVERAGE_WITNESS_PROTOCOL, COVERAGE_WITNESS_SCHEMA_NAME, coverageWitnessSchema, type CoverageWitnessAssessment } from './knowledge-coverage-witness';
+import { CANONICAL_CONFIG_SCHEMA, SOURCE_PARTITIONED_PRODUCER, SOURCE_PARTITIONED_SCHEMA, canonicalConfigurationSchema, type CanonicalConfigurationProducer } from './canonical-configuration-propositions';
+import { SOURCE_EXHAUSTIVE_SCHEMA_NAME, SOURCE_EXHAUSTIVE_V2_PROTOCOL, SOURCE_EXHAUSTIVE_V2_SCHEMA_NAME,
+  isSourceExhaustiveProtocol, sourceExhaustiveSchema, type SourceExhaustiveProtocol } from './source-exhaustive-coverage';
 
-export type KnowledgeVerificationProtocol = 'v2' | 'compact-v1' | typeof COVERAGE_WITNESS_PROTOCOL;
+export type KnowledgeVerificationProtocol = 'v2' | 'compact-v1' | typeof COVERAGE_WITNESS_PROTOCOL | SourceExhaustiveProtocol;
 export type KnowledgeExtractionProtocol = 'v2' | 'literal-evidence-v1';
 export function assertKnowledgeExtractionProtocol(value:unknown):asserts value is KnowledgeExtractionProtocol {
   if(value!=='v2'&&value!=='literal-evidence-v1')throw Error('unsupported_knowledge_extraction_protocol');
@@ -18,12 +21,18 @@ export function selectKnowledgeExtractionProtocol():KnowledgeExtractionProtocol 
 export function selectKnowledgeVerificationProtocol(): KnowledgeVerificationProtocol {
   const configured = process.env.ODINLINK_KNOWLEDGE_VERIFIER_PROTOCOL;
   if (configured === undefined) return compactVerificationEnabled() ? 'compact-v1' : 'v2';
-  if (configured !== 'v2' && configured !== COVERAGE_WITNESS_PROTOCOL) throw new Error('unsupported_knowledge_verifier_protocol');
+  if (configured !== 'v2' && configured !== COVERAGE_WITNESS_PROTOCOL && !isSourceExhaustiveProtocol(configured))
+    throw new Error('unsupported_knowledge_verifier_protocol');
+  assertKnowledgeVerificationProtocol(configured as KnowledgeVerificationProtocol);
   if (compactVerificationEnabled()) throw new Error('conflicting_knowledge_verifier_protocols');
-  return configured;
+  return configured as KnowledgeVerificationProtocol;
 }
 export function assertKnowledgeVerificationProtocol(protocol: KnowledgeVerificationProtocol): void {
-  if (!['v2','compact-v1',COVERAGE_WITNESS_PROTOCOL].includes(protocol)) throw new Error('unsupported_knowledge_verifier_protocol');
+  if (!['v2','compact-v1',COVERAGE_WITNESS_PROTOCOL].includes(protocol) && !isSourceExhaustiveProtocol(protocol)) throw new Error('unsupported_knowledge_verifier_protocol');
+  // The managed profile approves v2 only. Never silently demote it to the
+  // default model merely because a new verification schema was selected.
+  if (isSourceExhaustiveProtocol(protocol) && process.env.ODINLINK_KNOWLEDGE_MODEL_PROFILE &&
+    process.env.ODINLINK_KNOWLEDGE_MODEL_PROFILE !== 'off') throw new Error('source_exhaustive_managed_profile_unsupported');
 }
 
 export const KNOWLEDGE_SCHEMA_VERSION = 'evidence-first-v2';
@@ -133,13 +142,17 @@ const naturalValidation = object({contractHash:str,proposalHash:str,
   flags:object(Object.fromEntries(NATURAL_FLAGS.map(key=>[key,bool])))});
 export function knowledgeStructuredOutput(stage: keyof typeof schemas|'presentation_verification', natural=false,
   allowedFacetIds?: readonly string[], maximumUnits=6, verificationProtocol?: KnowledgeVerificationProtocol,
-  extractionProtocol:KnowledgeExtractionProtocol='v2'): UnifiedAiStructuredOutputRequest {
+  extractionProtocol:KnowledgeExtractionProtocol='v2',canonicalConfiguration?:CanonicalConfigurationProducer): UnifiedAiStructuredOutputRequest {
   assertKnowledgeExtractionProtocol(extractionProtocol);
+  if(canonicalConfiguration&&(stage!=='extraction'||natural||extractionProtocol!=='literal-evidence-v1'||!allowedFacetIds?.length))
+    throw Error('invalid_canonical_configuration_extraction');
   if(stage==='verification') {
     const protocol = verificationProtocol ?? selectKnowledgeVerificationProtocol();
     assertKnowledgeVerificationProtocol(protocol);
     if(protocol==='compact-v1')return{name:COMPACT_VERIFICATION_NAME,strict:true,schema:compactVerificationSchema()};
     if(protocol===COVERAGE_WITNESS_PROTOCOL)return{name:COVERAGE_WITNESS_SCHEMA_NAME,strict:true,schema:coverageWitnessSchema(schemas.verification)};
+    if(isSourceExhaustiveProtocol(protocol))return{name:protocol===SOURCE_EXHAUSTIVE_V2_PROTOCOL?SOURCE_EXHAUSTIVE_V2_SCHEMA_NAME:SOURCE_EXHAUSTIVE_SCHEMA_NAME,
+      strict:true,schema:sourceExhaustiveSchema(schemas.verification,protocol)};
   }
   if(stage==='presentation_verification')return{name:'odinlink_natural_validation_v1',strict:true,schema:naturalValidation};
   // Request-local enum, never a shared-schema mutation or a parser repair.
@@ -162,6 +175,8 @@ export function knowledgeStructuredOutput(stage: keyof typeof schemas|'presentat
       facetIds:{type:'array',items:enumeration(allowedFacetIds),minItems:1,maxItems:4},
     })),maxItems:maximumUnits}});
   }
+  if(stage==='extraction'&&canonicalConfiguration)return{name:canonicalConfiguration.protocol===SOURCE_PARTITIONED_PRODUCER?SOURCE_PARTITIONED_SCHEMA:CANONICAL_CONFIG_SCHEMA,
+    strict:true,schema:canonicalConfigurationSchema(extraction,canonicalConfiguration)};
   if(stage==='extraction'&&natural)return{name:literal?'odinlink_natural_extraction_literal_v1':'odinlink_natural_extraction_v1',strict:true,
     schema:object({...extraction.properties,naturalProposal:{anyOf:[{type:'null'},naturalProposal]}})};
   if(stage==='extraction')return{name:literal?'odinlink_knowledge_extraction_literal_v1':'odinlink_knowledge_extraction_v2',strict:true,schema:extraction};

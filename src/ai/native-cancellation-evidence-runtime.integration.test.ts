@@ -4,6 +4,8 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { deterministicLocationPlan } from './knowledge-planning';
 import { configuredCancellationEvidence } from './configured-cancellation-evidence';
 import { nativeKnowledgeTiming, knowledgeAdmission } from './knowledge-timing-policy';
+import { configureKnowledgeBudgetOwner } from './knowledge-model-policy';
+import { ScriptedKnowledgeBudgetOwner } from '../../tests/helpers/knowledge-budget-owner';
 import { incidentConfig, incidentFlags, incidentInbound, interceptedIncidentSend, incidentChannels, incidentCorpus } from '../../tests/helpers/p0-incident-knowledge';
 
 incidentFlags();
@@ -88,7 +90,8 @@ function setup(spec=specs[0],mode:Mode='valid',tenant=3){
     if(mode==='extraction-change')change();
     return {text:JSON.stringify({oversized:false,units:[spec[2],spec[3]].map((text,i)=>({facetIds:['f1'],subject:'configured cancellation',predicate:'setting',value:text,
      modality:'descriptive',negation:i===1,scope:'chat automation and this optional late fee only',qualifiers:[],language:spec[0],text,
-     evidenceRefs:[{evidenceId:mode==='cross-citation'?`configured-cancellation:${tenant+1}`:e.id,exactQuote:mode==='forged'?'Cancellation is always free.':statements[i]}]}))})};
+     evidenceRefs:[{evidenceId:mode==='cross-citation'?`configured-cancellation:${tenant+1}`:e.id,
+      ...(!instruction.includes('literal-evidence-v1')||mode==='forged'?{exactQuote:mode==='forged'?'Cancellation is always free.':statements[i]}:{})}]}))})};
    }
    if(mode==='verification-change')change();
    const requestAligned=data.facets.some((f:any)=>f.obligations.some((o:any)=>o.questionType==='requirement'));
@@ -270,6 +273,77 @@ test('accuracy-first cancellation route wires the bridge through real channel ad
   }
   assert.equal(sends,24,JSON.stringify(allStats));assert.deepEqual(forbiddenUrls,[]);
  }finally{Object.assign(incidentConfig,original);b.reset();}
+});
+
+for(const mode of ['omitted-facts','recovered-u2'] as const)for(const channel of incidentChannels)
+test(`P0 planner timeout and extraction recovery/${mode}/${channel}`,{timeout:5000},async t=>{
+ quiet(t);b.reset();const saved=structuredClone(incidentConfig),f=setup(specs[0],'valid',77),answers:string[]=[],calls:string[]=[];
+ const generate=f.dependencies.aiGenerate;
+ useLocalRetrieval(f,(await localDocumentCorpus()).service);
+ f.dependencies.aiGenerate=async(r:any)=>{
+  if(r.systemInstruction.includes('retrieval query planner')){calls.push('planning-timeout');throw new DOMException('scripted planner deadline','TimeoutError');}
+  if(r.systemInstruction.includes('UNIT EXTRACTION')){
+   calls.push('extraction');assert.match(r.systemInstruction,/literal-evidence-v1/);
+   const data=JSON.parse(r.messages[0].content),e=data.evidence.find((e:any)=>e.text.includes('Fullständiga avbokningsvillkor'));
+   assert.ok(e,'Actual document chunk, including the noncontiguous list, reaches extraction');
+   assert.match(e.text,/Priser på studions tjänster[\s\S]*Fullständiga avbokningsvillkor/u);
+   const config=data.evidence.find((e:any)=>e.id===f.expected.id);
+   return{text:JSON.stringify({oversized:false,units:mode==='omitted-facts'?[]:[{
+    facetIds:['f1'],subject:"AdMotion Studio's business configuration",predicate:'has the optional late cancellation fee',value:'disabled',
+    modality:'descriptive',negation:false,scope:'business configuration',
+    qualifiers:['This configuration covers the optional late fee only; other fees and mandatory advance notice are outside this source.'],language:'en',
+    text:"AdMotion Studio's business configuration has the optional late cancellation fee disabled; this source does not specify any mandatory advance-notice period.",
+    evidenceRefs:[{evidenceId:config.id}]},{
+    facetIds:['f1'],subject:'the supplied customer-information document',predicate:'contains information about full cancellation terms',
+    value:'no',modality:'descriptive',negation:true,scope:'the supplied document',qualifiers:[],language:'en',
+    text:'The supplied customer-information document does not contain the full cancellation terms.',evidenceRefs:[{evidenceId:e.id}]}]})};
+  }
+  if(r.systemInstruction.includes('BATCH ENTAILMENT')){
+   calls.push('verification');const data=JSON.parse(r.messages[0].content);
+   assert.deepEqual(data.facets.map((x:any)=>x.questionType),['description','requirement']);
+   assert.equal(data.units.length,mode==='omitted-facts'?2:4,'Original proposals survive and canonical facts remain proposals for the independent verifier');
+   if(mode==='recovered-u2'){
+    const u=data.units[1],e=data.evidence.find((e:any)=>e.id===u.evidenceRefs[0].evidenceId);
+    assert.equal(u.evidenceRefs[0].exactQuote,e.text,'Backend binds literal source, never stitches a quote');
+   }
+  }
+  return generate(r);
+ };
+ try{
+  Object.assign(incidentConfig,audited.business,{id:77,businessId:77,businessRecordId:77,business_id:77,language:'en',cancellationSettingsEvidence:f.config.cancellationSettingsEvidence});
+  t.mock.method(globalThis,'fetch',async(url,options)=>{answers.push(interceptedIncidentSend(url,options));return new Response(JSON.stringify({ok:true,result:{message_id:1},messages:[{id:'offline'}]}));});
+  b.configure(f.dependencies);await incidentInbound(b,channel,specs[0][1]);
+  assert.equal(answers.length,1);for(const required of specs[0].slice(2,5))assert.ok(answers[0].includes(required),answers[0]);
+  assert.doesNotMatch(answers[0],/cannot verify an answer|24 hours|always free/);
+  assert.deepEqual(calls,['planning-timeout','extraction','verification']);assert.equal(f.stats().actions,0);assert.equal(f.stats().legacyReads,0);
+  records.push({kind:'SCRIPTED_P0_RECOVERY_NOT_PROVIDER_ACCEPTANCE',mode,channel,answer:answers[0],calls});
+ }finally{for(const key of Object.keys(incidentConfig))delete (incidentConfig as any)[key];Object.assign(incidentConfig,saved);b.reset();}
+});
+
+for(const approved of [false,true])test(`P0 scoped transport preserves managed Sol routing/approved=${approved}`,{timeout:5000},async t=>{
+ quiet(t);b.reset();const saved=structuredClone(incidentConfig),savedEnv={...process.env},f=setup(specs[0],'valid',77),answers:string[]=[],stages:string[]=[];
+ const generate=f.dependencies.aiGenerate;
+ useLocalRetrieval(f,(await localDocumentCorpus()).service);
+ Object.assign(process.env,{ODINLINK_KNOWLEDGE_MODEL_PROFILE:'sol-low-v1',ODINLINK_KNOWLEDGE_SOL_TENANT_IDS:'77'});
+ configureKnowledgeBudgetOwner(approved?new ScriptedKnowledgeBudgetOwner():undefined);
+ f.dependencies.aiGenerate=async(r:any)=>{
+  if(r.systemInstruction.includes('UNIT EXTRACTION')||r.systemInstruction.includes('BATCH ENTAILMENT')){
+   stages.push(r.systemInstruction.includes('UNIT EXTRACTION')?'extraction':'verification');
+   assert.equal(r.model,'gpt-6.1-sol');assert.ok(r.knowledgeExecution);assert.doesNotMatch(r.systemInstruction,/literal-evidence-v1/);
+   assert.equal(r.structuredOutput.name,stages.at(-1)==='extraction'?'odinlink_knowledge_extraction_v2':'odinlink_knowledge_verification_v2');
+  }
+  return generate(r);
+ };
+ try{
+  Object.assign(incidentConfig,audited.business,{id:77,businessId:77,businessRecordId:77,business_id:77,language:'en',cancellationSettingsEvidence:f.config.cancellationSettingsEvidence});
+  t.mock.method(globalThis,'fetch',async(url,options)=>{answers.push(interceptedIncidentSend(url,options));return new Response(JSON.stringify({ok:true,result:{message_id:1}}));});
+  b.configure(f.dependencies);await incidentInbound(b,'telegram',specs[0][1]);
+  assert.equal(answers.length,1);assert.deepEqual(stages,approved?['extraction','verification']:[],'No implicit demotion to Luna or bypass of the managed profile');
+  assert.equal(answers[0].includes(specs[0][2]),approved);assert.equal(f.stats().actions,0);
+ }finally{
+  configureKnowledgeBudgetOwner();for(const key of Object.keys(process.env))if(!(key in savedEnv))delete process.env[key];Object.assign(process.env,savedEnv);
+  for(const key of Object.keys(incidentConfig))delete (incidentConfig as any)[key];Object.assign(incidentConfig,saved);b.reset();
+ }
 });
 
 

@@ -1,5 +1,9 @@
 import { resolveEvidenceQuote, captureLiteralEvidence, hydrateLiteralEvidenceReferences, type LiteralEvidenceSnapshot } from './knowledge-citation';
 import { nativeKnowledgeTiming, type NativeKnowledgeTiming } from './knowledge-timing-policy';
+import { cancellationConfigurationProposals, cancellationRecoveryEligible, cancellationSourceLimitations } from './cancellation-answer-recovery';
+import { selectCanonicalConfigurationProducer, captureCanonicalConfigurationProducer, canonicalConfigurationOutputValid,
+  CANONICAL_CONFIG_INSTRUCTION, SOURCE_PARTITIONED_PRODUCER, SOURCE_PARTITIONED_INSTRUCTION, type CanonicalConfigurationProducer } from './canonical-configuration-propositions';
+import { isSourceExhaustiveProtocol, sourceExhaustiveInstruction, assessSourceCoverage } from './source-exhaustive-coverage';
 import { createHash } from 'node:crypto';
 import { numericalConstraintSafe, NUMERICAL_DIRECTION_GUIDANCE } from './numerical-constraints';
 import { containsUnverifiedBookingSuccessClaim } from './reliability';
@@ -8,7 +12,7 @@ import { configuredServiceScopeSupported } from './configured-service-evidence';
 import { independentServiceProposal, DOCUMENT_AUTHORITY_EXTRACTION, serviceRelationshipUnresolved, verifiedServiceRelationshipWitness, serviceScopeUncertainty,documentQuestionProjection } from './source-aware-service-proposal';
 import { QUESTION_TYPES, MODALITIES, RELATIONS, knowledgeFailureReason, selectKnowledgeVerificationProtocol, assertKnowledgeVerificationProtocol, assertKnowledgeExtractionProtocol,
   type KnowledgeExtractionProtocol, type KnowledgeVerificationProtocol, type KnowledgeDecision, type DecisionReason } from './knowledge-answer-protocol';
-import { uncertaintyNotice, uncertaintyReferences, requestUncertaintyFacets, unresolvedRequirementNotices, type UncertaintyReference, type RequirementNotice } from './knowledge-answer-presentation';
+import { uncertaintyNotice, uncertaintyReferences, requestUncertaintyFacets, unresolvedRequirementNotices, sourceExhaustiveLimitations, type UncertaintyReference, type RequirementNotice } from './knowledge-answer-presentation';
 import { isBusinessInformationQuestion, isExplicitBusinessActionRequest } from './business-information';
 import { detectNormalizedIntent } from './booking-intelligence';
 import { compactVerificationInstruction, decodeCompactVerification } from './knowledge-compact-verification';
@@ -53,6 +57,9 @@ export type AnswerPresentation = Readonly<{ unitIds: readonly string[]; prefix: 
 export type AnswerManifest = Readonly<{ language: string; presentation: AnswerPresentation; facets: readonly Facet[]; units: readonly AnswerUnit[]; outcomes: readonly FacetOutcome[]; text: string; presentationFallback: boolean;
   /** Backend-only, current-run publication attestation; JSON/model output cannot recreate it. */
   qualifiedPartial?: object;
+  /** Separate source-exhaustive permission; never a complete-answer verdict. */
+  sourceScopedPartial?: object;
+  sourceLimitations?: readonly RequirementNotice[];
   sourceScopeNotice?: string;
   /** Internal publication dependency; never supplied by the model. */
   documentaryInventoryIds?: readonly string[];
@@ -64,7 +71,7 @@ export type AnswerManifest = Readonly<{ language: string; presentation: AnswerPr
 type Stage = 'planning' | 'extraction' | 'verification' | 'composition' | 'presentation_verification';
 export type ProviderResult = { text: string; functionCalls?: unknown[]; structuredFailure?: 'REFUSAL' | 'TRUNCATED' | 'BLOCKED' };
 export type AnswerGenerator = (stage: Exclude<Stage, 'planning'>, instruction: string, data: unknown,
-  contract?:Readonly<{extractionProtocol:KnowledgeExtractionProtocol}>) => Promise<ProviderResult>;
+  contract?:Readonly<{extractionProtocol:KnowledgeExtractionProtocol;canonicalConfiguration?:CanonicalConfigurationProducer}>) => Promise<ProviderResult>;
 
 /** Request-local only. A retry consumes the same finite allowance as a first attempt. */
 export class InformationBudget {
@@ -115,7 +122,10 @@ export function completeKnowledgeManifest(manifest: AnswerManifest | undefined):
 
 type PartialAuthority = Readonly<{ businessId: number; owner: NativeKnowledgeTiming; evidenceHash: string; contractHash: string }>;
 const partialAuthorities = new WeakMap<object, PartialAuthority>();
+const sourcePartialAuthorities = new WeakMap<object, PartialAuthority>();
+const revokedSourcePartial = new WeakSet<object>();
 const partialContractHash = (m: AnswerManifest) => hash(JSON.stringify([m.language,m.facets,m.units,m.outcomes,m.sourceScopeNotice,m.uncertaintyReferences,m.unresolvedRequirements]));
+const sourcePartialContractHash = (m: AnswerManifest) => hash(JSON.stringify([partialContractHash(m), m.sourceLimitations, m.presentation]));
 const partialEvidenceHash = (evidence: readonly Evidence[]) => hash(JSON.stringify([...evidence].sort((a,b)=>a.id.localeCompare(b.id))));
 // Additional subtraction-only admission for the new PARTIAL permission. Matching
 // numerals never establishes entailment; an absent cited numeral cannot acquire
@@ -129,6 +139,16 @@ const citedNumeralsPresent = (unit: AnswerUnit) => {
 
 /** Publication only: never upgrades coverage or verifies a proposed fact. */
 export function publishableKnowledgeManifest(manifest: AnswerManifest | undefined, businessId: number | undefined): boolean {
+  if (manifest?.sourceScopedPartial || manifest?.sourceLimitations) {
+    const token = manifest.sourceScopedPartial, proof = token && sourcePartialAuthorities.get(token);
+    return !!proof && !revokedSourcePartial.has(token!) && !manifest.qualifiedPartial && !manifest.naturalAttachment &&
+      !manifest.unresolvedRequirements && !!manifest.sourceLimitations?.length && Number.isSafeInteger(businessId) &&
+      proof.businessId === businessId && proof.owner === nativeKnowledgeTiming() && !proof.owner.failure &&
+      proof.contractHash === sourcePartialContractHash(manifest) && !manifest.fallbackReason && manifest.units.length > 0 &&
+      manifest.presentation.prefix === 'none' && !manifest.presentation.addition &&
+      JSON.stringify(manifest.presentation.unitIds) === JSON.stringify(manifest.units.map(u => u.id)) &&
+      manifest.text === renderVerifiedManifest(manifest).text;
+  }
   if (!manifest?.qualifiedPartial && !manifest?.unresolvedRequirements && completeKnowledgeManifest(manifest)) return true;
   if (!manifest?.qualifiedPartial || manifest.naturalAttachment || !Number.isSafeInteger(businessId) || !manifest.units.length) return false;
   const proof = partialAuthorities.get(manifest.qualifiedPartial);
@@ -318,7 +338,7 @@ function renderVerifiedManifest(manifest: Omit<AnswerManifest, 'text'>): AnswerM
   if (!manifest.units.length) return Object.freeze({ ...manifest, text: notices.unavailable });
   const ordered = manifest.presentation.unitIds.map(id => manifest.units.find(u => u.id === id)).filter((u): u is AnswerUnit => Boolean(u));
   const lines = ordered.map((u, i) => i === 1 && manifest.presentation.addition ? `${notices.addition} ${u.text}` : u.text);
-  const uncertainty = manifest.unresolvedRequirements ? [...new Set([
+  const uncertainty = manifest.sourceLimitations ? [...new Set(manifest.sourceLimitations.map(n => n.text))] : manifest.unresolvedRequirements ? [...new Set([
     ...(manifest.sourceScopeNotice ? [manifest.sourceScopeNotice] : []), ...manifest.unresolvedRequirements.map(n => n.text),
   ])] : [...new Set(manifest.outcomes.filter(o => o.status !== 'VERIFIED').map(outcome => manifest.sourceScopeNotice ||
     uncertaintyNotice(manifest.language, manifest.facets.find(f => f.id === outcome.facetId), outcome, manifest.uncertaintyReferences)))];
@@ -330,6 +350,13 @@ function renderVerifiedManifest(manifest: Omit<AnswerManifest, 'text'>): AnswerM
  * or reuse the previous prose. Removing any necessary source removes the entire unit.
  */
 export function pruneAnswerManifest(manifest: AnswerManifest, validEvidence: readonly Evidence[], diagnostic: (e:KnowledgeDecision)=>void = ()=>{}): AnswerManifest {
+  if (manifest.sourceScopedPartial) {
+    const token = manifest.sourceScopedPartial, proof = sourcePartialAuthorities.get(token);
+    if (!proof || proof.evidenceHash !== partialEvidenceHash(validEvidence)) {
+      revokedSourcePartial.add(token);
+      manifest = Object.freeze({ ...manifest, sourceScopedPartial: undefined });
+    }
+  }
   if (manifest.qualifiedPartial) {
     const proof=partialAuthorities.get(manifest.qualifiedPartial);
     if (!proof || proof.evidenceHash!==partialEvidenceHash(validEvidence))
@@ -373,6 +400,8 @@ export async function buildEvidenceFirstAnswer(input: {
   /** Explicit backend tenant and extraction protocol; default remains v2. */
   businessId?:number;
   extractionProtocol?:KnowledgeExtractionProtocol;
+  /** Trusted host bridge only; documentary IDs/model output cannot opt in. */
+  cancellationEvidence?: Evidence;
   /** Durable callers cannot publish partial coverage; stop before optional model work. */
   requireCompleteCoverage?: boolean;
   languageSafe?: (unit: AnswerUnit) => boolean;
@@ -403,6 +432,9 @@ export async function buildEvidenceFirstAnswer(input: {
     const parsed=answerJson(result.text);if(!parsed)diagnostic({stage,reason:'MALFORMED_JSON'});return parsed;
   };
   if (!facets.length || !budget.remaining() || !await input.current()) return empty('UNAVAILABLE',budget.remaining()?'CONTEXT_INVALID':'DEADLINE');
+  if (isSourceExhaustiveProtocol(verificationProtocol) && (!input.foreground || !budget.nativeTiming || input.natural ||
+    input.requireCompleteCoverage || !input.revalidateEvidence || !isBusinessInformationQuestion(input.question) ||
+    isExplicitBusinessActionRequest(input.question))) return empty('UNAVAILABLE', 'CONTEXT_INVALID');
   if (!input.evidence.length) return empty('NO_EVIDENCE','NO_EVIDENCE');
   if(requestedExtractionProtocol==='literal-evidence-v1' && (!input.revalidateEvidence ||
     !Number.isSafeInteger(input.businessId)||input.businessId!<=0||input.evidence.some(e=>e.businessId!==input.businessId)||
@@ -434,6 +466,12 @@ export async function buildEvidenceFirstAnswer(input: {
     ?facets.flatMap(f=>f.obligations.map(o=>({facetId:f.id,obligationId:o.id,requirement:{businessId:capturedCatalog.businessId,serviceName:requestedCatalog.name,attributes:['price','duration'] as const}}))):[];
   let availableEvidence = await revalidate();
   if (!availableEvidence.length) return empty('UNAVAILABLE','SOURCE_INVALID');
+  const cancellationRequested = input.foreground && budget.nativeTiming && !input.natural && !input.requireCompleteCoverage && input.cancellationEvidence;
+  if (cancellationRequested && (!cancellationRecoveryEligible(input.question, input.businessId, input.cancellationEvidence) ||
+      !availableEvidence.some(e => JSON.stringify(e) === JSON.stringify(input.cancellationEvidence)) ||
+      availableEvidence.some(e => e.businessId !== input.businessId))) return empty('UNAVAILABLE', 'SOURCE_INVALID');
+  const cancellationProposals = cancellationRequested
+    ? cancellationConfigurationProposals(input.question, language, facets, input.cancellationEvidence!) : [];
   const catalogProposal=input.foreground&&!input.natural&&!input.requireCompleteCoverage?independentServiceProposal(input.question,language,facets,availableEvidence):null;
   // Capture the same backend scope once for both stages. Other protocols and
   // legacy, natural, durable and catalog-producing paths retain their prompts.
@@ -443,14 +481,29 @@ export async function buildEvidenceFirstAnswer(input: {
   const mixedDocumentaryGuidance=catalogProposal && input.foreground && budget.nativeTiming && !input.natural && !input.requireCompleteCoverage &&
     requestedExtractionProtocol==='v2' && verificationProtocol==='v2'
     ? '\n'+NATIVE_V2_MIXED_DOCUMENTARY_GUIDANCE : '';
-  const extractionEvidence=catalogProposal?availableEvidence.filter(e=>e.id!==catalogProposal.evidenceId):availableEvidence;
+  const producerProtocol=selectCanonicalConfigurationProducer();
+  const canonicalProducerRequested=producerProtocol!=='off'&&cancellationProposals.length>0;
+  if(canonicalProducerRequested&&(requestedExtractionProtocol!=='literal-evidence-v1'||verificationProtocol!=='source-exhaustive-v2'||catalogProposal))
+    return empty('UNAVAILABLE','CONTEXT_INVALID');
+  let canonicalConfiguration:CanonicalConfigurationProducer|undefined;
+  if(canonicalProducerRequested){
+    try{canonicalConfiguration=captureCanonicalConfigurationProducer(input.businessId!,cancellationProposals,availableEvidence,producerProtocol as Exclude<typeof producerProtocol,'off'>);}
+    catch{return empty('UNAVAILABLE','SOURCE_INVALID');}
+  }
+  const partitioned=canonicalConfiguration?.protocol===SOURCE_PARTITIONED_PRODUCER;
+  const extractionEvidence=partitioned?availableEvidence.filter(e=>canonicalConfiguration!.documentEvidenceIds.includes(e.id)):
+    catalogProposal?availableEvidence.filter(e=>e.id!==catalogProposal.evidenceId):availableEvidence;
+  if(partitioned&&extractionEvidence.length&&canonicalConfiguration!.units.length>=ANSWER_LIMITS.units)return empty('UNAVAILABLE','LIMIT_EXCEEDED');
   let literalSnapshot:LiteralEvidenceSnapshot|null=null;
   if(requestedExtractionProtocol==='literal-evidence-v1' && !extractionEvidence.some(e=>e.id==='configured-services'||e.sourceId.startsWith('configured-services:'))) {
     try{literalSnapshot=captureLiteralEvidence(input.businessId!,extractionEvidence);}catch{return empty('UNAVAILABLE','SOURCE_INVALID');}
   }
   // One captured backend decision controls instruction, schema and hydration.
   // Oversized documentary chunks select legacy v2 before the only dispatch.
-  const extractionContract=Object.freeze({extractionProtocol:literalSnapshot?'literal-evidence-v1' as const:'v2' as const});
+  if(canonicalProducerRequested&&!literalSnapshot&&(!partitioned||extractionEvidence.length))
+    return empty('UNAVAILABLE','CONTEXT_INVALID');
+  const extractionContract=Object.freeze({extractionProtocol:literalSnapshot?'literal-evidence-v1' as const:'v2' as const,
+    ...(canonicalConfiguration?{canonicalConfiguration}:{})});
   let proposed: ReturnType<typeof parseAnswerUnits>;
   let extractionIncomplete=false;
   let proposalParseComplete=false;
@@ -462,37 +515,56 @@ export async function buildEvidenceFirstAnswer(input: {
   };
   try {
     const queryContext={question:input.question,facets:modelFacets,relevantHistory:input.history};
-    const documentContext=catalogProposal?documentQuestionProjection(queryContext,catalogProposal.name) as typeof queryContext:queryContext;
+    // No secondary factual channel (history/tone) may reintroduce host settings
+    // into the new documentary-only producer. Keep the full original request.
+    const documentContext=partitioned?{question:input.question,facets:modelFacets}:
+      catalogProposal?documentQuestionProjection(queryContext,catalogProposal.name) as typeof queryContext:queryContext;
     // A constructed catalog proposal needs verification, not a document model
     // invocation with no documentary sources. Coverage still sees the full question.
     const baseInstruction=catalogProposal ? DOCUMENT_AUTHORITY_EXTRACTION : input.foreground ? FOREGROUND_UNIT_EXTRACTION_INSTRUCTION : UNIT_EXTRACTION_INSTRUCTION;
     const producerGuidance=input.foreground && budget.nativeTiming && !input.natural && !input.requireCompleteCoverage &&
       !catalogProposal && requestedExtractionProtocol==='v2' ? '\n'+NATIVE_V2_PRODUCER_GUIDANCE : '';
-    const result: ProviderResult = catalogProposal && !extractionEvidence.length ? {text:'{"oversized":false,"units":[]}'} : await input.generate('extraction', (literalSnapshot?literalEvidenceExtractionInstruction(baseInstruction):baseInstruction)+producerGuidance+questionResponsivenessGuidance+mixedDocumentaryGuidance+(input.natural?'\n'+NATURAL_PROPOSAL_INSTRUCTION:''), {
+    const noDocumentaryGeneration=partitioned&&!extractionEvidence.length;
+    if(noDocumentaryGeneration)diagnostic({stage:'extraction',reason:'NO_EVIDENCE',counts:{proposed:0,parsed:0,verified:0,rejected:0}});
+    const result: ProviderResult|undefined = noDocumentaryGeneration?undefined:catalogProposal && !extractionEvidence.length ? {text:'{"oversized":false,"units":[]}'} : await input.generate('extraction', (literalSnapshot?literalEvidenceExtractionInstruction(baseInstruction):baseInstruction)+producerGuidance+questionResponsivenessGuidance+mixedDocumentaryGuidance+(canonicalConfiguration?'\n'+(partitioned?SOURCE_PARTITIONED_INSTRUCTION:CANONICAL_CONFIG_INSTRUCTION):'')+(input.natural?'\n'+NATURAL_PROPOSAL_INSTRUCTION:''), {
       ...documentContext, requestedLanguage: language,
       ...(input.foreground ? {allowedFacetIds:facets.map(f=>f.id)} : {}),
-      evidence: wireEvidence(extractionEvidence), businessTone: input.businessTone,
-      ...(catalogProposal?{authorityScope:'document_only'}:{}),
+      evidence: wireEvidence(extractionEvidence), ...(!partitioned?{businessTone:input.businessTone}:{}),
+      ...(canonicalConfiguration&&!partitioned?{canonicalConfigurationProposals:canonicalConfiguration.units}:{}),
+      ...(catalogProposal||partitioned?{authorityScope:'document_only'}:{}),
     },extractionContract);
-    let raw = checked(result,'extraction');
+    // No-document inventory is local producer bookkeeping, not a model response.
+    let raw = noDocumentaryGeneration?{oversized:false,units:[]}:checked(result!,'extraction');
     if(!raw) {
       // Malformed/truncated document output cannot supply any facts. It also
       // cannot erase a separate catalog proposal before independent verification.
       // Safety refusals, blocks and unexpected tools remain terminal.
-      if(!catalogProposal || result.functionCalls?.length || result.structuredFailure && result.structuredFailure!=='TRUNCATED')
-        return empty('UNAVAILABLE',result.structuredFailure||'MALFORMED_JSON');
+      if(!catalogProposal || result?.functionCalls?.length || result?.structuredFailure && result.structuredFailure!=='TRUNCATED')
+        return empty('UNAVAILABLE',result?.structuredFailure||'MALFORMED_JSON');
       raw={oversized:true,units:[]};
     }
     if(catalogProposal&&!Array.isArray(raw.units))raw={oversized:true,units:[]};
-    if(literalSnapshot){
+    if(literalSnapshot||canonicalConfiguration){
       availableEvidence=await revalidate();
-      raw=hydrateLiteralEvidenceReferences(raw,literalSnapshot,availableEvidence);
+      if(canonicalConfiguration&&!canonicalConfigurationOutputValid(raw,canonicalConfiguration,availableEvidence)){
+        diagnostic({stage:'extraction',reason:'INVALID_FIELDS'});return empty('UNAVAILABLE','INVALID_FIELDS');
+      }
+      if(literalSnapshot)raw=hydrateLiteralEvidenceReferences(raw,literalSnapshot,availableEvidence);
+    }
+    if (cancellationProposals.length && Array.isArray(raw.units) && raw.oversized !== true) {
+      // Keep every model proposal, including invalid ones. Only avoid an exact
+      // canonical duplicate with the same source quotation; no semantic filtering.
+      const missing = partitioned?cancellationProposals:cancellationProposals.filter(p => !raw.units.some((u: any) => u?.text === p.text && u.language === p.language &&
+        Array.isArray(u.evidenceRefs) && u.evidenceRefs.some((r: any) => r.evidenceId === input.cancellationEvidence!.id &&
+          (r.exactQuote === p.evidenceRefs[0].exactQuote || r.exactQuote === input.cancellationEvidence!.text))));
+      raw = { ...raw, units: [...raw.units, ...missing] };
     }
     proposed = parseAnswerUnits(catalogProposal&&Array.isArray(raw.units)?{...raw,units:[catalogProposal.unit,...raw.units]}:raw, facets, availableEvidence, language,diagnostic);
     proposalParseComplete=Array.isArray(raw.units) && raw.oversized!==true && proposed.units.length===raw.units.length+(catalogProposal?1:0);
     // A rejected proposal cannot silently erase a requested condition, even if
     // a later coverage verdict incorrectly calls the surviving inventory complete.
     extractionIncomplete=!proposalParseComplete;
+    if (cancellationProposals.length && extractionIncomplete) return empty('UNAVAILABLE', 'MATERIAL_FACTS_MISSING');
     if(catalogProposal) {
       // No model-supplied dependency metadata: the complete documentary inventory
       // is one conservative publication group, independent from catalog authority.
@@ -529,7 +601,7 @@ export async function buildEvidenceFirstAnswer(input: {
   try {
     const compact = verificationProtocol === 'compact-v1';
     const instruction = (input.foreground ? FOREGROUND_UNIT_VERIFICATION_INSTRUCTION : UNIT_VERIFICATION_INSTRUCTION)+questionResponsivenessGuidance;
-    const result = await input.generate('verification', compact ? compactVerificationInstruction(instruction) :
+    const result = await input.generate('verification', isSourceExhaustiveProtocol(verificationProtocol) ? instruction + '\n' + sourceExhaustiveInstruction(verificationProtocol) : compact ? compactVerificationInstruction(instruction) :
       verificationProtocol === COVERAGE_WITNESS_PROTOCOL ? coverageWitnessInstruction(instruction) : instruction, {
       question: input.question, requestedLanguage: language, facets:modelFacets, units: proposed.units.map(({verification,...u})=>({...u,evidenceRefs:u.evidenceRefs.map(({evidenceId,exactQuote})=>({evidenceId,exactQuote}))})), evidence: wireEvidence(availableEvidence), authoritativeEvidence: input.authoritativeEvidence,
     });
@@ -611,6 +683,21 @@ export async function buildEvidenceFirstAnswer(input: {
     return Object.freeze({...o,status:'PARTIAL' as const,materialFactsComplete:false});
   });
   let catalogComplete=true;
+  // A positive whole-question verdict cannot hide omission/rejection of either
+  // authoritative setting. Bind their verified witnesses into existing pruning
+  // dependencies so later evidence loss cannot retain completeness.
+  if (cancellationProposals.length) {
+    const witnesses = cancellationProposals.map(p => verified.find(u => u.text === p.text && u.modality === p.modality && u.negation === p.negation &&
+      u.evidenceRefs.some(r => r.evidenceId === input.cancellationEvidence!.id && r.version === input.cancellationEvidence!.version)));
+    const complete = witnesses.every(Boolean);
+    if (!complete) catalogComplete = false;
+    for (let i = 0; i < outcomes.length; i++) if (cancellationProposals.some(p => p.facetIds.includes(outcomes[i].facetId))) {
+      const o = outcomes[i], ids = witnesses.filter((u): u is AnswerUnit => !!u).map(u => u.id);
+      outcomes[i] = Object.freeze({ ...o, ...(!complete ? { status: o.unitIds.length ? 'PARTIAL' as const : 'UNAVAILABLE' as const, materialFactsComplete: false } : {}),
+        materialUnitIds: Object.freeze([...new Set([...o.materialUnitIds, ...ids])]) });
+      if (!complete) diagnostic({ stage: 'verification', facetId: o.facetId, reason: 'MATERIAL_FACTS_MISSING' });
+    }
+  }
   for(const {facetId,obligationId,requirement} of catalogRequirements) {
     const expected=requestedCatalog?.name===requirement.serviceName?requestedCatalog.unit:null;
     const witness=expected&&capturedCatalog?.businessId===requirement.businessId &&
@@ -660,6 +747,14 @@ export async function buildEvidenceFirstAnswer(input: {
     if(notice&&verified.length&&(!input.languageSafe||input.languageSafe({...verified[0],text:notice})))sourceScopeNotice=notice;
   }
   if (!verified.length) return Object.freeze({ ...empty('UNAVAILABLE','NO_VERIFIED_UNITS'), outcomes });
+  if (isSourceExhaustiveProtocol(verificationProtocol) && (!proposalParseComplete || extractionIncomplete || conflicts.size ||
+    !catalogComplete || verified.length !== proposed.units.length)) return empty('UNAVAILABLE', 'INVALID_COVERAGE');
+  const sourceAssessment = isSourceExhaustiveProtocol(verificationProtocol)
+    ? assessSourceCoverage(parsed, facets, proposed.units, availableEvidence, input.businessId, verificationProtocol) : undefined;
+  if (sourceAssessment?.state === 'DENIED') {
+    diagnostic({ stage: 'verification', reason: 'INVALID_COVERAGE' });
+    return empty('UNAVAILABLE', 'INVALID_COVERAGE');
+  }
   // With no further model work, defer the duplicate post-verification read to
   // the native publication guard. This grants no authority to send the manifest.
   const deferFreshness=input.finalPublicationRevalidates && !input.natural && !optionalCompositionAffordable(budget);
@@ -671,6 +766,28 @@ export async function buildEvidenceFirstAnswer(input: {
     uncertaintyReferences: uncertaintyReferences(input.question, language, facets, outcomes,
       text => Boolean(input.languageSafe?.({ ...verified[0], text })),[...verified.map(u=>u.text),...manifestEvidence.map(e=>e.text)]),
     presentation: Object.freeze({ unitIds: Object.freeze(verified.map(u => u.id)), prefix: 'none' as const, addition: false }) }), manifestEvidence,diagnostic);
+  if (sourceAssessment?.state === 'SCOPED_PARTIAL') {
+    // New opt-in permission. Never reuse the diagnostic witness as a certificate,
+    // modify legacy coverage, or fall through to another partial-authority lane.
+    const limitations = cancellationSourceLimitations(input.question, language, facets, sourceAssessment.unavailable) ||
+      sourceExhaustiveLimitations(input.question, language, facets, sourceAssessment.unavailable);
+    const safeRequest = (text: string) => !isExplicitBusinessActionRequest(text) && detectNormalizedIntent(text) !== 'booking_lookup' &&
+      (isBusinessInformationQuestion(text) || !['cancellation', 'reschedule', 'new_booking'].includes(detectNormalizedIntent(text)));
+    const eligible = proposalParseComplete && !extractionIncomplete && !conflicts.size && catalogComplete && !catalogRequirements.length &&
+      !relationshipRequest && parsed.decisions.length === proposed.units.length && verified.length === proposed.units.length &&
+      manifest.units.length === verified.length && manifest.units.every(citedNumeralsPresent) && !!limitations?.length &&
+      limitations.every(n => !input.languageSafe || input.languageSafe({ ...verified[0], text: n.text })) &&
+      safeRequest(input.question) && input.question.split(/(?<=[.!?؟؛;])\s+|\n+|\s+(?:and|och|und|y|و)\s+/giu).every(safeRequest) &&
+      partialEvidenceHash(availableEvidence) === partialEvidenceHash(input.evidence) &&
+      partialEvidenceHash(manifestEvidence) === partialEvidenceHash(availableEvidence);
+    if (!eligible || !await input.current()) return Object.freeze({ ...manifest, text: notices.unavailable, fallbackReason: 'INVALID_COVERAGE' });
+    manifest = renderVerifiedManifest({ ...manifest, sourceLimitations: limitations, presentationFallback: false,
+      presentationPath: 'direct_verified_units', fallbackReason: null });
+    const token = Object.freeze({});
+    sourcePartialAuthorities.set(token, Object.freeze({ businessId: input.businessId!, owner: budget.nativeTiming!,
+      evidenceHash: partialEvidenceHash(manifestEvidence), contractHash: sourcePartialContractHash(manifest) }));
+    return Object.freeze({ ...manifest, sourceScopedPartial: token });
+  }
   // A narrow current-run eligibility record for qualified partial answers.
   // Missing conditions/recommendations, rejected proposals, failed extraction,
   // malformed coverage, lost authority and operational/modality gaps stay closed.

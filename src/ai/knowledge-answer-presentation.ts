@@ -137,6 +137,30 @@ export function uncertaintyNotice(language: string, facet: Facet | undefined, ou
   return reference ? `${wording.about(reference.text)} ${notice}` : notice;
 }
 
+const unavailableAnswer: Record<string, (label: string) => string> = {
+ en: t => `The full answer to “${t}” cannot be confirmed from the available information.`,
+ sv: t => `Det fullständiga svaret på ”${t}” kan inte bekräftas utifrån den tillgängliga informationen.`,
+ de: t => `Die vollständige Antwort auf „${t}“ kann anhand der verfügbaren Informationen nicht bestätigt werden.`,
+ es: t => `La respuesta completa a «${t}» no puede confirmarse con la información disponible.`,
+ fa: t => `پاسخ کامل به «${t}» را نمی‌توان بر اساس اطلاعات موجود تأیید کرد.`,
+ ar: t => `لا يمكن تأكيد الإجابة الكاملة عن «${t}» من المعلومات المتاحة.`,
+};
+
+/** Never render a model-authored missing-proposition explanation as a business
+ * fact. General limitations name bounded literal spans of the user's request. */
+export function sourceExhaustiveLimitations(question: string, language: string, facets: readonly Facet[],
+ unavailable: readonly { facetId: string; obligationId: string }[]): readonly RequirementNotice[] | undefined {
+ if (!unavailableAnswer[language] || !unavailable.length || unavailable.length > 8) return;
+ const result: RequirementNotice[] = [];
+ for (const gap of unavailable) {
+  const f = facets.find(f => f.id === gap.facetId), o = f?.obligations.find(o => o.id === gap.obligationId);
+  const label = o?.description.trim();
+  if (!label || !safeReference(label, 90) || !userSpan(question, label, o.questionType === 'requirement')) return;
+  result.push(Object.freeze({ ...gap, text: unavailableAnswer[language](label) }));
+ }
+ return Object.freeze(result);
+}
+
 // A localized uncertainty label, never a cancellation rule or evidence of
 // absence. Require both the independently unresolved typed obligation and a
 // matching user request. Unknown/scoped/conditional labels retain literal copy.

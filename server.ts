@@ -11,6 +11,7 @@ import { directMixedSourceInformationPlan, mixedSourceInformationQuestion } from
 import { SOURCE_LANGUAGE_QUERY_INSTRUCTION, SOURCE_LANGUAGE_QUERY_SCHEMA, parseSourceLanguageQuery } from './src/ai/source-language-query';
 import { configuredServiceEvidence } from './src/ai/configured-service-evidence';
 import { createCancellationEvidenceBridge } from './src/ai/configured-cancellation-evidence';
+import { cancellationRecoveryEligible } from './src/ai/cancellation-answer-recovery';
 import { isArrivalInformationQuestion,isConditionalArrivalInformationQuestion } from './src/ai/information-request-contract';
 import { compactKnowledgeVerifierInput } from './src/ai/knowledge-verifier-input';
 import { hasForeignAddressPreposition } from './src/ai/knowledge-prose-language';
@@ -5845,14 +5846,13 @@ async function generateNativeKnowledgeContent(sessionId:string,options:any,suppo
   if (!state.manifest) {
     const verificationProtocol = state.verificationProtocol ?? selectKnowledgeVerificationProtocol();
     if (state.verificationProtocol === undefined) Object.defineProperty(state, 'verificationProtocol', { value: verificationProtocol, enumerable: true });
-    const extractionProtocol = state.extractionProtocol ?? selectKnowledgeExtractionProtocol();
-    if (state.extractionProtocol === undefined) Object.defineProperty(state, 'extractionProtocol', { value: extractionProtocol, enumerable: true });
+    const configuredExtractionProtocol = state.extractionProtocol ?? selectKnowledgeExtractionProtocol();
     const modelBinding = controlledTrialBinding() ?? Object.freeze({ businessId: state.businessId, turnId: nativeKnowledgeTiming()?.turnId ?? '',
       requestKey: crypto.createHash('sha256').update(JSON.stringify([sessionId, state.nativeEvent?.eventId ?? null, support.question])).digest('hex') });
     const modelEvidenceSnapshot = state.snapshot?.evidence ?? [];
     if (state.modelProfile === undefined) Object.defineProperty(state, 'modelProfile', { enumerable: true, value: captureKnowledgeModelProfile({
       ...modelBinding, provider: getConfiguredAiProvider(), nativeForeground: !!nativeKnowledgeTiming() && !!state.nativeChannel && !!state.nativeEvent?.eventId,
-      natural: !!state.naturalEnabled, durable: state.budget instanceof DurableKnowledgeBudget, extractionProtocol, verificationProtocol,
+      natural: !!state.naturalEnabled, durable: state.budget instanceof DurableKnowledgeBudget, extractionProtocol: configuredExtractionProtocol, verificationProtocol,
       documentary: modelEvidenceSnapshot.some(e => !e.sourceId.startsWith('configured-services:') && !e.sourceId.startsWith('business-cancellation-configuration:')) &&
         (!directConfiguredServicePlan(support.question, support.businessConfig) || isMixedSourceInformationQuestion(support.question, support.businessConfig)),
       operational: isExplicitBusinessActionRequest(support.question),
@@ -5864,9 +5864,18 @@ async function generateNativeKnowledgeContent(sessionId:string,options:any,suppo
         return !state.freshnessFailure && identity(fresh) === identity(modelEvidenceSnapshot) && await knowledgeOwnershipCurrent();
       },
     }) });
+    const cancellationEvidence = nativeKnowledgeTiming() && !state.naturalEnabled && !(state.budget instanceof DurableKnowledgeBudget) &&
+      cancellationRecoveryEligible(support.question, state.businessId, state.cancellationBridge?.evidence[0])
+      ? state.cancellationBridge!.evidence[0] : undefined;
+    // Scoped citation transport only. Capture the managed Sol profile FIRST:
+    // its approved v2 schema/accounting cannot silently switch to another model.
+    const extractionProtocol = cancellationEvidence && getConfiguredAiProvider() === 'openai' && state.modelProfile!.id === 'default' &&
+      configuredExtractionProtocol === 'v2' && modelEvidenceSnapshot.every(e => e.text.length <= 2400)
+      ? 'literal-evidence-v1' : configuredExtractionProtocol;
+    if (state.extractionProtocol === undefined) Object.defineProperty(state, 'extractionProtocol', { value: extractionProtocol, enumerable: true });
     const snapshot = buildBusinessGroundingSnapshot(support);
     const manifest = await buildEvidenceFirstAnswer({ question: support.question, language: capturedSupportLanguage(support),
-      verificationProtocol, extractionProtocol, businessId: state.businessId,
+      verificationProtocol, extractionProtocol, businessId: state.businessId, cancellationEvidence,
       facets: state.facets || [], evidence: state.snapshot?.evidence || [],
       // Use the same captured question/facet/evidence contract in both hosts.
       // Durable budgets, attempt accounting and publication authority stay separate.
@@ -5899,7 +5908,7 @@ async function generateNativeKnowledgeContent(sessionId:string,options:any,suppo
           ...((stage==='extraction' || stage==='verification' && !(state.budget instanceof DurableKnowledgeBudget)) ? {reasoningEffort:'low' as const} : {}),
           ...(stage!=='composition'?{structuredOutput:knowledgeStructuredOutput(stage,state.naturalEnabled,
             stage==='extraction' ? state.facets?.map(f=>f.id) : undefined,
-            stage==='extraction'&&(data as {authorityScope?:unknown})?.authorityScope==='document_only'?5:6,verificationProtocol,contract?.extractionProtocol)}:{}),
+            stage==='extraction'&&(data as {authorityScope?:unknown})?.authorityScope==='document_only'?5:6,verificationProtocol,contract?.extractionProtocol,contract?.canonicalConfiguration)}:{}),
           context: { ...businessInformationTimingContext(sessionId), businessId: state.businessId, channel: 'knowledge-core', stage: `knowledge_units_${stage}`, language: capturedSupportLanguage(support) } });
           if(stage==='extraction'||stage==='verification')runOptionalDiagnostic(()=>state.durableProgress?.(stage,(state.facets||[]).map(f=>f.attribute)));
           const result=await pending;

@@ -1,6 +1,6 @@
 import { resolveEvidenceQuote, captureLiteralEvidence, hydrateLiteralEvidenceReferences, type LiteralEvidenceSnapshot } from './knowledge-citation';
 import { nativeKnowledgeTiming, type NativeKnowledgeTiming } from './knowledge-timing-policy';
-import { cancellationConfigurationProposals, cancellationRecoveryEligible, cancellationSourceLimitations } from './cancellation-answer-recovery';
+import { cancellationConfigurationProposals, cancellationRecoveryEligible, cancellationSourceLimitations, isReportedCancellationPremiseClause } from './cancellation-answer-recovery';
 import { selectCanonicalConfigurationProducer, captureCanonicalConfigurationProducer, canonicalConfigurationOutputValid,
   CANONICAL_CONFIG_INSTRUCTION, SOURCE_PARTITIONED_PRODUCER, SOURCE_PARTITIONED_INSTRUCTION, type CanonicalConfigurationProducer } from './canonical-configuration-propositions';
 import { isSourceExhaustiveProtocol, sourceExhaustiveInstruction, assessSourceCoverage } from './source-exhaustive-coverage';
@@ -769,10 +769,12 @@ export async function buildEvidenceFirstAnswer(input: {
   if (sourceAssessment?.state === 'SCOPED_PARTIAL') {
     // New opt-in permission. Never reuse the diagnostic witness as a certificate,
     // modify legacy coverage, or fall through to another partial-authority lane.
-    const limitations = cancellationSourceLimitations(input.question, language, facets, sourceAssessment.unavailable) ||
+    const limitations = cancellationSourceLimitations(input.question, language, facets, sourceAssessment.unavailable,
+      input.cancellationEvidence ? {item:input.cancellationEvidence,evidence:manifestEvidence,units:manifest.units} : undefined) ||
       sourceExhaustiveLimitations(input.question, language, facets, sourceAssessment.unavailable);
     const safeRequest = (text: string) => !isExplicitBusinessActionRequest(text) && detectNormalizedIntent(text) !== 'booking_lookup' &&
-      (isBusinessInformationQuestion(text) || !['cancellation', 'reschedule', 'new_booking'].includes(detectNormalizedIntent(text)));
+      (isBusinessInformationQuestion(text) || !['cancellation', 'reschedule', 'new_booking'].includes(detectNormalizedIntent(text)) ||
+        !!input.cancellationEvidence && cancellationProposals.length>0 && isReportedCancellationPremiseClause(input.question,text));
     const eligible = proposalParseComplete && !extractionIncomplete && !conflicts.size && catalogComplete && !catalogRequirements.length &&
       !relationshipRequest && parsed.decisions.length === proposed.units.length && verified.length === proposed.units.length &&
       manifest.units.length === verified.length && manifest.units.every(citedNumeralsPresent) && !!limitations?.length &&

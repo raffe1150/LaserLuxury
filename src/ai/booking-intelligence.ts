@@ -1,5 +1,5 @@
 import { hasBookingInterruption, isBookingResumeRequest, withoutNegatedBookingClauses } from './booking-interruption';
-import { businessInformationTopics, isBusinessInformationQuestion } from './business-information';
+import { businessInformationTopics, isBusinessInformationQuestion, reportedCancellationPolicyPremise } from './business-information';
 import { applyBookingTransition, mergeBookingRequest } from './booking-state-machine';
 
 export type SupportedLanguage = 'fa' | 'sv' | 'en' | 'de' | 'es' | 'ar';
@@ -215,9 +215,13 @@ export function isServiceGuidanceRequest(text: string): boolean {
 export function isReadOnlyAvailabilityInquiry(text: string): boolean {
   const raw = normalizeConversationText(text).toLowerCase().trim();
   if (!raw) return false;
+  // Reported policy claims under confirmation are not slot availability. Keep
+  // the full original turn everywhere else, including action checks.
+  const premise=reportedCancellationPolicyPremise(raw);
+  const availabilityProbe=premise?raw.slice(premise.length).trim():raw;
   const availabilityLanguage =
-    /\b(?:available|availability|free|open|ledig|ledigt|lediga|frei|freier|verfügbar|verfugbar|disponible|disponibles|libre|libres)\b/iu.test(raw) ||
-    /(?:خالی|آزاد|متاح|متوفر|شاغر)/u.test(raw);
+    /\b(?:available|availability|free|open|ledig|ledigt|lediga|frei|freier|verfügbar|verfugbar|disponible|disponibles|libre|libres)\b/iu.test(availabilityProbe) ||
+    /(?:خالی|آزاد|متاح|متوفر|شاغر)/u.test(availabilityProbe);
   const questionForm = /[?؟]$/u.test(raw) ||
     /^(?:is|are|do|does|can|could|är|finns|har|ist|sind|haben|hay|tienen|es|está|esta|آیا|هل)\b/iu.test(raw);
   const explicitBookingAction =

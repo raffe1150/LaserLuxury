@@ -38,9 +38,17 @@ const topicPatterns: Record<BusinessInformationTopic, RegExp> = {
   meetings: /\b(?:digitala?\s+m(?:ö|o)ten|digitalt|digital(?:e[nr]?|es)?\s+(?:meetings?|treffen|besprechungen)|digitally|online|remote\s+(?:meetings?|services?)|reuniones?\s+(?:digitales|virtuales))\b|(?:جلسات|خدمات)\s+(?:آنلاین|دیجیتال)|اجتماعات\s+(?:رقمية|افتراضية)|عن\s+بعد/iu,
   parking: /(?<![\p{L}\p{M}\p{N}_])(?:park(?:ing|er[\p{L}\p{M}]*|en|pl[\p{L}\p{M}]*)?|aparca[\p{L}\p{M}]*)(?![\p{L}\p{M}\p{N}_])|پارکینگ|پارک\s+کن|موقف(?:ات)?|مواقف|ركن\s+سيار/iu,
 };
+
+/** A quantified notice/duration is not an opening-hours request. This affects
+ * only the coarse hours probe; preserve the full question for every later stage
+ * and retain any separately requested business hours in the same turn. */
+function openingHoursTopicProbe(text: string): string {
+  return text.replace(/(?<![\p{L}\p{M}\p{N}_])(?:\p{N}+(?:[.,]\p{N}+)?|one|two|three|four|five|six|seven|eight|nine|ten|twelve|twenty(?:[ -]four)?|a few|several|how many)\s+hours?\b(?=\s+(?:in advance|before|after|prior to|ahead of|later|earlier)\b)/giu,
+    measure => measure.replace(/\bhours?\b/iu, ''));
+}
 export function businessInformationTopics(text: string): BusinessInformationTopic[] {
   return (Object.entries(topicPatterns) as [BusinessInformationTopic, RegExp][])
-    .filter(([topic, pattern]) => pattern.test(topic==='contact'?text.replace(/تحل\s+محل/gu,''):text) || (topic === 'policies' && (isAdvanceBookingPolicyQuestion(text)||hasVisitInformationContext(text))) || (topic === 'contact' && isBusinessAddressQuestion(text)))
+    .filter(([topic, pattern]) => pattern.test(topic==='contact'?text.replace(/تحل\s+محل/gu,''):topic==='hours'?openingHoursTopicProbe(text):text) || (topic === 'policies' && (isAdvanceBookingPolicyQuestion(text)||hasVisitInformationContext(text))) || (topic === 'contact' && isBusinessAddressQuestion(text)))
     .map(([topic]) => topic);
 }
 
@@ -61,7 +69,7 @@ export function isBusinessInformationQuestion(text: string): boolean {
   // a Knowledge request (e.g. "what time can I book?").
   // Coordinated question clauses may precede the sentence's question mark.
   // Recognize their interrogatives independently of terminal punctuation.
-  const openQuestion = /[?؟]|\b(?:what|where|who|why|how|tell me|question about|fråga om|frage zu|pregunta sobre|vad|varför|hur|vilken|vilket|berätta|was|wo|wie|welche|qué|cuál|cu[aá]nt[oa]s?|dónde|cómo)\b|(?:سوال|سؤال|چیست|چیه|کجاست|چند|چقدر|ما هو|ما هي|أين|كم)/iu.test(text);
+  const openQuestion = /[?؟]|\b(?:what|where|who|why|how|finns\s+det|tell me|question about|fråga om|frage zu|pregunta sobre|vad|varför|hur|vilken|vilket|berätta|was|wo|wie|welche|qué|cuál|cu[aá]nt[oa]s?|dónde|cómo)\b|(?:سوال|سؤال|چیست|چیه|کجاست|چند|چقدر|ما هو|ما هي|أين|كم)/iu.test(text);
   const schedulingInput = /\b(?:book|booking|appointment|reserve|schedule|reschedule|cancel|available|availability|slots?|times?|appointment\w*|tid|tider|vaght|vaghtam|rezerv|boka|bokning\w*|avboka|omboka|ledig\w*|termin\w*|buchen|reservieren|stornieren|verschieben|reservar|reserva|cita|cancelar)\b|رزرو|نوبت|وقت|حجز|موعد|مواعيد|أوقات|الأوقات/iu.test(text);
   // Possibility/permission is a speech act, not authority to execute the verb.
   // Do not require a topic noun: "there/that/it" is resolved from both speakers'
@@ -90,6 +98,21 @@ export function isExplicitBusinessActionRequest(text: string): boolean {
   // A real instruction, including a mixed question + booking request, must stay
   // with the deterministic engine. Mentioning "how booking works" is not one.
   return /\b(?:please\s+(?:book|cancel|reschedule)|(?:i(?:\s+(?:want|would like)|[’']d\s+like)\s+to|can you)\s+(?:book|cancel|reschedule)|(?:bitte|ich möchte|ich will)\s+(?:(?:einen?|den|die|das)\s+)?(?:.{0,45}\s+)?(?:buchen|buche|stornieren|verschieben)|(?:quiero|por favor)\s+(?:reservar|cancelar|cambiar))\b|(?:^|[.!?؟;,]\s*|\b(?:och|and)\s+)(?:cancel\s+(?:my|the|this)|(?:boka|avboka|omboka)\s+(?:en|ett|min|den))\b|\b(?:jag\s+(?:vill|vill gärna)|kan\s+du|vänligen)\b.{0,45}\b(?:boka|avboka|omboka)\b|(?:رزرو|لغو)\s+کن(?:ید)?(?![\p{L}\p{M}])|می[‌\s]?خواهم[^.!?؟\n]{0,60}(?:رزرو|لغو)\s+کنم(?![\p{L}\p{M}])|(?:احجز|أحجز|ألغِ?|الغِ?)(?![\p{L}\p{M}])|(?:أريد|اريد|أرغب|ارغب)[^.!?؟\n]{0,60}(?:إلغاء|الغاء|حجز)|(?:^|[.!?؟]\s*)(?:الغاء|إلغاء)\s+(?:موعد|حجز)/iu.test(text);
+}
+
+/** Syntax-only reporting scope. The returned span is still an unverified
+ * customer claim, not a rule, an action or evidence. Its exact bytes remain in
+ * the request; callers may exclude it only from speech-act/availability probes. */
+export function reportedCancellationPolicyPremise(question: string): string | undefined {
+  if(!hasCancellationInformationTopic(question) || isExplicitBusinessActionRequest(question))return;
+  const sentences=question.trim().split(/(?<=[.!?؟])\s+/u);
+  if(sentences.length!==2 || !/^(?:can|could) you confirm\b[^.!?]{1,180}\?$/iu.test(sentences[1]))return;
+  const reporting=/^(?:I|we) (?:heard|read|understand) that\s+/iu;
+  if(!reporting.test(sentences[0]) || !/\.$/u.test(sentences[0]))return;
+  const assertions=sentences[0].replace(reporting,'').slice(0,-1).split(/\s+and\s+(?:that\s+)?/iu);
+  if(!assertions.length || assertions.length>3 || assertions.some(a=>
+    !/^(?:(?:cancellations?|(?:late |cancellation )?fees?) (?:are|is)|(?:I|we) (?:must|have to|need to))\s+[^.!?;:\n]{1,100}$/iu.test(a)))return;
+  return sentences[0];
 }
 
 export function formatRecommendationClarification(language: string): string {

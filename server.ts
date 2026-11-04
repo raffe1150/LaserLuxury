@@ -11,7 +11,8 @@ import { directMixedSourceInformationPlan, mixedSourceInformationQuestion } from
 import { SOURCE_LANGUAGE_QUERY_INSTRUCTION, SOURCE_LANGUAGE_QUERY_SCHEMA, parseSourceLanguageQuery } from './src/ai/source-language-query';
 import { configuredServiceEvidence } from './src/ai/configured-service-evidence';
 import { createCancellationEvidenceBridge } from './src/ai/configured-cancellation-evidence';
-import { cancellationRecoveryEligible } from './src/ai/cancellation-answer-recovery';
+import { cancellationRecoveryEligible, readOnlyCancellationProposalRequest } from './src/ai/cancellation-answer-recovery';
+import { selectCanonicalConfigurationProducer } from './src/ai/canonical-configuration-propositions';
 import { isArrivalInformationQuestion,isConditionalArrivalInformationQuestion } from './src/ai/information-request-contract';
 import { compactKnowledgeVerifierInput } from './src/ai/knowledge-verifier-input';
 import { hasForeignAddressPreposition } from './src/ai/knowledge-prose-language';
@@ -5592,11 +5593,7 @@ function isCurrentBusinessInformationRequest(question:string,businessConfig:any)
 /** Shared read-only boundary for cancellation evidence and native admission.
  * Classification confers neither policy facts nor appointment action authority. */
 function readOnlyCancellationKnowledgeRequest(question:string):boolean {
-  const operational=(text:string)=>isExplicitBusinessActionRequest(text) || isExistingAppointmentLookupIntent(text) ||
-    !isBusinessInformationQuestion(text)&&['cancellation','reschedule','new_booking'].includes(detectNormalizedIntent(text));
-  const clauses=question.split(/(?<=[.!?؟؛;])\s+|\n+|\s+(?:and|och|und|y|و)\s+/giu);
-  return cancellationInformationRequested(question) && isBusinessInformationQuestion(question) &&
-    !operational(question) && clauses.length<=6 && clauses.every(text=>!operational(text));
+  return readOnlyCancellationProposalRequest(question) && !isExistingAppointmentLookupIntent(question);
 }
 function evidenceFirstEligible(question: string, businessConfig?:any,nativeChannel=knowledgeTurnScope.getStore()?.nativeChannel): boolean {
   // New cancellation admission requires the existing tenant opt-in so retrieval,

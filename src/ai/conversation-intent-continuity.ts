@@ -39,6 +39,20 @@ export function hasConversationReference(text: string): boolean {
  * sentence. Recognize grammar only: never infer an address or a source fact.
  * Demonstratives, multiple questions and unrelated follow-ups stay unresolved. */
 export function hasExternalConversationReference(text: string): boolean {
+  // A demonstrative naming the current medium and a reporting complementizer
+  // do not refer to a missing earlier turn. This is a grammar-only probe: keep
+  // the full original question, including any reported premise, in every model
+  // and verification request. Other pronouns still require their antecedent.
+  // A single explicitly named appointment operation in an inline conditional
+  // supplies its own event antecedent. Mask only its demonstrative in this
+  // reference probe; the original question is never rewritten or resolved to
+  // an appointment identity. Alternatives and external references stay closed.
+  const inlineCapability = text.replace(/^(\s*(?:wenn|falls)\s+ich\s+(?:meinen|einen|den)\s+Termin\s+(?:(?!(?:und|oder|das|dort|sein|ihr|absagen|stornieren|verschieben)\b)\p{L}+\s+){0,3}(?:absagen|stornieren|verschieben)\s+(?:muss|müsste),\s*(?:kann|könnte|darf)\s+ich)\s+das(?=\s+[^?؟.!;\n]{1,65}[?؟])/iu, '$1');
+  const referenceText = inlineCapability
+    .replace(/\b(?:this|that)\s+(?:chat|conversation)\b/giu, 'the chat')
+    .replace(/\b((?:I|we)\s+(?:heard|read|understand)|(?:you|they)\s+said)\s+that\b/giu, '$1')
+    .replace(/\band\s+that(?=\s+(?:I|we|you|they)\b)/giu, 'and');
+  if (referenceText !== text) return hasExternalConversationReference(referenceText);
   if (hasIntroducedReferent(text) && !/\b(?:there|där|dort|all[ií]|same\s+place)\b|آنجا/iu.test(text)) return false;
   const clauses = text.split(/\s+(?:and|och|und)\s+/iu);
   if (clauses.length === 2 && !hasConversationReference(clauses[0]) &&

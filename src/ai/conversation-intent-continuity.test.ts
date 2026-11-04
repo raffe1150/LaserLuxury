@@ -1,6 +1,13 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { hasConversationReference, referenceClarificationReply, splitMixedBusinessRequest, prepareLiteralTurn } from './conversation-intent-continuity';
+import { hasConversationReference, hasExternalConversationReference, referenceClarificationReply, splitMixedBusinessRequest, prepareLiteralTurn } from './conversation-intent-continuity';
+
+test('reporting complementizers and an explicitly named chat need no historical antecedent', () => {
+ assert.equal(hasExternalConversationReference('I heard that cancellations are always free and that I must cancel at least 24 hours in advance. Can you confirm both rules, and tell me whether I can cancel through this chat?'), false);
+ assert.equal(hasExternalConversationReference('Can I cancel through this chat?'), false);
+ for (const text of ['Can I cancel that?', 'I heard that it is free. Can I reserve it there?', 'Can I cancel through this chat and use it there?', 'I heard that rule. Does it apply?'])
+  assert.equal(hasExternalConversationReference(text), true, text);
+});
 
 const examples = [
  ['en','Please book Video Consultation for Tuesday.','Can I reserve a spot there in advance?'],

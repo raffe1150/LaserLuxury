@@ -1,12 +1,44 @@
 import assert from 'node:assert/strict';
 import { documentKnowledgeTopicsEligible, wholeQuestionInformationPlan } from './knowledge-planning';
 import {
+  businessInformationTopics,
   buildConfiguredServiceCatalogPlan,
   formatConfiguredServiceCatalogPlan,
   isBusinessInformationQuestion,
   isBusinessRecommendationQuestion,
   isServiceCatalogQuestion,
 } from './business-information';
+
+const falsePremiseCancellation = 'I heard that cancellations are always free and that I must cancel at least 24 hours in advance. Can you confirm both rules, and tell me whether I can cancel through this chat?';
+for (const text of [
+  falsePremiseCancellation,
+  'Must I cancel two hours before my appointment?',
+  'How many hours in advance must I cancel?',
+  'How long after a cancellation can I book again: three hours later?',
+  'Måste jag avboka 24 timmar i förväg?',
+  'Muss ich 24 Stunden vor dem Termin absagen?',
+  '¿Debo cancelar con 24 horas de antelación?',
+  'آیا باید 24 ساعت قبل نوبت را لغو کنم؟',
+  'هل يجب إلغاء الموعد قبل 24 ساعة؟',
+]) {
+  assert.equal(businessInformationTopics(text).includes('hours'), false, `duration is not opening hours: ${text}`);
+  assert.equal(isBusinessInformationQuestion(text), true, text);
+}
+assert.equal(documentKnowledgeTopicsEligible(falsePremiseCancellation), true);
+
+for (const text of [
+  'What are your hours?', 'What are your opening hours?',
+  'What are your business hours?', 'Are you open 24 hours?',
+  'How many hours are you open on Saturday?',
+  'Vilka öppettider har ni?', 'Was sind Ihre Öffnungszeiten?',
+  '¿Cuáles son sus horarios de atención?', 'ساعات کاری شما چیست؟', 'ما ساعات العمل لديكم؟',
+  'What are your opening hours, and must I cancel 24 hours in advance?',
+  'Must I cancel two hours before my appointment, and what are your hours?',
+]) {
+  assert.equal(businessInformationTopics(text).includes('hours'), true, `retain requested business hours: ${text}`);
+  assert.equal(isBusinessInformationQuestion(text), true, text);
+}
+assert.deepEqual(businessInformationTopics('What are your opening hours, and must I cancel 24 hours in advance?'), ['hours', 'policies']);
 
 for (const text of [
   'Tell me about the company and services before I book.',

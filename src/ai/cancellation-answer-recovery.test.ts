@@ -5,6 +5,7 @@ import { configuredCancellationEvidence } from './configured-cancellation-eviden
 import { captureLiteralEvidence, hydrateLiteralEvidenceReferences, resolveEvidenceQuote } from './knowledge-citation';
 import { cancellationPolicyNoticePlan, literalInformationFallback } from './knowledge-planning';
 import { nativeKnowledgeTiming, runAccuracyFirstNative } from './knowledge-timing-policy';
+import { cancellationConfigurationProposals, cancellationRecoveryEligible, readOnlyCancellationProposalRequest } from './cancellation-answer-recovery';
 
 // Recovered from the Nov 2 production extraction response; no customer identity.
 const question = 'What is your cancellation policy, and how far in advance do I need to cancel my appointment?';
@@ -115,4 +116,84 @@ for (const q of [question.replace('appointment?', 'appointment if I arrive late?
 test('timeout grammar requires prior information admission and reference safety', () => {
   assert.equal(cancellationPolicyNoticePlan(question, false), null);
   assert.equal(cancellationPolicyNoticePlan(question, true, true), null);
+});
+
+// Actual November 3 questions. These exercise proposal selection, not scripted
+// entailment or publication acceptance. Native adapters remain covered separately.
+const complexQuestions = [
+  ['sv', 'Kan jag avboka min tid direkt här i chatten? Finns det någon avgift om jag avbokar sent, och hur långt i förväg måste jag avboka?', 'avbokning via chatt', 'avgift för sen avbokning'],
+  ['de', 'Wenn ich meinen Termin kurzfristig absagen muss, kann ich das direkt im Chat erledigen? Fallen Gebühren an, und gibt es eine verbindliche Stornierungsfrist?', 'Terminabsage per Chat', 'Gebühren bei Stornierung'],
+  ['es', '¿Puedo cancelar mi cita por este chat? ¿Significa que todas las cancelaciones son gratuitas, incluso a última hora? ¿Con cuánta antelación debo avisar?', 'cancelación por chat', 'cancelaciones gratuitas'],
+  ['fa', 'اگر بخوام نوبتم رو از همین چت لغو کنم، امکانش هست؟ آیا لغو دیرهنگام جریمه داره؟ لطفاً بگو چند ساعت قبل باید اطلاع بدم و اگر این زمان مشخص نیست، واضح توضیح بده.', 'لغو از طریق چت', 'جریمه لغو'],
+  ['ar', 'هل يمكنني إلغاء موعدي من خلال هذه المحادثة؟ وهل عدم تفعيل رسوم الإلغاء المتأخر يعني أنه لا توجد أي رسوم إطلاقاً؟ وما المهلة الإلزامية للإلغاء؟', 'إلغاء عبر المحادثة', 'رسوم الإلغاء'],
+  ['en', 'I heard that cancellations are always free and that I must cancel at least 24 hours in advance. Can you confirm both rules, and tell me whether I can cancel through this chat?', 'automatic chat cancellation', 'cancellation fees'],
+] as const;
+function aspectFacets(chat: string, fee: string) {
+  return parseRequestedFacets([
+    {subject:'cancellation',attribute:chat,questionType:'permission',obligations:[{description:chat,questionType:'permission'}]},
+    {subject:'cancellation',attribute:fee,questionType:'description',obligations:[{description:fee,questionType:'description'}]},
+    {subject:'cancellation',attribute:'mandatory advance notice',questionType:'requirement',obligations:[{description:'mandatory advance notice',questionType:'requirement'}]},
+  ]).facets;
+}
+for (const [language, q, chat, fee] of complexQuestions) {
+  test(`actual complex cancellation selects only requested source-bound aspects/${language}`, () => {
+    assert.equal(cancellationPolicyNoticePlan(q, true), null, 'The old narrow grammar does not admit this case');
+    assert.equal(readOnlyCancellationProposalRequest(q), true);
+    assert.equal(cancellationRecoveryEligible(q, 3, config), true);
+    const proposals = cancellationConfigurationProposals(q, language, aspectFacets(chat, fee), config);
+    assert.equal(proposals.length, 2);
+    assert.deepEqual(proposals.map(p => p.facetIds), [['f1'], ['f2']]);
+    assert.deepEqual(proposals.map(p => p.modality), ['descriptive','descriptive'], 'No business permission or mandatory rule is invented');
+    assert.deepEqual(proposals.map(p => p.value), ['enabled','disabled']);
+    assert.ok(proposals.every(p => p.evidenceRefs[0].evidenceId === config.id && p.evidenceRefs[0].version === config.version &&
+      config.text.includes(p.evidenceRefs[0].exactQuote) && p.language === language));
+    assert.ok(proposals.every(p => !('verification' in p)), 'Backend proposals grant no verification authority');
+    assert.ok(proposals.every(p => !p.facetIds.includes('f3')), 'Settings cannot answer mandatory-notice requirements');
+  });
+  test(`actual complex cancellation retains a whole-question literal obligation/${language}`, () => {
+    const facets = parseRequestedFacets([{subject:'customer request',attribute:q,questionType:'description',obligations:[{description:q,questionType:'description'}]}]).facets;
+    const proposals = cancellationConfigurationProposals(q, language, facets, config);
+    assert.equal(proposals.length, 2);
+    assert.ok(proposals.every(p => JSON.stringify(p.facetIds) === '["f1"]'));
+    assert.equal(facets[0].obligations[0].description, q, 'No user premise or requested notice is removed');
+  });
+}
+
+test('original accepted English proposal contract remains exact', () => {
+  const facets = parseRequestedFacets(cancellationPolicyNoticePlan(question, true)!.requestedFacets).facets;
+  const proposals = cancellationConfigurationProposals(question, 'en', facets, config);
+  assert.deepEqual(proposals.map(p => [p.text,p.facetIds,p.modality,p.negation]), [
+    ['Automatic appointment cancellation through chat is enabled.',['f1'],'descriptive',false],
+    ['The optional late cancellation fee is disabled.',['f1'],'descriptive',true],
+  ]);
+});
+
+for (const [q, expected] of [
+  ['Is there an optional fee for late cancellation?', ['optional late fee']],
+  ['Can I cancel my appointment through this chat?', ['automatic chat cancellation']],
+  ['How far in advance must I cancel my appointment?', []],
+  ['What are your opening hours?', []],
+  ['Are there any parking fees?', []],
+] as const) test(`proposal selection does not infer unrequested settings/${q}`, () => {
+  const facets = parseRequestedFacets([{subject:'customer request',attribute:q,questionType:'description',obligations:[{description:q,questionType:'description'}]}]).facets;
+  assert.deepEqual(cancellationConfigurationProposals(q, 'en', facets, config).map(p => p.predicate), expected);
+});
+
+for (const q of ['Cancel my appointment and explain the policy?', 'What is your cancellation policy? Please cancel my appointment.',
+  'What is your cancellation policy and check my appointment?', 'Is my appointment cancelled?', 'Ist mein Termin storniert?',
+  'Är min tid avbokad?', '¿Está mi cita cancelada?', 'What is your cancellation policy and when is my appointment?',
+  'What is your cancellation policy? Can you confirm my booking?']) test(`proposal admission retains actions and appointment status outside knowledge/${q}`, () => {
+  assert.equal(readOnlyCancellationProposalRequest(q), false);
+  assert.equal(cancellationRecoveryEligible(q, 3, config), false);
+});
+
+test('a matched question cannot attach configuration to an unknown or requirement-only facet', () => {
+  const q = complexQuestions[5][1];
+  const facets = parseRequestedFacets([
+    {subject:'visitor',attribute:'directions',questionType:'description',obligations:[{description:'entrance',questionType:'description'}]},
+    {subject:'cancellation',attribute:'required notice and fees',questionType:'requirement',obligations:[{description:'required notice and fees',questionType:'requirement'}]},
+  ]).facets;
+  assert.deepEqual(cancellationConfigurationProposals(q, 'en', facets, config), []);
+  assert.equal(cancellationRecoveryEligible(q, 4, config), false);
+  assert.equal(cancellationRecoveryEligible(q, 3, {...config,version:'stale',chunkId:'stale'}), false);
 });

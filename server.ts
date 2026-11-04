@@ -5866,7 +5866,14 @@ async function generateNativeKnowledgeContent(sessionId:string,options:any,suppo
       ? state.cancellationBridge!.evidence[0] : undefined;
     // Scoped citation transport only. Capture the managed Sol profile FIRST:
     // its approved v2 schema/accounting cannot silently switch to another model.
-    const extractionProtocol = cancellationEvidence && getConfiguredAiProvider() === 'openai' && state.modelProfile!.id === 'default' &&
+    const boundedDocumentary = nativeKnowledgeTiming() && !state.naturalEnabled && !(state.budget instanceof DurableKnowledgeBudget) &&
+      verificationProtocol === 'source-exhaustive-v2' && selectCanonicalConfigurationProducer() === 'source-partitioned-v1' &&
+      modelEvidenceSnapshot.some(e => !e.sourceId.startsWith('business-cancellation-configuration:')) &&
+      !modelEvidenceSnapshot.some(e => e.sourceId.startsWith('configured-services:'));
+    // The host owns immutable OCR/source bytes. Bounded documentary requests
+    // use the same ID-only citation transport as configuration recovery; full
+    // source entailment, inventory coverage and revision checks are unchanged.
+    const extractionProtocol = (cancellationEvidence || boundedDocumentary) && getConfiguredAiProvider() === 'openai' && state.modelProfile!.id === 'default' &&
       configuredExtractionProtocol === 'v2' && modelEvidenceSnapshot.every(e => e.text.length <= 2400)
       ? 'literal-evidence-v1' : configuredExtractionProtocol;
     if (state.extractionProtocol === undefined) Object.defineProperty(state, 'extractionProtocol', { value: extractionProtocol, enumerable: true });

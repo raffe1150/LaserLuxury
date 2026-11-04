@@ -203,7 +203,7 @@ export function answerEvidence(businessId: number, matches: readonly any[]): Evi
 }
 
 export function parseAnswerUnits(raw: unknown, facets: readonly Facet[], evidence: readonly Evidence[], language: string,
-  diagnostic: (event: KnowledgeDecision) => void = () => {}): { units: AnswerUnit[]; oversized: boolean } {
+  diagnostic: (event: KnowledgeDecision) => void = () => {}, citationScope: 'quotation' | 'whole_source' = 'quotation'): { units: AnswerUnit[]; oversized: boolean } {
   if (!object(raw) || !Array.isArray(raw.units)) { diagnostic({ stage:'extraction', reason:'MALFORMED_ARRAY' }); return { units: [], oversized: false }; }
   if (raw.units.length > ANSWER_LIMITS.units) { diagnostic({ stage:'extraction', reason:'LIMIT_EXCEEDED' }); return { units: [], oversized: true }; }
   const units: AnswerUnit[] = [];
@@ -228,7 +228,7 @@ export function parseAnswerUnits(raw: unknown, facets: readonly Facet[], evidenc
     if (refs.length !== u.evidenceRefs.length) { reject('INVALID_CITATION'); continue; }
     if (!configuredServiceScopeSupported({text:u.text,subject:u.subject,predicate:u.predicate,value:u.value,
       scope:u.scope,qualifiers:u.qualifiers,evidenceRefs:refs},evidence)) { reject('SOURCE_SCOPE'); continue; }
-    if (!numericalConstraintSafe(u.text,u.text,refs.map(r=>({source:'retrieved_knowledge',quote:r.exactQuote})))) { reject('NUMERICAL_CONSTRAINT'); continue; }
+    if (!numericalConstraintSafe(u.text,u.text,refs.map(r=>({source:'retrieved_knowledge',quote:r.exactQuote})),undefined,citationScope)) { reject('NUMERICAL_CONSTRAINT'); continue; }
     units.push(Object.freeze({ id: `u${index + 1}`, verification: 'PROPOSED', facetIds: Object.freeze([...new Set<string>(u.facetIds)]),
       subject: u.subject, predicate: u.predicate, value: u.value, modality: u.modality, negation: u.negation, scope: u.scope,
       qualifiers: Object.freeze([...u.qualifiers]), language, text: u.text, evidenceRefs: Object.freeze(refs) }));
@@ -559,7 +559,7 @@ export async function buildEvidenceFirstAnswer(input: {
           (r.exactQuote === p.evidenceRefs[0].exactQuote || r.exactQuote === input.cancellationEvidence!.text))));
       raw = { ...raw, units: [...raw.units, ...missing] };
     }
-    proposed = parseAnswerUnits(catalogProposal&&Array.isArray(raw.units)?{...raw,units:[catalogProposal.unit,...raw.units]}:raw, facets, availableEvidence, language,diagnostic);
+    proposed = parseAnswerUnits(catalogProposal&&Array.isArray(raw.units)?{...raw,units:[catalogProposal.unit,...raw.units]}:raw, facets, availableEvidence, language,diagnostic,literalSnapshot?'whole_source':'quotation');
     proposalParseComplete=Array.isArray(raw.units) && raw.oversized!==true && proposed.units.length===raw.units.length+(catalogProposal?1:0);
     // A rejected proposal cannot silently erase a requested condition, even if
     // a later coverage verdict incorrectly calls the surviving inventory complete.

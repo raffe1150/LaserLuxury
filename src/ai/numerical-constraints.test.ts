@@ -1,6 +1,21 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { numericalConstraintSafe } from './numerical-constraints';
+
+test('whole-source citations do not impose an unrelated arrival time on a location fact', () => {
+ const source = 'First-time visitors should arrive 10 minutes before the appointment. Use gate Aurora 7. The elevator is on the right.';
+ for (const text of ['Use gate Aurora 7.', 'The elevator is on the right.'])
+  assert.equal(numericalConstraintSafe(text, text, [source], undefined, 'whole_source'), true);
+ // The old quotation contract remains strict when extraction drops its bound.
+ assert.equal(numericalConstraintSafe('Cancel your appointment.', 'Cancel your appointment.', ['Cancel at least 91 hours before the visit.']), false);
+});
+for (const text of ['Normally up to 21 days.', 'Normalt upp till 21 dagar.', 'Normalerweise bis zu 21 Tage.', 'Normalmente hasta 21 días.', 'معمولاً تا ۲۱ روز.', 'عادةً حتى ٢١ يوم.'])
+ test(`literal retention upper bound is preserved: ${text}`, () => {
+  assert.equal(numericalConstraintSafe(text, text, ['Kvarglömda föremål förvaras normalt i upp till 21 dagar. First-time visitors arrive 10 minutes before the visit.'], undefined, 'whole_source'), true);
+ });
+for (const text of ['At least 21 days.', 'Exactly 21 days.', '21 days.', 'Up to 22 days.', 'Up to 21 hours.'])
+ test(`whole-source citation cannot change the retention limit: ${text}`, () =>
+  assert.equal(numericalConstraintSafe(text, text, ['Normally up to 21 days. First-time visitors arrive 10 minutes before the visit.'], undefined, 'whole_source'), false));
 const source = 'För Synthetic Birch Studio ska en bokad tid avbokas senast 91 timmar före besöket.';
 const minimum: Record<string,string> = {
  sv: 'Avboka minst 91 timmar före besöket.', en: 'Cancel at least 91 hours before the visit.',
@@ -89,4 +104,18 @@ test('identical bare cancellation numbers cannot make an incomplete deadline aut
 });
 test('a gate identifier near before wording is not a numerical deadline',()=>{
  const text='Check BJORK-915 before the appointment.';assert.equal(numericalConstraintSafe(text,text,[text]),true);
+});
+
+test('Persian arrival recommendation preserves relative time and a trailing purpose clause', () => {
+  const source = 'Kunder som besöker studion för första gången rekommenderas att komma cirka 10 minuter före sin bokade tid för att hinna förbereda sig i lugn och ro.';
+  const text = 'به مشتریانی که برای نخستین بار به AdMotion Studio مراجعه می‌کنند توصیه می‌شود حدود 10 دقیقه زودتر از زمان رزروشده حاضر شوند تا فرصت آماده‌شدن با آرامش را داشته باشند.';
+  const safe = (claim: string) => numericalConstraintSafe(claim, claim, [source]);
+  assert.equal(safe(text), true);
+  for (const changed of [
+    text.replace('10', '11'),
+    text.replace('حدود', 'حداقل'),
+    text.replace('حدود', 'تا'),
+    text.replace('زودتر از', 'دیرتر از'),
+    text.replace('زودتر از زمان رزروشده', ''),
+  ]) assert.equal(safe(changed), false, changed);
 });

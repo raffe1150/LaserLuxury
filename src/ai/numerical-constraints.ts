@@ -13,7 +13,7 @@ const canonical = (s: string) => s.normalize('NFKC').toLocaleLowerCase()
   .replace(/[\u064b-\u065f\u200c]/gu, ' ').replace(/\s+/gu, ' ').trim();
 const rules: Array<[Bound | 'latest' | 'earliest', string[]]> = [
   ['minimum', ['at least', 'not less than', 'minimum', 'minst', 'minimi', 'inte mindre än', 'mindestens', 'nicht weniger als', 'al menos', 'como mínimo', 'mínimo', 'no menos de', 'حداقل', 'دست کم', 'على الأقل', 'لا يقل عن']],
-  ['maximum', ['at most', 'not more than', 'maximum', 'högst', 'maximalt', 'inte mer än', 'höchstens', 'maximal', 'nicht mehr als', 'como máximo', 'máximo', 'a lo sumo', 'no más de', 'حداکثر', 'حد اکثر', 'على الأكثر', 'لا يزيد عن']],
+  ['maximum', ['at most', 'up to', 'not more than', 'maximum', 'högst', 'upp till', 'maximalt', 'inte mer än', 'höchstens', 'bis zu', 'maximal', 'nicht mehr als', 'como máximo', 'hasta', 'máximo', 'a lo sumo', 'no más de', 'حداکثر', 'حد اکثر', 'تا', 'على الأكثر', 'حتى', 'تصل إلى', 'تصل الى', 'لا يزيد عن']],
   ['latest', ['no later than', 'senast', 'spätestens', 'a más tardar', 'نه دیرتر از', 'في موعد أقصاه']],
   ['earliest', ['no earlier than', 'tidigast', 'frühestens', 'no antes de', 'نه زودتر از', 'ليس قبل']],
 ];
@@ -30,7 +30,9 @@ const units: Record<string, number> = Object.fromEntries(unitGroups.flatMap(([fa
 
 function parse(input: string): { constraints: Constraint[]; unsupported: boolean } {
   if (input.length > 20_000) return { constraints: [], unsupported: true };
-  const text = canonical(input);
+  // German source attribution ("according to the test terms") is not an
+  // after-event anchor. Quantified temporal uses of nach remain untouched.
+  const text = canonical(input).replace(/\bnach\s+(?:(?:den|dem|diesen|unseren|fiktiven|vorliegenden|genannten)\s+){0,3}(?:testbedingungen|angaben|informationen|dokumenten|dokument)\b/gu, 'laut Quelle');
   const constraints: Constraint[] = [];
   const quantities = [...text.matchAll(new RegExp(`(?<![\\p{L}\\p{N}])([0-9]+(?:[.,][0-9]+)?)\\s+(${Object.keys(units).join('|')})(?![\\p{L}\\p{N}])`, 'gu'))];
   for (const quantity of quantities) {
@@ -40,8 +42,13 @@ function parse(input: string): { constraints: Constraint[]; unsupported: boolean
     const left = text.slice(0, start).split(/[.!?؟؛;\n]/u).at(-1)!;
     const right = text.slice(end).split(/[.!?؟؛;\n]/u)[0];
     const context = left + quantity[0] + right;
-    const side: Side = hasPhrase(context, before) ? 'before' : hasPhrase(context, after) ? 'after' : 'none';
-    let remaining = context; const bounds: Array<Bound | 'latest' | 'earliest'> = [];
+    const anchoredBefore = hasPhrase(context, before) || /^ زودتر از /u.test(right);
+    const anchoredAfter = hasPhrase(context, after) || /^ دیرتر از /u.test(right);
+    const side: Side = anchoredBefore ? 'before' : anchoredAfter ? 'after' : 'none';
+    // After the quantity, Persian "تا فرصت ..." introduces a purpose
+    // ("so there is time to ..."), rather than a maximum on that quantity.
+    let remaining = left + quantity[0] + (side === 'none' ? right : right.replace(boundary('تا فرصت'), ' فرصت'));
+    const bounds: Array<Bound | 'latest' | 'earliest'> = [];
     // Long negated phrases are consumed before looking for remaining negation.
     for (const [kind, phrases] of rules) for (const phrase of [...phrases].sort((a, b) => b.length - a.length)) {
       remaining = remaining.replace(boundary(phrase), () => { bounds.push(kind); return ' '; });
@@ -54,7 +61,7 @@ function parse(input: string): { constraints: Constraint[]; unsupported: boolean
       /requires?|needs?|kräver|behöver|erfordert|benötigt|requiere|necesita|نیاز دارد|يتطلب/u.test(context) &&
       /notice|varsel|förvarning|vorlauf|ankündigung|aviso|اطلاع|إشعار/u.test(context);
     if (!mapped.length && noticeRequirement) mapped.push('minimum');
-    const ambiguous = context.length > 500 || (hasPhrase(context, before) && hasPhrase(context, after)) ||
+    const ambiguous = context.length > 500 || (anchoredBefore && anchoredAfter) ||
       bounds.some(b => (b === 'latest' || b === 'earliest') && side === 'none') ||
       new Set(mapped).size > 1 || /[<>≤≥]|\b(?:between|or|eller|oder|o|inte|nicht|not|no|never)\b|(?<![\p{L}])(?:یا|أو|ليس|ليست|نباید|هرگز)(?![\p{L}])|(?<![\p{L}])نمی|(?<![\p{L}])لا(?![\p{L}])/u.test(remaining) ||
       /[0-9]/u.test(left + right) || /exactly|precisely|exakt|genau|exactamente|دقیقا|بالضبط/u.test(context);
@@ -85,7 +92,8 @@ export function literalDurationSeconds(text: string): number | null {
     ? constraint.seconds : null;
 }
 
-export function numericalConstraintSafe(candidateQuote: string, atomicClaim: string, evidence: Array<string | { quote: string; source: string }>, structuredBusinessConfig?: string): boolean {
+export function numericalConstraintSafe(candidateQuote: string, atomicClaim: string, evidence: Array<string | { quote: string; source: string }>, structuredBusinessConfig?: string,
+  citationScope: 'quotation' | 'whole_source' = 'quotation'): boolean {
   const cancellationClaim = /cancel|avbok|absag|stornier|لغو|إلغاء|الغاء/iu;
   const freeClaim = /\b(?:free|gratis|avgiftsfri\w*|kostenlos\w*|gratuit\w*)\b|رایگان|مجاني|المجاني/iu;
   let policy: any, services: any[] = [];
@@ -139,7 +147,13 @@ export function numericalConstraintSafe(candidateQuote: string, atomicClaim: str
     (!freeClaim.test(candidateQuote) || !freeClaim.test(atomicClaim))) return false;
   const authoritative = sources.flatMap(s => s.constraints).filter(c => c.bound !== null || c.side !== 'none');
   if (checks.some(c => c.unsupported)) return false;
-  const relevant = authoritative.length > 0 || checks.some(c => c.constraints.some(q => q.bound !== null || q.side !== 'none')) ||
+  // ID-only transport binds a complete source item, which can contain unrelated
+  // temporal statements. It must not turn a gate/elevator fact into a deadline.
+  // Still compare every asserted bound/anchor and any matching source quantity:
+  // removing "up to" from the same 21-day limit must remain a rejection.
+  const sourceRelevant = authoritative.length > 0 && (citationScope === 'quotation' ||
+    checks.some(c => c.constraints.some(q => authoritative.some(a => a.seconds === q.seconds))));
+  const relevant = sourceRelevant || checks.some(c => c.constraints.some(q => q.bound !== null || q.side !== 'none')) ||
     (policyClaim && checks.some(c => c.constraints.length > 0));
   if (!relevant) return true;
   if (sources.some(s => s.unsupported) || !authoritative.length) return false;

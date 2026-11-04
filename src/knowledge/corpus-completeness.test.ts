@@ -99,3 +99,29 @@ test('ready-only completeness must not opt in when the ordinary freshness invent
  }
  assert.equal(complete,null,'Retain semantic retrieval unless ordinary source reads can see the same bounded inventory');
 });
+
+test('complete corpus keeps five canonical chunks but rejects an otherwise small sixth chunk', async () => {
+ const text = anchor.text;
+ const content = Array.from({length: 6}, (_, index) => index ? `Additional customer condition ${index}.` : text).join('\n');
+ const lines = content.split('\n');
+ const fixture = (count:number) => {
+  let start = 0;
+  const segments = lines.slice(0,count).map((line,index) => {
+   const segment = {start,end:start+line.length,page:index+1};
+   start=segment.end+1;
+   return segment;
+  });
+  return backend([{...row('visible'),content:content.slice(0,segments.at(-1)!.end),metadata:{segments}}]).service;
+ };
+ const five = await fixture(5).completeSmallCorpus(77,[anchor]);
+ assert.equal(five?.length,5);
+ assert.deepEqual(five?.map(m=>m.text),lines.slice(0,5));
+ assert.equal(await fixture(6).completeSmallCorpus(77,[anchor]),null);
+ assert.equal(await fixture(5).completeSmallCorpus(77,[]),null);
+});
+
+test('complete corpus rejects oversized source text even when the canonical evidence is short', async () => {
+ const content = anchor.text.padEnd(9001,' ');
+ const source = {...row('visible'),content,metadata:{segments:[{start:0,end:anchor.text.length,page:1}]}};
+ assert.equal(await backend([source]).service.completeSmallCorpus(77,[anchor]),null);
+});

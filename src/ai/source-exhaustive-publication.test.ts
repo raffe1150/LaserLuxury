@@ -240,3 +240,61 @@ test('general scoped authority works for a different tenant and a non-cancellati
     assert.doesNotMatch(manifest.text, /cancel|fee|24/);
   }, async () => assert.fail('Unexpected native failure'));
 });
+
+for (const mode of ['unqualified', 'qualified', 'revoked-declaration'] as const) {
+  const qualified = mode !== 'unqualified';
+  test(`SCRIPTED document-wide scope crosses chunks without qualifying an independent source / ${mode}`, async () => {
+    await runAccuracyFirstNative(async () => {
+      const question = 'Where is the studio entrance and what is your contact email?';
+      const declaration = 'All information in this document is fictional and is not real business information.';
+      const entrance = 'The studio entrance is in the courtyard.';
+      const contact = 'The contact email is help@example.com.';
+      const evidence = answerEvidence(4382, [
+        { businessId: 4382, sourceId: 'visitor-guide', text: entrance, metadata: { documentRevision: 'r2' } },
+        { businessId: 4382, sourceId: 'visitor-guide', text: declaration, metadata: { documentRevision: 'r2' } },
+        { businessId: 4382, sourceId: 'contact-directory', text: contact },
+        { businessId: 4382, sourceId: 'visitor-guide', text: 'Archived directions.', metadata: { documentRevision: 'r1' } },
+        { businessId: 99, sourceId: 'visitor-guide', text: 'Unrelated tenant.', metadata: { documentRevision: 'r2' } },
+      ]);
+      const facets = parseRequestedFacets([{ subject: 'studio', attribute: question, questionType: 'description' }]).facets;
+      const scopedEntrance = qualified ? 'In the fictional visitor guide, the studio entrance is in the courtyard.' : entrance;
+      const stages: string[] = [];
+      let reads = 0;
+      const manifest = await buildEvidenceFirstAnswer({
+        question, language: 'en', businessId: 4382, facets, evidence, foreground: true,
+        verificationProtocol: SOURCE_EXHAUSTIVE_V2_PROTOCOL, extractionProtocol: 'literal-evidence-v1',
+        authoritativeEvidence: '', businessTone: {}, history: [], budget: new InformationBudget(undefined, nativeKnowledgeTiming()),
+        current: async () => true, revalidateEvidence: async () => {
+          reads++;
+          return mode === 'revoked-declaration' && reads > 1 ? evidence.filter(item => item.id !== 'e2') : evidence;
+        }, languageSafe: () => true,
+        generate: async (stage, instruction, data: any) => {
+          stages.push(stage);
+          assert.deepEqual(data.evidence.map((e: any) => e.sourceGroup),
+            mode === 'revoked-declaration' && stage === 'verification' ? [undefined, undefined, undefined] : ['e1', 'e1', undefined, undefined]);
+          assert.match(instruction, /A qualification in one unit does not qualify its siblings/);
+          if (stage === 'extraction') return { text: JSON.stringify({ oversized: false, units: [
+            { text: scopedEntrance, predicate: 'entrance location', evidenceRefs: [{ evidenceId: 'e1' }, ...(qualified ? [{ evidenceId: 'e2' }] : [])] },
+            { text: contact, predicate: 'contact email', evidenceRefs: [{ evidenceId: 'e3' }] },
+          ].map(unit => ({ facetIds: ['f1'], subject: 'studio', value: unit.text, scope: 'studio', modality: 'descriptive',
+            negation: false, qualifiers: [], language: 'en', ...unit })) }) };
+          assert.equal(stage, 'verification');
+          const ids = data.units.map((unit: {id: string}) => unit.id);
+          if (mode === 'revoked-declaration') assert.deepEqual(ids, ['u2']);
+          return { text: JSON.stringify({
+            decisions: ids.map(unitId => ({ unitId, facetIds: ['f1'], relation: 'ENTAILED', meaningPreserved: true,
+              modalityPreserved: true, qualifiersPreserved: unitId === 'u2' || qualified, relevant: true, languageCorrect: true,
+              explicitAbsenceEvidence: false, negativeAbsence: false })),
+            coverage: [{ facetId: 'f1', requestAligned: true, materialFactsComplete: true, incompletenessReason: 'NONE', materialUnitIds: ids,
+              obligations: [{ obligationId: 'f1.o1', status: 'COVERED', unitIds: ids }] }],
+            sourceCoverage: { ...certificate(data, SOURCE_EXHAUSTIVE_V2_PROTOCOL),
+              obligations: [{ facetId: 'f1', obligationId: 'f1.o1', state: 'COMPLETE' }] },
+          }) };
+        },
+      });
+      assert.deepEqual(stages, ['extraction', 'verification']);
+      assert.equal(publishableKnowledgeManifest(manifest, 4382), mode === 'qualified');
+      if (mode === 'qualified') assert.equal(manifest.text, `${scopedEntrance} ${contact}`);
+    }, async () => assert.fail('Unexpected native failure'));
+  });
+}

@@ -1,7 +1,18 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { answerEvidence, buildEvidenceFirstAnswer, InformationBudget, parseRequestedFacets, pruneAnswerManifest, type AnswerUnit } from './business-information-answer-plan';
-import { uncertaintyNotice, uncertaintyReferences } from './knowledge-answer-presentation';
+import { uncertaintyNotice, uncertaintyReferences, sourceExhaustiveLimitations, serviceSelectionClarification, renderAnswerClarification } from './knowledge-answer-presentation';
+
+test('whole-question descriptive limitation avoids long question echoes without relabeling typed requirements',()=>{
+ const question='Welche Preise und Bedingungen gelten für Ihre Dienstleistungen? Gibt es zusätzliche Kosten, die ich vor einer Buchung kennen sollte?';
+ const facets=parseRequestedFacets([{subject:'customer request',attribute:question,questionType:'description',obligations:[{description:question,questionType:'description'}]}]).facets;
+ const gaps=[{facetId:'f1',obligationId:'f1.o1'}];
+ const notices=sourceExhaustiveLimitations(question,'de',facets,gaps);
+ assert.equal(notices?.length,1);assert.ok(!notices![0].text.includes(question));assert.match(notices![0].text,/nicht bestätigen/u);
+ const requirement=parseRequestedFacets([{subject:'customer request',attribute:question,questionType:'requirement',obligations:[{description:question,questionType:'requirement'}]}]).facets;
+ assert.equal(sourceExhaustiveLimitations(question,'de',requirement,gaps),undefined);
+ assert.equal(sourceExhaustiveLimitations('Different question?', 'de',facets,gaps),undefined);
+});
 
 const languages = [
  ['sv','Kan jag komma utan att boka tid i förväg?','Vi rekommenderar att du bokar tid i förväg.','tillåtet'],
@@ -149,4 +160,28 @@ for(const durable of [false,true])test(`${durable?'durable coverage stop':'foreg
 test('durable coverage stop: complete one-facet multi-unit answer retains direct verified presentation',async()=>{
  const {manifest,calls}=await answer({requireCompleteCoverage:true,secondFact:'Visits are arranged by agreement.',planner:[{subject:'visits',attribute:'recommendation',questionType:'recommendation'}]});
  assert.deepEqual(calls,['extraction','verification']);assert.equal(manifest.outcomes[0].status,'VERIFIED');assert.equal(manifest.presentationPath,'direct_verified_units');assert.equal(manifest.presentationFallback,false);assert.equal(manifest.fallbackReason,null);assert.equal(manifest.units.length,2);assert.ok(manifest.text.includes(languages[1][2]));assert.ok(manifest.text.includes('Visits are arranged by agreement.'));assert.ok(manifest.units.every(u=>u.verification==='ENTAILED'&&u.evidenceRefs[0].version==='v1'));
+});
+
+test('service-selection clarification admits explicit read-only requests in the current language', () => {
+ for(const [language,question,copy] of [
+  ['en','What services do you offer? Could you help me choose the right service?','What would you like help with?'],
+  ['sv','Vilka tjänster har ni? Vilken tjänst passar mig?','Vad vill du ha hjälp med?'],
+  ['fa','من اولین باره می‌خوام از خدمات شما استفاده کنم. چه خدماتی ارائه می‌دید و برای اینکه بفهمم کدوم مناسب منه چه اطلاعاتی از من لازم دارید؟','دوست دارید در چه زمینه‌ای به شما کمک کنیم؟'],
+ ] as const){
+  assert.equal(renderAnswerClarification(serviceSelectionClarification(question,language),language),copy);
+ }
+});
+
+test('ordinary lists, mixed requests, operations and language mismatches receive no clarification', () => {
+ for(const [language,question] of [
+  ['en','What services do you offer?'],
+  ['sv','Vilka tjänster erbjuder ni?'],
+  ['en','How long do you keep lost property?'],
+  ['en','How long do you keep lost property? Which service is right for me?'],
+  ['en','Which service is right for me? Please book it.'],
+  ['en','Please cancel my appointment. Which service is right for me?'],
+  ['sv','Boka en tid. Vilken tjänst passar mig?'],
+  ['fa','لغو کنید. کدام خدمت برای من مناسب است؟'],
+  ['sv','Which service is right for me?'],
+ ] as const)assert.equal(serviceSelectionClarification(question,language),undefined,question);
 });

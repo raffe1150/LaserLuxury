@@ -3,7 +3,7 @@ import { nativeKnowledgeTiming, type NativeKnowledgeTiming } from './knowledge-t
 import { cancellationConfigurationProposals, cancellationRecoveryEligible, cancellationSourceLimitations, isReportedCancellationPremiseClause } from './cancellation-answer-recovery';
 import { selectCanonicalConfigurationProducer, captureCanonicalConfigurationProducer, canonicalConfigurationOutputValid,
   CANONICAL_CONFIG_INSTRUCTION, SOURCE_PARTITIONED_PRODUCER, SOURCE_PARTITIONED_INSTRUCTION, type CanonicalConfigurationProducer } from './canonical-configuration-propositions';
-import { isSourceExhaustiveProtocol, sourceExhaustiveInstruction, assessSourceCoverage } from './source-exhaustive-coverage';
+import { isSourceExhaustiveProtocol, sourceExhaustiveInstruction, assessSourceCoverage, SOURCE_EXHAUSTIVE_V2_EVIDENCE_REVIEW } from './source-exhaustive-coverage';
 import { createHash } from 'node:crypto';
 import { numericalConstraintSafe, NUMERICAL_DIRECTION_GUIDANCE } from './numerical-constraints';
 import { containsUnverifiedBookingSuccessClaim } from './reliability';
@@ -12,7 +12,7 @@ import { configuredServiceScopeSupported } from './configured-service-evidence';
 import { independentServiceProposal, DOCUMENT_AUTHORITY_EXTRACTION, serviceRelationshipUnresolved, verifiedServiceRelationshipWitness, serviceScopeUncertainty,documentQuestionProjection } from './source-aware-service-proposal';
 import { QUESTION_TYPES, MODALITIES, RELATIONS, knowledgeFailureReason, selectKnowledgeVerificationProtocol, assertKnowledgeVerificationProtocol, assertKnowledgeExtractionProtocol,
   type KnowledgeExtractionProtocol, type KnowledgeVerificationProtocol, type KnowledgeDecision, type DecisionReason } from './knowledge-answer-protocol';
-import { uncertaintyNotice, uncertaintyReferences, requestUncertaintyFacets, unresolvedRequirementNotices, sourceExhaustiveLimitations, type UncertaintyReference, type RequirementNotice } from './knowledge-answer-presentation';
+import { uncertaintyNotice, uncertaintyReferences, requestUncertaintyFacets, unresolvedRequirementNotices, sourceExhaustiveLimitations, renderAnswerClarification, type AnswerClarification, type UncertaintyReference, type RequirementNotice } from './knowledge-answer-presentation';
 import { isBusinessInformationQuestion, isExplicitBusinessActionRequest } from './business-information';
 import { detectNormalizedIntent } from './booking-intelligence';
 import { compactVerificationInstruction, decodeCompactVerification } from './knowledge-compact-verification';
@@ -55,6 +55,7 @@ export type FacetOutcome = Readonly<{ facetId: string; status: 'VERIFIED' | 'PAR
   obligations: readonly ObligationOutcome[]; requestAligned: boolean; materialFactsComplete: boolean; materialUnitIds: readonly string[] }>;
 export type AnswerPresentation = Readonly<{ unitIds: readonly string[]; prefix: 'none' | 'greeting' | 'acknowledgement'; addition: boolean }>;
 export type AnswerManifest = Readonly<{ language: string; presentation: AnswerPresentation; facets: readonly Facet[]; units: readonly AnswerUnit[]; outcomes: readonly FacetOutcome[]; text: string; presentationFallback: boolean;
+  clarification?: AnswerClarification;
   /** Backend-only, current-run publication attestation; JSON/model output cannot recreate it. */
   qualifiedPartial?: object;
   /** Separate source-exhaustive permission; never a complete-answer verdict. */
@@ -124,7 +125,7 @@ type PartialAuthority = Readonly<{ businessId: number; owner: NativeKnowledgeTim
 const partialAuthorities = new WeakMap<object, PartialAuthority>();
 const sourcePartialAuthorities = new WeakMap<object, PartialAuthority>();
 const revokedSourcePartial = new WeakSet<object>();
-const partialContractHash = (m: AnswerManifest) => hash(JSON.stringify([m.language,m.facets,m.units,m.outcomes,m.sourceScopeNotice,m.uncertaintyReferences,m.unresolvedRequirements]));
+const partialContractHash = (m: AnswerManifest) => hash(JSON.stringify([m.language,m.facets,m.units,m.outcomes,m.sourceScopeNotice,m.uncertaintyReferences,m.unresolvedRequirements,m.clarification]));
 const sourcePartialContractHash = (m: AnswerManifest) => hash(JSON.stringify([partialContractHash(m), m.sourceLimitations, m.presentation]));
 const partialEvidenceHash = (evidence: readonly Evidence[]) => hash(JSON.stringify([...evidence].sort((a,b)=>a.id.localeCompare(b.id))));
 // Additional subtraction-only admission for the new PARTIAL permission. Matching
@@ -262,6 +263,9 @@ Verifier: Assess source relation and question responsiveness independently. Set 
 export const NATIVE_V2_MIXED_DOCUMENTARY_GUIDANCE = `Evaluate every independently asserted clause against the latest question. A true statement about where or how information is obtained or a process is managed is not itself a different requested value, rule or relationship. Include such procedural context only when requested or necessary to interpret the requested arrangement. A requested clause does not authorize an independent neighboring clause. Do not substitute a known independent attribute for an unavailable requested attribute.
 Do not overcorrect: preserve directly applicable recommendations with their original conditions and modality, necessary antecedents, exceptions, populations and every coordinated restriction on the same relevant offering, even when the customer did not enumerate them. Preserve all requested documentary facts without asserting an unsupported relationship to a distinct offering.
 Preserve explicit limits on a source claim's truth and applicability, including fictional, hypothetical or test-only context and any stated distinction from real business terms. Put each necessary qualification in the actual factual text in requestedLanguage; a scope field, qualifier field or quotation alone is not customer-visible preservation. Necessary source qualification is not an optional supplement. Use separate exact references for noncontiguous supporting context. Apply a qualification only to claims it governs; never invent it or transfer it to an independent source. If support cannot be established, do not manufacture a factual unit.`;
+const STRUCTURED_UNIT_FIDELITY_GUIDANCE = `Before returning a unit, compare the proposition in its structured fields with both the cited source and its customer-facing text. The subject, predicate, value and negation must express the same claim at the same strength; carry its scope, conditions and qualifications without broadening it. A predicate may be concise, but a correct text or qualifier does not fix a stronger assertion in another field. For example, lack of responsibility or obligation to perform an act does not establish that the actor never performs it. Preserve what the source actually negates.`;
+const SOURCE_APPLICABILITY_GUIDANCE = `
+Evidence items with the same sourceGroup belong to the same source revision. Read all supplied items in that group for explicit document-wide qualifications, even when the cited claim appears in a different item. If a source explicitly says its contents are fictional, hypothetical or test-only rather than real business terms, each affected unit's customer-visible text must carry that qualification in requestedLanguage. If the necessary qualification is in another item, cite that item as well. A qualification in one unit does not qualify its siblings. A section- or claim-specific qualifier stays local. Do not infer a document-wide limitation from a local one, a filename, or the presence of test terminology alone. Do not transfer qualifications to independent sources or configured facts. The verifier must set qualifiersPreserved=false when the applicable qualification is missing from the text or cannot be validated against cited evidence from that source revision, even when the underlying statement matches its quotation.`;
 /** Change citation transport only, preserving each existing extraction variant's
  * factual requirements. The legacy strings and verifier instructions stay intact. */
 export function literalEvidenceExtractionInstruction(base:string):string {
@@ -343,7 +347,9 @@ function renderVerifiedManifest(manifest: Omit<AnswerManifest, 'text'>): AnswerM
   ])] : [...new Set(manifest.outcomes.filter(o => o.status !== 'VERIFIED').map(outcome => manifest.sourceScopeNotice ||
     uncertaintyNotice(manifest.language, manifest.facets.find(f => f.id === outcome.facetId), outcome, manifest.uncertaintyReferences)))];
   const prefix = manifest.presentation.prefix === 'none' ? '' : notices[manifest.presentation.prefix];
-  return Object.freeze({ ...manifest, text: [[prefix, ...lines].filter(Boolean).join(' '), uncertainty.join(' ')].filter(Boolean).join('\n\n') });
+  const clarification = ordered.some(u => u.verification === 'ENTAILED' && u.evidenceRefs.some(ref => ref.evidenceId === 'configured-services'))
+    ? renderAnswerClarification(manifest.clarification, manifest.language) : undefined;
+  return Object.freeze({ ...manifest, text: [[prefix, ...lines].filter(Boolean).join(' '), uncertainty.join(' '), clarification].filter(Boolean).join('\n\n') });
 }
 
 /** Subtraction only: preserve whole independently verified units, never edit a clause
@@ -391,6 +397,8 @@ export function pruneAnswerManifest(manifest: AnswerManifest, validEvidence: rea
 
 export async function buildEvidenceFirstAnswer(input: {
   question: string; language: string; facets: readonly Facet[]; evidence: readonly Evidence[];
+  /** Read-only presentation instruction supplied by the native host, never by the model. */
+  clarification?: AnswerClarification;
   authoritativeEvidence: string; businessTone: unknown; history: unknown; budget: InformationBudget;
   /** Foreground wire projection only. Other callers retain their existing payload. */
   omitModelEvidenceVersions?: boolean;
@@ -454,8 +462,12 @@ export async function buildEvidenceFirstAnswer(input: {
   // The model cites opaque evidence IDs and exact text, never revision hashes.
   // Keep every tenant/source/chunk/revision binding in capturedEvidence, parsed
   // unit refs and the unchanged freshness/publication gates, not model tokens.
-  const wireEvidence = (items: readonly Evidence[]) => items.map(({id,businessId,version,text})=>
-    input.omitModelEvidenceVersions ? {id,businessId,text} : {id,businessId,version,text});
+  const sourceApplicabilityGuidance = verificationProtocol === 'source-exhaustive-v2' ? SOURCE_APPLICABILITY_GUIDANCE : '';
+  const wireEvidence = (items: readonly Evidence[]) => items.map(({id,businessId,version,text,sourceId}) => {
+    const siblings = sourceApplicabilityGuidance ? items.filter(e => e.businessId === businessId && e.sourceId === sourceId && e.version === version) : [];
+    return {id, businessId, ...(!input.omitModelEvidenceVersions ? {version} : {}), text,
+      ...(siblings.length > 1 ? {sourceGroup: siblings[0].id} : {})};
+  });
   // Request authority constraints are local bookkeeping, not documentary
   // context or new instructions for either semantic model stage.
   const modelFacets=facets.map(f=>({...f,obligations:f.obligations.map(({catalogRequirement,...o})=>o)}));
@@ -526,7 +538,7 @@ export async function buildEvidenceFirstAnswer(input: {
       !catalogProposal && requestedExtractionProtocol==='v2' ? '\n'+NATIVE_V2_PRODUCER_GUIDANCE : '';
     const noDocumentaryGeneration=partitioned&&!extractionEvidence.length;
     if(noDocumentaryGeneration)diagnostic({stage:'extraction',reason:'NO_EVIDENCE',counts:{proposed:0,parsed:0,verified:0,rejected:0}});
-    const result: ProviderResult|undefined = noDocumentaryGeneration?undefined:catalogProposal && !extractionEvidence.length ? {text:'{"oversized":false,"units":[]}'} : await input.generate('extraction', (literalSnapshot?literalEvidenceExtractionInstruction(baseInstruction):baseInstruction)+producerGuidance+questionResponsivenessGuidance+mixedDocumentaryGuidance+(canonicalConfiguration?'\n'+(partitioned?SOURCE_PARTITIONED_INSTRUCTION:CANONICAL_CONFIG_INSTRUCTION):'')+(input.natural?'\n'+NATURAL_PROPOSAL_INSTRUCTION:''), {
+    const result: ProviderResult|undefined = noDocumentaryGeneration?undefined:catalogProposal && !extractionEvidence.length ? {text:'{"oversized":false,"units":[]}'} : await input.generate('extraction', (literalSnapshot?literalEvidenceExtractionInstruction(baseInstruction):baseInstruction)+producerGuidance+questionResponsivenessGuidance+mixedDocumentaryGuidance+sourceApplicabilityGuidance+(verificationProtocol==='source-exhaustive-v2'?'\n'+SOURCE_EXHAUSTIVE_V2_EVIDENCE_REVIEW+'\n'+STRUCTURED_UNIT_FIDELITY_GUIDANCE:'')+(canonicalConfiguration?'\n'+(partitioned?SOURCE_PARTITIONED_INSTRUCTION:CANONICAL_CONFIG_INSTRUCTION):'')+(input.natural?'\n'+NATURAL_PROPOSAL_INSTRUCTION:''), {
       ...documentContext, requestedLanguage: language,
       ...(input.foreground ? {allowedFacetIds:facets.map(f=>f.id)} : {}),
       evidence: wireEvidence(extractionEvidence), ...(!partitioned?{businessTone:input.businessTone}:{}),
@@ -600,7 +612,7 @@ export async function buildEvidenceFirstAnswer(input: {
   let parsed: any;
   try {
     const compact = verificationProtocol === 'compact-v1';
-    const instruction = (input.foreground ? FOREGROUND_UNIT_VERIFICATION_INSTRUCTION : UNIT_VERIFICATION_INSTRUCTION)+questionResponsivenessGuidance;
+    const instruction = (input.foreground ? FOREGROUND_UNIT_VERIFICATION_INSTRUCTION : UNIT_VERIFICATION_INSTRUCTION)+questionResponsivenessGuidance+sourceApplicabilityGuidance;
     const result = await input.generate('verification', isSourceExhaustiveProtocol(verificationProtocol) ? instruction + '\n' + sourceExhaustiveInstruction(verificationProtocol) : compact ? compactVerificationInstruction(instruction) :
       verificationProtocol === COVERAGE_WITNESS_PROTOCOL ? coverageWitnessInstruction(instruction) : instruction, {
       question: input.question, requestedLanguage: language, facets:modelFacets, units: proposed.units.map(({verification,...u})=>({...u,evidenceRefs:u.evidenceRefs.map(({evidenceId,exactQuote})=>({evidenceId,exactQuote}))})), evidence: wireEvidence(availableEvidence), authoritativeEvidence: input.authoritativeEvidence,
@@ -748,7 +760,10 @@ export async function buildEvidenceFirstAnswer(input: {
   }
   if (!verified.length) return Object.freeze({ ...empty('UNAVAILABLE','NO_VERIFIED_UNITS'), outcomes });
   if (isSourceExhaustiveProtocol(verificationProtocol) && (!proposalParseComplete || extractionIncomplete || conflicts.size ||
-    !catalogComplete || verified.length !== proposed.units.length)) return empty('UNAVAILABLE', 'INVALID_COVERAGE');
+    !catalogComplete || verified.length !== proposed.units.length)) {
+    diagnostic({ stage: 'verification', reason: 'INVALID_COVERAGE' });
+    return empty('UNAVAILABLE', 'INVALID_COVERAGE');
+  }
   const sourceAssessment = isSourceExhaustiveProtocol(verificationProtocol)
     ? assessSourceCoverage(parsed, facets, proposed.units, availableEvidence, input.businessId, verificationProtocol) : undefined;
   if (sourceAssessment?.state === 'DENIED') {
@@ -760,6 +775,7 @@ export async function buildEvidenceFirstAnswer(input: {
   const deferFreshness=input.finalPublicationRevalidates && !input.natural && !optionalCompositionAffordable(budget);
   const manifestEvidence=deferFreshness ? availableEvidence : await revalidate();
   let manifest = pruneAnswerManifest(Object.freeze({ ...empty('UNAVAILABLE'), units: Object.freeze(verified), outcomes: Object.freeze(outcomes),
+    ...(input.clarification && !input.natural ? {clarification: input.clarification} : {}),
     ...(sourceScopeNotice?{sourceScopeNotice}:{}),
     ...(documentaryInventoryIds.length?{documentaryInventoryIds}:{}),
     ...(input.natural?{naturalScope:input.natural.scope,naturalOutcome:'canonical_fallback' as const,naturalReason:'NATURAL_PROPOSAL_INVALID' as const}:{}),

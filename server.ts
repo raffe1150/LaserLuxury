@@ -10,6 +10,7 @@ import { selectCandidateRetrievalPolicy, type CandidateFallback, type RetrievalO
 import { directMixedSourceInformationPlan, mixedSourceInformationQuestion } from './src/ai/mixed-source-planning';
 import { SOURCE_LANGUAGE_QUERY_INSTRUCTION, SOURCE_LANGUAGE_QUERY_SCHEMA, parseSourceLanguageQuery } from './src/ai/source-language-query';
 import { configuredServiceEvidence } from './src/ai/configured-service-evidence';
+import { serviceSelectionClarification } from './src/ai/knowledge-answer-presentation';
 import { createCancellationEvidenceBridge } from './src/ai/configured-cancellation-evidence';
 import { cancellationRecoveryEligible, readOnlyCancellationProposalRequest } from './src/ai/cancellation-answer-recovery';
 import { selectCanonicalConfigurationProducer } from './src/ai/canonical-configuration-propositions';
@@ -5892,7 +5893,11 @@ async function generateNativeKnowledgeContent(sessionId:string,options:any,suppo
       ? 'literal-evidence-v1' : configuredExtractionProtocol;
     if (state.extractionProtocol === undefined) Object.defineProperty(state, 'extractionProtocol', { value: extractionProtocol, enumerable: true });
     const snapshot = buildBusinessGroundingSnapshot(support);
-    const manifest = await buildEvidenceFirstAnswer({ question: support.question, language: capturedSupportLanguage(support),
+    const language = capturedSupportLanguage(support);
+    const clarification = state.nativeChannel && nativeKnowledgeTiming() && !state.mixedRequest &&
+      !state.requiresReferenceResolution && !state.unresolvedReference && options.knowledgePublication === 'guarded_text'
+      ? serviceSelectionClarification(support.question, language) : undefined;
+    const manifest = await buildEvidenceFirstAnswer({ question: support.question, language, clarification,
       verificationProtocol, extractionProtocol, businessId: state.businessId, cancellationEvidence,
       facets: state.facets || [], evidence: state.snapshot?.evidence || [],
       // Use the same captured question/facet/evidence contract in both hosts.

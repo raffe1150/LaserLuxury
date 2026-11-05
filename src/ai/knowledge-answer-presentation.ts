@@ -5,6 +5,32 @@ import {hasCancellationInformationTopic} from './cancellation-information';
 /** Request-local references, never new business facts or model-authored prose. */
 export type UncertaintyReference = Readonly<{ facetId: string; obligationId: string; text: string; kind?:'requested-attribute' }>;
 export type RequirementNotice = Readonly<{ facetId: string; obligationId: string; text: string }>;
+export type AnswerClarification = 'service-selection';
+const serviceSelection = {
+  en: {
+    request: /^(?:what services do you offer(?:\?\s*|,?\s+and\s+))?(?:(?:can|could) you help me (?:choose|pick) (?:a|the right) service|which service (?:is right|would be suitable) for me|what service would you recommend for me|what (?:information|details) do you need (?:from me )?to help me choose (?:a|the right) service)\?$/iu,
+    question: 'What would you like help with?',
+  },
+  sv: {
+    request: /^(?:vilka tjänster (?:erbjuder|har) ni(?:\?\s*|,?\s+och\s+))?(?:kan ni hjälpa mig att välja (?:en|rätt) tjänst|vilken tjänst passar mig|vilken tjänst rekommenderar ni för mig|vilken information behöver ni (?:från mig )?för att hjälpa mig välja (?:en|rätt) tjänst)\?$/iu,
+    question: 'Vad vill du ha hjälp med?',
+  },
+  fa: {
+    request: /^(?:(?:من )?اولین بار(?:ه| است| هست) (?:می خوام|می خواهم) از خدمات(?: شما)? استفاده کنم\.\s*)?(?:چه خدماتی ارائه می دید و )?(?:برای اینکه بفهمم کدوم مناسب منه چه اطلاعاتی از من لازم دارید|برای انتخاب خدمات مناسب چه اطلاعاتی از من لازم دارید|کدام خدمت برای من مناسب است)[?؟]$/u,
+    question: 'دوست دارید در چه زمینه‌ای به شما کمک کنیم؟',
+  },
+} as const;
+
+export function serviceSelectionClarification(question: string, language: string): AnswerClarification | undefined {
+  const rule = Object.hasOwn(serviceSelection, language) ? serviceSelection[language as keyof typeof serviceSelection] : undefined;
+  if (rule && !isExplicitBusinessActionRequest(question) && !hasCancellationInformationTopic(question) &&
+      rule.request.test(question.trim().replace(/[\u200c\s]+/gu, ' '))) return 'service-selection';
+}
+
+export function renderAnswerClarification(kind: AnswerClarification | undefined, language: string): string | undefined {
+  if (kind === 'service-selection' && Object.hasOwn(serviceSelection, language))
+    return serviceSelection[language as keyof typeof serviceSelection].question;
+}
 type Copy = { about: (text: string) => string; description: string; recommendation: string; requirement: string; permission: string; prohibition: string; conflict: string };
 const copy: Record<string, Copy> = {
   sv: { about: t => `När det gäller ”${t}”:`, description: 'Jag kan bara bekräfta de här uppgifterna just nu.', recommendation: 'Jag kan däremot inte bekräfta vilken rekommendation som gäller.', requirement: 'Jag kan däremot inte bekräfta vilka krav som gäller.', permission: 'Jag kan däremot inte bekräfta vad som är tillåtet.', prohibition: 'Jag kan däremot inte bekräfta vad som är förbjudet.', conflict: 'Uppgifterna behöver klargöras innan jag kan ge ett säkert svar.' },
@@ -145,6 +171,14 @@ const unavailableAnswer: Record<string, (label: string) => string> = {
  fa: t => `پاسخ کامل به «${t}» را نمی‌توان بر اساس اطلاعات موجود تأیید کرد.`,
  ar: t => `لا يمكن تأكيد الإجابة الكاملة عن «${t}» من المعلومات المتاحة.`,
 };
+const remainingInformation: Record<string,string> = {
+ en:'I cannot confirm the remaining requested details from the available information.',
+ sv:'Övriga efterfrågade uppgifter kan jag inte bekräfta utifrån den tillgängliga informationen.',
+ de:'Die übrigen angefragten Angaben kann ich anhand der verfügbaren Informationen nicht bestätigen.',
+ es:'No puedo confirmar los demás detalles solicitados con la información disponible.',
+ fa:'سایر جزئیات درخواستی را نمی‌توانم بر اساس اطلاعات موجود تأیید کنم.',
+ ar:'لا أستطيع تأكيد بقية التفاصيل المطلوبة من المعلومات المتاحة.',
+};
 
 /** Never render a model-authored missing-proposition explanation as a business
  * fact. General limitations name bounded literal spans of the user's request. */
@@ -155,6 +189,12 @@ export function sourceExhaustiveLimitations(question: string, language: string, 
  for (const gap of unavailable) {
   const f = facets.find(f => f.id === gap.facetId), o = f?.obligations.find(o => o.id === gap.obligationId);
   const label = o?.description.trim();
+  if (facets.length===1 && f?.obligations.length===1 && o?.questionType==='description' && label===question.trim() && remainingInformation[language]) {
+   // A faithfully retained whole-question container can exceed the safe echo
+   // bound. This copy supplies no new fact or narrowed missing-attribute claim;
+   // the caller still requires the original exhaustive unavailable certificate.
+   result.push(Object.freeze({...gap,text:remainingInformation[language]}));continue;
+  }
   if (!label || !safeReference(label, 90) || !userSpan(question, label, o.questionType === 'requirement')) return;
   result.push(Object.freeze({ ...gap, text: unavailableAnswer[language](label) }));
  }

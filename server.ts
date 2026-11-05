@@ -5627,7 +5627,10 @@ async function requestEvidenceCurrent(): Promise<boolean> {
   const support = evidence.support;
   if (!support) return !evidence.required;
   if (evidence.required && !await documentEvidenceRegistry.validate(evidence.documents, Number(getBusinessIdFromConfig(support.businessConfig)), support.retrievedKnowledge || '',
-    priority1hTestDependencies?.validateKnowledgeMatches || ((id, matches) => knowledgeService.validateMatches(id, matches)))) return false;
+    priority1hTestDependencies?.validateKnowledgeMatches || ((id, matches) => knowledgeService.validateMatches(id,
+      matches.filter(match => match.metadata?.source !== 'document' ||
+        (support.retrievedKnowledge || '').includes('untrusted_document_text: ' + JSON.stringify(String(match.text || '').trim()))),
+      {requireCompleteDocumentContext:true})))) return false;
   const state=knowledgeTurnScope.getStore();
   return state?.cancellationBridge ? nativeCancellationEvidenceCurrent(state) : cancellationInformationCurrent(support, support.cancellationPolicyEpoch);
 }
@@ -5729,8 +5732,19 @@ async function currentAnswerEvidence(): Promise<readonly Evidence[]> {
   try {
     valid = await withinInformationDeadline(state.budget, async () => {
       if (!await knowledgeContextCurrent(false)) throw new Error('knowledge_context_invalid');
-      const readDocuments = () => revalidateKnowledgeSourceIds(snapshot.businessId, snapshot.matches,
-        priority1hTestDependencies?.validateKnowledgeMatches || ((id, matches) => knowledgeService.validateMatches(id, matches, { signal: state.budget?.nativeTiming?.signal, strictSources: true,onRejected:(id,reason)=>reasons.set(id,reason) })),
+      // Validate the evidence actually admitted to the bounded model payload.
+      // Retrieved rows omitted by packing cannot supply document-wide context.
+      const boundEvidenceIds = new Set<string>();
+      const modelMatches = snapshot.matches.filter(match => {
+        const candidate = answerEvidence(snapshot.businessId, [match])[0];
+        const bound = candidate && snapshot.evidence.find(item => !boundEvidenceIds.has(item.id) &&
+          item.sourceId === candidate.sourceId && item.chunkId === candidate.chunkId &&
+          item.version === candidate.version && item.text === candidate.text);
+        if (bound) boundEvidenceIds.add(bound.id);
+        return !!bound;
+      });
+      const readDocuments = () => revalidateKnowledgeSourceIds(snapshot.businessId, modelMatches,
+        priority1hTestDependencies?.validateKnowledgeMatches || ((id, matches) => knowledgeService.validateMatches(id, matches, { signal: state.budget?.nativeTiming?.signal, strictSources: true,requireCompleteDocumentContext:true,onRejected:(id,reason)=>reasons.set(id,reason) })),
         (id,reason)=>{if(!reasons.has(id))reasons.set(id,reason);});
       const serviceEvidence = snapshot.evidence.find(e => e.sourceId === `configured-services:${snapshot.businessId}`);
       const readCatalog = async () => {

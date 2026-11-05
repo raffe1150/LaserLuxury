@@ -43,7 +43,7 @@ export interface KnowledgeSearchMatch {
   text?: string;
   metadata?: KnowledgeSourceMetadata;
 }
-type KnowledgeValidationOptions = { signal?: AbortSignal; strictSources?: boolean; captureRevision?: boolean;
+type KnowledgeValidationOptions = { signal?: AbortSignal; strictSources?: boolean; captureRevision?: boolean; requireCompleteDocumentContext?: boolean;
   onRejected?: (sourceId:string,reason:'SOURCE_SCOPE'|'SOURCE_MISSING_OR_UNAUTHORIZED'|'SOURCE_NOT_READY'|'SOURCE_REVISION'|'SOURCE_CHUNK')=>void };
 
 /** Operation counts and wall-clock durations only; never query/source contents. */
@@ -1060,6 +1060,23 @@ export class KnowledgeService {
           documents?.set(source.id, document);
         }
         const { revision, corpus } = document;
+        if (options.requireCompleteDocumentContext) {
+          // No semantic scope classification is stored at ingestion. Require
+          // every canonical chunk from this current source in the actual model
+          // inventory, including any qualifications outside the retrieved hit.
+          let end = 0;
+          const segments = source.metadata.segments;
+          const coversContent = Array.isArray(segments) && segments.every(segment => {
+            const gap = source.content.slice(end, segment.start);
+            end = segment.end;
+            return !gap.trim();
+          }) && !source.content.slice(end).trim();
+          const complete = coversContent && corpus.length > 0 && corpus.every(chunk => matches.some(candidate =>
+            candidate.businessId === businessId && candidate.sourceId === source.id &&
+            candidate.metadata?.documentRevision === revision && candidate.text === chunk.text &&
+            ['page','sheet','section'].every(key => candidate.metadata?.[key] === chunk.metadata?.[key])));
+          if (!complete) return reject('SOURCE_CHUNK');
+        }
         if (match.metadata?.documentRevision && match.metadata.documentRevision !== revision) return reject('SOURCE_REVISION');
         const canonical = corpus.find((chunk) => chunk.text === String(match.text || "").trim() &&
           (match.metadata?.page === undefined || match.metadata.page === chunk.metadata?.page) &&

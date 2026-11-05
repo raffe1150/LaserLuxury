@@ -27,7 +27,9 @@ export function readOnlyCancellationProposalRequest(question: string): boolean {
     /\b(?:status|confirmed|cancelled|canceled|avbokad|bekräftad|storniert|bestätigt|cancelad[oa]|confirmad[oa])\b|(?:لغو|تأیید|تاييد)\s+شد|(?:تم|حالة)\s+(?:إلغاء|الغاء|الحجز|الموعد)/iu.test(value) ||
     /\b(?:when is|what time is|wann ist|cuándo es|när är|confirm|check|verify|bestätigen|prüfen|comprobar|confirmar|bekräfta|kontrollera)\b[^.!?؟]{0,45}\b(?:appointment|booking|termin|buchung|cita|reserva|tid|bokning)\b/iu.test(value);
   const operational = (value: string) => isExplicitBusinessActionRequest(value) || status(value) ||
-    detectNormalizedIntent(value) === 'booking_lookup';
+    // Sentence punctuation is not part of an action's final token. Preserve
+    // question marks so permission questions retain their read-only meaning.
+    ['booking_lookup', 'reschedule'].includes(detectNormalizedIntent(value.replace(/[.!؛;]+$/u, '')));
   const clauses = text.split(/(?<=[.!?؟؛;])\s+|\n+|\s+(?:and|och|und|y|و)\s+/giu).filter(Boolean);
   return !!text && hasCancellationInformationTopic(text) && isCancellationInformationRequested(text) &&
     isBusinessInformationQuestion(text) && !operational(text) && clauses.length <= 6 && clauses.every(value => !operational(value));

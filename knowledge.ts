@@ -801,10 +801,10 @@ export class KnowledgeService {
       catch { metrics.sourceListFailures++; return queries.map(() => []); }
       finally { metrics.sourceListMs = performance.now() - listStarted; }
       const documents = new Map<string, { revision: string; corpus: SemanticChunk[] }>();
-      return sets.map(matches => {
-        try { return this.filterMatchesFromSources(id, matches, sources, {}, metrics, documents); }
+      return await Promise.all(sets.map(async matches => {
+        try { return await this.filterMatchesFromSources(id, matches, sources, {}, metrics, documents); }
         catch { metrics.validationFailures++; return []; }
-      });
+      }));
     } finally { reportLexicalMetrics(metrics, started, diagnostic); }
   }
 
@@ -917,7 +917,7 @@ export class KnowledgeService {
       corpus.push(...chunks);
     }
     if (corpus.reduce((sum, c) => sum + c.text.length, 0) > 9000) return null;
-    const current = this.filterMatchesFromSources(businessId, [...lexical], sources, { strictSources: true, captureRevision: true });
+    const current = await this.filterMatchesFromSources(businessId, [...lexical], sources, { strictSources: true, captureRevision: true });
     if (!current.length) return null; // Empty, stale/foreign or fabricated hits cannot opt in.
     const key = (m: KnowledgeSearchMatch) => JSON.stringify([m.sourceId, m.text]);
     const selected = new Map<string, KnowledgeSearchMatch>();
@@ -944,9 +944,9 @@ export class KnowledgeService {
     const known = [...new Map(matches.map(m => [key(m),m])).values()];
     // Unknown/stale revisions cannot be silently rebound during completion.
     if (known.some(m => {const s=ready.get(m.sourceId);return !s || s.type==='document' && m.metadata?.documentRevision!==documentRevision(s);})) return null;
-    const current = this.filterMatchesFromSources(businessId, known, sources, {strictSources:true,captureRevision:true},undefined,documents);
+    const current = await this.filterMatchesFromSources(businessId, known, sources, {strictSources:true,captureRevision:true},undefined,documents);
     if (current.length !== known.length) return null;
-    const anchors = this.filterMatchesFromSources(businessId, lexical.filter(m => m.businessId===businessId && !m.indexProof &&
+    const anchors = await this.filterMatchesFromSources(businessId, lexical.filter(m => m.businessId===businessId && !m.indexProof &&
       Number.isFinite(m.score) && Number(m.score)>0 && current.some(c=>key(c)===key(m) && c.metadata?.documentRevision===m.metadata?.documentRevision)),
       sources,{strictSources:true},undefined,documents);
     const anchored = new Set(anchors.filter(m=>ready.get(m.sourceId)?.type==='document').map(m=>m.sourceId));
@@ -968,7 +968,7 @@ export class KnowledgeService {
       if (result.reduce((sum,m)=>sum+String(m.text||'').length,0)>9000) return null;
     }
     if (!packDocumentEvidence(result)) return null;
-    const complete=this.filterMatchesFromSources(businessId,result,sources,{strictSources:true,requireCompleteDocumentContext:true},undefined,documents);
+    const complete=await this.filterMatchesFromSources(businessId,result,sources,{strictSources:true,requireCompleteDocumentContext:true},undefined,documents);
     return complete.length===result.length ? complete : null;
   }
 
@@ -1082,17 +1082,17 @@ export class KnowledgeService {
         return valid;
       });
     }
-    try { return this.filterMatchesFromSources(businessId, matches, sources, options, metrics); }
+    try { return await this.filterMatchesFromSources(businessId, matches, sources, options, metrics); }
     catch (error) { if (metrics) metrics.validationFailures++; throw error; }
   }
 
-  private filterMatchesFromSources(businessId: number, matches: KnowledgeSearchMatch[], sources: KnowledgeSource[],
+  private async filterMatchesFromSources(businessId: number, matches: KnowledgeSearchMatch[], sources: KnowledgeSource[],
     options: KnowledgeValidationOptions, metrics?: LexicalRetrievalMetrics,
-    documents?: Map<string, { revision: string; corpus: SemanticChunk[] }>): KnowledgeSearchMatch[] {
+    documents?: Map<string, { revision: string; corpus: SemanticChunk[] }>): Promise<KnowledgeSearchMatch[]> {
     const validationStarted = performance.now();
     try {
       const ready = new Map(sources.filter((s) => s.businessId === businessId && s.status === "ready").map((s) => [s.id, s]));
-      const hierarchicalValid=matches.some(m=>m.hierarchicalProof)?this.hierarchicalIndex?.validProofs(businessId,matches,sources):undefined;
+      const hierarchicalValid=matches.some(m=>m.hierarchicalProof)?await this.hierarchicalIndex?.validProofs(businessId,matches,sources):undefined;
       return matches.flatMap((match) => {
         const reject=(reason:Parameters<NonNullable<KnowledgeValidationOptions['onRejected']>>[1])=>{options.onRejected?.(match.sourceId,reason);return [];};
         const source = ready.get(match.sourceId);

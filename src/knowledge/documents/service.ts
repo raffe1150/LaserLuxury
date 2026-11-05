@@ -1,3 +1,4 @@
+import type {HierarchicalSearchIndex} from '../hierarchical-search';
 import { createHash, randomUUID } from 'node:crypto';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { chunkKnowledgeContent, type KnowledgeSource } from '../../../knowledge';
@@ -21,7 +22,7 @@ export function documentChunks(sections: ExtractedSection[], filename: string) {
 export class DocumentService {
   private active = false;
   constructor(private client: SupabaseClient | null, private extract = extractInProcess,
-    private readonly indexing?: { recover(): Promise<unknown>; stop(): void }) {}
+    private readonly indexing?: { recover(): Promise<unknown>; stop(): void }, readonly hierarchicalIndex?:HierarchicalSearchIndex) {}
   recoverIndex() { return this.indexing?.recover() ?? Promise.resolve([]); }
   stopIndexing() { this.indexing?.stop(); }
   private db(): SupabaseClient {

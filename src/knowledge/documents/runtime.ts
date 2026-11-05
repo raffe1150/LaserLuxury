@@ -1,3 +1,4 @@
+import {hierarchicalIndexForClient,type HierarchicalIndexOptions} from '../hierarchical-runtime';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { getBackendSupabaseConfiguration } from '../../auth/backend-supabase';
 import { DocumentService } from './service';
@@ -28,7 +29,7 @@ export function newDocumentIndexingOptions(raw: string | undefined, shutdownSign
     shutdownSignal,newDocumentsSince:p.notBefore};
 }
 export function documentServiceForClient(client: SupabaseClient,
-  indexing?: DocumentIndexingOptions): DocumentService {
+  indexing?: DocumentIndexingOptions, hierarchy?:HierarchicalIndexOptions): DocumentService {
   let coordinator: SourceIndexCoordinator | undefined;
   if (indexing) {
     try {
@@ -37,11 +38,16 @@ export function documentServiceForClient(client: SupabaseClient,
     }
     catch { console.warn('[KnowledgeDocuments] indexing disabled: invalid configuration'); }
   }
-  return new DocumentService(client, undefined, coordinator);
+  let hierarchical:ReturnType<typeof hierarchicalIndexForClient>;
+  try {hierarchical=hierarchicalIndexForClient(client,hierarchy);}
+  catch {console.warn('[KnowledgeDocuments] hierarchical index unavailable: invalid configuration');}
+  const workers=[coordinator,hierarchical].filter((w):w is NonNullable<typeof w>=>!!w);
+  const combined=workers.length?{recover:async()=>{const results:unknown[]=[];for(const worker of workers){const rows=await worker.recover();if(Array.isArray(rows))results.push(...rows);}return results;},stop:()=>workers.forEach(w=>w.stop())}:undefined;
+  return new DocumentService(client, undefined, combined, hierarchical);
 }
 // Default OFF. The existing server call can install approved new-upload indexing;
 // absent/invalid configuration keeps text processing available without embedding.
-export function createDocumentRuntime(indexing?: DocumentIndexingOptions): DocumentService {
+export function createDocumentRuntime(indexing?: DocumentIndexingOptions, hierarchy?:HierarchicalIndexOptions): DocumentService {
   if (process.env.KNOWLEDGE_DOCUMENT_UPLOADS_ENABLED !== 'true') return new DocumentService(null);
   try {
     const { url, serviceRoleKey } = getBackendSupabaseConfiguration();
@@ -57,7 +63,7 @@ export function createDocumentRuntime(indexing?: DocumentIndexingOptions): Docum
         process.once('SIGTERM',stop);process.once('SIGINT',stop);
       } catch { console.warn('[KnowledgeDocuments] indexing disabled: invalid configuration'); }
     }
-    return documentServiceForClient(client, indexing);
+    return documentServiceForClient(client, indexing, hierarchy);
   } catch { return new DocumentService(null); }
 }
 export function startDocumentRecovery(service: DocumentService): () => void {

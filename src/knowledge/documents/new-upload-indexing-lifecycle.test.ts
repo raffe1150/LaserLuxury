@@ -63,7 +63,8 @@ for(const mode of ['revoked','invalid'] as const)test(`new-upload ${mode} result
  const result=await service.recoverIndex();assert.equal(result[0].status,'failed');assert.equal(f.counts().commits,0);assert.equal(f.counts().embeddings,1);
 });
 test('new-upload embedding timeout aborts work without publishing a partial index',async t=>{
- t.mock.timers.enable({apis:['Date','setTimeout'],now:Date.parse('2026-11-01T02:00:00.000Z')});
+ // The extractor child uses real wall time; align epochs before advancing the provider timer.
+ t.mock.timers.enable({apis:['Date','setTimeout'],now:Date.now()});
  const f=fixture(t,'timeout');t.after(()=>f.host.abort());const service=f.service();await service.process(77,f.id);
  const pending=service.recoverIndex();for(let i=0;i<60;i++)await Promise.resolve();assert.equal(f.counts().embeddings,1);
  t.mock.timers.tick(20_001);assert.deepEqual(await pending,[{status:'failed',reason:'provider_timeout'}]);assert.equal(f.counts().commits,0);

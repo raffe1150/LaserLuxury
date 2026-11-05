@@ -825,6 +825,7 @@ const knowledgeService = new KnowledgeService(
   new InMemoryKnowledgeStorage(),
   new ConfiguredEmbeddingProvider(() => getApiKeys()[currentKeyIndex]),
   process.env.KNOWLEDGE_DOCUMENT_UPLOADS_ENABLED === "true",
+  documentService.hierarchicalIndex,
 );
 
 let currentKeyIndex = 0;

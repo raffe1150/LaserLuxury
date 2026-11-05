@@ -2,6 +2,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {writeFileSync} from 'node:fs';
+import {KnowledgeService} from '../../knowledge';
+import {canonicalDocument} from '../knowledge/documents/canonical';
+import {HierarchicalSearchIndex} from '../knowledge/hierarchical-search';
 import {hierarchicalFixture,declaration,policy,exception,condition} from '../../tests/helpers/hierarchical-foundation';
 import {incidentFlags,incidentConfig,incidentChannels,incidentInbound,interceptedIncidentSend} from '../../tests/helpers/p0-incident-knowledge';
 incidentFlags();
@@ -17,9 +20,22 @@ const copy={es:['Según este documento ficticio de prueba, los objetos de valor 
  'طبق این سند تخیلی آزمایشی، اشیای خطرناک از این ثبت مستثنا هستند.',
  'طبق این سند تخیلی آزمایشی، مشتری باید پیش از تحویل گرفتن شیء آن را توصیف کند.']};
 type Fault='none'|'overflow'|'overflow-catalog'|'missing-context'|'missing-context-catalog'|'late-completion'|'revoked'|'changed'|'foreign'|'conflict'|'hint-citation'|'missing-source';
-async function replay(t:any,language:'es'|'fa',channel:typeof incidentChannels[number],count:number,fault:Fault){
+async function replay(t:any,language:'es'|'fa',channel:typeof incidentChannels[number],count:number,fault:Fault,durable=false){
  for(const key of ['log','warn','error','info'])t.mock.method(console,key,()=>{});b.reset();
  const saved=structuredClone(incidentConfig),f=await hierarchicalFixture(count,fault.startsWith('overflow')?300:0),question=fault.endsWith('-catalog')?'¿Cuánto cuesta Video Consultation y cómo se registran los objetos de valor?':language==='es'?'¿Cómo se registran los objetos de valor?':'اشیای باارزش چگونه ثبت می‌شوند؟';
+ if(durable){
+  // SCRIPTED repository capability. Real Supabase RPC lifecycle is tested in
+  // hierarchical-store.test.ts; no SQL or database is used here.
+  let claim:any;let stage=0,pending=false;
+  const repository={durable:true,read:async(id:number,source:string)=>f.repository.read(id,source),invalidate:(id:number,source:string)=>f.repository.invalidate(id,source),
+   claim:async(doc:any)=>{if(claim)return undefined;claim={token:'SCRIPTED-lease',epoch:'1',deadline:new Date(Date.now()+30000).toISOString(),fence:doc.fence};return claim;},
+   stage:async(doc:any,lease:any,index:number,action:string)=>{assert.equal(lease.token,claim.token);assert.equal(canonicalDocument((await f.storage.list(77)).find(s=>s.id===doc.sourceId)!).fence,doc.fence);
+    assert.equal(index,stage);if(action==='begin'){assert.equal(pending,false);pending=true;}else{assert.equal(pending,true);pending=false;stage++;}},
+   fail:async()=>{},publish:async(g:any)=>{assert.equal(pending,false);assert.ok(stage>0);f.repository.publish(g);claim=undefined;stage=0;}};
+  const producer={...f.producer,mode:'durable-injected' as const,identity:{provider:'SCRIPTED',model:'generator',version:'1',verifierModel:'independent',verifierVersion:'1'}};
+  f.index=new HierarchicalSearchIndex(id=>f.storage.list(id),repository,producer,{enabled:true,businessIds:[77],maxRequests:400});
+  f.service=new KnowledgeService(f.storage,f.storage,null,false,f.index);
+ }
  if(fault==='conflict'){
   const source={...f.source,id:'conflicting',content:f.source.content.replace(policy,'Wertgegenstände werden nicht getrennt registriert.')};
   // Same-length geometry is not assumed: construct a separately current source.
@@ -67,7 +83,7 @@ async function replay(t:any,language:'es'|'fa',channel:typeof incidentChannels[n
   Object.assign(incidentConfig,{id:77,businessId:77,businessRecordId:77,business_id:77,language,services:fault.endsWith('-catalog')?[{name:'Video Consultation',price:300,duration:60}]:[]});
   t.mock.method(globalThis,'fetch',async(url,options)=>{sends.push(interceptedIncidentSend(url,options));return new Response(JSON.stringify({ok:true,result:{message_id:1},messages:[{id:'offline'}]}));});
   const started=performance.now();await incidentInbound(b,channel,question);
-  records.push({kind:'SCRIPTED_HIERARCHICAL_NATIVE',language,channel,count,fault,sends,stages,payloads,actions,semantic,translated,elapsedMs:performance.now()-started});
+  records.push({kind:'SCRIPTED_HIERARCHICAL_NATIVE',durable,language,channel,count,fault,sends,stages,payloads,actions,semantic,translated,elapsedMs:performance.now()-started});
   assert.equal(sends.length,1);assert.equal(actions,0);assert.equal(semantic,0);assert.equal(translated,0);
   if(fault==='none'){assert.deepEqual(stages,['extraction','verification']);for(const text of copy[language])assert.ok(sends[0].includes(text),sends[0]);}
   else assert.ok(!sends[0].includes(copy[language][0]),JSON.stringify({fault,stages,sends}));
@@ -75,8 +91,8 @@ async function replay(t:any,language:'es'|'fa',channel:typeof incidentChannels[n
   if(fault.endsWith('-catalog')||fault==='late-completion'){assert.deepEqual(stages,[]);assert.ok(!sends[0].includes('300'));}
  }finally{for(const key of Object.keys(incidentConfig))delete (incidentConfig as any)[key];Object.assign(incidentConfig,saved);b.reset();}
 }
-for(const count of [4,50])for(const language of ['fa','es'] as const)for(const channel of incidentChannels)
- test(`SCRIPTED hierarchical native / ${count}/${language}/${channel}`,{timeout:5000},async t=>replay(t,language,channel,count,'none'));
-for(const fault of ['overflow','overflow-catalog','missing-context','missing-context-catalog','late-completion','revoked','changed','foreign','conflict','hint-citation','missing-source'] as const)
- test(`SCRIPTED hierarchical native denial / ${fault}`,{timeout:5000},async t=>replay(t,'es','telegram',50,fault));
+for(const durable of [false,true])for(const count of [4,50])for(const language of ['fa','es'] as const)for(const channel of incidentChannels)
+ test(`SCRIPTED hierarchical native / ${durable?'durable':'memory'}/${count}/${language}/${channel}`,{timeout:5000},async t=>replay(t,language,channel,count,'none',durable));
+for(const durable of [false,true])for(const fault of ['overflow','overflow-catalog','missing-context','missing-context-catalog','late-completion','revoked','changed','foreign','conflict','hint-citation','missing-source'] as const)
+ test(`SCRIPTED hierarchical native denial / ${durable?'durable':'memory'}/${fault}`,{timeout:5000},async t=>replay(t,'es','telegram',50,fault,durable));
 test('write optional SCRIPTED hierarchical observations',()=>{if(process.env.ODINLINK_HIERARCHICAL_RECEIPT)writeFileSync(process.env.ODINLINK_HIERARCHICAL_RECEIPT,JSON.stringify({providerCalls:0,records},null,2)+'\n',{flag:'wx'});});

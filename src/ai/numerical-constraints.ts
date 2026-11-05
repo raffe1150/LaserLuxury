@@ -31,11 +31,30 @@ const unitGroups: Array<[number, string[]]> = [
 ];
 const units: Record<string, number> = Object.fromEntries(unitGroups.flatMap(([factor, names]) => names.map(name => [name, factor])));
 
+/** A closed spatial grammar, not a general exemption for hasta/تا. Quantified,
+ * conditional, fee/notice and ambiguous clauses keep the original strict path.
+ * Only the parser's copy changes; citations and published text stay untouched. */
+function spatialConnectives(text: string): string {
+  return text.replace(/[^.!?؟؛;\n]+/gu, clause => {
+    if (clause.length > 500 || cancellationClaim.test(clause) || hasPhrase(clause, Object.keys(units)) ||
+        /[<>≤≥%]|\b(?:not|never|must|require\w*|deadline|fees?|no|nunca|si|durante|por|antes|después|plazo|aviso|debe\w*|oblig\w*|requier\w*|pagar|pago|tarifa\w*|cargo\w*|gratis|semanas?|mes(?:es)?|años?|quincenas?|weeks?|months?|years?|fortnights?|fecha|hoy|mañana|ayer|lunes|martes|miércoles|jueves|viernes|sábado|domingo)\b|(?:باید|نباید|نکن|شرط|اگر|برای|مدت|هزینه|جریمه|رایگان|مهلت|زمان|قبل|پیش|بعد|هفته|ماه|سال|امروز|فردا|دیروز)/u.test(clause)) return clause;
+    // Digits are permitted only in an explicitly marked location identifier.
+    // This does not validate the identifier: exact citation + entailment still do.
+    const withoutLabels = clause.replace(/(?:\bmarcad[oa]|نشان|علامت|کد)\s+[\p{L}\p{N}_-]+(?:\s+[0-9]+)?/gu, ' ');
+    if (/[0-9]/u.test(withoutLabels)) return clause;
+    if (/\b(?:sigue|siga|sigan|seguir|camina|camine|caminar|ve|vaya|dirígete|diríjase|continúa|continúe)\b/u.test(clause))
+      clause = clause.replace(/\bhasta(?=\s+(?:(?:el|la|los|las|un|una)\s+)?(?:recepción|entrada|salida|puerta|ascensor|escaleras?|piso|planta|mostrador|sala|oficina|pasillo)(?![\p{L}\p{N}]))/gu, 'hacia');
+    if (/(?:وارد شوید|دنبال کنید|ادامه دهید|حرکت کنید|بروید|برو)(?![\p{L}\p{N}])/u.test(clause))
+      clause = clause.replace(/(?<![\p{L}\p{N}])تا(?=\s+(?:پذیرش|ورودی|خروجی|آسانسور|پله|طبقه|اتاق|دفتر|راهرو)(?![\p{L}\p{N}]))/gu, 'به');
+    return clause;
+  });
+}
+
 function parse(input: string): { constraints: Constraint[]; unsupported: boolean } {
   if (input.length > 20_000) return { constraints: [], unsupported: true };
   // German source attribution ("according to the test terms") is not an
   // after-event anchor. Quantified temporal uses of nach remain untouched.
-  const text = canonical(input).replace(/\bnach\s+(?:(?:den|dem|diesen|unseren|fiktiven|vorliegenden|genannten)\s+){0,3}(?:testbedingungen|angaben|informationen|dokumenten|dokument)\b/gu, 'laut Quelle');
+  const text = spatialConnectives(canonical(input)).replace(/\bnach\s+(?:(?:den|dem|diesen|unseren|fiktiven|vorliegenden|genannten)\s+){0,3}(?:testbedingungen|angaben|informationen|dokumenten|dokument)\b/gu, 'laut Quelle');
   const constraints: Constraint[] = [];
   const quantities = [...text.matchAll(new RegExp(`(?<![\\p{L}\\p{N}])([0-9]+(?:[.,][0-9]+)?)\\s+(${Object.keys(units).join('|')})(?![\\p{L}\\p{N}])`, 'gu'))];
   for (const quantity of quantities) {

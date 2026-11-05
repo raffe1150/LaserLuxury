@@ -122,6 +122,44 @@ test('a gate identifier near before wording is not a numerical deadline',()=>{
  const text='Check BJORK-915 before the appointment.';assert.equal(numericalConstraintSafe(text,text,[text]),true);
 });
 
+const spatialSource='Besökare ska använda porten märkt   Aurora 7   och därefter följa de blå skyltarna till receptionen på andra våningen.';
+for (const text of [
+ 'Usa la puerta marcada Aurora 7 y sigue las señales azules hasta la recepción en la segunda planta.',
+ 'از درِ دارای نشان Aurora 7 وارد شوید و تابلوهای آبی را تا پذیرش در طبقه دوم دنبال کنید.',
+ 'Camina hasta la salida.', 'Siga hasta el ascensor.', 'Continúa hasta la oficina.',
+ 'تا اتاق بروید.', 'تا راهرو ادامه دهید.',
+]) test(`spatial destination is not a numerical upper bound: ${text}`,()=>{
+ assert.equal(numericalConstraintSafe(text,text,[spatialSource]),true,'Only numerical admissibility; factual support requires the independent verifier');
+});
+for(const text of [
+ 'Normalmente hasta 21 días.', 'معمولاً تا ۲۱ روز.',
+ 'Camina hasta 21 días antes de la cita.', 'تا ۲۱ روز قبل از نوبت بروید.',
+ 'Camina hasta noventa fortnights antes de la cita.', 'تا بیست هفته قبل از نوبت بروید.',
+ 'Camina hasta la recepción y cancela hasta 21 días antes de la cita.',
+ 'تا پذیرش بروید و نوبت را تا ۲۱ روز قبل لغو کنید.',
+ 'Camina durante 21 fortnights hasta la recepción.', 'تا پذیرش به مدت ۲۱ هفته بروید.',
+ 'Camina hasta la recepción si debes cancelar.', 'اگر باید لغو کنید تا پذیرش بروید.',
+ 'Hasta la recepción.', 'تا پذیرش.',
+]) test(`spatial vocabulary cannot exempt an ambiguous numerical/policy proposal: ${text}`,()=>{
+ assert.equal(numericalConstraintSafe(text,text,[spatialSource]),false);
+});
+for(const [valid,changed] of [
+ ['Normalmente hasta 21 días.','Normalmente al menos 21 días.'],
+ ['معمولاً تا ۲۱ روز.','معمولاً حداقل ۲۱ روز.'],
+ ['Cancelar al menos 21 horas antes de la cita.','Cancelar al menos 21 horas después de la cita.'],
+ ['لغو حداقل ۲۱ ساعت قبل از نوبت.','لغو حداکثر ۲۱ ساعت قبل از نوبت.'],
+] as const) test(`genuine numerical direction remains strict: ${valid}`,()=>{
+ assert.equal(numericalConstraintSafe(valid,valid,[valid]),true);
+ assert.equal(numericalConstraintSafe(changed,changed,[valid]),false);
+});
+test('a spatial clause cannot hide a separate unsupported or negated temporal claim',()=>{
+ for(const suffix of [' Cancel at most 21 hours before the visit.',' Cancel at least 21 hours after the visit.',' Do not cancel at least 21 hours before the visit.',
+  ' No cancelar al menos 21 horas antes de la cita.',' لغو نباید حداقل ۲۱ ساعت قبل از نوبت باشد.']){
+  const route='Camina hasta la recepción.';
+  assert.equal(numericalConstraintSafe(route+suffix,route+suffix,[spatialSource,'Cancel at least 21 hours before the visit.']),false);
+ }
+});
+
 test('Persian arrival recommendation preserves relative time and a trailing purpose clause', () => {
   const source = 'Kunder som besöker studion för första gången rekommenderas att komma cirka 10 minuter före sin bokade tid för att hinna förbereda sig i lugn och ro.';
   const text = 'به مشتریانی که برای نخستین بار به AdMotion Studio مراجعه می‌کنند توصیه می‌شود حدود 10 دقیقه زودتر از زمان رزروشده حاضر شوند تا فرصت آماده‌شدن با آرامش را داشته باشند.';

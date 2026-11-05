@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { deterministicLocationPlan } from './knowledge-planning';
+import { knowledgeSourceRevision } from '../../knowledge';
+import { documentChunks } from '../knowledge/documents/service';
 import { configuredCancellationEvidence } from './configured-cancellation-evidence';
 import { nativeKnowledgeTiming, knowledgeAdmission } from './knowledge-timing-policy';
 import { configureKnowledgeBudgetOwner } from './knowledge-model-policy';
@@ -482,6 +484,75 @@ for(const channel of incidentChannels)test(`planner cannot escape native cancell
   assert.deepEqual(calls,['planning'],'GENERAL_CONVERSATION may not dispatch legacy generation or repair');assert.equal(answers.length,1);
   assert.equal(answers[0].includes(specs[0][2]),false);assert.equal(f.stats().actions,0);
  }finally{for(const key of Object.keys(incidentConfig))delete (incidentConfig as any)[key];Object.assign(incidentConfig,saved);b.reset();}
+});
+
+
+// SCRIPTED spatial regressions isolated from the separate documentary audit.
+// Complete recall is supplied; the actual native freshness/publication gates run.
+for(const index of [3,4])for(const channel of incidentChannels)
+for(const mode of ['complete-original','complete-original-unsupported-policy'] as const)
+test(`spatial full-PDF/${specs[index][0]}/${channel}/${mode}`,{timeout:5000},async t=>{
+ quiet(t);b.reset();const spec=specs[index],saved=structuredClone(incidentConfig),f=setup(spec,'valid',77);
+ const savedVerifier=process.env.ODINLINK_KNOWLEDGE_VERIFIER_PROTOCOL;
+ process.env.ODINLINK_KNOWLEDGE_VERIFIER_PROTOCOL='source-exhaustive-v2';
+ const question=gateControls[index][0],originalAnswer=gateControls[index][1],answers:string[]=[],calls:string[]=[];
+ const unsupportedPolicy=mode==='complete-original-unsupported-policy';
+ const answer=(spec[0]==='es'?'Según este documento ficticio de prueba: ':'طبق این سند تخیلی آزمایشی: ')+originalAnswer+
+  (unsupportedPolicy?(spec[0]==='es'?' Debes cancelar como máximo 21 horas antes de la cita.':' لغو نوبت باید حداکثر ۲۱ ساعت قبل از نوبت انجام شود.'):'');
+ const corpus=await localDocumentCorpus(),pdf=(await corpus.storage.list(77)).find(s=>s.id==='incident-pdf')!;
+ const segments=pdf.metadata.segments;if(!Array.isArray(segments))throw Error('Original PDF fixture requires canonical segments');
+ const canonical=documentChunks(segments.map(({start,end,...provenance}:any)=>({text:pdf.content.slice(start,end),...provenance})),pdf.title);
+ const matches=canonical.chunks.map(c=>({businessId:77,sourceId:pdf.id,text:String(c.content),score:1,
+  metadata:{...(c.metadata as any),documentRevision:knowledgeSourceRevision(pdf)}}));
+ assert.equal(matches.length,5);
+ useLocalRetrieval(f,corpus.service);
+ f.dependencies.knowledgeSearch=async()=>matches;
+ f.dependencies.validateKnowledgeMatches=async(id:number,m:any[])=>{
+  const current=await corpus.service.validateMatches(id,m,{strictSources:true,captureRevision:true,requireCompleteDocumentContext:true});
+  assert.equal(current.length,5);return current;
+ };
+ f.dependencies.knowledgeCancellationConfig=async()=>{throw Error('No cancellation config on a document control');};
+ let verifierSchema:string|undefined;
+ f.dependencies.aiGenerate=async(r:any)=>{
+  const instruction=r.systemInstruction,data=JSON.parse(r.messages[0].content);
+  if(instruction.includes('retrieval query planner')){calls.push('planning');return{text:JSON.stringify({requestKind:'BUSINESS_INFORMATION',canonicalMeaning:question,
+   referenceResolution:'NOT_REQUIRED',queries:[],requestedFacets:[{subject:'studio visitors',attribute:question,questionType:'description'}]})};}
+  if(instruction.startsWith('OdinLink source-language search query.'))return{text:JSON.stringify({query:'porten Aurora 7'})};
+  if(instruction.includes('UNIT EXTRACTION')){
+   calls.push('extraction');assert.equal(data.evidence.length,5);assert.ok(data.evidence.every((e:any)=>e.businessId===77));
+   const pattern=/Besökare ska använda porten märkt\s+Aurora 7\s+och därefter följa de blå skyltarna till receptionen på andra våningen\./u;
+   const e=data.evidence.find((e:any)=>pattern.test(e.text));assert.ok(e);
+   return{text:JSON.stringify({units:[{facetIds:['f1'],subject:'studio visitors',predicate:'documented visitor information',value:answer,modality:'required',
+    negation:false,scope:'documented visitors',qualifiers:[],language:spec[0],text:answer,evidenceRefs:[{evidenceId:e.id,exactQuote:pattern.exec(e.text)![0]}]}]})};
+  }
+  assert.ok(instruction.includes('BATCH ENTAILMENT'));calls.push('verification');verifierSchema=r.structuredOutput?.name;
+  assert.equal(data.evidence.length,5);
+  return{text:JSON.stringify({decisions:data.units.map((u:any)=>({unitId:u.id,facetIds:u.facetIds,relation:'ENTAILED',meaningPreserved:true,modalityPreserved:true,
+   qualifiersPreserved:true,relevant:true,languageCorrect:true,negativeAbsence:false,explicitAbsenceEvidence:false})),coverage:data.facets.map((f:any)=>({facetId:f.id,
+   requestAligned:true,materialFactsComplete:true,incompletenessReason:'NONE',materialUnitIds:data.units.map((u:any)=>u.id),
+   obligations:f.obligations.map((o:any)=>({obligationId:o.id,status:'COVERED',unitIds:data.units.map((u:any)=>u.id)}))})),
+   sourceCoverage:{protocol:'source-exhaustive-v2',requestAligned:true,availableMaterialFactsComplete:true,conditionsPreserved:true,conflictsAbsent:true,
+    evidenceIdsReviewed:data.evidence.map((e:any)=>e.id),acceptedUnitIdsReviewed:data.units.map((u:any)=>u.id),
+    obligations:data.facets.flatMap((f:any)=>f.obligations.map((o:any)=>({facetId:f.id,obligationId:o.id,state:'COMPLETE'})))}})};
+ };
+ try{
+  Object.assign(incidentConfig,audited.business,{id:77,businessId:77,businessRecordId:77,business_id:77,language:spec[0],cancellationSettingsEvidence:f.config.cancellationSettingsEvidence});
+  t.mock.method(globalThis,'fetch',async(url,options)=>{answers.push(interceptedIncidentSend(url,options));return new Response(JSON.stringify({ok:true,result:{message_id:1},messages:[{id:'offline'}]}));});
+  b.configure(f.dependencies);await incidentInbound(b,channel,question);
+  assert.equal(f.stats().actions,0);assert.equal(f.stats().reads,0);assert.equal(answers.length,1);
+  records.push({kind:unsupportedPolicy?'SCRIPTED_COMPLETE_SOURCE_UNSUPPORTED_POLICY':'SCRIPTED_COMPLETE_SOURCE_ORIGINAL_WORDING',language:spec[0],channel,
+   question,originalAnswer,answer:answers,calls,verifierSchema,actions:f.stats().actions,sourceId:pdf.id,revision:knowledgeSourceRevision(pdf),canonicalChunks:matches.length});
+  if(unsupportedPolicy){
+   assert.equal(answers[0].includes(originalAnswer),false);assert.ok(f.decisions.some((d:any)=>d.reason==='NUMERICAL_CONSTRAINT'));
+   assert.equal(calls.filter(x=>x==='verification').length,0);
+  }else{
+   assert.deepEqual(answers,[answer]);assert.equal(calls.filter(x=>x==='extraction').length,1);assert.equal(calls.filter(x=>x==='verification').length,1);
+   assert.equal(verifierSchema,'odinlink_knowledge_source_exhaustive_v2');
+  }
+ }finally{
+  for(const key of Object.keys(incidentConfig))delete (incidentConfig as any)[key];Object.assign(incidentConfig,saved);b.reset();
+  if(savedVerifier===undefined)delete process.env.ODINLINK_KNOWLEDGE_VERIFIER_PROTOCOL;else process.env.ODINLINK_KNOWLEDGE_VERIFIER_PROTOCOL=savedVerifier;
+ }
 });
 
 test('write simulated receipts only when explicitly requested',{timeout:5000},()=>{

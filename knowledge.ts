@@ -6,6 +6,7 @@ import { OPENAI_KNOWLEDGE_EMBEDDING_IDENTITY } from './src/knowledge/embedding-b
 import { CompatibleSemanticIndex, semanticCorpusFingerprint, type SemanticChunk } from "./src/knowledge/semantic-index";
 import { confirmedTextLanguage, normalizeSemanticQuery, explicitlyWrongWorkflow, MAX_SEMANTIC_QUERIES, type SourceLanguage } from './src/knowledge/semantic-queries';
 import { CANDIDATE_RETRIEVAL_POLICY } from './src/knowledge/candidate-retrieval';
+import { packDocumentEvidence, DOCUMENT_EVIDENCE_LIMITS } from './src/knowledge/document-evidence-packing';
 
 export const KNOWLEDGE_SOURCE_TYPES = ["faq", "pdf", "website", "text", "document"] as const;
 
@@ -946,12 +947,13 @@ export class KnowledgeService {
       if (anchored.has(id)) {
         if (source.content.length>9000) return null;
         const corpus=documents.get(id)!.corpus;
-        if (!corpus.length || result.length+corpus.length>5) return null;
+        if (!corpus.length || corpus.length>DOCUMENT_EVIDENCE_LIMITS.chunksPerSource) return null;
         // Preserve existing semantic proofs; new rows are canonical context only.
         result.push(...corpus.map(c=>selected.find(m=>key(m)===key(c)) || c));
       } else result.push(...selected);
-      if (result.length>5 || result.reduce((sum,m)=>sum+String(m.text||'').length,0)>9000) return null;
+      if (result.reduce((sum,m)=>sum+String(m.text||'').length,0)>9000) return null;
     }
+    if (!packDocumentEvidence(result)) return null;
     const complete=this.filterMatchesFromSources(businessId,result,sources,{strictSources:true,requireCompleteDocumentContext:true},undefined,documents);
     return complete.length===result.length ? complete : null;
   }

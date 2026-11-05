@@ -557,13 +557,18 @@ test(`spatial full-PDF/${specs[index][0]}/${channel}/${mode}`,{timeout:5000},asy
 
 // Actual retrieval plus bounded source completion: no forced PDF inventory.
 for(const index of [3,4])for(const channel of incidentChannels)
-for(const mode of (index===3?['normal','low-budget'] as const:['normal','late'] as const))
+for(const mode of (index===3?['normal','low-budget','conflict','stale','foreign','missing-group','unrelated','six-chunks','packing-overflow'] as const:['normal','late'] as const))
 test(`bounded document completion/${specs[index][0]}/${channel}/${mode}`,{timeout:5000},async t=>{
  quiet(t);b.reset();const spec=specs[index],saved=structuredClone(incidentConfig),f=setup(spec,'valid',77);
  const savedVerifier=process.env.ODINLINK_KNOWLEDGE_VERIFIER_PROTOCOL;process.env.ODINLINK_KNOWLEDGE_VERIFIER_PROTOCOL='source-exhaustive-v2';
- const corpus=await localDocumentCorpus(),question=gateControls[index][0],originalAnswer=gateControls[index][1];
- const answer=(index===3?'Según este documento ficticio de prueba: ':'طبق این سند تخیلی آزمایشی: ')+originalAnswer;
- const answers:string[]=[],calls:string[]=[],completions:any[]=[];let completionCalls=0;
+ const corpus=index===3?await incidentCorpus(false,77):await localDocumentCorpus(),question=gateControls[index][0],originalAnswer=gateControls[index][1];
+ if(mode==='conflict'){const txt=(await corpus.storage.list(77)).find(s=>s.id==='incident-txt')!;const content=txt.content+'\nBesökare måste använda huvudingången mot gatan, inte innergården.';await corpus.storage.create({...txt,content,metadata:{segments:[{start:0,end:content.length,section:'Text'}]}});}
+ if(mode==='six-chunks'){const pdf=(await corpus.storage.list(77)).find(s=>s.id==='incident-pdf')!,extra='Extra section outside the supported document envelope.';await corpus.storage.create({...pdf,content:pdf.content+'\n\n'+extra,metadata:{...pdf.metadata,segments:[...(pdf.metadata.segments as any[]),{start:pdf.content.length+2,end:pdf.content.length+2+extra.length,page:99}]}});}
+ if(mode==='packing-overflow'){const txt=(await corpus.storage.list(77)).find(s=>s.id==='incident-txt')!,content=txt.content+' '+'x'.repeat(6000);await corpus.storage.create({...txt,content,metadata:{segments:[{start:0,end:content.length,section:'Text'}]}});}
+ if(mode==='conflict'||mode==='packing-overflow'){const txt=(await corpus.storage.list(77)).find(s=>s.id==='incident-txt')!,parsed=documentChunks([{text:txt.content,section:'Text'}],txt.title);await corpus.storage.create({...txt,content:parsed.content,metadata:parsed.metadata});await corpus.storage.replaceChunks(77,txt.id,parsed.chunks.map(c=>({chunkIndex:Number(c.chunk_index),content:String(c.content),metadata:c.metadata as any})));}
+ if(mode==='unrelated')for(let i=0;i<6;i++){const text='zzzzxxxx';const parsed=documentChunks([{text}],'Other.txt');await corpus.storage.create({id:'unrelated-'+i,businessId:77,type:'document',status:'ready',title:'Other.txt',content:parsed.content,metadata:parsed.metadata,createdAt:'2026',updatedAt:'2026'});}
+ const answer=(index===3?'Según este documento ficticio de prueba: ':'طبق این سند تخیلی آزمایشی: ')+(index===3?'La entrada está en el patio interior, no en la entrada principal de la calle. ':'')+originalAnswer;
+ const answers:string[]=[],calls:string[]=[],completions:any[]=[],payloads:any[]=[];let completionCalls=0,completed:any[]=[];
  const now=Date.now();if(mode==='low-budget')t.mock.timers.enable({apis:['Date'],now});
  useLocalRetrieval(f,corpus.service);
  const search=f.dependencies.knowledgeSearch;
@@ -571,9 +576,12 @@ test(`bounded document completion/${specs[index][0]}/${channel}/${mode}`,{timeou
  f.dependencies.completeKnowledgeDocuments=async(id:number,found:any[],anchors:any[],options:any)=>{
   completionCalls++;const started=performance.now(),complete=await corpus.service.completeSelectedDocuments(id,found,anchors,options);
   completions.push({sources:found.map(m=>m.sourceId),inputCount:found.length,outputCount:complete?.length||0,elapsedMs:performance.now()-started});
+  completed=complete||[];
+  if(mode==='stale'){const pdf=(await corpus.storage.list(77)).find(s=>s.id==='incident-pdf')!;await corpus.storage.create({...pdf,content:pdf.content+' Revised.'});}
+  if(mode==='foreign'&&complete)complete[0]={...complete[0],businessId:88};
   if(mode==='late')await new Promise(resolve=>setTimeout(resolve,120));return complete;
  };
- f.dependencies.validateKnowledgeMatches=(id:number,found:any[])=>corpus.service.validateMatches(id,found,{strictSources:true,captureRevision:true,requireCompleteDocumentContext:true});
+ f.dependencies.validateKnowledgeMatches=async(id:number,found:any[])=>{const current=await corpus.service.validateMatches(id,found,{strictSources:true,captureRevision:true,requireCompleteDocumentContext:true});return mode==='missing-group'?current.slice(1):current;};
  f.dependencies.knowledgeCancellationConfig=async()=>{throw Error('No cancellation configuration for entry directions');};
  f.dependencies.aiGenerate=async(r:any)=>{
   const instruction=r.systemInstruction,data=JSON.parse(r.messages[0].content);
@@ -584,16 +592,21 @@ test(`bounded document completion/${specs[index][0]}/${channel}/${mode}`,{timeou
    calls.push('extraction');const pattern=/Besökare ska använda porten märkt\s+Aurora 7\s+och därefter följa de blå skyltarna till receptionen på andra våningen\./u;
    const e=data.evidence.find((e:any)=>pattern.test(e.text));
    if(!e)return{text:'{"oversized":false,"units":[]}'};
-   assert.equal(data.evidence.length,5);assert.ok(data.evidence.every((e:any)=>e.businessId===77));
+   assert.ok(data.evidence.length<=5);assert.ok(data.evidence.every((e:any)=>e.businessId===77&&e.text.length<=2400));
+   assert.ok(completed.every(m=>data.evidence.some((e:any)=>e.text.includes(m.text))),'Every canonical constituent reaches model context');
+   assert.ok(data.evidence.reduce((n:number,e:any)=>n+e.text.length,0)<=9000);
+   payloads.push({stage:'extraction',jsonChars:r.messages[0].content.length,utf8Bytes:Buffer.byteLength(r.messages[0].content),systemChars:r.systemInstruction.length,totalInputUtf8Bytes:Buffer.byteLength(r.messages[0].content)+Buffer.byteLength(r.systemInstruction),records:data.evidence.length,textChars:data.evidence.reduce((n:number,e:any)=>n+e.text.length,0),sourceGroups:data.evidence.map((e:any)=>e.sourceGroup)});
    return{text:JSON.stringify({units:[{facetIds:['f1'],subject:'studio visitors',predicate:'documented visitor information',value:answer,modality:'required',
-    negation:false,scope:'documented visitors',qualifiers:[],language:spec[0],text:answer,evidenceRefs:[{evidenceId:e.id,exactQuote:pattern.exec(e.text)![0]}]}]})};
+    negation:false,scope:'documented visitors',qualifiers:[],language:spec[0],text:answer,evidenceRefs:[{evidenceId:e.id,exactQuote:pattern.exec(e.text)![0]},...(index===3?[{evidenceId:e.id,exactQuote:'Studions entré ligger på innergården, inte vid huvudingången mot gatan.'}]:[])]}]})};
   }
+  payloads.push({stage:'verification',jsonChars:r.messages[0].content.length,utf8Bytes:Buffer.byteLength(r.messages[0].content),systemChars:r.systemInstruction.length,totalInputUtf8Bytes:Buffer.byteLength(r.messages[0].content)+Buffer.byteLength(r.systemInstruction),records:data.evidence.length,textChars:data.evidence.reduce((n:number,e:any)=>n+e.text.length,0),sourceGroups:data.evidence.map((e:any)=>e.sourceGroup)});
+  if(mode==='conflict')assert.ok(data.evidence.some((e:any)=>e.text.includes('Besökare måste använda huvudingången mot gatan, inte innergården.')),'Current conflicting TXT reaches independent verification');
   calls.push('verification');assert.equal(r.structuredOutput?.name,'odinlink_knowledge_source_exhaustive_v2');
-  return{text:JSON.stringify({decisions:data.units.map((u:any)=>({unitId:u.id,facetIds:u.facetIds,relation:'ENTAILED',meaningPreserved:true,modalityPreserved:true,
+  return{text:JSON.stringify({decisions:data.units.map((u:any)=>({unitId:u.id,facetIds:u.facetIds,relation:mode==='conflict'?'CONTRADICTED':'ENTAILED',meaningPreserved:mode!=='conflict',modalityPreserved:true,
    qualifiersPreserved:true,relevant:true,languageCorrect:true,negativeAbsence:false,explicitAbsenceEvidence:false})),coverage:data.facets.map((f:any)=>({facetId:f.id,
    requestAligned:true,materialFactsComplete:true,incompletenessReason:'NONE',materialUnitIds:data.units.map((u:any)=>u.id),
    obligations:f.obligations.map((o:any)=>({obligationId:o.id,status:'COVERED',unitIds:data.units.map((u:any)=>u.id)}))})),
-   sourceCoverage:{protocol:'source-exhaustive-v2',requestAligned:true,availableMaterialFactsComplete:true,conditionsPreserved:true,conflictsAbsent:true,
+   sourceCoverage:{protocol:'source-exhaustive-v2',requestAligned:true,availableMaterialFactsComplete:true,conditionsPreserved:true,conflictsAbsent:mode!=='conflict',
     evidenceIdsReviewed:data.evidence.map((e:any)=>e.id),acceptedUnitIdsReviewed:data.units.map((u:any)=>u.id),
     obligations:data.facets.flatMap((f:any)=>f.obligations.map((o:any)=>({facetId:f.id,obligationId:o.id,state:'COMPLETE'})))}})};
  };
@@ -601,15 +614,15 @@ test(`bounded document completion/${specs[index][0]}/${channel}/${mode}`,{timeou
   Object.assign(incidentConfig,audited.business,{id:77,businessId:77,businessRecordId:77,business_id:77,language:spec[0],cancellationSettingsEvidence:f.config.cancellationSettingsEvidence});
   t.mock.method(globalThis,'fetch',async(url,options)=>{answers.push(interceptedIncidentSend(url,options));return new Response(JSON.stringify({ok:true,result:{message_id:1},messages:[{id:'offline'}]}));});
   b.configure(f.dependencies);const started=performance.now();await incidentInbound(b,channel,question);
-  records.push({kind:'SCRIPTED_BOUNDED_DOCUMENT_COMPLETION',language:spec[0],channel,mode,question,answers,calls,completionCalls,completions,retrieval:f.retrieval,actions:f.stats().actions,wallMs:performance.now()-started});
+  records.push({kind:'SCRIPTED_BOUNDED_DOCUMENT_COMPLETION',language:spec[0],channel,mode,question,answers,calls,payloads,completionCalls,completions,retrieval:f.retrieval,actions:f.stats().actions,wallMs:performance.now()-started});
   assert.equal(f.stats().actions,0);assert.equal(answers.length,1);
-  if(index===4&&mode==='normal'){
-   assert.deepEqual(answers,[answer]);assert.equal(completionCalls,1);assert.equal(completions[0].outputCount,5);assert.equal(calls.filter(s=>s==='verification').length,1);
-   assert.equal(calls.filter(s=>s==='source_query').length,1,'Reuse the existing single Swedish recovery stage');
+  if(mode==='normal'||mode==='unrelated'){
+   assert.deepEqual(answers,[answer]);assert.equal(completionCalls,1);assert.equal(completions[0].outputCount,index===3?6:5);assert.equal(calls.filter(s=>s==='verification').length,1);
+   assert.equal(calls.filter(s=>s==='source_query').length,index===3?0:1,'Reuse the existing single Swedish recovery stage');
   }else{
    assert.equal(answers[0].includes(originalAnswer),false);
    if(mode==='low-budget')assert.equal(completionCalls,0);else assert.equal(completionCalls,1);
-   if(mode==='normal')assert.equal(completions[0].outputCount,0,'Do not evict TXT to fit the PDF');
+   if(mode==='conflict')assert.ok(calls.includes('verification'),'Conflicting applicable context reaches independent verification');
   }
  }finally{
   for(const key of Object.keys(incidentConfig))delete (incidentConfig as any)[key];Object.assign(incidentConfig,saved);b.reset();

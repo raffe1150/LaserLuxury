@@ -5,6 +5,7 @@ import { selectCanonicalConfigurationProducer, captureCanonicalConfigurationProd
   CANONICAL_CONFIG_INSTRUCTION, SOURCE_PARTITIONED_PRODUCER, SOURCE_PARTITIONED_INSTRUCTION, type CanonicalConfigurationProducer } from './canonical-configuration-propositions';
 import { isSourceExhaustiveProtocol, sourceExhaustiveInstruction, assessSourceCoverage, SOURCE_EXHAUSTIVE_V2_EVIDENCE_REVIEW } from './source-exhaustive-coverage';
 import { createHash } from 'node:crypto';
+import { packDocumentEvidence } from '../knowledge/document-evidence-packing';
 import { numericalConstraintSafe, NUMERICAL_DIRECTION_GUIDANCE } from './numerical-constraints';
 import { containsUnverifiedBookingSuccessClaim } from './reliability';
 import { containsWebOperationSuccess } from './web-response-integrity';
@@ -43,7 +44,9 @@ export type CatalogRequirement = Readonly<{businessId:number;serviceName:string;
 export type Obligation = Readonly<{ id: string; description: string; questionType: QuestionType; catalogRequirement?:CatalogRequirement }>;
 export type Facet = Readonly<{ id: string; subject: string; attribute: string; questionType: QuestionType; obligations: readonly Obligation[] }>;
 export type Modality = 'descriptive' | 'recommended' | 'required' | 'permitted' | 'prohibited';
-export type Evidence = Readonly<{ id: string; sourceId: string; chunkId: string; version: string; businessId: number; text: string }>;
+export type Evidence = Readonly<{ id: string; sourceId: string; chunkId: string; version: string; businessId: number; text: string;
+  /** Backend-only constituent boundaries; a quotation cannot cross a grouping seam. */
+  citationRanges?: readonly Readonly<{ start: number; end: number }>[] }>;
 export type AnswerUnit = Readonly<{
   id: string; facetIds: readonly string[]; subject: string; predicate: string; value: string;
   verification: 'PROPOSED' | 'ENTAILED';
@@ -193,14 +196,33 @@ export function parseRequestedFacets(value: unknown): { facets: Facet[]; oversiz
 
 /** IDs, versions and tenant are assigned from validated retrieval, never from model claims. */
 export function answerEvidence(businessId: number, matches: readonly any[]): Evidence[] {
+  return answerEvidenceBindings(businessId, matches).map(binding => binding.evidence);
+}
+/** Reconstructed from the immutable retrieval inventory at each freshness read.
+ * Every grouped byte must still bind to all of its original canonical rows. */
+export function answerEvidenceBindings(businessId: number, matches: readonly any[]): { evidence: Evidence; matches: readonly any[] }[] {
+  if (matches.length > 5) {
+    if (matches.some(m => m.businessId !== businessId)) return [];
+    const groups = packDocumentEvidence(matches);
+    if (!groups) return [];
+    return groups.map((group, index) => {
+      const rows = group.matches;
+      if (rows.length === 1) return { evidence: { ...answerEvidence(businessId, rows)[0], id: `e${index + 1}` }, matches: rows };
+      let offset = 0;
+      const citationRanges = rows.map(row => { const start = offset; offset += row.text!.length + 2; return Object.freeze({start, end: offset - 2}); });
+      return { evidence: Object.freeze({ id: `e${index + 1}`, businessId, sourceId: rows[0].sourceId,
+        chunkId: hash(JSON.stringify(rows.map(row => [row.sourceId, row.text, row.metadata?.page, row.metadata?.sheet, row.metadata?.section]))),
+        version: String(rows[0].metadata!.documentRevision), text: group.text, citationRanges: Object.freeze(citationRanges) }), matches: rows };
+    });
+  }
   let length = 0;
   // Keep complete chunks, never truncate away a condition at the text boundary.
   return matches.filter(m => {
     if (m.businessId !== businessId || !short(m.sourceId, 256) || !short(m.text, 9000) || length + m.text.length > 9000) return false;
     length += m.text.length; return true;
-  }).slice(0, 5).map((m, i) => Object.freeze({ id: `e${i + 1}`, businessId, sourceId: m.sourceId,
+  }).slice(0, 5).map((m, i) => ({ matches: [m], evidence: Object.freeze({ id: `e${i + 1}`, businessId, sourceId: m.sourceId,
       chunkId: hash(JSON.stringify([m.sourceId, m.text, m.metadata?.page, m.metadata?.sheet, m.metadata?.section])),
-      version: String(m.metadata?.documentRevision || m.metadata?.sourceRevision || hash(m.text)), text: m.text }));
+      version: String(m.metadata?.documentRevision || m.metadata?.sourceRevision || hash(m.text)), text: m.text }) }));
 }
 
 export function parseAnswerUnits(raw: unknown, facets: readonly Facet[], evidence: readonly Evidence[], language: string,
@@ -223,6 +245,9 @@ export function parseAnswerUnits(raw: unknown, facets: readonly Facet[], evidenc
       if (!e) { diagnostic({stage:'extraction',unitId:`u${index+1}`,reason:'INVALID_CITATION',citationSubtype:'EVIDENCE_ID'}); break; }
       const citation=short(r.exactQuote,2400)?resolveEvidenceQuote(e.text,r.exactQuote):{subtype:'QUOTE_NOT_FOUND' as const};
       if (!citation.quote) { diagnostic({stage:'extraction',unitId:`u${index+1}`,reason:'INVALID_CITATION',citationSubtype:citation.subtype,typographyHint:citation.typographyHint}); break; }
+      if (e.citationRanges && !e.citationRanges.some(span => citation.start! >= span.start && citation.end! <= span.end)) {
+        diagnostic({stage:'extraction',unitId:`u${index+1}`,reason:'INVALID_CITATION',citationSubtype:'QUOTE_NOT_FOUND'}); break;
+      }
       if(citation.subtype)diagnostic({stage:'extraction',unitId:`u${index+1}`,reason:'ACCEPTED',citationSubtype:citation.subtype});
       refs.push(Object.freeze({ evidenceId: e.id, sourceId: e.sourceId, chunkId: e.chunkId, version: e.version, exactQuote: citation.quote }));
     }
@@ -507,7 +532,7 @@ export async function buildEvidenceFirstAnswer(input: {
     catalogProposal?availableEvidence.filter(e=>e.id!==catalogProposal.evidenceId):availableEvidence;
   if(partitioned&&extractionEvidence.length&&canonicalConfiguration!.units.length>=ANSWER_LIMITS.units)return empty('UNAVAILABLE','LIMIT_EXCEEDED');
   let literalSnapshot:LiteralEvidenceSnapshot|null=null;
-  if(requestedExtractionProtocol==='literal-evidence-v1' && !extractionEvidence.some(e=>e.id==='configured-services'||e.sourceId.startsWith('configured-services:'))) {
+  if(requestedExtractionProtocol==='literal-evidence-v1' && !extractionEvidence.some(e=>e.citationRanges||e.id==='configured-services'||e.sourceId.startsWith('configured-services:'))) {
     try{literalSnapshot=captureLiteralEvidence(input.businessId!,extractionEvidence);}catch{return empty('UNAVAILABLE','SOURCE_INVALID');}
   }
   // One captured backend decision controls instruction, schema and hydration.

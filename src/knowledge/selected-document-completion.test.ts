@@ -39,7 +39,8 @@ test('a competing source is never displaced to fit a five-chunk PDF',async()=>{
  const f=await fixture();const text='The entrance is closed during construction.';
  const doc=documentChunks([{text}],'Conditions.txt');const source={...f.source,id:'conditions',content:doc.content,metadata:doc.metadata};await f.storage.create(source);
  const other={sourceId:source.id,businessId:77,text,score:1,metadata:{...(doc.chunks[0].metadata as any),documentRevision:knowledgeSourceRevision(source)}};
- assert.equal(await f.service.completeSelectedDocuments(77,[f.rows[0],other],[f.rows[0],other]),null);
+ const complete=await f.service.completeSelectedDocuments(77,[f.rows[0],other],[f.rows[0],other]);
+ assert.equal(complete?.length,6);assert.ok(complete?.some(m=>m.text===text),'Competing condition survives grouping');
 });
 test('independently relevant TXT and conflicting conditions are retained when both fit',async()=>{
  const f=await fixture(3),text='Customer access is unavailable during construction.';

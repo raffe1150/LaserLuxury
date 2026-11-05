@@ -3,6 +3,7 @@ import { recoveryDiagnostic, recoveryFailureFields, recoveryOutcome, recoveryExt
 import {installControlledTrial,trialModeOn,trialEnforced,trialHttpAllowed,trialBusinessId,
   controlledTrialBinding,runControlledTrialInbound,withVerifiedTrialMeta,withVerifiedTrialTelegram,trialSendAllowed,
   denyTrialAction,assertTrialProvider,trialSha,trialPollerCurrent,trialCurrent} from './src/runtime/controlled-knowledge-trial';
+import { packDocumentEvidence } from './src/knowledge/document-evidence-packing';
 import { installConfiguredKnowledgeBudgetOwner } from './src/ai/durable-knowledge-budget-owner';
 import { accuracyFirstEnabled, ACCURACY_FIRST_POLICY, accuracyFirstExtractionAllowance, nativeKnowledgeTiming, runAccuracyFirstNative, abortKnowledgeWork } from './src/ai/knowledge-timing-policy';
 import { directServiceInformationPlan } from './src/ai/direct-service-planning';
@@ -42,7 +43,7 @@ import { isCancellationInformationRequested, readCancellationPolicy, cancellatio
   type CancellationConfirmation, type CancellationSubject } from './src/ai/cancellation-policy';
 import { selectSemanticQueries, retainPlannedQueryLanguages, explicitlyWrongWorkflow, type PlannedQueryLanguages, type SourceLanguage } from './src/knowledge/semantic-queries';
 import { RequestSecurity, immutable } from './src/knowledge/request-security';
-import { InformationBudget, INFORMATION_PUBLICATION_RESERVE_MS, parseRequestedFacets, answerEvidence, buildEvidenceFirstAnswer, narrowInformationRequest, withinInformationDeadline, pruneAnswerManifest, publishableKnowledgeManifest, type Facet, type Evidence, type AnswerManifest } from './src/ai/business-information-answer-plan';
+import { InformationBudget, INFORMATION_PUBLICATION_RESERVE_MS, parseRequestedFacets, answerEvidence, answerEvidenceBindings, buildEvidenceFirstAnswer, narrowInformationRequest, withinInformationDeadline, pruneAnswerManifest, publishableKnowledgeManifest, type Facet, type Evidence, type AnswerManifest } from './src/ai/business-information-answer-plan';
 import { KNOWLEDGE_SCHEMA_VERSION, verificationAdmissionDiagnostic, knowledgeDiagnosticFailure, knowledgeStructuredOutput, knowledgeFailureReason, safeModelIdentifier, selectKnowledgeVerificationProtocol, selectKnowledgeExtractionProtocol, type KnowledgeExtractionProtocol, type KnowledgeVerificationProtocol, type KnowledgeDecision, type DecisionReason, type KnowledgeStage } from './src/ai/knowledge-answer-protocol';
 import { captureKnowledgeModelProfile, knowledgeStageOptions, type KnowledgeModelProfile, type KnowledgeExecutionPermit } from './src/ai/knowledge-model-policy';
 import { resolveOpenAiTextModel } from './src/ai/providers/openai';
@@ -5736,13 +5737,12 @@ async function currentAnswerEvidence(): Promise<readonly Evidence[]> {
       // Validate the evidence actually admitted to the bounded model payload.
       // Retrieved rows omitted by packing cannot supply document-wide context.
       const boundEvidenceIds = new Set<string>();
-      const modelMatches = snapshot.matches.filter(match => {
-        const candidate = answerEvidence(snapshot.businessId, [match])[0];
-        const bound = candidate && snapshot.evidence.find(item => !boundEvidenceIds.has(item.id) &&
-          item.sourceId === candidate.sourceId && item.chunkId === candidate.chunkId &&
-          item.version === candidate.version && item.text === candidate.text);
+      const modelMatches = answerEvidenceBindings(snapshot.businessId, snapshot.matches).flatMap(binding => {
+        const candidate = binding.evidence;
+        const bound = snapshot.evidence.find(item => !boundEvidenceIds.has(item.id) &&
+          item.id === candidate.id && JSON.stringify(item) === JSON.stringify(candidate));
         if (bound) boundEvidenceIds.add(bound.id);
-        return !!bound;
+        return bound ? binding.matches : [];
       });
       const readDocuments = () => revalidateKnowledgeSourceIds(snapshot.businessId, modelMatches,
         priority1hTestDependencies?.validateKnowledgeMatches || ((id, matches) => knowledgeService.validateMatches(id, matches, { signal: state.budget?.nativeTiming?.signal, strictSources: true,requireCompleteDocumentContext:true,onRejected:(id,reason)=>reasons.set(id,reason) })),
@@ -5904,7 +5904,7 @@ async function generateNativeKnowledgeContent(sessionId:string,options:any,suppo
     // use the same ID-only citation transport as configuration recovery; full
     // source entailment, inventory coverage and revision checks are unchanged.
     const extractionProtocol = (cancellationEvidence || boundedDocumentary) && getConfiguredAiProvider() === 'openai' && state.modelProfile!.id === 'default' &&
-      configuredExtractionProtocol === 'v2' && modelEvidenceSnapshot.every(e => e.text.length <= 2400)
+      configuredExtractionProtocol === 'v2' && modelEvidenceSnapshot.every(e => !e.citationRanges && e.text.length <= 2400)
       ? 'literal-evidence-v1' : configuredExtractionProtocol;
     if (state.extractionProtocol === undefined) Object.defineProperty(state, 'extractionProtocol', { value: extractionProtocol, enumerable: true });
     const snapshot = buildBusinessGroundingSnapshot(support);
@@ -8969,7 +8969,13 @@ function getActiveBusinessInformation(sessionId: string) {
 function formatRetrievedBusinessKnowledge(
   matches: Array<{ sourceId?: string; text?: string; score?: number; metadata?: Record<string, unknown> }>
 ): string {
-  const chunks = matches
+  // Group transport only after canonical completion; retain constituent provenance.
+  // Overflow is unavailable, never permission to drop another source.
+  const grouped = matches.length > 5 ? packDocumentEvidence(matches as KnowledgeSearchMatch[]) : null;
+  if (matches.length > 5 && !grouped) return '';
+  const transport = grouped ? grouped.map(group => ({...group.matches[0], text:group.text,
+    metadata:{...group.matches[0].metadata, constituents:group.matches.map(m=>m.metadata)}})) : matches;
+  const chunks = transport
     .slice(0, 5)
     .map((match, index) => {
       const content = String(match?.text || "").trim();
@@ -8979,7 +8985,7 @@ function formatRetrievedBusinessKnowledge(
         `KNOWLEDGE CHUNK ${index + 1}`,
         `source_id: ${String(match?.sourceId || "")}`,
         ...(match.metadata?.source === "document" ? [
-          `document_provenance: ${JSON.stringify({ filename: match.metadata.filename, page: match.metadata.page, sheet: match.metadata.sheet, section: match.metadata.section })}`,
+          `document_provenance: ${JSON.stringify({ filename: match.metadata.filename, page: match.metadata.page, sheet: match.metadata.sheet, section: match.metadata.section, ...(grouped ? {constituents:match.metadata.constituents} : {}) })}`,
           `untrusted_document_text: ${JSON.stringify(content.slice(0, 2400))}`,
         ] : [content.slice(0, 2400)]),
       ].join("\n");
@@ -8989,7 +8995,7 @@ function formatRetrievedBusinessKnowledge(
   let result = '';
   for (const chunk of chunks) {
     const next = result ? `${result}\n\n${chunk}` : chunk;
-    if (next.length > 9000) break;
+    if (next.length > 9000) { if (grouped) return ''; break; }
     result = next;
   }
   return result;

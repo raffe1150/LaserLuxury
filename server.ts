@@ -5728,12 +5728,12 @@ async function currentAnswerEvidence(): Promise<readonly Evidence[]> {
   try {
     valid = await withinInformationDeadline(state.budget, async () => {
       if (!await knowledgeContextCurrent(false)) throw new Error('knowledge_context_invalid');
-      const documents = await revalidateKnowledgeSourceIds(snapshot.businessId, snapshot.matches,
+      const readDocuments = () => revalidateKnowledgeSourceIds(snapshot.businessId, snapshot.matches,
         priority1hTestDependencies?.validateKnowledgeMatches || ((id, matches) => knowledgeService.validateMatches(id, matches, { signal: state.budget?.nativeTiming?.signal, strictSources: true,onRejected:(id,reason)=>reasons.set(id,reason) })),
         (id,reason)=>{if(!reasons.has(id))reasons.set(id,reason);});
-      const valid = new Set(documents);
       const serviceEvidence = snapshot.evidence.find(e => e.sourceId === `configured-services:${snapshot.businessId}`);
-      if (serviceEvidence) {
+      const readCatalog = async () => {
+        if (!serviceEvidence) return undefined;
         let catalog: unknown;
         if (process.env.NODE_ENV === 'test') catalog = priority1hTestDependencies?.knowledgeServiceCatalog
           ? await priority1hTestDependencies.knowledgeServiceCatalog(snapshot.businessId) : requestSecurity.evidence?.support?.businessConfig.services;
@@ -5745,7 +5745,21 @@ async function currentAnswerEvidence(): Promise<readonly Evidence[]> {
           catalog = data.services;
         }
         const current = configuredServiceEvidence(snapshot.businessId, catalog);
-        if (current?.version === serviceEvidence.version) valid.add(serviceEvidence.sourceId);
+        return current?.version === serviceEvidence.version ? serviceEvidence.sourceId : undefined;
+      };
+      let valid: Set<string>;
+      if (state.budget?.nativeTiming && snapshot.matches.length && serviceEvidence) {
+        // Independent authority reads share the native deadline. Keep both
+        // observed until they settle, even if one fails, before committing freshness.
+        const [documents, catalog] = await Promise.allSettled([readDocuments(), readCatalog()]);
+        if (documents.status === 'rejected') throw documents.reason;
+        if (catalog.status === 'rejected') throw catalog.reason;
+        valid = new Set(documents.value);
+        if (catalog.value) valid.add(catalog.value);
+      } else {
+        valid = new Set(await readDocuments());
+        const catalog = await readCatalog();
+        if (catalog) valid.add(catalog);
       }
       // Read settings last: document/catalog awaits cannot leave an earlier
       // configuration check stale immediately before returning publication evidence.

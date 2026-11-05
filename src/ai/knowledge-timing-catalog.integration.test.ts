@@ -49,3 +49,35 @@ test(`accuracy-first incomplete separate authorities ${tenant.id}/${channel}/${m
   assert.equal(actions,0);
  }finally{Object.assign(incidentConfig,original);b.reset();}
 });
+
+test('native mixed-authority freshness starts the catalog read before the document read settles', async t => {
+ b.reset();
+ for(const name of ['log','info','warn','error'] as const)t.mock.method(console,name,()=>{});
+ const config={...incidentConfig,services:[tenants[0]]};
+ const question='What does Video Consultation cost, how long does it last, and can it replace an in-person visit?';
+ const matches=[{businessId:77,sourceId:'current-document',text:'Remote consultations cannot automatically replace an in-person visit.',score:1,
+  metadata:{source:'document',documentRevision:'revision-1'}}];
+ let releaseDocuments!:()=>void;
+ const documentsBlocked=new Promise<void>(resolve=>{releaseDocuments=resolve;});
+ const calls:string[]=[];
+ b.configure({offlineAi:true,
+  validateKnowledgeMatches:async(id,found)=>{
+   assert.equal(id,77);calls.push('documents started');
+   await documentsBlocked;
+   calls.push('documents settled');return found;
+  },
+  knowledgeServiceCatalog:async id=>{assert.equal(id,77);calls.push('catalog started');return config.services;},
+ });
+ try{
+  await b.nativeKnowledgeEvidenceRequest({sessionId:'overlapping-freshness',businessConfig:config,question,language:'en',
+   facets:[{subject:'Video Consultation',attribute:question,questionType:'description'}],matches},async api=>{
+   const refresh=api.refresh();
+   await new Promise<void>(resolve=>setImmediate(resolve));
+   const startedBeforeRelease=[...calls];
+   releaseDocuments();
+   const current=await refresh;
+   assert.deepEqual(startedBeforeRelease,['documents started','catalog started']);
+   assert.deepEqual(current.map(e=>e.id),['e1','configured-services']);
+  });
+ }finally{releaseDocuments();b.reset();}
+});

@@ -916,6 +916,46 @@ export class KnowledgeService {
     return [...selected.values()];
   }
 
+  /** Complete only sources already admitted by retrieval, never an entire tenant.
+   * A current lexical anchor permits canonical document context, not new facts.
+   * Keep ALL retrieved sources: if their union cannot fit, do not expand any.
+   * Semantic-only hits never acquire lexical authority through this operation. */
+  async completeSelectedDocuments(businessId: number, matches: readonly KnowledgeSearchMatch[], lexical: readonly KnowledgeSearchMatch[],
+    options?: KnowledgeSemanticOptions): Promise<KnowledgeSearchMatch[] | null> {
+    if (!Number.isSafeInteger(businessId) || businessId <= 0 || !matches.length || !lexical.length ||
+        matches.some(m => m.businessId !== businessId) || new Set(matches.map(m => m.sourceId)).size > 5) return null;
+    await abortable(this.ensureInitialized(), options?.signal);
+    const read = this.storage.list(businessId, options);
+    const sources = await abortable(options?.observe ? options.observe(read) : read, options?.signal);
+    const documents = new Map<string, { revision: string; corpus: SemanticChunk[] }>();
+    const ready = new Map(sources.filter(s => s.businessId === businessId && s.status === 'ready').map(s => [s.id, s]));
+    const key = (m: KnowledgeSearchMatch) => JSON.stringify([m.sourceId,m.text,m.metadata?.page,m.metadata?.sheet,m.metadata?.section]);
+    const known = [...new Map(matches.map(m => [key(m),m])).values()];
+    // Unknown/stale revisions cannot be silently rebound during completion.
+    if (known.some(m => {const s=ready.get(m.sourceId);return !s || s.type==='document' && m.metadata?.documentRevision!==documentRevision(s);})) return null;
+    const current = this.filterMatchesFromSources(businessId, known, sources, {strictSources:true,captureRevision:true},undefined,documents);
+    if (current.length !== known.length) return null;
+    const anchors = this.filterMatchesFromSources(businessId, lexical.filter(m => m.businessId===businessId && !m.indexProof &&
+      Number.isFinite(m.score) && Number(m.score)>0 && current.some(c=>key(c)===key(m) && c.metadata?.documentRevision===m.metadata?.documentRevision)),
+      sources,{strictSources:true},undefined,documents);
+    const anchored = new Set(anchors.filter(m=>ready.get(m.sourceId)?.type==='document').map(m=>m.sourceId));
+    if (!anchored.size) return null;
+    const result: KnowledgeSearchMatch[] = [];
+    for (const id of new Set(current.map(m=>m.sourceId))) {
+      const selected=current.filter(m=>m.sourceId===id),source=ready.get(id)!;
+      if (anchored.has(id)) {
+        if (source.content.length>9000) return null;
+        const corpus=documents.get(id)!.corpus;
+        if (!corpus.length || result.length+corpus.length>5) return null;
+        // Preserve existing semantic proofs; new rows are canonical context only.
+        result.push(...corpus.map(c=>selected.find(m=>key(m)===key(c)) || c));
+      } else result.push(...selected);
+      if (result.length>5 || result.reduce((sum,m)=>sum+String(m.text||'').length,0)>9000) return null;
+    }
+    const complete=this.filterMatchesFromSources(businessId,result,sources,{strictSources:true,requireCompleteDocumentContext:true},undefined,documents);
+    return complete.length===result.length ? complete : null;
+  }
+
   /** OpenAI query embeddings only; corpus generations are prepared off-request. */
   async semanticSearchQueries(businessId: number, queries: string[], limit = 5, options?: KnowledgeSemanticOptions): Promise<KnowledgeSearchMatch[]> {
     const seen = new Set<string>();

@@ -4,7 +4,7 @@ import {installControlledTrial,trialModeOn,trialEnforced,trialHttpAllowed,trialB
   controlledTrialBinding,runControlledTrialInbound,withVerifiedTrialMeta,withVerifiedTrialTelegram,trialSendAllowed,
   denyTrialAction,assertTrialProvider,trialSha,trialPollerCurrent,trialCurrent} from './src/runtime/controlled-knowledge-trial';
 import { installConfiguredKnowledgeBudgetOwner } from './src/ai/durable-knowledge-budget-owner';
-import { accuracyFirstEnabled, ACCURACY_FIRST_POLICY, accuracyFirstExtractionAllowance, nativeKnowledgeTiming, runAccuracyFirstNative } from './src/ai/knowledge-timing-policy';
+import { accuracyFirstEnabled, ACCURACY_FIRST_POLICY, accuracyFirstExtractionAllowance, nativeKnowledgeTiming, runAccuracyFirstNative, abortKnowledgeWork } from './src/ai/knowledge-timing-policy';
 import { directServiceInformationPlan } from './src/ai/direct-service-planning';
 import { selectCandidateRetrievalPolicy, type CandidateFallback, type RetrievalObservation } from './src/knowledge/candidate-retrieval';
 import { directMixedSourceInformationPlan, mixedSourceInformationQuestion } from './src/ai/mixed-source-planning';
@@ -1539,6 +1539,7 @@ type Priority1hTestDependencies = {
   validateKnowledgeMatches?: (businessId: number, matches: any[]) => Promise<any[]>;
   knowledgeSourceLanguages?: (businessId: number) => Promise<SourceLanguage[]>;
   completeKnowledgeCorpus?: (businessId: number, lexical: KnowledgeSearchMatch[]) => Promise<KnowledgeSearchMatch[] | null>;
+  completeKnowledgeDocuments?: KnowledgeService['completeSelectedDocuments'];
   semanticKnowledgeSearchQueries?: (businessId: number, queries: string[], limit: number, options?: import('./src/knowledge/persistent-search').KnowledgeSemanticOptions) => Promise<any[]>;
   semanticKnowledgeSearch?: (
     businessId: number,
@@ -9368,6 +9369,8 @@ async function retrieveBusinessKnowledgeForQuestion(
       businessId,
     );
 
+    let completionAnchors = lexicalMatches;
+    let completionContext = [...deduped.values(), ...scopedSemanticMatches];
     let matches = mergeKnowledgeMatchesByRank(
       lexicalMatches,
       scopedSemanticMatches,
@@ -9388,9 +9391,28 @@ async function retrieveBusinessKnowledgeForQuestion(
         const query = !response.structuredFailure && !response.functionCalls?.length ? parseSourceLanguageQuery(response.text) : null;
         if (query) {
           const [lexical, semantic] = await Promise.all([searchKnowledge(businessId,query,5),semanticSearchKnowledge(businessId,[normalizedQuestion,query],5)]);
+          completionAnchors = retainScopedKnowledgeMatches(lexical.filter(m=>!explicitlyWrongWorkflow(String(m.text||''),normalizedQuestion)),businessId);
+          completionContext = [...completionContext,...completionAnchors,...retainStrictlyScopedSemanticKnowledgeMatches(semantic.filter(m=>!explicitlyWrongWorkflow(String(m.text||''),normalizedQuestion)),businessId)];
           matches = mergeKnowledgeMatchesByRank(retainScopedKnowledgeMatches(lexical.filter(m=>!explicitlyWrongWorkflow(String(m.text||''),normalizedQuestion)),businessId),retainStrictlyScopedSemanticKnowledgeMatches(semantic.filter(m=>!explicitlyWrongWorkflow(String(m.text||''),normalizedQuestion)),businessId),5);
         }
       } catch(error) {emitKnowledgeDecision({stage:'planning',reason:knowledgeFailureReason(error)});}
+    }
+
+    // Optional native context read, capped at 100ms like the small-corpus proof,
+    // inside the same deadline. It cannot evict sources or spend model calls.
+    if (timing && state?.budget && !completeCorpusUsed && state.migrated!==false && !state.mixedRequest &&
+        !state.requiresReferenceResolution && state.budget.generationRemaining()>ACCURACY_FIRST_POLICY.verificationReserveMs+100 &&
+        completionAnchors.length && matches.some(m=>m.metadata?.source==='document')) {
+      const controller=new AbortController(),signal=AbortSignal.any([timing.signal,controller.signal]);
+      const timer=setTimeout(()=>controller.abort(),100);
+      try {
+        const pending = Promise.resolve().then(() => process.env.NODE_ENV==='test'
+          ? priority1hTestDependencies?.completeKnowledgeDocuments?.(businessId,completionContext,completionAnchors,{...retrievalOptions,signal}) || null
+          : knowledgeService.completeSelectedDocuments(businessId,completionContext,completionAnchors,{...retrievalOptions,signal}));
+        const complete = await abortKnowledgeWork(timing.observe(pending),signal);
+        if (complete && !signal.aborted) matches=complete;
+      } catch { /* Retain original retrieval; ordinary full-context gates decide. */ }
+      finally { clearTimeout(timer); }
     }
 
     if (state?.budget) {

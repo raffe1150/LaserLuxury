@@ -7,6 +7,11 @@ export type BusinessInformationTopic = 'company' | 'services' | 'contact' | 'hou
 
 const businessAddressPattern = /(?<![\p{L}\p{M}\p{N}_])(?:location|located|standort\w*|kundeneingang\w*|adresse|adress|kundentré\w*|ubicaci[oó]n|ubicad\w*|direcci[oó]n|befind\w*)(?![\p{L}\p{M}\p{N}_])|\b(?:your|our|business|street|postal|mailing|physical)\s+address\b|\b(?:what(?:['’]s|\s+is)|where(?:['’]s|\s+is))\s+(?:the\s+|your\s+|our\s+)?address\b|\bcustomer\s+entrance\b|\bentrance\s+(?:for\s+)?customers?\b|\bvar\s+ligger\b|\bentrada\s+(?:de\s+|para\s+)?clientes?\b|آدرس|ورودی\s+مشتری(?:ان)?|کجا\s+هست|عنوان(?:كم|ك|نا)|مدخل\s+العملاء|(?:أين|اين)\s+(?:يقع\s+)?(?:مكان|موقع)/iu;
 
+// A generic Persian place noun is not itself a request for contact details.
+// Recognize a locative question, an explicit location request, or a standalone
+// nominal question instead; incidental policy context keeps its original intent.
+const persianPlaceRequestPattern = /(?:محل|مکان)[^.!?؟\n]{0,45}(?:کجا(?:ست|یی|ی)?|کجاس|کجاست|کو(?:جاست)?)(?![\p{L}\p{M}])|(?:کجا(?:ست)?|کجاس)[^.!?؟\n]{0,45}(?:محل|مکان)|(?:محل|مکان)[^.!?؟\n]{0,35}(?:بفرست|ارسال|اعلام|نشان|بگو)|^(?:لطفاً?\s+)?(?:محل|مکان)(?:\s+(?:دقیق|شما|تان|کارتان|کارتون|استودیو)){0,4}\s*[?؟]?$/u;
+
 // Location can be expressed as a relationship to the business without an
 // address/location noun. Use the same role for requests and verified claims;
 // recognizing the role does not establish that the claim is supported.
@@ -31,8 +36,8 @@ export function isAdvanceBookingPolicyQuestion(text: string): boolean {
 const topicPatterns: Record<BusinessInformationTopic, RegExp> = {
   company: /\b(?:company|business|unternehmen|firma|företag|verksamhet|empresa|negocio)\b|کسب.?و.?کار|شرکت|الشركة|المنشأة/iu,
   services: /\b(?:services?|offer(?:ings?)?|dienstleistungen?|leistungen?|angebot\w*|serviceportfolio|leistungskatalog|pakete?|tjänst\w*|utbud|servicios?|ofrecen|paquetes?)\b|خدمات|سرویس|الخدمات|خدمة/iu,
-  contact: /(?<![\p{L}\p{M}\p{N}_])(?:contact\w*|reach|website|location|located|entrance\w*|entry|übersichtsseite|standort\w*|kundeneingang\w*|eingang\w*|zugang\w*|erreichen|kontakt\w*|address|adresse|adress|ingång\w*|entré\w*|kundentré\w*|ubicaci[oó]n|ubicad\w*|direcci[oó]n|entrada\w*|acceso\w*|befind\w*)(?![\p{L}\p{M}\p{N}_])|\bvar\s+ligger\b|تماس|آدرس|ورودی|محل|موقع|عنوان|اتصال|مدخل|المدخل|مكان|کجا\s+هست/iu,
-  hours: /(?<![\p{L}\p{M}\p{N}_])(?:opening hours|hours|öffnungszeiten|öppettider|horarios?)(?![\p{L}\p{M}\p{N}_])|ساعات کاری|ساعات العمل/iu,
+  contact: /(?<![\p{L}\p{M}\p{N}_])(?:contact\w*|reach|website|location|located|entrance\w*|entry|übersichtsseite|standort\w*|kundeneingang\w*|eingang\w*|zugang\w*|erreichen|kontakt\w*|address|adresse|adress|ingång\w*|entré\w*|kundentré\w*|ubicaci[oó]n|ubicad\w*|direcci[oó]n|entrada\w*|acceso\w*|befind\w*)(?![\p{L}\p{M}\p{N}_])|\bvar\s+ligger\b|تماس|تلفن|راه\s+ارتباط|آدرس|ورودی|موقع|عنوان|اتصال|مدخل|المدخل|مكان|کجا\s+هست/iu,
+  hours: /(?<![\p{L}\p{M}\p{N}_])(?:opening hours|hours|öffnungszeiten|öppettider|horarios?)(?![\p{L}\p{M}\p{N}_])|ساعات کار(?:ی)?|ساعات العمل/iu,
   prices: /\b(?:prices?|costs?|pricing|preisen?|preise?|kost(?:en|et)|pris\w*|kostar|precios?|cuesta)\b|قیمت|هزینه|(?:ال)?سعر(?:ها|ه|كم)?|أسعار/iu,
   policies: /\b(?:polic\w*|conditions|requirements|preparation|prepare|bring|payment|documents?|cancel(?:lation|lations)?|deadline|notice period|stornier\w*|stornierung\w*|absagefrist|bedingungen|geschäftsbedingungen|vorbereit\w*|mitbringen|betalning|villkor|avboka|avbokning\w*|förbereda|ta med|condiciones|preparar|llevar|pago|cancelar|cancelaci[oó]n)\b|شرایط|آماده|پرداخت|لغو|شروط|تحضير|دفع|إلغاء|الغاء/iu,
   meetings: /\b(?:digitala?\s+m(?:ö|o)ten|digitalt|digital(?:e[nr]?|es)?\s+(?:meetings?|treffen|besprechungen)|digitally|online|remote\s+(?:meetings?|services?)|reuniones?\s+(?:digitales|virtuales))\b|(?:جلسات|خدمات)\s+(?:آنلاین|دیجیتال)|اجتماعات\s+(?:رقمية|افتراضية)|عن\s+بعد/iu,
@@ -54,7 +59,7 @@ export function businessInformationTopics(text: string): BusinessInformationTopi
 
 export function isBusinessAddressQuestion(text: string): boolean {
   const raw = String(text || '');
-  return businessAddressPattern.test(raw) || businessLocationRelationPattern.test(raw);
+  return businessAddressPattern.test(raw) || businessLocationRelationPattern.test(raw) || persianPlaceRequestPattern.test(raw);
 }
 
 export function isBusinessRecommendationQuestion(text: string): boolean {

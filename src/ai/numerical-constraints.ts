@@ -6,7 +6,10 @@ import { isArrivalInformationQuestion } from './information-request-contract';
  */
 type Bound = 'minimum' | 'maximum';
 type Side = 'before' | 'after' | 'none';
-type Constraint = { seconds: number; bound: Bound | null; side: Side; ambiguous: boolean };
+type Constraint = { seconds: number; bound: Bound | null; side: Side; ambiguous: boolean;
+  cancellationKind?: 'free_window' | 'notice' };
+const cancellationClaim = /cancel|avbok|absag|stornier|لغو|إلغاء|الغاء/iu;
+const freeClaim = /\b(?:free|gratis|avgiftsfri\w*|kostenlos\w*|gratuit\w*)\b|رایگان|مجاني|المجاني/iu;
 const canonical = (s: string) => s.normalize('NFKC').toLocaleLowerCase()
   .replace(/[۰-۹]/gu, c => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(c)))
   .replace(/[٠-٩]/gu, c => String('٠١٢٣٤٥٦٧٨٩'.indexOf(c)))
@@ -65,7 +68,8 @@ function parse(input: string): { constraints: Constraint[]; unsupported: boolean
       bounds.some(b => (b === 'latest' || b === 'earliest') && side === 'none') ||
       new Set(mapped).size > 1 || /[<>≤≥]|\b(?:between|or|eller|oder|o|inte|nicht|not|no|never)\b|(?<![\p{L}])(?:یا|أو|ليس|ليست|نباید|هرگز)(?![\p{L}])|(?<![\p{L}])نمی|(?<![\p{L}])لا(?![\p{L}])/u.test(remaining) ||
       /[0-9]/u.test(left + right) || /exactly|precisely|exakt|genau|exactamente|دقیقا|بالضبط/u.test(context);
-    constraints.push({ seconds: Number(quantity[1].replace(',', '.')) * units[quantity[2]], bound: mapped[0] || null, side, ambiguous });
+    constraints.push({ seconds: Number(quantity[1].replace(',', '.')) * units[quantity[2]], bound: mapped[0] || null, side, ambiguous,
+      ...(cancellationClaim.test(context) ? { cancellationKind: freeClaim.test(context) ? 'free_window' as const : 'notice' as const } : {}) });
   }
   // Recognized comparative wording with an unknown unit/quantity must not be
   // approved merely because a model copies the same number into a citation.
@@ -94,8 +98,6 @@ export function literalDurationSeconds(text: string): number | null {
 
 export function numericalConstraintSafe(candidateQuote: string, atomicClaim: string, evidence: Array<string | { quote: string; source: string }>, structuredBusinessConfig?: string,
   citationScope: 'quotation' | 'whole_source' = 'quotation'): boolean {
-  const cancellationClaim = /cancel|avbok|absag|stornier|لغو|إلغاء|الغاء/iu;
-  const freeClaim = /\b(?:free|gratis|avgiftsfri\w*|kostenlos\w*|gratuit\w*)\b|رایگان|مجاني|المجاني/iu;
   let policy: any, services: any[] = [];
   if (structuredBusinessConfig) {
     try { const config = JSON.parse(structuredBusinessConfig); policy = config?.cancellation; services = Array.isArray(config?.services) ? config.services : []; } catch { return false; }
@@ -138,7 +140,7 @@ export function numericalConstraintSafe(candidateQuote: string, atomicClaim: str
     // Editable document JSON is not allowed to acquire this structured meaning.
     if (typeof item !== 'string' && item.source === 'structured_business_config') {
       const deadline = text.match(/"freeCancellationDeadlineMinutes"\s*:\s*([0-9]+)(?=\s*[,}\n]|\s*$)/u);
-      if (deadline) parsed.constraints.push({ seconds: Number(deadline[1]) * 60, bound: 'minimum', side: 'before', ambiguous: false });
+      if (deadline) parsed.constraints.push({ seconds: Number(deadline[1]) * 60, bound: 'minimum', side: 'before', ambiguous: false, cancellationKind: 'free_window' });
     }
     return parsed;
   });
@@ -173,7 +175,12 @@ export function numericalConstraintSafe(candidateQuote: string, atomicClaim: str
       authoritative.filter(a => a.seconds === c.seconds).every(a => !a.ambiguous && a.bound === null && a.side === c.side);
     if (configuredDeadline !== null && (c.seconds !== configuredDeadline || c.bound !== 'minimum' || c.side !== 'before')) return false;
     const sameValue = authoritative.filter(a => a.seconds === c.seconds);
-    return sameValue.length > 0 && sameValue.every(a => !a.ambiguous && a.bound === c.bound && a.side === c.side);
+    // Equal intervals cannot turn an optional free-fee window into mandatory
+    // notice (or vice versa), even when the citation is documentary prose.
+    // Keep the attribute clause-local so unrelated policy sentences do not
+    // donate or erase the free qualifier.
+    return sameValue.length > 0 && sameValue.every(a => !a.ambiguous && a.bound === c.bound && a.side === c.side &&
+      (!a.cancellationKind || a.cancellationKind === c.cancellationKind));
   }));
 }
 

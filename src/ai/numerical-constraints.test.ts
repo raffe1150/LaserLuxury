@@ -92,12 +92,28 @@ test('typed free-cancellation window retains minimum before; neither hard notice
 test('an exact notice interval or negated notice requirement cannot be rescued as minimum',()=>{
  for(const text of ['Cancellation requires exactly 91 hours notice before the visit.','Cancellation does not require 91 hours notice before the visit.'])assert.equal(numericalConstraintSafe(text,text,[source]),false);
 });
-test('configured free-cancellation window overrides conflicting notice prose without inventing a hard cutoff or binding service facts',()=>{
+test('configured free window does not contradict independently documented notice or establish a hard cutoff',()=>{
  const config=JSON.stringify({cancellation:{available:true,automaticCancellationEnabled:true,freeCancellationDeadlineMinutes:120,lateFeeEnabled:true,hardCancellationCutoffMinutes:null}});
- assert.equal(numericalConstraintSafe(minimum.en,minimum.en,[source],config),false);
+ assert.equal(numericalConstraintSafe(minimum.en,minimum.en,[source],config),true);
+ assert.equal(numericalConstraintSafe(minimum.en,minimum.en,[{source:'structured_business_config',quote:'"freeCancellationDeadlineMinutes":120'}],config),false);
  const good='Free cancellation is available at least 2 hours before the visit.';
  assert.equal(numericalConstraintSafe(good,good,['Free cancellation is available no later than 2 hours before the visit.'],config),true);
  assert.equal(numericalConstraintSafe('Service lasts 45 minutes.','Service lasts 45 minutes.',['"durationMinutes":45'],config),true);
+});
+
+test('documentary free windows cannot establish mandatory notice even with equal values, bounds and direction',()=>{
+ const free='Free cancellation is available at least 2 hours before the visit.';
+ const hard='Cancel at least 2 hours before the visit.';
+ for(const config of [undefined, JSON.stringify({cancellation:{available:true,lateFeeEnabled:true,freeCancellationDeadlineMinutes:120,hardCancellationCutoffMinutes:null}})]) {
+  assert.equal(numericalConstraintSafe(hard,hard,[free],config),false);
+  assert.equal(numericalConstraintSafe(free,free,[hard],config),false);
+  assert.equal(numericalConstraintSafe(free,hard,[free],config),false);
+  assert.equal(numericalConstraintSafe(hard,free,[free],config),false);
+ }
+ // Attribute binding is per clause, including in whole-source citations.
+ const combined='Cancel at least 91 hours before the visit. '+free;
+ assert.equal(numericalConstraintSafe(minimum.en,minimum.en,[combined],undefined,'whole_source'),true);
+ assert.equal(numericalConstraintSafe(hard,hard,[combined],undefined,'whole_source'),false);
 });
 test('identical bare cancellation numbers cannot make an incomplete deadline authoritative',()=>{
  for(const text of ['Cancel 91 before the visit.','Cancel ninety-one hours before the visit.','Cancellation requires 91 hours.'])assert.equal(numericalConstraintSafe(text,text,[text]),false);

@@ -579,7 +579,7 @@ test(`bounded document completion/${specs[index][0]}/${channel}/${mode}`,{timeou
   completed=complete||[];
   if(mode==='stale'){const pdf=(await corpus.storage.list(77)).find(s=>s.id==='incident-pdf')!;await corpus.storage.create({...pdf,content:pdf.content+' Revised.'});}
   if(mode==='foreign'&&complete)complete[0]={...complete[0],businessId:88};
-  if(mode==='late')await new Promise(resolve=>setTimeout(resolve,120));return complete;
+  if(mode==='late')await new Promise(resolve=>setTimeout(resolve,1100));return complete;
  };
  f.dependencies.validateKnowledgeMatches=async(id:number,found:any[])=>{const current=await corpus.service.validateMatches(id,found,{strictSources:true,captureRevision:true,requireCompleteDocumentContext:true});return mode==='missing-group'?current.slice(1):current;};
  f.dependencies.knowledgeCancellationConfig=async()=>{throw Error('No cancellation configuration for entry directions');};

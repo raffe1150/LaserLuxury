@@ -84,7 +84,7 @@ export interface KnowledgeStorage {
   /** Complete ready-source inventory or null. Ordinary list() does not attest
    * exhaustiveness. A conservative whole-inventory bound is allowed; backend
    * caps and partial pages must never imply completeness. */
-  listReadyComplete?(businessId: number, maxSources: number, options?: KnowledgeSemanticOptions): Promise<KnowledgeSource[] | null>;
+  listReadyComplete?(businessId: number, maxSources: number, options?: KnowledgeSemanticOptions, throwOnError?: boolean): Promise<KnowledgeSource[] | null>;
   create(source: KnowledgeSource): Promise<KnowledgeSource>;
   replaceChunks(
     businessId: number,
@@ -289,7 +289,7 @@ export class SupabaseKnowledgeStorage implements KnowledgeStorage {
     return (data || []).map(mapKnowledgeSourceRow).filter((source: KnowledgeSource) => source.businessId === businessId && source.status !== "deleted");
   }
 
-  async listReadyComplete(businessId: number, maxSources: number, options?: KnowledgeSemanticOptions): Promise<KnowledgeSource[] | null> {
+  async listReadyComplete(businessId: number, maxSources: number, options?: KnowledgeSemanticOptions, throwOnError = false): Promise<KnowledgeSource[] | null> {
     if (!Number.isSafeInteger(businessId) || businessId <= 0 || !Number.isSafeInteger(maxSources) || maxSources <= 0) return null;
     try {
       // Prove the ALL-status inventory before selecting ready rows. Existing
@@ -302,13 +302,14 @@ export class SupabaseKnowledgeStorage implements KnowledgeStorage {
         .order('created_at', { ascending: false }).limit(maxSources).retry(false);
       if (options?.signal && typeof query.abortSignal==='function') query=query.abortSignal(options.signal);
       const {data,error,count}=await abortable<any>(query,options?.signal);
+      if (error && throwOnError) throw new Error('knowledge_inventory_read');
       if (error || !Array.isArray(data) || !Number.isSafeInteger(count) || count < 0 || count > maxSources || count !== data.length ||
           data.some(row => !row || typeof row.id !== 'string' || !row.id.trim() ||
             !['pending','processing','ready','failed','deleted','disabled','error'].includes(row.status))) return null;
       const sources = data.map(mapKnowledgeSourceRow);
       if (new Set(sources.map(s => s.id)).size !== count || sources.some(s => s.businessId !== businessId)) return null;
       return sources.filter(s => s.status === 'ready');
-    } catch { return null; } // Unknown inventory must retain semantic retrieval.
+    } catch (error) { if (throwOnError) throw error; return null; } // Unknown inventory must retain semantic retrieval.
   }
 
   async create(source: KnowledgeSource): Promise<KnowledgeSource> {
@@ -902,21 +903,33 @@ export class KnowledgeService {
    * contribute any additional text. Include unmatched conditions/conflicts too.
    * Otherwise return null; lexical hit counts/scores cannot prove completeness.
    * No cache, storage writes or changes to version-1 document reconstruction. */
-  async completeSmallCorpus(businessId: number, lexical: readonly KnowledgeSearchMatch[], options?: KnowledgeSemanticOptions): Promise<KnowledgeSearchMatch[] | null> {
-    if (!Number.isSafeInteger(businessId) || businessId <= 0 || !lexical.length) return null;
+  async completeSmallCorpus(businessId: number, lexical: readonly KnowledgeSearchMatch[], options?: KnowledgeSemanticOptions, mode: 'lexical' | 'native-documentary' = 'lexical'): Promise<KnowledgeSearchMatch[] | null> {
+    const exhaustive = mode === 'native-documentary';
+    if (!Number.isSafeInteger(businessId) || businessId <= 0 || !exhaustive && !lexical.length) return null;
     await this.ensureInitialized();
-    const sources = this.storage.listReadyComplete ? await this.storage.listReadyComplete(businessId, 5, options).catch(() => null) : null;
+    const pending = this.storage.listReadyComplete?.(businessId, 5, options, exhaustive);
+    const sources = pending ? await (exhaustive ? pending : pending.catch(()=>null)) : null;
     if (!sources?.length || sources.length > 5 || sources.some(s => s.businessId !== businessId || s.status !== 'ready' || !s.content.trim()) ||
-        sources.reduce((sum, s) => sum + s.content.length, 0) > 9000) return null;
+        sources.reduce((sum, s) => sum + s.content.length, 0) > 9000 || exhaustive && sources.some(s => s.type !== 'document')) return null;
     const corpus: KnowledgeSearchMatch[] = [];
     for (const source of sources) {
       const chunks = source.type === 'document' ? documentCorpus(source) : chunkKnowledgeContent(source.content).map(c => ({
         sourceId: source.id, businessId, text: c.content, metadata: { ...c.metadata, sourceRevision: knowledgeSourceRevision(source) },
       }));
-      if (!chunks.length || corpus.length + chunks.length > 5) return null;
+      if (!chunks.length || !exhaustive && corpus.length + chunks.length > 5) return null;
       corpus.push(...chunks);
     }
     if (corpus.reduce((sum, c) => sum + c.text.length, 0) > 9000) return null;
+    // An exhaustive, bounded inventory needs no cross-language keyword anchor.
+    // Every ready source must fit, including unrelated/conflicting conditions.
+    // This is retrieval authority only; currentness and semantic verification
+    // still run independently before publication.
+    if (exhaustive) {
+      if (!packDocumentEvidence(corpus)) return null;
+      const current = await this.filterMatchesFromSources(businessId, corpus, sources,
+        {strictSources:true,requireCompleteDocumentContext:true});
+      return current.length === corpus.length ? current : null;
+    }
     const current = await this.filterMatchesFromSources(businessId, [...lexical], sources, { strictSources: true, captureRevision: true });
     if (!current.length) return null; // Empty, stale/foreign or fabricated hits cannot opt in.
     const key = (m: KnowledgeSearchMatch) => JSON.stringify([m.sourceId, m.text]);

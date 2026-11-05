@@ -23,14 +23,16 @@ const cases=[
  {language:'en',question:'If I leave an item at your premises, how long do you keep it and what must I provide to collect it?',
  answer:'According to this fictional test document, found items are handed to reception and normally kept for up to 21 days. Valuables are registered separately. You must describe the item before collecting it. Under these test terms, the studio is not responsible for sending lost items by post.'},
 ];
+const revised={...cases[0],question:'سلام، اگه یکی از وسایل شخصیم رو پیش شما فراموش کنم، معمولاً چقدر فرصت دارم که برگردم دنبالش؟ برای پس گرفتنش باید مشخصات خاصی ارائه بدم؟'};
 const receipts:any[]=[];
 after(()=>{if(process.env.ODINLINK_LOST_PROPERTY_RECEIPTS)writeFileSync(process.env.ODINLINK_LOST_PROPERTY_RECEIPTS,JSON.stringify({mode:'SCRIPTED_NOT_GENUINE',receipts},null,2));});
-type Fault='none'|'stale'|'incomplete'|'foreign'|'conflict'|'oversized'|'source-query-deadline'|'extraction-deadline'|'verification-deadline'|'postal-obligation';
-async function replay(t:any,spec:typeof cases[number],channel:typeof incidentChannels[number],fault:Fault){
+type Fault='none'|'stale'|'incomplete'|'foreign'|'conflict'|'oversized'|'source-query-deadline'|'extraction-deadline'|'verification-deadline'|'postal-obligation'|'planner-deadline'|'read-timeout'|'read-error'|'read-null'|'revoked'|'slow'|'low-budget'|'dual-planning-deadline';
+async function replay(t:any,spec:typeof cases[number],channel:typeof incidentChannels[number],fault:Fault,inventoryMode=false,readDelay=350){
  b.reset();for(const key of ['log','info','warn','error'] as const)t.mock.method(console,key,()=>{});
+ const now=Date.now();if(fault==='low-budget')t.mock.timers.enable({apis:['Date'],now});
  const old=structuredClone(incidentConfig);Object.assign(incidentConfig,{language:spec.language,services:[]});
  const corpus=await incidentCorpus(false,77),sources=await corpus.storage.list(77);
- const record:any={language:spec.language,channel,fault,question:spec.question,stages:[],completions:[],payloads:[],decisions:[],answers:[],actions:0,assertionErrors:[]};
+ const record:any={language:spec.language,channel,fault,question:spec.question,inventoryMode,readDelay,stages:[],completions:[],payloads:[],decisions:[],answers:[],actions:0,assertionErrors:[]};
  const deny=async()=>{record.actions++;throw Error('OFFLINE_ACTION_FORBIDDEN');};
  if(fault==='oversized'){
   const pdf=sources.find(s=>s.id==='incident-pdf')!,extra='Extra unsupported section';
@@ -56,10 +58,24 @@ async function replay(t:any,spec:typeof cases[number],channel:typeof incidentCha
   record.payloads.push({stage,records:data.evidence.length,canonicalChunks:completed.length,retainedSources:[...new Set(completed.map(m=>m.sourceId))],sourceGroups:data.evidence.map((e:any)=>e.sourceGroup),revisions:[...new Set(completed.map(m=>m.metadata.documentRevision))]});
  };
  b.configure({offlineAi:true,postProcess:async()=>{},incrementUsage:async()=>({allowed:true,count:1,limit:100}),
-  semanticLanguageResolver:async()=>({language:spec.language,confidence:1}),knowledgeServiceCatalog:async()=>[],
+  semanticLanguageResolver:async()=>{if(fault==='low-budget')t.mock.timers.setTime(now+25000);return{language:spec.language,confidence:1};},knowledgeServiceCatalog:async()=>[],
   knowledgeSearch:(id,q,limit)=>corpus.service.search(id,q,limit),knowledgeSourceLanguages:id=>corpus.service.sourceLanguageHints(id),
-  semanticKnowledgeSearchQueries:async()=>[],completeKnowledgeCorpus:(id,m)=>corpus.service.completeSmallCorpus(id,m),
+  semanticKnowledgeSearchQueries:async()=>[],completeKnowledgeCorpus:async(id,m,options,mode)=>{
+   if(mode!=='native-documentary'||!inventoryMode)return corpus.service.completeSmallCorpus(id,m,options);
+   if(fault==='read-error')throw Error('scripted inventory read failure');
+   if(fault==='read-null')return null;
+   await new Promise(resolve=>setTimeout(resolve,fault==='read-timeout'?1100:readDelay));
+   const result=await corpus.service.completeSmallCorpus(id,m,options,mode);completed=result||[];
+   record.completions.push({kind:'inventory',output:result?.length||0});
+   if(fault==='stale'||fault==='revoked'){const pdf=expectedSources.find(s=>s.id==='incident-pdf')!;await corpus.storage.create({...pdf,...(fault==='revoked'?{status:'disabled' as const}:{content:pdf.content+' changed'})});}
+   if(fault==='incomplete'&&result)return result.slice(1);
+   if(fault==='foreign'&&result)return result.map((m,i)=>i?m:{...m,businessId:88});
+   return result;
+  },
   completeKnowledgeDocuments:async(id,m,anchors,options)=>{
+   if(fault==='slow'||fault==='read-timeout')await new Promise(resolve=>setTimeout(resolve,fault==='read-timeout'?1100:readDelay));
+   if(fault==='read-error')throw Error('scripted selected read failure');
+   if(fault==='read-null')return null;
    const result=await corpus.service.completeSelectedDocuments(id,m,anchors,options);completed=result||[];
    record.completions.push({input:m.length,output:result?.length||0});
    if(fault==='stale'){const pdf=expectedSources.find(s=>s.id==='incident-pdf')!;await corpus.storage.create({...pdf,content:pdf.content+' changed'});}
@@ -73,14 +89,14 @@ async function replay(t:any,spec:typeof cases[number],channel:typeof incidentCha
   recordAppointment:deny,cancelAppointmentRow:deny,updateAppointmentRow:deny,
   aiGenerate:async request=>{try{
    const instruction=request.systemInstruction||'',data=JSON.parse(request.messages[0].content);
-   if(instruction.includes('retrieval query planner')){record.stages.push('planning');return{functionCalls:[],text:JSON.stringify({canonicalMeaning:spec.question,queries:['kvarglömda föremål information'],queryLanguages:[{query:'kvarglömda föremål information',language:'sv'}],referenceResolution:'NOT_REQUIRED',requestKind:'BUSINESS_INFORMATION',requestedFacets:[{subject:'lost property',attribute:spec.question,questionType:'description'}]})};}
+   if(instruction.includes('retrieval query planner')){record.stages.push('planning');if(fault==='planner-deadline'||fault==='dual-planning-deadline'){await new Promise(resolve=>setTimeout(resolve,2600));throw new AiReliabilityError('TIMEOUT','scripted planner timeout');}return{functionCalls:[],text:JSON.stringify({canonicalMeaning:spec.question,queries:['kvarglömda föremål information'],queryLanguages:[{query:'kvarglömda föremål information',language:'sv'}],referenceResolution:'NOT_REQUIRED',requestKind:'BUSINESS_INFORMATION',requestedFacets:[{subject:'lost property',attribute:spec.question,questionType:'description'}]})};}
    if(instruction.startsWith('OdinLink source-language search query.')){
-    record.stages.push('source_query');if(fault==='source-query-deadline')await new Promise(resolve=>setTimeout(resolve,2600));
+    record.stages.push('source_query');if(fault==='source-query-deadline'||fault==='dual-planning-deadline')await new Promise(resolve=>setTimeout(resolve,2600));
     return{functionCalls:[],text:JSON.stringify({query:'kvarglömda föremål information'})};
    }
    if(instruction.includes('UNIT EXTRACTION')){
     record.stages.push('extraction');extracted=true;
-    if(['stale','incomplete','oversized'].includes(fault)){
+    if(['stale','incomplete','oversized','revoked','read-timeout','read-error','read-null'].includes(fault)){
      assert.ok(data.evidence.length>0);
      assert.ok(data.evidence.every((e:any)=>e.businessId===77&&!e.text.includes('Kvarglömda föremål')&&!e.text.includes('All information i detta dokument är')),'Invalid PDF is quarantined while current TXT remains usable');
      record.payloads.push({stage:'extraction',records:data.evidence.length,quarantinedPdf:true});
@@ -113,10 +129,10 @@ async function replay(t:any,spec:typeof cases[number],channel:typeof incidentCha
  try{
   assert.equal(b.inspectNativeKnowledgeAdmissionForTest(channel,spec.question,incidentConfig),true);
   await incidentInbound(b,channel,spec.question);receipts.push(record);
-  assert.deepEqual(record.assertionErrors,[]);assert.equal(record.actions,0);assert.equal(record.answers.length,1);
-  if(fault==='none'){
+  assert.deepEqual(record.assertionErrors,[]);assert.equal(record.actions,0);assert.equal(record.answers.length,1);if(fault==='low-budget')assert.ok(record.retrieval.canonicalCompletion.some((r:any)=>r.outcome==='skipped_budget'));
+  if(fault==='none'||fault==='slow'||fault==='planner-deadline'||fault==='dual-planning-deadline'||inventoryMode&&fault==='source-query-deadline'){
    assert.deepEqual(record.answers,[spec.answer]);assert.equal(record.stages.filter((s:string)=>s==='extraction').length,1);assert.equal(record.stages.filter((s:string)=>s==='verification').length,1);
-   assert.equal(record.payloads.length,2);assert.ok(record.decisions.some((e:any)=>e.stage==='publication'&&e.publishableUnits>0));
+   assert.equal(record.payloads.length,2);if(inventoryMode){assert.equal(record.retrieval.completeCorpusUsed,true);assert.equal(record.stages.includes('source_query'),false);assert.ok(record.retrieval.canonicalCompletion.some((r:any)=>r.kind==='inventory'&&r.outcome==='complete'));}assert.ok(record.decisions.some((e:any)=>e.stage==='publication'&&e.publishableUnits>0));
   }else{
    assert.ok(record.answers.every((a:string)=>!a.includes('21')));assert.notDeepEqual(record.answers,[spec.answer]);
    if(['foreign','source-query-deadline'].includes(fault))assert.equal(extracted,false);
@@ -129,3 +145,18 @@ async function replay(t:any,spec:typeof cases[number],channel:typeof incidentCha
 for(const spec of cases)for(const channel of incidentChannels)test('SCRIPTED lost-property original adapter/'+spec.language+'/'+channel,{timeout:8000},t=>replay(t,spec,channel,'none'));
 for(const fault of ['stale','incomplete','foreign','conflict','oversized','source-query-deadline','extraction-deadline','verification-deadline','postal-obligation'] as const)
  for(const channel of incidentChannels)test('SCRIPTED lost-property safety/'+fault+'/'+channel,{timeout:8000},t=>replay(t,cases[0],channel,fault));
+
+// The production failure replays use a complete tenant inventory and real bounded
+// database-delay simulation, not injected matches or a second test harness.
+for(const spec of [cases[0],revised])for(const channel of incidentChannels)
+ for(const delay of [150,350,750])test(`SCRIPTED full canonical inventory/${spec===revised?'reworded':'original'}/${channel}/${delay}ms`,{timeout:8000},t=>replay(t,spec,channel,'slow',true,delay));
+for(const channel of incidentChannels)test(`SCRIPTED live planner timeout with canonical inventory/${channel}`,{timeout:8000},t=>replay(t,revised,channel,'planner-deadline',true));
+for(const channel of incidentChannels)test(`SCRIPTED slow selected-source completion/${channel}`,{timeout:8000},t=>replay(t,cases[0],channel,'slow',false,350));
+for(const fault of ['stale','revoked','incomplete','foreign','conflict','oversized','read-timeout','read-error','read-null','extraction-deadline','verification-deadline','postal-obligation'] as const)
+ for(const channel of incidentChannels)test(`SCRIPTED canonical inventory safety/${fault}/${channel}`,{timeout:8000},t=>replay(t,cases[0],channel,fault,true));
+for(const fault of ['read-timeout','read-error','read-null'] as const)
+ test(`SCRIPTED selected completion outcome/${fault}`,{timeout:8000},t=>replay(t,cases[0],'telegram',fault,false));
+
+for(const channel of incidentChannels)test(`SCRIPTED canonical read preserves downstream reserves/${channel}`,{timeout:8000},t=>replay(t,cases[0],channel,'low-budget',true));
+
+for(const channel of incidentChannels)test(`SCRIPTED exact 2358 dual query timeout replay/${channel}`,{timeout:8000},t=>replay(t,revised,channel,'dual-planning-deadline',true));

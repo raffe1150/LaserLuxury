@@ -1541,7 +1541,7 @@ type Priority1hTestDependencies = {
   ) => Promise<any[]> | any[];
   validateKnowledgeMatches?: (businessId: number, matches: any[]) => Promise<any[]>;
   knowledgeSourceLanguages?: (businessId: number) => Promise<SourceLanguage[]>;
-  completeKnowledgeCorpus?: (businessId: number, lexical: KnowledgeSearchMatch[]) => Promise<KnowledgeSearchMatch[] | null>;
+  completeKnowledgeCorpus?: KnowledgeService['completeSmallCorpus'];
   completeKnowledgeDocuments?: KnowledgeService['completeSelectedDocuments'];
   semanticKnowledgeSearchQueries?: (businessId: number, queries: string[], limit: number, options?: import('./src/knowledge/persistent-search').KnowledgeSemanticOptions) => Promise<any[]>;
   semanticKnowledgeSearch?: (
@@ -9171,12 +9171,37 @@ async function retrieveBusinessKnowledgeForQuestion(
     emitKnowledgeDecision({stage:'planning',reason:'LITERAL_REQUEST_DIRECT'});
     return ''; // Catalog is captured and revalidated by the existing answer path.
   }
+  // Start the bounded current inventory alongside planning. It can establish
+  // all documentary context without depending on translated lexical recall.
+  // Leave 10s for extraction, the existing 12s verification reserve, and the
+  // separately protected publication/delivery deadlines. Observed DB reads of
+  // 123-331ms cannot reliably finish in the former 100ms optional window.
+  const completionDiagnostics: Array<{kind:string;outcome:string;allowanceMs:number;durationMs:number;chunks:number}> = [];
+  const canonicalRead = async (kind:'inventory'|'selected', read:(options:NonNullable<typeof retrievalOptions>)=>Promise<KnowledgeSearchMatch[]|null>) => {
+    const started=Date.now(), allowanceMs=Math.max(0,Math.min(1000,Math.floor((state?.budget?.generationRemaining()||0)-ACCURACY_FIRST_POLICY.verificationReserveMs-10000)));
+    if (!timing || !allowanceMs) {completionDiagnostics.push({kind,outcome:'skipped_budget',allowanceMs,durationMs:0,chunks:0});return null;}
+    const controller=new AbortController(),signal=AbortSignal.any([timing.signal,controller.signal]);
+    let expired=false,outcome='error',chunks=0;
+    const timer=setTimeout(()=>{expired=true;controller.abort();},allowanceMs);
+    try {
+      const result=await abortKnowledgeWork(timing.observe(Promise.resolve().then(()=>read({...retrievalOptions,signal}))),signal);
+      if(signal.aborted || Date.now()-started>=allowanceMs){outcome='timeout';return null;}
+      outcome=result?'complete':'declined';chunks=result?.length||0;return result;
+    } catch {outcome=expired?'timeout':signal.aborted?'cancelled':'error';return null;}
+    finally {clearTimeout(timer);completionDiagnostics.push({kind,outcome,allowanceMs,durationMs:Date.now()-started,chunks});}
+  };
+  const inventoryEligible=!!timing && !!state?.budget && !hierarchicalSearchEnabled() && !state.mixedRequest && !state.requiresReferenceResolution;
+  const inventory = inventoryEligible ? canonicalRead('inventory', options => process.env.NODE_ENV==='test'
+    ? priority1hTestDependencies?.completeKnowledgeCorpus?.(businessId,[],options,'native-documentary') || Promise.resolve(null)
+    : knowledgeService.completeSmallCorpus(businessId,[],options,'native-documentary')) : Promise.resolve(null);
   try {
+    let completeInventory: KnowledgeSearchMatch[]|null=null;
+    const sourceHints=()=> (process.env.NODE_ENV === 'test'
+      ? priority1hTestDependencies?.knowledgeSourceLanguages?.(businessId) || Promise.resolve([])
+      : knowledgeService.sourceLanguageHints(businessId,retrievalOptions)).catch(() => [] as SourceLanguage[]);
     const plan = () => Promise.all([
       resolveSemanticKnowledgeQueries(normalizedQuestion, businessConfig, timingContext),
-      (process.env.NODE_ENV === 'test'
-        ? priority1hTestDependencies?.knowledgeSourceLanguages?.(businessId) || Promise.resolve([])
-        : knowledgeService.sourceLanguageHints(businessId,retrievalOptions)).catch(() => [] as SourceLanguage[]),
+      inventory.then(complete=>{completeInventory=complete;return complete ? [] as SourceLanguage[] : sourceHints();}),
     ]);
     const [semanticPlan, sourceLanguages] = await (state?.budget ? withinInformationDeadline(state.budget, plan) : plan());
     if (state && ((hasExternalConversationReference(normalizedQuestion) && semanticPlan?.referenceResolution === "UNRESOLVED") ||
@@ -9271,6 +9296,10 @@ async function retrieveBusinessKnowledgeForQuestion(
     };
 
     const search = async () => {
+      if (completeInventory && state?.facets?.length && state.migrated!==false) {
+        completeCorpusUsed=true;
+        return [queries.map(()=>[] as KnowledgeSearchMatch[]),[] as KnowledgeSearchMatch[]] as const;
+      }
       let lexicalFailed = false;
       const lexical =
       process.env.ODINLINK_KNOWLEDGE_LEXICAL_BATCH === 'true'
@@ -9380,7 +9409,7 @@ async function retrieveBusinessKnowledgeForQuestion(
 
     let completionAnchors = lexicalMatches;
     let completionContext = [...deduped.values(), ...scopedSemanticMatches];
-    let matches = mergeKnowledgeMatchesByRank(
+    let matches = completeCorpusUsed && completeInventory ? completeInventory : mergeKnowledgeMatchesByRank(
       lexicalMatches,
       scopedSemanticMatches,
       5,
@@ -9408,21 +9437,14 @@ async function retrieveBusinessKnowledgeForQuestion(
     }
 
     let hierarchicalContextComplete=false;
-    // Optional native context read, capped at 100ms like the small-corpus proof,
-    // inside the same deadline. It cannot evict sources or spend model calls.
+    // A selected-source fallback shares the same bounded allocator. Preserve
+    // every retrieved source; null/error/timeout retain the ordinary safe gates.
     if (timing && state?.budget && !completeCorpusUsed && state.migrated!==false && !state.mixedRequest &&
-        !state.requiresReferenceResolution && state.budget.generationRemaining()>ACCURACY_FIRST_POLICY.verificationReserveMs+100 &&
-        completionAnchors.length && matches.some(m=>m.metadata?.source==='document')) {
-      const controller=new AbortController(),signal=AbortSignal.any([timing.signal,controller.signal]);
-      const timer=setTimeout(()=>controller.abort(),100);
-      try {
-        const pending = Promise.resolve().then(() => process.env.NODE_ENV==='test'
-          ? priority1hTestDependencies?.completeKnowledgeDocuments?.(businessId,completionContext,completionAnchors,{...retrievalOptions,signal}) || null
-          : knowledgeService.completeSelectedDocuments(businessId,completionContext,completionAnchors,{...retrievalOptions,signal}));
-        const complete = await abortKnowledgeWork(timing.observe(pending),signal);
-        if (complete && !signal.aborted) {matches=complete;hierarchicalContextComplete=true;}
-      } catch { /* Retain original retrieval; ordinary full-context gates decide. */ }
-      finally { clearTimeout(timer); }
+        !state.requiresReferenceResolution && completionAnchors.length && matches.some(m=>m.metadata?.source==='document')) {
+      const complete=await canonicalRead('selected',options=>process.env.NODE_ENV==='test'
+        ? priority1hTestDependencies?.completeKnowledgeDocuments?.(businessId,completionContext,completionAnchors,options) || Promise.resolve(null)
+        : knowledgeService.completeSelectedDocuments(businessId,completionContext,completionAnchors,options));
+      if(complete){matches=complete;hierarchicalContextComplete=true;}
     }
 
     if(hierarchicalSearchEnabled() && state?.budget && !hierarchicalContextComplete)state.sourceValidationUnavailable=true;
@@ -9452,6 +9474,7 @@ async function retrieveBusinessKnowledgeForQuestion(
       questionLength: normalizedQuestion.length,
       semanticPlanUsed: Boolean(semanticPlan),
       completeCorpusUsed,
+      canonicalCompletion: completionDiagnostics,
       semanticIndexStatus,
       retrievalPolicy: candidatePolicy || 'strict-default',
       candidateEligible,

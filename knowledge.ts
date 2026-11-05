@@ -7,6 +7,8 @@ import { CompatibleSemanticIndex, semanticCorpusFingerprint, type SemanticChunk 
 import { confirmedTextLanguage, normalizeSemanticQuery, explicitlyWrongWorkflow, MAX_SEMANTIC_QUERIES, type SourceLanguage } from './src/knowledge/semantic-queries';
 import { CANDIDATE_RETRIEVAL_POLICY } from './src/knowledge/candidate-retrieval';
 import { packDocumentEvidence, DOCUMENT_EVIDENCE_LIMITS } from './src/knowledge/document-evidence-packing';
+import {hierarchicalSearchEnabled,type HierarchicalSearchIndex,type HierarchicalSearchProof} from './src/knowledge/hierarchical-search';
+import {canonicalDocument} from './src/knowledge/documents/canonical';
 
 export const KNOWLEDGE_SOURCE_TYPES = ["faq", "pdf", "website", "text", "document"] as const;
 
@@ -40,6 +42,7 @@ export interface KnowledgeSearchMatch {
   businessId: number;
   /** Backend proof only; independently revalidated at publication. */
   indexProof?: IndexMatchProof;
+  hierarchicalProof?: HierarchicalSearchProof;
   score?: number;
   text?: string;
   metadata?: KnowledgeSourceMetadata;
@@ -615,7 +618,8 @@ export class KnowledgeService {
     primaryStorage: KnowledgeStorage = new InMemoryKnowledgeStorage(),
     fallbackStorage: KnowledgeStorage = new InMemoryKnowledgeStorage(),
     embeddingProvider: EmbeddingProvider | null = null,
-    private readonly requireDurableStorage = false
+    private readonly requireDurableStorage = false,
+    private readonly hierarchicalIndex?: HierarchicalSearchIndex
   ) {
     this.primaryStorage = primaryStorage;
     this.fallbackStorage = fallbackStorage;
@@ -755,6 +759,11 @@ export class KnowledgeService {
       const normalizedBusinessId = Number(businessId);
       const normalizedQuery = String(query || "").trim();
       if (!Number.isSafeInteger(normalizedBusinessId) || normalizedBusinessId <= 0 || !normalizedQuery) return [];
+      if(hierarchicalSearchEnabled()) {
+        const pending=this.hierarchicalIndex?.discover(normalizedBusinessId,normalizedQuery);
+        const found=pending?await abortable(options?.observe?options.observe(pending):pending,options?.signal):[];
+        return this.filterCurrentMatches(normalizedBusinessId,found,{strictSources:true,captureRevision:true},metrics,options);
+      }
       console.log("Knowledge search", { businessId: normalizedBusinessId, queryLength: normalizedQuery.length });
       const searchStarted = performance.now();
       let matches: KnowledgeSearchMatch[];
@@ -771,6 +780,7 @@ export class KnowledgeService {
    * Subsequent verification/publication must use their existing fresh reads. */
   async searchLexicalQueries(businessId: number, queries: readonly string[], limit = 5,
     diagnostic?: LexicalDiagnostic, options?: KnowledgeSemanticOptions): Promise<KnowledgeSearchMatch[][]> {
+    if(hierarchicalSearchEnabled())return Promise.all(queries.map(query=>this.search(businessId,query,limit,diagnostic,options)));
     const started = performance.now(), metrics = lexicalMetrics('batch', queries.length);
     try {
       await this.ensureInitialized();
@@ -947,9 +957,13 @@ export class KnowledgeService {
       if (anchored.has(id)) {
         if (source.content.length>9000) return null;
         const corpus=documents.get(id)!.corpus;
-        if (!corpus.length || corpus.length>DOCUMENT_EVIDENCE_LIMITS.chunksPerSource) return null;
+        const canonical=hierarchicalSearchEnabled()?canonicalDocument(source):undefined;
+        const anchor=anchors.find(m=>m.sourceId===id&&m.hierarchicalProof);
+        if(canonical&&!anchor)return null;
+        if (!corpus.length || !canonical&&corpus.length>DOCUMENT_EVIDENCE_LIMITS.chunksPerSource) return null;
         // Preserve existing semantic proofs; new rows are canonical context only.
-        result.push(...corpus.map(c=>selected.find(m=>key(m)===key(c)) || c));
+        result.push(...corpus.map((c,index)=>({...selected.find(m=>key(m)===key(c))||c,
+          ...(canonical?{hierarchicalProof:{...anchor!.hierarchicalProof!,chunkId:canonical.chunks[index].id}}:{})})));
       } else result.push(...selected);
       if (result.reduce((sum,m)=>sum+String(m.text||'').length,0)>9000) return null;
     }
@@ -1078,11 +1092,13 @@ export class KnowledgeService {
     const validationStarted = performance.now();
     try {
       const ready = new Map(sources.filter((s) => s.businessId === businessId && s.status === "ready").map((s) => [s.id, s]));
+      const hierarchicalValid=matches.some(m=>m.hierarchicalProof)?this.hierarchicalIndex?.validProofs(businessId,matches,sources):undefined;
       return matches.flatMap((match) => {
         const reject=(reason:Parameters<NonNullable<KnowledgeValidationOptions['onRejected']>>[1])=>{options.onRejected?.(match.sourceId,reason);return [];};
         const source = ready.get(match.sourceId);
         if(match.businessId!==businessId)return reject('SOURCE_SCOPE');
         if(!source)return reject(sources.some(s=>s.id===match.sourceId&&s.businessId===businessId)?'SOURCE_NOT_READY':'SOURCE_MISSING_OR_UNAUTHORIZED');
+        if(match.hierarchicalProof&&!hierarchicalValid?.has(match))return reject('SOURCE_REVISION');
         if (source.type !== "document") {
           if (!options.strictSources) return [match];
           const revision = knowledgeSourceRevision(source);

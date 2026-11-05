@@ -1,4 +1,6 @@
 import type { KnowledgeSearchMatch } from '../../knowledge';
+import {hierarchicalSearchEnabled} from './hierarchical-search';
+import {CANONICAL_RESOURCE_LIMITS} from './documents/canonical';
 
 /** Transport grouping, never relevance or source authority. Canonical rows remain
  * separate for currentness checks. No words are removed or rewritten. */
@@ -6,7 +8,8 @@ export const DOCUMENT_EVIDENCE_LIMITS = Object.freeze({ items: 5, itemChars: 240
 export type DocumentEvidenceGroup = { text: string; matches: readonly KnowledgeSearchMatch[] };
 export function packDocumentEvidence(matches: readonly KnowledgeSearchMatch[]): DocumentEvidenceGroup[] | null {
   const limits = DOCUMENT_EVIDENCE_LIMITS;
-  if (!matches.length || matches.length > limits.items * limits.chunksPerSource) return null;
+  const chunkLimit=hierarchicalSearchEnabled()?CANONICAL_RESOURCE_LIMITS.maxChunks:limits.chunksPerSource;
+  if (!matches.length || matches.length > limits.items * chunkLimit) return null;
   const tenant = matches[0].businessId, sources = new Map<string, { revision: string; count: number }>();
   if (!Number.isSafeInteger(tenant) || tenant <= 0) return null;
   for (const m of matches) {
@@ -16,7 +19,7 @@ export function packDocumentEvidence(matches: readonly KnowledgeSearchMatch[]): 
     const prior = sources.get(m.sourceId);
     if (prior && prior.revision !== m.metadata.documentRevision) return null;
     const count = (prior?.count || 0) + 1;
-    if (count > limits.chunksPerSource) return null;
+    if (count > chunkLimit) return null;
     sources.set(m.sourceId, { revision: m.metadata.documentRevision, count });
   }
   if (sources.size > limits.items) return null;

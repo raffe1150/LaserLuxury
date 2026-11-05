@@ -4,6 +4,7 @@ import {installControlledTrial,trialModeOn,trialEnforced,trialHttpAllowed,trialB
   controlledTrialBinding,runControlledTrialInbound,withVerifiedTrialMeta,withVerifiedTrialTelegram,trialSendAllowed,
   denyTrialAction,assertTrialProvider,trialSha,trialPollerCurrent,trialCurrent} from './src/runtime/controlled-knowledge-trial';
 import { packDocumentEvidence } from './src/knowledge/document-evidence-packing';
+import {hierarchicalSearchEnabled} from './src/knowledge/hierarchical-search';
 import { installConfiguredKnowledgeBudgetOwner } from './src/ai/durable-knowledge-budget-owner';
 import { accuracyFirstEnabled, ACCURACY_FIRST_POLICY, accuracyFirstExtractionAllowance, nativeKnowledgeTiming, runAccuracyFirstNative, abortKnowledgeWork } from './src/ai/knowledge-timing-policy';
 import { directServiceInformationPlan } from './src/ai/direct-service-planning';
@@ -8974,7 +8975,7 @@ function formatRetrievedBusinessKnowledge(
   const grouped = matches.length > 5 ? packDocumentEvidence(matches as KnowledgeSearchMatch[]) : null;
   if (matches.length > 5 && !grouped) return '';
   const transport = grouped ? grouped.map(group => ({...group.matches[0], text:group.text,
-    metadata:{...group.matches[0].metadata, constituents:group.matches.map(m=>m.metadata)}})) : matches;
+    metadata:{...group.matches[0].metadata, constituents:group.matches.map(m=>hierarchicalSearchEnabled()?{page:m.metadata?.page,sheet:m.metadata?.sheet,section:m.metadata?.section}:m.metadata)}})) : matches;
   const chunks = transport
     .slice(0, 5)
     .map((match, index) => {
@@ -9302,7 +9303,7 @@ async function retrieveBusinessKnowledgeForQuestion(
       // semantic work: aborting a speculative embedding wastes a real request.
       // This total window includes lexical lookup; a slow/unknown/large inventory
       // cannot serialize semantic startup behind an unbounded lexical read.
-      if (state?.budget && state.facets?.length && state.migrated !== false) {
+      if (!hierarchicalSearchEnabled() && state?.budget && state.facets?.length && state.migrated !== false) {
         let timer: ReturnType<typeof setTimeout> | undefined;
         let proofClosed = false;
         let complete: KnowledgeSearchMatch[] | null = null;
@@ -9320,6 +9321,7 @@ async function retrieveBusinessKnowledgeForQuestion(
           return [[complete, ...queries.slice(1).map(() => [])], [] as KnowledgeSearchMatch[]] as const;
         }
       }
+      if(hierarchicalSearchEnabled())return [await lexical, [] as KnowledgeSearchMatch[]] as const;
       const semantic = Promise.resolve()
         .then(() => semanticSearchKnowledge(businessId, semanticQueries, 5, candidateEligible ? Object.freeze({policy:candidatePolicy!,
           lexicalEmpty:Promise.resolve(lexical).then(sets => !lexicalFailed && sets.every(set => Array.isArray(set) && set.length === 0), () => false)}) : undefined))
@@ -9387,7 +9389,7 @@ async function retrieveBusinessKnowledgeForQuestion(
     // Retry empty retrieval once in a language confirmed from current source
     // content, inside the existing planning and foreground budget. This hint
     // cannot resolve references or change the question given to verification.
-    if (!candidateEligible && state?.budget && state.facets?.length && !matches.length && sourceLanguages.length &&
+    if (!hierarchicalSearchEnabled() && !candidateEligible && state?.budget && state.facets?.length && !matches.length && sourceLanguages.length &&
         semanticPlan?.referenceResolution === 'NOT_REQUIRED' &&
         state.budget.generationRemaining() > KNOWLEDGE_PLANNING_LIMIT_MS + KNOWLEDGE_VERIFICATION_MIN_MS) {
       try {
@@ -9404,6 +9406,7 @@ async function retrieveBusinessKnowledgeForQuestion(
       } catch(error) {emitKnowledgeDecision({stage:'planning',reason:knowledgeFailureReason(error)});}
     }
 
+    let hierarchicalContextComplete=false;
     // Optional native context read, capped at 100ms like the small-corpus proof,
     // inside the same deadline. It cannot evict sources or spend model calls.
     if (timing && state?.budget && !completeCorpusUsed && state.migrated!==false && !state.mixedRequest &&
@@ -9416,10 +9419,12 @@ async function retrieveBusinessKnowledgeForQuestion(
           ? priority1hTestDependencies?.completeKnowledgeDocuments?.(businessId,completionContext,completionAnchors,{...retrievalOptions,signal}) || null
           : knowledgeService.completeSelectedDocuments(businessId,completionContext,completionAnchors,{...retrievalOptions,signal}));
         const complete = await abortKnowledgeWork(timing.observe(pending),signal);
-        if (complete && !signal.aborted) matches=complete;
+        if (complete && !signal.aborted) {matches=complete;hierarchicalContextComplete=true;}
       } catch { /* Retain original retrieval; ordinary full-context gates decide. */ }
       finally { clearTimeout(timer); }
     }
+
+    if(hierarchicalSearchEnabled() && state?.budget && !hierarchicalContextComplete)state.sourceValidationUnavailable=true;
 
     if (state?.budget) {
       if (state.migrated !== false && matches.some(m => m.metadata?.source !== 'document')) {

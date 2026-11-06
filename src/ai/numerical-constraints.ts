@@ -4,7 +4,7 @@ import { isArrivalInformationQuestion } from './information-request-contract';
  * quantified constraints fail closed. Ordinary unqualified durations still use
  * the existing citation, structured-authority and semantic verification gates.
  */
-type Bound = 'minimum' | 'maximum';
+type Bound = 'minimum' | 'maximum' | 'strict_minimum' | 'strict_maximum';
 type Side = 'before' | 'after' | 'none';
 type Constraint = { seconds: number; bound: Bound | null; side: Side; ambiguous: boolean;
   cancellationKind?: 'free_window' | 'notice' };
@@ -19,6 +19,10 @@ const rules: Array<[Bound | 'latest' | 'earliest', string[]]> = [
   ['maximum', ['at most', 'up to', 'not more than', 'maximum', 'högst', 'upp till', 'maximalt', 'inte mer än', 'höchstens', 'bis zu', 'maximal', 'nicht mehr als', 'como máximo', 'hasta', 'máximo', 'a lo sumo', 'no más de', 'حداکثر', 'حد اکثر', 'تا', 'على الأكثر', 'حتى', 'تصل إلى', 'تصل الى', 'لا يزيد عن']],
   ['latest', ['no later than', 'senast', 'spätestens', 'a más tardar', 'نه دیرتر از', 'في موعد أقصاه']],
   ['earliest', ['no earlier than', 'tidigast', 'frühestens', 'no antes de', 'نه زودتر از', 'ليس قبل']],
+  // Consume inclusive negated phrases above before their strict substrings.
+  // More than N excludes N; it must never equal "at least N".
+  ['strict_minimum', ['more than', 'greater than', 'mer än', 'mehr als', 'más de', 'بیش از', 'أكثر من']],
+  ['strict_maximum', ['less than', 'fewer than', 'mindre än', 'weniger als', 'menos de', 'کمتر از', 'أقل من']],
 ];
 const boundary = (phrase: string) => new RegExp(`(?<![\\p{L}\\p{N}])${phrase.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')}(?![\\p{L}\\p{N}])`, 'gu');
 const before = ['before', 'in advance', 'i förväg', 'im voraus', 'de antelación', 'före', 'innan', 'vor', 'vorher', 'antes', 'قبل', 'پیش از', 'پیش'];

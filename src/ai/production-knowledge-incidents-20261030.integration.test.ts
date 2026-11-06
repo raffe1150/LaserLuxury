@@ -108,3 +108,95 @@ test('exact incident contracts preserve all wording without recommendation or mo
   assert.equal(wholeQuestionInformationPlan(spec.question,true,true),null);
  }
 });
+
+const novemberQuestions = [
+ {channel:'telegram',language:'fa',question:'من می‌خوام اولین بار بیام استودیو. باید زودتر برسم؟ تأییدیه رزرو رو همراهم داشته باشم؟ آدرس دقیق رو از کجا می‌تونم بگیرم؟',facts:[
+  ['طبق اطلاعات آزمایشی، برای اولین مراجعه توصیه می‌شود حدود 10 دقیقه پیش از زمان رزرو برسید.',/Kunder som besöker[^]+?lugn och ro\./u,'recommended'],
+  ['طبق اطلاعات آزمایشی، تأییدیه رزرو را دیجیتال یا کاغذی همراه داشته باشید و دستورهای آماده‌سازی ویژه‌ای را که دریافت کرده‌اید رعایت کنید.',/Ta gärna med[^]+?följa dessa\./u,'recommended'],
+  ['آدرس بازدید همراه با تأییدیه رزرو اعلام می‌شود.',/Besöksadressen meddelas[^.]+\./u,'descriptive']]},
+ {channel:'whatsapp',language:'en',question:"Hi! I'm visiting your studio for the first time. Should I use the main entrance facing the street, and how do I get to reception? Is there an elevator?",facts:[
+  ['According to the fictional test information, use the courtyard entrance, not the street-facing main entrance; use the gate marked Aurora 7 and follow the blue signs to reception on the second floor.',/Studions entré[^]+?andra våningen\./u,'descriptive'],
+  ['According to the fictional test information, there is an elevator reached via the right side of the courtyard.',/Det fi nns hiss[^]+?högra sida\./u,'descriptive']]},
+ {channel:'messenger',language:'de',question:'Darf ich jemanden zu meinem Termin mitbringen? Kann die Person auch mit in den Behandlungsraum kommen?',facts:[
+  ['Laut den fiktiven Testinformationen darf eine erwachsene Begleitperson in den Wartebereich der Rezeption mitkommen.',/En kund får[^]+?väntrum\./u,'permitted'],
+  ['Laut den fiktiven Testinformationen ist der Zugang zum Behandlungs- oder Arbeitsraum nicht automatisch erlaubt; das Personal muss ihn separat genehmigen.',/Medföljande personer[^]+?personalen\./u,'descriptive']]},
+ {channel:'instagram',language:'es',question:'Hola, creo que llegaré unos 20 minutos tarde a mi cita. ¿La cancelan automáticamente o todavía puedo acudir?',facts:[
+  ['Según la información ficticia de prueba, si prevés llegar tarde, deberías contactar al estudio cuanto antes por tu canal habitual.',/Om du riskerar[^]+?med företaget\./u,'recommended'],
+  ['Según la información ficticia de prueba, con más de 15 minutos de retraso el estudio puede necesitar evaluar de nuevo si la visita puede realizarse según lo previsto.',/Vid en försening[^]+?enligt plan\./u,'descriptive'],
+  ['Según la información ficticia de prueba, la visita no se cancela automáticamente; el personal debe evaluar primero la situación.',/Detta innebär[^]+?bedöma situationen\./u,'descriptive']]},
+] as const;
+
+// Scripted native-handler regressions, not historical model judgments or live success.
+for(const spec of novemberQuestions)for(const reject of [false,true])
+test(`November 6 original ${spec.channel}: ${reject?'rejected units stay unpublished':'complete verified answer'}`,async t=>{
+ b.reset();const saved={...incidentConfig},savedEnv={...process.env};
+ const replies:string[]=[],stages:string[]=[],events:any[]=[];let actions=0;let scriptError:unknown;
+ const forbidden=async()=>{actions++;throw Error('OFFLINE_ACTION_FORBIDDEN');};
+ for(const name of ['log','info','warn','error'] as const)t.mock.method(console,name,()=>{});
+ Object.assign(process.env,{ODINLINK_KNOWLEDGE_TIMING_POLICY:'accuracy-first-v1',ODINLINK_KNOWLEDGE_TIMING_TENANT_IDS:'77',
+  ODINLINK_KNOWLEDGE_EXTRACTION_PROTOCOL:'v2',ODINLINK_KNOWLEDGE_VERIFIER_PROTOCOL:'source-exhaustive-v2'});
+ const local=await incidentCorpus(false);
+ const {readFileSync}=await import('node:fs');
+ const audited=JSON.parse(readFileSync('tests/fixtures/cancellation-business3-audited-20261101.json','utf8'));
+ const txt=audited.sources.find((s:any)=>s.title==='odinlink-test.txt');assert.ok(txt);
+ // Remove the older harness's deliberately competing five-minute TXT advice.
+ const prior=(await local.storage.list(77)).find(s=>s.id==='incident-txt')!;
+ await local.storage.create({...prior,content:txt.content,metadata:{segments:[{start:0,end:txt.content.length,section:'Text'}]}});
+ await local.storage.replaceChunks(77,prior.id,[{chunkIndex:0,content:txt.content,metadata:{source:'document',section:'Text'}}]);
+ t.mock.method(globalThis,'fetch',async(input,options)=>{
+  replies.push(interceptedIncidentSend(input,options));
+  return new Response(JSON.stringify({ok:true,result:{message_id:1},messages:[{id:'synthetic'}],message_id:'synthetic'}));
+ });
+ try{
+  incidentConfig.language=spec.language;
+  b.configure({offlineAi:true,semanticLanguageResolver:async()=>({language:spec.language,confidence:1}),
+   postProcess:async()=>{},incrementUsage:async()=>({allowed:true,count:1,limit:100}),
+   knowledgeSearch:(id,q,limit)=>local.service.search(id,q,limit),
+   completeKnowledgeCorpus:async(id,m,options,mode)=>{const complete=await local.service.completeSmallCorpus(id,m,options,mode);assert.equal(complete?.length,6);return complete;},
+   knowledgeSourceLanguages:id=>local.service.sourceLanguageHints(id),semanticKnowledgeSearchQueries:async()=>[],
+   validateKnowledgeMatches:(id,m)=>local.service.validateMatches(id,m,{strictSources:true,captureRevision:true}),
+   evidenceFirstDecisionDiagnostic:e=>events.push(e),
+   aiGenerate:async r=>{try {
+    assert.deepEqual(r.tools,[]);
+    const d=JSON.parse(r.messages[0].content),instruction=r.systemInstruction;
+    assert.equal(d.question.replace(/؟/gu,'?').replace(/‌/gu,' '),spec.question.replace(/؟/gu,'?').replace(/‌/gu,' '));
+    if(instruction.includes('retrieval query planner'))return{functionCalls:[],text:JSON.stringify({canonicalMeaning:d.question,queries:[d.question],queryLanguages:{},requestKind:'BUSINESS_INFORMATION',referenceResolution:'NOT_REQUIRED',requestedFacets:[{subject:'visitor policy',attribute:d.question,questionType:'description',obligations:[{description:d.question,questionType:'description'}]}]})};
+    if(instruction.includes('UNIT EXTRACTION')){
+     stages.push('extraction');assert.ok(d.evidence.length>0 && d.evidence.length<=6);assert.equal(new Set(d.evidence.map((e:any)=>e.sourceGroup||e.sourceId)).size,2);
+     assert.ok(d.evidence.every((e:any)=>e.businessId===77));
+     return{functionCalls:[],text:JSON.stringify({oversized:false,units:spec.facts.map(([text,quote,modality])=>{
+      const e=d.evidence.find((e:any)=>quote.test(e.text));assert.ok(e,String(quote));
+      return{facetIds:['f1'],subject:'documented visitor policy',predicate:'states',value:text,text,modality,
+       negation:false,scope:'documented visit process; PDF facts are fictional test information',qualifiers:[],language:spec.language,
+       evidenceRefs:[{evidenceId:e.id,...(instruction.includes('literal-evidence-v1')?{}:{exactQuote:e.text.match(quote)[0]})}]};
+     })})};
+    }
+    assert.match(instruction,/BATCH ENTAILMENT/);stages.push('verification');
+    assert.equal(d.units.length,spec.facts.length);assert.equal(new Set(d.evidence.map((e:any)=>e.sourceGroup||e.sourceId)).size,2);
+    for(const u of d.units)for(const ref of u.evidenceRefs){
+     const e=d.evidence.find((e:any)=>e.id===ref.evidenceId);assert.ok(e?.text.includes(ref.exactQuote));
+    }
+    return{functionCalls:[],text:JSON.stringify({
+     decisions:d.units.map((u:any,i:number)=>({unitId:u.id,facetIds:u.facetIds,relation:reject?(i===0?'CONTRADICTED':'UNKNOWN'):'ENTAILED',
+      meaningPreserved:!reject,modalityPreserved:true,qualifiersPreserved:!reject,relevant:true,languageCorrect:true,
+      negativeAbsence:false,explicitAbsenceEvidence:false})),
+     coverage:d.facets.map((f:any)=>({facetId:f.id,requestAligned:true,materialFactsComplete:!reject,
+      incompletenessReason:reject?'MISSING_RELEVANT_FACT':'NONE',materialUnitIds:reject?[]:d.units.map((u:any)=>u.id),
+      obligations:f.obligations.map((o:any)=>({obligationId:o.id,status:reject?'UNRESOLVED':'COVERED',unitIds:reject?[]:d.units.map((u:any)=>u.id)}))})),
+     sourceCoverage:{protocol:'source-exhaustive-v2',requestAligned:true,availableMaterialFactsComplete:!reject,
+      conditionsPreserved:!reject,conflictsAbsent:!reject,evidenceIdsReviewed:d.evidence.map((e:any)=>e.id),
+      acceptedUnitIdsReviewed:d.units.map((u:any)=>u.id),
+      obligations:d.facets.flatMap((f:any)=>f.obligations.map((o:any)=>({facetId:f.id,obligationId:o.id,state:reject?'UNLOCATED':'COMPLETE'})))}
+    })};
+   } catch(error) {scriptError=error;throw error;}},
+   calendarAdapter:{getCalendarId:()=>'',getEvents:forbidden,checkSlots:forbidden,insertAppointment:forbidden,
+    cancelAppointment:forbidden,updateAppointment:forbidden},recordAppointment:forbidden,cancelAppointmentRow:forbidden});
+  assert.equal(b.inspectNativeKnowledgeAdmissionForTest(spec.channel,spec.question,incidentConfig),true);
+  await incidentInbound(b,spec.channel,spec.question);
+  assert.equal(scriptError,undefined);assert.equal(actions,0);assert.equal(replies.length,1);assert.deepEqual(stages,['extraction','verification']);
+  if(reject){for(const [text]of spec.facts)assert.ok(!replies[0].includes(text));assert.ok(events.some(e=>e.relation==='CONTRADICTED'),JSON.stringify(events));}
+  else {for(const [text]of spec.facts)assert.ok(replies[0].includes(text),JSON.stringify({reply:replies[0],events:events.map(e=>({stage:e.stage,reason:e.reason,unitId:e.unitId,route:e.route}))}));
+   assert.equal(events.filter(e=>e.stage==='publication').at(-1)?.route,'verified_manifest');
+   if(spec.language==='fa')assert.doesNotMatch(replies[0],/Studio Street|Stjärngatan/u);}
+ }finally{Object.assign(incidentConfig,saved);for(const k of Object.keys(process.env))if(!(k in savedEnv))delete process.env[k];Object.assign(process.env,savedEnv);b.reset();}
+});

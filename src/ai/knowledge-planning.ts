@@ -1,5 +1,5 @@
 import { businessInformationTopics, isExplicitBusinessActionRequest } from './business-information';
-import {withoutExplicitParkingFeeTerms, hasDocumentaryVisitAccess, isArrivalInformationQuestion} from './information-request-contract';
+import {withoutExplicitParkingFeeTerms, hasDocumentaryVisitAccess, isArrivalInformationQuestion, hasVisitInformationContext} from './information-request-contract';
 import { hasConversationReference, hasExternalConversationReference } from './conversation-intent-continuity';
 import { documentAttributeQuestions } from './knowledge-answer-presentation';
 import { hasServiceName } from './source-aware-service-proposal';
@@ -14,6 +14,12 @@ export function documentKnowledgeTopicsEligible(question: string): boolean {
   if (topics.includes('prices') && businessInformationTopics(withoutExplicitParkingFeeTerms(question)).includes('prices')) return false;
   if (!topics.includes('contact')) return true;
   if (hasDocumentaryVisitAccess(question)) return true;
+  // Asking how to obtain the visit address is a documentary process question,
+  // not a request for a configured address value. Probe only; retain the full
+  // original question for extraction and independent coverage verification.
+  const visitProbe = hasVisitInformationContext(question) ? question.replace(/(^|[.!?؟]\s*)آدرس(?:\s+(?:دقیق|بازدید|شما|استودیو)){0,3}\s+(?:(?:را|رو)\s+)?(?:از\s+کجا\s+(?:می[‌\s]?(?:توانم|تونم)\s+)?بگیرم|چگونه\s+(?:می[‌\s]?توانم\s+)?دریافت\s+کنم)\s*[?؟]/gu, '$1') : question;
+  if (visitProbe !== question && !businessInformationTopics(visitProbe).includes('contact') &&
+      !/\b(?:phone|email|e-mail|website|telephone|telefon|webbplats|kontaktuppgifter|teléfono|correo|webseite)\b|تلفن|ایمیل|وب.?سایت|هاتف|بريد|موقع\s+إلكتروني/iu.test(visitProbe)) return true;
   return !/\b(?:phone|email|website|telephone|telefon|webbplats|kontaktuppgifter|teléfono|correo|webseite)\b/iu.test(question) && topics.includes('parking') &&
     /\b(?:garage|car\s*park|parkeringsgarage|parkhaus|tiefgarage|aparcamiento|garaje)\b|پارکینگ|موقف/u.test(question.toLowerCase()) &&
     !/\b(?:(?:your|our|studio|business)(?:'s)?\s+(?:address|phone|email)|(?:er|studions)\s+adress|adresse\s+(?:des\s+studios|ihrer)|dirección\s+del\s+estudio)\b/iu.test(question);

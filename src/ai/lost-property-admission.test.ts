@@ -49,3 +49,17 @@ test('adapter normalization matches the observed production question fingerprint
  assert.equal(createHash('sha256').update(normalized).digest('hex').slice(0,12),'7c0de454d6f3');
  assert.equal(documentKnowledgeTopicsEligible(normalized),true);
 });
+
+const firstVisit = 'من می‌خوام اولین بار بیام استودیو. باید زودتر برسم؟ تأییدیه رزرو رو همراهم داشته باشم؟ آدرس دقیق رو از کجا می‌تونم بگیرم؟';
+test('first-visit address-delivery question retains the whole documentary request',()=>{
+ for(const question of [firstVisit, normalizeConversationText(firstVisit), firstVisit.replace('از کجا می‌تونم بگیرم','چگونه دریافت کنم')]) {
+  assert.equal(isBusinessInformationQuestion(question),true);
+  assert.equal(isExplicitBusinessActionRequest(question),false);
+  assert.equal(documentKnowledgeTopicsEligible(question),true);
+ }
+});
+test('address-delivery admission does not consume other structured contact requests',()=>{
+ for(const suffix of [' آدرس شما چیست؟',' شماره تلفن شما چیست؟',' ایمیل شما چیست؟',' ساعات کاری شما چیست؟'])
+  assert.equal(documentKnowledgeTopicsEligible(firstVisit+suffix),false);
+ assert.equal(documentKnowledgeTopicsEligible(firstVisit.replace('آدرس دقیق رو از کجا می‌تونم بگیرم؟','آدرس دقیق شما چیست؟')),false);
+});

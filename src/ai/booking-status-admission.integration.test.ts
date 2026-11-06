@@ -9,6 +9,18 @@ incidentFlags();
 Object.assign(process.env,{AI_PROVIDER:'gemini',ODINLINK_KNOWLEDGE_TIMING_POLICY:'accuracy-first-v1',
   ODINLINK_KNOWLEDGE_TIMING_TENANT_IDS:'3',ODINLINK_KNOWLEDGE_MODEL_PROFILE:'off',ODINLINK_KNOWLEDGE_SOL_TENANT_IDS:''});
 const {priority1hUnifiedEngineTestBoundary:b}=await import('../../server');
+test('Persian confirmation document is not a confirmed-booking status predicate',()=>{
+ b.reset();
+ const session='offline-confirmation-document';
+ b.seedRecentCompletedBooking(session,'fa',{ok:true,bookingId:'synthetic',businessId:77,
+  serviceName:'Consultation',startTime:'2026-11-07T18:30:00+01:00',customerName:'Synthetic',sourceChannel:'telegram'});
+ try {
+  for(const question of ['تأییدیه رزرو رو همراهم داشته باشم؟','تاییدیه رزرو را باید بیاورم؟'])
+   assert.equal(b.recentCompletionClassification(session,question,incidentConfig)?.statusSemantics,false);
+  for(const question of ['آیا رزرو من تأیید شده؟','آیا رزرو من تاییدشده است؟','آیا نوبت من ثبت شده؟'])
+   assert.equal(b.recentCompletionClassification(session,question,incidentConfig)?.statusSemantics,true);
+ } finally {b.reset();}
+});
 const questions={
   sv:{book:'Boka en Video Consultation i morgon.',move:'Flytta min bokning till i morgon.',cancel:'Avboka min bokning eftersom jag blir sen.',lookup:'Har jag en bokning?',status:'Kan du bekräfta min bokning?',header:'Ja, bokningen är verifierad.'},
   en:{book:'Please book a Video Consultation tomorrow.',move:'Please reschedule my appointment to tomorrow.',cancel:'Please cancel my appointment because I will be late.',lookup:'Do I have an appointment?',status:'Can you please confirm my booking?',header:'Yes, the booking is verified.'},

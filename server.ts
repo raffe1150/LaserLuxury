@@ -8056,7 +8056,8 @@ function hasRecentCompletedBookingStatusSemantics(text?: string): boolean {
     /\b(?:bokning|tid)\b.{0,50}\b(?:bekraftad|bokad|klar)\b|\b(?:bekraftad|bokad)\b.{0,50}\b(?:bokning|tid)\b/u.test(normalized) ||
     /\b(?:termin|buchung)\b.{0,50}\b(?:bestatigt|gebucht|reserviert)\b|\b(?:bestatigt|gebucht|reserviert)\b.{0,50}\b(?:termin|buchung)\b/u.test(normalized) ||
     /\b(?:cita|reserva|reservacion)\b.{0,50}\b(?:confirmada|confirmado|reservada|reservado)\b|\b(?:confirmada|confirmado|reservada|reservado)\b.{0,50}\b(?:cita|reserva|reservacion)\b/u.test(normalized) ||
-    /(?:وقت|نوبت|رزرو|قرار).{0,45}(?:تایید|تأیید|قطعی|ثبت|رزرو\s+شده)|(?:تایید|تأیید|قطعی|ثبت).{0,45}(?:وقت|نوبت|رزرو|قرار)/u.test(normalized) ||
+    // The confirmation-document noun (تأییدیه) is not booking status; keep verbal forms intact.
+    /(?:وقت|نوبت|رزرو|قرار).{0,45}(?:(?:تایید|تأیید)(?!یه)|قطعی|ثبت|رزرو\s+شده)|(?:(?:تایید|تأیید)(?!یه)|قطعی|ثبت).{0,45}(?:وقت|نوبت|رزرو|قرار)/u.test(normalized) ||
     /(?:موعد|حجز).{0,45}(?:مؤ[كک]د|مو[كک]د|مؤ[كک]دة|مو[كک]دة|(?<![\p{L}\p{M}])تم(?![\p{L}\p{M}])|محجوز)|(?:تأ[كک][يی]د|تا[كک][يی]د|مؤ[كک]د|مو[كک]د|(?<![\p{L}\p{M}])تم(?![\p{L}\p{M}])).{0,45}(?:موعد|حجز)/u.test(normalized)
   );
 }

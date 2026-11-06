@@ -1,0 +1,41 @@
+{
+  "provenance": {
+    "kind": "permitted genuine replay evidence; not historical production proposals",
+    "commit": "96e03c3d0c61055f2af1c8a4bbae693c23107d4c",
+    "reportSha256": "2335a9cc0c9152c447e2eab76c7f5a542036fe1dbc4183f08117b78a5061d8ae",
+    "analysisSha256": "be2e6e1867c38b70da080499795f21e63ba60482f9d1e31d04e2061d70ea4c60"
+  },
+  "u1": {
+    "id": "u1",
+    "text": "Según la información ficticia del documento de prueba, AdMotion Studio no cancela automáticamente la cita por un retraso de más de 15 minutos.",
+    "originalQuotes": [
+      "Detta innebär inte att besöket automatiskt avbokas.",
+      "Observera: All information i detta dokument är fi ktiv och används enbart för att testa OdinLinks AI-assistent. Uppgifterna ska inte\nbetraktas som AdMotion Studios verkliga kundvillkor."
+    ],
+    "addedAntecedentQuote": "Vid en försening på mer än 15 minuter kan studion behöva göra en ny bedömning av om besöket kan genomföras enligt plan.",
+    "originalReason": "SOURCE_CONSTRAINT_UNAVAILABLE",
+    "correctedBindingBaselineReason": "CLAIM_AMBIGUOUS"
+  },
+  "u2": {
+    "id": "u2",
+    "textAvailable": "partially redacted; not reconstructed",
+    "scope": "retrasos de más de 15 minutos",
+    "observedReason": "UNBOUNDED_CLAIM_NOT_SUPPORTED",
+    "observedClaimConstraints": [
+      {
+        "seconds": 1200,
+        "bound": null,
+        "side": "none",
+        "ambiguous": false
+      }
+    ],
+    "observedSourceConstraints": [
+      {
+        "seconds": 900,
+        "bound": "strict_minimum",
+        "side": "none",
+        "ambiguous": false
+      }
+    ]
+  }
+}

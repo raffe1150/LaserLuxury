@@ -127,14 +127,22 @@ const novemberQuestions = [
 ] as const;
 
 // Scripted native-handler regressions, not historical model judgments or live success.
-for(const spec of novemberQuestions)for(const reject of [false,true])
-test(`November 6 original ${spec.channel}: ${reject?'rejected units stay unpublished':'complete verified answer'}`,async t=>{
+for(const entry of novemberQuestions)for(const channel of entry.language==='es'?incidentChannels:[entry.channel])
+for(const fault of entry.language==='es'?['none','private-flag-only','corrected-antecedent','missing-antecedent','numeric-negation','rejected','threshold-16','inclusive-15','automatic-cancellation','invalid-quote','wrong-valid-span','missing-condition','missing-qualification','omitted-fact','incomplete-source-review','wrong-language-label','wrong-language-text']:['none','rejected'])
+test(`November 6 original ${channel}/${entry.language}: ${fault}`,async t=>{
+ const spec={...entry,channel},positive=['none','private-flag-only','corrected-antecedent'].includes(fault);
+ const parseLoss=['threshold-16','inclusive-15','invalid-quote','wrong-language-label','wrong-valid-span','missing-condition','missing-antecedent','numeric-negation'].includes(fault);
+ const semanticFailure=['rejected','automatic-cancellation','missing-qualification','wrong-language-text'].includes(fault);
+ const incomplete=!positive&&!parseLoss&&fault!=='incomplete-source-review';
+ let completeCorpusReads=0;
  b.reset();const saved={...incidentConfig},savedEnv={...process.env};
  const replies:string[]=[],stages:string[]=[],events:any[]=[];let actions=0;let scriptError:unknown;
  const forbidden=async()=>{actions++;throw Error('OFFLINE_ACTION_FORBIDDEN');};
  for(const name of ['log','info','warn','error'] as const)t.mock.method(console,name,()=>{});
  Object.assign(process.env,{ODINLINK_KNOWLEDGE_TIMING_POLICY:'accuracy-first-v1',ODINLINK_KNOWLEDGE_TIMING_TENANT_IDS:'77',
   ODINLINK_KNOWLEDGE_EXTRACTION_PROTOCOL:'v2',ODINLINK_KNOWLEDGE_VERIFIER_PROTOCOL:'source-exhaustive-v2'});
+ delete process.env.ODINLINK_PRIVATE_NUMERICAL_DIAGNOSTICS;
+ if(fault==='private-flag-only')process.env.ODINLINK_PRIVATE_NUMERICAL_DIAGNOSTICS='fixture-v1';
  const local=await incidentCorpus(false);
  const {readFileSync}=await import('node:fs');
  const audited=JSON.parse(readFileSync('tests/fixtures/cancellation-business3-audited-20261101.json','utf8'));
@@ -152,7 +160,7 @@ test(`November 6 original ${spec.channel}: ${reject?'rejected units stay unpubli
   b.configure({offlineAi:true,semanticLanguageResolver:async()=>({language:spec.language,confidence:1}),
    postProcess:async()=>{},incrementUsage:async()=>({allowed:true,count:1,limit:100}),
    knowledgeSearch:(id,q,limit)=>local.service.search(id,q,limit),
-   completeKnowledgeCorpus:async(id,m,options,mode)=>{const complete=await local.service.completeSmallCorpus(id,m,options,mode);assert.equal(complete?.length,6);return complete;},
+   completeKnowledgeCorpus:async(id,m,options,mode)=>{const complete=await local.service.completeSmallCorpus(id,m,options,mode);completeCorpusReads++;assert.equal(complete?.length,6);return complete;},
    knowledgeSourceLanguages:id=>local.service.sourceLanguageHints(id),semanticKnowledgeSearchQueries:async()=>[],
    validateKnowledgeMatches:(id,m)=>local.service.validateMatches(id,m,{strictSources:true,captureRevision:true}),
    evidenceFirstDecisionDiagnostic:e=>events.push(e),
@@ -162,31 +170,55 @@ test(`November 6 original ${spec.channel}: ${reject?'rejected units stay unpubli
     assert.equal(d.question.replace(/؟/gu,'?').replace(/‌/gu,' '),spec.question.replace(/؟/gu,'?').replace(/‌/gu,' '));
     if(instruction.includes('retrieval query planner'))return{functionCalls:[],text:JSON.stringify({canonicalMeaning:d.question,queries:[d.question],queryLanguages:{},requestKind:'BUSINESS_INFORMATION',referenceResolution:'NOT_REQUIRED',requestedFacets:[{subject:'visitor policy',attribute:d.question,questionType:'description',obligations:[{description:d.question,questionType:'description'}]}]})};
     if(instruction.includes('UNIT EXTRACTION')){
+     assert.match(instruction,/Citation completeness:/u);assert.match(instruction,/cite both spans/u);assert.match(instruction,/Customer quantities describe the requested scenario/u);
      stages.push('extraction');assert.ok(d.evidence.length>0 && d.evidence.length<=6);assert.equal(new Set(d.evidence.map((e:any)=>e.sourceGroup||e.sourceId)).size,2);
      assert.ok(d.evidence.every((e:any)=>e.businessId===77));
-     return{functionCalls:[],text:JSON.stringify({oversized:false,units:spec.facts.map(([text,quote,modality])=>{
+     const units=spec.facts.map(([text,quote,modality])=>{
       const e=d.evidence.find((e:any)=>quote.test(e.text));assert.ok(e,String(quote));
       return{facetIds:['f1'],subject:'documented visitor policy',predicate:'states',value:text,text,modality,
        negation:false,scope:'documented visit process; PDF facts are fictional test information',qualifiers:[],language:spec.language,
        evidenceRefs:[{evidenceId:e.id,...(instruction.includes('literal-evidence-v1')?{}:{exactQuote:e.text.match(quote)[0]})}]};
-     })})};
+     });
+     if(['corrected-antecedent','missing-antecedent','numeric-negation'].includes(fault)){
+      const replay=JSON.parse(readFileSync('tests/fixtures/late-arrival-genuine-96e03c3.json','utf8'));
+      const consequence=/Detta innebär[^]+?bedöma situationen\./u;
+      const policy=/Vid en försening[^]+?enligt plan\./u;
+      const e=d.evidence.find((e:any)=>policy.test(e.text)&&consequence.test(e.text));assert.ok(e);
+      // Counterfactual complete binding of the actual permitted u1 sentence;
+      // not a reconstruction or repair of a genuine provider response.
+      units[2]={...units[2],text:replay.u1.text+' El personal debe evaluar primero la situación.',value:replay.u1.text+' El personal debe evaluar primero la situación.',negation:true,
+       evidenceRefs:[{evidenceId:e.id,exactQuote:e.text.match(consequence)[0]},
+        ...(fault==='missing-antecedent'?[]:[{evidenceId:e.id,exactQuote:e.text.match(policy)[0]}])]};
+      if(fault==='numeric-negation')units[2].text=units[2].text.replace('más de','no más de');
+     }
+     if(fault==='threshold-16')units[1]={...units[1],text:units[1].text.replace('15','16'),value:units[1].value.replace('15','16')};
+     if(fault==='inclusive-15')units[1]={...units[1],text:units[1].text.replace('más de','al menos')};
+     if(fault==='automatic-cancellation')units[2]={...units[2],text:'Según la información ficticia de prueba, la visita se cancela automáticamente.'};
+     if(fault==='invalid-quote')units[1].evidenceRefs=[{evidenceId:units[1].evidenceRefs[0].evidenceId,exactQuote:'A quotation absent from the reviewed source.'}];
+     if(fault==='wrong-valid-span')units[1].evidenceRefs=units[0].evidenceRefs;
+     if(fault==='missing-condition')units[1]={...units[1],text:'Según la información ficticia de prueba, el estudio siempre debe evaluar de nuevo si la visita puede realizarse según lo previsto.'};
+     if(fault==='missing-qualification')units[2]={...units[2],text:units[2].text.replace('Según la información ficticia de prueba, ','')};
+     if(fault==='omitted-fact')units.splice(2,1);
+     if(fault==='wrong-language-label')units[1]={...units[1],language:'en'};
+     if(fault==='wrong-language-text')units[1]={...units[1],text:'According to the fictional test information, with more than 15 minutes of delay staff may need to assess the visit.'};
+     return{functionCalls:[],text:JSON.stringify({oversized:false,units})};
     }
     assert.match(instruction,/BATCH ENTAILMENT/);stages.push('verification');
-    assert.equal(d.units.length,spec.facts.length);assert.equal(new Set(d.evidence.map((e:any)=>e.sourceGroup||e.sourceId)).size,2);
+    assert.equal(d.units.length,spec.facts.length-(parseLoss||fault==='omitted-fact'?1:0));assert.equal(new Set(d.evidence.map((e:any)=>e.sourceGroup||e.sourceId)).size,2);
     for(const u of d.units)for(const ref of u.evidenceRefs){
      const e=d.evidence.find((e:any)=>e.id===ref.evidenceId);assert.ok(e?.text.includes(ref.exactQuote));
     }
     return{functionCalls:[],text:JSON.stringify({
-     decisions:d.units.map((u:any,i:number)=>({unitId:u.id,facetIds:u.facetIds,relation:reject?(i===0?'CONTRADICTED':'UNKNOWN'):'ENTAILED',
-      meaningPreserved:!reject,modalityPreserved:true,qualifiersPreserved:!reject,relevant:true,languageCorrect:true,
+     decisions:d.units.map((u:any,i:number)=>({unitId:u.id,facetIds:u.facetIds,relation:semanticFailure?(i===0?'CONTRADICTED':'UNKNOWN'):'ENTAILED',
+      meaningPreserved:!semanticFailure,modalityPreserved:fault!=='missing-condition',qualifiersPreserved:!semanticFailure,relevant:true,languageCorrect:fault!=='wrong-language-text',
       negativeAbsence:false,explicitAbsenceEvidence:false})),
-     coverage:d.facets.map((f:any)=>({facetId:f.id,requestAligned:true,materialFactsComplete:!reject,
-      incompletenessReason:reject?'MISSING_RELEVANT_FACT':'NONE',materialUnitIds:reject?[]:d.units.map((u:any)=>u.id),
-      obligations:f.obligations.map((o:any)=>({obligationId:o.id,status:reject?'UNRESOLVED':'COVERED',unitIds:reject?[]:d.units.map((u:any)=>u.id)}))})),
-     sourceCoverage:{protocol:'source-exhaustive-v2',requestAligned:true,availableMaterialFactsComplete:!reject,
-      conditionsPreserved:!reject,conflictsAbsent:!reject,evidenceIdsReviewed:d.evidence.map((e:any)=>e.id),
+     coverage:d.facets.map((f:any)=>({facetId:f.id,requestAligned:true,materialFactsComplete:!incomplete,
+      incompletenessReason:incomplete?'MISSING_RELEVANT_FACT':'NONE',materialUnitIds:incomplete?[]:d.units.map((u:any)=>u.id),
+      obligations:f.obligations.map((o:any)=>({obligationId:o.id,status:incomplete?'UNRESOLVED':'COVERED',unitIds:incomplete?[]:d.units.map((u:any)=>u.id)}))})),
+     sourceCoverage:{protocol:'source-exhaustive-v2',requestAligned:true,availableMaterialFactsComplete:!incomplete,
+      conditionsPreserved:!incomplete,conflictsAbsent:!semanticFailure,evidenceIdsReviewed:d.evidence.slice(fault==='incomplete-source-review'?1:0).map((e:any)=>e.id),
       acceptedUnitIdsReviewed:d.units.map((u:any)=>u.id),
-      obligations:d.facets.flatMap((f:any)=>f.obligations.map((o:any)=>({facetId:f.id,obligationId:o.id,state:reject?'UNLOCATED':'COMPLETE'})))}
+      obligations:d.facets.flatMap((f:any)=>f.obligations.map((o:any)=>({facetId:f.id,obligationId:o.id,state:incomplete?'UNLOCATED':'COMPLETE'})))}
     })};
    } catch(error) {scriptError=error;throw error;}},
    calendarAdapter:{getCalendarId:()=>'',getEvents:forbidden,checkSlots:forbidden,insertAppointment:forbidden,
@@ -194,9 +226,18 @@ test(`November 6 original ${spec.channel}: ${reject?'rejected units stay unpubli
   assert.equal(b.inspectNativeKnowledgeAdmissionForTest(spec.channel,spec.question,incidentConfig),true);
   await incidentInbound(b,spec.channel,spec.question);
   assert.equal(scriptError,undefined);assert.equal(actions,0);assert.equal(replies.length,1);assert.deepEqual(stages,['extraction','verification']);
-  if(reject){for(const [text]of spec.facts)assert.ok(!replies[0].includes(text));assert.ok(events.some(e=>e.relation==='CONTRADICTED'),JSON.stringify(events));}
-  else {for(const [text]of spec.facts)assert.ok(replies[0].includes(text),JSON.stringify({reply:replies[0],events:events.map(e=>({stage:e.stage,reason:e.reason,unitId:e.unitId,route:e.route}))}));
+  assert.ok(completeCorpusReads>0,'canonical completion was exercised');
+  if(!positive){
+   assert.notEqual(events.filter(e=>e.stage==='publication').at(-1)?.route,'verified_manifest');
+   for(const [text]of spec.facts)assert.ok(!replies[0].includes(text));
+   if(semanticFailure)assert.ok(events.some(e=>e.relation==='CONTRADICTED'),JSON.stringify(events));
+   if(['threshold-16','inclusive-15','wrong-valid-span','missing-condition','missing-antecedent','numeric-negation'].includes(fault))assert.ok(events.some(e=>e.reason==='NUMERICAL_CONSTRAINT'));
+   if(fault==='invalid-quote')assert.ok(events.some(e=>e.reason==='INVALID_CITATION'));
+   if(fault==='wrong-language-label')assert.ok(events.some(e=>e.reason==='LANGUAGE_LABEL'));
+  }
+  else {for(const [index,[text]]of spec.facts.entries()){const expected=fault==='corrected-antecedent'&&index===2?JSON.parse(readFileSync('tests/fixtures/late-arrival-genuine-96e03c3.json','utf8')).u1.text+' El personal debe evaluar primero la situación.':text;assert.ok(replies[0].includes(expected),JSON.stringify({reply:replies[0],events:events.map(e=>({stage:e.stage,reason:e.reason,unitId:e.unitId,route:e.route}))}));}
    assert.equal(events.filter(e=>e.stage==='publication').at(-1)?.route,'verified_manifest');
    if(spec.language==='fa')assert.doesNotMatch(replies[0],/Studio Street|Stjärngatan/u);}
+  t.diagnostic(JSON.stringify({channel:spec.channel,language:spec.language,fault,completeCorpusReads,stages,replies:replies.length,actions,route:events.filter(e=>e.stage==='publication').at(-1)?.route,answer:positive?replies[0]:undefined}));
  }finally{Object.assign(incidentConfig,saved);for(const k of Object.keys(process.env))if(!(k in savedEnv))delete process.env[k];Object.assign(process.env,savedEnv);b.reset();}
 });

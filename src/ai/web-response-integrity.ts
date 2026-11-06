@@ -4,13 +4,13 @@ import { withoutTemporalBookingAttribute } from './booking-operation-reference';
 // another completed predicate, even in the same sentence, remains detectable.
 const nonAssertedPredicates = [
   /\b(?:must|should|can|may|could|need(?:s)? to|ha(?:s|ve) to|ought to)\s+(?:be|get)\s+(?:successfully\s+)?(?:booked|confirmed|reserved|created|secured|cancelled|canceled|rescheduled|moved)\b/giu,
-  /\b(?:not|never)\s+(?:(?:been|be|yet|successfully)\s+){0,2}(?:booked|confirmed|reserved|created|secured|cancelled|canceled|rescheduled|moved)\b/giu,
+  /\b(?:not|never)\s+(?:(?:been|be|yet|successfully|automatically)\s+){0,2}(?:booked|confirmed|reserved|created|secured|cancelled|canceled|rescheduled|moved)\b/giu,
   /\b(?:isn|aren|wasn|weren|hasn|haven|hadn)['’]t\s+(?:been\s+)?(?:booked|confirmed|reserved|created|secured|cancelled|canceled|rescheduled|moved)\b/giu,
   /\b(?:cannot|can't|couldn't)\s+(?:be|get)\s+(?:booked|confirmed|reserved|cancelled|canceled|rescheduled|moved)\b/giu,
   /\b(?:måste|ska|skall|bör|kan|behöver)\s+(?:vara|bli)\s+(?:bokad|bekräftad|reserverad|avbokad|ombokad|flyttad)\b/giu,
   /\b(?:inte|ej|aldrig)\s+(?:(?:blivit|vara|bli|ännu)\s+){0,2}(?:bokad|bekräftad|reserverad|avbokad|ombokad|flyttad)\b/giu,
   /\b(?:muss|müssen|soll|sollen|sollte|sollten|kann|können|darf|dürfen)\s+(?:gebucht|bestätigt|reserviert|storniert|verschoben|umgebucht)\s+werden\b/giu,
-  /\b(?:nicht|nie)\s+(?:(?:bereits|schon|erfolgreich)\s+)?(?:gebucht|bestätigt|reserviert|storniert|verschoben|umgebucht)\b/giu,
+  /\b(?:nicht|nie)\s+(?:(?:bereits|schon|erfolgreich|automatisch)\s+)?(?:gebucht|bestätigt|reserviert|storniert|verschoben|umgebucht)\b/giu,
   /\b(?:debe|deben|debería|deberían|puede|pueden|podría|podrían)\s+ser\s+(?:reservada|confirmada|creada|cancelada|reprogramada)\b/giu,
   /\bno\s+(?:(?:ha|han)\s+sido\s+|(?:está|están|fue|fueron)\s+)(?:reservada|confirmada|creada|cancelada|reprogramada)\b/giu,
   /\bno\s+(?:he|hemos)\s+(?:cancelado|reservado|confirmado|reprogramado)\b/giu,

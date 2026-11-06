@@ -54,6 +54,24 @@ function spatialConnectives(text: string): string {
   });
 }
 
+/** In a descriptive numeric condition, negating an automatic event does not
+ * negate the comparison. Consume only closed indicative verb/adverb forms in
+ * the parser's copy; leave other negators, quantities and published text intact.
+ * Notice/fee, modal and before/after statements retain the conservative path. */
+function indicativeActionNegation(text:string,context:string):string {
+  if (freeClaim.test(context) || /\b(?:must|shall|should|require\w*|notice|deadline|fee\w*|debe\w*|oblig\w*|aviso|plazo|tarifa\w*|måste|ska|kräver|varsel|avgift\w*|muss|darf|soll|vorlauf|gebühr\w*)\b|باید|نباید|مهلت|هزینه|جریمه|يجب|إشعار|رسوم/iu.test(context)) return text;
+  const forms:readonly [RegExp,RegExp][] = [
+    [/\bno\s+(?:se\s+)?cancel(?:a|an)\s+automáticamente\b/gu,/\bno\b/u],
+    [/\bnot\s+automatically\s+cancel(?:led|ed)\b|\bdoes\s+not\s+(?:automatically\s+cancel|cancel\s+automatically)\b/gu,/\bnot\b/u],
+    [/\bavbokas\s+(?:(?:besöket|tiden|bokningen|mötet)\s+)?inte\s+automatiskt\b/gu,/\binte\b/u],
+    [/\bnicht\s+automatisch\s+(?:storniert|abgesagt)\b/gu,/\bnicht\b/u],
+    [/(?<![\p{L}\p{N}])خودکار\s+لغو\s+نمی\s*شود(?![\p{L}\p{N}])/gu,/نمی/u],
+    [/(?<![\p{L}\p{N}])لا\s+(?:يلغى|تلغى)\s+(?:(?:الموعد|الحجز)\s+)?تلقائيا(?![\p{L}\p{N}])/gu,/لا/u],
+  ];
+  for(const [form,negator] of forms)text=text.replace(form,match=>match.replace(negator,' '));
+  return text;
+}
+
 function parse(input: string): { constraints: Constraint[]; unsupported: boolean } {
   if (input.length > 20_000) return { constraints: [], unsupported: true };
   // German source attribution ("according to the test terms") is not an
@@ -87,9 +105,10 @@ function parse(input: string): { constraints: Constraint[]; unsupported: boolean
       /requires?|needs?|kräver|behöver|erfordert|benötigt|requiere|necesita|نیاز دارد|يتطلب/u.test(context) &&
       /notice|varsel|förvarning|vorlauf|ankündigung|aviso|اطلاع|إشعار/u.test(context);
     if (!mapped.length && noticeRequirement) mapped.push('minimum');
+    const ambiguityText = side === 'none' && mapped.length === 1 ? indicativeActionNegation(remaining,context) : remaining;
     const ambiguous = context.length > 500 || (anchoredBefore && anchoredAfter) ||
       bounds.some(b => (b === 'latest' || b === 'earliest') && side === 'none') ||
-      new Set(mapped).size > 1 || /[<>≤≥]|\b(?:between|or|eller|oder|o|inte|nicht|not|no|never)\b|(?<![\p{L}])(?:یا|أو|ليس|ليست|نباید|هرگز)(?![\p{L}])|(?<![\p{L}])نمی|(?<![\p{L}])لا(?![\p{L}])/u.test(remaining) ||
+      new Set(mapped).size > 1 || /[<>≤≥]|\b(?:between|or|eller|oder|o|inte|nicht|not|no|never)\b|(?<![\p{L}])(?:یا|أو|ليس|ليست|نباید|هرگز)(?![\p{L}])|(?<![\p{L}])نمی|(?<![\p{L}])لا(?![\p{L}])/u.test(ambiguityText) ||
       /[0-9]/u.test(left + right) || /exactly|precisely|exakt|genau|exactamente|دقیقا|بالضبط/u.test(context);
     constraints.push({ seconds: Number(quantity[1].replace(',', '.')) * units[quantity[2]], bound: mapped[0] || null, side, ambiguous,
       ...(cancellationClaim.test(context) ? { cancellationKind: freeClaim.test(context) ? 'free_window' as const : 'notice' as const } : {}) });

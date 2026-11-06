@@ -119,16 +119,20 @@ export function literalDurationSeconds(text: string): number | null {
     ? constraint.seconds : null;
 }
 
-export function numericalConstraintSafe(candidateQuote: string, atomicClaim: string, evidence: Array<string | { quote: string; source: string }>, structuredBusinessConfig?: string,
-  citationScope: 'quotation' | 'whole_source' = 'quotation'): boolean {
+export type NumericalConstraintAssessment = Readonly<{safe:boolean;reason:string;checks:readonly ReturnType<typeof parse>[];sources:readonly ReturnType<typeof parse>[]}>;
+
+export function assessNumericalConstraint(candidateQuote: string, atomicClaim: string, evidence: Array<string | { quote: string; source: string }>, structuredBusinessConfig?: string,
+  citationScope: 'quotation' | 'whole_source' = 'quotation'): NumericalConstraintAssessment {
+  let checks: ReturnType<typeof parse>[] = [], sources: ReturnType<typeof parse>[] = [];
+  const result = (safe: boolean, reason: string): NumericalConstraintAssessment => ({safe,reason,checks,sources});
   let policy: any, services: any[] = [];
   if (structuredBusinessConfig) {
-    try { const config = JSON.parse(structuredBusinessConfig); policy = config?.cancellation; services = Array.isArray(config?.services) ? config.services : []; } catch { return false; }
+    try { const config = JSON.parse(structuredBusinessConfig); policy = config?.cancellation; services = Array.isArray(config?.services) ? config.services : []; } catch { return result(false,'CONFIGURATION_INVALID'); }
   }
   const typedPolicy = policy?.available === true;
   const structuredPolicyCitation = evidence.some(item => typeof item !== 'string' && item.source === 'structured_business_config' &&
     /"(?:freeCancellationDeadlineMinutes|lateFeeEnabled|automaticCancellationEnabled)"\s*:/u.test(item.quote));
-  const checks = [parse(candidateQuote), parse(atomicClaim)];
+  checks = [parse(candidateQuote), parse(atomicClaim)];
   // A verified service name can itself contain "Cancellation". Its ordinary
   // duration remains a service attribute, not a cancellation-policy interval.
   const namedServiceDuration = services.some(service => typeof service.name === 'string' && service.name.length > 0 &&
@@ -141,9 +145,9 @@ export function numericalConstraintSafe(candidateQuote: string, atomicClaim: str
     // or prohibition. Both the original quotation and extracted claim must
     // name the free-cancellation attribute; the model cannot drop that qualifier.
     if (checks.some(c => c.constraints.length > 0) &&
-      (!freeClaim.test(candidateQuote) || !freeClaim.test(atomicClaim))) return false;
+      (!freeClaim.test(candidateQuote) || !freeClaim.test(atomicClaim))) return result(false,'FREE_WINDOW_SCOPE_MISMATCH');
     if ((!policy.lateFeeEnabled || typeof policy.freeCancellationDeadlineMinutes !== 'number' || policy.freeCancellationDeadlineMinutes <= 0) &&
-      checks.some(c => c.constraints.length > 0)) return false;
+      checks.some(c => c.constraints.length > 0)) return result(false,'DISABLED_OR_INVALID_FREE_WINDOW');
     if (policy.hardCancellationCutoffMinutes === null || policy.hardCancellationCutoffMinutes === undefined) {
       const text = canonical(candidateQuote + ' ' + atomicClaim);
       const automaticScope = /automatic|automatis|automátic|خودکار|تلقائي/iu;
@@ -151,12 +155,12 @@ export function numericalConstraintSafe(candidateQuote: string, atomicClaim: str
         automaticScope.test(candidateQuote) && automaticScope.test(atomicClaim) &&
         !freeClaim.test(candidateQuote + ' ' + atomicClaim);
       // Mentioning "free" elsewhere cannot hide an affirmative prohibition.
-      if (!disabledAutomation && /\b(?:prohibited|forbidden|cannot cancel|can't cancel|not allowed to cancel|no longer cancel|får inte avboka|nicht (?:mehr )?stornieren|no puedes cancelar|prohibid\w*)\b|لغو.{0,30}ممنوع|نمی\s?توان.{0,35}لغو|لا يمكن.{0,25}إلغاء|إلغاء.{0,30}(?:ممنوع|محظور)/iu.test(text)) return false;
+      if (!disabledAutomation && /\b(?:prohibited|forbidden|cannot cancel|can't cancel|not allowed to cancel|no longer cancel|får inte avboka|nicht (?:mehr )?stornieren|no puedes cancelar|prohibid\w*)\b|لغو.{0,30}ممنوع|نمی\s?توان.{0,35}لغو|لا يمكن.{0,25}إلغاء|إلغاء.{0,30}(?:ممنوع|محظور)/iu.test(text)) return result(false,'UNSUPPORTED_CANCELLATION_RESTRICTION');
       if (!freeClaim.test(candidateQuote) && !freeClaim.test(atomicClaim) &&
-        /\b(?:must cancel|must be cancel(?:led|ed)|muss\w*.*stornier|måste.*avbok|debes? cancelar)\b|باید.*لغو|يجب.*إلغاء/iu.test(text)) return false;
+        /\b(?:must cancel|must be cancel(?:led|ed)|muss\w*.*stornier|måste.*avbok|debes? cancelar)\b|باید.*لغو|يجب.*إلغاء/iu.test(text)) return result(false,'UNSUPPORTED_CANCELLATION_RESTRICTION');
     }
   }
-  const sources = evidence.map(item => {
+  sources = evidence.map(item => {
     const text = typeof item === 'string' ? item : item.quote;
     const parsed = parse(text);
     // Only a typed free-cancellation field can establish the free-fee boundary.
@@ -169,9 +173,9 @@ export function numericalConstraintSafe(candidateQuote: string, atomicClaim: str
   });
   if (policyClaim && evidence.some(item => typeof item !== 'string' && item.source === 'structured_business_config' &&
     /"freeCancellationDeadlineMinutes"\s*:/u.test(item.quote)) &&
-    (!freeClaim.test(candidateQuote) || !freeClaim.test(atomicClaim))) return false;
+    (!freeClaim.test(candidateQuote) || !freeClaim.test(atomicClaim))) return result(false,'FREE_WINDOW_SCOPE_MISMATCH');
   const authoritative = sources.flatMap(s => s.constraints).filter(c => c.bound !== null || c.side !== 'none');
-  if (checks.some(c => c.unsupported)) return false;
+  if (checks.some(c => c.unsupported)) return result(false,'UNSUPPORTED_CLAIM_COMPARISON');
   // ID-only transport binds a complete source item, which can contain unrelated
   // temporal statements. It must not turn a gate/elevator fact into a deadline.
   // Still compare every asserted bound/anchor and any matching source quantity:
@@ -180,31 +184,41 @@ export function numericalConstraintSafe(candidateQuote: string, atomicClaim: str
     checks.some(c => c.constraints.some(q => authoritative.some(a => a.seconds === q.seconds))));
   const relevant = sourceRelevant || checks.some(c => c.constraints.some(q => q.bound !== null || q.side !== 'none')) ||
     (policyClaim && checks.some(c => c.constraints.length > 0));
-  if (!relevant) return true;
-  if (sources.some(s => s.unsupported) || !authoritative.length) return false;
+  if (!relevant) return result(true,'NO_RELEVANT_CONSTRAINT');
+  if (sources.some(s => s.unsupported) || !authoritative.length) return result(false,'SOURCE_CONSTRAINT_UNAVAILABLE');
   let configuredDeadline: number | null = null;
   if (typedPolicy && policyClaim && freeClaim.test(candidateQuote + ' ' + atomicClaim) &&
       (typeof policy.freeCancellationDeadlineMinutes === 'number' || policy.lateFeeEnabled === false)) {
     const value = policy.freeCancellationDeadlineMinutes;
-    if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return false;
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return result(false,'CONFIGURED_DEADLINE_INVALID');
     configuredDeadline = value * 60;
   }
-  return checks.every(check => check.constraints.length === 1 && check.constraints.every(c => {
-    if (c.ambiguous || !Number.isFinite(c.seconds) || c.seconds <= 0) return false;
+  let mismatchReason = 'CLAIM_QUANTITY_COUNT';
+  const mismatch = (reason:string) => { mismatchReason=reason;return false; };
+  const safe = checks.every(check => check.constraints.length === 1 && check.constraints.every(c => {
+    if (c.ambiguous) return mismatch('CLAIM_AMBIGUOUS');
+    if (!Number.isFinite(c.seconds) || c.seconds <= 0) return mismatch('CLAIM_VALUE_INVALID');
     // An ordinary relative time is not an inequality. Match its exact value
     // and temporal anchor against equally unbounded explicit source wording.
-    if (!c.bound) return !policyClaim && configuredDeadline === null &&
+    if (!c.bound) return (!policyClaim && configuredDeadline === null &&
       authoritative.some(a => !a.ambiguous && a.bound === null && a.seconds === c.seconds && a.side === c.side) &&
-      authoritative.filter(a => a.seconds === c.seconds).every(a => !a.ambiguous && a.bound === null && a.side === c.side);
-    if (configuredDeadline !== null && (c.seconds !== configuredDeadline || c.bound !== 'minimum' || c.side !== 'before')) return false;
+      authoritative.filter(a => a.seconds === c.seconds).every(a => !a.ambiguous && a.bound === null && a.side === c.side)) || mismatch('UNBOUNDED_CLAIM_NOT_SUPPORTED');
+    if (configuredDeadline !== null && (c.seconds !== configuredDeadline || c.bound !== 'minimum' || c.side !== 'before')) return mismatch('CONFIGURED_DEADLINE_MISMATCH');
     const sameValue = authoritative.filter(a => a.seconds === c.seconds);
     // Equal intervals cannot turn an optional free-fee window into mandatory
     // notice (or vice versa), even when the citation is documentary prose.
     // Keep the attribute clause-local so unrelated policy sentences do not
     // donate or erase the free qualifier.
-    return sameValue.length > 0 && sameValue.every(a => !a.ambiguous && a.bound === c.bound && a.side === c.side &&
-      (!a.cancellationKind || a.cancellationKind === c.cancellationKind));
+    if (!sameValue.length) return mismatch('SOURCE_VALUE_MISSING');
+    return sameValue.every(a => !a.ambiguous && a.bound === c.bound && a.side === c.side &&
+      (!a.cancellationKind || a.cancellationKind === c.cancellationKind)) || mismatch('SOURCE_BOUND_ANCHOR_OR_SCOPE_MISMATCH');
   }));
+  return result(safe,safe?'CONSTRAINT_MATCH':mismatchReason);
+}
+
+export function numericalConstraintSafe(candidateQuote:string,atomicClaim:string,evidence:Array<string|{quote:string;source:string}>,structuredBusinessConfig?:string,
+  citationScope:'quotation'|'whole_source'='quotation'):boolean {
+  return assessNumericalConstraint(candidateQuote,atomicClaim,evidence,structuredBusinessConfig,citationScope).safe;
 }
 
 export const NUMERICAL_DIRECTION_GUIDANCE = `Preserve numerical constraint direction, not just values: minimum/at least is not maximum/at most; before is not after. A cancellation deadline no later than N hours before a visit means at least N hours of advance notice, not at most N. Preserve no earlier/no later distinctions relative to the event. In Persian use حداقل for minimum notice and حداکثر for maximum; Arabic على الأقل/على الأكثر, Swedish minst/högst, German mindestens/höchstens, Spanish al menos/como máximo, English at least/at most. Ambiguous or reversed inequality, temporal anchor or unit cannot be stated as a verified policy. Exact matching numbers are never sufficient support.`;

@@ -1,0 +1,14 @@
+{
+  "provenance": {
+    "kind": "permitted exact first sentence and citation spans from genuine 036c3df replay; full redacted unit not reconstructed",
+    "sha": "036c3dfcaeee69f5e5a56d3f842a882dd503cea5",
+    "evidenceSha256": "a0fde69ba3c6b99106865c03825deb5e0a1f29de4c848bbfe9b22dbdec0e56e8"
+  },
+  "text": "La visita no se cancela automáticamente por un retraso de más de 15 minutos; el personal debe evaluar primero la situación.",
+  "originalQuotes": [
+    "Detta innebär inte att besöket automatiskt avbokas. Personalen behöver först bedöma situationen.",
+    "Observera: All information i detta dokument är fi ktiv och används enbart för att testa OdinLinks AI-assistent. Uppgifterna ska inte\nbetraktas som AdMotion Studios verkliga kundvillkor."
+  ],
+  "antecedent": "Vid en försening på mer än 15 minuter kan studion behöva göra en ny bedömning av om besöket kan genomföras enligt plan.",
+  "originalReason": "SOURCE_CONSTRAINT_UNAVAILABLE"
+}

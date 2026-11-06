@@ -1,3 +1,4 @@
+import { completeConditionalCitations } from './conditional-citation-completeness';
 import { resolveEvidenceQuote, captureLiteralEvidence, hydrateLiteralEvidenceReferences, type LiteralEvidenceSnapshot } from './knowledge-citation';
 import { nativeKnowledgeTiming, type NativeKnowledgeTiming } from './knowledge-timing-policy';
 import { cancellationConfigurationProposals, cancellationRecoveryEligible, cancellationSourceLimitations, isReportedCancellationPremiseClause } from './cancellation-answer-recovery';
@@ -228,7 +229,8 @@ export function answerEvidenceBindings(businessId: number, matches: readonly any
 
 export function parseAnswerUnits(raw: unknown, facets: readonly Facet[], evidence: readonly Evidence[], language: string,
   diagnostic: (event: KnowledgeDecision) => void = () => {}, citationScope: 'quotation' | 'whole_source' = 'quotation',
-  privateDiagnosticScope?: {businessId?:number;question:string;language:string}): { units: AnswerUnit[]; oversized: boolean } {
+  privateDiagnosticScope?: {businessId?:number;question:string;language:string},
+  conditionalCitationScope?: {businessId:number;protocol:'source-exhaustive-v2'}): { units: AnswerUnit[]; oversized: boolean } {
   if (!object(raw) || !Array.isArray(raw.units)) { diagnostic({ stage:'extraction', reason:'MALFORMED_ARRAY' }); return { units: [], oversized: false }; }
   if (raw.units.length > ANSWER_LIMITS.units) { diagnostic({ stage:'extraction', reason:'LIMIT_EXCEEDED' }); return { units: [], oversized: true }; }
   const units: AnswerUnit[] = [];
@@ -241,7 +243,7 @@ export function parseAnswerUnits(raw: unknown, facets: readonly Facet[], evidenc
     if (/[?؟？]\s*$/u.test(u.text)) { reject('QUESTION_TEXT'); continue; }
     if (containsUnverifiedBookingSuccessClaim(u.text) || containsWebOperationSuccess(u.text)) { reject('OPERATION_CLAIM'); continue; }
     if (!Array.isArray(u.evidenceRefs) || !u.evidenceRefs.length || u.evidenceRefs.length > 4) { reject('MISSING_CITATION'); continue; }
-    const refs: AnswerUnit['evidenceRefs'][number][] = [];
+    let refs: AnswerUnit['evidenceRefs'][number][] = [];
     for (const r of u.evidenceRefs) {
       const e = object(r) && evidence.find(e => e.id === r.evidenceId);
       if (!e) { diagnostic({stage:'extraction',unitId:`u${index+1}`,reason:'INVALID_CITATION',citationSubtype:'EVIDENCE_ID'}); break; }
@@ -254,6 +256,9 @@ export function parseAnswerUnits(raw: unknown, facets: readonly Facet[], evidenc
       refs.push(Object.freeze({ evidenceId: e.id, sourceId: e.sourceId, chunkId: e.chunkId, version: e.version, exactQuote: citation.quote }));
     }
     if (refs.length !== u.evidenceRefs.length) { reject('INVALID_CITATION'); continue; }
+    if (conditionalCitationScope?.protocol==='source-exhaustive-v2' && citationScope==='quotation') {
+      refs=[...completeConditionalCitations({text:u.text,modality:u.modality,negation:u.negation},refs,evidence,conditionalCitationScope.businessId)];
+    }
     if (!configuredServiceScopeSupported({text:u.text,subject:u.subject,predicate:u.predicate,value:u.value,
       scope:u.scope,qualifiers:u.qualifiers,evidenceRefs:refs},evidence)) { reject('SOURCE_SCOPE'); continue; }
     const numerical=assessNumericalConstraint(u.text,u.text,refs.map(r=>({source:'retrieved_knowledge',quote:r.exactQuote})),undefined,citationScope);
@@ -604,7 +609,9 @@ export async function buildEvidenceFirstAnswer(input: {
       raw = { ...raw, units: [...raw.units, ...missing] };
     }
     proposed = parseAnswerUnits(catalogProposal&&Array.isArray(raw.units)?{...raw,units:[catalogProposal.unit,...raw.units]}:raw, facets, availableEvidence, language,diagnostic,literalSnapshot?'whole_source':'quotation',
-      {businessId:input.businessId,question:input.question,language});
+      {businessId:input.businessId,question:input.question,language},
+      input.foreground && budget.nativeTiming && !input.natural && !input.requireCompleteCoverage && !literalSnapshot &&
+      verificationProtocol==='source-exhaustive-v2'?{businessId:input.businessId,protocol:verificationProtocol}:undefined);
     proposalParseComplete=Array.isArray(raw.units) && raw.oversized!==true && proposed.units.length===raw.units.length+(catalogProposal?1:0);
     // A rejected proposal cannot silently erase a requested condition, even if
     // a later coverage verdict incorrectly calls the surviving inventory complete.

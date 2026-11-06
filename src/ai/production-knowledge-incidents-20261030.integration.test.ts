@@ -128,11 +128,11 @@ const novemberQuestions = [
 
 // Scripted native-handler regressions, not historical model judgments or live success.
 for(const entry of novemberQuestions)for(const channel of entry.language==='es'?incidentChannels:[entry.channel])
-for(const fault of entry.language==='es'?['none','private-flag-only','corrected-antecedent','missing-antecedent','numeric-negation','rejected','threshold-16','inclusive-15','automatic-cancellation','invalid-quote','wrong-valid-span','missing-condition','missing-qualification','omitted-fact','incomplete-source-review','wrong-language-label','wrong-language-text']:['none','rejected'])
+for(const fault of entry.language==='es'?['none','private-flag-only','conditional-completion','conditional-completion-rejected','conditional-completion-incomplete','corrected-antecedent','missing-antecedent','numeric-negation','rejected','threshold-16','inclusive-15','automatic-cancellation','invalid-quote','wrong-valid-span','missing-condition','missing-qualification','omitted-fact','incomplete-source-review','wrong-language-label','wrong-language-text']:['none','rejected'])
 test(`November 6 original ${channel}/${entry.language}: ${fault}`,async t=>{
- const spec={...entry,channel},positive=['none','private-flag-only','corrected-antecedent'].includes(fault);
+ const spec={...entry,channel},positive=['none','private-flag-only','conditional-completion','corrected-antecedent'].includes(fault);
  const parseLoss=['threshold-16','inclusive-15','invalid-quote','wrong-language-label','wrong-valid-span','missing-condition','missing-antecedent','numeric-negation'].includes(fault);
- const semanticFailure=['rejected','automatic-cancellation','missing-qualification','wrong-language-text'].includes(fault);
+ const semanticFailure=['conditional-completion-rejected','rejected','automatic-cancellation','missing-qualification','wrong-language-text'].includes(fault);
  const incomplete=!positive&&!parseLoss&&fault!=='incomplete-source-review';
  let completeCorpusReads=0;
  b.reset();const saved={...incidentConfig},savedEnv={...process.env};
@@ -179,6 +179,14 @@ test(`November 6 original ${channel}/${entry.language}: ${fault}`,async t=>{
        negation:false,scope:'documented visit process; PDF facts are fictional test information',qualifiers:[],language:spec.language,
        evidenceRefs:[{evidenceId:e.id,...(instruction.includes('literal-evidence-v1')?{}:{exactQuote:e.text.match(quote)[0]})}]};
      });
+     if(fault.startsWith('conditional-completion')){
+      const captured=JSON.parse(readFileSync('tests/fixtures/conditional-citation-genuine-036c3df.json','utf8'));
+      const e=d.evidence.find((e:any)=>e.text.includes(captured.originalQuotes[0]));assert.ok(e);
+      // Exact retained policy sentence only. Structured fields are scripted;
+      // unavailable redacted metadata from the original unit is not recreated.
+      units[2]={...units[2],text:captured.text,value:captured.text,negation:true,
+       evidenceRefs:[{evidenceId:e.id,exactQuote:captured.originalQuotes[0]}]};
+     }
      if(['corrected-antecedent','missing-antecedent','numeric-negation'].includes(fault)){
       const replay=JSON.parse(readFileSync('tests/fixtures/late-arrival-genuine-96e03c3.json','utf8'));
       const consequence=/Detta innebär[^]+?bedöma situationen\./u;
@@ -204,6 +212,12 @@ test(`November 6 original ${channel}/${entry.language}: ${fault}`,async t=>{
      return{functionCalls:[],text:JSON.stringify({oversized:false,units})};
     }
     assert.match(instruction,/BATCH ENTAILMENT/);stages.push('verification');
+    if(fault.startsWith('conditional-completion')){
+     const captured=JSON.parse(readFileSync('tests/fixtures/conditional-citation-genuine-036c3df.json','utf8'));
+     assert.equal(d.units[2].text,captured.text);
+     assert.equal(d.units[2].evidenceRefs.length,2);
+     assert.ok(d.units[2].evidenceRefs.some((ref:any)=>ref.exactQuote.replace(/\s+/gu,' ')===captured.antecedent));
+    }
     assert.equal(d.units.length,spec.facts.length-(parseLoss||fault==='omitted-fact'?1:0));assert.equal(new Set(d.evidence.map((e:any)=>e.sourceGroup||e.sourceId)).size,2);
     for(const u of d.units)for(const ref of u.evidenceRefs){
      const e=d.evidence.find((e:any)=>e.id===ref.evidenceId);assert.ok(e?.text.includes(ref.exactQuote));
@@ -235,7 +249,7 @@ test(`November 6 original ${channel}/${entry.language}: ${fault}`,async t=>{
    if(fault==='invalid-quote')assert.ok(events.some(e=>e.reason==='INVALID_CITATION'));
    if(fault==='wrong-language-label')assert.ok(events.some(e=>e.reason==='LANGUAGE_LABEL'));
   }
-  else {for(const [index,[text]]of spec.facts.entries()){const expected=fault==='corrected-antecedent'&&index===2?JSON.parse(readFileSync('tests/fixtures/late-arrival-genuine-96e03c3.json','utf8')).u1.text+' El personal debe evaluar primero la situación.':text;assert.ok(replies[0].includes(expected),JSON.stringify({reply:replies[0],events:events.map(e=>({stage:e.stage,reason:e.reason,unitId:e.unitId,route:e.route}))}));}
+  else {for(const [index,[text]]of spec.facts.entries()){const expected=fault==='conditional-completion'&&index===2?JSON.parse(readFileSync('tests/fixtures/conditional-citation-genuine-036c3df.json','utf8')).text:fault==='corrected-antecedent'&&index===2?JSON.parse(readFileSync('tests/fixtures/late-arrival-genuine-96e03c3.json','utf8')).u1.text+' El personal debe evaluar primero la situación.':text;assert.ok(replies[0].includes(expected),JSON.stringify({reply:replies[0],events:events.map(e=>({stage:e.stage,reason:e.reason,unitId:e.unitId,route:e.route}))}));}
    assert.equal(events.filter(e=>e.stage==='publication').at(-1)?.route,'verified_manifest');
    if(spec.language==='fa')assert.doesNotMatch(replies[0],/Studio Street|Stjärngatan/u);}
   t.diagnostic(JSON.stringify({channel:spec.channel,language:spec.language,fault,completeCorpusReads,stages,replies:replies.length,actions,route:events.filter(e=>e.stage==='publication').at(-1)?.route,answer:positive?replies[0]:undefined}));

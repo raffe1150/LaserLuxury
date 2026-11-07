@@ -146,7 +146,7 @@ const automatic={en:'With more than 15 minutes of delay, the appointment is auto
  ar:'مع التأخر أكثر من ١٥ دقيقة يلغى الموعد تلقائيا.'};
 const attribution={en:'According to the fictional test document, ',sv:'Enligt den fiktiva testinformationen: ',
  de:'Laut den fiktiven Testinformationen: ',es:'Según la información ficticia de prueba, ',fa:'طبق اطلاعات آزمایشی، ',ar:'وفق المعلومات الاختبارية الخيالية، '};
-for(const language of Object.keys(questions)as (keyof typeof questions)[])for(const fault of ['none','automatic-cancellation','incomplete-coverage']as const)
+for(const language of Object.keys(questions)as (keyof typeof questions)[])for(const fault of ['none','quoted-threshold','quoted-threshold-16','automatic-cancellation','incomplete-coverage']as const)
  test(`${language}: source-exhaustive publication / ${fault}`,async t=>{
   const {buildEvidenceFirstAnswer,InformationBudget,parseRequestedFacets}=await import('./business-information-answer-plan');
   const {runAccuracyFirstNative,nativeKnowledgeTiming}=await import('./knowledge-timing-policy');
@@ -158,6 +158,7 @@ for(const language of Object.keys(questions)as (keyof typeof questions)[])for(co
    sourceId:i===3?txt.id:doc.id,chunkId:`language-${i}`,version:'fixture-r1',text}));
   assert.ok(evidence.every(e=>e.text.length<=2400));const e=evidence[1],facets=parseRequestedFacets([{subject:'visitor policy',attribute:questions[language],questionType:'description'}]).facets;
   const texts=[contactTexts[language],variants.find(v=>v[0]===language)![1],fault==='automatic-cancellation'?automatic[language]:negatedActions[language]];
+  if(fault.startsWith('quoted-threshold'))texts[1]=texts[1].replace(/15|۱۵|١٥/u,n=>'“'+(fault==='quoted-threshold-16'?n.replace('15','16').replace('۱۵','۱۶').replace('١٥','١٦'):n)+'”');
   const quotes=[contactQuote,threshold,cancellation];let manifest:any;const stages:string[]=[],events:any[]=[];
   await runAccuracyFirstNative(async()=>{manifest=await buildEvidenceFirstAnswer({businessId:3,question:questions[language],language,facets,evidence,
    foreground:true,extractionProtocol:'v2',verificationProtocol:'source-exhaustive-v2',authoritativeEvidence:'{}',businessTone:{},history:[],
@@ -167,8 +168,8 @@ for(const language of Object.keys(questions)as (keyof typeof questions)[])for(co
     if(stage==='extraction')return{text:JSON.stringify({oversized:false,units:texts.map((text,i)=>({facetIds:['f1'],subject:'documented visitor policy',
      predicate:'states',value:text,text:attribution[language]+text,scope:'fictional documented late arrival policy',qualifiers:[],negation:i===2&&fault!=='automatic-cancellation',
      modality:i===0?'recommended':'descriptive',language,evidenceRefs:[{evidenceId:e.id,exactQuote:quotes[i]},...(i===2?[{evidenceId:e.id,exactQuote:threshold}]:[])]}))})};
-    assert.equal(stage,'verification');assert.equal(data.units.length,fault==='automatic-cancellation'&&(language==='en'||language==='de')?2:3,JSON.stringify(events));
-    const complete=fault==='none';
+    assert.equal(stage,'verification');assert.equal(data.units.length,fault==='quoted-threshold-16'?2:fault==='automatic-cancellation'&&(language==='en'||language==='de')?2:3,JSON.stringify(events));
+    const complete=['none','quoted-threshold','quoted-threshold-16'].includes(fault);
     return{text:JSON.stringify({decisions:data.units.map((u:any)=>({unitId:u.id,facetIds:u.facetIds,relation:fault==='automatic-cancellation'&&u.id==='u3'?'CONTRADICTED':'ENTAILED',
      meaningPreserved:!(fault==='automatic-cancellation'&&u.id==='u3'),modalityPreserved:true,qualifiersPreserved:true,relevant:true,languageCorrect:true,
      negativeAbsence:false,explicitAbsenceEvidence:false})),coverage:data.facets.map((f:any)=>({facetId:f.id,requestAligned:true,materialFactsComplete:complete,
@@ -180,7 +181,8 @@ for(const language of Object.keys(questions)as (keyof typeof questions)[])for(co
    }});},async()=>assert.fail('Unexpected native timeout'));
   assert.deepEqual(stages,['extraction','verification']);assert.notEqual(manifest.fallbackReason,'PROVIDER_FAILURE',JSON.stringify(events));
   if(fault==='automatic-cancellation')assert.ok(events.some(e=>e.unitId==='u3'&&e.reason===((language==='en'||language==='de')?'OPERATION_CLAIM':'CONTRADICTED')),JSON.stringify(events));
-  if(fault==='none'){assert.equal(manifest.units.length,3,JSON.stringify({fallback:manifest.fallbackReason,outcomes:manifest.outcomes,events}));assert.equal(manifest.presentationPath,'direct_verified_units');for(const text of texts)assert.ok(manifest.text.includes(text));}
+  if(fault==='quoted-threshold-16')assert.ok(events.some(e=>e.unitId==='u2'&&e.reason==='NUMERICAL_CONSTRAINT'));
+  if(fault==='none'||fault==='quoted-threshold'){assert.equal(manifest.units.length,3,JSON.stringify({fallback:manifest.fallbackReason,outcomes:manifest.outcomes,events}));assert.equal(manifest.presentationPath,'direct_verified_units');for(const text of texts)assert.ok(manifest.text.includes(text));}
   else{assert.notEqual(manifest.presentationPath,'direct_verified_units');assert.ok(!manifest.text.includes(automatic[language]));}
  });
 
@@ -194,4 +196,79 @@ test('negated automatic events do not hide a separate asserted booking mutation'
   'Dein Termin wird nicht automatisch storniert, aber die Buchung ist bestätigt.',
   'Dein Termin ist nicht automatisch storniert und ist verschoben.',
  ])assert.equal(operation(text),true,text);
+});
+
+// Explicit authored formatting counterfactuals against the real PDF; not
+// reconstructed genuine claims or genuine-provider semantic verdicts.
+const typographyPairs=[['"','"'],["'","'"],['“','”'],['‘','’'],['«','»'],['„','“']] as const;
+for(const [language,text]of variants)for(const [open,close]of typographyPairs){
+ const quoted=text.replace(/15|۱۵|١٥/u,n=>open+n+close);
+ test(`${language}: matched temporal-number typography ${open}${close} preserves the exact source threshold`,()=>{
+  assert.equal(safe(quoted,quoted,[threshold]),true);assert.equal(safe(text,text,[threshold]),true);
+ });
+ const wrong=quoted.replace('15','16').replace('۱۵','۱۶').replace('١٥','١٦');
+ test(`${language}: quoted invented threshold ${open}${close} is still rejected`,()=>assert.equal(safe(wrong,wrong,[threshold]),false));
+}
+const quotedInclusive=[
+ ['en','With at least “15” minutes of delay staff may need to assess the visit.'],
+ ['sv','Vid minst “15” minuter försening kan personalen behöva bedöma besöket.'],
+ ['de','Bei mindestens „15“ Minuten Verspätung kann das Personal den Besuch neu beurteilen.'],
+ ['es','Con al menos «15» minutos de retraso el estudio puede necesitar evaluar la visita.'],
+ ['fa','با حداقل «۱۵» دقیقه تأخیر ممکن است کارکنان نیاز به ارزیابی مراجعه داشته باشند.'],
+ ['ar','عند التأخر على الأقل «١٥» دقيقة قد يحتاج الموظفون إلى تقييم الزيارة.'],
+]as const;
+for(const [language,text]of quotedInclusive)test(`${language}: quoted inclusive comparator never replaces strict source boundary`,()=>assert.equal(safe(text,text,[threshold]),false));
+for(const text of [
+ 'With more than “15" minutes of delay staff may assess the visit.',
+ 'With more than “fifteen” minutes of delay staff may assess the visit.',
+ 'With more than “15–20” minutes of delay staff may assess the visit.',
+ 'With more than “10 + 5” minutes of delay staff may assess the visit.',
+ 'With more than “>15” minutes of delay staff may assess the visit.',
+ 'With more than “-15” minutes of delay staff may assess the visit.',
+ 'With more than “15” weeks of delay staff may assess the visit.',
+ 'With more than “15” hours of delay staff may assess the visit.',
+ 'With no more than “15” minutes of delay staff may assess the visit.',
+ 'With exactly “15” minutes of delay staff may assess the visit.',
+ 'With more than ID_“15” minutes of delay staff may assess the visit.',
+])test(`unsupported quoted syntax or scope remains rejected: ${text}`,()=>assert.equal(safe(text,text,[threshold]),false));
+test('quoted temporal normalization preserves advance notice anchors and fee scope',()=>{
+ const claim='Cancel at least “37” hours before the visit.';
+ assert.equal(safe(claim,claim,['Cancel at least 37 hours before the visit.']),true);
+ for(const source of ['Cancel at most 37 hours before the visit.','Cancel at least 37 hours after the visit.','Cancel for free at least 37 hours before the visit.'])assert.equal(safe(claim,claim,[source]),false);
+});
+test('quoted decimal duration retains exact numeric value and original unit conversion',()=>{
+ const claim='Wait at least “1.5” hours.';assert.equal(safe(claim,claim,['Wait at least 90 minutes.']),true);
+ assert.equal(safe(claim,claim,['Wait at least 15 minutes.']),false);
+});
+test('numeric typography cannot repair an invented source quotation',async()=>{
+ const {parseAnswerUnits,parseRequestedFacets}=await import('./business-information-answer-plan');
+ const e={id:'e1',businessId:3,sourceId:'audited-pdf',chunkId:'policy',version:'fixture-r1',text:threshold};
+ const facets=parseRequestedFacets([{subject:'visit',attribute:'late arrival',questionType:'description'}]).facets;
+ const text='Con más de “15” minutos de retraso el estudio puede necesitar evaluar la visita.';
+ const raw={units:[{facetIds:['f1'],text,subject:'estudio',predicate:'puede necesitar evaluar',value:'15 minutos',scope:'retraso de más de 15 minutos',qualifiers:[],modality:'descriptive',negation:false,language:'es',evidenceRefs:[{evidenceId:e.id,exactQuote:threshold.replace(/15/u,'“15”')}]}]};
+ const events:any[]=[];assert.equal(parseAnswerUnits(raw,facets,[e],'es',e=>events.push(e)).units.length,0);assert.ok(events.some(e=>e.reason==='INVALID_CITATION'));
+});
+
+for(const [language,text]of Object.entries(negatedActions))test(`${language}: quoted negative cancellation still requires its policy antecedent`,()=>{
+ const quoted=text.replace(/15|۱۵|١٥/u,n=>'“'+n+'”');
+ assert.equal(safe(quoted,quoted,[threshold,cancellation]),true);assert.equal(safe(quoted,quoted,[cancellation]),false);
+ const scenario=scenarioTexts[language as keyof typeof scenarioTexts].replace(/20|۲۰|٢٠/u,n=>'“'+n+'”');
+ assert.equal(safe(scenario,scenario,[threshold,cancellation]),false,'customer delay is not a source policy threshold');
+});
+test('private vocabulary/typography redaction does not veto a source-supported product proposal',async t=>{
+ const {mkdtempSync,chmodSync,rmSync}=await import('node:fs');const {tmpdir}=await import('node:os');const {join}=await import('node:path');
+ const {withPrivateLateArrivalNumericalDiagnostics:capture}=await import('./late-arrival-numerical-diagnostics');
+ const {parseAnswerUnits,parseRequestedFacets}=await import('./business-information-answer-plan');
+ const root=mkdtempSync(join(tmpdir(),'odinlink-format-privacy-'));chmodSync(root,0o700);const saved={...process.env};
+ Object.assign(process.env,{NODE_ENV:'test',ODINLINK_PRIVATE_NUMERICAL_DIAGNOSTICS:'fixture-v1'});
+ t.after(()=>{for(const k of Object.keys(process.env))if(!(k in saved))delete process.env[k];Object.assign(process.env,saved);rmSync(root,{recursive:true,force:true});});
+ const evidence=audited.sources.map((s:any,i:number)=>({id:'e'+(i+1),businessId:3,sourceId:s.id,chunkId:'audited-'+i,version:'fixture-r1',text:s.content}));
+ const e=evidence.find((e:any)=>e.sourceId===audited.sources.find((s:any)=>s.title.endsWith('.pdf')).id)!;
+ const scope={businessId:3,question:questions.es,language:'es'},facets=parseRequestedFacets([{subject:'visita',attribute:'retraso',questionType:'description'}]).facets;
+ const text='Con más de “15” minutos de retraso el estudio puede necesitar evaluar la visita.';
+ const raw={units:[{facetIds:['f1'],text,subject:'estudio',predicate:'evaluar la visita',value:'15 minutos',scope:'retraso de más de 15 minutos',qualifiers:[],modality:'descriptive',negation:false,language:'es',evidenceRefs:[{evidenceId:e.id,exactQuote:threshold}]}]};
+ const parse=()=>parseAnswerUnits(raw,facets,evidence,'es',()=>{},'quotation',scope),without=parse();assert.equal(without.units.length,1);
+ const result=await capture({...scope,directory:root},async()=>parse());assert.deepEqual(result.value,without);assert.equal(result.capture,'written');
+ const record=JSON.parse(readFileSync(result.path!,'utf8')).records[0];assert.equal(record.claim.text.status,'redacted');assert.equal(record.numerical.safe,true);
+ assert.equal(result.value.units[0].text,text);assert.equal(result.value.units[0].verification,'PROPOSED');
 });

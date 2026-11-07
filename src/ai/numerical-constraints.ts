@@ -35,6 +35,19 @@ const unitGroups: Array<[number, string[]]> = [
 ];
 const units: Record<string, number> = Object.fromEntries(unitGroups.flatMap(([factor, names]) => names.map(name => [name, factor])));
 
+/** Typography around a standalone numeric temporal literal is not a changed
+ * policy quantity. Remove only matched quote pairs immediately before a known
+ * time unit, in the parser's copy. Claims/citations are never rewritten, and
+ * all comparison, anchor, ambiguity and source checks still run unchanged. */
+function quotedTemporalNumbers(text:string):string {
+  const pairs:readonly (readonly [string,string])[]=[['"','"'],["'","'"],['“','”'],['‘','’'],['«','»'],['„','“']];
+  for(const [open,close] of pairs){
+    const literal=new RegExp(`(?<![\\p{L}\\p{N}_-])${open}([0-9]+(?:[.,][0-9]+)?)${close}(?=\\s+(?:${Object.keys(units).join('|')})(?![\\p{L}\\p{N}]))`,'gu');
+    text=text.replace(literal,'$1');
+  }
+  return text;
+}
+
 /** A closed spatial grammar, not a general exemption for hasta/تا. Quantified,
  * conditional, fee/notice and ambiguous clauses keep the original strict path.
  * Only the parser's copy changes; citations and published text stay untouched. */
@@ -76,7 +89,7 @@ function parse(input: string): { constraints: Constraint[]; unsupported: boolean
   if (input.length > 20_000) return { constraints: [], unsupported: true };
   // German source attribution ("according to the test terms") is not an
   // after-event anchor. Quantified temporal uses of nach remain untouched.
-  const text = spatialConnectives(canonical(input)).replace(/\bnach\s+(?:(?:den|dem|diesen|unseren|fiktiven|vorliegenden|genannten)\s+){0,3}(?:testbedingungen|angaben|informationen|dokumenten|dokument)\b/gu, 'laut Quelle');
+  const text = spatialConnectives(quotedTemporalNumbers(canonical(input))).replace(/\bnach\s+(?:(?:den|dem|diesen|unseren|fiktiven|vorliegenden|genannten)\s+){0,3}(?:testbedingungen|angaben|informationen|dokumenten|dokument)\b/gu, 'laut Quelle');
   const constraints: Constraint[] = [];
   const quantities = [...text.matchAll(new RegExp(`(?<![\\p{L}\\p{N}])([0-9]+(?:[.,][0-9]+)?)\\s+(${Object.keys(units).join('|')})(?![\\p{L}\\p{N}])`, 'gu'))];
   for (const quantity of quantities) {

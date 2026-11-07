@@ -1,5 +1,5 @@
 import { withoutNegatedBookingClauses } from './booking-interruption';
-import {hasVisitInformationContext} from './information-request-contract';
+import {hasVisitInformationContext,isPassiveCancellationPolicyQuestion} from './information-request-contract';
 import { hasCancellationInformationTopic, cancellationInformationSubject } from './cancellation-information';
 
 /** Read-only topic recognition. It does not choose services or authorize bookings. */
@@ -82,6 +82,7 @@ export function isBusinessInformationQuestion(text: string): boolean {
   // An explicit action anywhere in a mixed turn retains deterministic authority.
   const permissionQuestion = /\b(?:(?:can|could|may)\s+i|(?:is|would)\s+it\s+(?:be\s+)?possible|(?:do\s+i\s+need|do\s+i\s+have)\s+to|can\s+[^.!?\n]{1,60}\s+be)\b|\b(?:(?:kan|får|måste|behöver)\s+jag|(?:är|vore)\s+det\s+möjligt|kan\s+[^.!?\n]{1,60}\s+(?:bokas|avbokas))\b|\b(?:(?:kann|darf|muss)\s+ich|ist\s+es\s+möglich|kann\s+[^.!?\n]{1,60}\s+werden)\b|\b(?:puedo|es\s+posible|se\s+puede|necesito)\b|آیا[^.!?؟\n]{0,30}(?:می[‌\s]?توان|باید)|هل\s+(?:يمكن|يجب)/iu.test(text);
   if (schedulingInput && permissionQuestion && !isExplicitBusinessActionRequest(text)) return true;
+  if (isPassiveCancellationPolicyQuestion(text) && !isExplicitBusinessActionRequest(text)) return true;
   const requestedTopics = businessInformationTopics(text);
   // A service named "Online Appointment" does not turn an explicit request
   // for available times into a question about digital service delivery.

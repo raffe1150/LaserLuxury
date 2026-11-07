@@ -16,7 +16,7 @@ import { serviceSelectionClarification } from './src/ai/knowledge-answer-present
 import { createCancellationEvidenceBridge } from './src/ai/configured-cancellation-evidence';
 import { cancellationRecoveryEligible, readOnlyCancellationProposalRequest } from './src/ai/cancellation-answer-recovery';
 import { selectCanonicalConfigurationProducer } from './src/ai/canonical-configuration-propositions';
-import { isArrivalInformationQuestion,isConditionalArrivalInformationQuestion } from './src/ai/information-request-contract';
+import { isArrivalInformationQuestion,isConditionalArrivalInformationQuestion,isPassiveCancellationPolicyQuestion } from './src/ai/information-request-contract';
 import { compactKnowledgeVerifierInput } from './src/ai/knowledge-verifier-input';
 import { hasForeignAddressPreposition } from './src/ai/knowledge-prose-language';
 import { TelegramPollerSupervisor, recoverableTelegramLeaseFailure } from './src/p2/telegram-poller-supervisor';
@@ -8048,7 +8048,7 @@ function isRecentCompletionRequirementsQuestion(text?: string): boolean {
 }
 
 function hasRecentCompletedBookingStatusSemantics(text?: string): boolean {
-  if (isConditionalArrivalInformationQuestion(String(text||'')) && !isExplicitBusinessActionRequest(String(text||''))) return false;
+  if ((isConditionalArrivalInformationQuestion(String(text||'')) || isPassiveCancellationPolicyQuestion(String(text||''))) && !isExplicitBusinessActionRequest(String(text||''))) return false;
   const normalized = normalizeConfirmationReply(text);
   if (!normalized) return false;
   return (
@@ -15246,18 +15246,21 @@ function isExistingAppointmentLookupIntent(text?: string): boolean {
   const raw = String(text || "").trim().toLowerCase();
   if (!raw) return false;
   if (isDirectAppointmentLookupPhrase(raw)) return true;
+  // A first-person statement supplies context; only a direct existence question
+  // or an explicit lookup predicate authorizes reading the appointment record.
+  if (/^(?:¿\s*)?tengo\s+(?:(?:ya|una?|alguna?)\s+){0,2}(?:cita|reserva)\s*\?$/iu.test(raw) || /¿\s*tengo(?!\s+que\b)[^.!?؟]{0,80}\b(?:cita|reserva)\b[^.!?؟]*\?/iu.test(raw)) return true;
 
   const lookupPatterns = [
     // Require an existence/verification predicate. Auxiliary words alone also
     // occur in policy questions ("do I need to cancel my appointment?").
     /\b(do i (?:already )?have|did i (?:already )?(?:book|reserve|schedule)|have i (?:already )?(?:booked|reserved|scheduled|got)|can you check|check if i).*(appointment|booking|booked)\b/i,
     /\b(when is|what time is).*(appointment|booking)\b/i,
-    /\b(jag har|har jag|kan du kolla|kan du kontrollera).*(tid|bokning|bokat)\b/i,
+    /\b(har jag|kan du kolla|kan du kontrollera).*(tid|bokning|bokat)\b/i,
     /\b(har jag en tid|har jag bokat|när är min tid|när är min bokning)\b/i,
     /\b(aya|آیا|میشه|می‌شود|میتونی|می‌تونی|mitoni|mishe).*(vaght|وقت|رزرو|booking|boka).*(daram|دارم|kardam|کردم|ya na|یا نه)\b/i,
     /\b(nemidonam|نمی.?دونم|motmaen nistam|مطمئن نیستم).*(vaght|وقت|رزرو|booking|boka)\b/i,
     /\b(habe ich|kannst du prüfen|wann ist).*(termin|buchung)\b/i,
-    /\b(tengo(?!\s+que\b)|puedes comprobar|cuándo es).*(cita|reserva)\b/i,
+    /\b(puedes comprobar|cuándo es).*(cita|reserva)\b/i,
     /(?:هل لدي(?=\s|$)|هل حجزت|متى موعدي|تحقق من موعدي)/i
   ];
 

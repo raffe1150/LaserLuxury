@@ -18,6 +18,25 @@ export function isArrivalInformationQuestion(text: string): boolean {
   return !feeOrNotice && (late && arrival || !recordLookup && appointment.test(text) && consequence && (late || relative));
 }
 
+/** Future/passive automatic-cancellation questions describe policy, not a
+ * request to execute cancellation. Recognize the speech act only; no threshold,
+ * booking identity or policy answer is inferred. Past/completed status wording
+ * and independent operation clauses retain their existing routing. */
+export function isPassiveCancellationPolicyQuestion(text: string): boolean {
+  const automatic = /automatic\p{L}*|automatisk\p{L}*|automatisch\p{L}*|automátic\p{L}*|خودکار|تلقائي/iu.test(text);
+  const conditionalDelay = /\b(?:if|om|wenn|falls|si)\b|اگر|إذا|اذا/iu.test(text) &&
+    /\b(?:late|delay\p{L}*|sen|sent|försen\p{L}*|spät|verspät\p{L}*|tarde|retras\p{L}*)\b|دیر|تأخیر|تاخیر|تأخر|تأخير/iu.test(text);
+  if (!automatic && !conditionalDelay) return false;
+  return [
+    /\b(?:will|would)\s+(?:my|our|the|an?)\s+(?:appointment|booking|visit)[^.!?؟\n]{0,70}\b(?:be\s+)?cancel(?:led|ed)\b/iu,
+    /\b(?:blir|skulle)\s+(?:(?:min|vår|en|den)\s+)?(?:tid|bokning|besök)[^.!?؟\n]{0,60}\bavbokad\p{L}*\b|\bavbokas\s+(?:min|vår|en|den)\s+(?:tid|bokning)\b/iu,
+    /\b(?:wird|würde)\s+(?:mein|unser|der|ein)\s+(?:Termin|Besuch|Buchung)[^.!?؟\n]{0,60}\b(?:storniert|abgesagt)\b/iu,
+    /\b(?:se\s+cancela(?:ría)?|la\s+cancelan|cancelan\s+(?:mi|la)\s+cita)\b/iu,
+    /آیا[^.!?؟\n]{0,50}(?:رزرو|نوبت|وقت)[^.!?؟\n]{0,70}لغو\s+(?:می[‌\s]?شود|خواهد\s+شد)/u,
+    /هل\s+(?:سيتم|يتم)\s+إلغاء\s+(?:موعدي|حجزي|الموعد|الحجز)/u,
+  ].some(pattern => pattern.test(text));
+}
+
 /** Bounded visit-policy context, not a question/action classifier or authority
  * for any business fact. Callers still require a question and reject actions. */
 export function hasVisitInformationContext(text:string):boolean {

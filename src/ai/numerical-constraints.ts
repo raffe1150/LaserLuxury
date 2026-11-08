@@ -108,7 +108,11 @@ function parse(input: string): { constraints: Constraint[]; unsupported: boolean
     const left = text.slice(0, start).split(/[.!?؟؛;\n]/u).at(-1)!;
     const right = text.slice(end).split(/[.!?؟؛;\n]/u)[0];
     const context = left + quantity[0] + right;
-    const anchoredBefore = hasPhrase(context, before) || /^ زودتر از /u.test(right);
+    // A visitor arriving N minutes earlier is relative to the appointment.
+    // Keep this narrow: never reinterpret cancellation or policy deadlines.
+    const persianEarlyArrival = !cancellationClaim.test(context) &&
+      /^\s*زودتر\s+(?:برسید|برسم|برسد|برسند|بیایید|بیام|حاضر\s+شوید)(?![\p{L}\p{N}])/u.test(right);
+    const anchoredBefore = hasPhrase(context, before) || /^ زودتر از /u.test(right) || persianEarlyArrival;
     const anchoredAfter = hasPhrase(context, after) || /^ دیرتر از /u.test(right);
     const side: Side = anchoredBefore ? 'before' : anchoredAfter ? 'after' : 'none';
     // After the quantity, Persian "تا فرصت ..." introduces a purpose

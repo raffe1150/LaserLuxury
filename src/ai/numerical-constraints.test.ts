@@ -192,3 +192,11 @@ test('Persian walking destination with approximate duration is spatial', () => {
     assert.equal(numericalConstraintSafe(claim, claim, [source], undefined, 'whole_source'), false);
   }
 });
+
+test('Persian short early-arrival wording preserves the appointment anchor', () => {
+  const source = 'Förstagångsbesökare bör komma 10 minuter före sin bokade tid.';
+  const good = 'بهتر است ۱۰ دقیقه زودتر برسید.';
+  const wrong = 'بهتر است ۱۰ دقیقه دیرتر برسید.';
+  assert.equal(numericalConstraintSafe(good, good, [source]), true);
+  assert.equal(numericalConstraintSafe(wrong, wrong, [source]), false);
+});

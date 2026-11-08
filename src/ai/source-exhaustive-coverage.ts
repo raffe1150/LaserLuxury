@@ -75,30 +75,38 @@ export function sourceExhaustiveInstruction(protocol: SourceExhaustiveProtocol):
 export function assessSourceCoverage(raw: any, facets: readonly Facet[], units: readonly AnswerUnit[],
   evidence: readonly Evidence[], businessId: number | undefined,
   protocol: SourceExhaustiveProtocol = SOURCE_EXHAUSTIVE_PROTOCOL): SourceCoverageAssessment {
-  if (!isSourceExhaustiveProtocol(protocol)) return denied;
+  const coverageDenied = (guard: string): SourceCoverageAssessment => {
+    if (process.env.ODINLINK_KNOWLEDGE_COVERAGE_DIAGNOSTICS === '1') {
+      console.warn('[SourceCoverageDenied]', JSON.stringify({
+        protocol, guard
+      }));
+    }
+    return denied;
+  };
+  if (!isSourceExhaustiveProtocol(protocol)) return coverageDenied('GUARD_01');
   if (!Number.isSafeInteger(businessId) || businessId! <= 0 || !facets.length || facets.length > 4 || !units.length || units.length > 6 ||
     !evidence.length || evidence.length > 6 || evidence.some(e => e.businessId !== businessId ||
       [e.id, e.sourceId, e.chunkId, e.version, e.text].some(x => typeof x !== 'string' || !x.trim()) || e.text.length > 2400) ||
     new Set(evidence.map(e => e.id)).size !== evidence.length || new Set(evidence.map(e => JSON.stringify([e.sourceId, e.chunkId]))).size !== evidence.length ||
-    new Set(units.map(u => u.id)).size !== units.length) return denied;
-  if (!keys(raw, ['decisions', 'coverage', 'sourceCoverage'])) return denied;
+    new Set(units.map(u => u.id)).size !== units.length) return coverageDenied('GUARD_02');
+  if (!keys(raw, ['decisions', 'coverage', 'sourceCoverage'])) return coverageDenied('GUARD_03');
   const s = raw.sourceCoverage;
   if (!keys(s, ['protocol', 'requestAligned', 'availableMaterialFactsComplete', 'conditionsPreserved', 'conflictsAbsent',
     'evidenceIdsReviewed', 'acceptedUnitIdsReviewed', 'obligations']) || s.protocol !== protocol ||
     s.requestAligned !== true || s.availableMaterialFactsComplete !== true || s.conditionsPreserved !== true || s.conflictsAbsent !== true ||
-    !same(s.evidenceIdsReviewed, evidence.map(e => e.id)) || !same(s.acceptedUnitIdsReviewed, units.map(u => u.id))) return denied;
-  if (!Array.isArray(raw.decisions) || raw.decisions.length !== units.length || !same(raw.decisions.map((d: any) => d?.unitId), units.map(u => u.id))) return denied;
+    !same(s.evidenceIdsReviewed, evidence.map(e => e.id)) || !same(s.acceptedUnitIdsReviewed, units.map(u => u.id))) return coverageDenied('GUARD_04');
+  if (!Array.isArray(raw.decisions) || raw.decisions.length !== units.length || !same(raw.decisions.map((d: any) => d?.unitId), units.map(u => u.id))) return coverageDenied('GUARD_05');
   for (const u of units) {
     const d = raw.decisions.find((d: any) => d.unitId === u.id);
     if (!u.facetIds.length || !u.facetIds.every(id => facets.some(f => f.id === id)) || d.relation !== 'ENTAILED' ||
       !same(d.facetIds, u.facetIds) || ['meaningPreserved', 'modalityPreserved', 'qualifiersPreserved', 'relevant', 'languageCorrect'].some(k => d[k] !== true) ||
       typeof d.negativeAbsence !== 'boolean' || typeof d.explicitAbsenceEvidence !== 'boolean' || d.negativeAbsence && !d.explicitAbsenceEvidence ||
       !u.evidenceRefs.length || u.evidenceRefs.some(r => !evidence.some(e => e.id === r.evidenceId && e.sourceId === r.sourceId &&
-        e.chunkId === r.chunkId && e.version === r.version && e.text.includes(r.exactQuote)))) return denied;
+        e.chunkId === r.chunkId && e.version === r.version && e.text.includes(r.exactQuote)))) return coverageDenied('GUARD_06');
   }
   const obligations = facets.flatMap(f => f.obligations.map(o => ({ f, o })));
   if (!Array.isArray(s.obligations) || s.obligations.length !== obligations.length || !same(s.obligations.map((o: any) => o?.obligationId), obligations.map(({ o }) => o.id)) ||
-    !Array.isArray(raw.coverage) || raw.coverage.length !== facets.length || !same(raw.coverage.map((c: any) => c?.facetId), facets.map(f => f.id))) return denied;
+    !Array.isArray(raw.coverage) || raw.coverage.length !== facets.length || !same(raw.coverage.map((c: any) => c?.facetId), facets.map(f => f.id))) return coverageDenied('GUARD_07');
   const unavailable: SourceShortfall[] = [];
   for (const f of facets) {
     const c = raw.coverage.find((c: any) => c.facetId === f.id), validIds = units.filter(u => u.facetIds.includes(f.id)).map(u => u.id);
@@ -106,23 +114,23 @@ export function assessSourceCoverage(raw: any, facets: readonly Facet[], units: 
     if (!keys(c, ['facetId', 'requestAligned', 'materialFactsComplete', 'incompletenessReason', 'materialUnitIds', 'obligations']) || c.requestAligned !== true ||
       typeof c.materialFactsComplete !== 'boolean' || !['NONE', 'UNRESOLVED', 'MISSING_RELEVANT_FACT'].includes(c.incompletenessReason) ||
       !subset(c.materialUnitIds) || !Array.isArray(c.obligations) || c.obligations.length !== f.obligations.length ||
-      !same(c.obligations.map((o: any) => o?.obligationId), f.obligations.map(o => o.id))) return denied;
+      !same(c.obligations.map((o: any) => o?.obligationId), f.obligations.map(o => o.id))) return coverageDenied('GUARD_08');
     for (const o of f.obligations) {
       const d = c.obligations.find((d: any) => d.obligationId === o.id), a = s.obligations.find((a: any) => a.obligationId === o.id);
-      if (!keys(d, ['obligationId', 'status', 'unitIds']) || !subset(d.unitIds) || !keys(a, ['facetId', 'obligationId', 'state']) || a.facetId !== f.id) return denied;
+      if (!keys(d, ['obligationId', 'status', 'unitIds']) || !subset(d.unitIds) || !keys(a, ['facetId', 'obligationId', 'state']) || a.facetId !== f.id) return coverageDenied('GUARD_09');
       if (a.state === 'COMPLETE') {
         const covers = o.questionType === 'description' || units.some(u => d.unitIds.includes(u.id) &&
           (o.questionType === 'permission' ? u.modality === 'permitted' || u.modality === 'prohibited' && !u.negation :
             u.modality === ({ requirement: 'required', recommendation: 'recommended', prohibition: 'prohibited' } as const)[o.questionType]));
-        if (!covers || !c.materialFactsComplete || c.incompletenessReason !== 'NONE' || d.status !== 'COVERED' || !d.unitIds.length || !c.materialUnitIds.length) return denied;
+        if (!covers || !c.materialFactsComplete || c.incompletenessReason !== 'NONE' || d.status !== 'COVERED' || !d.unitIds.length || !c.materialUnitIds.length) return coverageDenied('GUARD_10');
       } else {
         if (d.status !== 'UNRESOLVED' || c.materialFactsComplete || c.incompletenessReason === 'NONE' ||
           o.questionType === 'requirement' && d.unitIds.length !== 0 ||
-          !(a.state === 'REQUESTED_INFORMATION_NOT_VERIFIED' && o.questionType === 'description' || a.state === 'UNRESOLVED_REQUIREMENT' && o.questionType === 'requirement')) return denied;
+          !(a.state === 'REQUESTED_INFORMATION_NOT_VERIFIED' && o.questionType === 'description' || a.state === 'UNRESOLVED_REQUIREMENT' && o.questionType === 'requirement')) return coverageDenied('GUARD_11');
         unavailable.push(Object.freeze({ facetId: f.id, obligationId: o.id, state: a.state }));
       }
     }
   }
-  if (unavailable.length && units.some(u => u.modality !== 'descriptive')) return denied;
+  if (unavailable.length && units.some(u => u.modality !== 'descriptive')) return coverageDenied('GUARD_12');
   return Object.freeze({ state: unavailable.length ? 'SCOPED_PARTIAL' : 'COMPLETE', unavailable: Object.freeze(unavailable) });
 }

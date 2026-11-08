@@ -173,3 +173,22 @@ test('Persian arrival recommendation preserves relative time and a trailing purp
     text.replace('زودتر از زمان رزروشده', ''),
   ]) assert.equal(safe(changed), false, changed);
 });
+
+
+test('Persian walking destination with approximate duration is spatial', () => {
+  for (const claim of [
+    'تا ورودی استودیو حدود پنج دقیقه پیاده‌روی دارد.',
+    'تا ورودی استودیو حدود ۵ دقیقه پیاده‌روی دارد.',
+    'ورودی آن در Stjärngatan 14 است و تا ورودی استودیو حدود پنج دقیقه پیاده‌روی دارد.'
+  ]) {
+    assert.equal(numericalConstraintSafe(claim, claim, [claim], undefined, 'whole_source'), true);
+  }
+
+  const source = 'تا ورودی استودیو حدود پنج دقیقه پیاده‌روی دارد.';
+  for (const claim of [
+    'نوبت را تا ۲۱ روز قبل لغو کنید.',
+    'تا ورودی استودیو حدود پنج دقیقه پیاده‌روی دارد و نوبت را تا ۲۱ روز قبل لغو کنید.'
+  ]) {
+    assert.equal(numericalConstraintSafe(claim, claim, [source], undefined, 'whole_source'), false);
+  }
+});

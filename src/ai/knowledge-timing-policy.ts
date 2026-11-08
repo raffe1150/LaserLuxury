@@ -135,7 +135,9 @@ const boundedSetting = (value: string | undefined, fallback: number, max: number
   value && /^\d+$/u.test(value) ? Math.min(max, Math.max(0, Number(value))) : fallback;
 let admission: { key: string; queue: AiRequestQueue } | undefined;
 export function knowledgeAdmission() {
-  // One active Knowledge turn by default: it cannot occupy all three default AI slots.
+  // This queue is used only by the opted-in native policy.
+  // Keep one active Knowledge turn by default until production load is validated.
+  // Provider concurrency remains independently bounded; deadlines never reset.
   const active = Math.max(1, boundedSetting(process.env.KNOWLEDGE_MAX_ACTIVE_REQUESTS, 1, 3));
   const waiting = boundedSetting(process.env.KNOWLEDGE_MAX_WAITING_REQUESTS, 3, 12);
   const key = `${active}:${waiting}`;

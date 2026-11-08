@@ -9,18 +9,6 @@ incidentFlags();
 Object.assign(process.env,{AI_PROVIDER:'gemini',ODINLINK_KNOWLEDGE_TIMING_POLICY:'accuracy-first-v1',
   ODINLINK_KNOWLEDGE_TIMING_TENANT_IDS:'3',ODINLINK_KNOWLEDGE_MODEL_PROFILE:'off',ODINLINK_KNOWLEDGE_SOL_TENANT_IDS:''});
 const {priority1hUnifiedEngineTestBoundary:b}=await import('../../server');
-test('Persian confirmation document is not a confirmed-booking status predicate',()=>{
- b.reset();
- const session='offline-confirmation-document';
- b.seedRecentCompletedBooking(session,'fa',{ok:true,bookingId:'synthetic',businessId:77,
-  serviceName:'Consultation',startTime:'2026-11-07T18:30:00+01:00',customerName:'Synthetic',sourceChannel:'telegram'});
- try {
-  for(const question of ['تأییدیه رزرو رو همراهم داشته باشم؟','تاییدیه رزرو را باید بیاورم؟'])
-   assert.equal(b.recentCompletionClassification(session,question,incidentConfig)?.statusSemantics,false);
-  for(const question of ['آیا رزرو من تأیید شده؟','آیا رزرو من تاییدشده است؟','آیا نوبت من ثبت شده؟'])
-   assert.equal(b.recentCompletionClassification(session,question,incidentConfig)?.statusSemantics,true);
- } finally {b.reset();}
-});
 const questions={
   sv:{book:'Boka en Video Consultation i morgon.',move:'Flytta min bokning till i morgon.',cancel:'Avboka min bokning eftersom jag blir sen.',lookup:'Har jag en bokning?',status:'Kan du bekräfta min bokning?',header:'Ja, bokningen är verifierad.'},
   en:{book:'Please book a Video Consultation tomorrow.',move:'Please reschedule my appointment to tomorrow.',cancel:'Please cancel my appointment because I will be late.',lookup:'Do I have an appointment?',status:'Can you please confirm my booking?',header:'Yes, the booking is verified.'},
@@ -78,4 +66,44 @@ test(`booking authority excludes Knowledge ${language}/${channel}/${operation}`,
       assert.doesNotMatch(replies[0],/18:30/u);
     }
   }finally{Object.assign(incidentConfig,saved);b.reset();}
+});
+
+
+test('Persian confirmation document is not completed booking status',()=>{
+  b.reset();
+  const saved={...incidentConfig};
+  try {
+    Object.assign(incidentConfig,{id:3,businessId:3,language:'fa'});
+    const session=incidentSession(b,'telegram','46700000999');
+    b.seedRecentCompletedBooking(session,'fa',{
+      ok:true,
+      bookingId:'synthetic-booking',
+      businessId:3,
+      serviceName:'Consultation',
+      startTime:'2026-10-31T18:30:00+01:00',
+      customerName:'Synthetic',
+      sourceChannel:'telegram'
+    });
+
+    for(const question of [
+      'تأییدیه رزرو رو از کجا بگیرم؟',
+      'من می‌خوام اولین بار بیام استودیو. باید زودتر برسم؟ تأییدیه رزرو رو همراهم داشته باشم؟ آدرس دقیق رو از کجا می‌تونم بگیرم؟'
+    ]){
+      const result=b.recentCompletionClassification(session,question,incidentConfig);
+      assert.equal(result?.statusSemantics,false,
+        'Documentary question misidentified as booking status: '+question);
+      assert.equal(result?.category,'business_support',
+        'Documentary question misrouted: '+question);
+    }
+
+    const genuine=b.recentCompletionClassification(
+      session,'رزرو من تأیید شده؟',incidentConfig
+    );
+    assert.equal(genuine?.statusSemantics,true,
+      'Genuine booking-status question must remain recognized');
+    assert.equal(genuine?.category,'current_booking_status');
+  }finally{
+    Object.assign(incidentConfig,saved);
+    b.reset();
+  }
 });

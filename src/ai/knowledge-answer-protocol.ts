@@ -70,7 +70,7 @@ export type KnowledgeDecision = {
   outputMode?: 'json_schema' | 'validated_text';
   failureCategory?: string;
   timeoutScope?: 'stage' | 'request';
-  citationSubtype?: import('./knowledge-citation').CitationSubtype; typographyHint?: boolean;
+  citationSubtype?: import('./knowledge-citation').CitationSubtype; typographyHint?: boolean; citationRangeRejected?: boolean;
   blockId?: string; blockKind?: 'fact'|'uncertainty'|'courtesy'; requestedLanguage?: string;
   semanticVerifiedUnits?: number; publishableUnits?: number; deadlineAt?: number; timeoutMs?: number;
   natural?: { schemaVersion: string; outcome: 'accepted_natural'|'canonical_fallback'|'direct_canonical'; reason: DecisionReason | null };

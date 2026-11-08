@@ -11,6 +11,12 @@ import { runAiProviderRequest } from './reliability';
 const flush = async () => { for (let i=0;i<20;i++) await Promise.resolve(); };
 const deferred = <T=void>() => { let resolve!: (value:T)=>void; const promise=new Promise<T>(r=>{resolve=r;});return{promise,resolve}; };
 const clock = (t:any) => t.mock.timers.enable({apis:['Date','setTimeout'],now:1_000_000});
+function admissionSettings(t:any, active?:string, waiting?:string) {
+ const saved={active:process.env.KNOWLEDGE_MAX_ACTIVE_REQUESTS,waiting:process.env.KNOWLEDGE_MAX_WAITING_REQUESTS};
+ const set=(name:string,value:string|undefined)=>{if(value===undefined)delete process.env[name];else process.env[name]=value;};
+ set('KNOWLEDGE_MAX_ACTIVE_REQUESTS',active);set('KNOWLEDGE_MAX_WAITING_REQUESTS',waiting);
+ t.after(()=>{set('KNOWLEDGE_MAX_ACTIVE_REQUESTS',saved.active);set('KNOWLEDGE_MAX_WAITING_REQUESTS',saved.waiting);});
+}
 
 test('extended timing requires both backend selector and exact tenant enrollment',()=>{
  const enabled={ODINLINK_KNOWLEDGE_TIMING_POLICY:P.version,ODINLINK_KNOWLEDGE_TIMING_TENANT_IDS:'3'};
@@ -92,8 +98,75 @@ test('bounded admission rejects overload, and aborted queued work never executes
  controller.abort(Error('cancel'));await rejected;held.resolve();await first;
  assert.equal(ran,false);assert.equal(queue.snapshot().active,0);
 });
+test('native admission defaults to one active turn and retains explicit operator bounds',t=>{
+ admissionSettings(t);assert.deepEqual(knowledgeAdmission().snapshot(),{active:0,waiting:0,concurrency:1,maxWaiting:3});
+ process.env.KNOWLEDGE_MAX_ACTIVE_REQUESTS='1';assert.equal(knowledgeAdmission().snapshot().concurrency,1);
+ process.env.KNOWLEDGE_MAX_ACTIVE_REQUESTS='99';process.env.KNOWLEDGE_MAX_WAITING_REQUESTS='99';
+ assert.deepEqual(knowledgeAdmission().snapshot(),{active:0,waiting:0,concurrency:3,maxWaiting:12});
+ process.env.KNOWLEDGE_MAX_ACTIVE_REQUESTS='0';assert.equal(knowledgeAdmission().snapshot().concurrency,1);
+ process.env.KNOWLEDGE_MAX_ACTIVE_REQUESTS='invalid';assert.equal(knowledgeAdmission().snapshot().concurrency,1);
+});
+test('four staggered native turns share two slots in FIFO order without renewing any deadline',async t=>{
+ admissionSettings(t,'2');clock(t);
+ const start=Date.now(),names=['telegram','whatsapp','instagram','messenger'];
+ const arrivals=[0,12777,16511,23145],owners:NativeKnowledgeTiming[]=[],jobs:Promise<unknown>[]=[],admitted:number[]=[],completed:number[]=[],fallbacks:number[]=[];
+ let active=0,peak=0;
+ const pause=(ms:number)=>new Promise<void>(resolve=>setTimeout(resolve,ms));
+ // Scheduling rehearsal only: measured incident extraction/verification times,
+ // with 1s of local work. It does not simulate model correctness or all incident overhead.
+ const launch=(i:number)=>jobs.push(runAccuracyFirstNative(async()=>{
+  const owner=nativeKnowledgeTiming()!;owners[i]=owner;admitted[i]=Date.now()-start;active++;peak=Math.max(peak,active);
+  try{
+   assert.equal(owner.startedAt,start+arrivals[i]);assert.equal(owner.deadlineAt,start+arrivals[i]+P.turnMs);
+   const budget=new InformationBudget(undefined,owner);
+   await owner.wait(()=>pause(1000));
+   assert.ok(allowance(budget.generationRemaining())>=6154,names[i]+' extraction retains verification reserve');
+   await owner.wait(()=>pause(6154));
+   assert.ok(verificationAdmissionDiagnostic(budget.remaining(),budget.publicationReserveMs,P.verificationDispatchMs,'after_queue').admitted);
+   await owner.wait(()=>pause(12047));
+   assert.ok(budget.remaining()>P.publicationMs);
+   await owner.deliver(async()=>{completed.push(i);});
+  }finally{active--;}
+ },async()=>{fallbacks.push(i);}));
+ // Small steps flush asynchronous continuations before advancing the next timer.
+ for(let elapsed=0;elapsed<=60000;elapsed++){
+  const i=arrivals.indexOf(elapsed);if(i>=0)launch(i);
+  await flush();if(completed.length+fallbacks.length===4)break;
+  t.mock.timers.tick(1);
+ }
+ await Promise.all(jobs);
+ assert.equal(peak,2);assert.equal(active,0);assert.deepEqual(fallbacks,[]);assert.deepEqual(completed,[0,1,2,3]);
+ assert.deepEqual(admitted,[0,12777,19201,31978]);
+ assert.ok(owners.every((owner,i)=>owner.deadlineAt===start+arrivals[i]+45000));
+ assert.deepEqual(knowledgeAdmission().snapshot(),{active:0,waiting:0,concurrency:2,maxWaiting:3});
+});
+test('two native turns leave the third provider slot usable by unrelated work',async t=>{
+ admissionSettings(t,'2');const providers=new AiRequestQueue(3),held=[deferred(),deferred()];let unrelated=false;
+ const jobs=held.map(h=>runAccuracyFirstNative(async()=>{
+  const owner=nativeKnowledgeTiming()!;
+  return owner.wait(()=>providers.run(()=>h.promise,undefined,owner.signal));
+ },async()=>assert.fail('Held work is resolved before its deadline')));
+ await flush();assert.equal(knowledgeAdmission().snapshot().active,2);assert.equal(providers.snapshot().active,2);
+ await providers.run(async()=>{unrelated=true;});assert.equal(unrelated,true);assert.equal(providers.snapshot().active,2);
+ held.forEach(h=>h.resolve());await Promise.all(jobs);assert.equal(providers.snapshot().active,0);
+});
+test('two ignored aborts retain native admission and a waiting turn never executes after its original deadline',async t=>{
+ admissionSettings(t,'2');clock(t);const held=[deferred(),deferred()];let ran=0,failures=0;
+ const jobs=held.map(h=>runAccuracyFirstNative(async()=>{
+  const owner=nativeKnowledgeTiming()!;return owner.wait(()=>h.promise);
+ },async()=>{failures++;}));
+ await flush();const waiting=runAccuracyFirstNative(async()=>{ran++;},async()=>{failures++;});
+ await flush();assert.equal(knowledgeAdmission().snapshot().active,2);assert.equal(knowledgeAdmission().snapshot().waiting,1);
+ t.mock.timers.tick(38000);await flush();await Promise.all([...jobs,waiting]);
+ assert.equal(ran,0);assert.equal(failures,3);assert.equal(knowledgeAdmission().snapshot().active,2);assert.equal(knowledgeAdmission().snapshot().waiting,0);
+ // Reconfiguration cannot abandon either real pending owner.
+ process.env.KNOWLEDGE_MAX_ACTIVE_REQUESTS='1';assert.equal(knowledgeAdmission().snapshot().concurrency,2);
+ held[0].resolve();await flush();assert.equal(knowledgeAdmission().snapshot().active,1);
+ held[1].resolve();await flush();assert.equal(knowledgeAdmission().snapshot().active,0);
+ assert.equal(knowledgeAdmission().snapshot().concurrency,1);
+});
 test('uncooperative provider retains Knowledge admission after caller timeout and quarantine is observable',async t=>{
- clock(t);const late=deferred();let failure=0,owner:NativeKnowledgeTiming|undefined,diagnostic:any;
+ admissionSettings(t,'1');clock(t);const late=deferred();let failure=0,owner:NativeKnowledgeTiming|undefined,diagnostic:any;
  const run=runAccuracyFirstNative(async()=>{owner=nativeKnowledgeTiming();return owner!.wait(()=>late.promise);},async()=>{failure++;},e=>{diagnostic=e;});
  await flush();t.mock.timers.tick(38000);await flush();await run;
  assert.equal(failure,1);assert.equal(knowledgeAdmission().snapshot().active,1);

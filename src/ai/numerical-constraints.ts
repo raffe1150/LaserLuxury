@@ -52,6 +52,15 @@ function quotedTemporalNumbers(text:string):string {
  * conditional, fee/notice and ambiguous clauses keep the original strict path.
  * Only the parser's copy changes; citations and published text stay untouched. */
 function spatialConnectives(text: string): string {
+  // A walking-time description can use Persian "تا" for a destination.
+  // Normalize only this narrow spatial pattern in the parser's copy.
+  // Policy, deadline, conditional and fee clauses remain unchanged.
+  const walkingDestination = /(?<![\p{L}\p{N}])تا(?=\s+(?:ورودی|پذیرش|خروجی)(?:\s+[\p{L}]+){0,3}\s+حدود\s+(?:[0-9]+|یک|دو|سه|چهار|پنج|شش|هفت|هشت|نه|ده)\s+دقیقه\s+پیاده\s+روی(?![\p{L}\p{N}]))/gu;
+  text = text.replace(/[^.!?؟؛;\n]+/gu, clause => {
+    if (cancellationClaim.test(clause) ||
+        /باید|نباید|اگر|شرط|مهلت|هزینه|جریمه|حداقل|حداکثر|قبل|پیش|بعد|لغو|رایگان/u.test(clause)) return clause;
+    return clause.replace(walkingDestination, 'به');
+  });
   return text.replace(/[^.!?؟؛;\n]+/gu, clause => {
     if (clause.length > 500 || cancellationClaim.test(clause) || hasPhrase(clause, Object.keys(units)) ||
         /[<>≤≥%]|\b(?:not|never|must|require\w*|deadline|fees?|no|nunca|si|durante|por|antes|después|plazo|aviso|debe\w*|oblig\w*|requier\w*|pagar|pago|tarifa\w*|cargo\w*|gratis|semanas?|mes(?:es)?|años?|quincenas?|weeks?|months?|years?|fortnights?|fecha|hoy|mañana|ayer|lunes|martes|miércoles|jueves|viernes|sábado|domingo)\b|(?:باید|نباید|نکن|شرط|اگر|برای|مدت|هزینه|جریمه|رایگان|مهلت|زمان|قبل|پیش|بعد|هفته|ماه|سال|امروز|فردا|دیروز)/u.test(clause)) return clause;

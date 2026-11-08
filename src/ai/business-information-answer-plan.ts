@@ -250,7 +250,7 @@ export function parseAnswerUnits(raw: unknown, facets: readonly Facet[], evidenc
       const citation=short(r.exactQuote,2400)?resolveEvidenceQuote(e.text,r.exactQuote):{subtype:'QUOTE_NOT_FOUND' as const};
       if (!citation.quote) { diagnostic({stage:'extraction',unitId:`u${index+1}`,reason:'INVALID_CITATION',citationSubtype:citation.subtype,typographyHint:citation.typographyHint}); break; }
       if (e.citationRanges && !e.citationRanges.some(span => citation.start! >= span.start && citation.end! <= span.end)) {
-        diagnostic({stage:'extraction',unitId:`u${index+1}`,reason:'INVALID_CITATION',citationSubtype:'QUOTE_NOT_FOUND'}); break;
+        diagnostic({stage:'extraction',unitId:`u${index+1}`,reason:'INVALID_CITATION',citationSubtype:'QUOTE_NOT_FOUND',citationRangeRejected:true}); break;
       }
       if(citation.subtype)diagnostic({stage:'extraction',unitId:`u${index+1}`,reason:'ACCEPTED',citationSubtype:citation.subtype});
       refs.push(Object.freeze({ evidenceId: e.id, sourceId: e.sourceId, chunkId: e.chunkId, version: e.version, exactQuote: citation.quote }));

@@ -112,7 +112,18 @@ function parse(input: string): { constraints: Constraint[]; unsupported: boolean
     // Keep this narrow: never reinterpret cancellation or policy deadlines.
     const persianEarlyArrival = !cancellationClaim.test(context) &&
       /^\s*زودتر\s+(?:برسید|برسم|برسد|برسند|بیایید|بیام|تشریف\s+بیاورید|حاضر\s+شوید)(?![\p{L}\p{N}])/u.test(right);
-    const anchoredBefore = hasPhrase(context, before) || /^ زودتر از /u.test(right) || persianEarlyArrival;
+    // Narrow arrival-only equivalences. These identify temporal direction,
+    // not source entailment, eligibility, modality or publication authority.
+    const additionalArrivalBefore = !cancellationClaim.test(context) && (
+      /^\s*early(?![\p{L}\p{N}])/u.test(right) &&
+        /\b(?:arriv\w*|come|be there|show up|check in)\b/u.test(left) ||
+      /^\s*con antelación(?![\p{L}\p{N}])/u.test(right) &&
+        /(?:preséntese|preséntate|llegue|llegar|acuda)/u.test(left) ||
+      /^\s*زودتر\s+در\s+محل\s+حضور\s+داشته\s+باشید/u.test(right) ||
+      /(?:الوصول|الحضور)\s+مبكرا\s+بـ?\s*$/u.test(left)
+    );
+    const anchoredBefore = hasPhrase(context, before) || /^ زودتر از /u.test(right) ||
+      persianEarlyArrival || additionalArrivalBefore;
     const anchoredAfter = hasPhrase(context, after) || /^ دیرتر از /u.test(right);
     const side: Side = anchoredBefore ? 'before' : anchoredAfter ? 'after' : 'none';
     // After the quantity, Persian "تا فرصت ..." introduces a purpose

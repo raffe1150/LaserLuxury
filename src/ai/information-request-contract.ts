@@ -64,7 +64,17 @@ export function hasIntroducedReferent(text: string): boolean {
   const prefix = text.slice(0, reference.index);
   // A new clause must follow the introduced subject before an anaphor can
   // reuse it; an indefinite object cannot resolve 'that place' in its clause.
-  if (!/[.,;،؛?؟]|\b(?:and|och|und)\b|(?:^|\s)و(?:\s|$)/iu.test(prefix)) return false;
+  if (!/[.,;،؛?؟]|\b(?:and|och|und)\b|(?:^|\s)و(?:\s|$)/iu.test(prefix)) {
+    // An inline conditional also starts a clause: "my appointment ... if it
+    // is a follow-up" retains its explicitly introduced event. This is reference
+    // grammar only, not a first-visit rule or an inferred booking identity.
+    // Do not let this additional boundary resolve quoted subjects or any
+    // further pronoun whose antecedent has not independently been established.
+    if (!/\b(?:if|when|om|när|wenn|falls|si)\s*$/iu.test(prefix) ||
+        !/^(?:['’]s|\s+(?:is|är|ist|es))\s+(?:my|our|your|an?|the|min|mitt|vår|vårt|din|ditt|en|ett|mein\p{L}*|ein\p{L}*|mi|un[ao]?)\s+[\p{L}\p{M}]/iu.test(text.slice(reference.index + reference[0].length)) ||
+        /"[^"]*"|“[^”]*”|«[^»]*»|‘[^’]*’|'[^']*'/u.test(prefix) ||
+        /(?<![\p{L}\p{M}])(?:it|that|there|this|them|same\s+place|det|den|där|samma\s+plats|das|dort|demselben\s+ort|eso|all[ií]|mismo\s+lugar|آنجا|آن|همان\s+مکان|هناك|ذلك|نفس\s+المكان)(?![\p{L}\p{M}])/iu.test(text.slice(reference.index + reference[0].length))) return false;
+  }
   if (/^\s+[\p{L}\p{M}]/u.test(text.slice(reference.index + reference[0].length)) && /^(?:that|das|eso)$/iu.test(reference[0])) return false;
   if (/\b(?:there|där|dort|all[ií])\b|آنجا/iu.test(prefix)) return false;
   if (/\b\p{Lu}\p{Ll}+\s+\p{Lu}\p{Ll}+/u.test(prefix)) return true;

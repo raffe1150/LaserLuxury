@@ -1,6 +1,46 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { hasConversationReference, hasExternalConversationReference, referenceClarificationReply, splitMixedBusinessRequest, prepareLiteralTurn } from './conversation-intent-continuity';
+import { literalInformationFallback } from './knowledge-planning';
+import { parseRequestedFacets } from './business-information-answer-plan';
+import { firstVisitCases, firstVisitQuestion } from '../../tests/fixtures/first-visit-planning-recovery';
+
+for (const [, question] of firstVisitCases) test(`self-contained first-visit recovery retains the full request: ${question}`, () => {
+ assert.equal(hasExternalConversationReference(question), false);
+ const plan = literalInformationFallback(question, true);
+ assert.ok(plan);
+ const { facets } = parseRequestedFacets(plan.requestedFacets);
+ assert.equal(facets.length, 1);
+ assert.equal(facets[0].obligations[0].description, question);
+ assert.deepEqual(plan.queries, [question]);
+ assert.equal(literalInformationFallback(question, true, true), null, 'An independently unresolved reference still blocks recovery');
+});
+
+// Exercise clause grammar, not a first-visit phrase exception. No source or
+// booking identity is inferred from these explicitly named in-question events.
+for (const question of [
+ firstVisitQuestion.replace("it's", 'it’s'),
+ 'How early should I arrive for my consultation when it is a follow-up session?',
+ 'How early should I arrive for my appointment if it is a group session?',
+ 'Hur tidigt bör jag komma till mitt möte om det är ett uppföljningsmöte?',
+]) test(`an inline condition can refer to an explicitly introduced event: ${question}`, () => {
+ assert.equal(hasExternalConversationReference(question), false);
+ assert.ok(literalInformationFallback(question, true));
+});
+
+for (const question of [
+ 'Does it apply to me?', 'What about that one?', 'Is it the same as before?',
+ "How early should I arrive if it's available?", 'How early should I arrive if it is cancelled?',
+ 'How early should I arrive for my appointment if that one is cancelled?',
+ 'How early should I arrive for my appointment if it is there?',
+ 'How early should I arrive for my appointment if it is my first visit? Does that rule apply?',
+ 'How early should I arrive for my appointment if it is my first visit and they allow that?',
+ 'How early should I arrive for "my appointment" if it is available?',
+ 'What does "it is my first visit" mean for that one?',
+]) test(`recovery cannot infer an external or quoted referent: ${question}`, () => {
+ assert.equal(hasExternalConversationReference(question), true);
+ assert.equal(literalInformationFallback(question, true), null);
+});
 
 test('reporting complementizers and an explicitly named chat need no historical antecedent', () => {
  assert.equal(hasExternalConversationReference('I heard that cancellations are always free and that I must cancel at least 24 hours in advance. Can you confirm both rules, and tell me whether I can cancel through this chat?'), false);

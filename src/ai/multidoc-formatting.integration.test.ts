@@ -31,10 +31,14 @@ const persianCase = ['fa',
 const persianPurposeCase = ['fa', persianCase[1],
   'به مراجعه‌کنندگان بار اول توصیه می‌شود حدود ۱۰ دقیقه قبل از نوبت رزروشده خود حاضر شوند تا زمان کافی برای آماده شدن داشته باشند.',
 ] as const; // SYNTHETIC faithful proposal, not historical production output.
+const additionalPersianPurposes = [
+  ['fa', persianCase[1], persianCase[2].slice(0, -1) + ' تا بتوانند با آرامش آماده شوند.'],
+  ['fa', persianCase[1], persianCase[2].slice(0, -1) + ' تا برای آماده شدن زمان کافی داشته باشند.'],
+] as const;
 const { priority1hUnifiedEngineTestBoundary: b } = await import('../../server');
 type Fault = 'none' | 'rejected' | 'incomplete' | 'foreign' | 'revoked' | 'number' | 'scope' | 'required' | 'overflow' | 'conflict' | 'revision' | 'badquote' | 'unknown-id';
 
-async function exercise(t: any, channel: IncidentChannel, spec: typeof cases[number] | typeof persianCase | typeof persianPurposeCase, fault: Fault = 'none', selection: 'old' | 'new' | 'both' = 'both', tombstones = false) {
+async function exercise(t: any, channel: IncidentChannel, spec: typeof cases[number] | typeof persianCase | typeof persianPurposeCase | typeof additionalPersianPurposes[number], fault: Fault = 'none', selection: 'old' | 'new' | 'both' = 'both', tombstones = false) {
   b.reset();
   t.after(() => b.reset());
   const recoveryLogs: any[] = [];
@@ -234,3 +238,7 @@ for (const channel of incidentChannels)
   test(`SYNTHETIC combined fixes / remaining PDF / ${channel}`, t => exercise(t, channel, persianPurposeCase, 'none', 'new', true));
 for (const fault of ['rejected', 'incomplete', 'unknown-id'] as const)
   test(`SYNTHETIC combined fixes / remaining PDF / fail-closed ${fault}`, t => exercise(t, 'telegram', persianPurposeCase, fault, 'new', true));
+
+for (const channel of incidentChannels) for (const [i, spec] of additionalPersianPurposes.entries())
+  test(`SYNTHETIC additional Persian purpose ${i + 1} / remaining PDF / ${channel}`, t => exercise(t, channel, spec, 'none', 'new', true));
+test('SYNTHETIC Persian ability purpose still requires verifier acceptance', t => exercise(t, 'telegram', additionalPersianPurposes[0], 'rejected', 'new', true));

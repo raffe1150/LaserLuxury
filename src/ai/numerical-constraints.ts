@@ -129,12 +129,12 @@ function parse(input: string): { constraints: Constraint[]; unsupported: boolean
     // After the quantity, Persian "تا فرصت ..." introduces a purpose
     // ("so there is time to ..."), rather than a maximum on that quantity.
     let boundSuffix = side === 'none' ? right : right.replace(boundary('تا فرصت'), ' فرصت');
-    // A post-quantity arrival verb followed by "so they have enough time to
-    // prepare" is purpose, not "up to". Consume only that connective in the
-    // parser's copy; retain all real bounds, negators and other quantities.
+    // An arrival verb followed by a finite preparation-purpose clause (enough
+    // time or ability to prepare) does not set a bound. Consume only its
+    // post-quantity connective; retain real bounds and the rest of the clause.
     if (side === 'before' && !anchoredAfter && !cancellationClaim.test(context) &&
         !/مهلت|هزینه|جریمه/u.test(context)) {
-      boundSuffix = boundSuffix.replace(/(?<![\p{L}\p{N}])((?:حاضر\s+شو(?:ند|ید|د|یم|م)|برس(?:ند|ید|د|یم|م))\s+)تا(?=\s+(?:زمان|فرصت)\s+کافی\s+برای\s+آماده\s+شدن\s+داشته\s+باش(?:ند|ید|د|یم|م)(?![\p{L}\p{N}]))/gu, '$1');
+      boundSuffix = boundSuffix.replace(/(?<![\p{L}\p{N}])((?:حاضر\s+شو(?:ند|ید|د|یم|م)|برس(?:ند|ید|د|یم|م))\s+)تا(?=\s+(?:(?:(?:زمان|فرصت)\s+کافی\s+برای\s+آماده\s+شدن|برای\s+آماده\s+شدن\s+(?:زمان|فرصت)\s+کافی)\s+داشته\s+باش(?:ند|ید|د|یم|م)|بتوان(?:ند|ید|د|یم|م)\s+(?:با\s+آرامش\s+)?آماده\s+شو(?:ند|ید|د|یم|م))(?![\p{L}\p{N}]))/gu, '$1');
     }
     let remaining = left + quantity[0] + boundSuffix;
     const bounds: Array<Bound | 'latest' | 'earliest'> = [];

@@ -49,3 +49,52 @@ test('cancellation notice and fee constraints do not acquire the arrival exempti
  const fee = 'لغو رایگان حداقل ۱۰ دقیقه قبل از نوبت مجاز است.';
  assert.equal(assess(notice, fee).safe, false);
 });
+
+const additionalPurposes = [
+ ['ability', ' تا بتوانند آماده شوند.'],
+ ['ability with manner', ' تا بتوانند با آرامش آماده شوند.'],
+ ['purpose complement before time', ' تا برای آماده شدن زمان کافی داشته باشند.'],
+] as const;
+
+for (const n of ['۱۰', '10', '١٠']) for (const [name, suffix] of additionalPurposes)
+ test(`SYNTHETIC preparation purpose / ${name} / ${n}`, () => {
+  const a = assess(base(n) + suffix);
+  assert.equal(a.safe, true, a.reason);
+  const shapes = numericalComparisonShapes(a);
+  assert.equal(shapes.length, 2);
+  assert.ok(shapes.every(row => row.candidateBound === 'unbounded' && row.candidateSide === 'before' && row.boundCompatible));
+ });
+
+for (const [qualifier, bound] of [
+ ['حداکثر', 'maximum'], ['حد اکثر', 'maximum'], ['تا', 'maximum'],
+ ['نه زودتر از', 'maximum'], ['کمتر از', 'strict_maximum'],
+ ['حداقل', 'minimum'], ['نه دیرتر از', 'minimum'],
+] as const) test(`preparation purpose preserves genuine bound / ${qualifier}`, () => {
+ const claim = base('۱۰', qualifier) + additionalPurposes[1][1];
+ const a = assess(claim);
+ assert.equal(a.safe, false);
+ assert.equal(numericalComparisonShapes(a)[0].candidateBound, bound);
+ assert.equal(assess(claim, claim).safe, true);
+});
+
+for (const [name, claim] of [
+ ['wrong quantity', base('۲۰') + additionalPurposes[0][1]],
+ ['after', base().replace('قبل', 'بعد') + additionalPurposes[0][1]],
+ ['negative arrival', base().replace('حاضر شوند', 'حاضر نشوند') + additionalPurposes[0][1]],
+ ['alternative quantity', base().replace('۱۰', '۱۰ یا ۲۰') + additionalPurposes[0][1]],
+ ['unrelated action', base().replace('حاضر شوند', 'ثبت نام کنند') + additionalPurposes[0][1]],
+ ['unrelated ability', base() + ' تا بتوانند پرداخت کنند.'],
+ ['bare connective', base() + ' تا با آرامش آماده شوند.'],
+ ['deadline', base() + ' تا شروع نوبت.'],
+ ['cancellation context', 'لغو: ' + base() + additionalPurposes[0][1]],
+] as const) test(`preparation purpose keeps conservative rejection / ${name}`, () => assert.equal(assess(claim).safe, false));
+
+test('no-later-than after an appointment still denotes a maximum', () => {
+ const claim = base('۱۰', 'نه دیرتر از').replace('قبل', 'بعد') + '.';
+ const a = assess(claim);
+ assert.equal(a.safe, false);
+ const shape = numericalComparisonShapes(a)[0];
+ assert.equal(shape.candidateBound, 'maximum');
+ assert.equal(shape.candidateSide, 'after');
+ assert.equal(assess(claim, claim).safe, true);
+});

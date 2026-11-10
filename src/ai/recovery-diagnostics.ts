@@ -8,7 +8,7 @@ export type RecoveryReason = 'accepted' | 'eligible' | 'malformed_response' | 'p
   'overlapping_quotes' | 'unsafe_quote' | 'entailment_rejected' | 'absence_evidence_missing' | 'numerical_constraint' |
   'requested_aspect_rejected' | 'relevance_limit' | 'no_safe_sentence' | 'no_verified_seed' | 'repair_already_attempted' |
   'topic_limit' | 'evidence_missing' | 'topic_mismatch' | 'empty_candidate' | 'candidate_limit' | 'tool_calls' |
-  'cached_verdict_reused' | 'verified_result_reused' | 'verification_limit' | 'no_factual_claims' | 'claim_count_limit' | 'no_accepted_facts' | 'freshness_failure' | 'source_conflict' |
+  'cached_verdict_reused' | 'verified_result_reused' | 'verification_limit' | 'no_factual_claims' | 'claim_count_limit' | 'no_accepted_facts' | 'freshness_failure' | 'knowledge_formatting_failure' | 'source_conflict' |
   'verification_unavailable' | 'fallback' | 'exception';
 type Counts = Partial<Record<'claimCount' | 'attemptedFacts' | 'acceptedFacts' | 'candidateLength' | 'relevanceChecks', number>>;
 type Entry = { stage: RecoveryStage; reason: RecoveryReason; count: number };

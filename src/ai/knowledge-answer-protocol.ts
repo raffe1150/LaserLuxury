@@ -39,8 +39,9 @@ export const KNOWLEDGE_SCHEMA_VERSION = 'evidence-first-v2';
 export const QUESTION_TYPES = ['description', 'recommendation', 'requirement', 'permission', 'prohibition'] as const;
 export const MODALITIES = ['descriptive', 'recommended', 'required', 'permitted', 'prohibited'] as const;
 export const RELATIONS = ['ENTAILED', 'UNKNOWN', 'CONTRADICTED', 'NOT_APPLICABLE'] as const;
-export type KnowledgeStage = 'planning' | 'extraction' | 'verification' | 'composition' | 'presentation_verification' | 'freshness' | 'publication';
+export type KnowledgeStage = 'formatting' | 'planning' | 'extraction' | 'verification' | 'composition' | 'presentation_verification' | 'freshness' | 'publication';
 export const DECISION_REASONS = [
+  'EVIDENCE_PACKING_FAILED', 'EVIDENCE_ITEM_OVERFLOW', 'EVIDENCE_FORMAT_OVERFLOW',
   'ACCEPTED', 'MALFORMED_JSON', 'MALFORMED_ARRAY', 'LIMIT_EXCEEDED', 'INVALID_FIELDS', 'INVALID_FACET',
   'LANGUAGE_LABEL', 'OPERATION_CLAIM', 'QUESTION_TEXT', 'MISSING_CITATION', 'INVALID_CITATION', 'NUMERICAL_CONSTRAINT',
   'MISSING_VERDICT', 'DUPLICATE_VERDICT', 'WRONG_VERDICT_ID', 'INVALID_RELATION', 'INVALID_FLAGS',
@@ -94,6 +95,7 @@ export function verificationAdmissionDiagnostic(remainingMs: number, publication
 }
 
 export function knowledgeDiagnosticFailure(event: KnowledgeDecision) {
+  if (['EVIDENCE_PACKING_FAILED', 'EVIDENCE_ITEM_OVERFLOW', 'EVIDENCE_FORMAT_OVERFLOW'].includes(event.reason)) return 'formatting_failure';
   if (event.reason === 'STAGE_ADMISSION') return 'not_admitted';
   if (event.transportSuccess === false && event.failureCategory === 'TIMEOUT') return event.providerAttempted === false ? 'queue_timeout' : 'provider_timeout';
   if (['MALFORMED_JSON', 'MALFORMED_ARRAY', 'MALFORMED_RESPONSE', 'INVALID_FIELDS',

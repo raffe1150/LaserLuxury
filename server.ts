@@ -3,7 +3,7 @@ import { recoveryDiagnostic, recoveryFailureFields, recoveryOutcome, recoveryExt
 import {installControlledTrial,trialModeOn,trialEnforced,trialHttpAllowed,trialBusinessId,
   controlledTrialBinding,runControlledTrialInbound,withVerifiedTrialMeta,withVerifiedTrialTelegram,trialSendAllowed,
   denyTrialAction,assertTrialProvider,trialSha,trialPollerCurrent,trialCurrent} from './src/runtime/controlled-knowledge-trial';
-import { packDocumentEvidence } from './src/knowledge/document-evidence-packing';
+import { formatRetrievedBusinessKnowledge, type KnowledgeFormattingFailure } from './src/knowledge/retrieved-knowledge-format';
 import {hierarchicalSearchEnabled} from './src/knowledge/hierarchical-search';
 import { installConfiguredKnowledgeBudgetOwner } from './src/ai/durable-knowledge-budget-owner';
 import { accuracyFirstEnabled, ACCURACY_FIRST_POLICY, accuracyFirstExtractionAllowance, nativeKnowledgeTiming, runAccuracyFirstNative, abortKnowledgeWork } from './src/ai/knowledge-timing-policy';
@@ -5405,7 +5405,7 @@ type KnowledgeTurnState = { readonly modelProfile?: KnowledgeModelProfile; reado
   businessId?: number; question?: string; manifest?: AnswerManifest; sessionId?: string; history?: any[]; matches?: KnowledgeSearchMatch[];
   snapshot?: Readonly<{ businessId: number; question: string; matches: KnowledgeSearchMatch[]; evidence: Evidence[] }>;
   invalidSourceIds?: Set<string>; nativeChannel?: 'telegram'|'instagram'|'whatsapp'|'messenger'; provider?:string; model?:string;
-  freshnessFailure?:DecisionReason; sourceValidationUnavailable?:boolean; freshnessChecks?:number; freshnessDurationMs?:number; semanticVerifiedUnits?:number;
+  formattingFailure?:KnowledgeFormattingFailure; freshnessFailure?:DecisionReason; sourceValidationUnavailable?:boolean; freshnessChecks?:number; freshnessDurationMs?:number; semanticVerifiedUnits?:number;
   diagnosticCount?:number; unitCounts?:KnowledgeDecision['counts'] };
 type VerifiedTenantRequestState = {
   businessId: number;
@@ -5709,6 +5709,7 @@ function captureNativeKnowledgeSnapshot(state:KnowledgeTurnState,admitted:boolea
 async function knowledgeContextCurrent(revalidateCancellation=true): Promise<boolean> {
   if (nativeKnowledgeTiming()?.failure) return false;
   const state = knowledgeTurnScope.getStore();
+  if (state?.formattingFailure) return false;
   const captured = requestSecurity.evidence;
   const support = captured?.support;
   const snapshot = state?.snapshot;
@@ -8969,41 +8970,6 @@ function getActiveBusinessInformation(sessionId: string) {
   return info && Date.now() - info.savedAt < 2 * 60 * 1000 ? info : null;
 }
 
-function formatRetrievedBusinessKnowledge(
-  matches: Array<{ sourceId?: string; text?: string; score?: number; metadata?: Record<string, unknown> }>
-): string {
-  // Group transport only after canonical completion; retain constituent provenance.
-  // Overflow is unavailable, never permission to drop another source.
-  const grouped = matches.length > 5 ? packDocumentEvidence(matches as KnowledgeSearchMatch[]) : null;
-  if (matches.length > 5 && !grouped) return '';
-  const transport = grouped ? grouped.map(group => ({...group.matches[0], text:group.text,
-    metadata:{...group.matches[0].metadata, constituents:group.matches.map(m=>hierarchicalSearchEnabled()?{page:m.metadata?.page,sheet:m.metadata?.sheet,section:m.metadata?.section}:m.metadata)}})) : matches;
-  const chunks = transport
-    .slice(0, 5)
-    .map((match, index) => {
-      const content = String(match?.text || "").trim();
-      if (!content) return "";
-
-      return [
-        `KNOWLEDGE CHUNK ${index + 1}`,
-        `source_id: ${String(match?.sourceId || "")}`,
-        ...(match.metadata?.source === "document" ? [
-          `document_provenance: ${JSON.stringify({ filename: match.metadata.filename, page: match.metadata.page, sheet: match.metadata.sheet, section: match.metadata.section, ...(grouped ? {constituents:match.metadata.constituents} : {}) })}`,
-          `untrusted_document_text: ${JSON.stringify(content.slice(0, 2400))}`,
-        ] : [content.slice(0, 2400)]),
-      ].join("\n");
-    })
-    .filter(Boolean);
-
-  let result = '';
-  for (const chunk of chunks) {
-    const next = result ? `${result}\n\n${chunk}` : chunk;
-    if (next.length > 9000) { if (grouped) return ''; break; }
-    result = next;
-  }
-  return result;
-}
-
 type RankedKnowledgeMatch = {
   sourceId?: string;
   businessId?: number;
@@ -9460,9 +9426,11 @@ async function retrieveBusinessKnowledgeForQuestion(
       state.matches = structuredClone(matches) as KnowledgeSearchMatch[];
       state.evidence = answerEvidence(businessId, matches);
     }
-    const formattedKnowledge =
-      formatRetrievedBusinessKnowledge(matches);
-    documentEvidenceRegistry.register(businessId, formattedKnowledge, matches as KnowledgeSearchMatch[]);
+    const formatting = formatRetrievedBusinessKnowledge(matches);
+    const formattedKnowledge = formatting.ok === true ? formatting.text : '';
+    if (state) state.formattingFailure = formatting.ok === true ? undefined : formatting.reason;
+    if (formatting.ok === false) emitKnowledgeDecision({ stage: 'formatting', reason: formatting.reason });
+    if (formatting.ok === true) documentEvidenceRegistry.register(businessId, formattedKnowledge, matches as KnowledgeSearchMatch[]);
 
     const semanticScores = scopedSemanticMatches
       .map((match) => Number(match?.score))
@@ -9518,13 +9486,15 @@ async function retrieveBusinessKnowledgeForQuestion(
         Boolean(formattedKnowledge),
       formattedKnowledgeLength:
         formattedKnowledge.length,
+      formattingFailure: formatting.ok === true ? null : formatting.reason,
+      serializedKnowledgeLength: formatting.serializedChars,
     };
 
     priority1hTestDependencies?.knowledgeRetrievalDiagnostic?.(
       retrievalDiagnostic,
     );
     console.log("[KnowledgeRetrieval]", retrievalDiagnostic);
-    onOutcome?.(matches.length ? retrievalFailed ? 'partial' : 'matched' : invalidSource ? 'invalid' : retrievalFailed ? 'failed' : 'empty');
+    onOutcome?.(formatting.ok === false ? 'failed' : matches.length ? retrievalFailed ? 'partial' : 'matched' : invalidSource ? 'invalid' : retrievalFailed ? 'failed' : 'empty');
     return formattedKnowledge;
   } catch (error) {
     onOutcome?.('failed');
@@ -11375,7 +11345,7 @@ async function guardBusinessSupportGroundingWithDiagnostics(
       return cancellationInformationCurrent(support);
     };
     const invalidSource = () => {
-      recoveryDiagnostic('guard', 'freshness_failure'); recoveryOutcome('rejected');
+      recoveryDiagnostic('guard', knowledgeTurnScope.getStore()?.formattingFailure ? 'knowledge_formatting_failure' : 'freshness_failure'); recoveryOutcome('rejected');
       if (!knowledgeTurnScope.getStore()?.budget && hasCancellationInformationTopic(latestCustomerMessage)) {
         recordCancellationInformationOutcome(sessionId, 'source_invalid');
         return cancellationInformationNotice(language, 'source_invalid');

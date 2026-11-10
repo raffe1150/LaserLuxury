@@ -9140,12 +9140,13 @@ async function retrieveBusinessKnowledgeForQuestion(
   }
   // Start the bounded current inventory alongside planning. It can establish
   // all documentary context without depending on translated lexical recall.
-  // Leave 10s for extraction, the existing 12s verification reserve, and the
-  // separately protected publication/delivery deadlines. Observed DB reads of
-  // 123-331ms cannot reliably finish in the former 100ms optional window.
+  // Share extraction's dynamic allowance rather than requiring an additional
+  // fixed 10s after admission waiting. Keep the 12s verification reserve and
+  // separately protected publication/delivery deadlines; extraction recomputes
+  // its allowance after this bounded read. Partial/late reads still fail closed.
   const completionDiagnostics: Array<{kind:string;outcome:string;allowanceMs:number;durationMs:number;chunks:number}> = [];
   const canonicalRead = async (kind:'inventory'|'selected', read:(options:NonNullable<typeof retrievalOptions>)=>Promise<KnowledgeSearchMatch[]|null>) => {
-    const started=Date.now(), allowanceMs=Math.max(0,Math.min(1000,Math.floor((state?.budget?.generationRemaining()||0)-ACCURACY_FIRST_POLICY.verificationReserveMs-10000)));
+    const started=Date.now(), allowanceMs=Math.min(1000,accuracyFirstExtractionAllowance(state?.budget?.generationRemaining()||0));
     if (!timing || !allowanceMs) {completionDiagnostics.push({kind,outcome:'skipped_budget',allowanceMs,durationMs:0,chunks:0});return null;}
     const controller=new AbortController(),signal=AbortSignal.any([timing.signal,controller.signal]);
     let expired=false,outcome='error',chunks=0;

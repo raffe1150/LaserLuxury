@@ -67,8 +67,34 @@ export function isBusinessRecommendationQuestion(text: string): boolean {
   return /\b(?:recommend(?:ation|ed|ing)?|suggest(?:ion|ed|ing)?|best\s+(?:service|option|choice)|what\s+(?:service|option)\s+(?:should|would)\s+(?:i|you)|what\s+(?:should|would)\s+(?:i|you)\s+(?:choose|pick|book|try|get)|empfehl\w*|rekommend\w*|recomiend\w*|recomend\w*)\b|پیشنهاد|توصیه|توصي|اقتراح/iu.test(String(text || ''));
 }
 
+/** Arrival advice is documentary information, not an appointment operation.
+ * This probe confers no fact or action authority; retain explicit operations. */
+function isArabicArrivalRecommendationQuestion(text: string): boolean {
+  const probe = text.normalize('NFKC').replace(/[\u064b-\u065f\u0670]/gu,'');
+  if (!/[?؟]|كم|ما الوقت|متى/u.test(probe) ||
+      !/تنصح|ينصح|موصى|توصي/u.test(probe) ||
+      !/حضور|الحضور|وصول|الوصول|أوصل|اوصل|أصل|اصل|أحضر|احضر/u.test(probe) ||
+      !/قبل[^.!?؟\n]{0,45}(?:موعد|حجز)/u.test(probe)) return false;
+  return true;
+}
+
+function hasArabicAppointmentOperation(text: string): boolean {
+  const probe = text.normalize('NFKC').replace(/[\u064b-\u065f\u0670]/gu,'');
+  // Mixed arrival questions must not hide rescheduling or a real status lookup.
+  // Policy nouns alone (e.g. "cancellation of an appointment") are not actions.
+  return /(?<![\p{L}\p{M}])(?:غير|عدل|انقل|أجل|اجل|قدم|أخر|اخر|احجز|أحجز|ألغ|الغ)(?![\p{L}\p{M}])|(?:^|[.!?؟]\s*|(?:أريد|اريد|أود|اود|أرغب|ارغب)\s+)(?:تغيير|تعديل|نقل|تأجيل|تقديم|إلغاء|الغاء)[^.!?؟\n]{0,30}(?:موعد|حجز)|تحقق|تأكد|حالة\s+(?:الموعد|الحجز)|متى\s+موعدي|هل\s+(?:لدي|حجزت)|تم\s+(?:حجز|تأكيد)/u.test(probe);
+}
+
+/** Shared with the intent router; retain its existing sentence-boundary grammar. */
+export function isExplicitArabicBookingCreationRequest(text: string): boolean {
+  return /(?:^|[,.!?؛]\s*)(?:أريد|اريد|أود|اود)\s+(?:حجز|(?:أن\s+)?(?:أحجز|احجز))(?=\s|[.!?،؛]|$)/u.test(text);
+}
+
 export function isBusinessInformationQuestion(text: string): boolean {
   text = withoutNegatedBookingClauses(text);
+  if (isExplicitArabicBookingCreationRequest(text)) return false;
+  if (isArabicArrivalRecommendationQuestion(text) &&
+      (isExplicitBusinessActionRequest(text) || hasArabicAppointmentOperation(text))) return false;
   // Documents can contain arbitrary business facts, beyond the catalog of UI
   // topics. Recognize read-only questions without treating scheduling input as
   // a Knowledge request (e.g. "what time can I book?").
@@ -90,7 +116,7 @@ export function isBusinessInformationQuestion(text: string): boolean {
     /\b(?:times?|slots?|tider|zeiten|uhrzeiten|horas?)\b|مواعيد|زمان|أوقات/iu.test(text);
   if (asksForAvailableTimes && requestedTopics.every(topic => topic === 'meetings' || topic === 'services')) return false;
   const bookingRefinement = /\b(?:which one|how about|what about)\b|\d{1,2}:\d{2}|\b(?:tienes|tienen|hay)\s+(?:algo|huecos?|tiempo)\s+(?:por|en)\s+la\s+ma[nñ]ana\b/iu.test(text);
-  if (!requestedTopics.length && !isBusinessRecommendationQuestion(text) &&
+  if (!requestedTopics.length && !isBusinessRecommendationQuestion(text) && !isArabicArrivalRecommendationQuestion(text) &&
       !(openQuestion && !schedulingInput && !bookingRefinement)) return false;
   const informationFirst = /\b(?:before\s+i\s+book|bevor\s+ich|erstmal\s+informieren|innan\s+jag\s+bokar|antes\s+de\s+reservar)\b|قبل از رزرو|قبل الحجز/iu.test(text);
   if (isExplicitBusinessActionRequest(text) && !informationFirst) return false;
@@ -99,6 +125,7 @@ export function isBusinessInformationQuestion(text: string): boolean {
 
 export function isExplicitBusinessActionRequest(text: string): boolean {
   text = withoutNegatedBookingClauses(text);
+  if (isExplicitArabicBookingCreationRequest(text)) return true;
   if (/\b(?:could|can|would)\s+(?:we|you)\s+(?:arrange|book|reserve|schedule)\b/iu.test(text)) return true;
   if (/^(?:book|reserve|schedule|reschedule|boka|reservera|buche|reservar|agendar)\s+\p{L}/iu.test(text)) return true;
   // A real instruction, including a mixed question + booking request, must stay

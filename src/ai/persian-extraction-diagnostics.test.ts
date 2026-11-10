@@ -73,10 +73,24 @@ test('four-reference payload remains bounded without quotes or proposed fields',
   const raw=proposal(text('۲۰'));raw.units[0].evidenceRefs=items.map(e=>({evidenceId:e.id,exactQuote:quote}));
   const {events}=parse(raw,items);const event=events.find(e=>e.reason==='NUMERICAL_CONSTRAINT')!;
   assert.equal(event.evidenceBindings!.length,4);assert.ok(Buffer.byteLength(JSON.stringify(event))<1000);
-  assert.deepEqual(Object.keys(event).sort(),['stage','unitId','reason','numericalMismatchReason','evidenceBindings'].sort());
+  assert.deepEqual(Object.keys(event).sort(),['stage','unitId','reason','numericalMismatchReason','numericalComparisons','evidenceBindings'].sort());
 });
 test('constituent-range rejection retains fail-closed category and metadata',()=> {
   const {result,events}=parse(proposal(),[{...evidence[0],citationRanges:[{start:0,end:5}]}]);
   assert.equal(result.units.length,0);
   assert.ok(events.some(e=>e.citationSubtype==='QUOTE_NOT_FOUND'&&e.citationRangeRejected&&e.evidenceBindings?.[0].sourceId===sourceId));
+});
+
+test('same-tenant comparison shapes retain evidence ordinals without private text',()=> {
+  const {events}=parse(proposal(text().replace('حدود','حداقل')));
+  const event=events.find(e=>e.reason==='NUMERICAL_CONSTRAINT')!;
+  assert.equal(event.numericalComparisons?.[0].candidateBound,'minimum');
+  assert.equal(event.numericalComparisons?.[0].sourceBound,'unbounded');
+  assert.equal(event.numericalComparisons?.[0].sourceIndex,0);
+  assert.equal(event.evidenceBindings?.[0].evidenceId,'e1');
+  assert.ok(!JSON.stringify(event).includes(quote));assert.ok(!JSON.stringify(event).includes('seconds'));
+});
+test('comparison shapes are omitted for foreign metadata',()=> {
+  const {events}=parse(proposal(text().replace('حدود','حداقل')),[{...evidence[0],businessId:9}]);
+  assert.equal(events.find(e=>e.reason==='NUMERICAL_CONSTRAINT')!.numericalComparisons,undefined);
 });

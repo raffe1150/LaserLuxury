@@ -7,7 +7,7 @@ import { selectCanonicalConfigurationProducer, captureCanonicalConfigurationProd
 import { isSourceExhaustiveProtocol, sourceExhaustiveInstruction, assessSourceCoverage, SOURCE_EXHAUSTIVE_V2_EVIDENCE_REVIEW } from './source-exhaustive-coverage';
 import { createHash } from 'node:crypto';
 import { packDocumentEvidence } from '../knowledge/document-evidence-packing';
-import { numericalConstraintSafe, assessNumericalConstraint, NUMERICAL_DIRECTION_GUIDANCE } from './numerical-constraints';
+import { numericalConstraintSafe, assessNumericalConstraint, numericalComparisonShapes, NUMERICAL_DIRECTION_GUIDANCE } from './numerical-constraints';
 import { recordPrivateNumericalCandidate } from './late-arrival-numerical-diagnostics';
 import { containsUnverifiedBookingSuccessClaim } from './reliability';
 import { containsWebOperationSuccess } from './web-response-integrity';
@@ -278,9 +278,13 @@ export function parseAnswerUnits(raw: unknown, facets: readonly Facet[], evidenc
     recordPrivateNumericalCandidate(privateDiagnosticScope,{id:`u${index+1}`,text:u.text,subject:u.subject,predicate:u.predicate,
       value:u.value,scope:u.scope,qualifiers:u.qualifiers,modality:u.modality,negation:u.negation,evidenceRefs:refs},evidence,numerical);
     if (!numerical.safe) {
+      const evidenceBindings=diagnosticBindings(refs);
       diagnostic({stage:'extraction',unitId:`u${index+1}`,reason:'NUMERICAL_CONSTRAINT',
         ...(/^[A-Z_]{1,64}$/u.test(numerical.reason) ? {numericalMismatchReason:numerical.reason} : {}),
-        evidenceBindings:diagnosticBindings(refs)});
+        // Emit comparison shapes only when every cited item has eligible,
+        // same-tenant metadata; sourceIndex then binds to this ordered array.
+        ...(evidenceBindings.length===refs.length ? {numericalComparisons:numericalComparisonShapes(numerical)} : {}),
+        evidenceBindings});
       continue;
     }
     units.push(Object.freeze({ id: `u${index + 1}`, verification: 'PROPOSED', facetIds: Object.freeze([...new Set<string>(u.facetIds)]),

@@ -277,4 +277,30 @@ export function numericalConstraintSafe(candidateQuote:string,atomicClaim:string
   return assessNumericalConstraint(candidateQuote,atomicClaim,evidence,structuredBusinessConfig,citationScope).safe;
 }
 
+/** Diagnostic projection only. Ordinals refer to assessor inputs; no quantities,
+ * text or quotations leave this projection. Never used to decide acceptance. */
+export function numericalComparisonShapes(assessment: NumericalConstraintAssessment) {
+  type Shape = { candidateIndex:number; sourceIndex:number;
+    candidateBound:Bound|'unbounded'; sourceBound:Bound|'unbounded'; candidateSide:Side; sourceSide:Side;
+    candidateAmbiguous:boolean; sourceAmbiguous:boolean;
+    candidateCancellationKind:'none'|'notice'|'free_window'; sourceCancellationKind:'none'|'notice'|'free_window';
+    boundCompatible:boolean; temporalAnchorCompatible:boolean; cancellationKindCompatible:boolean };
+  const shapes: Shape[] = [];
+  for (const [candidateIndex,check] of assessment.checks.slice(0,2).entries()) {
+    if (check.constraints.length !== 1) continue;
+    const candidate=check.constraints[0];
+    for (const [sourceIndex,source] of assessment.sources.slice(0,4).entries()) {
+      for (const constraint of source.constraints.filter(s => s.seconds===candidate.seconds && (s.bound!==null||s.side!=='none')).slice(0,2)) {
+        if (shapes.length===8) return shapes;
+        shapes.push({candidateIndex,sourceIndex,candidateBound:candidate.bound??'unbounded',sourceBound:constraint.bound??'unbounded',
+          candidateSide:candidate.side,sourceSide:constraint.side,candidateAmbiguous:candidate.ambiguous,sourceAmbiguous:constraint.ambiguous,
+          candidateCancellationKind:candidate.cancellationKind??'none',sourceCancellationKind:constraint.cancellationKind??'none',
+          boundCompatible:candidate.bound===constraint.bound,temporalAnchorCompatible:candidate.side===constraint.side,
+          cancellationKindCompatible:!constraint.cancellationKind||constraint.cancellationKind===candidate.cancellationKind});
+      }
+    }
+  }
+  return shapes;
+}
+
 export const NUMERICAL_DIRECTION_GUIDANCE = `Preserve numerical constraint direction, not just values: minimum/at least is not maximum/at most; before is not after. A cancellation deadline no later than N hours before a visit means at least N hours of advance notice, not at most N. Preserve no earlier/no later distinctions relative to the event. In Persian use حداقل for minimum notice and حداکثر for maximum; Arabic على الأقل/على الأكثر, Swedish minst/högst, German mindestens/höchstens, Spanish al menos/como máximo, English at least/at most. Ambiguous or reversed inequality, temporal anchor or unit cannot be stated as a verified policy. Exact matching numbers are never sufficient support.`;

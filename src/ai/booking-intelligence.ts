@@ -1,5 +1,5 @@
 import { hasBookingInterruption, isBookingResumeRequest, withoutNegatedBookingClauses } from './booking-interruption';
-import { businessInformationTopics, isBusinessInformationQuestion, reportedCancellationPolicyPremise } from './business-information';
+import { businessInformationTopics, isBusinessInformationQuestion, isExplicitArabicBookingCreationRequest, reportedCancellationPolicyPremise } from './business-information';
 import { applyBookingTransition, mergeBookingRequest } from './booking-state-machine';
 
 export type SupportedLanguage = 'fa' | 'sv' | 'en' | 'de' | 'es' | 'ar';
@@ -292,7 +292,7 @@ export function detectNormalizedIntent(text: string): NormalizedIntent {
 
   // Explicit Arabic creation requests must reach service resolution on WhatsApp.
   // Anchor at a sentence boundary so questions and negated requests stay unchanged.
-  if (/(?:^|[,.!?؛]\s*)(?:أريد|اريد|أود|اود)\s+(?:حجز|(?:أن\s+)?(?:أحجز|احجز))(?=\s|[.!?،؛]|$)/u.test(raw)) return 'new_booking';
+  if (isExplicitArabicBookingCreationRequest(raw)) return 'new_booking';
 
   const bookingNoun = /\b(?:appointment|booking|consultation|slot|time|boka|bokning|tid|konsultation|termin|cita|reserva|reservación|reservacion|vaght|rezerv|moshavereh?|laser)\b/iu.test(raw) || /(?:وقت|رزرو|مشاوره|لیزر|موعد|مواعيد|حجز)/u.test(raw);
   const bookingAction = /\b(?:book|want|need|available|have anything|have any time|do you have any time|boka|vill|behöver|finns|har ni|haben sie|möchte|mochte|buchen|tienen|hay|disponible|disponibles|quiero|mikham|mikhastam|mitoni|bدي|begiram|dari)\b/iu.test(raw) || /(?:می ?خوام|می ?خواهم|می ?تونی|وقت داری|بگیرم|بگیری|متاح|متوفر|شاغر)/u.test(raw);

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { productionInventory } from '../../tests/helpers/multidoc-production-inventory';
-import { incidentConfig, incidentFlags, incidentInbound, interceptedIncidentSend, type IncidentChannel } from '../../tests/helpers/p0-incident-knowledge';
+import { incidentConfig, incidentFlags, incidentInbound, incidentSession, interceptedIncidentSend, type IncidentChannel } from '../../tests/helpers/p0-incident-knowledge';
 import { answerEvidenceBindings } from './business-information-answer-plan';
 import { AiReliabilityError } from './reliability';
 import { nativeKnowledgeTiming } from './knowledge-timing-policy';
@@ -93,6 +93,39 @@ async function replay(t: any, channel: IncidentChannel, fault = 'none', language
 }
 for (const channel of ['telegram', 'whatsapp', 'instagram', 'messenger'] as const)
   test(`Arabic temporal booking reference / ${channel} / SYNTHETIC model`, t => replay(t, channel));
+
+for (const channel of ['telegram', 'whatsapp', 'instagram', 'messenger'] as const)
+ for (const operation of ['أود حجز موعد جديد غدًا.', 'اود حجز موعد غدا.', 'أريد أن أحجز موعد جديد غدًا.'])
+  test(`Arabic mixed creation / ${channel} / ${operation} / SYNTHETIC adapter`, async t => {
+   b.reset(); t.after(() => b.reset());
+   for (const method of ['log', 'info', 'warn', 'error'] as const) t.mock.method(console, method, () => {});
+   const replies: string[] = [];
+   const forbidden = async () => assert.fail('No Knowledge/provider/calendar/database action before service selection');
+   t.mock.method(globalThis, 'fetch', async (input: any, options: any) => {
+    replies.push(interceptedIncidentSend(input, options));
+    return new Response(JSON.stringify({ ok: true, result: { message_id: 1 }, message_id: 'synthetic', messages: [{ id: 'synthetic' }] }));
+   });
+   // Multiple services require deterministic clarification before availability.
+   const originalServices = incidentConfig.services;
+   incidentConfig.services = [...originalServices, { id: 'photo', name: 'Portrait Session', durationMinutes: 30 }];
+   const originalDefault = incidentConfig.defaultBookingService;
+   incidentConfig.defaultBookingService = '';
+   t.after(() => { incidentConfig.services = originalServices; incidentConfig.defaultBookingService = originalDefault; });
+   b.configure({ offlineAi: true, structuredUnderstandingAdoptionRuntime: null,
+    postProcess: async () => {}, incrementUsage: async () => ({ allowed: true, count: 1, limit: 1000 }),
+    semanticLanguageResolver: async () => ({ language: 'ar', confidence: 1 }),
+    knowledgeSearch: forbidden, aiGenerate: forbidden,
+    calendarAdapter: { getCalendarId: () => 'synthetic', getEvents: forbidden, checkSlots: forbidden, insertAppointment: forbidden },
+    recordAppointment: forbidden,
+   });
+   await incidentInbound(b, channel, `${operation} تنصحوني أوصل قبل موعد الحجز بكم دقيقة؟`);
+   const pending = b.pendingStateSnapshot(incidentSession(b, channel, '46700000001'));
+   assert.equal(pending?.operation, 'new_booking');
+   assert.equal(pending?.status, 'awaiting_service');
+   assert.equal(pending?.normalizedBookingRequest?.intent, 'new_booking');
+   assert.ok(replies.length >= 1);
+   assert.ok(replies.some(reply => /خدمة/u.test(reply)));
+  });
 for (const fault of ['partial', 'verifier'])
   test(`Arabic completion recovery still fails closed: ${fault}`, t => replay(t, 'telegram', fault));
 
@@ -106,3 +139,10 @@ for (const channel of ['telegram', 'whatsapp', 'instagram', 'messenger'] as cons
   // modeled here. Defer it explicitly instead of broadening the offline harness.
   for (const [index, question] of persianQuestions.entries())
     (index === 1 ? test.skip : test)(`Persian exact message ${index + 1} / ${channel} / SYNTHETIC faithful proposal`, t => replay(t, channel, 'none', 'fa', question));
+
+// Exact post-deployment failures: admission must reach the existing evidence gates.
+for (const channel of ['telegram', 'whatsapp', 'instagram', 'messenger'] as const)
+  for (const question of [
+    'أنا جاي للاستوديو لأول مرة، تنصحوني أوصل قبل موعد الحجز بكم دقيقة؟',
+    'بالنسبة للزبائن الجدد في AdMotion Studio، ما الوقت الموصى به للحضور قبل بدء الموعد؟',
+  ]) test(`Arabic arrival paraphrase / ${channel} / SYNTHETIC faithful proposal / ${question}`,t=>replay(t,channel,'none','ar',question));

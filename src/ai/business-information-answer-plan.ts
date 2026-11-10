@@ -233,6 +233,19 @@ export function parseAnswerUnits(raw: unknown, facets: readonly Facet[], evidenc
   conditionalCitationScope?: {businessId:number;protocol:'source-exhaustive-v2'}): { units: AnswerUnit[]; oversized: boolean } {
   if (!object(raw) || !Array.isArray(raw.units)) { diagnostic({ stage:'extraction', reason:'MALFORMED_ARRAY' }); return { units: [], oversized: false }; }
   if (raw.units.length > ANSWER_LIMITS.units) { diagnostic({ stage:'extraction', reason:'LIMIT_EXCEEDED' }); return { units: [], oversized: true }; }
+  // Do not infer the request tenant from model refs or a possibly mixed inventory.
+  // Only matched backend IDs are eligible; omit free-form/configuration IDs.
+  const diagnosticBusinessId = privateDiagnosticScope?.businessId ?? conditionalCitationScope?.businessId;
+  const diagnosticBindings = (references: readonly { evidenceId: string }[]): NonNullable<KnowledgeDecision['evidenceBindings']> =>
+    references.slice(0,4).flatMap(reference => {
+      const item = evidence.find(e => e.id === reference.evidenceId);
+      if (!Number.isSafeInteger(diagnosticBusinessId) || diagnosticBusinessId! <= 0 ||
+          !item || item.businessId !== diagnosticBusinessId || !/^e[1-9][0-9]{0,2}$/u.test(item.id)) return [];
+      return [{ evidenceId: item.id,
+        ...(/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/iu.test(item.sourceId) ? {sourceId:item.sourceId} : {}),
+        ...(/^[a-f0-9]{64}$/iu.test(item.version) ? {sourceRevision:item.version} : {}),
+      }];
+    });
   const units: AnswerUnit[] = [];
   for (const [index, u] of raw.units.entries()) {
     const reject = (reason: DecisionReason) => diagnostic({ stage:'extraction', unitId:`u${index+1}`, reason });
@@ -248,9 +261,9 @@ export function parseAnswerUnits(raw: unknown, facets: readonly Facet[], evidenc
       const e = object(r) && evidence.find(e => e.id === r.evidenceId);
       if (!e) { diagnostic({stage:'extraction',unitId:`u${index+1}`,reason:'INVALID_CITATION',citationSubtype:'EVIDENCE_ID'}); break; }
       const citation=short(r.exactQuote,2400)?resolveEvidenceQuote(e.text,r.exactQuote):{subtype:'QUOTE_NOT_FOUND' as const};
-      if (!citation.quote) { diagnostic({stage:'extraction',unitId:`u${index+1}`,reason:'INVALID_CITATION',citationSubtype:citation.subtype,typographyHint:citation.typographyHint}); break; }
+      if (!citation.quote) { diagnostic({stage:'extraction',unitId:`u${index+1}`,reason:'INVALID_CITATION',citationSubtype:citation.subtype,typographyHint:citation.typographyHint,evidenceBindings:diagnosticBindings([{evidenceId:e.id}])}); break; }
       if (e.citationRanges && !e.citationRanges.some(span => citation.start! >= span.start && citation.end! <= span.end)) {
-        diagnostic({stage:'extraction',unitId:`u${index+1}`,reason:'INVALID_CITATION',citationSubtype:'QUOTE_NOT_FOUND',citationRangeRejected:true}); break;
+        diagnostic({stage:'extraction',unitId:`u${index+1}`,reason:'INVALID_CITATION',citationSubtype:'QUOTE_NOT_FOUND',citationRangeRejected:true,evidenceBindings:diagnosticBindings([{evidenceId:e.id}])}); break;
       }
       if(citation.subtype)diagnostic({stage:'extraction',unitId:`u${index+1}`,reason:'ACCEPTED',citationSubtype:citation.subtype});
       refs.push(Object.freeze({ evidenceId: e.id, sourceId: e.sourceId, chunkId: e.chunkId, version: e.version, exactQuote: citation.quote }));
@@ -264,7 +277,12 @@ export function parseAnswerUnits(raw: unknown, facets: readonly Facet[], evidenc
     const numerical=assessNumericalConstraint(u.text,u.text,refs.map(r=>({source:'retrieved_knowledge',quote:r.exactQuote})),undefined,citationScope);
     recordPrivateNumericalCandidate(privateDiagnosticScope,{id:`u${index+1}`,text:u.text,subject:u.subject,predicate:u.predicate,
       value:u.value,scope:u.scope,qualifiers:u.qualifiers,modality:u.modality,negation:u.negation,evidenceRefs:refs},evidence,numerical);
-    if (!numerical.safe) { reject('NUMERICAL_CONSTRAINT'); continue; }
+    if (!numerical.safe) {
+      diagnostic({stage:'extraction',unitId:`u${index+1}`,reason:'NUMERICAL_CONSTRAINT',
+        ...(/^[A-Z_]{1,64}$/u.test(numerical.reason) ? {numericalMismatchReason:numerical.reason} : {}),
+        evidenceBindings:diagnosticBindings(refs)});
+      continue;
+    }
     units.push(Object.freeze({ id: `u${index + 1}`, verification: 'PROPOSED', facetIds: Object.freeze([...new Set<string>(u.facetIds)]),
       subject: u.subject, predicate: u.predicate, value: u.value, modality: u.modality, negation: u.negation, scope: u.scope,
       qualifiers: Object.freeze([...u.qualifiers]), language, text: u.text, evidenceRefs: Object.freeze(refs) }));

@@ -72,6 +72,9 @@ export type KnowledgeDecision = {
   failureCategory?: string;
   timeoutScope?: 'stage' | 'request';
   citationSubtype?: import('./knowledge-citation').CitationSubtype; typographyHint?: boolean; citationRangeRejected?: boolean;
+  /** Bounded backend metadata only; never proposed text, quotes or model IDs. */
+  numericalMismatchReason?: string;
+  evidenceBindings?: readonly { evidenceId: string; sourceId?: string; sourceRevision?: string }[];
   blockId?: string; blockKind?: 'fact'|'uncertainty'|'courtesy'; requestedLanguage?: string;
   semanticVerifiedUnits?: number; publishableUnits?: number; deadlineAt?: number; timeoutMs?: number;
   natural?: { schemaVersion: string; outcome: 'accepted_natural'|'canonical_fallback'|'direct_canonical'; reason: DecisionReason | null };

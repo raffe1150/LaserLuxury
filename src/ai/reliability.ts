@@ -144,7 +144,7 @@ export function containsUnverifiedBookingSuccessClaim(text: string): boolean {
     /\b(?:termin|buchung)\b.{0,35}\b(?:gebucht|bestätigt|reserviert)\b/i.test(lower) ||
     /\b(?:cita|reserva)\b.{0,35}\b(?:reservada|confirmada|creada)\b/i.test(lower) ||
     /(?:وقت|نوبت|رزرو).{0,30}(?:رزرو شد|ثبت شد|تأیید شد|قطعی شد)/u.test(value) ||
-    /(?:تم\s+(?:حجز|تأكيد)|موعدك.{0,25}(?:محجوز|مؤكد))/u.test(value)
+    /(?:تم\s+(?:حجز|تأكيد)|موعدك.{0,25}(?:محجوز|مؤكد))/u.test(operationProbe)
   );
 }
 

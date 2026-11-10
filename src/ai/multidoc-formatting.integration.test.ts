@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { productionInventory } from '../../tests/helpers/multidoc-production-inventory';
+import { capturedSources, productionInventory } from '../../tests/helpers/multidoc-production-inventory';
+import { createClient } from '@supabase/supabase-js';
+import { KnowledgeService, SupabaseKnowledgeStorage } from '../../knowledge';
 import { answerEvidenceBindings } from './business-information-answer-plan';
 import { AiReliabilityError } from './reliability';
 import { nativeKnowledgeTiming } from './knowledge-timing-policy';
@@ -22,10 +24,17 @@ const cases = [
   ['en', "How many minutes before my appointment should I arrive if it's my first visit?", 'According to the test document, first-time visitors are recommended to arrive approximately 10 minutes before their booked appointment.'],
   ['de', 'Wie viele Minuten vor meinem Termin sollte ich kommen, wenn ich zum ersten Mal zu Besuch bin?', 'Laut dem Testdokument wird Erstbesuchern empfohlen, etwa 10 Minuten vor ihrem gebuchten Termin zu kommen.'],
 ] as const;
+const persianCase = ['fa',
+  'برای مشتری‌هایی که اولین بار به استودیو میان، زمان پیشنهادی برای رسیدن قبل از وقت رزرو چقدره؟',
+  'به مراجعه‌کنندگان بار اول توصیه می‌شود حدود ۱۰ دقیقه قبل از نوبت رزروشده خود حاضر شوند.',
+] as const;
+const persianPurposeCase = ['fa', persianCase[1],
+  'به مراجعه‌کنندگان بار اول توصیه می‌شود حدود ۱۰ دقیقه قبل از نوبت رزروشده خود حاضر شوند تا زمان کافی برای آماده شدن داشته باشند.',
+] as const; // SYNTHETIC faithful proposal, not historical production output.
 const { priority1hUnifiedEngineTestBoundary: b } = await import('../../server');
-type Fault = 'none' | 'rejected' | 'incomplete' | 'foreign' | 'revoked' | 'number' | 'scope' | 'required' | 'overflow' | 'conflict' | 'revision' | 'badquote';
+type Fault = 'none' | 'rejected' | 'incomplete' | 'foreign' | 'revoked' | 'number' | 'scope' | 'required' | 'overflow' | 'conflict' | 'revision' | 'badquote' | 'unknown-id';
 
-async function exercise(t: any, channel: IncidentChannel, spec: typeof cases[number], fault: Fault = 'none', selection: 'old' | 'new' | 'both' = 'both') {
+async function exercise(t: any, channel: IncidentChannel, spec: typeof cases[number] | typeof persianCase | typeof persianPurposeCase, fault: Fault = 'none', selection: 'old' | 'new' | 'both' = 'both', tombstones = false) {
   b.reset();
   t.after(() => b.reset());
   const recoveryLogs: any[] = [];
@@ -34,7 +43,37 @@ async function exercise(t: any, channel: IncidentChannel, spec: typeof cases[num
   });
   const [language, question, answer] = spec;
   const normalizedQuestion = normalizeConversationText(question);
-  const { storage, service, matches } = await productionInventory(selection);
+  const { storage, service: memoryService, matches } = await productionInventory(selection);
+  if (selection === 'new') {
+    assert.equal(matches.length, 3);
+    assert.ok(matches.every(m => m.sourceId === '2ac009ba-c913-48bc-b13d-c09adf34c8e0'));
+  }
+  let service = memoryService;
+  if (tombstones) {
+    assert.equal(selection, 'new'); assert.ok(['none', 'rejected', 'incomplete', 'unknown-id'].includes(fault));
+    assert.equal(matches.length, 3);
+    const rows = [...structuredClone(capturedSources)];
+    const old = rows.find((r: any) => r.id === '8eec8b5c-87bc-4a7b-9789-b65d977b5ae4');
+    old.status = 'deleted'; old.content = ''; old.metadata = { segments: [] };
+    for (let i = 0; i < 5; i++) rows.push({ ...old, id: `synthetic-tombstone-${i}` });
+    const client = createClient('https://synthetic.invalid', 'synthetic-local-only', {
+      auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+      global: { fetch: async (input, init) => {
+        const url = new URL(String(input));
+        assert.equal(init?.method || 'GET', 'GET'); assert.equal(url.pathname, '/rest/v1/knowledge_sources');
+        if (!url.searchParams.has('business_id')) { assert.equal(url.searchParams.get('select'), 'id'); return new Response('[]'); }
+        assert.equal(url.searchParams.get('business_id'), 'eq.3');
+        const status = url.searchParams.get('status');
+        assert.ok(status === null || status === 'neq.deleted');
+        const visible = rows.filter((r: any) => r.business_id === 3 && (status === null || r.status !== 'deleted'));
+        return new Response(JSON.stringify(visible.slice(0, Number(url.searchParams.get('limit') || 1000))), {
+          headers: { 'Content-Type': 'application/json', 'Content-Range': `0-${Math.max(0, visible.length - 1)}/${visible.length}` },
+        });
+      } },
+    });
+    const backend = new SupabaseKnowledgeStorage(client);
+    service = new KnowledgeService(backend, backend, null, true);
+  }
   if (fault === 'overflow') {
     const source = (await storage.list(3)).find(s => s.id === matches.at(-1)!.sourceId)!;
     const metadata = structuredClone(source.metadata);
@@ -66,9 +105,9 @@ async function exercise(t: any, channel: IncidentChannel, spec: typeof cases[num
     semanticLanguageResolver: async () => ({ language, confidence: 1 }),
     knowledgeSourceLanguages: async id => { assert.equal(id, 3); return ['sv']; },
     // Captured canonical inventory/ranking replay. No claim of replaying an LLM or vector search.
-    knowledgeSearch: async id => { assert.equal(id, 3); return fault === 'foreign' ? matches.map(m => ({...m, businessId: 9})) : matches.map(m => ({...m, score: 1})); },
+    knowledgeSearch: async id => { assert.equal(id, 3); return tombstones ? [] : fault === 'foreign' ? matches.map(m => ({...m, businessId: 9})) : matches.map(m => ({...m, score: 1})); },
     semanticKnowledgeSearchQueries: async () => [],
-    completeKnowledgeCorpus: async () => null, // Captured production inventory shortcut declined.
+    completeKnowledgeCorpus: async (id, lexical, options, mode) => tombstones ? service.completeSmallCorpus(id, lexical, options, mode) : null,
     completeKnowledgeDocuments: async (id, found, anchors, options) => fault === 'foreign' ? null : service.completeSelectedDocuments(id, found, anchors, options),
     validateKnowledgeMatches: async (id, found) => {
       assert.equal(id, 3);
@@ -111,7 +150,7 @@ async function exercise(t: any, channel: IncidentChannel, spec: typeof cases[num
           return { functionCalls: [], text: JSON.stringify({ oversized: false, units: [{ facetIds: ['f1'], subject: 'first-time visitors', predicate: 'arrival recommendation',
             value: 'approximately 10 minutes before booked appointment', modality: fault === 'required' ? 'required' : 'recommended', negation: false,
             scope: fault === 'scope' ? 'all visitors' : 'first-time visitors', qualifiers: ['approximately', 'before booked appointment'], language, text,
-            evidenceRefs: [{ evidenceId: evidence.id, ...(request.systemInstruction.includes('literal-evidence-v1') ? {} : { exactQuote: fault === 'badquote' ? 'SYNTHETIC unsupported citation' : firstVisitSource }) }] }] }) };
+            evidenceRefs: [{ evidenceId: fault === 'unknown-id' ? 'e999' : evidence.id, ...(request.systemInstruction.includes('literal-evidence-v1') ? {} : { exactQuote: fault === 'badquote' ? 'SYNTHETIC unsupported citation' : firstVisitSource }) }] }] }) };
         }
         assert.ok(request.systemInstruction.includes('BATCH ENTAILMENT'), 'No unrestricted or optional answer generation');
         stages.push('verification');
@@ -145,6 +184,7 @@ async function exercise(t: any, channel: IncidentChannel, spec: typeof cases[num
   assert.ok(decisions.some(e => e.stage === 'planning' && e.reason === 'DEADLINE'));
   assert.ok(decisions.some(e => e.stage === 'planning' && e.reason === 'LITERAL_REQUEST_FALLBACK'), 'The timeout must recover a full-question facet');
   const publication = decisions.filter(e => e.stage === 'publication').at(-1);
+  if (tombstones) assert.ok(retrievals.at(-1)?.canonicalCompletion.some((c: any) => c.kind === 'inventory' && c.outcome === 'complete' && c.chunks === 3));
   if (fault === 'none') {
     assert.equal(retrievals.at(-1)?.formattedKnowledgePresent, true);
     assert.equal(retrievals.at(-1)?.matchCount, matches.length);
@@ -158,7 +198,7 @@ async function exercise(t: any, channel: IncidentChannel, spec: typeof cases[num
     assert.notEqual(replies[0], answer);
     assert.doesNotMatch(replies[0], /10|20|99|approximately|recommended|must arrive|All visitors/u);
     if (fault === 'foreign' || fault === 'overflow') assert.deepEqual(stages, []);
-    else if (fault === 'number' || fault === 'revoked' || fault === 'revision' || fault === 'badquote') assert.deepEqual(stages, ['extraction']);
+    else if (fault === 'number' || fault === 'revoked' || fault === 'revision' || fault === 'badquote' || fault === 'unknown-id') assert.deepEqual(stages, ['extraction']);
     else assert.deepEqual(stages, ['extraction', 'verification']);
     if (fault === 'number') assert.ok(decisions.some(e => e.reason === 'NUMERICAL_CONSTRAINT'));
   }
@@ -176,3 +216,21 @@ for (const selection of ['old','new','both'] as const) for (const channel of inc
   test(`SYNTHETIC model, captured ${selection} PDF inventory/${channel}/${spec[0]}`, t => exercise(t, channel, spec, 'none', selection));
 for (const channel of incidentChannels) for (const fault of ['rejected','incomplete','foreign','revoked','number','scope','required','overflow','conflict','revision','badquote'] as const)
   test(`SYNTHETIC model, two-PDF ${channel} remains fail-closed: ${fault}`, t => exercise(t, channel, cases[0], fault));
+
+for (const channel of incidentChannels) for (const spec of [cases[0], persianCase])
+  test(`SYNTHETIC tombstone inventory / remaining PDF / ${channel} / ${spec[0]}`, t => exercise(t, channel, spec, 'none', 'new', true));
+
+for (const channel of incidentChannels)
+  test(`SYNTHETIC Persian preparation purpose / remaining PDF / ${channel}`, t => exercise(t, channel, persianPurposeCase, 'none', 'new'));
+// The smaller PDF can use ID-only transport: corrupt the reference, not a
+// quotation that this protocol never asks the model to supply.
+for (const fault of ['rejected', 'incomplete', 'foreign', 'unknown-id'] as const)
+  test(`SYNTHETIC Persian preparation purpose / remaining PDF / fail-closed ${fault}`, t => exercise(t, 'telegram', persianPurposeCase, fault, 'new'));
+test('SYNTHETIC Persian preparation purpose / two PDFs', t => exercise(t, 'telegram', persianPurposeCase));
+
+// Combined candidate: empty lexical search, six deleted rows, actual REST-backed
+// canonical completion, purpose-clause parsing, then independent verification.
+for (const channel of incidentChannels)
+  test(`SYNTHETIC combined fixes / remaining PDF / ${channel}`, t => exercise(t, channel, persianPurposeCase, 'none', 'new', true));
+for (const fault of ['rejected', 'incomplete', 'unknown-id'] as const)
+  test(`SYNTHETIC combined fixes / remaining PDF / fail-closed ${fault}`, t => exercise(t, 'telegram', persianPurposeCase, fault, 'new', true));

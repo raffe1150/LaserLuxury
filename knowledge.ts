@@ -278,6 +278,7 @@ export class SupabaseKnowledgeStorage implements KnowledgeStorage {
       .from(this.tableName)
       .select("id,business_id,type,title,status,content,created_at,updated_at,metadata")
       .eq("business_id", businessId)
+      .neq("status", "deleted")
       .order("created_at", { ascending: false });
     if(options?.signal && typeof query.abortSignal==='function')query=query.abortSignal(options.signal);
     const {data,error}=await abortable<any>(query,options?.signal);
@@ -292,13 +293,14 @@ export class SupabaseKnowledgeStorage implements KnowledgeStorage {
   async listReadyComplete(businessId: number, maxSources: number, options?: KnowledgeSemanticOptions, throwOnError = false): Promise<KnowledgeSource[] | null> {
     if (!Number.isSafeInteger(businessId) || businessId <= 0 || !Number.isSafeInteger(maxSources) || maxSources <= 0) return null;
     try {
-      // Prove the ALL-status inventory before selecting ready rows. Existing
-      // freshness reads also list all statuses: a ready-only proof could opt in
-      // while later capped reads hide older conditions. One data+exact-count
-      // response detects overflow/truncation without a separate count or paging.
+      // Prove the non-deleted inventory before selecting ready rows, using the
+      // same filter as freshness reads. Tombstones must not consume either
+      // response cap; other statuses still count. One data+exact-count response
+      // detects overflow/truncation without a separate count or paging.
       let query = this.client.from(this.tableName)
         .select('id,business_id,type,title,status,content,created_at,updated_at,metadata', { count: 'exact' })
         .eq('business_id', businessId)
+        .neq('status', 'deleted')
         .order('created_at', { ascending: false }).limit(maxSources).retry(false);
       if (options?.signal && typeof query.abortSignal==='function') query=query.abortSignal(options.signal);
       const {data,error,count}=await abortable<any>(query,options?.signal);

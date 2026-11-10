@@ -15,14 +15,13 @@ for(const n of ['۱۰','10','١٠'])test(`Persian comparison categories and unch
   assert.equal(shapes[0].cancellationKindCompatible,true);
  }
 });
-for(const n of ['۱۰','10','١٠'])test(`SYNTHETIC faithful purpose clause reproduces current false rejection: ${n}`,()=>{
+for(const n of ['۱۰','10','١٠'])test(`SYNTHETIC faithful preparation purpose clause has no upper bound: ${n}`,()=>{
  const claim=base(n)+' تا زمان کافی برای آماده شدن داشته باشند.';
  const assessment=assessNumericalConstraint(claim,claim,[source]);
- // Deliberately preserve the current validator result. This is NOT a fix.
- assert.equal(assessment.safe,false);assert.equal(assessment.reason,'SOURCE_BOUND_ANCHOR_OR_SCOPE_MISMATCH');
+ assert.equal(assessment.safe,true);
  const row=numericalComparisonShapes(assessment)[0];
- assert.equal(row.candidateBound,'maximum');assert.equal(row.sourceBound,'unbounded');
- assert.equal(row.temporalAnchorCompatible,true);assert.equal(row.boundCompatible,false);
+ assert.equal(row.candidateBound,'unbounded');assert.equal(row.sourceBound,'unbounded');
+ assert.equal(row.temporalAnchorCompatible,true);assert.equal(row.boundCompatible,true);
 });
 test('before/after mismatch is visible without exposing values',()=>{
  const claim=base('۱۰','حداقل').replace('قبل','بعد')+'.';

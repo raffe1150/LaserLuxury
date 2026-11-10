@@ -128,7 +128,15 @@ function parse(input: string): { constraints: Constraint[]; unsupported: boolean
     const side: Side = anchoredBefore ? 'before' : anchoredAfter ? 'after' : 'none';
     // After the quantity, Persian "تا فرصت ..." introduces a purpose
     // ("so there is time to ..."), rather than a maximum on that quantity.
-    let remaining = left + quantity[0] + (side === 'none' ? right : right.replace(boundary('تا فرصت'), ' فرصت'));
+    let boundSuffix = side === 'none' ? right : right.replace(boundary('تا فرصت'), ' فرصت');
+    // A post-quantity arrival verb followed by "so they have enough time to
+    // prepare" is purpose, not "up to". Consume only that connective in the
+    // parser's copy; retain all real bounds, negators and other quantities.
+    if (side === 'before' && !anchoredAfter && !cancellationClaim.test(context) &&
+        !/مهلت|هزینه|جریمه/u.test(context)) {
+      boundSuffix = boundSuffix.replace(/(?<![\p{L}\p{N}])((?:حاضر\s+شو(?:ند|ید|د|یم|م)|برس(?:ند|ید|د|یم|م))\s+)تا(?=\s+(?:زمان|فرصت)\s+کافی\s+برای\s+آماده\s+شدن\s+داشته\s+باش(?:ند|ید|د|یم|م)(?![\p{L}\p{N}]))/gu, '$1');
+    }
+    let remaining = left + quantity[0] + boundSuffix;
     const bounds: Array<Bound | 'latest' | 'earliest'> = [];
     // Long negated phrases are consumed before looking for remaining negation.
     for (const [kind, phrases] of rules) for (const phrase of [...phrases].sort((a, b) => b.length - a.length)) {

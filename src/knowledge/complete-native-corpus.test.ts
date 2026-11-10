@@ -39,7 +39,7 @@ test('native inventory read errors remain distinguishable from declined inventor
 for(const fault of ['error','truncated','foreign','duplicate'] as const)test('Supabase complete-inventory proof '+fault,async()=>{
  const row={id:'pdf',business_id:fault==='foreign'?88:77,type:'document',title:'Guide',status:'ready',content:'Policy',metadata:{segments:[{start:0,end:6}]},created_at:'2026',updated_at:'2026'};
  const response={data:fault==='duplicate'?[row,row]:[row],error:fault==='error'?{message:'private database detail'}:null,count:fault==='truncated'?6:fault==='duplicate'?2:1};
- const query:any={select(_columns:string,options:any){assert.equal(options.count,'exact');return this;},eq(key:string,id:number){assert.equal(key,'business_id');assert.equal(id,77);return this;},order(){return this;},limit(n:number){assert.equal(n,5);return this;},retry(value:boolean){assert.equal(value,false);return this;},then(resolve:any,reject:any){return Promise.resolve(response).then(resolve,reject);}};
+ const query:any={select(_columns:string,options:any){assert.equal(options.count,'exact');return this;},eq(key:string,id:number){assert.equal(key,'business_id');assert.equal(id,77);return this;},neq(key:string,value:string){assert.equal(key,'status');assert.equal(value,'deleted');return this;},order(){return this;},limit(n:number){assert.equal(n,5);return this;},retry(value:boolean){assert.equal(value,false);return this;},then(resolve:any,reject:any){return Promise.resolve(response).then(resolve,reject);}};
  const storage=new SupabaseKnowledgeStorage({from(name:string){assert.equal(name,'knowledge_sources');return query;}});
  if(fault==='error'){
   assert.equal(await storage.listReadyComplete(77,5),null,'Legacy callers keep null-on-error behavior');

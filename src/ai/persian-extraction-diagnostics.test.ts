@@ -85,6 +85,10 @@ test('same-tenant comparison shapes retain evidence ordinals without private tex
   const {events}=parse(proposal(text().replace('حدود','حداقل')));
   const event=events.find(e=>e.reason==='NUMERICAL_CONSTRAINT')!;
   assert.equal(event.numericalComparisons?.[0].candidateBound,'minimum');
+  assert.equal(event.numericalComparisons?.[0].boundTriggerCategory,'explicit_minimum');
+  assert.equal(event.numericalComparisons?.[0].boundTriggerPosition,'before_quantity');
+  assert.equal(event.numericalComparisons?.[0].purposeClauseGuardMatched,false);
+  assert.equal(event.numericalComparisons?.[0].boundDecisionBranch,'explicit_bound');
   assert.equal(event.numericalComparisons?.[0].sourceBound,'unbounded');
   assert.equal(event.numericalComparisons?.[0].sourceIndex,0);
   assert.equal(event.evidenceBindings?.[0].evidenceId,'e1');

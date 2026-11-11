@@ -57,3 +57,30 @@ test('shape output is bounded, has no quantities/text, and does not mutate asses
  const serialized=JSON.stringify(shapes);assert.ok(!serialized.includes(claim));assert.ok(!serialized.includes(source));assert.ok(!serialized.includes('10'));
  assert.ok(Buffer.byteLength(serialized)<4500);
 });
+
+test('Persian marker diagnostics identify the rule that set the candidate bound', () => {
+  const cases = [
+    { claim: base('۱۰', 'حداکثر'), bound: 'maximum', category: 'explicit_maximum', position: 'before_quantity', branch: 'explicit_bound', safe: false },
+    { claim: base('۱۰', 'حداقل'), bound: 'minimum', category: 'explicit_minimum', position: 'before_quantity', branch: 'explicit_bound', safe: false },
+    { claim: base('۱۰', 'تا'), bound: 'maximum', category: 'persian_ta', position: 'before_quantity', branch: 'explicit_bound', safe: false },
+    { claim: base('۱۰') + ' تا آماده شوند', bound: 'maximum', category: 'persian_ta', position: 'after_quantity', branch: 'explicit_bound', safe: false },
+    { claim: base('۱۰') + ' تا زمان کافی برای آماده شدن داشته باشند', bound: 'unbounded', category: 'none', position: 'unknown', branch: 'unbounded', purpose: 'finite_preparation', safe: true },
+    { claim: base('۱۰') + ' تا فرصت کافی برای آماده شدن داشته باشند', bound: 'unbounded', category: 'none', position: 'unknown', branch: 'unbounded', purpose: 'time_opportunity', safe: true },
+    { claim: base('۱۰', 'حداکثر') + ' تا زمان کافی برای آماده شدن داشته باشند', bound: 'maximum', category: 'explicit_maximum', position: 'before_quantity', branch: 'explicit_bound', purpose: 'finite_preparation', safe: false },
+    { claim: 'لغو نه دیرتر از ۱۰ دقیقه قبل از نوبت مجاز است', bound: 'minimum', category: 'latest', position: 'before_quantity', branch: 'temporal_bound', self: true, safe: true },
+    { claim: 'نه زودتر از ۱۰ دقیقه قبل از نوبت حاضر شوند', bound: 'maximum', category: 'earliest', position: 'before_quantity', branch: 'temporal_bound', self: true, safe: true },
+    { claim: base('۱۰', 'حداقل یا حداکثر'), bound: 'minimum', category: 'explicit_minimum', position: 'before_quantity', branch: 'explicit_bound', ambiguous: true, safe: false },
+  ];
+  for (const entry of cases) {
+    const assessment = assessNumericalConstraint(entry.claim, entry.claim, [entry.self ? entry.claim : source]);
+    assert.equal(assessment.safe, entry.safe, entry.claim);
+    const [row] = numericalComparisonShapes(assessment);
+    assert.ok(row, entry.claim);
+    assert.deepEqual(
+      [row.candidateBound, row.boundTriggerCategory, row.boundTriggerPosition, row.boundDecisionBranch,
+        row.purposeClauseGuardMatched, row.purposeClauseCategory, row.candidateAmbiguous],
+      [entry.bound, entry.category, entry.position, entry.branch, Boolean(entry.purpose), entry.purpose, Boolean(entry.ambiguous)],
+      entry.claim,
+    );
+  }
+});

@@ -8,6 +8,17 @@ type Bound = 'minimum' | 'maximum' | 'strict_minimum' | 'strict_maximum';
 type Side = 'before' | 'after' | 'none';
 type Constraint = { seconds: number; bound: Bound | null; side: Side; ambiguous: boolean;
   cancellationKind?: 'free_window' | 'notice' };
+type BoundMarkerDiagnostic = {
+  boundTriggerCategory: 'persian_ta' | 'explicit_maximum' | 'explicit_minimum' |
+    'strict_maximum' | 'strict_minimum' | 'earliest' | 'latest' | 'notice_requirement' | 'none';
+  boundTriggerPosition: 'before_quantity' | 'after_quantity' | 'other' | 'unknown';
+  purposeClauseGuardMatched: boolean;
+  purposeClauseCategory?: 'time_opportunity' | 'finite_preparation' | 'both';
+  boundDecisionBranch: 'explicit_bound' | 'temporal_bound' | 'implicit_notice' | 'unbounded';
+};
+// Only the bounded comparison projection exposes this candidate metadata.
+const boundMarkers = new WeakMap<Constraint, BoundMarkerDiagnostic>();
+
 const cancellationClaim = /cancel|avbok|absag|stornier|لغو|إلغاء|الغاء/iu;
 const freeClaim = /\b(?:free|gratis|avgiftsfri\w*|kostenlos\w*|gratuit\w*)\b|رایگان|مجاني|المجاني/iu;
 const canonical = (s: string) => s.normalize('NFKC').toLocaleLowerCase()
@@ -94,7 +105,7 @@ function indicativeActionNegation(text:string,context:string):string {
   return text;
 }
 
-function parse(input: string): { constraints: Constraint[]; unsupported: boolean } {
+function parse(input: string, diagnoseBound = false): { constraints: Constraint[]; unsupported: boolean } {
   if (input.length > 20_000) return { constraints: [], unsupported: true };
   // German source attribution ("according to the test terms") is not an
   // after-event anchor. Quantified temporal uses of nach remain untouched.
@@ -128,19 +139,44 @@ function parse(input: string): { constraints: Constraint[]; unsupported: boolean
     const side: Side = anchoredBefore ? 'before' : anchoredAfter ? 'after' : 'none';
     // After the quantity, Persian "تا فرصت ..." introduces a purpose
     // ("so there is time to ..."), rather than a maximum on that quantity.
-    let boundSuffix = side === 'none' ? right : right.replace(boundary('تا فرصت'), ' فرصت');
+    let timeOpportunityMatched = false;
+    let finitePreparationMatched = false;
+    let boundSuffix = side === 'none' ? right : right.replace(boundary('تا فرصت'), () => {
+      timeOpportunityMatched = true;
+      return ' فرصت';
+    });
     // An arrival verb followed by a finite preparation-purpose clause (enough
     // time or ability to prepare) does not set a bound. Consume only its
     // post-quantity connective; retain real bounds and the rest of the clause.
     if (side === 'before' && !anchoredAfter && !cancellationClaim.test(context) &&
         !/مهلت|هزینه|جریمه/u.test(context)) {
-      boundSuffix = boundSuffix.replace(/(?<![\p{L}\p{N}])((?:حاضر\s+شو(?:ند|ید|د|یم|م)|برس(?:ند|ید|د|یم|م))\s+)تا(?=\s+(?:(?:(?:زمان|فرصت)\s+کافی\s+برای\s+آماده\s+شدن|برای\s+آماده\s+شدن\s+(?:زمان|فرصت)\s+کافی)\s+داشته\s+باش(?:ند|ید|د|یم|م)|بتوان(?:ند|ید|د|یم|م)\s+(?:با\s+آرامش\s+)?آماده\s+شو(?:ند|ید|د|یم|م))(?![\p{L}\p{N}]))/gu, '$1');
+      boundSuffix = boundSuffix.replace(/(?<![\p{L}\p{N}])((?:حاضر\s+شو(?:ند|ید|د|یم|م)|برس(?:ند|ید|د|یم|م))\s+)تا(?=\s+(?:(?:(?:زمان|فرصت)\s+کافی\s+برای\s+آماده\s+شدن|برای\s+آماده\s+شدن\s+(?:زمان|فرصت)\s+کافی)\s+داشته\s+باش(?:ند|ید|د|یم|م)|بتوان(?:ند|ید|د|یم|م)\s+(?:با\s+آرامش\s+)?آماده\s+شو(?:ند|ید|د|یم|م))(?![\p{L}\p{N}]))/gu, (_, arrival: string) => {
+        finitePreparationMatched = true;
+        return arrival;
+      });
     }
     let remaining = left + quantity[0] + boundSuffix;
     const bounds: Array<Bound | 'latest' | 'earliest'> = [];
     // Long negated phrases are consumed before looking for remaining negation.
+    const quantityStart = left.length;
+    const quantityEnd = quantityStart + quantity[0].length;
+    let firstMarker: Pick<BoundMarkerDiagnostic, 'boundTriggerCategory' | 'boundTriggerPosition' | 'boundDecisionBranch'> | undefined;
     for (const [kind, phrases] of rules) for (const phrase of [...phrases].sort((a, b) => b.length - a.length)) {
-      remaining = remaining.replace(boundary(phrase), () => { bounds.push(kind); return ' '; });
+      remaining = remaining.replace(boundary(phrase), (match: string, offset: number) => {
+        if (diagnoseBound && !firstMarker) {
+          // The mapped bound uses the first rule match in scan order.
+          const temporal = kind === 'earliest' || kind === 'latest';
+          firstMarker = {
+            boundTriggerCategory: phrase === 'تا' ? 'persian_ta' :
+              kind === 'maximum' ? 'explicit_maximum' : kind === 'minimum' ? 'explicit_minimum' : kind,
+            boundTriggerPosition: offset + match.length <= quantityStart ? 'before_quantity' :
+              offset >= quantityEnd ? 'after_quantity' : 'other',
+            boundDecisionBranch: temporal ? 'temporal_bound' : 'explicit_bound',
+          };
+        }
+        bounds.push(kind);
+        return ' ';
+      });
     }
     const mapped = bounds.map(b => b === 'latest' ? side === 'before' ? 'minimum' : 'maximum'
       : b === 'earliest' ? side === 'before' ? 'maximum' : 'minimum' : b);
@@ -155,8 +191,23 @@ function parse(input: string): { constraints: Constraint[]; unsupported: boolean
       bounds.some(b => (b === 'latest' || b === 'earliest') && side === 'none') ||
       new Set(mapped).size > 1 || /[<>≤≥]|\b(?:between|or|eller|oder|o|inte|nicht|not|no|never)\b|(?<![\p{L}])(?:یا|أو|ليس|ليست|نباید|هرگز)(?![\p{L}])|(?<![\p{L}])نمی|(?<![\p{L}])لا(?![\p{L}])/u.test(ambiguityText) ||
       /[0-9]/u.test(left + right) || /exactly|precisely|exakt|genau|exactamente|دقیقا|بالضبط/u.test(context);
-    constraints.push({ seconds: Number(quantity[1].replace(',', '.')) * units[quantity[2]], bound: mapped[0] || null, side, ambiguous,
-      ...(cancellationClaim.test(context) ? { cancellationKind: freeClaim.test(context) ? 'free_window' as const : 'notice' as const } : {}) });
+    const constraint: Constraint = { seconds: Number(quantity[1].replace(',', '.')) * units[quantity[2]], bound: mapped[0] || null, side, ambiguous,
+      ...(cancellationClaim.test(context) ? { cancellationKind: freeClaim.test(context) ? 'free_window' as const : 'notice' as const } : {}) };
+    constraints.push(constraint);
+    if (diagnoseBound) {
+      const purposeClauseCategory = finitePreparationMatched
+        ? timeOpportunityMatched ? 'both' : 'finite_preparation'
+        : timeOpportunityMatched ? 'time_opportunity' : undefined;
+      boundMarkers.set(constraint, {
+        ...(firstMarker ?? {
+          boundTriggerCategory: noticeRequirement ? 'notice_requirement' : 'none',
+          boundTriggerPosition: 'unknown',
+          boundDecisionBranch: noticeRequirement ? 'implicit_notice' : 'unbounded',
+        }),
+        purposeClauseGuardMatched: timeOpportunityMatched || finitePreparationMatched,
+        ...(purposeClauseCategory ? { purposeClauseCategory } : {}),
+      });
+    }
   }
   // Recognized comparative wording with an unknown unit/quantity must not be
   // approved merely because a model copies the same number into a citation.
@@ -196,7 +247,7 @@ export function assessNumericalConstraint(candidateQuote: string, atomicClaim: s
   const typedPolicy = policy?.available === true;
   const structuredPolicyCitation = evidence.some(item => typeof item !== 'string' && item.source === 'structured_business_config' &&
     /"(?:freeCancellationDeadlineMinutes|lateFeeEnabled|automaticCancellationEnabled)"\s*:/u.test(item.quote));
-  checks = [parse(candidateQuote), parse(atomicClaim)];
+  checks = [parse(candidateQuote, true), parse(atomicClaim, true)];
   // A verified service name can itself contain "Cancellation". Its ordinary
   // duration remains a service attribute, not a cancellation-policy interval.
   const namedServiceDuration = services.some(service => typeof service.name === 'string' && service.name.length > 0 &&
@@ -288,7 +339,7 @@ export function numericalConstraintSafe(candidateQuote:string,atomicClaim:string
 /** Diagnostic projection only. Ordinals refer to assessor inputs; no quantities,
  * text or quotations leave this projection. Never used to decide acceptance. */
 export function numericalComparisonShapes(assessment: NumericalConstraintAssessment) {
-  type Shape = { candidateIndex:number; sourceIndex:number;
+  type Shape = Partial<BoundMarkerDiagnostic> & { candidateIndex:number; sourceIndex:number;
     candidateBound:Bound|'unbounded'; sourceBound:Bound|'unbounded'; candidateSide:Side; sourceSide:Side;
     candidateAmbiguous:boolean; sourceAmbiguous:boolean;
     candidateCancellationKind:'none'|'notice'|'free_window'; sourceCancellationKind:'none'|'notice'|'free_window';
@@ -304,7 +355,8 @@ export function numericalComparisonShapes(assessment: NumericalConstraintAssessm
           candidateSide:candidate.side,sourceSide:constraint.side,candidateAmbiguous:candidate.ambiguous,sourceAmbiguous:constraint.ambiguous,
           candidateCancellationKind:candidate.cancellationKind??'none',sourceCancellationKind:constraint.cancellationKind??'none',
           boundCompatible:candidate.bound===constraint.bound,temporalAnchorCompatible:candidate.side===constraint.side,
-          cancellationKindCompatible:!constraint.cancellationKind||constraint.cancellationKind===candidate.cancellationKind});
+          cancellationKindCompatible:!constraint.cancellationKind||constraint.cancellationKind===candidate.cancellationKind,
+          ...boundMarkers.get(candidate)});
       }
     }
   }

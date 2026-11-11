@@ -52,6 +52,7 @@ import { mapWebsiteInstallation, websiteInstallationRouter } from './src/knowled
 import { DocumentEvidenceRegistry, revalidateKnowledgeSourceIds } from './src/knowledge/evidence-registry';
 import { createWebsiteKnowledgeRouter, type WebsiteVisitorRequest } from './src/knowledge/website-chat';
 import { documentRouter } from './src/knowledge/documents/router';
+import { ownerAnswerApprovalRouter, ownerAnswerApprovalsEnabled, ownerAnswerSelectionCurrent, selectOwnerAnswerProposal, type OwnerAnswerSelection } from './src/knowledge/owner-answer-approvals';
 import { createDocumentRuntime, startDocumentRecovery } from './src/knowledge/documents/runtime';
 import {
   hasQualifiedServiceConcept, groundedSemanticServicePhrase, serviceIntentConcept,
@@ -117,7 +118,7 @@ import crypto from "crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 import fs from "fs";
 import { google } from "googleapis";
-import { createClient } from "@supabase/supabase-js";
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { getBackendSupabaseConfiguration } from "./src/auth/backend-supabase";
 import { createTelegramSetupHandler } from "./src/channels/telegram-setup";
 import { createSalonListHandler, createSalonCreateHandler } from "./src/business/salons-api";
@@ -1390,6 +1391,9 @@ async function postProcessMessage(chatId: string, platform: string, userMessage:
       return;
     }
 
+    const knowledge = knowledgeTurnScope.getStore();
+    if (knowledge?.ownerAnswerSelection && knowledge.businessId === Number(businessId))
+      agentResponse = knowledge.ownerAnswerPublication?.text ?? knowledgeUnavailableReply(capturedSupportLanguage(requestSecurity.evidence?.support));
     const payload = [
   {
     user_id: canonicalUserId,
@@ -1513,6 +1517,7 @@ type BusinessGroundingVerificationRequest = {
 };
 
 type Priority1hTestDependencies = {
+  ownerAnswerApprovalDatabase?: SupabaseClient;
   knowledgeCancellationConfig?: (businessId: number, signal: AbortSignal) => Promise<unknown>;
   controlledTrialConnection?: (channel:string,account:string)=>Promise<{businessId:number;tokenSha:string}|null>;
   knowledgeServiceCatalog?: (businessId: number) => Promise<unknown>;
@@ -5399,6 +5404,8 @@ const businessInformationTurns: Record<string, BusinessInformationTurn> = {};
 // Opt-in shared rollout. No per-channel overrides; no persistent answer/unit cache.
 type NativeKnowledgeEvent = {eventId:string;account:string;recipient:string;order:NativeKnowledgeOrder|null};
 type KnowledgeTurnState = { readonly modelProfile?: KnowledgeModelProfile; readonly extractionProtocol?: KnowledgeExtractionProtocol; readonly verificationProtocol?: KnowledgeVerificationProtocol; nativeEvent?: NativeKnowledgeEvent; nativeAsync?: {runtime:NativeKnowledgeRuntime|null;admission:NativeKnowledgeAdmission|null;failed:boolean}; durableCheckpoint?: (stage: 'extraction') => Promise<void>; durableProgress?: Parameters<KnowledgeExecutor>[1]['progress']; durableCurrent?: () => Promise<boolean>; mixedRequest?: boolean; requiresReferenceResolution?: boolean; unresolvedReference?: boolean; migrated?: boolean; budget?: InformationBudget; facets?: Facet[]; oversized?: boolean; evidence?: Evidence[];
+  ownerAnswerSelection?: OwnerAnswerSelection;
+  ownerAnswerPublication?: { text: string; requiresCurrentApproval: boolean };
   cancellationBridge?: ReturnType<typeof createCancellationEvidenceBridge>;
   verifiedCancellationReply?: string;
   naturalEnabled?: boolean; naturalSinglePartial?: boolean; naturalTurnId?: string; replyLanguage?: string;
@@ -5823,6 +5830,10 @@ async function knowledgeOwnershipCurrent(): Promise<boolean> {
   }catch{state.freshnessFailure='DEADLINE';return false;}
 }
 
+function ownerAnswerApprovalDatabase() {
+  return process.env.NODE_ENV === 'test' ? priority1hTestDependencies?.ownerAnswerApprovalDatabase : supabase;
+}
+
 async function knowledgeEvidenceCurrent(): Promise<boolean> {
   const state = knowledgeTurnScope.getStore();
   if (!state?.budget || state.migrated === false) return requestEvidenceCurrent();
@@ -5834,6 +5845,8 @@ async function knowledgeEvidenceCurrent(): Promise<boolean> {
     // This continuation runs only after a completed, timely read. In particular
     // no detached timeout continuation may later prune or restore the manifest.
     if(state.freshnessFailure||!state.budget.remaining()||!requestSecurity.current())return false;
+    if (state.ownerAnswerSelection && state.manifest.units.length &&
+        evidence.length !== state.snapshot?.evidence.length) return false;
     state.manifest=pruneAnswerManifest(state.manifest,evidence,emitKnowledgeDecision);
   }
   if(!state.budget.remaining()){state.freshnessFailure='DEADLINE';return false;}
@@ -5934,6 +5947,22 @@ async function generateNativeKnowledgeContent(sessionId:string,options:any,suppo
       languageSafe: unit => !customerReplyLanguageIsIncompatible(removeConfiguredEntitiesFromLanguageEvidence(unit.text, support.businessConfig), capturedSupportLanguage(support)),
       current: knowledgeOwnershipCurrent,
       revalidateEvidence: currentAnswerEvidence,
+      ...(ownerAnswerApprovalsEnabled() && state.nativeChannel && nativeKnowledgeTiming() &&
+        !state.naturalEnabled && !state.requiresReferenceResolution && !state.unresolvedReference && !(state.budget instanceof DurableKnowledgeBudget) ? {
+          ownerAnswerProposal: async (facets, evidence) => {
+            const db = ownerAnswerApprovalDatabase();
+            if (!db || !state.snapshot || evidence.length !== state.snapshot.evidence.length ||
+                !await knowledgeOwnershipCurrent()) return;
+            const signal = AbortSignal.any([state.budget!.nativeTiming!.signal,
+              AbortSignal.timeout(Math.max(1, Math.min(750, state.budget!.generationRemaining())))]);
+            const selection = await selectOwnerAnswerProposal(db, {
+              businessId: state.snapshot.businessId, question: state.snapshot.question, language, facets, evidence,
+            }, signal);
+            if (!selection || !ownerAnswerApprovalsEnabled() || signal.aborted || !requestSecurity.current()) return;
+            state.ownerAnswerSelection = selection;
+            return selection.proposal;
+          },
+        } : {}),
       finalPublicationRevalidates: options.knowledgePublication === 'guarded_text',
       diagnostic:event=>emitKnowledgeDecision(event.stage==='freshness'&&event.reason==='SOURCE_INVALID'&&state.freshnessFailure
         ? {...event,reason:state.freshnessFailure}:event),
@@ -6043,15 +6072,18 @@ async function securePublicationReply(reply: string, language?: string): Promise
   // Delivery can recheck publication multiple times without a support object.
   // The current turn's resolved language remains authoritative at every check.
   language = knowledgeTurnScope.getStore()?.replyLanguage || language;
+  const state = knowledgeTurnScope.getStore();
+  if (state?.ownerAnswerSelection) state.ownerAnswerPublication = {
+    text: knowledgeUnavailableReply(language || capturedSupportLanguage(requestSecurity.evidence?.support)), requiresCurrentApproval: false,
+  };
   const publicationStartedAt=Date.now();
-  const publicationStartingBudgetMs=knowledgeTurnScope.getStore()?.budget?.remaining();
+  const publicationStartingBudgetMs=state?.budget?.remaining();
   const publicationTiming=()=>({startedAtMs:publicationStartedAt,startingBudgetMs:publicationStartingBudgetMs,durationMs:Date.now()-publicationStartedAt});
   const scopedTiming = nativeKnowledgeTiming();
   if (scopedTiming?.deliveryAttempted || scopedTiming && scopedTiming.remaining() <= scopedTiming.policy.cleanupMs) return null;
   if (scopedTiming && (scopedTiming.failure || !requestSecurity.evidence))
     return knowledgeUnavailableReply(language || capturedSupportLanguage(requestSecurity.evidence?.support));
   if (!requestSecurity.evidence) return reply; // Existing deterministic booking sends precede AI capture.
-  const state = knowledgeTurnScope.getStore();
   if (!requestSecurity.current()) {emitKnowledgeDecision({stage:'publication',...publicationTiming(),reason:'PUBLICATION_SUPPRESSED',route:'suppressed'});return null;}
   if(state?.budget&&state.migrated===false)emitKnowledgeDecision({stage:'publication',...publicationTiming(),reason:'LEGACY_ROUTE',route:'legacy'});
   const previousText = state?.manifest?.text;
@@ -6069,6 +6101,9 @@ async function securePublicationReply(reply: string, language?: string): Promise
   const text = publishable ? state?.manifest?.text || state?.verifiedCancellationReply || reply : !scopedTiming && !state?.budget && hasCancellationInformationTopic(supportQuestion)
     ? cancellationInformationNotice(outputLanguage, 'source_invalid')
     : scopedTiming || state?.budget&&state.migrated!==false?knowledgeUnavailableReply(outputLanguage):formatBusinessSupportKnowledgeGap(outputLanguage);
+  if (state?.ownerAnswerSelection) state.ownerAnswerPublication = {
+    text, requiresCurrentApproval: Boolean(publishable && state.manifest?.units.length),
+  };
   if (state?.manifest) {
     // Only the last assistant entry for this owned turn can be corrected. Never
     // retain unpublished revoked prose as the next turn's conversation context.
@@ -13659,6 +13694,24 @@ async function fetchNativeKnowledgeText(input: string, init: RequestInit): Promi
   return timing.deliver(async signal => {
     if (!requestSecurity.current()) throw new Error('knowledge_delivery_authority_expired');
     if(!await trialSendAllowed(input,init))throw Error('controlled_trial_delivery_denied');
+    if (state?.ownerAnswerPublication?.requiresCurrentApproval) {
+      const selection = state.ownerAnswerSelection;
+      const db = ownerAnswerApprovalDatabase();
+      const support = requestSecurity.evidence?.support;
+      if (!db || !selection || !support || state.businessId !== selection.key.businessId ||
+          Number(getBusinessIdFromConfig(support.businessConfig)) !== selection.key.businessId ||
+          !await ownerAnswerSelectionCurrent(db, selection, signal) ||
+          !ownerAnswerApprovalsEnabled() || signal.aborted || !requestSecurity.current()) {
+        const text = knowledgeUnavailableReply(capturedSupportLanguage(support));
+        const history = state.sessionId && chatSessions[state.sessionId];
+        const last = history && history[history.length - 1];
+        if (requestSecurity.current() && last?.role === 'assistant' && last.content === state.ownerAnswerPublication.text)
+          last.content = text;
+        state.ownerAnswerPublication = { text, requiresCurrentApproval: false };
+        emitKnowledgeDecision({ stage: 'publication', reason: 'PUBLICATION_SUPPRESSED', route: 'suppressed', publishableUnits: 0 });
+        throw Error('owner_answer_publication_denied');
+      }
+    }
     signal.throwIfAborted();
     const response=await fetch(input,{...init,signal});
     const body=await response.arrayBuffer();
@@ -33482,6 +33535,8 @@ async function startServer() {
   app.use(createTestBridgeRouter());
 
   const requireAuth = createRequireAuth();
+  app.use('/api/businesses/:businessId/knowledge/answer-approvals',
+    ownerAnswerApprovalRouter(() => supabase, requireAuth, createRequireBusinessPermission('settings.manage')));
   app.use("/api/businesses/:businessId/website-chat/installations", requireAuth, createRequireBusinessPermission("settings.manage"), websiteInstallationRouter(supabase));
   const requireBusinessPermission = (permission: BusinessPermission) =>
     createRequireBusinessPermission(permission);

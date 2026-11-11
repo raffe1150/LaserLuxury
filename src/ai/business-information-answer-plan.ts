@@ -74,6 +74,9 @@ export type AnswerManifest = Readonly<{ language: string; presentation: AnswerPr
   unresolvedRequirements?: readonly RequirementNotice[];
   naturalScope?: NaturalScope; naturalAttachment?: NaturalAttachment; naturalOutcome?: NaturalOutcome; naturalReason?: DecisionReason | null;
   presentationPath: 'direct_single_unit' | 'direct_verified_units' | 'composed' | 'fallback' | 'validated_natural'; fallbackReason: DecisionReason | null }>;
+export type OwnerAnswerProposal = Omit<AnswerUnit, 'id' | 'verification' | 'evidenceRefs'> & {
+  evidenceRefs: readonly { evidenceId: string; exactQuote: string }[];
+};
 type Stage = 'planning' | 'extraction' | 'verification' | 'composition' | 'presentation_verification';
 export type ProviderResult = { text: string; functionCalls?: unknown[]; structuredFailure?: 'REFUSAL' | 'TRUNCATED' | 'BLOCKED' };
 export type AnswerGenerator = (stage: Exclude<Stage, 'planning'>, instruction: string, data: unknown,
@@ -230,7 +233,8 @@ export function answerEvidenceBindings(businessId: number, matches: readonly any
 export function parseAnswerUnits(raw: unknown, facets: readonly Facet[], evidence: readonly Evidence[], language: string,
   diagnostic: (event: KnowledgeDecision) => void = () => {}, citationScope: 'quotation' | 'whole_source' = 'quotation',
   privateDiagnosticScope?: {businessId?:number;question:string;language:string},
-  conditionalCitationScope?: {businessId:number;protocol:'source-exhaustive-v2'}): { units: AnswerUnit[]; oversized: boolean } {
+  conditionalCitationScope?: {businessId:number;protocol:'source-exhaustive-v2'},
+  ownerProposalIndex?: number): { units: AnswerUnit[]; oversized: boolean } {
   if (!object(raw) || !Array.isArray(raw.units)) { diagnostic({ stage:'extraction', reason:'MALFORMED_ARRAY' }); return { units: [], oversized: false }; }
   if (raw.units.length > ANSWER_LIMITS.units) { diagnostic({ stage:'extraction', reason:'LIMIT_EXCEEDED' }); return { units: [], oversized: true }; }
   // Do not infer the request tenant from model refs or a possibly mixed inventory.
@@ -269,12 +273,12 @@ export function parseAnswerUnits(raw: unknown, facets: readonly Facet[], evidenc
       refs.push(Object.freeze({ evidenceId: e.id, sourceId: e.sourceId, chunkId: e.chunkId, version: e.version, exactQuote: citation.quote }));
     }
     if (refs.length !== u.evidenceRefs.length) { reject('INVALID_CITATION'); continue; }
-    if (conditionalCitationScope?.protocol==='source-exhaustive-v2' && citationScope==='quotation') {
+    if (index !== ownerProposalIndex && conditionalCitationScope?.protocol==='source-exhaustive-v2' && citationScope==='quotation') {
       refs=[...completeConditionalCitations({text:u.text,modality:u.modality,negation:u.negation},refs,evidence,conditionalCitationScope.businessId)];
     }
     if (!configuredServiceScopeSupported({text:u.text,subject:u.subject,predicate:u.predicate,value:u.value,
       scope:u.scope,qualifiers:u.qualifiers,evidenceRefs:refs},evidence)) { reject('SOURCE_SCOPE'); continue; }
-    const numerical=assessNumericalConstraint(u.text,u.text,refs.map(r=>({source:'retrieved_knowledge',quote:r.exactQuote})),undefined,citationScope);
+    const numerical=assessNumericalConstraint(u.text,u.text,refs.map(r=>({source:'retrieved_knowledge',quote:r.exactQuote})),undefined,index === ownerProposalIndex ? 'quotation' : citationScope);
     recordPrivateNumericalCandidate(privateDiagnosticScope,{id:`u${index+1}`,text:u.text,subject:u.subject,predicate:u.predicate,
       value:u.value,scope:u.scope,qualifiers:u.qualifiers,modality:u.modality,negation:u.negation,evidenceRefs:refs},evidence,numerical);
     if (!numerical.safe) {
@@ -469,6 +473,7 @@ export async function buildEvidenceFirstAnswer(input: {
   extractionProtocol?:KnowledgeExtractionProtocol;
   /** Trusted host bridge only; documentary IDs/model output cannot opt in. */
   cancellationEvidence?: Evidence;
+  ownerAnswerProposal?: (facets: readonly Facet[], evidence: readonly Evidence[]) => Promise<OwnerAnswerProposal | undefined>;
   /** Durable callers cannot publish partial coverage; stop before optional model work. */
   requireCompleteCoverage?: boolean;
   languageSafe?: (unit: AnswerUnit) => boolean;
@@ -578,6 +583,7 @@ export async function buildEvidenceFirstAnswer(input: {
   let proposed: ReturnType<typeof parseAnswerUnits>;
   let extractionIncomplete=false;
   let proposalParseComplete=false;
+  let ownerProposalIndex: number | undefined;
   let documentaryInventoryIds: readonly string[] = [];
   let naturalProposal: NaturalProposal | null = null;
   const rejectProposals=(reason:DecisionReason) => {
@@ -597,7 +603,26 @@ export async function buildEvidenceFirstAnswer(input: {
       !catalogProposal && requestedExtractionProtocol==='v2' ? '\n'+NATIVE_V2_PRODUCER_GUIDANCE : '';
     const noDocumentaryGeneration=partitioned&&!extractionEvidence.length;
     if(noDocumentaryGeneration)diagnostic({stage:'extraction',reason:'NO_EVIDENCE',counts:{proposed:0,parsed:0,verified:0,rejected:0}});
-    const result: ProviderResult|undefined = noDocumentaryGeneration?undefined:catalogProposal && !extractionEvidence.length ? {text:'{"oversized":false,"units":[]}'} : await input.generate('extraction', (literalSnapshot?literalEvidenceExtractionInstruction(baseInstruction):baseInstruction)+producerGuidance+questionResponsivenessGuidance+mixedDocumentaryGuidance+sourceApplicabilityGuidance+(verificationProtocol==='source-exhaustive-v2'?'\n'+SOURCE_EXHAUSTIVE_V2_EVIDENCE_REVIEW+'\n'+STRUCTURED_UNIT_FIDELITY_GUIDANCE:'')+(canonicalConfiguration?'\n'+(partitioned?SOURCE_PARTITIONED_INSTRUCTION:CANONICAL_CONFIG_INSTRUCTION):'')+(input.natural?'\n'+NATURAL_PROPOSAL_INSTRUCTION:''), {
+    // Owner-first inventory. An active owner approval of the exact current
+    // revision is an independently authenticated, complete review of that
+    // source. When every admitted evidence item belongs to that one source
+    // revision, it is the complete inventory for this run, so no model
+    // extraction runs and no model proposal exists to reject, filter or replace.
+    // Parsing, numerical, citation, independent verification, source-exhaustive
+    // coverage, freshness and final publication rechecks all still apply. Any
+    // other inventory keeps the appended-proposal path and its existing vetoes.
+    let ownerApproval: OwnerAnswerProposal | undefined;
+    let ownerFirst = false;
+    if (input.ownerAnswerProposal && verificationProtocol === 'source-exhaustive-v2' && !catalogProposal &&
+        !cancellationProposals.length) {
+      ownerApproval = await input.ownerAnswerProposal(facets, availableEvidence);
+      const bound = ownerApproval?.evidenceRefs.map(ref => availableEvidence.find(item => item.id === ref.evidenceId));
+      const owned = bound?.[0];
+      ownerFirst = !input.natural && !canonicalConfiguration && !!owned && !!bound?.every(Boolean) &&
+        availableEvidence.length > 0 && availableEvidence.every(item => item.businessId === input.businessId &&
+          item.sourceId === owned.sourceId && item.version === owned.version);
+    }
+    const result: ProviderResult|undefined = ownerFirst||noDocumentaryGeneration?undefined:catalogProposal && !extractionEvidence.length ? {text:'{"oversized":false,"units":[]}'} : await input.generate('extraction', (literalSnapshot?literalEvidenceExtractionInstruction(baseInstruction):baseInstruction)+producerGuidance+questionResponsivenessGuidance+mixedDocumentaryGuidance+sourceApplicabilityGuidance+(verificationProtocol==='source-exhaustive-v2'?'\n'+SOURCE_EXHAUSTIVE_V2_EVIDENCE_REVIEW+'\n'+STRUCTURED_UNIT_FIDELITY_GUIDANCE:'')+(canonicalConfiguration?'\n'+(partitioned?SOURCE_PARTITIONED_INSTRUCTION:CANONICAL_CONFIG_INSTRUCTION):'')+(input.natural?'\n'+NATURAL_PROPOSAL_INSTRUCTION:''), {
       ...documentContext, requestedLanguage: language,
       ...(input.foreground ? {allowedFacetIds:facets.map(f=>f.id)} : {}),
       evidence: wireEvidence(extractionEvidence), ...(!partitioned?{businessTone:input.businessTone}:{}),
@@ -605,7 +630,8 @@ export async function buildEvidenceFirstAnswer(input: {
       ...(catalogProposal||partitioned?{authorityScope:'document_only'}:{}),
     },extractionContract);
     // No-document inventory is local producer bookkeeping, not a model response.
-    let raw = noDocumentaryGeneration?{oversized:false,units:[]}:checked(result!,'extraction');
+    let raw = ownerFirst?{oversized:false,units:[ownerApproval]}:noDocumentaryGeneration?{oversized:false,units:[]}:checked(result!,'extraction');
+    if (ownerFirst) ownerProposalIndex = 0;
     if(!raw) {
       // Malformed/truncated document output cannot supply any facts. It also
       // cannot erase a separate catalog proposal before independent verification.
@@ -615,7 +641,9 @@ export async function buildEvidenceFirstAnswer(input: {
       raw={oversized:true,units:[]};
     }
     if(catalogProposal&&!Array.isArray(raw.units))raw={oversized:true,units:[]};
-    if(literalSnapshot||canonicalConfiguration){
+    // Owner refs already carry exact reviewed quotations; there is no model
+    // output to hydrate. Freshness is still revalidated before verification.
+    if(!ownerFirst&&(literalSnapshot||canonicalConfiguration)){
       availableEvidence=await revalidate();
       if(canonicalConfiguration&&!canonicalConfigurationOutputValid(raw,canonicalConfiguration,availableEvidence)){
         diagnostic({stage:'extraction',reason:'INVALID_FIELDS'});return empty('UNAVAILABLE','INVALID_FIELDS');
@@ -630,10 +658,17 @@ export async function buildEvidenceFirstAnswer(input: {
           (r.exactQuote === p.evidenceRefs[0].exactQuote || r.exactQuote === input.cancellationEvidence!.text))));
       raw = { ...raw, units: [...raw.units, ...missing] };
     }
-    proposed = parseAnswerUnits(catalogProposal&&Array.isArray(raw.units)?{...raw,units:[catalogProposal.unit,...raw.units]}:raw, facets, availableEvidence, language,diagnostic,literalSnapshot?'whole_source':'quotation',
+    if (!ownerFirst && ownerApproval && Array.isArray(raw.units) && raw.oversized === false &&
+        raw.units.length < ANSWER_LIMITS.units) {
+      // Append after literal hydration. The original inventory, including
+      // rejected proposals, still determines extraction completeness.
+      ownerProposalIndex = raw.units.length;
+      raw = { ...raw, units: [...raw.units, ownerApproval] };
+    }
+    proposed = parseAnswerUnits(catalogProposal&&Array.isArray(raw.units)?{...raw,units:[catalogProposal.unit,...raw.units]}:raw, facets, availableEvidence, language,diagnostic,literalSnapshot&&!ownerFirst?'whole_source':'quotation',
       {businessId:input.businessId,question:input.question,language},
       input.foreground && budget.nativeTiming && !input.natural && !input.requireCompleteCoverage && !literalSnapshot &&
-      verificationProtocol==='source-exhaustive-v2'?{businessId:input.businessId,protocol:verificationProtocol}:undefined);
+      verificationProtocol==='source-exhaustive-v2'?{businessId:input.businessId,protocol:verificationProtocol}:undefined, ownerProposalIndex);
     proposalParseComplete=Array.isArray(raw.units) && raw.oversized!==true && proposed.units.length===raw.units.length+(catalogProposal?1:0);
     // A rejected proposal cannot silently erase a requested condition, even if
     // a later coverage verdict incorrectly calls the surviving inventory complete.
@@ -828,7 +863,7 @@ export async function buildEvidenceFirstAnswer(input: {
   }
   const sourceAssessment = isSourceExhaustiveProtocol(verificationProtocol)
     ? assessSourceCoverage(parsed, facets, proposed.units, availableEvidence, input.businessId, verificationProtocol) : undefined;
-  if (sourceAssessment?.state === 'DENIED') {
+  if (sourceAssessment?.state === 'DENIED' || (ownerProposalIndex !== undefined && sourceAssessment?.state !== 'COMPLETE')) {
     diagnostic({ stage: 'verification', reason: 'INVALID_COVERAGE' });
     return empty('UNAVAILABLE', 'INVALID_COVERAGE');
   }
@@ -836,6 +871,9 @@ export async function buildEvidenceFirstAnswer(input: {
   // the native publication guard. This grants no authority to send the manifest.
   const deferFreshness=input.finalPublicationRevalidates && !input.natural && !optionalCompositionAffordable(budget);
   const manifestEvidence=deferFreshness ? availableEvidence : await revalidate();
+  if (ownerProposalIndex !== undefined && (manifestEvidence.length !== input.evidence.length ||
+      !completeKnowledgeManifest({ ...empty('UNAVAILABLE'), units: verified, outcomes })))
+    return rejectProposals('INVALID_COVERAGE');
   let manifest = pruneAnswerManifest(Object.freeze({ ...empty('UNAVAILABLE'), units: Object.freeze(verified), outcomes: Object.freeze(outcomes),
     ...(input.clarification && !input.natural ? {clarification: input.clarification} : {}),
     ...(sourceScopeNotice?{sourceScopeNotice}:{}),

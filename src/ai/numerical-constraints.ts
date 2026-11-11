@@ -150,7 +150,7 @@ function parse(input: string, diagnoseBound = false): { constraints: Constraint[
     // post-quantity connective; retain real bounds and the rest of the clause.
     if (side === 'before' && !anchoredAfter && !cancellationClaim.test(context) &&
         !/مهلت|هزینه|جریمه/u.test(context)) {
-      boundSuffix = boundSuffix.replace(/(?<![\p{L}\p{N}])((?:حاضر\s+شو(?:ند|ید|د|یم|م)|برس(?:ند|ید|د|یم|م))\s+)تا(?=\s+(?:(?:(?:زمان|فرصت)\s+کافی\s+برای\s+آماده\s+شدن|برای\s+آماده\s+شدن\s+(?:زمان|فرصت)\s+کافی)\s+داشته\s+باش(?:ند|ید|د|یم|م)|بتوان(?:ند|ید|د|یم|م)\s+(?:با\s+آرامش\s+)?آماده\s+شو(?:ند|ید|د|یم|م))(?![\p{L}\p{N}]))/gu, (_, arrival: string) => {
+      boundSuffix = boundSuffix.replace(/(?<![\p{L}\p{N}])((?:حاضر\s+شو(?:ند|ید|د|یم|م)|برس(?:ند|ید|د|یم|م))(?:\s*[،,])?\s+)تا(?=\s+(?:(?:(?:زمان|فرصت)\s+کافی\s+برای\s+آماده\s+شدن|برای\s+آماده\s+شدن\s+(?:زمان|فرصت)\s+کافی)\s+داشته\s+باش(?:ند|ید|د|یم|م)|بتوان(?:ند|ید|د|یم|م)\s+(?:با\s+آرامش\s+)?آماده\s+شو(?:ند|ید|د|یم|م))(?![\p{L}\p{N}]))/gu, (_, arrival: string) => {
         finitePreparationMatched = true;
         return arrival;
       });

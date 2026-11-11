@@ -98,3 +98,42 @@ test('no-later-than after an appointment still denotes a maximum', () => {
  assert.equal(shape.candidateSide, 'after');
  assert.equal(assess(claim, claim).safe, true);
 });
+
+for (const comma of ['،', ',']) {
+ test(`comma before a recognized preparation purpose / ${comma}`, () => {
+  const a = assess(base() + comma + additionalPurposes[1][1]);
+  assert.equal(a.safe, true, a.reason);
+  const [shape] = numericalComparisonShapes(a);
+  assert.equal(shape.candidateBound, 'unbounded');
+  assert.equal(shape.candidateSide, 'before');
+  assert.equal(shape.purposeClauseCategory, 'finite_preparation');
+ });
+}
+
+test('a comma before a preparation purpose preserves genuine bounds and deadlines', () => {
+ for (const qualifier of ['حداکثر', 'تا']) {
+  const claim = base('۱۰', qualifier) + '،' + additionalPurposes[1][1];
+  const a = assess(claim);
+  assert.equal(a.safe, false);
+  assert.equal(numericalComparisonShapes(a)[0].candidateBound, 'maximum');
+  assert.equal(assess(claim, claim).safe, true);
+ }
+ const deadline = assess(base() + '، تا شروع نوبت.');
+ assert.equal(deadline.safe, false);
+ assert.equal(numericalComparisonShapes(deadline)[0].candidateBound, 'maximum');
+ assert.equal(numericalComparisonShapes(deadline)[0].purposeClauseGuardMatched, false);
+});
+
+test('a comma before a preparation purpose cannot resolve conflicting or unsupported claims', () => {
+ const suffix = '،' + additionalPurposes[1][1];
+ const conflict = assess(base('۱۰', 'حداقل یا حداکثر') + suffix);
+ assert.equal(conflict.safe, false);
+ assert.equal(conflict.reason, 'CLAIM_AMBIGUOUS');
+ for (const claim of [
+  base('۲۰') + suffix,
+  base() + '، تا بتوانند آماده شوند یا ۲۰ دقیقه قبل برسند.',
+  base() + '، تا با آرامش آماده شوند.',
+  base().replace('قبل', 'بعد') + suffix,
+  'لغو: ' + base() + suffix,
+ ]) assert.equal(assess(claim).safe, false, claim);
+});

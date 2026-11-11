@@ -34,6 +34,7 @@ const persianPurposeCase = ['fa', persianCase[1],
 const additionalPersianPurposes = [
   ['fa', persianCase[1], persianCase[2].slice(0, -1) + ' تا بتوانند با آرامش آماده شوند.'],
   ['fa', persianCase[1], persianCase[2].slice(0, -1) + ' تا برای آماده شدن زمان کافی داشته باشند.'],
+  ['fa', persianCase[1], persianCase[2].slice(0, -1) + '، تا بتوانند با آرامش آماده شوند.'],
 ] as const;
 const { priority1hUnifiedEngineTestBoundary: b } = await import('../../server');
 type Fault = 'none' | 'rejected' | 'incomplete' | 'foreign' | 'revoked' | 'number' | 'scope' | 'required' | 'overflow' | 'conflict' | 'revision' | 'badquote' | 'unknown-id';
@@ -242,3 +243,4 @@ for (const fault of ['rejected', 'incomplete', 'unknown-id'] as const)
 for (const channel of incidentChannels) for (const [i, spec] of additionalPersianPurposes.entries())
   test(`SYNTHETIC additional Persian purpose ${i + 1} / remaining PDF / ${channel}`, t => exercise(t, channel, spec, 'none', 'new', true));
 test('SYNTHETIC Persian ability purpose still requires verifier acceptance', t => exercise(t, 'telegram', additionalPersianPurposes[0], 'rejected', 'new', true));
+test('SYNTHETIC comma-separated Persian purpose still requires verifier acceptance', t => exercise(t, 'telegram', additionalPersianPurposes[2], 'rejected', 'new', true));

@@ -55,6 +55,44 @@ function safeSummary(error: any, status: number | null, code: string | null): st
   return "OpenAI generation failed";
 }
 
+// Non-HTTP failures only (no status). Closed vocabularies; never free text.
+// policyCode: OdinLink's own fail-closed guard codes (e.g. a post-reservation
+// source recheck), which mean no provider dispatch from that guard onward.
+const POLICY_CODE = /^(?:knowledge_sol|ai_money)_[a-z_]{1,48}$/;
+const ERROR_CLASSES = new Set([
+  "APIConnectionError", "APIConnectionTimeoutError", "APIUserAbortError",
+  "AbortError", "TimeoutError", "TypeError", "SyntaxError", "KnowledgeTimingError", "AiReliabilityError", "Error",
+]);
+const CAUSE_CODES = new Set([
+  "ECONNRESET", "ECONNREFUSED", "ECONNABORTED", "ETIMEDOUT", "ENOTFOUND", "EAI_AGAIN",
+  "EPIPE", "EHOSTUNREACH", "ENETUNREACH", "CERT_HAS_EXPIRED", "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+  "SELF_SIGNED_CERT_IN_CHAIN", "DEPTH_ZERO_SELF_SIGNED_CERT", "ERR_TLS_CERT_ALTNAME_INVALID",
+]);
+
+function errorClass(error: any): string | null {
+  const name = typeof error?.constructor?.name === "string" ? error.constructor.name : null;
+  if (name && ERROR_CLASSES.has(name)) return name;
+  return typeof error?.name === "string" && ERROR_CLASSES.has(error.name) ? error.name : null;
+}
+
+function causeCode(error: any): string | null {
+  // SDK connection errors wrap fetch's TypeError, which wraps the socket error.
+  let current = error?.cause;
+  for (let depth = 0; depth < 3 && current; depth++, current = current?.cause) {
+    const code = current?.code;
+    if (typeof code === "string" && (CAUSE_CODES.has(code) || /^UND_ERR_[A-Z_]{1,40}$/.test(code))) return code;
+  }
+  return null;
+}
+
+function nonHttpFields(error: any, status: number | null) {
+  if (status !== null) return {};
+  const message = typeof error?.message === "string" ? error.message : "";
+  const policyCode = POLICY_CODE.test(message) ? message : null;
+  const kind = errorClass(error), cause = causeCode(error);
+  return { ...(policyCode ? { policyCode } : {}), ...(kind ? { errorClass: kind } : {}), ...(cause ? { causeCode: cause } : {}) };
+}
+
 export function buildOpenAiFailureDiagnostic(error: unknown, context: {
   model: string;
   toolCount: number;
@@ -78,5 +116,6 @@ export function buildOpenAiFailureDiagnostic(error: unknown, context: {
     toolsPresent: context.toolCount > 0,
     toolCount: context.toolCount,
     correlationId: identifier(context.correlationId, /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i),
+    ...nonHttpFields(failure, status),
   };
 }

@@ -141,3 +141,78 @@ test("successful OpenAI generation preserves nonsampling payload and response wi
   assert.equal(create.mock.callCount(), 1);
   assert.equal(logs.mock.callCount(), 0);
 });
+
+// ---------------------------------------------------------------------------
+// P0 2026-11-12: non-HTTP Sol Knowledge failures were indistinguishable
+// (httpStatus/errorCode/requestId null, "OpenAI generation failed").
+import { captureKnowledgeModelProfile, configureKnowledgeBudgetOwner, knowledgeStageOptions } from "../knowledge-model-policy";
+import { knowledgeStructuredOutput } from "../knowledge-answer-protocol";
+import { ScriptedKnowledgeBudgetOwner } from "../../../tests/helpers/knowledge-budget-owner";
+
+async function managedExtractionFailure(t: any, options: { sourceCurrent: boolean; fetchImpl: () => Promise<Response> }) {
+  const saved = { ...process.env };
+  t.after(() => { configureKnowledgeBudgetOwner(); for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k]; Object.assign(process.env, saved); });
+  Object.assign(process.env, { OPENAI_API_KEY: "sk-test-secret-diagnostic", ODINLINK_AI_DEFAULT_MODEL: "gpt-6.1-sol" });
+  delete process.env.OPENAI_BASE_URL; delete process.env.OPENAI_PROJECT_ID;
+  const owner = new ScriptedKnowledgeBudgetOwner(); owner.businessIds = [3]; configureKnowledgeBudgetOwner(owner);
+  const binding = { businessId: 3, turnId: "p0-turn", requestKey: "f".repeat(64) };
+  const profile = captureKnowledgeModelProfile({ ...binding, provider: "openai", nativeForeground: true, natural: false, durable: false,
+    extractionProtocol: "v2", verificationProtocol: "source-exhaustive-v2", documentary: true, operational: false,
+    current: async () => options.sourceCurrent }, { ODINLINK_AI_DEFAULT_MODEL: "gpt-6.1-sol" });
+  let networkCalls = 0;
+  t.mock.method(globalThis, "fetch", async () => { networkCalls++; return options.fetchImpl(); });
+  const logs: unknown[][] = [];
+  t.mock.method(console, "error", (...args: unknown[]) => { logs.push(args); });
+  await assert.rejects(generateWithOpenAi({ ...knowledgeStageOptions(profile, "extraction", binding, Date.now() + 19000),
+    signal: new AbortController().signal, systemInstruction: "OdinLink UNIT EXTRACTION", diagnosticContext: { correlationId },
+    messages: [{ role: "user", content: JSON.stringify({ evidence: [{ id: "e1", businessId: 3, text: "Private source text 0701234567" }] }) }],
+    structuredOutput: knowledgeStructuredOutput("extraction", false, ["f1"], 6, "v2") }));
+  return { networkCalls, owner, logs, diagnostic: logs.find(entry => entry[0] === "[OpenAIProviderFailure]")?.[1] as any };
+}
+
+test("post-reservation source mismatch is named by policyCode; nothing dispatched; unknown hold kept", async (t) => {
+  const r = await managedExtractionFailure(t, { sourceCurrent: false, fetchImpl: async () => { throw new Error("must not dispatch"); } });
+  assert.equal(r.networkCalls, 0);
+  assert.deepEqual(r.owner.events, ["reserve", "retainUnknown"], "financial behavior unchanged: reserved, then retained as unknown");
+  assert.equal(r.diagnostic.policyCode, "knowledge_sol_source_or_turn_changed");
+  assert.equal(r.diagnostic.errorClass, "Error");
+  assert.equal(r.diagnostic.causeCode, undefined);
+  for (const field of ["httpStatus", "errorCode", "requestId"]) assert.equal(r.diagnostic[field], null);
+  assert.equal(r.diagnostic.message, "OpenAI generation failed");
+});
+
+test("OpenAI connection failure is named by errorClass/causeCode, never as a policy code", async (t) => {
+  const r = await managedExtractionFailure(t, { sourceCurrent: true, fetchImpl: async () => {
+    throw new TypeError("fetch failed", { cause: Object.assign(new Error("socket hang up near Private source text"), { code: "ECONNRESET" }) });
+  } });
+  assert.equal(r.networkCalls, 1);
+  assert.deepEqual(r.owner.events, ["reserve", "retainUnknown"]);
+  assert.equal(r.diagnostic.errorClass, "APIConnectionError");
+  assert.equal(r.diagnostic.causeCode, "ECONNRESET");
+  assert.equal(r.diagnostic.policyCode, undefined);
+  assert.equal(classifyAiFailure(new TypeError("x")), "UNKNOWN");
+});
+
+test("sensitive error text, foreign classes and unknown cause codes never reach the diagnostic", async (t) => {
+  const r = await managedExtractionFailure(t, { sourceCurrent: true, fetchImpl: async () => {
+    throw new TypeError("fetch failed: Private source text sk-test-secret-diagnostic", { cause: { code: "Private source text", cause: { code: "UND_ERR_SOCKET" } } });
+  } });
+  const serialized = JSON.stringify(r.logs);
+  for (const secret of ["Private source text", "0701234567", "sk-test-secret-diagnostic", "socket hang up"]) assert.ok(!serialized.includes(secret), secret);
+  assert.equal(r.diagnostic.causeCode, "UND_ERR_SOCKET", "only an allowlisted nested code is reported");
+  class EvidenceLeakError extends Error {}
+  const unsafe = [
+    Object.assign(new EvidenceLeakError("knowledge_sol_source_or_turn_changed"), { name: "Customer Private source text" }),
+    new Error("knowledge_sol_source_or_turn_changed: Private source text"),
+    new Error("ai_money_operation_failed sk-test-secret-diagnostic"),
+    Object.assign(new Error("Private source text"), { cause: { code: "ECONNRESET Private source text" } }),
+  ];
+  const diagnostics = unsafe.map(error => buildOpenAiFailureDiagnostic(error, context));
+  assert.deepEqual(diagnostics.map(d => [(d as any).policyCode, (d as any).errorClass, (d as any).causeCode]), [
+    ["knowledge_sol_source_or_turn_changed", undefined, undefined],
+    [undefined, "Error", undefined], [undefined, "Error", undefined], [undefined, "Error", undefined]]);
+  assert.ok(!JSON.stringify(diagnostics).includes("Private source text") && !JSON.stringify(diagnostics).includes("sk-test"));
+  // HTTP failures keep their exact pre-existing shape (no new fields).
+  assert.deepEqual(Object.keys(buildOpenAiFailureDiagnostic(apiError(400, "invalid_value"), context)).sort(),
+    ["correlationId", "errorCode", "errorType", "httpStatus", "message", "model", "operation", "parameter", "provider", "requestId", "stage", "toolCount", "toolsPresent"]);
+});

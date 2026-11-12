@@ -119,7 +119,7 @@ export function normalizeOpenAiGenerationResponse(
 export async function generateWithOpenAi(
   request: UnifiedAiGenerationRequest,
 ): Promise<UnifiedAiGenerationResponse> {
-  if(trialEnforced())assertTrialProvider('openai',request.knowledgeExecution ? (request.knowledgeExecution.stage==='extraction'?'knowledge_units_extraction':'knowledge_units_verification') : request.controlledTrialStage==='language'?'semantic_language_resolution':undefined);
+  if(trialEnforced())assertTrialProvider('openai',request.knowledgeExecution ? (request.knowledgeExecution.stage==='extraction'?'knowledge_units_extraction':request.knowledgeExecution.stage==='verification'?'knowledge_units_verification':undefined) : request.controlledTrialStage==='language'?'semantic_language_resolution':undefined);
   const trialSignal=controlledTrialSignal();
   if(trialSignal)request={...request,signal:AbortSignal.any([trialSignal,...(request.signal?[request.signal]:[])])};
   const apiKey = process.env.OPENAI_API_KEY;

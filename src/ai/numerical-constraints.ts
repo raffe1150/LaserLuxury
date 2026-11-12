@@ -336,6 +336,20 @@ export function numericalConstraintSafe(candidateQuote:string,atomicClaim:string
   return assessNumericalConstraint(candidateQuote,atomicClaim,evidence,structuredBusinessConfig,citationScope).safe;
 }
 
+/** Claim-to-citation quantity support. Every temporal quantity the candidate
+ * asserts must appear (same duration, any wording/unit) in at least one of the
+ * candidate's OWN cited quotes. Uses only this parser's existing multilingual
+ * grammar; adds no patterns. Bounds/anchors are judged by the assessor itself. */
+export function citedQuantitiesSupported(assessment: NumericalConstraintAssessment, citedQuotes: readonly string[]): boolean {
+  const cited = new Set(assessment.sources.flatMap(source => source.constraints.map(c => c.seconds)));
+  // Unit spellings the grammar does not know ("60 min", "1 h") still support the
+  // same numeric value; digits are normalised exactly as the parser does.
+  const literals = new Set(citedQuotes.flatMap(quote => [...canonical(quote).matchAll(/(?<![\p{N}.,])([0-9]+(?:[.,][0-9]+)?)(?![\p{N}])/gu)]
+    .map(match => Number(match[1].replace(',', '.')))));
+  return assessment.checks.every(check => check.constraints.every(c => cited.has(c.seconds) ||
+    [60, 3600, 86400].some(factor => literals.has(c.seconds / factor))));
+}
+
 /** Diagnostic projection only. Ordinals refer to assessor inputs; no quantities,
  * text or quotations leave this projection. Never used to decide acceptance. */
 export function numericalComparisonShapes(assessment: NumericalConstraintAssessment) {

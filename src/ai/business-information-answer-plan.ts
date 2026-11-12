@@ -7,7 +7,7 @@ import { selectCanonicalConfigurationProducer, captureCanonicalConfigurationProd
 import { isSourceExhaustiveProtocol, sourceExhaustiveInstruction, assessSourceCoverage, SOURCE_EXHAUSTIVE_V2_EVIDENCE_REVIEW } from './source-exhaustive-coverage';
 import { createHash } from 'node:crypto';
 import { packDocumentEvidence } from '../knowledge/document-evidence-packing';
-import { numericalConstraintSafe, assessNumericalConstraint, numericalComparisonShapes, NUMERICAL_DIRECTION_GUIDANCE } from './numerical-constraints';
+import { numericalConstraintSafe, assessNumericalConstraint, numericalComparisonShapes, citedQuantitiesSupported, NUMERICAL_DIRECTION_GUIDANCE } from './numerical-constraints';
 import { recordPrivateNumericalCandidate } from './late-arrival-numerical-diagnostics';
 import { containsUnverifiedBookingSuccessClaim } from './reliability';
 import { containsWebOperationSuccess } from './web-response-integrity';
@@ -77,7 +77,7 @@ export type AnswerManifest = Readonly<{ language: string; presentation: AnswerPr
 export type OwnerAnswerProposal = Omit<AnswerUnit, 'id' | 'verification' | 'evidenceRefs'> & {
   evidenceRefs: readonly { evidenceId: string; exactQuote: string }[];
 };
-type Stage = 'planning' | 'extraction' | 'verification' | 'composition' | 'presentation_verification';
+type Stage = 'planning' | 'extraction' | 're_extraction' | 'verification' | 'composition' | 'presentation_verification';
 export type ProviderResult = { text: string; functionCalls?: unknown[]; structuredFailure?: 'REFUSAL' | 'TRUNCATED' | 'BLOCKED' };
 export type AnswerGenerator = (stage: Exclude<Stage, 'planning'>, instruction: string, data: unknown,
   contract?:Readonly<{extractionProtocol:KnowledgeExtractionProtocol;canonicalConfiguration?:CanonicalConfigurationProducer}>) => Promise<ProviderResult>;
@@ -230,11 +230,46 @@ export function answerEvidenceBindings(businessId: number, matches: readonly any
       version: String(m.metadata?.documentRevision || m.metadata?.sourceRevision || hash(m.text)), text: m.text }) }));
 }
 
+/** Re-extraction trigger classes. A class only REQUESTS one fresh, complete
+ * re-extraction; it never admits, repairs or re-reads a rejected proposal. */
+export type ReExtractionTally = { ambiguousConnective: number; citationOmitsQuantity: number };
+export type ReExtractionEvent = Readonly<{
+  trigger: 'none' | 'ambiguous_connective' | 'citation_omits_quantity' | 'both' | 'other_rejection' | 'out_of_scope';
+  outcome: 'not_needed' | 'not_eligible' | 'skipped' | 'source_changed' | 'dispatched' | 'failed';
+  skipReason?: string; firstPass: { proposed: number; parsed: number; rejected: number };
+  replacement?: { proposed: number; parsed: number; rejected: number }; durationMs?: number; failureReason?: string }>;
+/** Validated with paid Luna/Sol runs (2026-11-12). Appended to the unchanged instruction. */
+export const REEXTRACTION_CONNECTIVE_GUIDANCE = 'RE-EXTRACTION: A previous proposal used a connective that can also denote a numerical limit. ' +
+  'Write every purpose, reason or goal with an unambiguous purpose connective in the requested language; never use a word that can also ' +
+  'mean "until", "up to" or a maximum to introduce a purpose. Preserve every quantity, approximation, modality, audience, temporal anchor, ' +
+  'condition and qualification from the evidence exactly. Do not add facts.';
+/** NOT yet validated with a paid run; see canary limitations. */
+export const REEXTRACTION_CITATION_GUIDANCE = 'RE-EXTRACTION: A previous proposal stated a quantity that its own exactQuote did not contain. ' +
+  'For every unit, each exactQuote must be a verbatim evidence span that itself contains every quantity, time and number the unit states; ' +
+  'cite the sentence that states the quantity, not only a neighbouring qualification. Preserve every quantity, approximation, modality, ' +
+  'audience, temporal anchor, condition and qualification from the evidence exactly. Do not add facts.';
+const ambiguousConnectiveRow = (row: ReturnType<typeof numericalComparisonShapes>[number]) =>
+  row.boundTriggerCategory === 'persian_ta' && row.boundTriggerPosition === 'after_quantity' &&
+  row.candidateBound === 'maximum' && row.sourceBound === 'unbounded' && row.temporalAnchorCompatible === true &&
+  !row.candidateAmbiguous && !row.sourceAmbiguous && row.candidateCancellationKind === 'none' && row.sourceCancellationKind === 'none';
+/** The quantity is supported by the SAME tenant's admitted documentary
+ * evidence even though the unit's own citation omits it. Trigger only. */
+function quantitySupportedByAdmittedEvidence(text: string, evidence: readonly Evidence[], businessId: number | undefined): boolean {
+  if (!Number.isSafeInteger(businessId) || businessId! <= 0) return false;
+  const documents = evidence.filter(e => e.businessId === businessId && !e.id.startsWith('configured-') && !e.sourceId.startsWith('configured-') &&
+    !e.sourceId.startsWith('business-cancellation-configuration:')).map(e => e.text);
+  if (!documents.length) return false;
+  const assessment = assessNumericalConstraint(text, text, documents.map(quote => ({ source: 'retrieved_knowledge', quote })), undefined, 'quotation');
+  const asserted = assessment.checks.some(check => check.constraints.length > 0);
+  return asserted && assessment.safe && (assessment.reason === 'CONSTRAINT_MATCH' ||
+    assessment.reason === 'NO_RELEVANT_CONSTRAINT' && citedQuantitiesSupported(assessment, documents));
+}
+
 export function parseAnswerUnits(raw: unknown, facets: readonly Facet[], evidence: readonly Evidence[], language: string,
   diagnostic: (event: KnowledgeDecision) => void = () => {}, citationScope: 'quotation' | 'whole_source' = 'quotation',
   privateDiagnosticScope?: {businessId?:number;question:string;language:string},
   conditionalCitationScope?: {businessId:number;protocol:'source-exhaustive-v2'},
-  ownerProposalIndex?: number): { units: AnswerUnit[]; oversized: boolean } {
+  ownerProposalIndex?: number, reExtractionTally?: ReExtractionTally): { units: AnswerUnit[]; oversized: boolean } {
   if (!object(raw) || !Array.isArray(raw.units)) { diagnostic({ stage:'extraction', reason:'MALFORMED_ARRAY' }); return { units: [], oversized: false }; }
   if (raw.units.length > ANSWER_LIMITS.units) { diagnostic({ stage:'extraction', reason:'LIMIT_EXCEEDED' }); return { units: [], oversized: true }; }
   // Do not infer the request tenant from model refs or a possibly mixed inventory.
@@ -283,12 +318,31 @@ export function parseAnswerUnits(raw: unknown, facets: readonly Facet[], evidenc
       value:u.value,scope:u.scope,qualifiers:u.qualifiers,modality:u.modality,negation:u.negation,evidenceRefs:refs},evidence,numerical);
     if (!numerical.safe) {
       const evidenceBindings=diagnosticBindings(refs);
+      if (reExtractionTally && index !== ownerProposalIndex) {
+        const shapes = evidenceBindings.length===refs.length ? numericalComparisonShapes(numerical) : [];
+        if (numerical.reason === 'SOURCE_BOUND_ANCHOR_OR_SCOPE_MISMATCH' && shapes.length && shapes.every(ambiguousConnectiveRow))
+          reExtractionTally.ambiguousConnective++;
+        else if (numerical.reason === 'SOURCE_CONSTRAINT_UNAVAILABLE' && refs.every(r => !r.evidenceId.startsWith('configured-') && !r.sourceId.startsWith('configured-')) &&
+          quantitySupportedByAdmittedEvidence(u.text, evidence, conditionalCitationScope?.businessId))
+          reExtractionTally.citationOmitsQuantity++;
+      }
       diagnostic({stage:'extraction',unitId:`u${index+1}`,reason:'NUMERICAL_CONSTRAINT',
         ...(/^[A-Z_]{1,64}$/u.test(numerical.reason) ? {numericalMismatchReason:numerical.reason} : {}),
         // Emit comparison shapes only when every cited item has eligible,
         // same-tenant metadata; sourceIndex then binds to this ordered array.
         ...(evidenceBindings.length===refs.length ? {numericalComparisons:numericalComparisonShapes(numerical)} : {}),
         evidenceBindings});
+      continue;
+    }
+    // A plain (unbounded, unanchored) quantity escapes the comparison above.
+    // It must still appear in the unit's OWN documentary citations; configured
+    // catalog/cancellation authorities are structured and judged elsewhere.
+    if (numerical.reason === 'NO_RELEVANT_CONSTRAINT' && !citedQuantitiesSupported(numerical, refs.map(r => r.exactQuote)) &&
+        refs.every(r => !r.evidenceId.startsWith('configured-') && !r.sourceId.startsWith('configured-'))) {
+      diagnostic({stage:'extraction',unitId:`u${index+1}`,reason:'NUMERICAL_CONSTRAINT',numericalMismatchReason:'QUANTITY_NOT_IN_CITATION',
+        evidenceBindings:diagnosticBindings(refs)});
+      if (reExtractionTally && index !== ownerProposalIndex && quantitySupportedByAdmittedEvidence(u.text, evidence, conditionalCitationScope?.businessId))
+        reExtractionTally.citationOmitsQuantity++;
       continue;
     }
     units.push(Object.freeze({ id: `u${index + 1}`, verification: 'PROPOSED', facetIds: Object.freeze([...new Set<string>(u.facetIds)]),
@@ -482,6 +536,11 @@ export async function buildEvidenceFirstAnswer(input: {
   finalPublicationRevalidates?: boolean;
   diagnostic?: (event: KnowledgeDecision) => void;
   natural?: { scope: NaturalScope; allowSinglePartial: boolean };
+  /** Trusted native host only (tenant-scoped Sol extraction canary, default OFF).
+   * At most ONE fresh, complete re-extraction after a narrowly classified
+   * first-pass rejection. `admit` re-checks permit, budget and time immediately
+   * before dispatch; `record` receives content-free telemetry. */
+  reExtraction?: { admit: () => string | null; record: (event: ReExtractionEvent) => void };
   generate: AnswerGenerator; current: () => Promise<boolean>;
 }): Promise<AnswerManifest> {
   const { language, budget } = input;
@@ -498,7 +557,7 @@ export async function buildEvidenceFirstAnswer(input: {
       outcomes:facets.map(f=>({facetId:f.id,status,unitIds:[],obligations:unresolvedObligations(f),requestAligned:false,materialFactsComplete:false,materialUnitIds:[]})),
       text:status==='NO_EVIDENCE'?notices.missing:notices.unavailable,presentationFallback:true,presentationPath:'fallback',fallbackReason:reason });
   };
-  const checked = (result:ProviderResult, stage:Exclude<Stage,'planning'>) => {
+  const checked = (result:ProviderResult, stage:Exclude<Stage,'planning'|'re_extraction'>) => {
     const reason:DecisionReason|null=result.structuredFailure || (result.functionCalls?.length?'TOOL_OUTPUT':null);
     if(reason){diagnostic({stage,reason});return null;}
     const parsed=answerJson(result.text);if(!parsed)diagnostic({stage,reason:'MALFORMED_JSON'});return parsed;
@@ -622,13 +681,15 @@ export async function buildEvidenceFirstAnswer(input: {
         availableEvidence.length > 0 && availableEvidence.every(item => item.businessId === input.businessId &&
           item.sourceId === owned.sourceId && item.version === owned.version);
     }
-    const result: ProviderResult|undefined = ownerFirst||noDocumentaryGeneration?undefined:catalogProposal && !extractionEvidence.length ? {text:'{"oversized":false,"units":[]}'} : await input.generate('extraction', (literalSnapshot?literalEvidenceExtractionInstruction(baseInstruction):baseInstruction)+producerGuidance+questionResponsivenessGuidance+mixedDocumentaryGuidance+sourceApplicabilityGuidance+(verificationProtocol==='source-exhaustive-v2'?'\n'+SOURCE_EXHAUSTIVE_V2_EVIDENCE_REVIEW+'\n'+STRUCTURED_UNIT_FIDELITY_GUIDANCE:'')+(canonicalConfiguration?'\n'+(partitioned?SOURCE_PARTITIONED_INSTRUCTION:CANONICAL_CONFIG_INSTRUCTION):'')+(input.natural?'\n'+NATURAL_PROPOSAL_INSTRUCTION:''), {
+    const extractionInstruction = (literalSnapshot?literalEvidenceExtractionInstruction(baseInstruction):baseInstruction)+producerGuidance+questionResponsivenessGuidance+mixedDocumentaryGuidance+sourceApplicabilityGuidance+(verificationProtocol==='source-exhaustive-v2'?'\n'+SOURCE_EXHAUSTIVE_V2_EVIDENCE_REVIEW+'\n'+STRUCTURED_UNIT_FIDELITY_GUIDANCE:'')+(canonicalConfiguration?'\n'+(partitioned?SOURCE_PARTITIONED_INSTRUCTION:CANONICAL_CONFIG_INSTRUCTION):'')+(input.natural?'\n'+NATURAL_PROPOSAL_INSTRUCTION:'');
+    const extractionData = (items: readonly Evidence[]) => ({
       ...documentContext, requestedLanguage: language,
       ...(input.foreground ? {allowedFacetIds:facets.map(f=>f.id)} : {}),
-      evidence: wireEvidence(extractionEvidence), ...(!partitioned?{businessTone:input.businessTone}:{}),
+      evidence: wireEvidence(items), ...(!partitioned?{businessTone:input.businessTone}:{}),
       ...(canonicalConfiguration&&!partitioned?{canonicalConfigurationProposals:canonicalConfiguration.units}:{}),
       ...(catalogProposal||partitioned?{authorityScope:'document_only'}:{}),
-    },extractionContract);
+    });
+    const result: ProviderResult|undefined = ownerFirst||noDocumentaryGeneration?undefined:catalogProposal && !extractionEvidence.length ? {text:'{"oversized":false,"units":[]}'} : await input.generate('extraction', extractionInstruction, extractionData(extractionEvidence),extractionContract);
     // No-document inventory is local producer bookkeeping, not a model response.
     let raw = ownerFirst?{oversized:false,units:[ownerApproval]}:noDocumentaryGeneration?{oversized:false,units:[]}:checked(result!,'extraction');
     if (ownerFirst) ownerProposalIndex = 0;
@@ -665,11 +726,72 @@ export async function buildEvidenceFirstAnswer(input: {
       ownerProposalIndex = raw.units.length;
       raw = { ...raw, units: [...raw.units, ownerApproval] };
     }
+    const reExtractionScope = !!input.reExtraction && !ownerFirst && !ownerApproval && !catalogProposal && !cancellationProposals.length &&
+      !canonicalConfiguration && !literalSnapshot && !input.natural && !input.requireCompleteCoverage && !!input.foreground && !!budget.nativeTiming &&
+      requestedExtractionProtocol === 'v2' && verificationProtocol === 'source-exhaustive-v2' &&
+      Number.isSafeInteger(input.businessId) && input.businessId! > 0 && extractionEvidence.every(e => e.businessId === input.businessId);
+    const reExtractionTally: ReExtractionTally | undefined = reExtractionScope ? { ambiguousConnective: 0, citationOmitsQuantity: 0 } : undefined;
+    if (input.reExtraction && !reExtractionScope) input.reExtraction.record({ trigger: 'out_of_scope', outcome: 'not_eligible',
+      firstPass: { proposed: Array.isArray(raw.units) ? raw.units.length : 0, parsed: 0, rejected: 0 } });
     proposed = parseAnswerUnits(catalogProposal&&Array.isArray(raw.units)?{...raw,units:[catalogProposal.unit,...raw.units]}:raw, facets, availableEvidence, language,diagnostic,literalSnapshot&&!ownerFirst?'whole_source':'quotation',
       {businessId:input.businessId,question:input.question,language},
       input.foreground && budget.nativeTiming && !input.natural && !input.requireCompleteCoverage && !literalSnapshot &&
-      verificationProtocol==='source-exhaustive-v2'?{businessId:input.businessId,protocol:verificationProtocol}:undefined, ownerProposalIndex);
+      verificationProtocol==='source-exhaustive-v2'?{businessId:input.businessId,protocol:verificationProtocol}:undefined, ownerProposalIndex, reExtractionTally);
     proposalParseComplete=Array.isArray(raw.units) && raw.oversized!==true && proposed.units.length===raw.units.length+(catalogProposal?1:0);
+    if (input.reExtraction && reExtractionTally) {
+      // Narrow, one-shot recovery. Only the canary's own v2 documentary path is
+      // in scope; owner, catalog, cancellation, canonical, literal, natural and
+      // durable paths are excluded above. Original proposals are DISCARDED; the
+      // replacement is a complete fresh inventory under every unchanged gate.
+      const proposedCount = Array.isArray(raw.units) ? raw.units.length : 0;
+      const firstPass = { proposed: proposedCount, parsed: proposed.units.length, rejected: Math.max(0, proposedCount - proposed.units.length) };
+      const eligible = reExtractionTally.ambiguousConnective + reExtractionTally.citationOmitsQuantity;
+      const trigger = !firstPass.rejected ? 'none' as const : !Array.isArray(raw.units) || raw.oversized !== false || eligible !== firstPass.rejected ? 'other_rejection' as const :
+        reExtractionTally.ambiguousConnective && reExtractionTally.citationOmitsQuantity ? 'both' as const :
+        reExtractionTally.ambiguousConnective ? 'ambiguous_connective' as const : 'citation_omits_quantity' as const;
+      if (trigger === 'none') input.reExtraction.record({ trigger, outcome: 'not_needed', firstPass });
+      else if (trigger === 'other_rejection') input.reExtraction.record({ trigger, outcome: 'not_eligible', firstPass });
+      else {
+        const skip = input.reExtraction.admit();
+        if (skip) input.reExtraction.record({ trigger, outcome: 'skipped', skipReason: skip, firstPass });
+        else {
+          // Full tenant/source revalidation at the new dispatch boundary.
+          const fresh = await input.current() ? await revalidate() : [];
+          const sameInventory = fresh.length === extractionEvidence.length && fresh.every(e => e.businessId === input.businessId) &&
+            extractionEvidence.every(e => fresh.some(f => f.id === e.id));
+          if (!sameInventory) { input.reExtraction.record({ trigger, outcome: 'source_changed', firstPass }); return empty('UNAVAILABLE','SOURCE_INVALID'); }
+          availableEvidence = fresh;
+          // Re-check flag, permit, time and attempts at the final pre-dispatch boundary.
+          const late = input.reExtraction.admit();
+          if (late) input.reExtraction.record({ trigger, outcome: 'skipped', skipReason: late, firstPass });
+          else {
+            const guidance = [trigger !== 'citation_omits_quantity' ? REEXTRACTION_CONNECTIVE_GUIDANCE : '',
+              trigger !== 'ambiguous_connective' ? REEXTRACTION_CITATION_GUIDANCE : ''].filter(Boolean).join('\n');
+            const started = Date.now();
+            let second: ProviderResult;
+            try { second = await input.generate('re_extraction', extractionInstruction + '\n' + guidance,
+              extractionData(extractionEvidence.map(e => fresh.find(f => f.id === e.id)!)), extractionContract); }
+            catch (error) {
+              input.reExtraction.record({ trigger, outcome: 'failed', firstPass, durationMs: Date.now() - started, failureReason: knowledgeFailureReason(error) });
+              throw error;
+            }
+            const replacementRaw = checked(second, 'extraction');
+            if (!replacementRaw) {
+              input.reExtraction.record({ trigger, outcome: 'failed', firstPass, durationMs: Date.now() - started, failureReason: second.structuredFailure || 'MALFORMED_JSON' });
+              return empty('UNAVAILABLE', second.structuredFailure || 'MALFORMED_JSON');
+            }
+            raw = replacementRaw;
+            proposed = parseAnswerUnits(raw, facets, availableEvidence, language, diagnostic, 'quotation',
+              {businessId:input.businessId,question:input.question,language},
+              {businessId:input.businessId!,protocol:'source-exhaustive-v2'});
+            proposalParseComplete = Array.isArray(raw.units) && raw.oversized !== true && proposed.units.length === raw.units.length;
+            const replacementCount = Array.isArray(raw.units) ? raw.units.length : 0;
+            input.reExtraction.record({ trigger, outcome: 'dispatched', firstPass, durationMs: Date.now() - started,
+              replacement: { proposed: replacementCount, parsed: proposed.units.length, rejected: Math.max(0, replacementCount - proposed.units.length) } });
+          }
+        }
+      }
+    }
     // A rejected proposal cannot silently erase a requested condition, even if
     // a later coverage verdict incorrectly calls the surviving inventory complete.
     extractionIncomplete=!proposalParseComplete;

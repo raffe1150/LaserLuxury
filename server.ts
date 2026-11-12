@@ -44,9 +44,11 @@ import { isCancellationInformationRequested, readCancellationPolicy, cancellatio
   type CancellationConfirmation, type CancellationSubject } from './src/ai/cancellation-policy';
 import { selectSemanticQueries, retainPlannedQueryLanguages, explicitlyWrongWorkflow, type PlannedQueryLanguages, type SourceLanguage } from './src/knowledge/semantic-queries';
 import { RequestSecurity, immutable } from './src/knowledge/request-security';
-import { InformationBudget, INFORMATION_PUBLICATION_RESERVE_MS, parseRequestedFacets, answerEvidence, answerEvidenceBindings, buildEvidenceFirstAnswer, narrowInformationRequest, withinInformationDeadline, pruneAnswerManifest, publishableKnowledgeManifest, type Facet, type Evidence, type AnswerManifest } from './src/ai/business-information-answer-plan';
+import { ANSWER_LIMITS, InformationBudget, INFORMATION_PUBLICATION_RESERVE_MS, parseRequestedFacets, answerEvidence, answerEvidenceBindings, buildEvidenceFirstAnswer, narrowInformationRequest, withinInformationDeadline, pruneAnswerManifest, publishableKnowledgeManifest, type Facet, type Evidence, type AnswerManifest } from './src/ai/business-information-answer-plan';
 import { KNOWLEDGE_SCHEMA_VERSION, verificationAdmissionDiagnostic, knowledgeDiagnosticFailure, knowledgeStructuredOutput, knowledgeFailureReason, safeModelIdentifier, selectKnowledgeVerificationProtocol, selectKnowledgeExtractionProtocol, type KnowledgeExtractionProtocol, type KnowledgeVerificationProtocol, type KnowledgeDecision, type DecisionReason, type KnowledgeStage } from './src/ai/knowledge-answer-protocol';
-import { captureKnowledgeModelProfile, knowledgeStageOptions, type KnowledgeModelProfile, type KnowledgeExecutionPermit } from './src/ai/knowledge-model-policy';
+import { captureKnowledgeModelProfile, knowledgeStageOptions, solExtractionMode, solExtractionEligible, KNOWLEDGE_SOL_EXTRACTION_PROFILE, type KnowledgeModelProfile, type KnowledgeExecutionPermit } from './src/ai/knowledge-model-policy';
+import { emitSolCanaryTelemetry, extractionReasonCounts, reExtractionAdmission, runSolExtractionShadow, type SolStageRecord } from './src/ai/sol-extraction-canary';
+import { generateWithOpenAi } from './src/ai/providers/openai';
 import { resolveOpenAiTextModel } from './src/ai/providers/openai';
 import { mapWebsiteInstallation, websiteInstallationRouter } from './src/knowledge/website-installations';
 import { DocumentEvidenceRegistry, revalidateKnowledgeSourceIds } from './src/knowledge/evidence-registry';
@@ -1526,6 +1528,10 @@ type Priority1hTestDependencies = {
   knowledgeVoiceValidation?: () => Promise<void>;
   messengerVoiceReply?: (text: string) => Promise<{filePath: string; url: string}>;
   evidenceFirstDiagnostic?: (event: Record<string, unknown>) => void;
+  /** Offline Sol canary shadow transport and telemetry sink (tests only). */
+  solShadowGenerate?: (request: any) => Promise<any>;
+  solShadowTelemetry?: (event: any) => void;
+  solCanaryTelemetry?: (event: any) => void;
   evidenceFirstDecisionDiagnostic?: (event: Record<string, unknown>) => void;
   evidenceFirstPublicationDiagnostic?: (event: Record<string, unknown>) => void;
   bookingPresentationGenerate?: (request: UnifiedAiGenerationRequest) => Promise<UnifiedAiGenerationResponse>;
@@ -5563,7 +5569,7 @@ async function prepareNativeKnowledgeIngress(businessConfig:any):Promise<boolean
 }
 function knowledgeProviderStage(stage?:string):KnowledgeStage {
   if(stage==='knowledge_units_presentation_verification')return 'presentation_verification';
-  return stage==='semantic_knowledge_query_resolution'?'planning':stage==='knowledge_units_extraction'?'extraction':stage==='knowledge_units_verification'?'verification':'composition';
+  return stage==='semantic_knowledge_query_resolution'?'planning':stage==='knowledge_units_extraction'||stage==='knowledge_units_re_extraction'?'extraction':stage==='knowledge_units_verification'?'verification':'composition';
 }
 function emitKnowledgeDecision(event:KnowledgeDecision) {
   runOptionalDiagnostic(() => {
@@ -5884,6 +5890,30 @@ async function generateSecureConversationContent(sessionId: string, options: any
   return generateContentWithFallback(null, { ...options, tools });
 }
 
+/** Shadow mode only. Detached from every live-turn scope: it receives frozen
+ * copies of the admitted evidence and an independent document freshness check,
+ * and can neither delay nor change the reply, delivery or booking state. */
+function scheduleSolExtractionShadow(state: KnowledgeTurnState, question: string, language: string,
+  binding: Readonly<{ businessId: number; turnId: string; requestKey: string }>, businessTone: unknown, history: unknown) {
+  const snapshot = state.snapshot!;
+  if (snapshot.businessId !== state.businessId || process.env.NODE_ENV === 'test' && !priority1hTestDependencies?.solShadowGenerate) return;
+  const evidence = structuredClone([...snapshot.evidence]), facets = structuredClone([...(state.facets || [])]);
+  const matches = answerEvidenceBindings(snapshot.businessId, snapshot.matches).flatMap(b =>
+    evidence.some(e => e.id === b.evidence.id && JSON.stringify(e) === JSON.stringify(b.evidence)) ? b.matches : []);
+  const sources = [...new Set(evidence.map(e => e.sourceId))];
+  const current = async () => {
+    const valid = await revalidateKnowledgeSourceIds(snapshot.businessId, structuredClone(matches),
+      priority1hTestDependencies?.validateKnowledgeMatches || ((id, m) => knowledgeService.validateMatches(id, m, { strictSources: true, requireCompleteDocumentContext: true })));
+    return sources.length > 0 && sources.every(id => valid.has(id));
+  };
+  const channel = state.nativeChannel || 'internal';
+  const run = () => knowledgeTurnScope.exit(() => runSolExtractionShadow({ binding: { ...binding, turnId: 'shadow:' + binding.turnId }, businessId: snapshot.businessId,
+    channel, question, language, facets, evidence, history: structuredClone(history ?? []), businessTone, current, provider: getConfiguredAiProvider(),
+    generate: (process.env.NODE_ENV === 'test' && priority1hTestDependencies?.solShadowGenerate) || generateWithOpenAi,
+    ...(priority1hTestDependencies?.solShadowTelemetry ? { emit: priority1hTestDependencies.solShadowTelemetry } : {}) }).catch(() => undefined));
+  setImmediate(run);
+}
+
 /** Shared already-admitted native execution; routing remains at its caller. */
 async function generateNativeKnowledgeContent(sessionId:string,options:any,support:(BusinessInformationTurn|CompletedBookingSupportTurn)&{question:string},state:KnowledgeTurnState) {
   state.sessionId = sessionId;
@@ -5926,6 +5956,17 @@ async function generateNativeKnowledgeContent(sessionId:string,options:any,suppo
     if (state.extractionProtocol === undefined) Object.defineProperty(state, 'extractionProtocol', { value: extractionProtocol, enumerable: true });
     const snapshot = buildBusinessGroundingSnapshot(support);
     const language = capturedSupportLanguage(support);
+    // Tenant-scoped Sol extraction canary (default OFF). The profile above was
+    // captured pre-turn; OFF/ineligible turns take exactly the existing path.
+    const canaryEligible = solExtractionEligible({ provider: getConfiguredAiProvider(), nativeForeground: !!nativeKnowledgeTiming() && !!state.nativeChannel && !!state.nativeEvent?.eventId,
+      natural: !!state.naturalEnabled, durable: state.budget instanceof DurableKnowledgeBudget, extractionProtocol: configuredExtractionProtocol, verificationProtocol,
+      documentary: modelEvidenceSnapshot.some(e => !e.sourceId.startsWith('configured-services:') && !e.sourceId.startsWith('business-cancellation-configuration:')) &&
+        (!directConfiguredServicePlan(support.question, support.businessConfig) || isMixedSourceInformationQuestion(support.question, support.businessConfig)),
+      operational: isExplicitBusinessActionRequest(support.question) });
+    const canaryMode = canaryEligible ? solExtractionMode(state.businessId!) : 'off';
+    const canaryStages: SolStageRecord[] = [], canaryEvents: KnowledgeDecision[] = [];
+    let canaryReExtraction: Parameters<NonNullable<Parameters<typeof buildEvidenceFirstAnswer>[0]['reExtraction']>['record']>[0] | undefined;
+    const canaryStarted = Date.now();
     const clarification = state.nativeChannel && nativeKnowledgeTiming() && !state.mixedRequest &&
       !state.requiresReferenceResolution && !state.unresolvedReference && options.knowledgePublication === 'guarded_text'
       ? serviceSelectionClarification(support.question, language) : undefined;
@@ -5964,15 +6005,24 @@ async function generateNativeKnowledgeContent(sessionId:string,options:any,suppo
           },
         } : {}),
       finalPublicationRevalidates: options.knowledgePublication === 'guarded_text',
-      diagnostic:event=>emitKnowledgeDecision(event.stage==='freshness'&&event.reason==='SOURCE_INVALID'&&state.freshnessFailure
-        ? {...event,reason:state.freshnessFailure}:event),
-      generate: async (stage, instruction, data, contract) => {
-        const started = Date.now(); let ok = false;
+      diagnostic:event=>{if(canaryMode!=='off')canaryEvents.push(event);emitKnowledgeDecision(event.stage==='freshness'&&event.reason==='SOURCE_INVALID'&&state.freshnessFailure
+        ? {...event,reason:state.freshnessFailure}:event);},
+      ...(state.modelProfile!.id === KNOWLEDGE_SOL_EXTRACTION_PROFILE && canaryMode === 'active' ? { reExtraction: {
+        record: event => { canaryReExtraction = event; },
+        admit: () => reExtractionAdmission({ profile: state.modelProfile!, businessId: state.businessId!, mode: 'active',
+          generationRemainingMs: state.budget!.generationRemaining(), attempts: state.budget!.attempts, maxAttempts: ANSWER_LIMITS.attempts }),
+      } } : {}),
+      generate: async (requestedStage, instruction, data, contract) => {
+        // A re_extraction is a complete fresh extraction: same schema, effort
+        // and timing rules, but its own stage permit and budget reservation.
+        const stage = requestedStage === 're_extraction' ? 'extraction' as const : requestedStage;
+        const started = Date.now(); let ok = false; const costBefore = state.budget!.estimatedCostUsd ?? 0; let sol = false;
         const wireData = stage === 'verification' && getConfiguredAiProvider() === 'openai' && !(state.budget instanceof DurableKnowledgeBudget)
           ? compactKnowledgeVerifierInput(data) : data;
         try {
-          const profileOptions = knowledgeStageOptions(state.modelProfile!, stage, modelBinding, Date.now() +
+          const profileOptions = knowledgeStageOptions(state.modelProfile!, requestedStage, modelBinding, Date.now() +
             (stage === 'extraction' ? accuracyFirstExtractionAllowance(state.budget!.generationRemaining()) : Math.min(19999, state.budget!.generationRemaining())));
+          sol = !!profileOptions.knowledgeExecution;
           const pending = generateContentWithFallback(null, { messages: [{ role: 'user', content: JSON.stringify(wireData) }],
           systemInstruction: instruction, tools: [], informationBudget: state.budget,
           ...profileOptions,
@@ -5980,20 +6030,31 @@ async function generateNativeKnowledgeContent(sessionId:string,options:any,suppo
           ...(stage!=='composition'?{structuredOutput:knowledgeStructuredOutput(stage,state.naturalEnabled,
             stage==='extraction' ? state.facets?.map(f=>f.id) : undefined,
             stage==='extraction'&&(data as {authorityScope?:unknown})?.authorityScope==='document_only'?5:6,verificationProtocol,contract?.extractionProtocol,contract?.canonicalConfiguration)}:{}),
-          context: { ...businessInformationTimingContext(sessionId), businessId: state.businessId, channel: 'knowledge-core', stage: `knowledge_units_${stage}`, language: capturedSupportLanguage(support) } });
-          if(stage==='extraction'||stage==='verification')runOptionalDiagnostic(()=>state.durableProgress?.(stage,(state.facets||[]).map(f=>f.attribute)));
+          context: { ...businessInformationTimingContext(sessionId), businessId: state.businessId, channel: 'knowledge-core', stage: `knowledge_units_${requestedStage}`, language: capturedSupportLanguage(support) } });
+          if(requestedStage==='extraction'||requestedStage==='verification')runOptionalDiagnostic(()=>state.durableProgress?.(requestedStage,(state.facets||[]).map(f=>f.attribute)));
           const result=await pending;
-          if (stage === 'extraction' && state.durableCheckpoint) await state.durableCheckpoint('extraction');
+          if (requestedStage === 'extraction' && state.durableCheckpoint) await state.durableCheckpoint('extraction');
           ok = true; return result;
         } finally {
-          if(stage==='extraction'||stage==='verification')runOptionalDiagnostic(()=>state.durableProgress?.(null));
-          state.budget!.stages.push({ stage, durationMs: Date.now() - started, ok });
+          if(requestedStage==='extraction'||requestedStage==='verification')runOptionalDiagnostic(()=>state.durableProgress?.(null));
+          state.budget!.stages.push({ stage: requestedStage, durationMs: Date.now() - started, ok });
+          if (canaryMode !== 'off' && (requestedStage === 'extraction' || requestedStage === 're_extraction' || requestedStage === 'verification'))
+            canaryStages.push({ stage: requestedStage, model: sol ? 'sol' : 'luna', durationMs: Date.now() - started, ok,
+              ...(sol ? { costNanoUsd: Math.round(((state.budget!.estimatedCostUsd ?? 0) - costBefore) * 1e9) } : {}) });
         }
       },
     });
     const unavailable=state.freshnessFailure?{...manifest,fallbackReason:state.freshnessFailure,
       ...(state.naturalEnabled?{naturalOutcome:'canonical_fallback' as const,naturalReason:state.freshnessFailure}:{})}:manifest;
     state.manifest = state.oversized ? { ...unavailable, text: narrowInformationRequest(capturedSupportLanguage(support)) } : unavailable;
+    if (canaryMode === 'active') (priority1hTestDependencies?.solCanaryTelemetry ?? emitSolCanaryTelemetry)({ schema: 'sol-extraction-canary-v1', mode: 'active', businessId: state.businessId!,
+      channel: state.nativeChannel || 'internal', language, profile: state.modelProfile!.id === KNOWLEDGE_SOL_EXTRACTION_PROFILE ? 'sol-extraction-v1' : 'default',
+      ...(state.modelProfile!.canaryFallback ? { fallbackReason: state.modelProfile!.canaryFallback } : {}),
+      stages: canaryStages, extractionReasons: extractionReasonCounts(canaryEvents), ...(canaryReExtraction ? { reExtraction: canaryReExtraction } : {}),
+      publication: publishableKnowledgeManifest(state.manifest, state.businessId) ? 'published' : 'safe_fallback',
+      fallbackReason_publication: state.manifest.fallbackReason, elapsedMs: Date.now() - canaryStarted });
+    if (canaryMode === 'shadow' && state.snapshot && state.modelProfile!.id === 'default') scheduleSolExtractionShadow(state, support.question, language,
+      modelBinding, normalizeBusinessToneConfig(support.businessConfig?.toneConfig), state.history || (options.messages || []).slice(-3));
     runOptionalDiagnostic(() => {
       const diagnostic = immutable({ businessInfoTurnId: businessInformationTimingContext(sessionId).businessInfoTurnId,
         nativeChannel:state.nativeChannel||'internal',schemaVersion:KNOWLEDGE_SCHEMA_VERSION,provider:state.provider,model:state.model,

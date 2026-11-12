@@ -1,13 +1,19 @@
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { knowledgeStructuredOutput } from './knowledge-answer-protocol';
+import { isSourceExhaustiveProtocol } from './source-exhaustive-coverage';
 import type { UnifiedAiGenerationRequest } from './providers/provider';
 
 export const KNOWLEDGE_SOL_PROFILE = 'sol-low-v1' as const;
+/** Extraction-only canary: Sol for extraction and one budget-owned re_extraction;
+ * verification stays on the default (Luna) source-exhaustive verifier. */
+export const KNOWLEDGE_SOL_EXTRACTION_PROFILE = 'sol-extraction-v1' as const;
+type SolProfile = typeof KNOWLEDGE_SOL_PROFILE | typeof KNOWLEDGE_SOL_EXTRACTION_PROFILE;
 export const KNOWLEDGE_SOL_RATES = Object.freeze({
   version: 'openai-sol-standard-30m-2026-10-28', input: 2, cacheRead: .1, cacheWrite: 2.5, output: 10,
 });
-type Stage = 'extraction' | 'verification';
+type Stage = 'extraction' | 're_extraction' | 'verification';
+export type KnowledgeSolStage = Stage;
 export type KnowledgeModelBinding = Readonly<{ businessId: number; turnId: string; requestKey: string }>;
 export type KnowledgeCostQuote = KnowledgeModelBinding & Readonly<{
   stage: Stage; model: 'gpt-6.1-sol'; requestSha256: string; reservationKey: string;
@@ -75,8 +81,9 @@ export function configureKnowledgeBudgetOwner(owner?: KnowledgeBudgetOwner): voi
     maximumRequestNanoUsd: owner.maximumRequestNanoUsd, maximumTurnNanoUsd: owner.maximumTurnNanoUsd,
     reserve: owner.reserve.bind(owner), settle: owner.settle.bind(owner), retainUnknown: owner.retainUnknown.bind(owner) });
 }
-export type KnowledgeModelProfile = Readonly<{ id: 'default' | typeof KNOWLEDGE_SOL_PROFILE; activationBlock?: string }>;
-type Selection = { binding: KnowledgeModelBinding; owner?: Owner; current?: () => Promise<boolean>; used: Set<Stage>; failed: boolean };
+export type KnowledgeModelProfile = Readonly<{ id: 'default' | SolProfile; activationBlock?: string;
+  /** Pre-turn canary fallback reason (content-free). The turn runs entirely on Luna. */ canaryFallback?: string }>;
+type Selection = { binding: KnowledgeModelBinding; owner?: Owner; current?: () => Promise<boolean>; used: Set<Stage>; settled: Set<Stage>; failed: boolean };
 const profiles = new WeakMap<KnowledgeModelProfile, Selection>();
 const defaultProfile: KnowledgeModelProfile = Object.freeze({ id: 'default' });
 export function captureKnowledgeModelProfile(input: KnowledgeModelBinding & {
@@ -84,6 +91,8 @@ export function captureKnowledgeModelProfile(input: KnowledgeModelBinding & {
   extractionProtocol: string; verificationProtocol: string; documentary: boolean; operational: boolean;
   current?: () => Promise<boolean>;
 }, env: NodeJS.ProcessEnv = process.env): KnowledgeModelProfile {
+  if ((!env.ODINLINK_KNOWLEDGE_MODEL_PROFILE || env.ODINLINK_KNOWLEDGE_MODEL_PROFILE === 'off') &&
+    solExtractionMode(input.businessId, env) === 'active') return captureSolExtraction(input);
   if (!env.ODINLINK_KNOWLEDGE_MODEL_PROFILE || env.ODINLINK_KNOWLEDGE_MODEL_PROFILE === 'off' ||
     input.provider !== 'openai' || !input.nativeForeground || input.natural || input.durable || !input.documentary || input.operational ||
     input.extractionProtocol !== 'v2' || input.verificationProtocol !== 'v2') return defaultProfile;
@@ -96,22 +105,74 @@ export function captureKnowledgeModelProfile(input: KnowledgeModelBinding & {
     typeof input.current !== 'function' ? 'source_check_unavailable' : undefined;
   const profile = Object.freeze({ id: KNOWLEDGE_SOL_PROFILE, ...(activationBlock ? { activationBlock } : {}) });
   profiles.set(profile, { binding: Object.freeze({ businessId: input.businessId, turnId: input.turnId, requestKey: input.requestKey }), owner,
-    current: input.current, used: new Set(), failed: false });
+    current: input.current, used: new Set(), settled: new Set(), failed: false });
   return profile;
 }
-export type KnowledgeExecutionPermit = Readonly<{ profile: typeof KNOWLEDGE_SOL_PROFILE; stage: Stage }>;
+
+const TENANT_LIST = /^[1-9][0-9]{0,15}$/u;
+/** Backend configuration only, default OFF. Separate from the legacy managed
+ * profile: ODINLINK_KNOWLEDGE_MODEL_PROFILE must stay unset/off (it is
+ * process-wide incompatible with the source-exhaustive verifier). Unknown modes,
+ * malformed or oversized tenant lists and non-allowlisted tenants are OFF. */
+export function solExtractionMode(businessId: number, env: NodeJS.ProcessEnv = process.env): 'off' | 'shadow' | 'active' {
+  const mode = env.ODINLINK_SOL_EXTRACTION_MODE;
+  if ((mode !== 'shadow' && mode !== 'active') || (env.ODINLINK_KNOWLEDGE_MODEL_PROFILE && env.ODINLINK_KNOWLEDGE_MODEL_PROFILE !== 'off') ||
+    !Number.isSafeInteger(businessId) || businessId <= 0) return 'off';
+  const tenants = (env.ODINLINK_SOL_EXTRACTION_TENANT_IDS ?? '').split(',').map(s => s.trim());
+  if (!tenants.length || tenants.length > 10 || !tenants.every(id => TENANT_LIST.test(id) && Number.isSafeInteger(Number(id)))) return 'off';
+  return tenants.includes(String(businessId)) ? mode : 'off';
+}
+/** Canary eligibility: customer-facing native Knowledge document questions only. */
+export function solExtractionEligible(input: { provider: string; nativeForeground: boolean; natural: boolean; durable: boolean;
+  extractionProtocol: string; verificationProtocol: string; documentary: boolean; operational: boolean }): boolean {
+  return input.provider === 'openai' && input.nativeForeground && !input.natural && !input.durable && input.documentary && !input.operational &&
+    input.extractionProtocol === 'v2' && input.verificationProtocol === 'source-exhaustive-v2' && isSourceExhaustiveProtocol(input.verificationProtocol);
+}
+/** Pre-turn decision only. Any unavailable authority selects the unchanged
+ * default (Luna) profile for the WHOLE turn; once Sol is selected, a later
+ * failure fails closed and never switches models mid-turn. */
+function captureSolExtraction(input: Parameters<typeof captureKnowledgeModelProfile>[0]): KnowledgeModelProfile {
+  const fallback = (reason: string): KnowledgeModelProfile => Object.freeze({ id: 'default', canaryFallback: reason });
+  if (!solExtractionEligible(input)) return defaultProfile;
+  if (!(integer(input.businessId) && input.businessId > 0 && input.turnId.length && /^[a-f0-9]{64}$/u.test(input.requestKey))) return fallback('turn_binding');
+  const owner = installedOwner;
+  if (!owner) return fallback('budget_owner_unavailable');
+  if (!owner.businessIds.includes(input.businessId)) return fallback('budget_owner_tenant');
+  if (typeof input.current !== 'function') return fallback('source_check_unavailable');
+  const profile: KnowledgeModelProfile = Object.freeze({ id: KNOWLEDGE_SOL_EXTRACTION_PROFILE });
+  profiles.set(profile, { binding: Object.freeze({ businessId: input.businessId, turnId: input.turnId, requestKey: input.requestKey }), owner,
+    current: input.current, used: new Set(), settled: new Set(), failed: false });
+  return profile;
+}
+/** Shadow mode only: the reply turn stays on the default profile; this captures
+ * a SEPARATE Sol selection for a detached, never-published extraction replay
+ * of the same message (same request key, so the same per-message limits). */
+export function captureSolExtractionShadow(input: Parameters<typeof captureKnowledgeModelProfile>[0], env: NodeJS.ProcessEnv = process.env): KnowledgeModelProfile {
+  return solExtractionMode(input.businessId, env) === 'shadow' ? captureSolExtraction(input) : defaultProfile;
+}
+/** Re-extraction admission for the host: Sol extraction must have settled and
+ * no stage of this turn may have failed. Never consumes or creates a permit. */
+export function knowledgeReExtractionAvailable(profile: KnowledgeModelProfile | undefined): boolean {
+  const selection = profile && profile.id === KNOWLEDGE_SOL_EXTRACTION_PROFILE ? profiles.get(profile) : undefined;
+  return !!selection && !selection.failed && selection.settled.has('extraction') && !selection.used.has('re_extraction');
+}
+export type KnowledgeExecutionPermit = Readonly<{ profile: SolProfile; stage: Stage }>;
 type Permit = { selection: Selection; stage: Stage; deadlineAt: number; attempted: boolean };
 const permits = new WeakMap<KnowledgeExecutionPermit, Permit>();
 export function knowledgeStageOptions(profile: KnowledgeModelProfile, stage: string, binding: KnowledgeModelBinding, deadlineAt: number):
   Partial<Pick<UnifiedAiGenerationRequest, 'model' | 'reasoningEffort' | 'knowledgeExecution'>> {
-  if (profile.id === 'default' || (stage !== 'extraction' && stage !== 'verification')) return {};
+  if (profile.id === 'default' || (stage !== 'extraction' && stage !== 'verification' && stage !== 're_extraction')) return {};
+  // The extraction-only canary keeps the unchanged default verifier.
+  if (profile.id === KNOWLEDGE_SOL_EXTRACTION_PROFILE && stage === 'verification') return {};
   const selection = profiles.get(profile);
   check(selection && isDeepStrictEqual(selection.binding, binding), 'turn_binding');
   check(!profile.activationBlock && selection.owner, profile.activationBlock ?? 'budget_owner_unavailable');
-  check(!selection.failed && !selection.used.has(stage), 'stage_already_closed');
+  check(stage !== 're_extraction' || profile.id === KNOWLEDGE_SOL_EXTRACTION_PROFILE, 'stage_unsupported');
+  check(!selection.failed && !selection.used.has(stage as Stage), 'stage_already_closed');
+  check(stage !== 're_extraction' || selection.settled.has('extraction'), 're_extraction_without_extraction');
   check(Number.isFinite(deadlineAt) && deadlineAt > Date.now(), 'deadline');
-  selection.used.add(stage);
-  const permit = Object.freeze({ profile: KNOWLEDGE_SOL_PROFILE, stage });
+  selection.used.add(stage as Stage);
+  const permit = Object.freeze({ profile: profile.id, stage: stage as Stage });
   permits.set(permit, { selection, stage, deadlineAt, attempted: false });
   return { model: 'gpt-6.1-sol', reasoningEffort: 'low', knowledgeExecution: permit };
 }
@@ -126,8 +187,10 @@ function validRequest(request: UnifiedAiGenerationRequest, state: Permit) {
   const ids = object(facetIds) && object(facetIds.items) && facetIds.items.enum;
   const allowedIds = Array.isArray(ids) && ids.every(id => typeof id === 'string') ? ids : undefined;
   const max = object(units) && typeof units.maxItems === 'number' ? units.maxItems : 6;
-  if (state.stage === 'extraction') check(allowedIds && (max === 5 || max === 6), 'bounded_extraction');
-  check(isDeepStrictEqual(schema, knowledgeStructuredOutput(state.stage, false, allowedIds, max, 'v2')), 'strict_schema');
+  // A re-extraction is a complete fresh extraction under the same schema.
+  const schemaStage = state.stage === 'verification' ? 'verification' : 'extraction';
+  if (schemaStage === 'extraction') check(allowedIds && (max === 5 || max === 6), 'bounded_extraction');
+  check(isDeepStrictEqual(schema, knowledgeStructuredOutput(schemaStage, false, allowedIds, max, 'v2')), 'strict_schema');
   check(!request.tools?.length && request.messages.length === 1 && request.messages[0].role === 'user', 'request_scope');
   const data: unknown = JSON.parse(request.messages[0].content);
   check(object(data) && Array.isArray(data.evidence) && data.evidence.length &&
@@ -224,6 +287,7 @@ export async function executeKnowledgeGeneration<T>(request: UnifiedAiGeneration
     await withinSignal(owner.settle(reservationId, quote, usage), signal);
     settled = true;
     signal.throwIfAborted();
+    state.selection.settled.add(state.stage);
     return { response, usage };
   } catch (error) {
     state.selection.failed = true;

@@ -122,6 +122,18 @@ export class NativeKnowledgeTiming {
   }
 }
 
+/** Detached, queue-free timing scope for the post-delivery Sol shadow. It is
+ * never admitted through the customer Knowledge queue and owns its own
+ * processing/lifetime signals; nothing it does can reach a reply or delivery. */
+export async function runDetachedKnowledgeShadow<T>(work: () => Promise<T>): Promise<T | undefined> {
+  const timing = new NativeKnowledgeTiming();
+  return context.run(timing, async () => {
+    try { return await abortKnowledgeWork(timing.observe(Promise.resolve().then(work)), timing.signal); }
+    catch { return undefined; }
+    finally { timing.close(); }
+  });
+}
+
 export async function abortKnowledgeWork<T>(promise: PromiseLike<T>, signal: AbortSignal): Promise<T> {
   if (signal.aborted) { void Promise.resolve(promise).catch(() => {}); signal.throwIfAborted(); }
   let abort!: () => void;

@@ -7,10 +7,15 @@
 
 export type AiRoutingProvider = 'openai' | 'gemini';
 
-/** Metered evidence-first Knowledge stages vs. everything else. */
-export type ModelStage = 'general' | 'knowledge_extraction' | 'knowledge_re_extraction' | 'knowledge_verification';
+/** Metered evidence-first Knowledge stages, the latency-bound planner, and everything else. */
+export type ModelStage = 'general' | 'knowledge_planning' | 'knowledge_extraction' | 'knowledge_re_extraction' | 'knowledge_verification';
 export const FINANCIALLY_CONTROLLED_STAGES: ReadonlySet<ModelStage> =
   new Set(['knowledge_extraction', 'knowledge_re_extraction', 'knowledge_verification']);
+/** Stages with a fixed sub-3-second host budget (Knowledge query planning:
+ * KNOWLEDGE_PLANNING_LIMIT_MS = 2500, including AI-queue wait). A 'deliberate'
+ * default model serves them through the interactive baseline instead of
+ * routinely timing out; the budget itself is never raised. */
+export const LATENCY_BOUND_STAGES: ReadonlySet<ModelStage> = new Set(['knowledge_planning']);
 
 export type ModelDescriptor = Readonly<{
   id: string;
@@ -20,15 +25,17 @@ export type ModelDescriptor = Readonly<{
   /** 'knowledge-budget-owner': metered Knowledge stages on this model are
    * dispatchable ONLY through a captured, owner-reserved permit. */
   knowledgeFinancialControl: 'none' | 'knowledge-budget-owner';
+  /** 'interactive': validated for the latency-bound stages; 'deliberate': not. */
+  latencyClass: 'interactive' | 'deliberate';
 }>;
 
 /** Models proven compatible with the production adapters. Supporting another
  * model or provider = one validated entry here (+ its adapter tests). */
 export const MODEL_CATALOG: Readonly<Record<string, ModelDescriptor>> = Object.freeze({
   'gpt-5.6-luna': Object.freeze({ id: 'gpt-5.6-luna', provider: 'openai',
-    capabilities: Object.freeze({ toolCalling: true, strictStructuredOutput: true, reasoningEffortLow: true }), knowledgeFinancialControl: 'none' }),
+    capabilities: Object.freeze({ toolCalling: true, strictStructuredOutput: true, reasoningEffortLow: true }), knowledgeFinancialControl: 'none', latencyClass: 'interactive' }),
   'gpt-6.1-sol': Object.freeze({ id: 'gpt-6.1-sol', provider: 'openai',
-    capabilities: Object.freeze({ toolCalling: true, strictStructuredOutput: true, reasoningEffortLow: true }), knowledgeFinancialControl: 'knowledge-budget-owner' }),
+    capabilities: Object.freeze({ toolCalling: true, strictStructuredOutput: true, reasoningEffortLow: true }), knowledgeFinancialControl: 'knowledge-budget-owner', latencyClass: 'deliberate' }),
 } as const);
 
 /** Known-good model: the unset default, the rollback target and the only
@@ -84,10 +91,12 @@ export function modelStageFor(contextStage?: string, structuredOutputName?: stri
   if (stage === 'knowledge_units_extraction') return 'knowledge_extraction';
   if (stage === 'knowledge_units_re_extraction') return 'knowledge_re_extraction';
   if (stage === 'knowledge_units_verification') return 'knowledge_verification';
+  if (stage === 'semantic_knowledge_query_resolution') return 'knowledge_planning';
   if (stage) return 'general';
   const name = String(structuredOutputName ?? '').trim();
   if (/^odinlink_knowledge_(?:extraction|documentary_partition)|^odinlink_natural_extraction/u.test(name)) return 'knowledge_extraction';
   if (/^odinlink_knowledge_(?:verification|source_exhaustive)/u.test(name)) return 'knowledge_verification';
+  if (/^odinlink_knowledge_planning/u.test(name)) return 'knowledge_planning';
   return 'general';
 }
 
@@ -96,7 +105,7 @@ export function isKnowledgeStageSchema(name?: string): boolean {
   return /^odinlink_knowledge_|^odinlink_natural_extraction/u.test(String(name ?? '').trim());
 }
 
-export type ModelRoute = Readonly<{ model: string; stage: ModelStage; selected: string; fallbackReason?: 'financial_control_unavailable' }>;
+export type ModelRoute = Readonly<{ model: string; stage: ModelStage; selected: string; fallbackReason?: 'financial_control_unavailable' | 'latency_budget' }>;
 
 /** Pre-dispatch selection only; a provider failure never re-sends on another model.
  * A financially controlled default reaches a metered Knowledge stage only with
@@ -108,6 +117,8 @@ export function routeDefaultModel(stage: ModelStage = 'general', financialPermit
   if (FINANCIALLY_CONTROLLED_STAGES.has(stage) && !financialPermit &&
       MODEL_CATALOG[selected]?.knowledgeFinancialControl === 'knowledge-budget-owner')
     return Object.freeze({ model: BASELINE_MODEL, stage, selected, fallbackReason: 'financial_control_unavailable' as const });
+  if (LATENCY_BOUND_STAGES.has(stage) && MODEL_CATALOG[selected]?.latencyClass === 'deliberate')
+    return Object.freeze({ model: BASELINE_MODEL, stage, selected, fallbackReason: 'latency_budget' as const });
   return Object.freeze({ model: selected, stage, selected });
 }
 

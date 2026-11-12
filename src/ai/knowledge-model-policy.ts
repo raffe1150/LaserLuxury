@@ -90,7 +90,25 @@ export type KnowledgeModelProfile = Readonly<{ id: 'default' | SolProfile; activ
   /** Pre-turn canary fallback reason (content-free). The turn runs entirely on Luna. */ canaryFallback?: string;
   /** Pre-turn production-routing fallback reason (content-free). Every Knowledge
    * stage of the turn then runs on the routing fallback model. */ managedFallback?: string }>;
-type Selection = { binding: KnowledgeModelBinding; owner?: Owner; current?: () => Promise<boolean>; used: Set<Stage>; settled: Set<Stage>; failed: boolean;
+/** The evidence a Sol request actually carries (id, tenant, exact text). */
+export type KnowledgeRequestEvidence = Readonly<{ id: string; businessId: number; text: string }>;
+type CurrentCheck = (sent: readonly KnowledgeRequestEvidence[]) => Promise<boolean>;
+/** Post-reservation freshness contract. Every evidence item SENT must be one the
+ * host captured for this tenant, byte-identical (tenant, text) to it, and still
+ * present with the identical [tenant, source, chunk, version, text] in a fresh
+ * revalidation. Sources excluded before the reservation are simply not sent and
+ * therefore cannot fail the request; nothing outside the captured set can pass. */
+export function sentEvidenceCurrent(sent: readonly KnowledgeRequestEvidence[], captured: readonly Readonly<{ id: string; businessId: number;
+  sourceId: string; chunkId: string; version: string; text: string }>[], fresh: typeof captured, businessId: number): boolean {
+  const key = (e: typeof captured[number]) => JSON.stringify([e.businessId, e.sourceId, e.chunkId, e.version, e.text]);
+  const capturedById = new Map(captured.map(e => [e.id, e])), freshById = new Map(fresh.map(e => [e.id, key(e)]));
+  return sent.length > 0 && new Set(sent.map(e => e.id)).size === sent.length && sent.every(item => {
+    const original = capturedById.get(item.id);
+    return !!original && original.businessId === businessId && item.businessId === businessId && item.text === original.text &&
+      freshById.get(item.id) === key(original);
+  });
+}
+type Selection = { binding: KnowledgeModelBinding; owner?: Owner; current?: CurrentCheck; used: Set<Stage>; settled: Set<Stage>; failed: boolean;
   /** Stages this profile dispatches on Sol through owner permits; captured once. */ managed: ReadonlySet<Stage>;
   /** Captured verifier protocol; the Sol verifier schema must match it exactly. */ verificationProtocol: string };
 const LEGACY_STAGES: ReadonlySet<Stage> = new Set(['extraction', 'verification']);
@@ -100,7 +118,7 @@ const defaultProfile: KnowledgeModelProfile = Object.freeze({ id: 'default' });
 export function captureKnowledgeModelProfile(input: KnowledgeModelBinding & {
   provider: string; nativeForeground: boolean; natural: boolean; durable: boolean;
   extractionProtocol: string; verificationProtocol: string; documentary: boolean; operational: boolean;
-  current?: () => Promise<boolean>;
+  current?: CurrentCheck;
 }, env: NodeJS.ProcessEnv = process.env): KnowledgeModelProfile {
   if ((!env.ODINLINK_KNOWLEDGE_MODEL_PROFILE || env.ODINLINK_KNOWLEDGE_MODEL_PROFILE === 'off') &&
     solExtractionMode(input.businessId, env) === 'active') return captureSolExtraction(input);
@@ -315,9 +333,12 @@ export async function executeKnowledgeGeneration<T>(request: UnifiedAiGeneration
     check(receipt, 'reservation_denied'); reservationId = receipt.id;
     check(typeof receipt.id === 'string' && receipt.id.length && receipt.reservationKey === quote.reservationKey && receipt.maximumNanoUsd === maximumNanoUsd, 'reservation_identity');
     signal.throwIfAborted();
-    // A monetary reserve is a NEW asynchronous boundary. Recheck the same
-    // tenant/message/source snapshot before sending its contents to a model.
-    check(state.selection.current && await withinSignal(state.selection.current(), signal), 'source_or_turn_changed');
+    // A monetary reserve is a NEW asynchronous boundary. Recheck the exact
+    // evidence this request carries (tenant/source/chunk/version/text) before
+    // sending its contents to a model.
+    const sent: readonly KnowledgeRequestEvidence[] = Object.freeze((JSON.parse(request.messages[0].content).evidence as any[]).map(e =>
+      Object.freeze({ id: String(e.id), businessId: e.businessId, text: String(e.text) })));
+    check(state.selection.current && await withinSignal(state.selection.current(sent), signal), 'source_or_turn_changed');
     signal.throwIfAborted();
     check(deadlineAt - Date.now() >= (state.stage === 'verification' ? 10000 : 1), 'dispatch_allowance');
     check(sha256Wire(wire) === requestSha256, 'wire_mutated');

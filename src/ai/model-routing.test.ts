@@ -33,6 +33,16 @@ test('Sol default: every non-metered stage on Sol; metered stages Sol only with 
   assert.equal(managedKnowledgeDefault(SOL_DEFAULT), true);
 });
 
+test('latency-bound planning: a deliberate default (Sol) plans on the interactive baseline; budget unchanged', () => {
+  const r = routeDefaultModel('knowledge_planning', false, SOL_DEFAULT);
+  assert.deepEqual([r.model, r.selected, r.fallbackReason], [LUNA, SOL, 'latency_budget']);
+  assert.deepEqual(routeDefaultModel('knowledge_planning', false, { ODINLINK_AI_DEFAULT_MODEL: LUNA }), { model: LUNA, stage: 'knowledge_planning', selected: LUNA });
+  assert.equal(routeDefaultModel('knowledge_planning', false, { OPENAI_MODEL: 'unlisted' }).model, 'unlisted', 'uncatalogued legacy models keep previous behavior');
+  assert.equal(routeDefaultModel('general', false, SOL_DEFAULT).model, SOL);
+  assert.equal(modelStageFor('semantic_knowledge_query_resolution'), 'knowledge_planning');
+  assert.equal(modelStageFor(undefined, 'odinlink_knowledge_planning_v2'), 'knowledge_planning');
+});
+
 test('unsupported model/provider or conflicting Sol flags are rejected at startup with content-free codes', () => {
   const cases: Array<[NodeJS.ProcessEnv, string]> = [
     [{ ODINLINK_AI_DEFAULT_MODEL: 'gpt-7-astra' }, 'default_unsupported_model'],

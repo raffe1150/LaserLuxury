@@ -95,7 +95,9 @@ for (const channel of ['telegram', 'whatsapp', 'instagram', 'messenger'] as cons
     assert.equal(r.reply, r.publishedAnswer);
     assert.deepEqual(knowledgeStages(r.routes), [
       { stage: 'knowledge_extraction', model: SOL, permit: true }, { stage: 'knowledge_verification', model: SOL, permit: true }]);
-    assert.ok(r.routes.every(x => x.model === SOL), JSON.stringify(r.routes));
+    // Latency-bound planner (2500 ms host budget) stays on the interactive baseline; all else Sol.
+    assert.ok(r.routes.filter(x => x.stage === 'knowledge_planning').every(x => x.model === LUNA && x.fallback === 'latency_budget'), JSON.stringify(r.routes));
+    assert.ok(r.routes.filter(x => x.stage !== 'knowledge_planning').every(x => x.model === SOL), JSON.stringify(r.routes));
     assert.deepEqual(r.logs.map(l => [l.profile, l.channel, l.publication]), [['sol-knowledge-v2', channel, 'published']]);
   });
   test(`Sol production / ${channel} / ${language}: no financial owner -> whole-turn Luna for metered stages, gates unchanged`, async t => {
@@ -104,7 +106,7 @@ for (const channel of ['telegram', 'whatsapp', 'instagram', 'messenger'] as cons
     assert.deepEqual(knowledgeStages(r.routes), [
       { stage: 'knowledge_extraction', model: LUNA, permit: false, fallback: 'financial_control_unavailable' },
       { stage: 'knowledge_verification', model: LUNA, permit: false, fallback: 'financial_control_unavailable' }]);
-    assert.ok(r.routes.filter(x => !knowledgeStages([x]).length).every(x => x.model === SOL));
+    assert.ok(r.routes.filter(x => !knowledgeStages([x]).length && x.stage !== 'knowledge_planning').every(x => x.model === SOL));
     assert.deepEqual(r.logs.map(l => [l.profile, l.fallbackReason]), [['default', 'budget_owner_unavailable']]);
   });
   test(`Rollback / ${channel} / ${language}: ODINLINK_AI_DEFAULT_MODEL=Luna restores Luna everywhere`, async t => {

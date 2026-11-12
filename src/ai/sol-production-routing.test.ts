@@ -143,6 +143,15 @@ test('verifier schema must equal the CAPTURED protocol; no other contract is acc
   assert.deepEqual([wires.at(-1).model, wires.at(-1).text.format.name], [SOL, 'odinlink_knowledge_verification_v2']);
 });
 
+test('the post-reservation check receives exactly the evidence the request carries, before any dispatch', async t => {
+  const wires: any[] = []; capture(t, wires);
+  const seen: unknown[] = [];
+  const profile = captureKnowledgeModelProfile({ ...context, current: async (sent: unknown) => { seen.push(sent); assert.equal(wires.length, seen.length - 1); return true; } }, PROD);
+  await generateWithOpenAi(knowledge(profile, 'extraction'));
+  assert.deepEqual(seen, [[{ id: 'e1', businessId: 77, text: 'Source text.' }]]);
+  assert.deepEqual(owner.events, ['reserve', 'settle']);
+});
+
 test('one-shot re-extraction is preserved with its own permit, reservation and citation-bound schema', async t => {
   const wires: any[] = []; capture(t, wires);
   const profile = captureKnowledgeModelProfile(context, PROD);

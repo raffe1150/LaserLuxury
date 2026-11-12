@@ -170,7 +170,8 @@ export async function generateWithOpenAi(
 
   const route = routeOpenAiRequest(request.model, request);
   const model = route.model;
-  if (route.fallbackReason) console.warn('[AiModelRouting]', { stage: route.stage, selected: route.selected, model,
+  // Financial fallbacks are exceptional and logged; the planner's latency route is by design.
+  if (route.fallbackReason === 'financial_control_unavailable') console.warn('[AiModelRouting]', { stage: route.stage, selected: route.selected, model,
     reason: route.fallbackReason, correlationId: request.diagnosticContext?.correlationId });
   const tools = toOpenAiTools(request.tools);
   const params = {

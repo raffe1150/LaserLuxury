@@ -67,3 +67,30 @@ test('owner limits/identity/rates requireexplicit backend configuration;no exper
   }
   assert.equal(KNOWLEDGE_SOL_RATES.version, 'openai-sol-standard-30m-2026-10-28');
 });
+
+// Post-reservation freshness: only the evidence actually sent is rechecked.
+import { sentEvidenceCurrent } from './knowledge-model-policy';
+test('sentEvidenceCurrent: the validated subset passes; changed, stale, foreign, unknown, duplicate or empty evidence fails closed', () => {
+  const ev = (id: string, sourceId: string, text: string, businessId = 77, version = 'v1') => ({ id, businessId, sourceId, chunkId: id + '-c', version, text });
+  const a = ev('e1', 's-valid', 'Arrive 10 minutes early.'), b = ev('e2', 's-excluded', 'Parking outside.');
+  const captured = [a, b], send = (...items: typeof captured) => items.map(({ id, businessId, text }) => ({ id, businessId, text }));
+  // b was excluded before the reservation: not sent, not in the fresh set -> the request may proceed.
+  assert.equal(sentEvidenceCurrent(send(a), captured, [a], 77), true);
+  // The excluded source can never be reintroduced.
+  assert.equal(sentEvidenceCurrent(send(a, b), captured, [a], 77), false);
+  // A sent source invalidated or stale after the reservation.
+  assert.equal(sentEvidenceCurrent(send(a), captured, [], 77), false);
+  // Changed version / chunk / text / tenant in the fresh revalidation.
+  for (const changed of [{ ...a, version: 'v2' }, { ...a, chunkId: 'other' }, { ...a, text: 'Arrive 30 minutes early.' }, { ...a, businessId: 88 }])
+    assert.equal(sentEvidenceCurrent(send(a), captured, [changed], 77), false, JSON.stringify(changed));
+  // Sent text differs from what the host captured.
+  assert.equal(sentEvidenceCurrent([{ id: 'e1', businessId: 77, text: 'Arrive 1 minute early.' }], captured, [a], 77), false);
+  // Cross-tenant: foreign sent tenant, foreign captured item, or a different turn tenant.
+  assert.equal(sentEvidenceCurrent([{ id: 'e1', businessId: 88, text: a.text }], captured, [a], 77), false);
+  assert.equal(sentEvidenceCurrent(send(a), [{ ...a, businessId: 88 }], [{ ...a, businessId: 88 }], 77), false);
+  assert.equal(sentEvidenceCurrent(send(a), captured, [a], 88), false);
+  // Unknown id, duplicate ids, nothing sent.
+  assert.equal(sentEvidenceCurrent([{ id: 'e9', businessId: 77, text: a.text }], captured, [a], 77), false);
+  assert.equal(sentEvidenceCurrent([...send(a), ...send(a)], captured, [a], 77), false);
+  assert.equal(sentEvidenceCurrent([], captured, [a, b], 77), false);
+});

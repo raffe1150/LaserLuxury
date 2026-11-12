@@ -46,7 +46,7 @@ import { selectSemanticQueries, retainPlannedQueryLanguages, explicitlyWrongWork
 import { RequestSecurity, immutable } from './src/knowledge/request-security';
 import { ANSWER_LIMITS, InformationBudget, INFORMATION_PUBLICATION_RESERVE_MS, parseRequestedFacets, answerEvidence, answerEvidenceBindings, buildEvidenceFirstAnswer, narrowInformationRequest, withinInformationDeadline, pruneAnswerManifest, publishableKnowledgeManifest, type Facet, type Evidence, type AnswerManifest } from './src/ai/business-information-answer-plan';
 import { KNOWLEDGE_SCHEMA_VERSION, verificationAdmissionDiagnostic, knowledgeDiagnosticFailure, knowledgeStructuredOutput, knowledgeFailureReason, safeModelIdentifier, selectKnowledgeVerificationProtocol, selectKnowledgeExtractionProtocol, type KnowledgeExtractionProtocol, type KnowledgeVerificationProtocol, type KnowledgeDecision, type DecisionReason, type KnowledgeStage } from './src/ai/knowledge-answer-protocol';
-import { captureKnowledgeModelProfile, knowledgeStageOptions, solExtractionMode, solExtractionEligible, KNOWLEDGE_SOL_EXTRACTION_PROFILE, KNOWLEDGE_SOL_PRODUCTION_PROFILE, knowledgeManagedStages, type KnowledgeModelProfile, type KnowledgeExecutionPermit } from './src/ai/knowledge-model-policy';
+import { captureKnowledgeModelProfile, sentEvidenceCurrent, knowledgeStageOptions, solExtractionMode, solExtractionEligible, KNOWLEDGE_SOL_EXTRACTION_PROFILE, KNOWLEDGE_SOL_PRODUCTION_PROFILE, knowledgeManagedStages, type KnowledgeModelProfile, type KnowledgeExecutionPermit } from './src/ai/knowledge-model-policy';
 import { emitSolCanaryTelemetry, extractionReasonCounts, reExtractionAdmission, runSolExtractionShadow, type SolStageRecord } from './src/ai/sol-extraction-canary';
 import { generateWithOpenAi } from './src/ai/providers/openai';
 import { assertDefaultModelConfiguration, describeDefaultModel, modelStageFor } from './src/ai/model-routing';
@@ -5945,12 +5945,14 @@ async function generateNativeKnowledgeContent(sessionId:string,options:any,suppo
       documentary: modelEvidenceSnapshot.some(e => !e.sourceId.startsWith('configured-services:') && !e.sourceId.startsWith('business-cancellation-configuration:')) &&
         (!directConfiguredServicePlan(support.question, support.businessConfig) || isMixedSourceInformationQuestion(support.question, support.businessConfig)),
       operational: isExplicitBusinessActionRequest(support.question),
-      current: async () => {
+      // Post-reservation recheck of exactly the evidence the request carries:
+      // a source excluded before the reservation is not sent and cannot block it;
+      // any sent item that changed, went stale or is foreign fails closed.
+      current: async sent => {
         if (trialEnforced()&&!await trialCurrent()) return false;
         if (!await knowledgeOwnershipCurrent()) return false;
         const fresh = await currentAnswerEvidence();
-        const identity = (items: readonly Evidence[]) => JSON.stringify(items.map(e => [e.businessId, e.sourceId, e.chunkId, e.version]).sort());
-        return !state.freshnessFailure && identity(fresh) === identity(modelEvidenceSnapshot) && await knowledgeOwnershipCurrent();
+        return !state.freshnessFailure && sentEvidenceCurrent(sent, modelEvidenceSnapshot, fresh, state.businessId!) && await knowledgeOwnershipCurrent();
       },
     }) });
     const cancellationEvidence = nativeKnowledgeTiming() && !state.naturalEnabled && !(state.budget instanceof DurableKnowledgeBudget) &&

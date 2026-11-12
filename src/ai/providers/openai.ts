@@ -5,6 +5,7 @@ import type { EmbeddingVector } from "../embeddings";
 import { buildOpenAiFailureDiagnostic } from "./openai-diagnostic";
 import { normalizeOpenAiToolSchema } from "./openai-tool-schema";
 import { executeKnowledgeGeneration, type KnowledgeUsage } from '../knowledge-model-policy';
+import { isKnowledgeStageSchema, modelDescriptor, modelStageFor, routeDefaultModel, type ModelRoute } from '../model-routing';
 import type {
   UnifiedAiGenerationRequest,
   UnifiedAiGenerationResponse,
@@ -74,12 +75,45 @@ export function toOpenAiInput(messages: any[]): any[] {
   }).flat();
 }
 
-export function resolveOpenAiTextModel(requestedModel?: string): string {
+/** Routing inputs only; no message content. */
+export type OpenAiRouteContext = Pick<UnifiedAiGenerationRequest, 'routingStage' | 'tools' | 'structuredOutput' | 'knowledgeExecution'>;
+
+/** Explicit, trusted code-level model pins (e.g. a Knowledge permit's model)
+ * are kept unchanged; otherwise the validated default model is used. */
+export function routeOpenAiRequest(requestedModel: string | undefined, context: OpenAiRouteContext = {}): ModelRoute {
   const requested = String(requestedModel || "").trim();
+  const stage = context.routingStage ?? modelStageFor(undefined, context.structuredOutput?.name);
   if (requested && !requested.toLowerCase().startsWith("gemini-")) {
-    return requested;
+    return Object.freeze({ model: requested, stage, selected: requested });
   }
-  return process.env.OPENAI_MODEL || "gpt-5.6-luna";
+  return routeDefaultModel(stage, !!context.knowledgeExecution);
+}
+
+export function resolveOpenAiTextModel(requestedModel?: string, context: OpenAiRouteContext = {}): string {
+  return routeOpenAiRequest(requestedModel, context).model;
+}
+
+/** Pre-routing reasoning scope, unchanged: Luna honours an explicit low effort;
+ * Sol only for the exact strict Knowledge contracts it was qualified on. */
+function legacyReasoningScope(request: UnifiedAiGenerationRequest, model: string): boolean {
+  return request.reasoningEffort === 'low' && (model === 'gpt-5.6-luna' ||
+    model === 'gpt-6.1-sol' && request.structuredOutput?.strict === true &&
+    (request.structuredOutput.name === 'odinlink_knowledge_verification_v2' ||
+      request.model === 'gpt-6.1-sol' && request.structuredOutput.name === 'odinlink_knowledge_extraction_v2'));
+}
+
+/** Capability-aware reasoning control. A Knowledge permit's exact model,
+ * effort and schema are re-validated by executeKnowledgeGeneration before any
+ * dispatch, so its requested low effort is always forwarded (this is what lets
+ * a managed source-exhaustive-v2 verifier run on Sol). Outside Knowledge stage
+ * contracts a catalogued model that supports low effort honours the caller's
+ * explicit request. Unknown models never receive unverified controls. */
+export function openAiReasoningEnabled(request: UnifiedAiGenerationRequest, route: ModelRoute): boolean {
+  if (request.reasoningEffort !== 'low') return false;
+  if (request.knowledgeExecution) return true;
+  if (legacyReasoningScope(request, route.model)) return true;
+  return !isKnowledgeStageSchema(request.structuredOutput?.name) &&
+    modelDescriptor(route.model)?.capabilities.reasoningEffortLow === true;
 }
 
 // Only documented non-reasoning Responses models accept temperature in this
@@ -134,20 +168,19 @@ export async function generateWithOpenAi(
     ...(request.knowledgeExecution || trialEnforced() ? { baseURL: 'https://api.openai.com/v1' } : {}),
   });
 
-  const model = resolveOpenAiTextModel(request.model);
+  const route = routeOpenAiRequest(request.model, request);
+  const model = route.model;
+  if (route.fallbackReason) console.warn('[AiModelRouting]', { stage: route.stage, selected: route.selected, model,
+    reason: route.fallbackReason, correlationId: request.diagnosticContext?.correlationId });
   const tools = toOpenAiTools(request.tools);
   const params = {
     model,
     instructions: request.systemInstruction,
     input: toOpenAiInput(request.messages),
     tools,
-    // Keep Luna and the verifier unchanged. Extraction additionally requires
-    // an explicit canonical Sol request; an inherited model is not an opt-in.
-    ...(request.reasoningEffort === 'low' && (model === 'gpt-5.6-luna' ||
-      model === 'gpt-6.1-sol' && request.structuredOutput?.strict === true &&
-      (request.structuredOutput.name === 'odinlink_knowledge_verification_v2' ||
-        request.model === 'gpt-6.1-sol' && request.structuredOutput.name === 'odinlink_knowledge_extraction_v2'))
-      ? { reasoning: { effort: 'low' as const } } : {}),
+    // Inherited models never opt Knowledge contracts into Sol: the router
+    // already sent permit-less financially controlled stages to the fallback.
+    ...(openAiReasoningEnabled(request, route) ? { reasoning: { effort: 'low' as const } } : {}),
     ...(request.structuredOutput ? {
       text: {
         format: {

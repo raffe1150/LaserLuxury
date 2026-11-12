@@ -1,6 +1,7 @@
 import type { EmbeddingVector } from "../embeddings";
 import type { UnifiedAudioInput } from "./audio";
 import type { KnowledgeExecutionPermit, KnowledgeUsage } from '../knowledge-model-policy';
+import type { ModelStage } from '../model-routing';
 
 export type AiProviderName = "gemini" | "openai";
 
@@ -54,6 +55,9 @@ export interface UnifiedAiGenerationRequest {
   temperature?: number;
   reasoningEffort?: 'low';
   structuredOutput?: UnifiedAiStructuredOutputRequest;
+  /** Backend routing stage (content-free). Absent => inferred from the
+   * structured-output contract, else 'conversation'. */
+  routingStage?: ModelStage;
   /** Opaque backend-owned strict Knowledge permission; absent on all defaults. */
   knowledgeExecution?: KnowledgeExecutionPermit;
 }

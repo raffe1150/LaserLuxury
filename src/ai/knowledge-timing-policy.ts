@@ -20,6 +20,11 @@ export const nativeKnowledgeTiming = () => context.getStore();
 export function accuracyFirstEnabled(businessId: number, env: NodeJS.ProcessEnv = process.env): boolean {
   if (env.ODINLINK_KNOWLEDGE_TIMING_POLICY !== ACCURACY_FIRST_POLICY.version ||
       !Number.isSafeInteger(businessId) || businessId <= 0) return false;
+  // Explicit global mode: every authenticated tenant, including newly onboarded
+  // ones, with no list to maintain. Eligibility only: admission concurrency and
+  // waiting stay bounded by knowledgeAdmission(), provider calls by the shared
+  // AI queue, and tenant isolation/evidence/financial checks are unchanged.
+  if (env.ODINLINK_KNOWLEDGE_TIMING_TENANT_IDS === 'all') return true;
   const tenants = (env.ODINLINK_KNOWLEDGE_TIMING_TENANT_IDS ?? '').split(',').map(id => id.trim());
   return tenants.length <= 10 && tenants.every(id => /^[1-9]\d*$/u.test(id) && Number.isSafeInteger(Number(id))) &&
     tenants.includes(String(businessId));

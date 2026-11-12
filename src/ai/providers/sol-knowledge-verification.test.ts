@@ -45,7 +45,8 @@ for (const item of plan.requests) test(`Sol verification exact SDK wire: ${item.
 const defaults: Array<{ name: string; request: Partial<UnifiedAiGenerationRequest>; low: boolean }> = [
   { name: 'Luna existing low without verification schema', request: { model: 'gpt-5.6-luna', reasoningEffort: 'low' }, low: true },
   { name: 'Luna default effort', request: { model: 'gpt-5.6-luna' }, low: false },
-  { name: 'Sol ordinary conversation', request: { model: 'gpt-6.1-sol', reasoningEffort: 'low' }, low: false },
+  // Production routing: Sol honours an explicit low effort outside Knowledge stage contracts (same as Luna).
+  { name: 'Sol ordinary conversation', request: { model: 'gpt-6.1-sol', reasoningEffort: 'low' }, low: true },
   { name: 'explicit Sol strict extraction opt-in', request: { model: 'gpt-6.1-sol', reasoningEffort: 'low', structuredOutput: knowledgeStructuredOutput('extraction') }, low: true },
   { name: 'Sol extraction without explicit low', request: { model: 'gpt-6.1-sol', structuredOutput: knowledgeStructuredOutput('extraction') }, low: false },
   { name: 'Sol non-strict extraction', request: { model: 'gpt-6.1-sol', reasoningEffort: 'low', structuredOutput: { ...knowledgeStructuredOutput('extraction'), strict: false } }, low: false },
@@ -108,13 +109,15 @@ test('Sol extraction exact SDK wire preserves frozen Persian input, evidence and
   assert.equal(result.text, extractionCall.outputText, 'Saved unwanted supplement is not locally filtered or repaired');
 });
 
-test('inheriting Sol from configuration does not opt extraction into low reasoning', async t => {
+test('inheriting Sol from configuration never sends a permit-less Knowledge contract to Sol', async t => {
   const prior = process.env.OPENAI_MODEL;
   process.env.OPENAI_MODEL = 'gpt-6.1-sol';
   t.after(() => { if (prior === undefined) delete process.env.OPENAI_MODEL; else process.env.OPENAI_MODEL = prior; });
+  t.mock.method(console, 'warn', () => {});
   t.mock.method(globalThis, 'fetch', async (_input, init) => {
     const wire = JSON.parse(String(init?.body));
-    assert.equal(wire.model, 'gpt-6.1-sol'); assert.equal(wire.reasoning, undefined);
+    // Pre-dispatch financial-control fallback to the unmetered routing fallback.
+    assert.equal(wire.model, 'gpt-5.6-luna'); assert.deepEqual(wire.reasoning, { effort: 'low' });
     return new Response(JSON.stringify({ object: 'response', status: 'completed', output: [] }),
       { status: 200, headers: { 'Content-Type': 'application/json' } });
   });

@@ -5,7 +5,7 @@ import {installControlledTrial,trialModeOn,trialEnforced,trialHttpAllowed,trialB
   denyTrialAction,assertTrialProvider,trialSha,trialPollerCurrent,trialCurrent} from './src/runtime/controlled-knowledge-trial';
 import { formatRetrievedBusinessKnowledge, type KnowledgeFormattingFailure } from './src/knowledge/retrieved-knowledge-format';
 import {hierarchicalSearchEnabled} from './src/knowledge/hierarchical-search';
-import { installConfiguredKnowledgeBudgetOwner } from './src/ai/durable-knowledge-budget-owner';
+import { installConfiguredKnowledgeBudgetOwner, refreshConfiguredKnowledgeBudgetOwner, knowledgeBudgetOwnerRefreshMs } from './src/ai/durable-knowledge-budget-owner';
 import { accuracyFirstEnabled, ACCURACY_FIRST_POLICY, accuracyFirstExtractionAllowance, nativeKnowledgeTiming, runAccuracyFirstNative, abortKnowledgeWork } from './src/ai/knowledge-timing-policy';
 import { directServiceInformationPlan } from './src/ai/direct-service-planning';
 import { selectCandidateRetrievalPolicy, type CandidateFallback, type RetrievalObservation } from './src/knowledge/candidate-retrieval';
@@ -46,9 +46,10 @@ import { selectSemanticQueries, retainPlannedQueryLanguages, explicitlyWrongWork
 import { RequestSecurity, immutable } from './src/knowledge/request-security';
 import { ANSWER_LIMITS, InformationBudget, INFORMATION_PUBLICATION_RESERVE_MS, parseRequestedFacets, answerEvidence, answerEvidenceBindings, buildEvidenceFirstAnswer, narrowInformationRequest, withinInformationDeadline, pruneAnswerManifest, publishableKnowledgeManifest, type Facet, type Evidence, type AnswerManifest } from './src/ai/business-information-answer-plan';
 import { KNOWLEDGE_SCHEMA_VERSION, verificationAdmissionDiagnostic, knowledgeDiagnosticFailure, knowledgeStructuredOutput, knowledgeFailureReason, safeModelIdentifier, selectKnowledgeVerificationProtocol, selectKnowledgeExtractionProtocol, type KnowledgeExtractionProtocol, type KnowledgeVerificationProtocol, type KnowledgeDecision, type DecisionReason, type KnowledgeStage } from './src/ai/knowledge-answer-protocol';
-import { captureKnowledgeModelProfile, knowledgeStageOptions, solExtractionMode, solExtractionEligible, KNOWLEDGE_SOL_EXTRACTION_PROFILE, type KnowledgeModelProfile, type KnowledgeExecutionPermit } from './src/ai/knowledge-model-policy';
+import { captureKnowledgeModelProfile, knowledgeStageOptions, solExtractionMode, solExtractionEligible, KNOWLEDGE_SOL_EXTRACTION_PROFILE, KNOWLEDGE_SOL_PRODUCTION_PROFILE, knowledgeManagedStages, type KnowledgeModelProfile, type KnowledgeExecutionPermit } from './src/ai/knowledge-model-policy';
 import { emitSolCanaryTelemetry, extractionReasonCounts, reExtractionAdmission, runSolExtractionShadow, type SolStageRecord } from './src/ai/sol-extraction-canary';
 import { generateWithOpenAi } from './src/ai/providers/openai';
+import { assertDefaultModelConfiguration, describeDefaultModel, modelStageFor } from './src/ai/model-routing';
 import { resolveOpenAiTextModel } from './src/ai/providers/openai';
 import { mapWebsiteInstallation, websiteInstallationRouter } from './src/knowledge/website-installations';
 import { DocumentEvidenceRegistry, revalidateKnowledgeSourceIds } from './src/knowledge/evidence-registry';
@@ -507,12 +508,25 @@ if (process.env.NODE_ENV === 'test' && !process.env.SUPABASE_URL
   console.log('[BackendSupabase] Privileged client configured; user sessions disabled.');
 }
 
+// The configured default model is validated before anything can be served. An
+// unsupported model/provider refuses to start this process (the previous
+// healthy instance keeps serving) instead of guessing a model.
+assertDefaultModelConfiguration();
+console.info('[AiDefaultModel]', JSON.stringify(describeDefaultModel()));
+
 // Explicit backend-only monetary bootstrap. No customer keys, numeric defaults
 // or activation. Missing/revoked authority keeps the selected Sol path blocked.
 const monetaryBootstrap = supabase && (process.env.ODINLINK_AI_MONEY_ACCOUNT || process.env.ODINLINK_AI_MONEY_APPROVAL)
   ? installConfiguredKnowledgeBudgetOwner(supabase).catch(() => {
     console.error('[KnowledgeBudget]', { status: 'blocked', reason: 'financial_authority_unavailable' });
   }) : Promise.resolve();
+// Newly entitled/revoked businesses take effect without a restart.
+if (supabase && (process.env.ODINLINK_AI_MONEY_ACCOUNT || process.env.ODINLINK_AI_MONEY_APPROVAL) && process.env.NODE_ENV !== 'test') {
+  const db = supabase;
+  setInterval(() => { void monetaryBootstrap.then(() => refreshConfiguredKnowledgeBudgetOwner(db)).catch(() => {
+    console.error('[KnowledgeBudget]', { status: 'blocked', reason: 'financial_authority_refresh_failed' });
+  }); }, knowledgeBudgetOwnerRefreshMs(process.env.ODINLINK_AI_MONEY_REFRESH_MS)).unref();
+}
 
 const p2StructuredUnderstandingProviderRuntime =
   createConfiguredUnderstandingProvider(trialModeOn()?{...process.env,STRUCTURED_UNDERSTANDING_ENABLED:'false'}:process.env);
@@ -910,6 +924,7 @@ async function generateContentWithFallback(ai: GoogleGenAI | null, options: {
     tools: scopedTiming ? [] : options.tools,
     systemInstruction: options.systemInstruction,
     model: options.model,
+    routingStage: modelStageFor(options.context?.stage, options.structuredOutput?.name),
     temperature: options.temperature,
     ...(options.reasoningEffort ? { reasoningEffort: options.reasoningEffort } : {}),
     ...(provider === 'openai' && options.structuredOutput ? { structuredOutput:options.structuredOutput } : {}),
@@ -936,7 +951,7 @@ async function generateContentWithFallback(ai: GoogleGenAI | null, options: {
   const knowledgeState = knowledgeTurnScope.getStore();
   if(informationBudget && knowledgeState) {
     knowledgeState.provider=provider;
-    knowledgeState.model=safeModelIdentifier(provider==='openai'?resolveOpenAiTextModel(options.model):options.model||'gemini-2.5-flash');
+    knowledgeState.model=safeModelIdentifier(provider==='openai'?resolveOpenAiTextModel(options.model, request):options.model||'gemini-2.5-flash');
   }
   if (informationBudget && !informationBudget.remaining()) throw new Error("information_deadline");
   if(informationBudget && !informationBudget.generationRemaining()) throw new Error('information_publication_reserve');
@@ -974,7 +989,7 @@ async function generateContentWithFallback(ai: GoogleGenAI | null, options: {
       stage: `${options.context!.stage}_${phase}`,
       correlationId,
       businessId: options.context?.businessId ?? null,
-      provider, model: safeModelIdentifier(provider === 'openai' ? resolveOpenAiTextModel(options.model) : options.model || 'gemini-2.5-flash'),
+      provider, model: safeModelIdentifier(provider === 'openai' ? resolveOpenAiTextModel(options.model, request) : options.model || 'gemini-2.5-flash'),
       verificationRole: options.context?.verificationRole || null,
       elapsedMs: now - timing.queuedAt,
       queueWaitMs: (timing.executionStartedAt ?? now) - timing.queuedAt,
@@ -1063,7 +1078,7 @@ async function generateContentWithFallback(ai: GoogleGenAI | null, options: {
       logVerifierTiming(event.attempt, event.category === "TIMEOUT" ? "attempt_timeout" : "attempt_complete");
       console.log("[AIRequest]", {
         correlationId,
-        provider, model: safeModelIdentifier(provider === 'openai' ? resolveOpenAiTextModel(options.model) : options.model || 'gemini-2.5-flash'),
+        provider, model: safeModelIdentifier(provider === 'openai' ? resolveOpenAiTextModel(options.model, request) : options.model || 'gemini-2.5-flash'),
         ...(options.context?.verificationRole ? { verificationRole: options.context.verificationRole } : {}),
         businessId: options.context?.businessId || null,
         channel: options.context?.channel || "internal",
@@ -6007,9 +6022,12 @@ async function generateNativeKnowledgeContent(sessionId:string,options:any,suppo
       finalPublicationRevalidates: options.knowledgePublication === 'guarded_text',
       diagnostic:event=>{if(canaryMode!=='off')canaryEvents.push(event);emitKnowledgeDecision(event.stage==='freshness'&&event.reason==='SOURCE_INVALID'&&state.freshnessFailure
         ? {...event,reason:state.freshnessFailure}:event);},
-      ...(state.modelProfile!.id === KNOWLEDGE_SOL_EXTRACTION_PROFILE && canaryMode === 'active' ? { reExtraction: {
+      // One-shot re-extraction: the active canary or the production managed profile.
+      ...((state.modelProfile!.id === KNOWLEDGE_SOL_EXTRACTION_PROFILE && canaryMode === 'active' ||
+        state.modelProfile!.id === KNOWLEDGE_SOL_PRODUCTION_PROFILE) ? { reExtraction: {
         record: event => { canaryReExtraction = event; },
-        admit: () => reExtractionAdmission({ profile: state.modelProfile!, businessId: state.businessId!, mode: 'active',
+        admit: () => reExtractionAdmission({ profile: state.modelProfile!, businessId: state.businessId!,
+          mode: state.modelProfile!.id === KNOWLEDGE_SOL_PRODUCTION_PROFILE ? 'production' : 'active',
           generationRemainingMs: state.budget!.generationRemaining(), attempts: state.budget!.attempts, maxAttempts: ANSWER_LIMITS.attempts }),
       } } : {}),
       generate: async (requestedStage, instruction, data, contract) => {
@@ -6047,6 +6065,13 @@ async function generateNativeKnowledgeContent(sessionId:string,options:any,suppo
     const unavailable=state.freshnessFailure?{...manifest,fallbackReason:state.freshnessFailure,
       ...(state.naturalEnabled?{naturalOutcome:'canonical_fallback' as const,naturalReason:state.freshnessFailure}:{})}:manifest;
     state.manifest = state.oversized ? { ...unavailable, text: narrowInformationRequest(capturedSupportLanguage(support)) } : unavailable;
+    // Content-free production routing record: profile, pre-turn fallback reason,
+    // Sol-managed stages and the publication decision. No text or evidence.
+    if (state.modelProfile!.id === KNOWLEDGE_SOL_PRODUCTION_PROFILE || state.modelProfile!.managedFallback) runOptionalDiagnostic(() =>
+      console.info('[KnowledgeModelRouting]', JSON.stringify({ businessId: state.businessId, channel: state.nativeChannel || 'internal',
+        profile: state.modelProfile!.id, managedStages: knowledgeManagedStages(state.modelProfile),
+        ...(state.modelProfile!.managedFallback ? { fallbackReason: state.modelProfile!.managedFallback } : {}),
+        publication: publishableKnowledgeManifest(state.manifest, state.businessId) ? 'published' : 'safe_fallback' })));
     if (canaryMode === 'active') (priority1hTestDependencies?.solCanaryTelemetry ?? emitSolCanaryTelemetry)({ schema: 'sol-extraction-canary-v1', mode: 'active', businessId: state.businessId!,
       channel: state.nativeChannel || 'internal', language, profile: state.modelProfile!.id === KNOWLEDGE_SOL_EXTRACTION_PROFILE ? 'sol-extraction-v1' : 'default',
       ...(state.modelProfile!.canaryFallback ? { fallbackReason: state.modelProfile!.canaryFallback } : {}),

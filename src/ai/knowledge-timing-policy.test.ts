@@ -25,7 +25,8 @@ test('extended timing requires both backend selector and exact tenant enrollment
   assert.equal(accuracyFirstEnabled(id,enabled),false);
  assert.equal(accuracyFirstEnabled(3,{...enabled,ODINLINK_KNOWLEDGE_TIMING_POLICY:'off'}),false);
  assert.equal(accuracyFirstEnabled(3,{ODINLINK_KNOWLEDGE_TIMING_TENANT_IDS:'3'}),false);
- for(const list of [undefined,'','*','all','03','3,','3,invalid','3,0','3,-1','3,1.5','3,1e2','3,9007199254740992',Array(11).fill('3').join(',')])
+ // 'all' is the explicit global mode (see sol-release-readiness.test.ts); near-misses stay OFF.
+ for(const list of [undefined,'','*','ALL',' all','all,3','03','3,','3,invalid','3,0','3,-1','3,1.5','3,1e2','3,9007199254740992',Array(11).fill('3').join(',')])
   assert.equal(accuracyFirstEnabled(3,{...enabled,ODINLINK_KNOWLEDGE_TIMING_TENANT_IDS:list}),false,list);
  assert.equal(accuracyFirstEnabled(3,{...enabled,ODINLINK_KNOWLEDGE_TIMING_TENANT_IDS:' 3, 8 '}),true);
  // No cached enrollment: changing the backend list affects the next admission.

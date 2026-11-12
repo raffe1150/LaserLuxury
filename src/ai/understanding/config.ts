@@ -1,3 +1,4 @@
+import { routeDefaultModel } from '../model-routing';
 import type { UnderstandingProvider } from './provider';
 import type { StructuredUnderstandingFailureCategory } from './provider-error';
 import {
@@ -45,6 +46,17 @@ const DEFAULT_OPENAI_MODEL = 'gpt-5.6-luna';
 const DEFAULT_TIMEOUT_MS = 2_500;
 const DEFAULT_SHADOW_MAX_CONCURRENCY = 2;
 
+/** Follows the validated production default (ODINLINK_AI_DEFAULT_MODEL); an
+ * explicit STRUCTURED_UNDERSTANDING_MODEL still overrides it. Unset (or an
+ * invalid value, which the server refuses at boot) keeps OPENAI_MODEL || Luna. */
+function routedUnderstandingModel(environment: NodeJS.ProcessEnv): string {
+  try {
+    return routeDefaultModel('general', false, environment).model;
+  } catch {
+    return String(environment.OPENAI_MODEL || DEFAULT_OPENAI_MODEL).trim();
+  }
+}
+
 function configuredTimeout(value: string | undefined): number {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_TIMEOUT_MS;
@@ -68,7 +80,7 @@ export function readStructuredUnderstandingConfiguration(
 
   const defaultModel = provider === 'gemini'
     ? DEFAULT_GEMINI_MODEL
-    : String(environment.OPENAI_MODEL || DEFAULT_OPENAI_MODEL).trim();
+    : routedUnderstandingModel(environment);
 
   return {
     enabled: String(environment.STRUCTURED_UNDERSTANDING_ENABLED || '').trim().toLowerCase() === 'true',

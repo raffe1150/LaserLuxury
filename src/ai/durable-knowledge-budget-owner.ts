@@ -122,3 +122,30 @@ export async function installConfiguredKnowledgeBudgetOwner(db: AiMoneyDatabase,
   configureKnowledgeBudgetOwner(owner);
   return true;
 }
+
+/** Periodic re-read of the SAME database authority, so newly entitled (or
+ * revoked) businesses take effect without a restart. Unlike the boot install,
+ * the current owner stays selectable while the read is pending; any failed or
+ * revoked configuration removes selection authority (fail-safe, never Sol
+ * without an owner). Reserve still rechecks entitlement atomically every time. */
+export async function refreshConfiguredKnowledgeBudgetOwner(db: AiMoneyDatabase, env: NodeJS.ProcessEnv = process.env): Promise<boolean> {
+  const generation = ++installationGeneration;
+  if (!env.ODINLINK_AI_MONEY_ACCOUNT && !env.ODINLINK_AI_MONEY_APPROVAL) { configureKnowledgeBudgetOwner(); return false; }
+  let owner: DurableKnowledgeBudgetOwner;
+  try {
+    owner = await DurableKnowledgeBudgetOwner.prepare(db, {
+      accountId: env.ODINLINK_AI_MONEY_ACCOUNT ?? '', approvalReference: env.ODINLINK_AI_MONEY_APPROVAL ?? '',
+    });
+  } catch (error) {
+    if (generation === installationGeneration) configureKnowledgeBudgetOwner();
+    throw error;
+  }
+  if (generation !== installationGeneration) return false;
+  configureKnowledgeBudgetOwner(owner);
+  return true;
+}
+
+/** Bounded refresh interval (ms): default 5 min, 1 min..1 h. */
+export function knowledgeBudgetOwnerRefreshMs(value: string | undefined): number {
+  return value && /^\d+$/u.test(value) ? Math.min(3_600_000, Math.max(60_000, Number(value))) : 300_000;
+}

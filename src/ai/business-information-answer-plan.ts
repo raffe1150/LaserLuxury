@@ -828,6 +828,15 @@ export async function buildEvidenceFirstAnswer(input: {
     return valid;
   });
   if (!proposed.units.length) return empty('UNAVAILABLE','SOURCE_INVALID');
+  // Source-exhaustive early stop. A proposal was rejected or invalidated and no
+  // (further) re-extraction can replace the inventory; neither flag is ever
+  // restored below, so the post-verification gate would return exactly this
+  // result. Do not spend a paid Verification call on a known fallback. Every
+  // other protocol, and every complete inventory, is unchanged.
+  if (isSourceExhaustiveProtocol(verificationProtocol) && (!proposalParseComplete || extractionIncomplete)) {
+    diagnostic({ stage: 'verification', reason: 'INVALID_COVERAGE' });
+    return empty('UNAVAILABLE', 'INVALID_COVERAGE');
+  }
   let parsed: any;
   try {
     const compact = verificationProtocol === 'compact-v1';

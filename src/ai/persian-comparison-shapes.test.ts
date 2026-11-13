@@ -63,7 +63,9 @@ test('Persian marker diagnostics identify the rule that set the candidate bound'
     { claim: base('۱۰', 'حداکثر'), bound: 'maximum', category: 'explicit_maximum', position: 'before_quantity', branch: 'explicit_bound', safe: false },
     { claim: base('۱۰', 'حداقل'), bound: 'minimum', category: 'explicit_minimum', position: 'before_quantity', branch: 'explicit_bound', safe: false },
     { claim: base('۱۰', 'تا'), bound: 'maximum', category: 'persian_ta', position: 'before_quantity', branch: 'explicit_bound', safe: false },
-    { claim: base('۱۰') + ' تا آماده شوند', bound: 'maximum', category: 'persian_ta', position: 'after_quantity', branch: 'explicit_bound', safe: false },
+    // Faithful phrasing outside the closed grammar (semantic-recovery-eval fa-purpose-8): still a persian_ta marker.
+    { claim: base('۱۰') + ' تا با خیال راحت آماده شوند', bound: 'maximum', category: 'persian_ta', position: 'after_quantity', branch: 'explicit_bound', safe: false },
+    { claim: base('۱۰') + ' تا آماده شوند', bound: 'unbounded', category: 'none', position: 'unknown', branch: 'unbounded', purpose: 'finite_preparation', safe: true },
     { claim: base('۱۰') + ' تا زمان کافی برای آماده شدن داشته باشند', bound: 'unbounded', category: 'none', position: 'unknown', branch: 'unbounded', purpose: 'finite_preparation', safe: true },
     { claim: base('۱۰') + ' تا فرصت کافی برای آماده شدن داشته باشند', bound: 'unbounded', category: 'none', position: 'unknown', branch: 'unbounded', purpose: 'time_opportunity', safe: true },
     { claim: base('۱۰', 'حداکثر') + ' تا زمان کافی برای آماده شدن داشته باشند', bound: 'maximum', category: 'explicit_maximum', position: 'before_quantity', branch: 'explicit_bound', purpose: 'finite_preparation', safe: false },

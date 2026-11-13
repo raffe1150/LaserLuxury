@@ -10,6 +10,8 @@ import { incidentConfig, incidentFlags, incidentInbound, interceptedIncidentSend
 import { answerEvidenceBindings } from './business-information-answer-plan';
 import { AiReliabilityError } from './reliability';
 import { nativeKnowledgeTiming } from './knowledge-timing-policy';
+import { assessNumericalConstraint } from './numerical-constraints';
+import { formatBusinessSupportVerificationUnavailable } from './business-information';
 import { configureKnowledgeBudgetOwner } from './knowledge-model-policy';
 import { routeOpenAiRequest } from './providers/openai';
 import { ScriptedKnowledgeBudgetOwner } from '../../tests/helpers/knowledge-budget-owner';
@@ -28,9 +30,13 @@ const QUESTIONS = {
   fa: ['اگر اولین بار است که می‌آیم، چند دقیقه قبل از نوبتم بهتر است برسم؟', 'به مراجعه‌کنندگان بار اول توصیه می‌شود حدود ۱۰ دقیقه قبل از نوبت رزروشده خود حاضر شوند.'],
 } as const;
 type Route = { stage: string; model: string; permit: boolean; fallback?: string };
+/** Optional SYNTHETIC extraction script: question, units per pass, extraction latency. */
+type Script = { question: string; extractionMs: number; units: (reExtraction: boolean, evidence: { id: string; text: string }[]) => unknown[];
+  /** Deterministic mocked Verifier decision fields for a unit (overrides the entailed default). */
+  decide?: (unit: any) => Record<string, unknown> | undefined };
 
-async function turn(t: any, channel: IncidentChannel, language: keyof typeof QUESTIONS, env: Record<string, string | undefined>, ownerTenants?: number[]) {
-  const [question, publishedAnswer] = QUESTIONS[language];
+async function turn(t: any, channel: IncidentChannel, language: keyof typeof QUESTIONS, env: Record<string, string | undefined>, ownerTenants?: number[], script?: Script) {
+  const question = script?.question ?? QUESTIONS[language][0], publishedAnswer = QUESTIONS[language][1];
   const saved = Object.fromEntries(Object.keys(env).map(k => [k, process.env[k]]));
   for (const [k, v] of Object.entries(env)) if (v === undefined) delete process.env[k]; else process.env[k] = v;
   t.after(() => { for (const [k, v] of Object.entries(saved)) if (v === undefined) delete process.env[k]; else process.env[k] = v; });
@@ -40,12 +46,14 @@ async function turn(t: any, channel: IncidentChannel, language: keyof typeof QUE
   const logs: string[] = [], timings: any[] = [];
   for (const method of ['log', 'warn', 'error'] as const) t.mock.method(console, method, () => {});
   t.mock.method(console, 'info', (...args: unknown[]) => { if (args[0] === '[KnowledgeModelRouting]') logs.push(String(args[1]));
-    else if (args[0] === '[KnowledgeTimingPolicy]') timings.push(args[1]); });
+    else if (args[0] === '[KnowledgeTimingPolicy]') timings.push(args[1]);
+    else if (args[0] === '[EvidenceFirstDecision]') decisions.push(JSON.parse(String(args[1]))); });
   let now = 1_000_000; t.mock.method(Date, 'now', () => now);
   const { service, matches: canonical } = await productionInventory();
   const partial = [0, 3, 4, 5, 2].map(i => canonical[i]);
   const quote = canonical[0].text!.match(/Kunder som besöker studion för första gången[^.]+\./u)![0];
   const routes: Route[] = [], replies: string[] = [], errors: unknown[] = [];
+  const verificationUnits: string[] = [], evidenceTenants: unknown[] = [], decisions: any[] = [];
   t.mock.method(globalThis, 'fetch', async (input: any, options: any) => {
     replies.push(interceptedIncidentSend(input, options));
     return new Response(JSON.stringify({ ok: true, result: { message_id: 1 }, message_id: 'synthetic', messages: [{ id: 'synthetic' }] }));
@@ -66,14 +74,18 @@ async function turn(t: any, channel: IncidentChannel, language: keyof typeof QUE
         const data = JSON.parse(request.messages[0].content);
         const evidence = data.evidence.find((e: any) => e.text.includes(quote));
         if ((request.systemInstruction ?? '').includes('UNIT EXTRACTION')) {
+          if (script) { now += script.extractionMs; return { functionCalls: [], text: JSON.stringify({ oversized: false,
+            units: script.units((request.systemInstruction ?? '').includes('RE-EXTRACTION'), data.evidence) }) }; }
           now += 3000;
           return { functionCalls: [], text: JSON.stringify({ oversized: false, units: [{ facetIds: ['f1'], subject: 'first-time visitors', predicate: 'arrival recommendation',
             value: 'approximately 10 minutes before booked appointment', modality: 'recommended', negation: false, scope: 'first-time visitors',
             qualifiers: ['approximately', 'before booked appointment'], language, text: publishedAnswer, evidenceRefs: [{ evidenceId: evidence.id, exactQuote: quote }] }] }) };
         }
         now += 1000; const ids = data.units.map((u: any) => u.id);
+        verificationUnits.push(...data.units.map((u: any) => u.text)); evidenceTenants.push(...data.evidence.map((e: any) => e.businessId));
         return { functionCalls: [], text: JSON.stringify({ decisions: data.units.map((u: any) => ({ unitId: u.id, facetIds: u.facetIds, relation: 'ENTAILED',
-          meaningPreserved: true, modalityPreserved: true, qualifiersPreserved: true, relevant: true, languageCorrect: true, negativeAbsence: false, explicitAbsenceEvidence: false })),
+          meaningPreserved: true, modalityPreserved: true, qualifiersPreserved: true, relevant: true, languageCorrect: true, negativeAbsence: false, explicitAbsenceEvidence: false,
+          ...(script?.decide?.(u) ?? {}) })),
           coverage: [{ facetId: 'f1', requestAligned: true, materialFactsComplete: true, incompletenessReason: 'NONE', materialUnitIds: ids,
             obligations: [{ obligationId: 'f1.o1', status: 'COVERED', unitIds: ids }] }],
           sourceCoverage: { protocol: 'source-exhaustive-v2', requestAligned: true, availableMaterialFactsComplete: true, conditionsPreserved: true, conflictsAbsent: true,
@@ -86,7 +98,7 @@ async function turn(t: any, channel: IncidentChannel, language: keyof typeof QUE
   await incidentInbound(b, channel, question);
   assert.deepEqual(errors, []);
   assert.equal(replies.length, 1, 'exactly one customer reply');
-  return { routes, reply: replies[0], publishedAnswer, logs: logs.map(l => JSON.parse(l)), timings };
+  return { routes, reply: replies[0], publishedAnswer, logs: logs.map(l => JSON.parse(l)), timings, verificationUnits, evidenceTenants, decisions };
 }
 const knowledgeStages = (routes: Route[]) => routes.filter(r => r.stage.startsWith('knowledge_') && r.stage !== 'knowledge_planning' && r.stage !== 'knowledge_composition');
 
@@ -153,3 +165,97 @@ for (const channel of ['telegram', 'whatsapp', 'instagram', 'messenger'] as cons
     assert.deepEqual(deadline(r), [[45000, 35000, 0, false]]);
   });
 }
+
+// Production first-visit question (Telegram 2026-11-13, turn c588c2d9) replayed OFFLINE on
+// business 3's recorded inventory. Unit texts are SYNTHETIC; u2 uses the recorded Sol/Luna
+// purpose wording family, not the unavailable original. Proves the offline path only, never
+// that the next live response succeeds.
+const PREP_QUESTION = 'برای اولین مراجعه به استودیو، قبل از نوبتم باید کار خاصی انجام بدم؟';
+const flat = (s: string) => s.replace(/\s+/gu, ' ');
+const PREP = [
+  ['recommended', 'توصیه می‌شود همه مراجعه‌کنندگان پیش از اولین مراجعه اطلاعات را مطالعه کنند.',
+    'Vi rekommenderar att alla besökare läser igenom informationen före sitt första besök hos AdMotion Studio.'],
+  ['recommended', 'به مراجعه‌کنندگان بار اول توصیه می‌شود حدود ۱۰ دقیقه قبل از نوبت رزروشده برسند تا با آرامش آماده شوند.',
+    'Kunder som besöker studion för första gången rekommenderas att komma cirka 10 minuter före sin bokade tid för att hinna förbereda sig i lugn och ro.'],
+  ['permitted', 'می‌توانید تأییدیه رزرو خود را به‌صورت دیجیتال یا کاغذی همراه داشته باشید.',
+    'Ta gärna med din bokningsbekräftelse, digitalt eller på papper.'],
+  ['required', 'اگر دستورالعمل آماده‌سازی خاصی دریافت کرده‌اید، باید آن را رعایت کنید.',
+    'Om du har fått särskilda förberedelseinstruktioner inför ditt besök ska du följa dessa.'],
+] as const;
+// Human-labelled faithful phrasing the closed grammar still rejects (semantic-recovery-eval fa-purpose-8).
+const AMBIGUOUS_U2 = 'به مراجعه‌کنندگان بار اول توصیه می‌شود حدود ۱۰ دقیقه قبل از نوبت رزروشده برسند تا با خیال راحت آماده شوند.';
+const UNAMBIGUOUS_U2 = 'به مراجعه‌کنندگان بار اول توصیه می‌شود حدود ۱۰ دقیقه قبل از نوبت رزروشده برسند، برای اینکه با آرامش آماده شوند.';
+const prep = (first: string, replacement: string, extractionMs: number): Script => ({ question: PREP_QUESTION, extractionMs,
+  units: (reExtraction, evidence) => PREP.map(([modality, text, quote], i) => ({ facetIds: ['f1'], subject: 'first visit', predicate: 'preparation',
+    value: quote, modality, negation: false, scope: 'first visit', qualifiers: [], language: 'fa', text: i === 1 ? (reExtraction ? replacement : first) : text,
+    evidenceRefs: [{ evidenceId: evidence.find(e => flat(e.text).includes(quote))!.id, exactQuote: quote }] })) });
+const SOL_EXTRACTION = { stage: 'knowledge_extraction', model: SOL, permit: true };
+const SOL_VERIFICATION = { stage: 'knowledge_verification', model: SOL, permit: true };
+
+for (const channel of ['telegram', 'whatsapp', 'instagram', 'messenger'] as const)
+  test(`Production first-visit question / ${channel}: complete Extraction, mandatory Sol Verification, all four facts published`, async t => {
+    const r = await turn(t, channel, 'fa', {}, [3], prep(PREP[1][1], PREP[1][1], 3000));
+    assert.deepEqual(knowledgeStages(r.routes), [SOL_EXTRACTION, SOL_VERIFICATION]);
+    for (const [, text] of PREP) assert.ok(r.reply.includes(text), text);
+    assert.deepEqual(r.logs.map(l => [l.profile, l.publication]), [['sol-knowledge-v2', 'published']]);
+  });
+
+// Production-profile re-extraction recovery needs a settled Extraction permit from
+// the real OpenAI adapter; it is covered end-to-end in sol-extraction-canary-native.
+test('Production timing (13,365 ms Extraction): re-extraction cannot fit, paid Verification is skipped, safe fallback', async t => {
+  const r = await turn(t, 'telegram', 'fa', {}, [3], prep(AMBIGUOUS_U2, UNAMBIGUOUS_U2, 13_365));
+  assert.deepEqual(knowledgeStages(r.routes), [SOL_EXTRACTION]);
+  for (const [, text] of PREP) assert.ok(!r.reply.includes(text));
+  assert.ok(!r.reply.includes(AMBIGUOUS_U2));
+  assert.deepEqual(r.logs.map(l => l.publication), ['safe_fallback']);
+});
+
+// Final safety gate for the narrowed Persian purpose grammar. Each faulty u2 has a
+// numerical shape the parser accepts; only the mandatory source-exhaustive Verifier
+// can reject its meaning, modality, audience or fact. The Verifier decisions are
+// deterministic mocks of the real decision contract; the extraction, parser,
+// verification and publication paths, channels and business-3 inventory are real.
+const FAITHFUL_U2 = PREP[1][1];
+const GATE_CASES = [
+  { name: 'positive control: faithful purpose wording', text: FAITHFUL_U2, modality: 'recommended', scope: 'first visit', reject: undefined },
+  { name: 'recommendation changed into a requirement', modality: 'required', scope: 'first visit',
+    text: 'مراجعه‌کنندگان بار اول باید حدود ۱۰ دقیقه قبل از نوبت رزروشده برسند تا با آرامش آماده شوند.',
+    reject: { decision: { modalityPreserved: false }, reason: 'MODALITY_CHANGED' } },
+  { name: 'first-time visitors generalized to all visitors', modality: 'recommended', scope: 'all visitors',
+    text: 'به همه مراجعه‌کنندگان توصیه می‌شود حدود ۱۰ دقیقه قبل از نوبت رزروشده برسند تا با آرامش آماده شوند.',
+    reject: { decision: { meaningPreserved: false }, reason: 'MEANING_CHANGED' } },
+  { name: 'unsupported invented fact', modality: 'recommended', scope: 'first visit',
+    text: 'به مراجعه‌کنندگان بار اول توصیه می‌شود حدود ۱۰ دقیقه قبل از نوبت رزروشده برسند تا با آرامش آماده شوند؛ پارکینگ هم رایگان است.',
+    reject: { decision: { relation: 'UNKNOWN' }, reason: 'UNKNOWN' } },
+] as const;
+const gateScript = (u2: (typeof GATE_CASES)[number]): Script => ({ question: PREP_QUESTION, extractionMs: 3000,
+  units: (_reExtraction, evidence) => PREP.map(([modality, text, quote], i) => ({ facetIds: ['f1'], subject: 'first visit', predicate: 'preparation',
+    value: quote, modality: i === 1 ? u2.modality : modality, negation: false, scope: i === 1 ? u2.scope : 'first visit', qualifiers: [], language: 'fa',
+    text: i === 1 ? u2.text : text, evidenceRefs: [{ evidenceId: evidence.find(e => flat(e.text).includes(quote))!.id, exactQuote: quote }] })),
+  decide: unit => unit.text === u2.text ? u2.reject?.decision : undefined });
+
+for (const channel of ['telegram', 'whatsapp', 'instagram', 'messenger'] as const) for (const u2 of GATE_CASES)
+  test(`Persian release gate / ${channel} / ${u2.name}`, async t => {
+    // 1. The parser accepts the numerical shape (no parser rejection hides the fault).
+    assert.equal(assessNumericalConstraint(u2.text, u2.text, [PREP[1][2]]).safe, true);
+    const r = await turn(t, channel, 'fa', {}, [3], gateScript(u2));
+    // 2. No Verification bypass: the unit reached the mandatory Sol Verifier with business-3 evidence only.
+    assert.deepEqual(knowledgeStages(r.routes), [SOL_EXTRACTION, SOL_VERIFICATION]);
+    assert.ok(r.verificationUnits.includes(u2.text));
+    assert.equal(r.verificationUnits.length, PREP.length);
+    assert.ok(r.evidenceTenants.length > 0 && r.evidenceTenants.every(id => id === 3), JSON.stringify(r.evidenceTenants));
+    const verdicts = r.decisions.filter(d => d.stage === 'verification' && d.unitId);
+    if (!u2.reject) {
+      assert.ok(verdicts.length === PREP.length && verdicts.every(d => d.reason === 'ACCEPTED'), JSON.stringify(verdicts));
+      for (const [, text] of PREP) assert.ok(r.reply.includes(text), text);
+      assert.deepEqual(r.logs.map(l => l.publication), ['published']);
+      return;
+    }
+    // 3. Verification rejects the unsupported meaning, modality, audience or fact.
+    assert.deepEqual(verdicts.filter(d => d.reason !== 'ACCEPTED').map(d => d.reason), [u2.reject.reason], JSON.stringify(verdicts));
+    // 4. No incorrect answer and no partial publication: the customer gets only the safe outcome.
+    assert.equal(r.reply, formatBusinessSupportVerificationUnavailable('fa', 'جزئیات درخواست‌شده'));
+    assert.ok(!r.reply.includes(u2.text));
+    for (const [, text] of PREP) assert.ok(!r.reply.includes(text), 'no verified sibling is published either');
+    assert.deepEqual(r.logs.map(l => l.publication), ['safe_fallback']);
+  });

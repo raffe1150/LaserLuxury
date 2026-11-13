@@ -23,14 +23,17 @@ const question = 'من اولین باره می‌خوام بیام استودی
 const recommendation = 'Förstagångsbesökare rekommenderas att komma cirka 10 minuter före sitt bokade besök för att hinna förbereda sig i lugn och ro.';
 const qualification = 'Detta är en rekommendation, inte ett krav.';
 const faithful = 'به مراجعه‌کنندگان بار اول توصیه می‌شود حدود ۱۰ دقیقه قبل از نوبت رزروشده برسند، برای اینکه با آرامش آماده شوند.';
-const purposeTa = 'به مراجعه‌کنندگان بار اول توصیه می‌شود حدود ۱۰ دقیقه قبل از نوبت رزروشده برسند تا با آرامش آماده شوند.';
+// Re-extraction trigger: a human-labelled faithful purpose (semantic-recovery-eval
+// fa-purpose-8) whose post-quantity «تا» the closed parser grammar still treats as
+// a possible limit. («تا با آرامش آماده شوند» is now recognised and no longer triggers.)
+const purposeTa = 'به مراجعه‌کنندگان بار اول توصیه می‌شود حدود ۱۰ دقیقه قبل از نوبت رزروشده برسند تا با خیال راحت آماده شوند.';
 const source: KnowledgeSource = {
   id: '6a1f0c2e-0d4b-4c51-9b8e-3f2a1c0d9e77', businessId: 77, type: 'document', status: 'ready', title: 'Synthetic first visit',
   content: [recommendation, qualification].join('\n\n'), createdAt: '2026-01-01', updatedAt: '2026-01-01',
   metadata: { segments: [{ start: 0, end: recommendation.length, page: 1 },
     { start: recommendation.length + 2, end: recommendation.length + 2 + qualification.length, page: 1 }] },
 };
-type Mode = 'active' | 'off' | 'no-owner' | 'shadow' | 'flag-flip' | 're-extraction-fails' | 'other-tenant';
+type Mode = 'active' | 'off' | 'no-owner' | 'shadow' | 'flag-flip' | 're-extraction-fails' | 'other-tenant' | 'production';
 const SHADOW_SETTLE_MS = 50;
 
 async function exercise(t: TestContext, channel: IncidentChannel, mode: Mode) {
@@ -42,7 +45,10 @@ async function exercise(t: TestContext, channel: IncidentChannel, mode: Mode) {
   const storage = new InMemoryKnowledgeStorage(); const service = new KnowledgeService(storage);
   await storage.create(source);
   const matches = canonicalDocument(source).chunks.map(chunk => ({ ...chunk.match, score: 1 }));
-  process.env.ODINLINK_SOL_EXTRACTION_MODE = mode === 'off' ? 'off' : mode === 'shadow' ? 'shadow' : 'active';
+  process.env.ODINLINK_SOL_EXTRACTION_MODE = mode === 'off' || mode === 'production' ? 'off' : mode === 'shadow' ? 'shadow' : 'active';
+  // Production profile: Sol is the managed Knowledge default; the canary is off.
+  const savedDefault = process.env.ODINLINK_AI_DEFAULT_MODEL;
+  if (mode === 'production') process.env.ODINLINK_AI_DEFAULT_MODEL = 'gpt-6.1-sol';
   process.env.ODINLINK_SOL_EXTRACTION_TENANT_IDS = mode === 'other-tenant' ? '78' : '77';
   const owner = new ScriptedKnowledgeBudgetOwner();
   configureKnowledgeBudgetOwner(mode === 'no-owner' ? undefined : owner);
@@ -125,6 +131,15 @@ async function exercise(t: TestContext, channel: IncidentChannel, mode: Mode) {
       assert.equal(telemetry[0].reExtraction.trigger, 'ambiguous_connective');
       assert.deepEqual(telemetry[0].stages.map((s: any) => [s.stage, s.model]), [['extraction', 'sol'], ['re_extraction', 'sol'], ['verification', 'luna']]);
       assert.ok(telemetry[0].stages.filter((s: any) => s.model === 'sol').every((s: any) => s.costNanoUsd > 0));
+    } else if (mode === 'production') {
+      // Production profile recovery: the one-shot re-extraction still repairs a
+      // legitimately rejected proposal when the turn has time, under the same
+      // money controls, and the unchanged source-exhaustive Verification runs.
+      assert.deepEqual(calls, [{ stage: 'extraction', model: 'gpt-6.1-sol' }, { stage: 're_extraction', model: 'gpt-6.1-sol' },
+        { stage: 'verification', model: 'gpt-6.1-sol' }]);
+      assert.equal(replies[0], faithful);
+      assert.deepEqual([...owner.reservations.values()].map(r => r.quote.stage), ['extraction', 're_extraction', 'verification']);
+      assert.ok(!owner.events.includes('retainUnknown'));
     } else {
       assert.notEqual(replies[0], purposeTa, 'the rejected purpose-تا proposal is never published');
       assert.notEqual(replies[0], faithful);
@@ -160,6 +175,7 @@ async function exercise(t: TestContext, channel: IncidentChannel, mode: Mode) {
   } finally {
     configureKnowledgeBudgetOwner();
     delete process.env.ODINLINK_SOL_EXTRACTION_MODE; delete process.env.ODINLINK_SOL_EXTRACTION_TENANT_IDS;
+    if (savedDefault === undefined) delete process.env.ODINLINK_AI_DEFAULT_MODEL; else process.env.ODINLINK_AI_DEFAULT_MODEL = savedDefault;
     incidentConfig.services = previousServices; boundary.reset();
   }
 }
@@ -168,5 +184,7 @@ for (const channel of incidentChannels) {
   for (const mode of ['active', 'off', 'no-owner', 'shadow'] as const)
     test(`Sol extraction canary ${mode} through ${channel}`, t => exercise(t, channel, mode));
 }
+for (const channel of incidentChannels)
+  test(`Sol production profile re-extraction recovery through ${channel}`, t => exercise(t, channel, 'production'));
 for (const mode of ['flag-flip', 're-extraction-fails', 'other-tenant'] as const)
   test(`Sol extraction canary ${mode} (whatsapp)`, t => exercise(t, 'whatsapp', mode));

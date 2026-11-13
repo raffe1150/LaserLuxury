@@ -54,6 +54,9 @@ const additionalPurposes = [
  ['ability', ' تا بتوانند آماده شوند.'],
  ['ability with manner', ' تا بتوانند با آرامش آماده شوند.'],
  ['purpose complement before time', ' تا برای آماده شدن زمان کافی داشته باشند.'],
+ // The same closed preparation clause without the modal (recorded Sol/Luna wording).
+ ['get ready, no modal', ' تا آماده شوند.'],
+ ['get ready calmly, no modal', ' تا با آرامش آماده شوند.'],
 ] as const;
 
 for (const n of ['۱۰', '10', '١٠']) for (const [name, suffix] of additionalPurposes)
@@ -84,7 +87,8 @@ for (const [name, claim] of [
  ['alternative quantity', base().replace('۱۰', '۱۰ یا ۲۰') + additionalPurposes[0][1]],
  ['unrelated action', base().replace('حاضر شوند', 'ثبت نام کنند') + additionalPurposes[0][1]],
  ['unrelated ability', base() + ' تا بتوانند پرداخت کنند.'],
- ['bare connective', base() + ' تا با آرامش آماده شوند.'],
+ // Human-labelled faithful (fa-purpose-8) but outside the closed grammar: stays conservative.
+ ['purpose outside the closed grammar', base() + ' تا با خیال راحت آماده شوند.'],
  ['deadline', base() + ' تا شروع نوبت.'],
  ['cancellation context', 'لغو: ' + base() + additionalPurposes[0][1]],
 ] as const) test(`preparation purpose keeps conservative rejection / ${name}`, () => assert.equal(assess(claim).safe, false));
@@ -132,8 +136,47 @@ test('a comma before a preparation purpose cannot resolve conflicting or unsuppo
  for (const claim of [
   base('۲۰') + suffix,
   base() + '، تا بتوانند آماده شوند یا ۲۰ دقیقه قبل برسند.',
-  base() + '، تا با آرامش آماده شوند.',
+  base() + '، تا با خیال راحت آماده شوند.',
   base().replace('قبل', 'بعد') + suffix,
   'لغو: ' + base() + suffix,
  ]) assert.equal(assess(claim).safe, false, claim);
+});
+
+// Narrow modal-less grammar: same closed preparation clause, every limit preserved.
+const getReady = [' تا آماده شوند.', ' تا با آرامش آماده شوند.'] as const;
+for (const suffix of getReady) for (const [qualifier, bound] of [
+ ['حداکثر', 'maximum'], ['تا', 'maximum'], ['نه زودتر از', 'maximum'], ['کمتر از', 'strict_maximum'],
+ ['حداقل', 'minimum'], ['نه دیرتر از', 'minimum'],
+] as const) test(`modal-less preparation purpose preserves genuine bound / ${qualifier} / ${suffix.trim()}`, () => {
+ const claim = base('۱۰', qualifier) + suffix;
+ assert.equal(assess(claim).safe, false);
+ assert.equal(numericalComparisonShapes(assess(claim))[0].candidateBound, bound);
+ assert.equal(assess(claim, claim).safe, true);
+});
+test('modal-less preparation purpose: second person and «برسند» arrival are accepted', () => {
+ for (const claim of ['اگر بار اول است، بهتر است حدود ۱۰ دقیقه قبل از وقت رزرو برسید تا با آرامش آماده شوید.',
+  'به مراجعه‌کنندگان بار اول توصیه می‌شود حدود ۱۰ دقیقه قبل از نوبت رزروشده برسند تا با آرامش آماده شوند.']) {
+  const a = assess(claim);
+  assert.equal(a.safe, true, a.reason);
+  assert.equal(numericalComparisonShapes(a)[0].purposeClauseCategory, 'finite_preparation');
+ }
+});
+for (const [name, claim] of [
+ ['deadline before the purpose', base() + ' تا شروع نوبت آماده شوند.'],
+ ['until-clause event', base() + ' تا نوبتشان شروع شود.'],
+ ['negated preparation', base() + ' تا آماده نشوند.'],
+ ['other preparation phrasing', base() + ' تا بدون عجله آماده شوند.'],
+ ['cancellation window', 'لغو تا ۱۰ دقیقه قبل از نوبت مجاز است تا آماده شوند.'],
+ ['notice period context', 'مهلت: ' + base() + ' تا آماده شوند.'],
+ ['exact instead of approximate', base('۱۰', 'دقیقاً') + ' تا آماده شوند.'],
+ ['conditional maximum', 'اگر دستورالعمل خاصی دارید، ' + base('۱۰', 'حداکثر') + ' تا آماده شوند.'],
+ ['negated recommendation', 'توصیه نمی‌شود مراجعه‌کنندگان بار اول حدود ۱۰ دقیقه قبل از نوبت حاضر شوند تا آماده شوند.'],
+ ['wrong quantity', base('۲۰') + ' تا آماده شوند.'],
+ ['wrong unit', base().replace('دقیقه', 'ساعت') + ' تا آماده شوند.'],
+ ['after the appointment', base().replace('قبل', 'بعد') + ' تا آماده شوند.'],
+] as const) test(`modal-less preparation purpose keeps conservative rejection / ${name}`, () => assert.equal(assess(claim).safe, false, claim));
+test('a conditional requirement is numerically unbounded; modality and condition remain Verification authority', () => {
+ const claim = 'اگر دستورالعمل خاصی دریافت کرده‌اید، باید حدود ۱۰ دقیقه قبل از نوبت برسید تا آماده شوید.';
+ assert.equal(assess(claim).safe, true);
+ assert.equal(numericalComparisonShapes(assess(claim))[0].candidateBound, 'unbounded');
 });

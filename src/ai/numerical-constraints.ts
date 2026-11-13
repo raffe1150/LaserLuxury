@@ -27,7 +27,7 @@ const canonical = (s: string) => s.normalize('NFKC').toLocaleLowerCase()
   .replace(/[\u064b-\u065f\u200c]/gu, ' ').replace(/\s+/gu, ' ').trim();
 const rules: Array<[Bound | 'latest' | 'earliest', string[]]> = [
   ['minimum', ['at least', 'not less than', 'minimum', 'minst', 'minimi', 'inte mindre än', 'mindestens', 'nicht weniger als', 'al menos', 'como mínimo', 'mínimo', 'no menos de', 'حداقل', 'دست کم', 'على الأقل', 'لا يقل عن']],
-  ['maximum', ['at most', 'up to', 'not more than', 'maximum', 'högst', 'upp till', 'maximalt', 'inte mer än', 'höchstens', 'bis zu', 'maximal', 'nicht mehr als', 'como máximo', 'hasta', 'máximo', 'a lo sumo', 'no más de', 'حداکثر', 'حد اکثر', 'تا', 'على الأكثر', 'حتى', 'تصل إلى', 'تصل الى', 'لا يزيد عن']],
+  ['maximum', ['at most', 'up to', 'not more than', 'maximum', 'högst', 'upp till', 'maximalt', 'inte mer än', 'höchstens', 'bis zu', 'maximal', 'nicht mehr als', 'como máximo', 'hasta', 'máximo', 'a lo sumo', 'no más de', 'حداکثر', 'حد اکثر', 'تا', 'على الأكثر', 'حتى', 'تصل إلى', 'تصل الى', 'يصل إلى', 'يصل الى', 'بحد أقصى', 'بحد اقصى', 'كحد أقصى', 'كحد اقصى', 'لا يزيد عن']],
   ['latest', ['no later than', 'senast', 'spätestens', 'a más tardar', 'نه دیرتر از', 'في موعد أقصاه']],
   ['earliest', ['no earlier than', 'tidigast', 'frühestens', 'no antes de', 'نه زودتر از', 'ليس قبل']],
   // Consume inclusive negated phrases above before their strict substrings.
@@ -39,6 +39,11 @@ const boundary = (phrase: string) => new RegExp(`(?<![\\p{L}\\p{N}])${phrase.rep
 const before = ['before', 'in advance', 'i förväg', 'im voraus', 'de antelación', 'före', 'innan', 'vor', 'vorher', 'antes', 'قبل', 'پیش از', 'پیش'];
 const after = ['after', 'efter', 'nach', 'después', 'بعد', 'پس از'];
 const hasPhrase = (s: string, list: string[]) => list.some(p => boundary(p).test(s));
+// Arabic "يصل/تصل إلى" is an upper limit ("up to N") only when it introduces the
+// quantity, optionally approximated; otherwise it is the arrival verb "arrives at".
+const quantityLed = new Set(['تصل إلى', 'تصل الى', 'يصل إلى', 'يصل الى']);
+const rulePattern = (phrase: string) => quantityLed.has(phrase)
+  ? new RegExp(`${boundary(phrase).source}(?=\\s*(?:(?:حوالي|حوالى|نحو|قرابة)\\s+)?[0-9])`, 'gu') : boundary(phrase);
 const unitGroups: Array<[number, string[]]> = [
   [60, ['minute', 'minutes', 'minuter', 'minut', 'minuten', 'minuto', 'minutos', 'دقیقه', 'دقيقة', 'دقائق']],
   [3600, ['hour', 'hours', 'timme', 'timmar', 'stunde', 'stunden', 'hora', 'horas', 'ساعت', 'ساعة', 'ساعات']],
@@ -146,11 +151,11 @@ function parse(input: string, diagnoseBound = false): { constraints: Constraint[
       return ' فرصت';
     });
     // An arrival verb followed by a finite preparation-purpose clause (enough
-    // time or ability to prepare) does not set a bound. Consume only its
+    // time, or (ability to) get ready, optionally calmly) does not set a bound. Consume only its
     // post-quantity connective; retain real bounds and the rest of the clause.
     if (side === 'before' && !anchoredAfter && !cancellationClaim.test(context) &&
         !/مهلت|هزینه|جریمه/u.test(context)) {
-      boundSuffix = boundSuffix.replace(/(?<![\p{L}\p{N}])((?:حاضر\s+شو(?:ند|ید|د|یم|م)|برس(?:ند|ید|د|یم|م))(?:\s*[،,])?\s+)تا(?=\s+(?:(?:(?:زمان|فرصت)\s+کافی\s+برای\s+آماده\s+شدن|برای\s+آماده\s+شدن\s+(?:زمان|فرصت)\s+کافی)\s+داشته\s+باش(?:ند|ید|د|یم|م)|بتوان(?:ند|ید|د|یم|م)\s+(?:با\s+آرامش\s+)?آماده\s+شو(?:ند|ید|د|یم|م))(?![\p{L}\p{N}]))/gu, (_, arrival: string) => {
+      boundSuffix = boundSuffix.replace(/(?<![\p{L}\p{N}])((?:حاضر\s+شو(?:ند|ید|د|یم|م)|برس(?:ند|ید|د|یم|م))(?:\s*[،,])?\s+)تا(?=\s+(?:(?:(?:زمان|فرصت)\s+کافی\s+برای\s+آماده\s+شدن|برای\s+آماده\s+شدن\s+(?:زمان|فرصت)\s+کافی)\s+داشته\s+باش(?:ند|ید|د|یم|م)|(?:بتوان(?:ند|ید|د|یم|م)\s+)?(?:با\s+آرامش\s+)?آماده\s+شو(?:ند|ید|د|یم|م))(?![\p{L}\p{N}]))/gu, (_, arrival: string) => {
         finitePreparationMatched = true;
         return arrival;
       });
@@ -162,7 +167,7 @@ function parse(input: string, diagnoseBound = false): { constraints: Constraint[
     const quantityEnd = quantityStart + quantity[0].length;
     let firstMarker: Pick<BoundMarkerDiagnostic, 'boundTriggerCategory' | 'boundTriggerPosition' | 'boundDecisionBranch'> | undefined;
     for (const [kind, phrases] of rules) for (const phrase of [...phrases].sort((a, b) => b.length - a.length)) {
-      remaining = remaining.replace(boundary(phrase), (match: string, offset: number) => {
+      remaining = remaining.replace(rulePattern(phrase), (match: string, offset: number) => {
         if (diagnoseBound && !firstMarker) {
           // The mapped bound uses the first rule match in scan order.
           const temporal = kind === 'earliest' || kind === 'latest';
@@ -214,7 +219,7 @@ function parse(input: string, diagnoseBound = false): { constraints: Constraint[
   const incompleteDeadline = /cancel|avbok|absag|stornier|لغو|إلغاء/iu.test(text) &&
     (hasPhrase(text, before) || hasPhrase(text, after)) &&
     (/(?<![\p{L}\p{N}-])[0-9]+(?![\p{L}\p{N}-])/u.test(text) || hasPhrase(text, Object.keys(units)));
-  const marked = rules.some(([, phrases]) => hasPhrase(text, phrases)) || /[<>≤≥]/u.test(text) || incompleteDeadline;
+  const marked = rules.some(([, phrases]) => phrases.some(phrase => rulePattern(phrase).test(text))) || /[<>≤≥]/u.test(text) || incompleteDeadline;
   return { constraints, unsupported: marked && !quantities.length };
 }
 

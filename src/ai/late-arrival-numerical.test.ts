@@ -179,7 +179,11 @@ for(const language of Object.keys(questions)as (keyof typeof questions)[])for(co
       evidenceIdsReviewed:data.evidence.map((e:any)=>e.id),acceptedUnitIdsReviewed:data.units.filter((u:any)=>!(fault==='automatic-cancellation'&&u.id==='u3')).map((u:any)=>u.id),
       obligations:data.facets.flatMap((f:any)=>f.obligations.map((o:any)=>({facetId:f.id,obligationId:o.id,state:complete?'COMPLETE':'AVAILABLE_SOURCE_FACT_OMITTED'})))}})};
    }});},async()=>assert.fail('Unexpected native timeout'));
-  assert.deepEqual(stages,['extraction','verification']);assert.notEqual(manifest.fallbackReason,'PROVIDER_FAILURE',JSON.stringify(events));
+  // A proposal rejected at parse makes the source-exhaustive inventory irrecoverably
+  // incomplete: the result is fixed, so the paid Verification call is skipped.
+  const parseRejected=fault==='quoted-threshold-16'||fault==='automatic-cancellation'&&(language==='en'||language==='de');
+  assert.deepEqual(stages,parseRejected?['extraction']:['extraction','verification']);assert.notEqual(manifest.fallbackReason,'PROVIDER_FAILURE',JSON.stringify(events));
+  if(parseRejected){assert.equal(manifest.fallbackReason,'INVALID_COVERAGE');assert.equal(manifest.units.length,0);}
   if(fault==='automatic-cancellation')assert.ok(events.some(e=>e.unitId==='u3'&&e.reason===((language==='en'||language==='de')?'OPERATION_CLAIM':'CONTRADICTED')),JSON.stringify(events));
   if(fault==='quoted-threshold-16')assert.ok(events.some(e=>e.unitId==='u2'&&e.reason==='NUMERICAL_CONSTRAINT'));
   if(fault==='none'||fault==='quoted-threshold'){assert.equal(manifest.units.length,3,JSON.stringify({fallback:manifest.fallbackReason,outcomes:manifest.outcomes,events}));assert.equal(manifest.presentationPath,'direct_verified_units');for(const text of texts)assert.ok(manifest.text.includes(text));}

@@ -406,9 +406,21 @@ async function replay(t: TestContext, channel: IncidentChannel,
   const languageEvents = decisions.filter(event => event.reason === 'LOCAL_LANGUAGE');
   assert.ok(decisions.every(event => !event.localLanguage || event.reason === 'LOCAL_LANGUAGE'));
   if (probe?.rules) {
-    assert.deepEqual(languageEvents.map(event => ({
-      unitId: event.unitId, turnIdPresent: Boolean(event.businessInfoTurnId), diagnostic: event.localLanguage,
-    })), [{
+    // The additive classification diagnostic is checked separately below, so
+    // every original localLanguage field keeps its exact assertion.
+    const branches = ['not_meaningful', 'arabic_script', 'latin_persian', 'grammatical', 'phrase_sv', 'shared_lexeme_de_sv',
+      'phrase_fa', 'phrase_en', 'phrase_de', 'phrase_es', 'weighted_with_strong_evidence', 'none'];
+    for (const event of languageEvents) {
+      const classification = event.localLanguage?.classification;
+      assert.ok(classification && branches.includes(classification.branch));
+      assert.ok(Object.values(classification.grammaticalScores).every((score: unknown) => Number.isInteger(score) && Number(score) >= 0 && Number(score) <= 99));
+      assert.ok(['none', 'sv', 'de', 'mixed'].includes(classification.duAttribution));
+      assert.equal(typeof classification.sharedGermanSwedishLexeme, 'boolean');
+    }
+    assert.deepEqual(languageEvents.map(event => {
+      const { classification: _classification, ...diagnostic } = event.localLanguage ?? {};
+      return { unitId: event.unitId, turnIdPresent: Boolean(event.businessInfoTurnId), diagnostic };
+    }), [{
       unitId: 'u2', turnIdPresent: true, diagnostic: {
         targetLanguage: language,
         ...(probe.detected ? { detectedLanguage: probe.detected } : {}),

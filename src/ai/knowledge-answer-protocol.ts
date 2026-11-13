@@ -84,6 +84,14 @@ export type KnowledgeDecision = {
       'english_structure' | 'swedish_structure' | 'persian_structure')[];
     configuredEntityRemoved: boolean;
     containsCitedSpan: boolean;
+    /** Fixed branch/marker-family IDs and bounded scores; never prose or tokens. */
+    classification?: {
+      branch: 'not_meaningful' | 'arabic_script' | 'latin_persian' | 'grammatical' | 'phrase_sv' | 'shared_lexeme_de_sv' |
+        'phrase_fa' | 'phrase_en' | 'phrase_de' | 'phrase_es' | 'weighted_with_strong_evidence' | 'none';
+      grammaticalScores: { sv: number; de: number; es: number; en: number };
+      duAttribution: 'none' | 'sv' | 'de' | 'mixed';
+      sharedGermanSwedishLexeme: boolean;
+    };
   };
   blockId?: string; blockKind?: 'fact'|'uncertainty'|'courtesy'; requestedLanguage?: string;
   semanticVerifiedUnits?: number; publishableUnits?: number; deadlineAt?: number; timeoutMs?: number;

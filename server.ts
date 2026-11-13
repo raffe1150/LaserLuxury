@@ -20,6 +20,7 @@ import { selectCanonicalConfigurationProducer } from './src/ai/canonical-configu
 import { isArrivalInformationQuestion,isConditionalArrivalInformationQuestion,isPassiveCancellationPolicyQuestion } from './src/ai/information-request-contract';
 import { compactKnowledgeVerifierInput } from './src/ai/knowledge-verifier-input';
 import { hasForeignAddressPreposition } from './src/ai/knowledge-prose-language';
+import { detectGrammaticalLatinLanguage, hasSharedGermanSwedishLexeme, resolveSharedGermanSwedishLexeme, scoreGrammaticalLatinLanguage, germanSwedishDuEvidence, unicodeWordPattern } from './src/ai/latin-language-markers';
 import { TelegramPollerSupervisor, recoverableTelegramLeaseFailure } from './src/p2/telegram-poller-supervisor';
 import { TelegramPollerLease } from './src/p2/telegram-poller-lease';
 import { NativeIntakeAcknowledgement } from './src/p2/native-intake-acknowledgement';
@@ -15771,17 +15772,19 @@ function customerReplyLanguageIsIncompatible(prose: string, language: string, st
 }
 
 function assessCustomerReplyLanguage(prose: string, language: string, structureProse = prose) {
-  const hasEnglishStructure = /\b(to confirm|can i ask|please send|please choose|i need|i can'?t find|what mobile|what day|what time|which time|of course|your appointment|your booking|would you like|sorry|couldn'?t|is available|is booked|try again)\b/i.test(structureProse);
-  const hasSwedishStructure = /\b(för att|kan jag|ditt namn|din bokning|mobilnummer|vill du|tyvärr|är ledig|är bokad)\b/i.test(structureProse);
-  const hasSwedishConfirmationStructure = /\b(?:ta gärna med|din bokningsbekräftelse)\b/iu.test(structureProse);
+  const hasEnglishStructure = unicodeWordPattern(/\b(to confirm|can i ask|please send|please choose|i need|i can'?t find|what mobile|what day|what time|which time|of course|your appointment|your booking|would you like|sorry|couldn'?t|is available|is booked|try again)\b/i).test(structureProse);
+  const hasSwedishStructure = unicodeWordPattern(/\b(för att|kan jag|ditt namn|din bokning|mobilnummer|vill du|tyvärr|är ledig|är bokad)\b/i).test(structureProse);
+  const hasSwedishConfirmationStructure = unicodeWordPattern(/\b(?:ta gärna med|din bokningsbekräftelse)\b/iu).test(structureProse);
   const hasPersianStructure = /[\u0600-\u06FF]/u.test(structureProse) &&
     /(برای|لطفاً|می.?خواهید|وقت|رزرو|نام|شماره|متأسفانه)/u.test(structureProse);
   const fallbackReplyLanguage = isMeaningfulLanguageMessage(prose)
     ? detectUserLanguage(prose)
     : null;
 
-  const strongReplyLanguage = isMeaningfulLanguageMessage(prose)
-    ? detectStrongLatestLanguage(prose) ||
+  const meaningful = isMeaningfulLanguageMessage(prose);
+  const strongEvidence = meaningful ? detectStrongLatestLanguageEvidence(prose) : null;
+  const strongReplyLanguage = meaningful
+    ? strongEvidence?.language ||
       (
         fallbackReplyLanguage &&
         hasStrongLanguageEvidence(fallbackReplyLanguage, prose)
@@ -15816,13 +15819,25 @@ function assessCustomerReplyLanguage(prose: string, language: string, structureP
   if ((['fa', 'en', 'de'].includes(language) && hasSwedishStructure) ||
       (language === 'de' && hasSwedishConfirmationStructure)) ruleIds.push('swedish_structure');
   if (language === 'en' && hasPersianStructure) ruleIds.push('persian_structure');
-  return { detectedLanguage: strongReplyLanguage, ruleIds };
+  // Fixed identifiers and bounded integers only; never prose, tokens or quotes.
+  const grammaticalScores = scoreGrammaticalLatinLanguage(prose);
+  const classification = {
+    branch: !meaningful ? 'not_meaningful' as const : strongEvidence?.branch ??
+      (strongReplyLanguage ? 'weighted_with_strong_evidence' as const : 'none' as const),
+    grammaticalScores: {
+      sv: Math.min(99, grammaticalScores.sv), de: Math.min(99, grammaticalScores.de),
+      es: Math.min(99, grammaticalScores.es), en: Math.min(99, grammaticalScores.en),
+    },
+    duAttribution: germanSwedishDuEvidence(prose).attribution,
+    sharedGermanSwedishLexeme: hasSharedGermanSwedishLexeme(prose),
+  };
+  return { detectedLanguage: strongReplyLanguage, ruleIds, classification };
 }
 
 function assessKnowledgeUnitLanguage(unit: { text: string; evidenceRefs: readonly { exactQuote: string }[] },
   language: string, businessConfig: unknown): KnowledgeDecision['localLanguage'] {
   const filtered = removeConfiguredEntitiesFromLanguageEvidence(unit.text, businessConfig);
-  const { detectedLanguage, ruleIds } = assessCustomerReplyLanguage(filtered, language);
+  const { detectedLanguage, ruleIds, classification } = assessCustomerReplyLanguage(filtered, language);
   if (!ruleIds.length) return undefined;
   const supported = (code: string | null) => {
     const codes = ['fa', 'ar', 'en', 'sv', 'de', 'es'] as const;
@@ -15835,6 +15850,7 @@ function assessKnowledgeUnitLanguage(unit: { text: string; evidenceRefs: readonl
     ruleIds,
     configuredEntityRemoved: filtered !== unit.text.replace(/\s+/g, ' ').trim(),
     containsCitedSpan: unit.evidenceRefs.some(ref => ref.exactQuote && unit.text.includes(ref.exactQuote)),
+    classification,
   };
 }
 
@@ -27292,45 +27308,6 @@ function detectTtsVoiceCode(text: string): string {
 
   return "en-US-AriaNeural";
 }
-function detectGrammaticalLatinLanguage(text?: string): string | null {
-  const lower = String(text || "").trim().toLowerCase();
-  if (!lower) return null;
-
-  const scores: Record<"sv" | "de" | "es" | "en", number> = { sv: 0, de: 0, es: 0, en: 0 };
-  const add = (language: keyof typeof scores, pattern: RegExp, weight: number) => {
-    const matches = lower.match(pattern);
-    if (matches) scores[language] += matches.length * weight;
-  };
-
-  // "den" is also a German article; it cannot independently prove Swedish.
-  add("sv", /\b(vilka?|finns|jag|mig|du|det|för|någon|några)\b/gu, 2);
-  add("sv", /\bjag\s+(?:vill|behöver|ska)\b/gu, 2);
-  add("sv", /\b(lediga?|tider?)\b/gu, 2);
-  // Complete question frames provide language evidence when the provider is unavailable.
-  add("sv", /^vilk(?:en|et|a)\s+[^.!?\n]{1,80}\s+(?:har|finns|är)\b/gu, 4);
-  add("de", /\b(welche[rsn]?|ich|mich|gibt\s+es|am|für)\b/gu, 2);
-  add("de", /\bich\s+(?:möchte|moechte)\b/gu, 2);
-  add("de", /\b(freie[nrms]?|zeiten?|termine?)\b/gu, 2);
-  add("de", /\b(können sie|könnten sie|unternehmen|dienstleistungen|informationen|erklären|erzählen|erstellt|kurze|videoanzeigen|bestätigung)\b/gu, 2);
-  add("de", /^welch(?:e|er|es|en|em)\s+[^.!?\n]{1,80}\s+(?:hat|haben|ist|sind|gilt)\b/gu, 4);
-  add("es", /\b(qué|cuáles?|hay|quiero|para|el|la)\b/gu, 2);
-  add("es", /\b(?:quiero|quisiera|me\s+gustar[ií]a)\b/gu, 2);
-  add("es", /\b(horas?|disponibles?|citas?)\b/gu, 2);
-  // Avoid cross-language pronouns/prepositions as standalone evidence.
-  // For example, "me" is common Spanish and must not make a Spanish sentence English.
-  add("en", /\b(what|which|are\s+there)\b/gu, 2);
-  // Standalone "i" is also a Swedish preposition. Require English grammar
-  // around the first-person pronoun rather than counting Swedish occurrences.
-  add("en", /\bi\s+(?:am|have|will|need|can|could|should|was)\b/gu, 2);
-  // A complete first-person verb frame is grammatical evidence, like jag vill
-  // or ich möchte. Standalone Swedish preposition "i" still contributes nothing.
-  add("en", /\bi\s+(?:want|would\s+like)\b/gu, 4);
-  add("en", /\b(available|times?|appointments?)\b/gu, 2);
-
-  const ranked = Object.entries(scores).sort((a, b) => b[1] - a[1]);
-  return ranked[0][1] >= 4 && ranked[0][1] > ranked[1][1] ? ranked[0][0] : null;
-}
-
 function detectUserLanguage(text: string): string;
 function detectUserLanguage(text: string, fallbackToEnglish: false): string | null;
 function detectUserLanguage(text: string, fallbackToEnglish = true): string | null {
@@ -27360,7 +27337,7 @@ function detectUserLanguage(text: string, fallbackToEnglish = true): string | nu
 
   const scores: Record<string, number> = { en: 0, sv: 0, de: 0, es: 0, fa: 0, ar: 0 };
   const add = (lang: string, pattern: RegExp, weight = 1) => {
-    const matches = lower.match(pattern);
+    const matches = lower.match(unicodeWordPattern(pattern));
     if (matches) scores[lang] += matches.length * weight;
   };
 
@@ -27445,21 +27422,21 @@ function hasStrongLanguageEvidence(language: string, text?: string): boolean {
   // also contains a time like 16:30. Short replies like "yes", "ok", "tack", "merci"
   // are handled elsewhere and must not switch the conversation language.
   if (language === "en") {
-    return /\b(hi|hello|hey|i\s+want|i\s+would\s+like|i\s+can|can\s+i|could\s+i|do\s+you\s+have|anything\s+(?:after|before)|any\s+(?:available\s+)?time|how\s+long|duration|appointment|consultation|book|booking|available|availability|next\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday|week)|my\s+name\s+is|my\s+phone\s+is|pedicure|treatment|quick\s+refresh)\b/i.test(lower);
+    return unicodeWordPattern(/\b(hi|hello|hey|i\s+want|i\s+would\s+like|i\s+can|can\s+i|could\s+i|do\s+you\s+have|anything\s+(?:after|before)|any\s+(?:available\s+)?time|how\s+long|duration|appointment|consultation|book|booking|available|availability|next\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday|week)|my\s+name\s+is|my\s+phone\s+is|pedicure|treatment|quick\s+refresh)\b/i).test(lower);
   }
   if (language === "sv") {
-    return /\b(hej|hejsan|hallå|kan\s+du|kan\s+jag|har\s+jag|har\s+ni|hos\s+er|mår\s+du|vad\s+heter\s+du|vem\s+är\s+du|jag\s+vill|jag\s+ska|jag\s+kan|jag\s+behöver|hur\s+lång|hur\s+långt|hur\s+länge|ändra\s+min\s+tid|flytta\s+min\s+tid|boka|bokning|lediga?|tid(?:er)?|behandling|konsultation|nästa\s+(måndag|tisdag|onsdag|torsdag|fredag|lördag|söndag)|mitt\s+namn|mitt\s+nummer|mobilnummer)\b/i.test(lower);
+    return unicodeWordPattern(/\b(hej|hejsan|hallå|kan\s+du|kan\s+jag|har\s+jag|har\s+ni|hos\s+er|mår\s+du|vad\s+heter\s+du|vem\s+är\s+du|jag\s+vill|jag\s+ska|jag\s+kan|jag\s+behöver|hur\s+lång|hur\s+långt|hur\s+länge|ändra\s+min\s+tid|flytta\s+min\s+tid|boka|bokning|lediga?|tid(?:er)?|behandling|konsultation|nästa\s+(måndag|tisdag|onsdag|torsdag|fredag|lördag|söndag)|mitt\s+namn|mitt\s+nummer|mobilnummer)\b/i).test(lower);
   }
   if (language === "de") {
-    return /\b(hallo|guten|ich\s+möchte|ich\s+moechte|ich\s+will|termin|buchen|buchung|behandlung|ganzkörper|ganzkoerper|unternehmen|dienstleistungen|können\s+sie|könnten\s+sie|mein\s+name|meine\s+nummer|telefonnummer|nächsten|naechsten)\b/i.test(lower);
+    return unicodeWordPattern(/\b(hallo|guten|ich\s+möchte|ich\s+moechte|ich\s+will|termin|buchen|buchung|behandlung|ganzkörper|ganzkoerper|unternehmen|dienstleistungen|können\s+sie|könnten\s+sie|mein\s+name|meine\s+nummer|telefonnummer|nächsten|naechsten)\b/i).test(lower);
   }
   if (language === "es") {
-    return /\b(hola|quiero|quisiera|me\s+gustaría|me\s+gustaria|tienen|tiene|hay|hora|horas|disponible|disponibles|cita|reservar|reserva|tratamiento|después|despues|antes|agosto|lunes|martes|miércoles|miercoles|jueves|viernes|sábado|sabado|domingo|mi\s+nombre|mi\s+teléfono|mi\s+telefono|la\s+próxima|la\s+proxima)\b/i.test(lower);
+    return unicodeWordPattern(/\b(hola|quiero|quisiera|me\s+gustaría|me\s+gustaria|tienen|tiene|hay|hora|horas|disponible|disponibles|cita|reservar|reserva|tratamiento|después|despues|antes|agosto|lunes|martes|miércoles|miercoles|jueves|viernes|sábado|sabado|domingo|mi\s+nombre|mi\s+teléfono|mi\s+telefono|la\s+próxima|la\s+proxima)\b/i).test(lower);
   }
   if (language === "fa") {
     return /[پچژگۀک‌ی]/u.test(raw) ||
       hasStrongLatinPersianEvidence(raw) ||
-      /\b(salam|mikham|mikhastam|baraye|vaght|saat|sate|doshanbe|seshanbe|chaharshanbe|panjshanbe|jome|shanbe|yekshanbe|esme|esmam|shomare|shomaram|telefonam)\b/i.test(lower);
+      unicodeWordPattern(/\b(salam|mikham|mikhastam|baraye|vaght|saat|sate|doshanbe|seshanbe|chaharshanbe|panjshanbe|jome|shanbe|yekshanbe|esme|esmam|shomare|shomaram|telefonam)\b/i).test(lower);
   }
   if (language === "ar") {
     return /(مرحب|أهلا|اهلا|السلام|موعد|حجز|احجز|أحجز|علاج|جلسة|الساعة|الخميس|الاثنين|الثلاثاء|الأربعاء|الاربعاء|الجمعة|السبت|الأحد|الاحد|اسمي|هاتفي|رقمي)/u.test(raw);
@@ -27573,12 +27550,20 @@ function removeConfiguredEntitiesFromLanguageEvidence(text: string, businessConf
   return remainder.replace(/\s+/g, " ").trim();
 }
 
+type StrongLanguageBranch = 'arabic_script' | 'latin_persian' | 'grammatical' | 'phrase_sv' |
+  'shared_lexeme_de_sv' | 'phrase_fa' | 'phrase_en' | 'phrase_de' | 'phrase_es';
+
 function detectStrongLatestLanguage(text?: string, businessConfig?: any): string | null {
+  return detectStrongLatestLanguageEvidence(text, businessConfig)?.language ?? null;
+}
+
+// Same decision as detectStrongLatestLanguage, plus the fixed branch that decided it.
+function detectStrongLatestLanguageEvidence(text?: string, businessConfig?: any): { language: string; branch: StrongLanguageBranch } | null {
   const source = String(text || "").trim();
   if (businessConfig) {
     const entityFreeText = removeConfiguredEntitiesFromLanguageEvidence(source, businessConfig);
     if (entityFreeText !== source) {
-      return detectStrongLatestLanguage(entityFreeText);
+      return detectStrongLatestLanguageEvidence(entityFreeText);
     }
   }
 
@@ -27586,28 +27571,32 @@ function detectStrongLatestLanguage(text?: string, businessConfig?: any): string
   if (!raw) return null;
 
   if (/[\u0600-\u06FF]/.test(raw)) {
-    if (/[پچژگکی]/u.test(raw) || /(?:^|[^\p{L}\p{N}])(?:برای|مشاوره|شماره)(?=$|[^\p{L}\p{N}])/u.test(raw) || /(?:^|[^\p{L}\p{N}])(?:می|نمی)(?:‌|\s)*(?=[\p{L}])/u.test(raw)) return "fa";
-    return "ar";
+    if (/[پچژگکی]/u.test(raw) || /(?:^|[^\p{L}\p{N}])(?:برای|مشاوره|شماره)(?=$|[^\p{L}\p{N}])/u.test(raw) || /(?:^|[^\p{L}\p{N}])(?:می|نمی)(?:‌|\s)*(?=[\p{L}])/u.test(raw)) return { language: "fa", branch: "arabic_script" };
+    return { language: "ar", branch: "arabic_script" };
   }
 
   // Standalone "man" is shared by German, Swedish, English and Finglish.
   // The weighted detector still counts it when other Persian markers corroborate it.
-  if (hasStrongLatinPersianEvidence(raw)) return "fa";
+  if (hasStrongLatinPersianEvidence(raw)) return { language: "fa", branch: "latin_persian" };
 
   const grammaticalLanguage = detectGrammaticalLatinLanguage(raw);
-  if (grammaticalLanguage) return grammaticalLanguage;
+  if (grammaticalLanguage) return { language: grammaticalLanguage, branch: "grammatical" };
 
   if (
-    /\b(hej+|hejsan|hallå|kan du|kan jag|har jag|har ni|hos er|mår du|vad heter du|vem är du|jag vill|jag ska|jag behöver|hur lång|hur långt|hur länge|ändra min tid|flytta min tid|måndag|tisdag|onsdag|torsdag|fredag|lördag|söndag|klockan|vilken tid|konsultation|boka|bokning|lediga?|tid(?:er)?|passar|mitt namn|mitt nummer|mobilnummer)\b/i.test(raw)
-  ) return "sv";
+    unicodeWordPattern(/\b(hej+|hejsan|hallå|kan du|kan jag|har jag|har ni|hos er|mår du|vad heter du|vem är du|jag vill|jag ska|jag behöver|hur lång|hur långt|hur länge|ändra min tid|flytta min tid|måndag|tisdag|onsdag|torsdag|fredag|lördag|söndag|klockan|vilken tid|boka|bokning|lediga?|tid(?:er)?|passar|mitt namn|mitt nummer|mobilnummer)\b/i).test(raw)
+  ) return { language: "sv", branch: "phrase_sv" };
+
+  // "Konsultation" is a German and a Swedish word. Attribute it from the
+  // surrounding German/Swedish function words; Swedish stays the default.
+  if (hasSharedGermanSwedishLexeme(raw)) return { language: resolveSharedGermanSwedishLexeme(raw), branch: "shared_lexeme_de_sv" };
 
   if (
-    /\b(mikham|mikhastam|mitonam|mitoonam|baraye|vaght|moshavere|moshavereh|cheghadr tool|esmam|esme man|shomare|shomaram|khobe|bale|lotfan|cancel konam|laghv konam|2shanbe|3shanbe|4shanbe|5shanbe)\b/i.test(raw)
-  ) return "fa";
+    unicodeWordPattern(/\b(mikham|mikhastam|mitonam|mitoonam|baraye|vaght|moshavere|moshavereh|cheghadr tool|esmam|esme man|shomare|shomaram|khobe|bale|lotfan|cancel konam|laghv konam|2shanbe|3shanbe|4shanbe|5shanbe)\b/i).test(raw)
+  ) return { language: "fa", branch: "phrase_fa" };
 
-  if (/\b(hello|hi there|what do you do|what services|why did you change (?:the )?language|i want|can i|do you have|how long|duration|monday|tuesday|wednesday|thursday|friday|saturday|sunday|appointments?|available|availability|consultation|book|booking|my name)\b/i.test(raw)) return "en";
-  if (/\b(ich|möchte|termin|montag|dienstag|beratung|unternehmen|dienstleistungen|leistungen|können sie|könnten sie)\b/i.test(raw)) return "de";
-  if (/\b(hola|quiero|quisiera|tienen|tiene|hay|hora|horas|disponible|disponibles|cita|reservar|reserva|consulta|tratamiento|después|despues|antes|agosto|lunes|martes|miércoles|miercoles|jueves|viernes|sábado|sabado|domingo)\b/i.test(raw)) return "es";
+  if (unicodeWordPattern(/\b(hello|hi there|what do you do|what services|why did you change (?:the )?language|i want|can i|do you have|how long|duration|monday|tuesday|wednesday|thursday|friday|saturday|sunday|appointments?|available|availability|consultation|book|booking|my name)\b/i).test(raw)) return { language: "en", branch: "phrase_en" };
+  if (unicodeWordPattern(/\b(ich|möchte|termin|montag|dienstag|beratung|unternehmen|dienstleistungen|leistungen|können sie|könnten sie)\b/i).test(raw)) return { language: "de", branch: "phrase_de" };
+  if (unicodeWordPattern(/\b(hola|quiero|quisiera|tienen|tiene|hay|hora|horas|disponible|disponibles|cita|reservar|reserva|consulta|tratamiento|después|despues|antes|agosto|lunes|martes|miércoles|miercoles|jueves|viernes|sábado|sabado|domingo)\b/i).test(raw)) return { language: "es", branch: "phrase_es" };
 
   return null;
 }
@@ -37379,6 +37368,18 @@ export const priority1hUnifiedEngineTestBoundary = {
     if (process.env.NODE_ENV !== 'test') throw new Error('Test-only');
     const prose = bookingReplyLanguageEvidence(reply, { kind: 'missing_service', language, services });
     return bookingPresentationLanguageMatches(prose, language);
+  },
+  sharedLanguageClassification(text: string, language: string, businessConfig?: any, previous?: string) {
+    if (process.env.NODE_ENV !== 'test') throw new Error('Test-only');
+    // Incoming deterministic detection and implicit switch decision (as used for
+    // pending bookings), plus the outgoing Knowledge unit local-language veto.
+    const strong = detectStrongLatestLanguage(text);
+    return {
+      strong,
+      switchTo: previous && strong && shouldAllowLatestLanguageOverride('shared-language-classification-test', previous, strong, text)
+        ? strong : null,
+      unit: assessKnowledgeUnitLanguage({ text, evidenceRefs: [] }, language, businessConfig),
+    };
   },
   geminiToolNames(sessionId: string) {
     if (process.env.NODE_ENV !== "test") throw new Error("Priority 1H test boundary is test-only");

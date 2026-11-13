@@ -7,7 +7,7 @@ import { selectCanonicalConfigurationProducer, captureCanonicalConfigurationProd
 import { isSourceExhaustiveProtocol, sourceExhaustiveInstruction, assessSourceCoverage, SOURCE_EXHAUSTIVE_V2_EVIDENCE_REVIEW } from './source-exhaustive-coverage';
 import { createHash } from 'node:crypto';
 import { packDocumentEvidence } from '../knowledge/document-evidence-packing';
-import { numericalConstraintSafe, assessNumericalConstraint, numericalAmbiguityReasons, numericalComparisonShapes, citedQuantitiesSupported, NUMERICAL_DIRECTION_GUIDANCE } from './numerical-constraints';
+import { numericalConstraintSafe, assessNumericalConstraint, hasMatchingExactnessRecoveryAnchor, numericalAmbiguityReasons, numericalComparisonShapes, citedQuantitiesSupported, NUMERICAL_DIRECTION_GUIDANCE } from './numerical-constraints';
 import { recordPrivateNumericalCandidate } from './late-arrival-numerical-diagnostics';
 import { containsUnverifiedBookingSuccessClaim } from './reliability';
 import { containsWebOperationSuccess } from './web-response-integrity';
@@ -232,9 +232,9 @@ export function answerEvidenceBindings(businessId: number, matches: readonly any
 
 /** Re-extraction trigger classes. A class only REQUESTS one fresh, complete
  * re-extraction; it never admits, repairs or re-reads a rejected proposal. */
-export type ReExtractionTally = { ambiguousConnective: number; citationOmitsQuantity: number };
+export type ReExtractionTally = { ambiguousConnective: number; citationOmitsQuantity: number; numericalExactness?: number };
 export type ReExtractionEvent = Readonly<{
-  trigger: 'none' | 'ambiguous_connective' | 'citation_omits_quantity' | 'both' | 'other_rejection' | 'out_of_scope';
+  trigger: 'none' | 'ambiguous_connective' | 'citation_omits_quantity' | 'both' | 'numerical_exactness' | 'other_rejection' | 'out_of_scope';
   outcome: 'not_needed' | 'not_eligible' | 'skipped' | 'source_changed' | 'dispatched' | 'failed';
   skipReason?: string; firstPass: { proposed: number; parsed: number; rejected: number };
   replacement?: { proposed: number; parsed: number; rejected: number }; durationMs?: number; failureReason?: string }>;
@@ -248,6 +248,10 @@ export const REEXTRACTION_CITATION_GUIDANCE = 'RE-EXTRACTION: A previous proposa
   'For every unit, each exactQuote must be a verbatim evidence span that itself contains every quantity, time and number the unit states; ' +
   'cite the sentence that states the quantity, not only a neighbouring qualification. Preserve every quantity, approximation, modality, ' +
   'audience, temporal anchor, condition and qualification from the evidence exactly. Do not add facts.';
+const REEXTRACTION_EXACTNESS_GUIDANCE = 'RE-EXTRACTION: Regenerate the complete set of material facts from the cited sources. ' +
+  'State the supported timing affirmatively, using the source quantity, approximation or precision, numerical bound and appointment anchor. ' +
+  'Preserve recommendation versus requirement and every applicable condition. Do not repeat an unsupported deadline, add facts, or omit material facts.';
+
 const ambiguousConnectiveRow = (row: ReturnType<typeof numericalComparisonShapes>[number]) =>
   row.boundTriggerCategory === 'persian_ta' && row.boundTriggerPosition === 'after_quantity' &&
   row.candidateBound === 'maximum' && row.sourceBound === 'unbounded' && row.temporalAnchorCompatible === true &&
@@ -320,7 +324,10 @@ export function parseAnswerUnits(raw: unknown, facets: readonly Facet[], evidenc
       const evidenceBindings=diagnosticBindings(refs);
       if (reExtractionTally && index !== ownerProposalIndex) {
         const shapes = evidenceBindings.length===refs.length ? numericalComparisonShapes(numerical) : [];
-        if (numerical.reason === 'SOURCE_BOUND_ANCHOR_OR_SCOPE_MISMATCH' && shapes.length && shapes.every(ambiguousConnectiveRow))
+        if (refs.length === 1 && evidenceBindings[0]?.sourceId && evidenceBindings[0]?.sourceRevision &&
+            !isExplicitBusinessActionRequest(u.text) && hasMatchingExactnessRecoveryAnchor(numerical)) {
+          reExtractionTally.numericalExactness = (reExtractionTally.numericalExactness ?? 0) + 1;
+        } else if (numerical.reason === 'SOURCE_BOUND_ANCHOR_OR_SCOPE_MISMATCH' && shapes.length && shapes.every(ambiguousConnectiveRow))
           reExtractionTally.ambiguousConnective++;
         else if (numerical.reason === 'SOURCE_CONSTRAINT_UNAVAILABLE' && refs.every(r => !r.evidenceId.startsWith('configured-') && !r.sourceId.startsWith('configured-')) &&
           quantitySupportedByAdmittedEvidence(u.text, evidence, conditionalCitationScope?.businessId))
@@ -747,8 +754,9 @@ export async function buildEvidenceFirstAnswer(input: {
       // replacement is a complete fresh inventory under every unchanged gate.
       const proposedCount = Array.isArray(raw.units) ? raw.units.length : 0;
       const firstPass = { proposed: proposedCount, parsed: proposed.units.length, rejected: Math.max(0, proposedCount - proposed.units.length) };
-      const eligible = reExtractionTally.ambiguousConnective + reExtractionTally.citationOmitsQuantity;
+      const eligible = reExtractionTally.ambiguousConnective + reExtractionTally.citationOmitsQuantity + (reExtractionTally.numericalExactness ?? 0);
       const trigger = !firstPass.rejected ? 'none' as const : !Array.isArray(raw.units) || raw.oversized !== false || eligible !== firstPass.rejected ? 'other_rejection' as const :
+        reExtractionTally.numericalExactness ? 'numerical_exactness' as const :
         reExtractionTally.ambiguousConnective && reExtractionTally.citationOmitsQuantity ? 'both' as const :
         reExtractionTally.ambiguousConnective ? 'ambiguous_connective' as const : 'citation_omits_quantity' as const;
       if (trigger === 'none') input.reExtraction.record({ trigger, outcome: 'not_needed', firstPass });
@@ -767,8 +775,11 @@ export async function buildEvidenceFirstAnswer(input: {
           const late = input.reExtraction.admit();
           if (late) input.reExtraction.record({ trigger, outcome: 'skipped', skipReason: late, firstPass });
           else {
-            const guidance = [trigger !== 'citation_omits_quantity' ? REEXTRACTION_CONNECTIVE_GUIDANCE : '',
-              trigger !== 'ambiguous_connective' ? REEXTRACTION_CITATION_GUIDANCE : ''].filter(Boolean).join('\n');
+            const guidance = [
+              reExtractionTally.ambiguousConnective ? REEXTRACTION_CONNECTIVE_GUIDANCE : '',
+              reExtractionTally.citationOmitsQuantity ? REEXTRACTION_CITATION_GUIDANCE : '',
+              reExtractionTally.numericalExactness ? REEXTRACTION_EXACTNESS_GUIDANCE : '',
+            ].filter(Boolean).join('\n');
             const started = Date.now();
             let second: ProviderResult;
             try { second = await input.generate('re_extraction', extractionInstruction + '\n' + guidance,

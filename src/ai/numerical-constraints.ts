@@ -1,4 +1,4 @@
-import { isArrivalInformationQuestion } from './information-request-contract';
+import { hasAppointmentReference, isArrivalInformationQuestion } from './information-request-contract';
 /** A conservative literal grammar, not a translator or an entailment substitute.
  * It can veto temporal inequalities; it never grants factual support. Unknown
  * quantified constraints fail closed. Ordinary unqualified durations still use
@@ -19,6 +19,7 @@ type BoundMarkerDiagnostic = {
 // Only the bounded comparison projection exposes this candidate metadata.
 export type NumericalAmbiguityReason = 'oversized_clause' | 'opposed_anchors' | 'unanchored_temporal_bound' |
   'conflicting_bounds' | 'comparison_symbol' | 'alternative' | 'negation' | 'extra_digit' | 'exactness';
+const appointmentAnchored = new WeakSet<Constraint>();
 const candidateAmbiguityReasons = new WeakMap<Constraint, readonly NumericalAmbiguityReason[]>();
 const boundMarkers = new WeakMap<Constraint, BoundMarkerDiagnostic>();
 
@@ -209,6 +210,7 @@ function parse(input: string, diagnoseBound = false): { constraints: Constraint[
     const constraint: Constraint = { seconds: Number(quantity[1].replace(',', '.')) * units[quantity[2]], bound: mapped[0] || null, side, ambiguous,
       ...(cancellationClaim.test(context) ? { cancellationKind: freeClaim.test(context) ? 'free_window' as const : 'notice' as const } : {}) };
     constraints.push(constraint);
+    if (hasAppointmentReference(context)) appointmentAnchored.add(constraint);
     if (diagnoseBound) {
       if (ambiguous) candidateAmbiguityReasons.set(constraint, ambiguityReasons);
       const purposeClauseCategory = finitePreparationMatched
@@ -371,6 +373,23 @@ export function numericalAmbiguityReasons(assessment: NumericalConstraintAssessm
   if (assessment.reason !== 'CLAIM_AMBIGUOUS') return [];
   return [...new Set(assessment.checks.flatMap(check =>
     check.constraints.length === 1 ? candidateAmbiguityReasons.get(check.constraints[0]) ?? [] : []))];
+}
+
+/** Recovery eligibility only. This never accepts a numerical claim. */
+export function hasMatchingExactnessRecoveryAnchor(assessment: NumericalConstraintAssessment): boolean {
+  const reasons = numericalAmbiguityReasons(assessment);
+  if (reasons.length !== 1 || reasons[0] !== 'exactness' || assessment.sources.length !== 1) return false;
+  const [source] = assessment.sources;
+  if (source.unsupported || source.constraints.length !== 1) return false;
+  const [fact] = source.constraints;
+  return !fact.ambiguous && !fact.cancellationKind && fact.side === 'before' &&
+    appointmentAnchored.has(fact) && Number.isFinite(fact.seconds) && fact.seconds > 0 &&
+    assessment.checks.length === 2 && assessment.checks.every(check => {
+      const [candidate] = check.constraints;
+      return !check.unsupported && check.constraints.length === 1 && candidate.ambiguous &&
+        !candidate.cancellationKind && appointmentAnchored.has(candidate) && candidate.seconds === fact.seconds &&
+        candidate.side === fact.side && candidate.bound === fact.bound;
+    });
 }
 
 /** Diagnostic projection only. Ordinals refer to assessor inputs; no quantities,

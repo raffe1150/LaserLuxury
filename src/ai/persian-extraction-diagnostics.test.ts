@@ -120,7 +120,9 @@ for (const [language, faithful, suffix, expected] of ambiguityCases) {
     const result = parseAnswerUnits(raw, facets, evidence, language, event => events.push(event), 'quotation',
       diagnosticScope, undefined, undefined, recoveryTally);
     assert.deepEqual(result, parseAnswerUnits(raw, facets, evidence, language));
-    assert.deepEqual(recoveryTally, { ambiguousConnective: 0, citationOmitsQuantity: 0 });
+    assert.deepEqual(recoveryTally, {
+      ambiguousConnective: 0, citationOmitsQuantity: 0, ...(language === 'fa' ? { numericalExactness: 1 } : {}),
+    });
     assert.equal(result.units.length, 0);
     const event = events.find(e => e.reason === 'NUMERICAL_CONSTRAINT')!;
     assert.equal(event.unitId, 'u1');

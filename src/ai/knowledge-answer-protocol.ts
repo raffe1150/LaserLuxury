@@ -77,6 +77,14 @@ export type KnowledgeDecision = {
   ambiguityReasons?: readonly import('./numerical-constraints').NumericalAmbiguityReason[];
   numericalComparisons?: ReturnType<typeof import('./numerical-constraints').numericalComparisonShapes>;
   evidenceBindings?: readonly { evidenceId: string; sourceId?: string; sourceRevision?: string }[];
+  localLanguage?: {
+    targetLanguage: 'fa' | 'ar' | 'en' | 'sv' | 'de' | 'es' | 'other';
+    detectedLanguage?: 'fa' | 'ar' | 'en' | 'sv' | 'de' | 'es';
+    ruleIds: ('foreign_address_preposition' | 'strong_language_mismatch' | 'opposite_arabic_script_evidence' |
+      'english_structure' | 'swedish_structure' | 'persian_structure')[];
+    configuredEntityRemoved: boolean;
+    containsCitedSpan: boolean;
+  };
   blockId?: string; blockKind?: 'fact'|'uncertainty'|'courtesy'; requestedLanguage?: string;
   semanticVerifiedUnits?: number; publishableUnits?: number; deadlineAt?: number; timeoutMs?: number;
   natural?: { schemaVersion: string; outcome: 'accepted_natural'|'canonical_fallback'|'direct_canonical'; reason: DecisionReason | null };

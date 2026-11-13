@@ -6015,7 +6015,8 @@ async function generateNativeKnowledgeContent(sessionId:string,options:any,suppo
       businessTone: normalizeBusinessToneConfig(support.businessConfig?.toneConfig), history: state.history || (options.messages || []).slice(-3), budget: state.budget,
       ...(state.naturalEnabled?{natural:{scope:immutable({turnId:state.naturalTurnId!,businessId:state.businessId!,question:support.question,
         tone:normalizeBusinessToneConfig(support.businessConfig?.toneConfig)}),allowSinglePartial:state.naturalSinglePartial===true}}:{}),
-      languageSafe: unit => !customerReplyLanguageIsIncompatible(removeConfiguredEntitiesFromLanguageEvidence(unit.text, support.businessConfig), capturedSupportLanguage(support)),
+      localLanguageRejection: unit => assessKnowledgeUnitLanguage(unit, language, support.businessConfig),
+      languageSafe: unit => !assessKnowledgeUnitLanguage(unit, language, support.businessConfig),
       current: knowledgeOwnershipCurrent,
       revalidateEvidence: currentAnswerEvidence,
       ...(ownerAnswerApprovalsEnabled() && state.nativeChannel && nativeKnowledgeTiming() &&
@@ -15766,8 +15767,13 @@ function enforceFinalConversationConcision(reply: string, maxWords: number = 45)
 // The composer and final booking guard must evaluate the same fact-free prose.
 // Strong opposing language/structure is a veto even when own-language markers exist.
 function customerReplyLanguageIsIncompatible(prose: string, language: string, structureProse = prose): boolean {
+  return assessCustomerReplyLanguage(prose, language, structureProse).ruleIds.length > 0;
+}
+
+function assessCustomerReplyLanguage(prose: string, language: string, structureProse = prose) {
   const hasEnglishStructure = /\b(to confirm|can i ask|please send|please choose|i need|i can'?t find|what mobile|what day|what time|which time|of course|your appointment|your booking|would you like|sorry|couldn'?t|is available|is booked|try again)\b/i.test(structureProse);
   const hasSwedishStructure = /\b(för att|kan jag|ditt namn|din bokning|mobilnummer|vill du|tyvärr|är ledig|är bokad)\b/i.test(structureProse);
+  const hasSwedishConfirmationStructure = /\b(?:ta gärna med|din bokningsbekräftelse)\b/iu.test(structureProse);
   const hasPersianStructure = /[\u0600-\u06FF]/u.test(structureProse) &&
     /(برای|لطفاً|می.?خواهید|وقت|رزرو|نام|شماره|متأسفانه)/u.test(structureProse);
   const fallbackReplyLanguage = isMeaningfulLanguageMessage(prose)
@@ -15801,15 +15807,35 @@ function customerReplyLanguageIsIncompatible(prose: string, language: string, st
       )
     );
 
-  return (
-    hasForeignAddressPreposition(prose, language) ||
-    strongLanguageMismatch ||
-    hasOppositeArabicScriptLanguageEvidence ||
-    (language === "sv" && hasEnglishStructure) ||
-    (language === "fa" && (hasEnglishStructure || hasSwedishStructure)) ||
-    (language === "en" && (hasSwedishStructure || hasPersianStructure)) ||
-    (["de", "es", "ar"].includes(language) && hasEnglishStructure)
-  );
+  const ruleIds: NonNullable<KnowledgeDecision['localLanguage']>['ruleIds'] = [];
+  if (hasForeignAddressPreposition(prose, language)) ruleIds.push('foreign_address_preposition');
+  if (strongLanguageMismatch) ruleIds.push('strong_language_mismatch');
+  if (hasOppositeArabicScriptLanguageEvidence) ruleIds.push('opposite_arabic_script_evidence');
+  if (language !== 'en' && hasEnglishStructure &&
+      ['sv', 'fa', 'de', 'es', 'ar'].includes(language)) ruleIds.push('english_structure');
+  if ((['fa', 'en', 'de'].includes(language) && hasSwedishStructure) ||
+      (language === 'de' && hasSwedishConfirmationStructure)) ruleIds.push('swedish_structure');
+  if (language === 'en' && hasPersianStructure) ruleIds.push('persian_structure');
+  return { detectedLanguage: strongReplyLanguage, ruleIds };
+}
+
+function assessKnowledgeUnitLanguage(unit: { text: string; evidenceRefs: readonly { exactQuote: string }[] },
+  language: string, businessConfig: unknown): KnowledgeDecision['localLanguage'] {
+  const filtered = removeConfiguredEntitiesFromLanguageEvidence(unit.text, businessConfig);
+  const { detectedLanguage, ruleIds } = assessCustomerReplyLanguage(filtered, language);
+  if (!ruleIds.length) return undefined;
+  const supported = (code: string | null) => {
+    const codes = ['fa', 'ar', 'en', 'sv', 'de', 'es'] as const;
+    return codes.find(value => value === code);
+  };
+  const detected = supported(detectedLanguage);
+  return {
+    targetLanguage: supported(language) ?? 'other',
+    ...(detected ? { detectedLanguage: detected } : {}),
+    ruleIds,
+    configuredEntityRemoved: filtered !== unit.text.replace(/\s+/g, ' ').trim(),
+    containsCitedSpan: unit.evidenceRefs.some(ref => ref.exactQuote && unit.text.includes(ref.exactQuote)),
+  };
 }
 
 function bookingPresentationLanguageMatches(prose: string, language: string): boolean {
@@ -27564,6 +27590,8 @@ function detectStrongLatestLanguage(text?: string, businessConfig?: any): string
     return "ar";
   }
 
+  // Standalone "man" is shared by German, Swedish, English and Finglish.
+  // The weighted detector still counts it when other Persian markers corroborate it.
   if (hasStrongLatinPersianEvidence(raw)) return "fa";
 
   const grammaticalLanguage = detectGrammaticalLatinLanguage(raw);
@@ -27574,7 +27602,7 @@ function detectStrongLatestLanguage(text?: string, businessConfig?: any): string
   ) return "sv";
 
   if (
-    /\b(man|mikham|mikhastam|mitonam|mitoonam|baraye|vaght|moshavere|moshavereh|cheghadr tool|esmam|esme man|shomare|shomaram|khobe|bale|lotfan|cancel konam|laghv konam|2shanbe|3shanbe|4shanbe|5shanbe)\b/i.test(raw)
+    /\b(mikham|mikhastam|mitonam|mitoonam|baraye|vaght|moshavere|moshavereh|cheghadr tool|esmam|esme man|shomare|shomaram|khobe|bale|lotfan|cancel konam|laghv konam|2shanbe|3shanbe|4shanbe|5shanbe)\b/i.test(raw)
   ) return "fa";
 
   if (/\b(hello|hi there|what do you do|what services|why did you change (?:the )?language|i want|can i|do you have|how long|duration|monday|tuesday|wednesday|thursday|friday|saturday|sunday|appointments?|available|availability|consultation|book|booking|my name)\b/i.test(raw)) return "en";

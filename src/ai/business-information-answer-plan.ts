@@ -539,6 +539,7 @@ export async function buildEvidenceFirstAnswer(input: {
   ownerAnswerProposal?: (facets: readonly Facet[], evidence: readonly Evidence[]) => Promise<OwnerAnswerProposal | undefined>;
   /** Durable callers cannot publish partial coverage; stop before optional model work. */
   requireCompleteCoverage?: boolean;
+  localLanguageRejection?: (unit: AnswerUnit) => KnowledgeDecision['localLanguage'];
   languageSafe?: (unit: AnswerUnit) => boolean;
   revalidateEvidence?: () => Promise<readonly Evidence[]>;
   /** Only native callers which independently revalidate immediately before send. */
@@ -886,8 +887,13 @@ export async function buildEvidenceFirstAnswer(input: {
       d.relation!=='ENTAILED'?d.relation:!d.meaningPreserved?'MEANING_CHANGED':!d.modalityPreserved?'MODALITY_CHANGED':!d.qualifiersPreserved?'QUALIFIERS_CHANGED':
       !d.relevant?'NOT_RELEVANT':!d.languageCorrect?'VERIFIER_LANGUAGE':d.negativeAbsence&&!d.explicitAbsenceEvidence?'NEGATIVE_ABSENCE':
       !strings(d.facetIds,ANSWER_LIMITS.facets,8)||new Set(d.facetIds).size!==d.facetIds.length||JSON.stringify([...d.facetIds].sort())!==JSON.stringify([...unit.facetIds].sort())?'FACET_MISMATCH':
-      input.languageSafe&&!input.languageSafe(unit)?'LOCAL_LANGUAGE':'ACCEPTED';
-    diagnostic({stage:'verification',unitId:unit.id,reason,relation:RELATIONS.includes(d.relation)?d.relation:'INVALID',flags});
+      'ACCEPTED';
+    const localLanguage = reason === 'ACCEPTED' ? input.localLanguageRejection?.(unit) : undefined;
+    if (reason === 'ACCEPTED' && (input.localLanguageRejection ? localLanguage : input.languageSafe && !input.languageSafe(unit))) {
+      reason = 'LOCAL_LANGUAGE';
+    }
+    diagnostic({stage:'verification',unitId:unit.id,reason,relation:RELATIONS.includes(d.relation)?d.relation:'INVALID',flags,
+      ...(localLanguage ? { localLanguage } : {})});
     if(reason==='CONTRADICTED')unit.facetIds.forEach(id=>conflicts.add(id));
     if(reason==='ACCEPTED')verified.push(Object.freeze({...unit,verification:'ENTAILED'}));
     // NOT_RELEVANT alone is insufficient: its earlier position in the rejection

@@ -106,6 +106,15 @@ const turns = [
 ] as const;
 
 type Fault = 'conflict' | 'stale_inline' | 'foreign_chunk' | 'missing_document_chunk' | 'verifier_protocol' | 'retry_no_hits';
+type LanguageProbe = {
+  prose: string;
+  rules?: readonly string[];
+  detected?: string;
+  containsCitedSpan?: boolean;
+  configuredEntityRemoved?: boolean;
+  service?: string;
+};
+
 type Scenario = 'faithful' | 'exactness_mention' | 'ambiguous' | 'persian_false_rejection' | Fault;
 const exactnessMention = {
   en: ', rather than arriving at an exactly specified time.',
@@ -136,8 +145,14 @@ const recoveryFailures = [
 ] as const;
 async function replay(t: TestContext, channel: IncidentChannel,
   [language, question, answer, ambiguous, confirmation, fallbackSubject]: typeof turns[number], scenario: Scenario,
-  failure?: typeof recoveryFailures[number][0], failureStages?: readonly string[]) {
-  const rejected = failure !== undefined;
+  failure?: typeof recoveryFailures[number][0], failureStages?: readonly string[], probe?: LanguageProbe) {
+  const originalDefaultService = incidentConfig.defaultBookingService;
+  if (probe?.service) {
+    incidentConfig.defaultBookingService = probe.service;
+    t.after(() => { incidentConfig.defaultBookingService = originalDefaultService; });
+  }
+  const confirmationText = probe?.prose ?? confirmation;
+  const rejected = failure !== undefined || probe?.rules !== undefined;
   const exactness = scenario === 'ambiguous' || scenario === 'exactness_mention';
   const recovered = exactness || scenario === 'persian_false_rejection';
   const fault = scenario !== 'faithful' && !recovered ? scenario : undefined;
@@ -267,7 +282,7 @@ async function replay(t: TestContext, channel: IncidentChannel,
             }
             const units = [arrival, {
               ...arrival, predicate: 'bringing booking confirmation', value: 'digital or paper confirmation',
-              qualifiers: [], text: confirmation, evidenceRefs: [{ evidenceId: document.id, exactQuote: 'Ta gärna med din bokningsbekräftelse, digitalt eller på papper.' }],
+              qualifiers: [], text: confirmationText, evidenceRefs: [{ evidenceId: document.id, exactQuote: 'Ta gärna med din bokningsbekräftelse, digitalt eller på papper.' }],
             }];
             if (!reExtracting) {
               if (failure === 'foreign_before_recovery') foreignAfterExtraction = true;
@@ -283,7 +298,7 @@ async function replay(t: TestContext, channel: IncidentChannel,
           stages.push('verification');
           assert.equal(request.structuredOutput?.name, 'odinlink_knowledge_source_exhaustive_v2');
           assert.ok(data.units.every((unit: any) => unit.modality === 'recommended'));
-          assert.deepEqual(data.units.map((unit: any) => unit.text), failure === 'incomplete_replacement' ? [answer] : [answer, confirmation]);
+          assert.deepEqual(data.units.map((unit: any) => unit.text), failure === 'incomplete_replacement' ? [answer] : [answer, confirmationText]);
           assert.ok(data.units.every((unit: any) => unit.language === language));
           assert.equal(data.units[0].value, 'approximately 10 minutes before the booked appointment');
           assert.deepEqual(data.units[0].qualifiers, ['approximately']);
@@ -348,7 +363,7 @@ async function replay(t: TestContext, channel: IncidentChannel,
     assert.equal(retrieval[0].completeCorpusUsed, true);
     assert.equal(retrieval[0].matchCount, 5);
     assert.deepEqual(stages, fault === 'missing_document_chunk' || fault === 'foreign_chunk' ? [] :
-      rejected ? failureStages : recovered ? ['extraction', 're_extraction', 'verification'] : ['extraction', 'verification']);
+      failure ? failureStages : recovered ? ['extraction', 're_extraction', 'verification'] : ['extraction', 'verification']);
   }
   if (!fault) {
     const publication = decisions.filter(event => event.eventType === 'publication');
@@ -388,12 +403,31 @@ async function replay(t: TestContext, channel: IncidentChannel,
     }]);
     if (exactness) assert.deepEqual(numerical[0].ambiguityReasons, ['exactness']);
   }
+  const languageEvents = decisions.filter(event => event.reason === 'LOCAL_LANGUAGE');
+  assert.ok(decisions.every(event => !event.localLanguage || event.reason === 'LOCAL_LANGUAGE'));
+  if (probe?.rules) {
+    assert.deepEqual(languageEvents.map(event => ({
+      unitId: event.unitId, turnIdPresent: Boolean(event.businessInfoTurnId), diagnostic: event.localLanguage,
+    })), [{
+      unitId: 'u2', turnIdPresent: true, diagnostic: {
+        targetLanguage: language,
+        ...(probe.detected ? { detectedLanguage: probe.detected } : {}),
+        ruleIds: probe.rules,
+        configuredEntityRemoved: probe.configuredEntityRemoved ?? false,
+        containsCitedSpan: probe.containsCitedSpan ?? false,
+      },
+    }]);
+    assert.ok(!JSON.stringify(languageEvents).includes(probe.prose));
+    assert.ok(!JSON.stringify(languageEvents).includes('Ta gärna med din bokningsbekräftelse'));
+  } else if (!fault) {
+    assert.deepEqual(languageEvents, []);
+  }
   if (rejected) {
     assert.equal(replies[0], formatBusinessSupportVerificationUnavailable(language, fallbackSubject));
   } else if (fault) {
     assert.ok(!replies[0].includes(answer));
   } else {
-    assert.equal(replies[0], [answer, confirmation].join(' '));
+    assert.equal(replies[0], [answer, confirmationText].join(' '));
   }
 }
 
@@ -412,4 +446,39 @@ for (const fault of ['conflict', 'stale_inline', 'foreign_chunk', 'missing_docum
 
 for (const [failure, stages] of recoveryFailures) {
   test(`exactness recovery fails closed /${failure}`, t => replay(t, 'telegram', turns[4], 'ambiguous', failure, stages));
+}
+
+
+const languageProbes: readonly [string, typeof turns[number], LanguageProbe][] = [
+  ['German man', turns[4], { prose: 'Man kann die Buchungsbestätigung digital oder auf Papier mitbringen.' }],
+  ['Swedish man', turns[2], { prose: 'Man kan ta med sin bekräftelse.' }],
+  ['Finglish man', turns[4], { prose: 'Man mikham vaghtam ro taghir bedam.', detected: 'fa', rules: ['strong_language_mismatch'] }],
+  ['English clause', turns[4], { prose: 'Bringen Sie Ihre Bestätigung mit. Please send your booking confirmation.',
+    detected: 'en', rules: ['strong_language_mismatch', 'english_structure'] }],
+  ['Swedish cited quotation', turns[4], { prose: 'Bringen Sie Ihre Bestätigung mit: „Ta gärna med din bokningsbekräftelse, digitalt eller på papper.“',
+    rules: ['swedish_structure'], containsCitedSpan: true }],
+  ['German address', turns[4], { prose: 'Der Eingang ist bei Stjärngatan 14.' }],
+  ['Swedish address glue', turns[4], { prose: 'Der Eingang ist på Stjärngatan 14.', rules: ['foreign_address_preposition'] }],
+  ['Swedish address', turns[2], { prose: 'Ingången är på Stjärngatan 14.' }],
+  ['German address glue', turns[2], { prose: 'Ingången är bei Stjärngatan 14.', rules: ['foreign_address_preposition'] }],
+  ['Business name', turns[4], { prose: 'Bringen Sie Ihre Buchungsbestätigung bei AdMotion Studio mit.' }],
+  ['Unconfigured entity', turns[4], { prose: 'Bei Booking Studio bitte die Bestätigung mitbringen.',
+    detected: 'en', rules: ['strong_language_mismatch'] }],
+  ['Configured entity', turns[4], { prose: 'Bei Booking Studio bitte die Bestätigung mitbringen.', service: 'Booking Studio' }],
+  ['Configured entity with foreign prose', turns[4], { prose: 'Bei Booking Studio gilt: Please send your booking confirmation.',
+    service: 'Booking Studio', detected: 'en', rules: ['strong_language_mismatch', 'english_structure'], configuredEntityRemoved: true }],
+];
+
+for (const [name, turn, probe] of languageProbes) {
+  test(`shared Knowledge language guard / ${name}`, t => replay(t, 'telegram', turn, 'faithful', undefined, undefined, probe));
+}
+
+
+for (const turn of turns) {
+  const language = turn[0];
+  const foreign: LanguageProbe = language === 'en'
+    ? { prose: 'Du kan ta med din bokning digitalt eller på papper.', detected: 'sv', rules: ['strong_language_mismatch', 'swedish_structure'] }
+    : { prose: 'Please send your booking confirmation.', detected: 'en', rules: ['strong_language_mismatch', 'english_structure'] };
+  test(`shared Knowledge language guard / foreign prose for ${language}`, t =>
+    replay(t, 'whatsapp', turn, 'faithful', undefined, undefined, foreign));
 }

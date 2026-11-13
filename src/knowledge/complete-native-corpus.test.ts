@@ -20,14 +20,14 @@ test('native exhaustive inventory admits five PDF chunks plus TXT without a lexi
  assert.ok(result?.every(m=>m.businessId===77&&m.metadata?.documentRevision));
  assert.equal(JSON.stringify(await f.storage.list(77)),before);
 });
-for(const fault of ['foreign','broken-map','chunk-overflow','character-overflow','non-document','inventory-truncated'] as const)
+for(const fault of ['foreign','broken-map','chunk-overflow','character-overflow','unsupported-source-type','inventory-truncated'] as const)
  test('native exhaustive inventory declines '+fault,async()=>{
   const f=await fixture(),sources=await f.storage.list(77),pdf=sources.find(s=>s.id==='pdf')!;
   if(fault==='foreign')f.storage.listReadyComplete=async()=>sources.map(s=>({...s,businessId:88}));
   if(fault==='broken-map')await f.storage.create({...pdf,metadata:{segments:[]}});
   if(fault==='chunk-overflow'){const parsed=documentChunks(Array.from({length:6},(_,i)=>({text:'Section '+i,page:i+1})),pdf.title);await f.storage.create({...pdf,content:parsed.content,metadata:parsed.metadata});}
   if(fault==='character-overflow')await f.storage.create({...pdf,content:'x'.repeat(9001)});
-  if(fault==='non-document')await f.storage.create({...pdf,type:'text'});
+  if(fault==='unsupported-source-type')await f.storage.create({...pdf,type:'faq'});
   if(fault==='inventory-truncated')f.storage.listReadyComplete=async()=>null;
   assert.equal(await f.service.completeSmallCorpus(77,[],undefined,'native-documentary'),null);
  });

@@ -8,6 +8,7 @@ import { confirmedTextLanguage, normalizeSemanticQuery, explicitlyWrongWorkflow,
 import { CANDIDATE_RETRIEVAL_POLICY } from './src/knowledge/candidate-retrieval';
 import { packDocumentEvidence, DOCUMENT_EVIDENCE_LIMITS } from './src/knowledge/document-evidence-packing';
 import {hierarchicalSearchEnabled,type HierarchicalSearchIndex,type HierarchicalSearchProof} from './src/knowledge/hierarchical-search';
+import { formatRetrievedBusinessKnowledge } from './src/knowledge/retrieved-knowledge-format';
 import {canonicalDocument} from './src/knowledge/documents/canonical';
 
 export const KNOWLEDGE_SOURCE_TYPES = ["faq", "pdf", "website", "text", "document"] as const;
@@ -609,6 +610,9 @@ export function knowledgeSourceRevision(source: KnowledgeSource): string {
       source.title, source.content, source.updatedAt, source.metadata])).digest('hex');
 }
 
+export type CanonicalInventoryRejection = 'inventory_unavailable' | 'invalid_source' | 'unsupported_source_type' |
+  'invalid_chunk_inventory' | 'size_limit' | 'source_validation' | 'verification_protocol';
+
 export class KnowledgeService {
   private storage: KnowledgeStorage;
   private initialized = false;
@@ -905,32 +909,43 @@ export class KnowledgeService {
    * contribute any additional text. Include unmatched conditions/conflicts too.
    * Otherwise return null; lexical hit counts/scores cannot prove completeness.
    * No cache, storage writes or changes to version-1 document reconstruction. */
-  async completeSmallCorpus(businessId: number, lexical: readonly KnowledgeSearchMatch[], options?: KnowledgeSemanticOptions, mode: 'lexical' | 'native-documentary' = 'lexical'): Promise<KnowledgeSearchMatch[] | null> {
+  async completeSmallCorpus(businessId: number, lexical: readonly KnowledgeSearchMatch[], options?: KnowledgeSemanticOptions, mode: 'lexical' | 'native-documentary' = 'lexical',
+    onDecline?: (reason: CanonicalInventoryRejection) => void): Promise<KnowledgeSearchMatch[] | null> {
     const exhaustive = mode === 'native-documentary';
+    const decline = (reason: CanonicalInventoryRejection) => { onDecline?.(reason); return null; };
     if (!Number.isSafeInteger(businessId) || businessId <= 0 || !exhaustive && !lexical.length) return null;
     await this.ensureInitialized();
     const pending = this.storage.listReadyComplete?.(businessId, 5, options, exhaustive);
     const sources = pending ? await (exhaustive ? pending : pending.catch(()=>null)) : null;
-    if (!sources?.length || sources.length > 5 || sources.some(s => s.businessId !== businessId || s.status !== 'ready' || !s.content.trim()) ||
-        sources.reduce((sum, s) => sum + s.content.length, 0) > 9000 || exhaustive && sources.some(s => s.type !== 'document')) return null;
+    if (!sources?.length || sources.length > 5) return decline('inventory_unavailable');
+    if (sources.some(s => s.businessId !== businessId || s.status !== 'ready' || !s.content.trim())) return decline('invalid_source');
+    if (sources.reduce((sum, s) => sum + s.content.length, 0) > 9000) return decline('size_limit');
+    const mixed = exhaustive && sources.some(s => s.type === 'text');
+    if (exhaustive && (sources.some(s => s.type !== 'document' && s.type !== 'text') ||
+        mixed && !sources.some(s => s.type === 'document'))) return decline('unsupported_source_type');
+    if (mixed && (new Set(sources.map(s => s.id)).size !== sources.length ||
+        sources.some(s => !s.id.trim() || s.id.length > 256))) return decline('invalid_source');
     const corpus: KnowledgeSearchMatch[] = [];
     for (const source of sources) {
       const chunks = source.type === 'document' ? documentCorpus(source) : chunkKnowledgeContent(source.content).map(c => ({
         sourceId: source.id, businessId, text: c.content, metadata: { ...c.metadata, sourceRevision: knowledgeSourceRevision(source) },
       }));
-      if (!chunks.length || !exhaustive && corpus.length + chunks.length > 5) return null;
+      if (!chunks.length) return decline('invalid_chunk_inventory');
+      if ((!exhaustive || mixed) && corpus.length + chunks.length > DOCUMENT_EVIDENCE_LIMITS.items) return decline('size_limit');
       corpus.push(...chunks);
     }
-    if (corpus.reduce((sum, c) => sum + c.text.length, 0) > 9000) return null;
+    if (corpus.reduce((sum, c) => sum + c.text.length, 0) > 9000) return decline('size_limit');
     // An exhaustive, bounded inventory needs no cross-language keyword anchor.
     // Every ready source must fit, including unrelated/conflicting conditions.
     // This is retrieval authority only; currentness and semantic verification
     // still run independently before publication.
     if (exhaustive) {
-      if (!packDocumentEvidence(corpus)) return null;
+      // Mixed rows travel individually. Use the actual formatter's item and
+      // serialized limits, including document provenance and JSON escaping.
+      if (mixed ? !formatRetrievedBusinessKnowledge(corpus).ok : !packDocumentEvidence(corpus)) return decline('size_limit');
       const current = await this.filterMatchesFromSources(businessId, corpus, sources,
         {strictSources:true,requireCompleteDocumentContext:true});
-      return current.length === corpus.length ? current : null;
+      return current.length === corpus.length ? current : decline('source_validation');
     }
     const current = await this.filterMatchesFromSources(businessId, [...lexical], sources, { strictSources: true, captureRevision: true });
     if (!current.length) return null; // Empty, stale/foreign or fabricated hits cannot opt in.

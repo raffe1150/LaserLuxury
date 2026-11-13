@@ -1,3 +1,4 @@
+import { isSourceExhaustiveProtocol } from './src/ai/source-exhaustive-coverage';
 import { ordinaryEntailmentPunctuationKey, ordinaryEntailmentIsReusable } from './src/ai/claim-entailment-reuse';
 import { recoveryDiagnostic, recoveryFailureFields, recoveryOutcome, recoveryExtractionStage, recoveryEntailmentStage, recoveryRequestedFactStage, withRepairDiagnostics, withRecoveryDiagnostics, type RecoveryStage } from './src/ai/recovery-diagnostics';
 import {installControlledTrial,trialModeOn,trialEnforced,trialHttpAllowed,trialBusinessId,
@@ -132,6 +133,7 @@ import {
   KnowledgeService,
   SupabaseKnowledgeStorage,
   type KnowledgeSearchMatch,
+  type CanonicalInventoryRejection,
 } from "./knowledge";
 import type {
   AppointmentLookupMode,
@@ -5438,6 +5440,7 @@ type KnowledgeTurnState = { readonly modelProfile?: KnowledgeModelProfile; reado
   businessId?: number; question?: string; manifest?: AnswerManifest; sessionId?: string; history?: any[]; matches?: KnowledgeSearchMatch[];
   snapshot?: Readonly<{ businessId: number; question: string; matches: KnowledgeSearchMatch[]; evidence: Evidence[] }>;
   invalidSourceIds?: Set<string>; nativeChannel?: 'telegram'|'instagram'|'whatsapp'|'messenger'; provider?:string; model?:string;
+  mixedCanonicalInventory?: boolean;
   formattingFailure?:KnowledgeFormattingFailure; freshnessFailure?:DecisionReason; sourceValidationUnavailable?:boolean; freshnessChecks?:number; freshnessDurationMs?:number; semanticVerifiedUnits?:number;
   diagnosticCount?:number; unitCounts?:KnowledgeDecision['counts'] };
 type VerifiedTenantRequestState = {
@@ -5837,6 +5840,11 @@ async function currentAnswerEvidence(): Promise<readonly Evidence[]> {
     return [];
   } finally {state.freshnessDurationMs=(state.freshnessDurationMs||0)+Date.now()-started;}
   for (const sourceId of new Set(snapshot.evidence.map(m => m.sourceId))) if (!valid.has(sourceId)) state.invalidSourceIds.add(sourceId);
+  if (state.mixedCanonicalInventory && state.invalidSourceIds.size) {
+    state.freshnessFailure = 'SOURCE_INVALID';
+    emitKnowledgeDecision({ stage:'freshness', reason:'SOURCE_INVALID', durationMs:Date.now()-started });
+    return [];
+  }
   emitKnowledgeDecision({stage:'freshness',reason:valid.size?'SOURCE_CURRENT':'SOURCE_INVALID',durationMs:Date.now()-started,sources:[...new Set(snapshot.matches.map(m=>m.sourceId))].slice(0,5).map((id,index)=>({
     index,valid:valid.has(id)&&!state.invalidSourceIds!.has(id),reason:state.invalidSourceIds!.has(id)?reasons.get(id)==='SOURCE_CURRENT'?'SOURCE_QUARANTINED':reasons.get(id)||'SOURCE_INVALID':'SOURCE_CURRENT'}))});
   return requestSecurity.current() ? snapshot.evidence.filter(e => valid.has(e.sourceId) && !state.invalidSourceIds!.has(e.sourceId)) : [];
@@ -9274,24 +9282,36 @@ async function retrieveBusinessKnowledgeForQuestion(
   // fixed 10s after admission waiting. Keep the 12s verification reserve and
   // separately protected publication/delivery deadlines; extraction recomputes
   // its allowance after this bounded read. Partial/late reads still fail closed.
-  const completionDiagnostics: Array<{kind:string;outcome:string;allowanceMs:number;durationMs:number;chunks:number}> = [];
-  const canonicalRead = async (kind:'inventory'|'selected', read:(options:NonNullable<typeof retrievalOptions>)=>Promise<KnowledgeSearchMatch[]|null>) => {
+  const completionDiagnostics: Array<{kind:string;outcome:string;allowanceMs:number;durationMs:number;chunks:number;reason?:CanonicalInventoryRejection}> = [];
+  const canonicalRead = async (kind:'inventory'|'selected', read:(options:NonNullable<typeof retrievalOptions>, onDecline:(reason:CanonicalInventoryRejection)=>void)=>Promise<KnowledgeSearchMatch[]|null>) => {
     const started=Date.now(), allowanceMs=Math.min(1000,accuracyFirstExtractionAllowance(state?.budget?.generationRemaining()||0));
     if (!timing || !allowanceMs) {completionDiagnostics.push({kind,outcome:'skipped_budget',allowanceMs,durationMs:0,chunks:0});return null;}
     const controller=new AbortController(),signal=AbortSignal.any([timing.signal,controller.signal]);
     let expired=false,outcome='error',chunks=0;
+    let reason: CanonicalInventoryRejection | undefined;
     const timer=setTimeout(()=>{expired=true;controller.abort();},allowanceMs);
     try {
-      const result=await abortKnowledgeWork(timing.observe(Promise.resolve().then(()=>read({...retrievalOptions,signal}))),signal);
+      const result=await abortKnowledgeWork(timing.observe(Promise.resolve().then(()=>read({...retrievalOptions,signal}, value => { reason = value; }))),signal);
       if(signal.aborted || Date.now()-started>=allowanceMs){outcome='timeout';return null;}
       outcome=result?'complete':'declined';chunks=result?.length||0;return result;
     } catch {outcome=expired?'timeout':signal.aborted?'cancelled':'error';return null;}
-    finally {clearTimeout(timer);completionDiagnostics.push({kind,outcome,allowanceMs,durationMs:Date.now()-started,chunks});}
+    finally {clearTimeout(timer);completionDiagnostics.push({kind,outcome,allowanceMs,durationMs:Date.now()-started,chunks,...(outcome==='declined' && reason ? {reason} : {})});}
   };
   const inventoryEligible=!!timing && !!state?.budget && !hierarchicalSearchEnabled() && !state.mixedRequest && !state.requiresReferenceResolution;
-  const inventory = inventoryEligible ? canonicalRead('inventory', options => process.env.NODE_ENV==='test'
-    ? priority1hTestDependencies?.completeKnowledgeCorpus?.(businessId,[],options,'native-documentary') || Promise.resolve(null)
-    : knowledgeService.completeSmallCorpus(businessId,[],options,'native-documentary')) : Promise.resolve(null);
+  const inventory = inventoryEligible ? canonicalRead('inventory', async (options, onDecline) => {
+    const corpus = await (process.env.NODE_ENV === 'test'
+      ? priority1hTestDependencies?.completeKnowledgeCorpus?.(businessId,[],options,'native-documentary',onDecline) || Promise.resolve(null)
+      : knowledgeService.completeSmallCorpus(businessId,[],options,'native-documentary',onDecline));
+    if (state && corpus?.some(m => m.metadata?.sourceRevision)) {
+      const protocol = state.verificationProtocol ?? selectKnowledgeVerificationProtocol();
+      if (state.naturalEnabled || !isSourceExhaustiveProtocol(protocol)) {
+        onDecline('verification_protocol');
+        return null;
+      }
+      if (state.verificationProtocol === undefined) Object.defineProperty(state, 'verificationProtocol', { value: protocol, enumerable: true });
+    }
+    return corpus;
+  }) : Promise.resolve(null);
   try {
     let completeInventory: KnowledgeSearchMatch[]|null=null;
     const sourceHints=()=> (process.env.NODE_ENV === 'test'
@@ -9515,6 +9535,8 @@ async function retrieveBusinessKnowledgeForQuestion(
       5,
     );
 
+    let sourceLanguageRetry: { targetLanguage: SourceLanguage; outcome: 'no_query' | 'searched' | 'error';
+      lexicalValidated?: number; lexicalScoped?: number; semanticReturned?: number; merged?: number } | undefined;
     // A direct full-question contract must not erase cross-language retrieval.
     // Retry empty retrieval once in a language confirmed from current source
     // content, inside the existing planning and foreground budget. This hint
@@ -9522,6 +9544,7 @@ async function retrieveBusinessKnowledgeForQuestion(
     if (!hierarchicalSearchEnabled() && !candidateEligible && state?.budget && state.facets?.length && !matches.length && sourceLanguages.length &&
         semanticPlan?.referenceResolution === 'NOT_REQUIRED' &&
         state.budget.generationRemaining() > KNOWLEDGE_PLANNING_LIMIT_MS + KNOWLEDGE_VERIFICATION_MIN_MS) {
+      sourceLanguageRetry = { targetLanguage: sourceLanguages[0], outcome: 'no_query' };
       try {
         const response = await generateContentWithFallback(null, {messages:[{role:'user',content:JSON.stringify({question:normalizedQuestion,targetLanguage:sourceLanguages[0]})}],
           systemInstruction:SOURCE_LANGUAGE_QUERY_INSTRUCTION,tools:[],reasoningEffort:'low',structuredOutput:SOURCE_LANGUAGE_QUERY_SCHEMA,
@@ -9532,8 +9555,10 @@ async function retrieveBusinessKnowledgeForQuestion(
           completionAnchors = retainScopedKnowledgeMatches(lexical.filter(m=>!explicitlyWrongWorkflow(String(m.text||''),normalizedQuestion)),businessId);
           completionContext = [...completionContext,...completionAnchors,...retainStrictlyScopedSemanticKnowledgeMatches(semantic.filter(m=>!explicitlyWrongWorkflow(String(m.text||''),normalizedQuestion)),businessId)];
           matches = mergeKnowledgeMatchesByRank(retainScopedKnowledgeMatches(lexical.filter(m=>!explicitlyWrongWorkflow(String(m.text||''),normalizedQuestion)),businessId),retainStrictlyScopedSemanticKnowledgeMatches(semantic.filter(m=>!explicitlyWrongWorkflow(String(m.text||''),normalizedQuestion)),businessId),5);
+          Object.assign(sourceLanguageRetry, { outcome:'searched', lexicalValidated:lexical.length,
+            lexicalScoped:completionAnchors.length, semanticReturned:semantic.length, merged:matches.length });
         }
-      } catch(error) {emitKnowledgeDecision({stage:'planning',reason:knowledgeFailureReason(error)});}
+      } catch(error) {sourceLanguageRetry.outcome='error';emitKnowledgeDecision({stage:'planning',reason:knowledgeFailureReason(error)});}
     }
 
     let hierarchicalContextComplete=false;
@@ -9550,7 +9575,11 @@ async function retrieveBusinessKnowledgeForQuestion(
     if(hierarchicalSearchEnabled() && state?.budget && !hierarchicalContextComplete)state.sourceValidationUnavailable=true;
 
     if (state?.budget) {
-      if (state.migrated !== false && matches.some(m => m.metadata?.source !== 'document')) {
+      // The native inventory already validated all reconstructed rows against
+      // one source snapshot. Freshness checks must keep that proof all-or-none.
+      state.mixedCanonicalInventory = completeCorpusUsed && !!completeInventory &&
+        matches.some(m => m.metadata?.source === 'document') && matches.some(m => m.metadata?.source !== 'document');
+      if (!state.mixedCanonicalInventory && state.migrated !== false && matches.some(m => m.metadata?.source !== 'document')) {
         const bind = priority1hTestDependencies?.validateKnowledgeMatches || ((id, found) => knowledgeService.validateMatches(id, found, { signal: timing?.signal, strictSources: true, captureRevision: true }));
         matches = await withinInformationDeadline(state.budget, () => bind(businessId, matches as KnowledgeSearchMatch[]));
       }
@@ -9577,6 +9606,7 @@ async function retrieveBusinessKnowledgeForQuestion(
       semanticPlanUsed: Boolean(semanticPlan),
       completeCorpusUsed,
       canonicalCompletion: completionDiagnostics,
+      ...(sourceLanguageRetry ? {sourceLanguageRetry} : {}),
       semanticIndexStatus,
       retrievalPolicy: candidatePolicy || 'strict-default',
       candidateEligible,

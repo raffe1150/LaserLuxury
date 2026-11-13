@@ -37,9 +37,10 @@ async function turn(t: any, channel: IncidentChannel, language: keyof typeof QUE
   const owner = ownerTenants ? Object.assign(new ScriptedKnowledgeBudgetOwner(), { businessIds: ownerTenants }) : undefined;
   configureKnowledgeBudgetOwner(owner); t.after(() => configureKnowledgeBudgetOwner());
   b.reset(); t.after(() => b.reset());
-  const logs: string[] = [];
+  const logs: string[] = [], timings: any[] = [];
   for (const method of ['log', 'warn', 'error'] as const) t.mock.method(console, method, () => {});
-  t.mock.method(console, 'info', (...args: unknown[]) => { if (args[0] === '[KnowledgeModelRouting]') logs.push(String(args[1])); });
+  t.mock.method(console, 'info', (...args: unknown[]) => { if (args[0] === '[KnowledgeModelRouting]') logs.push(String(args[1]));
+    else if (args[0] === '[KnowledgeTimingPolicy]') timings.push(args[1]); });
   let now = 1_000_000; t.mock.method(Date, 'now', () => now);
   const { service, matches: canonical } = await productionInventory();
   const partial = [0, 3, 4, 5, 2].map(i => canonical[i]);
@@ -85,7 +86,7 @@ async function turn(t: any, channel: IncidentChannel, language: keyof typeof QUE
   await incidentInbound(b, channel, question);
   assert.deepEqual(errors, []);
   assert.equal(replies.length, 1, 'exactly one customer reply');
-  return { routes, reply: replies[0], publishedAnswer, logs: logs.map(l => JSON.parse(l)) };
+  return { routes, reply: replies[0], publishedAnswer, logs: logs.map(l => JSON.parse(l)), timings };
 }
 const knowledgeStages = (routes: Route[]) => routes.filter(r => r.stage.startsWith('knowledge_') && r.stage !== 'knowledge_planning' && r.stage !== 'knowledge_composition');
 
@@ -123,3 +124,32 @@ test('Sol production: a tenant without a financial entitlement falls back pre-tu
   assert.deepEqual(r.logs.map(l => l.fallbackReason), ['budget_owner_tenant']);
   assert.ok(knowledgeStages(r.routes).every(x => x.model === LUNA && x.fallback === 'financial_control_unavailable'));
 });
+
+// Tenant-scoped 50s Knowledge deadline through the real channel adapters. The
+// authoritative tenant resolved for every channel here is business 3.
+const deadline = (r: { timings: any[] }) => r.timings.map(e => [e.turnMs, e.knowledgeMs, e.turnExtensionMs, 'turnExtensionInvalid' in e]);
+for (const channel of ['telegram', 'whatsapp', 'instagram', 'messenger'] as const) {
+  test(`50s deadline / ${channel}: listed business 3 gets 50/40s; reply, Sol stages and owner permits unchanged`, async t => {
+    const r = await turn(t, channel, 'fa', { ODINLINK_KNOWLEDGE_TURN_EXTENSION_MS: '5000', ODINLINK_KNOWLEDGE_TURN_EXTENSION_TENANT_IDS: '3' }, [3]);
+    assert.equal(r.reply, r.publishedAnswer);
+    assert.deepEqual(knowledgeStages(r.routes), [
+      { stage: 'knowledge_extraction', model: SOL, permit: true }, { stage: 'knowledge_verification', model: SOL, permit: true }]);
+    assert.deepEqual(deadline(r), [[50000, 40000, 5000, false]]);
+  });
+  test(`50s deadline / ${channel}: business 3 not listed (list=4) keeps 45/35s`, async t => {
+    const r = await turn(t, channel, 'ar', { ODINLINK_KNOWLEDGE_TURN_EXTENSION_MS: '5000', ODINLINK_KNOWLEDGE_TURN_EXTENSION_TENANT_IDS: '4' }, [3]);
+    assert.equal(r.reply, r.publishedAnswer);
+    assert.deepEqual(deadline(r), [[45000, 35000, 0, false]]);
+  });
+  for (const list of [undefined, 'all'])
+    test(`50s deadline / ${channel}: 5000 with ${list === undefined ? 'no' : 'an invalid'} tenant list fails closed to 45/35s`, async t => {
+      const r = await turn(t, channel, 'fa', { ODINLINK_KNOWLEDGE_TURN_EXTENSION_MS: '5000', ODINLINK_KNOWLEDGE_TURN_EXTENSION_TENANT_IDS: list }, [3]);
+      assert.equal(r.reply, r.publishedAnswer);
+      assert.deepEqual(deadline(r), [[45000, 35000, 0, true]]);
+    });
+  test(`50s deadline / ${channel}: flag unset keeps 45/35s with no invalid marker`, async t => {
+    const r = await turn(t, channel, 'fa', { ODINLINK_KNOWLEDGE_TURN_EXTENSION_MS: undefined, ODINLINK_KNOWLEDGE_TURN_EXTENSION_TENANT_IDS: '3' }, [3]);
+    assert.equal(r.reply, r.publishedAnswer);
+    assert.deepEqual(deadline(r), [[45000, 35000, 0, false]]);
+  });
+}

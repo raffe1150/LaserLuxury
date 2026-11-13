@@ -8,6 +8,8 @@ import { verificationAdmissionDiagnostic } from './knowledge-answer-protocol';
 import { AiRequestQueue } from './request-queue';
 import { runAiProviderRequest } from './reliability';
 
+// This file specifies the 45s default; the extension is set explicitly per test below.
+delete process.env.ODINLINK_KNOWLEDGE_TURN_EXTENSION_MS;delete process.env.ODINLINK_KNOWLEDGE_TURN_EXTENSION_TENANT_IDS;
 const flush = async () => { for (let i=0;i<20;i++) await Promise.resolve(); };
 const deferred = <T=void>() => { let resolve!: (value:T)=>void; const promise=new Promise<T>(r=>{resolve=r;});return{promise,resolve}; };
 const clock = (t:any) => t.mock.timers.enable({apis:['Date','setTimeout'],now:1_000_000});
@@ -240,4 +242,98 @@ test('complete publication rejects missing outcomes, units, conditions and unres
   {outcomes:[{...outcome,status:'PARTIAL'}]},{outcomes:[{...outcome,materialFactsComplete:false}]},
   {outcomes:[{...outcome,obligations:[{obligationId:'f1.o1',status:'UNRESOLVED',unitIds:[]}]}]}])
   assert.equal(completeKnowledgeManifest({...valid,...patch}),false);
+});
+
+// Controlled 50-second turn: ODINLINK_KNOWLEDGE_TURN_EXTENSION_MS.
+import { knowledgeTurnExtension, runDetachedKnowledgeShadow } from './knowledge-timing-policy';
+function extensionSetting(t:any,value?:string,tenants?:string){
+ const keys=['ODINLINK_KNOWLEDGE_TURN_EXTENSION_MS','ODINLINK_KNOWLEDGE_TURN_EXTENSION_TENANT_IDS'] as const,values=[value,tenants];
+ const saved=keys.map(k=>process.env[k]);
+ keys.forEach((k,i)=>{if(values[i]===undefined)delete process.env[k];else process.env[k]=values[i];});
+ t.after(()=>keys.forEach((k,i)=>{if(saved[i]===undefined)delete process.env[k];else process.env[k]=saved[i];}));
+}
+test('turn extension is tenant-scoped: only exactly 5000 plus a valid list naming the business extends; everything else fails closed',()=>{
+ const on=(list?:string)=>({ODINLINK_KNOWLEDGE_TURN_EXTENSION_MS:'5000',...(list===undefined?{}:{ODINLINK_KNOWLEDGE_TURN_EXTENSION_TENANT_IDS:list})});
+ assert.deepEqual(knowledgeTurnExtension(3,{}),{extensionMs:0,invalid:false},'default off');
+ assert.deepEqual(knowledgeTurnExtension(3,{ODINLINK_KNOWLEDGE_TURN_EXTENSION_TENANT_IDS:'3'}),{extensionMs:0,invalid:false},'list alone enables nothing');
+ assert.deepEqual(knowledgeTurnExtension(3,on('3')),{extensionMs:5000,invalid:false});
+ assert.deepEqual(knowledgeTurnExtension(3,on(' 3, 8 ')),{extensionMs:5000,invalid:false});
+ for(const other of [4,7,8_000,30,33] as number[])assert.deepEqual(knowledgeTurnExtension(other,on('3')),{extensionMs:0,invalid:false},String(other));
+ for(const id of [undefined,0,-3,NaN,Infinity,3.5,'3',null] as any[])assert.deepEqual(knowledgeTurnExtension(id,on('3')),{extensionMs:0,invalid:false},String(id));
+ assert.deepEqual(knowledgeTurnExtension(3,on()),{extensionMs:0,invalid:true},'missing list never enables everyone');
+ for(const list of ['','all','ALL','*',' ','03','3,','3,,4','3;4','3,abc','0','-3','1.5','1e2','0x3','9007199254740992',Array(11).fill('3').join(',')])
+  assert.deepEqual(knowledgeTurnExtension(3,on(list)),{extensionMs:0,invalid:true},JSON.stringify(list));
+ for(const value of ['','0','5000 ',' 5000','05000','5e3','5000.0','4999','5001','10000','15000','-5000','true','5s'])
+  assert.deepEqual(knowledgeTurnExtension(3,{ODINLINK_KNOWLEDGE_TURN_EXTENSION_MS:value,ODINLINK_KNOWLEDGE_TURN_EXTENSION_TENANT_IDS:'3'}),{extensionMs:0,invalid:true},value);
+});
+test('5000 extends turn and Knowledge window equally; every reserve, cap and floor is unchanged',t=>{
+ clock(t);
+ for(const [ext,turn,knowledge,extraction] of [[0,45000,35000,11115],[5000,50000,40000,16115]] as const){
+  const timing=new NativeKnowledgeTiming(ext);t.after(()=>timing.close());
+  assert.equal(timing.turnMs,turn);assert.equal(timing.knowledgeMs,knowledge);assert.equal(timing.deadlineAt,timing.startedAt+turn);
+  assert.throws(()=>{(timing as any).turnMs=60000;},TypeError);assert.throws(()=>{(timing as any).deadlineAt=0;},TypeError);
+  assert.equal(timing.publicationReserveMs,3000);assert.equal(timing.policy.version,'accuracy-first-v1');
+  assert.equal(timing.knowledgeDeadline(),timing.startedAt+knowledge);
+  const budget=new InformationBudget(undefined,timing);assert.equal(budget.generationRemaining(),knowledge-3000);
+  // 10:55 shape: 8,885 ms of Knowledge time spent before Extraction.
+  t.mock.timers.tick(8885);assert.equal(allowance(budget.generationRemaining()),extraction);
+  // An Extraction timeout still leaves exactly 15,000 ms: Verification reserve + publication.
+  t.mock.timers.tick(extraction);assert.equal(budget.remaining(),15000);
+  const admission=verificationAdmissionDiagnostic(budget.remaining(),budget.publicationReserveMs,P.verificationDispatchMs,'before_queue');
+  assert.equal(admission.verificationAdmissionFloorMs,10000);assert.equal(admission.effectiveAllowanceMs,12000);assert.equal(admission.admitted,true);
+  t.mock.timers.tick(15000);assert.equal(budget.remaining(),0);assert.equal(timing.failure,true);
+ }
+ assert.equal(allowance(40000-3000),20000,'Extraction cap stays 20 s');
+ assert.deepEqual([P.turnMs,P.knowledgeMs,P.extractionMs,P.verificationReserveMs,P.verificationDispatchMs,P.publicationMs,P.deliveryMs,P.cleanupMs],
+  [45000,35000,20000,12000,10000,3000,5000,2000]);
+ const coerced=new NativeKnowledgeTiming(10000 as any);t.after(()=>coerced.close());assert.equal(coerced.turnMs,45000);
+});
+async function managedTurn(t:any,value?:string,tenants?:string,businessId?:number,openWindow=true){
+ extensionSetting(t,value,tenants);clock(t);
+ const held=deferred(),events:any[]=[];let abortedAt=0,failures=0,start=Date.now(),turnMs=0;
+ const run=runAccuracyFirstNative(async()=>{
+  const timing=nativeKnowledgeTiming()!;turnMs=timing.turnMs;if(openWindow)timing.knowledgeDeadline();
+  timing.signal.addEventListener('abort',()=>{abortedAt=Date.now()-start;},{once:true});
+  return timing.wait(()=>held.promise);
+ },async()=>{failures++;},event=>events.push(event),businessId);
+ await flush();
+ return {run,held,events,turnMs:()=>turnMs,abortedAt:()=>abortedAt,failures:()=>failures};
+}
+for(const [label,value,tenants,businessId,turn,knowledge,invalid] of [
+ ['unset / business 3',undefined,undefined,3,45000,35000,false],
+ ['5000 + list 3 / business 3','5000','3',3,50000,40000,false],
+ ['5000 + list 3 / business 7','5000','3',7,45000,35000,false],
+ ['5000 + list 3 / no authoritative business','5000','3',undefined,45000,35000,false],
+ ['5000 without list / business 3','5000',undefined,3,45000,35000,true],
+ ['5000 + list all / business 3','5000','all',3,45000,35000,true],
+ ['10000 + list 3 / business 3','10000','3',3,45000,35000,true],
+] as const)
+ test(`managed turn, ${label}: processing stops at the Knowledge window and the log carries effective durations`,async t=>{
+  const turn_=await managedTurn(t,value,tenants,businessId);assert.equal(turn_.turnMs(),turn);
+  t.mock.timers.tick(knowledge-1);await flush();assert.equal(turn_.abortedAt(),0);
+  t.mock.timers.tick(1);await flush();assert.equal(await turn_.run,undefined);
+  assert.equal(turn_.abortedAt(),knowledge);assert.equal(turn_.failures(),1,'safe fallback sent once');
+  turn_.held.resolve();await flush();
+  const [event]=turn_.events;assert.equal(event.policyVersion,'accuracy-first-v1');
+  assert.equal(event.turnMs,turn);assert.equal(event.knowledgeMs,knowledge);assert.equal(event.turnExtensionMs,turn-45000);
+  assert.equal('turnExtensionInvalid' in event,invalid);
+  assert.deepEqual(Object.keys(event).filter(k=>/question|text|recipient|evidence|business|tenant/iu.test(k)),[]);
+ });
+test('with 5000 and no Knowledge window, processing stops at turn - 7s (43s), not 38s',async t=>{
+ const turn_=await managedTurn(t,'5000','3',3,false);
+ t.mock.timers.tick(42999);await flush();assert.equal(turn_.abortedAt(),0);
+ t.mock.timers.tick(1);await flush();await turn_.run;assert.equal(turn_.abortedAt(),43000);turn_.held.resolve();await flush();
+});
+test('delivery keeps its 5s window and 2s cleanup, measured from the extended deadline',async t=>{
+ clock(t);
+ const base=new NativeKnowledgeTiming(),extended=new NativeKnowledgeTiming(5000);t.after(()=>{base.close();extended.close();});
+ t.mock.timers.tick(44000);
+ await assert.rejects(base.deliver(async()=> 'sent'),/knowledge_deadline/);
+ let budget=0;assert.equal(await extended.deliver(async signal=>{budget=extended.deadlineAt-2000-Date.now();return signal.aborted?'aborted':'sent';}),'sent');
+ assert.equal(budget,4000);assert.equal(extended.deliverySignal.aborted,false);
+ t.mock.timers.tick(4000);assert.equal(extended.deliverySignal.aborted,true,'lifetime ends at turn - 2s (48s)');
+});
+test('the detached Sol shadow never receives the extension',async t=>{
+ extensionSetting(t,'5000','3');let seen=0;
+ await runDetachedKnowledgeShadow(async()=>{seen=nativeKnowledgeTiming()!.turnMs;});assert.equal(seen,45000);
 });

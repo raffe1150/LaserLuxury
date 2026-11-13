@@ -29,6 +29,26 @@ export function accuracyFirstEnabled(businessId: number, env: NodeJS.ProcessEnv 
   return tenants.length <= 10 && tenants.every(id => /^[1-9]\d*$/u.test(id) && Number.isSafeInteger(Number(id))) &&
     tenants.includes(String(businessId));
 }
+/** Controlled, default-off, tenant-scoped turn extension for the managed Knowledge
+ * path only. Unset keeps 45s/35s. Exactly '5000' adds the SAME 5s to the turn and
+ * the Knowledge window, but only for a business explicitly listed in
+ * ODINLINK_KNOWLEDGE_TURN_EXTENSION_TENANT_IDS (same strict format as the timing
+ * enrollment list, at most 10 IDs, no wildcard). A missing/invalid value or list
+ * fails closed to no extension for everyone. businessId must be the authoritative
+ * tenant already resolved for timing enrollment. Planning, extraction cap,
+ * verification reserve/floor, publication, delivery, cleanup and every financial
+ * guard are unchanged; the policy version is unchanged. */
+export function knowledgeTurnExtension(businessId: number | undefined, env: NodeJS.ProcessEnv = process.env): Readonly<{ extensionMs: 0 | 5_000; invalid: boolean }> {
+  const value = env.ODINLINK_KNOWLEDGE_TURN_EXTENSION_MS;
+  if (value === undefined) return { extensionMs: 0, invalid: false };
+  if (value !== '5000') return { extensionMs: 0, invalid: true };
+  const list = env.ODINLINK_KNOWLEDGE_TURN_EXTENSION_TENANT_IDS;
+  const tenants = (list ?? '').split(',').map(id => id.trim());
+  if (list === undefined || tenants.length > 10 || !tenants.every(id => /^[1-9]\d*$/u.test(id) && Number.isSafeInteger(Number(id))))
+    return { extensionMs: 0, invalid: true };
+  const listed = typeof businessId === 'number' && Number.isSafeInteger(businessId) && businessId > 0 && tenants.includes(String(businessId));
+  return { extensionMs: listed ? 5_000 : 0, invalid: false };
+}
 export const accuracyFirstExtractionAllowance = (generationMs: number) => Number.isFinite(generationMs)
   ? Math.max(0, Math.floor(Math.min(ACCURACY_FIRST_POLICY.extractionMs, generationMs - ACCURACY_FIRST_POLICY.verificationReserveMs))) : 0;
 
@@ -37,7 +57,11 @@ export class NativeKnowledgeTiming {
   readonly policy = ACCURACY_FIRST_POLICY;
   readonly turnId = randomUUID();
   readonly startedAt = Date.now();
-  readonly deadlineAt = this.startedAt + this.policy.turnMs;
+  readonly turnExtensionMs: 0 | 5_000;
+  /** Effective per-turn durations; frozen at construction, never reset. */
+  readonly turnMs: number;
+  readonly knowledgeMs: number;
+  readonly deadlineAt: number;
   private readonly processing = new AbortController();
   private readonly lifetime = new AbortController();
   private readonly timers = new Set<ReturnType<typeof setTimeout>>();
@@ -47,7 +71,12 @@ export class NativeKnowledgeTiming {
   private attemptedDelivery = false;
   private knowledgeEnd?: number;
   readonly events: Array<Readonly<{ event: string; elapsedMs: number; pending: number; remainingMs: number }>> = [];
-  constructor() {
+  constructor(turnExtensionMs: 0 | 5_000 = 0) {
+    this.turnExtensionMs = turnExtensionMs === 5_000 ? 5_000 : 0;
+    this.turnMs = this.policy.turnMs + this.turnExtensionMs;
+    this.knowledgeMs = this.policy.knowledgeMs + this.turnExtensionMs;
+    this.deadlineAt = this.startedAt + this.turnMs;
+    for (const key of ['turnExtensionMs', 'turnMs', 'knowledgeMs'] as const) Object.defineProperty(this, key, { writable: false, configurable: false });
     Object.defineProperty(this, 'startedAt', { writable: false, configurable: false });
     Object.defineProperty(this, 'deadlineAt', { writable: false, configurable: false });
     this.at(this.deadlineAt - this.policy.deliveryMs - this.policy.cleanupMs, () => this.fail());
@@ -63,7 +92,7 @@ export class NativeKnowledgeTiming {
   remaining() { return Math.max(0, this.deadlineAt - Date.now()); }
   knowledgeDeadline() {
     if (this.knowledgeEnd === undefined) {
-      this.knowledgeEnd = Math.min(Date.now() + this.policy.knowledgeMs,
+      this.knowledgeEnd = Math.min(Date.now() + this.knowledgeMs,
         this.deadlineAt - this.policy.deliveryMs - this.policy.cleanupMs);
       this.at(this.knowledgeEnd, () => this.fail());
       this.record('knowledge_started');
@@ -165,8 +194,12 @@ export function knowledgeAdmission() {
 }
 
 export async function runAccuracyFirstNative<T>(work: () => Promise<T>, safeFailure: () => Promise<void>,
-  diagnostic?: (event: { policyVersion: string; policyTurnId: string; elapsedMs: number; events: NativeKnowledgeTiming['events']; admission: ReturnType<AiRequestQueue['snapshot']> }) => void): Promise<T | undefined> {
-  const timing = new NativeKnowledgeTiming(), queue = knowledgeAdmission();
+  diagnostic?: (event: { policyVersion: string; policyTurnId: string; elapsedMs: number; turnMs: number; knowledgeMs: number; turnExtensionMs: number;
+    turnExtensionInvalid?: true; events: NativeKnowledgeTiming['events']; admission: ReturnType<AiRequestQueue['snapshot']> }) => void,
+  businessId?: number): Promise<T | undefined> {
+  // Only this managed foreground path reads the extension; the detached shadow keeps 45s.
+  const extension = knowledgeTurnExtension(businessId);
+  const timing = new NativeKnowledgeTiming(extension.extensionMs), queue = knowledgeAdmission();
   return context.run(timing, async () => {
     const stopped = new AbortController();
     // Once an authorized send has started, its own five-second deadline applies.
@@ -190,7 +223,9 @@ export async function runAccuracyFirstNative<T>(work: () => Promise<T>, safeFail
       timing.signal.removeEventListener('abort', processingStopped);
       timing.deliverySignal.removeEventListener('abort', lifetimeStopped);
       timing.close();
-      try { diagnostic?.({ policyVersion: timing.policy.version, policyTurnId: timing.turnId, elapsedMs: Date.now() - timing.startedAt, events: timing.events, admission: queue.snapshot() }); } catch { /* optional telemetry */ }
+      try { diagnostic?.({ policyVersion: timing.policy.version, policyTurnId: timing.turnId, elapsedMs: Date.now() - timing.startedAt,
+        turnMs: timing.turnMs, knowledgeMs: timing.knowledgeMs, turnExtensionMs: timing.turnExtensionMs,
+        ...(extension.invalid ? { turnExtensionInvalid: true as const } : {}), events: timing.events, admission: queue.snapshot() }); } catch { /* optional telemetry */ }
     }
   });
 }

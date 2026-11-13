@@ -82,6 +82,7 @@ export function recordKnowledgePolicyStage(stage: 'queued' | 'dispatch' | 'settl
   runOptionalDiagnostic(() => console.info('[KnowledgeTimingPolicyStage]', {
     policyVersion: timing.policy.version, policyTurnId: timing.turnId, stage, allowanceMs: elapsed(allowanceMs), queueWaitMs: elapsed(queueWaitMs),
     turnElapsedMs: elapsed(Date.now() - timing.startedAt), turnRemainingMs: elapsed(timing.remaining()),
+    turnMs: timing.turnMs, knowledgeMs: timing.knowledgeMs,
     publicationReserveMs: timing.policy.publicationMs, verificationReserveMs: timing.policy.verificationReserveMs,
   }));
 }

@@ -5503,7 +5503,7 @@ function runUnifiedConversationRequest<T>(work: () => Promise<T>, nativeChannel:
           if (!requestSecurity.current() || !nativeEvent || !nativeChannel || !written) return;
           const language=knowledgeTurnScope.getStore()?.replyLanguage || (requestSecurity.evidence?.support ? capturedSupportLanguage(requestSecurity.evidence.support) : written.config.language || 'en');
           await sendCustomerMessage(nativeChannel,nativeEvent.recipient,knowledgeUnavailableReply(language),timingConfig,'conversation');
-        }, event => runOptionalDiagnostic(() => console.info('[KnowledgeTimingPolicy]', event))) : work())), nativeChannel);
+        }, event => runOptionalDiagnostic(() => console.info('[KnowledgeTimingPolicy]', event)), Number(timingBusinessId)) : work())), nativeChannel);
 }
 
 const nativeIntakeScope = new AsyncLocalStorage<{runtime:NativeKnowledgeRuntime;admission:NativeKnowledgeAdmission;handoffAttempted?:boolean}>();

@@ -7,7 +7,7 @@ import { selectCanonicalConfigurationProducer, captureCanonicalConfigurationProd
 import { isSourceExhaustiveProtocol, sourceExhaustiveInstruction, assessSourceCoverage, SOURCE_EXHAUSTIVE_V2_EVIDENCE_REVIEW } from './source-exhaustive-coverage';
 import { createHash } from 'node:crypto';
 import { packDocumentEvidence } from '../knowledge/document-evidence-packing';
-import { numericalConstraintSafe, assessNumericalConstraint, numericalComparisonShapes, citedQuantitiesSupported, NUMERICAL_DIRECTION_GUIDANCE } from './numerical-constraints';
+import { numericalConstraintSafe, assessNumericalConstraint, numericalAmbiguityReasons, numericalComparisonShapes, citedQuantitiesSupported, NUMERICAL_DIRECTION_GUIDANCE } from './numerical-constraints';
 import { recordPrivateNumericalCandidate } from './late-arrival-numerical-diagnostics';
 import { containsUnverifiedBookingSuccessClaim } from './reliability';
 import { containsWebOperationSuccess } from './web-response-integrity';
@@ -326,7 +326,9 @@ export function parseAnswerUnits(raw: unknown, facets: readonly Facet[], evidenc
           quantitySupportedByAdmittedEvidence(u.text, evidence, conditionalCitationScope?.businessId))
           reExtractionTally.citationOmitsQuantity++;
       }
+      const ambiguityReasons = numericalAmbiguityReasons(numerical);
       diagnostic({stage:'extraction',unitId:`u${index+1}`,reason:'NUMERICAL_CONSTRAINT',
+        ...(ambiguityReasons.length ? { ambiguityReasons } : {}),
         ...(/^[A-Z_]{1,64}$/u.test(numerical.reason) ? {numericalMismatchReason:numerical.reason} : {}),
         // Emit comparison shapes only when every cited item has eligible,
         // same-tenant metadata; sourceIndex then binds to this ordered array.

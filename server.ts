@@ -6104,6 +6104,10 @@ async function generateNativeKnowledgeContent(sessionId:string,options:any,suppo
           reason:state.manifest.naturalReason||state.manifest.fallbackReason}}:{}),
         naturalEnabled:state.naturalEnabled===true,naturalSinglePartial:state.naturalSinglePartial===true,
         semanticVerifiedUnits:state.semanticVerifiedUnits||0,freshnessChecks:state.freshnessChecks||0,freshnessDurationMs:state.freshnessDurationMs||0,
+        ...(state.modelProfile!.id === KNOWLEDGE_SOL_PRODUCTION_PROFILE && canaryReExtraction ? {
+          reExtraction: { trigger: canaryReExtraction.trigger, outcome: canaryReExtraction.outcome,
+            ...(canaryReExtraction.skipReason ? { skipReason: canaryReExtraction.skipReason } : {}) },
+        } : {}),
         unitCounts:state.unitCounts,completeness:state.manifest.outcomes.map(o=>({status:o.status,obligations:o.obligations.map(d=>d.status),requestAligned:o.requestAligned,materialFactsComplete:o.materialFactsComplete})), attempts: state.budget.attempts, retries: 0,
         durationMs: Date.now() - state.budget.startedAt, stages: state.budget.stages, inputTokens: state.budget.inputTokens,
         outputTokens: state.budget.outputTokens, meteredAttempts: state.budget.meteredAttempts, estimatedCostUsd: state.budget.meteredAttempts === state.budget.attempts ? state.budget.estimatedCostUsd : null });

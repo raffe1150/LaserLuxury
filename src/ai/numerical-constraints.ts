@@ -17,6 +17,9 @@ type BoundMarkerDiagnostic = {
   boundDecisionBranch: 'explicit_bound' | 'temporal_bound' | 'implicit_notice' | 'unbounded';
 };
 // Only the bounded comparison projection exposes this candidate metadata.
+export type NumericalAmbiguityReason = 'oversized_clause' | 'opposed_anchors' | 'unanchored_temporal_bound' |
+  'conflicting_bounds' | 'comparison_symbol' | 'alternative' | 'negation' | 'extra_digit' | 'exactness';
+const candidateAmbiguityReasons = new WeakMap<Constraint, readonly NumericalAmbiguityReason[]>();
 const boundMarkers = new WeakMap<Constraint, BoundMarkerDiagnostic>();
 
 const cancellationClaim = /cancel|avbok|absag|stornier|لغو|إلغاء|الغاء/iu;
@@ -192,14 +195,22 @@ function parse(input: string, diagnoseBound = false): { constraints: Constraint[
       /notice|varsel|förvarning|vorlauf|ankündigung|aviso|اطلاع|إشعار/u.test(context);
     if (!mapped.length && noticeRequirement) mapped.push('minimum');
     const ambiguityText = side === 'none' && mapped.length === 1 ? indicativeActionNegation(remaining,context) : remaining;
-    const ambiguous = context.length > 500 || (anchoredBefore && anchoredAfter) ||
-      bounds.some(b => (b === 'latest' || b === 'earliest') && side === 'none') ||
-      new Set(mapped).size > 1 || /[<>≤≥]|\b(?:between|or|eller|oder|o|inte|nicht|not|no|never)\b|(?<![\p{L}])(?:یا|أو|ليس|ليست|نباید|هرگز)(?![\p{L}])|(?<![\p{L}])نمی|(?<![\p{L}])لا(?![\p{L}])/u.test(ambiguityText) ||
-      /[0-9]/u.test(left + right) || /exactly|precisely|exakt|genau|exactamente|دقیقا|بالضبط/u.test(context);
+    const ambiguityReasons: NumericalAmbiguityReason[] = [];
+    if (context.length > 500) ambiguityReasons.push('oversized_clause');
+    if (anchoredBefore && anchoredAfter) ambiguityReasons.push('opposed_anchors');
+    if (bounds.some(b => (b === 'latest' || b === 'earliest') && side === 'none')) ambiguityReasons.push('unanchored_temporal_bound');
+    if (new Set(mapped).size > 1) ambiguityReasons.push('conflicting_bounds');
+    if (/[<>≤≥]/u.test(ambiguityText)) ambiguityReasons.push('comparison_symbol');
+    if (/\b(?:between|or|eller|oder|o)\b|(?<![\p{L}])(?:یا|أو)(?![\p{L}])/u.test(ambiguityText)) ambiguityReasons.push('alternative');
+    if (/\b(?:inte|nicht|not|no|never)\b|(?<![\p{L}])(?:ليس|ليست|نباید|هرگز)(?![\p{L}])|(?<![\p{L}])نمی|(?<![\p{L}])لا(?![\p{L}])/u.test(ambiguityText)) ambiguityReasons.push('negation');
+    if (/[0-9]/u.test(left + right)) ambiguityReasons.push('extra_digit');
+    if (/exactly|precisely|exakt|genau|exactamente|دقیقا|بالضبط/u.test(context)) ambiguityReasons.push('exactness');
+    const ambiguous = ambiguityReasons.length > 0;
     const constraint: Constraint = { seconds: Number(quantity[1].replace(',', '.')) * units[quantity[2]], bound: mapped[0] || null, side, ambiguous,
       ...(cancellationClaim.test(context) ? { cancellationKind: freeClaim.test(context) ? 'free_window' as const : 'notice' as const } : {}) };
     constraints.push(constraint);
     if (diagnoseBound) {
+      if (ambiguous) candidateAmbiguityReasons.set(constraint, ambiguityReasons);
       const purposeClauseCategory = finitePreparationMatched
         ? timeOpportunityMatched ? 'both' : 'finite_preparation'
         : timeOpportunityMatched ? 'time_opportunity' : undefined;
@@ -353,6 +364,13 @@ export function citedQuantitiesSupported(assessment: NumericalConstraintAssessme
     .map(match => Number(match[1].replace(',', '.')))));
   return assessment.checks.every(check => check.constraints.every(c => cited.has(c.seconds) ||
     [60, 3600, 86400].some(factor => literals.has(c.seconds / factor))));
+}
+
+/** Fixed parser categories, deduplicated across the two candidate inputs. */
+export function numericalAmbiguityReasons(assessment: NumericalConstraintAssessment): NumericalAmbiguityReason[] {
+  if (assessment.reason !== 'CLAIM_AMBIGUOUS') return [];
+  return [...new Set(assessment.checks.flatMap(check =>
+    check.constraints.length === 1 ? candidateAmbiguityReasons.get(check.constraints[0]) ?? [] : []))];
 }
 
 /** Diagnostic projection only. Ordinals refer to assessor inputs; no quantities,

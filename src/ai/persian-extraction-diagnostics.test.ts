@@ -98,3 +98,38 @@ test('comparison shapes are omitted for foreign metadata',()=> {
   const {events}=parse(proposal(text().replace('حدود','حداقل')),[{...evidence[0],businessId:9}]);
   assert.equal(events.find(e=>e.reason==='NUMERICAL_CONSTRAINT')!.numericalComparisons,undefined);
 });
+
+const ambiguityCases = [
+  ['en', 'Arrive about 10 minutes before your appointment', ', not exactly', ['negation', 'exactness']],
+  ['sv', 'Kom cirka 10 minuter före din bokade tid', ', inte exakt', ['negation', 'exactness']],
+  ['de', 'Kommen Sie etwa 10 Minuten vor Ihrem Termin', ', nicht genau', ['negation', 'exactness']],
+  ['es', 'Llegue unos 10 minutos antes de su cita', ', no exactamente', ['negation', 'exactness']],
+  ['fa', 'حدود ۱۰ دقیقه قبل از نوبت رزروشده حاضر شوید', '، نه دقیقا', ['exactness']],
+  ['ar', 'ينصح بالوصول قبل موعدك المحجوز بحوالي 10 دقائق', '، أو لا تصل بالضبط عند الزيارة 1', ['alternative', 'negation', 'extra_digit', 'exactness']],
+] as const;
+
+for (const [language, faithful, suffix, expected] of ambiguityCases) {
+  test(`${language}: ambiguity diagnostic identifies overlapping parser predicates without text`, () => {
+    const candidate = faithful + suffix + ' PRIVATE_CANDIDATE_SENTINEL.';
+    const events: KnowledgeDecision[] = [];
+    const raw = proposal(candidate);
+    raw.units[0].language = language;
+    const diagnosticScope = { ...scope, language };
+    assert.equal(assessNumericalConstraint(faithful, faithful, [quote]).safe, true);
+    const recoveryTally = { ambiguousConnective: 0, citationOmitsQuantity: 0 };
+    const result = parseAnswerUnits(raw, facets, evidence, language, event => events.push(event), 'quotation',
+      diagnosticScope, undefined, undefined, recoveryTally);
+    assert.deepEqual(result, parseAnswerUnits(raw, facets, evidence, language));
+    assert.deepEqual(recoveryTally, { ambiguousConnective: 0, citationOmitsQuantity: 0 });
+    assert.equal(result.units.length, 0);
+    const event = events.find(e => e.reason === 'NUMERICAL_CONSTRAINT')!;
+    assert.equal(event.unitId, 'u1');
+    assert.equal(event.numericalMismatchReason, 'CLAIM_AMBIGUOUS');
+    assert.deepEqual(event.ambiguityReasons, expected);
+    assert.equal(event.numericalComparisons?.length, 2);
+    assert.ok(event.numericalComparisons?.every(row => row.candidateAmbiguous && !row.sourceAmbiguous &&
+      row.candidateBound === 'unbounded' && row.sourceBound === 'unbounded' && row.temporalAnchorCompatible));
+    assert.ok(!JSON.stringify(events).includes('PRIVATE_'));
+    assert.ok(!JSON.stringify(events).includes(quote));
+  });
+}

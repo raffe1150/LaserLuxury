@@ -43,10 +43,11 @@ async function turn(t: any, channel: IncidentChannel, language: keyof typeof QUE
   const owner = ownerTenants ? Object.assign(new ScriptedKnowledgeBudgetOwner(), { businessIds: ownerTenants }) : undefined;
   configureKnowledgeBudgetOwner(owner); t.after(() => configureKnowledgeBudgetOwner());
   b.reset(); t.after(() => b.reset());
-  const logs: string[] = [], timings: any[] = [];
+  const logs: string[] = [], timings: any[] = [], summaries: any[] = [];
   for (const method of ['log', 'warn', 'error'] as const) t.mock.method(console, method, () => {});
   t.mock.method(console, 'info', (...args: unknown[]) => { if (args[0] === '[KnowledgeModelRouting]') logs.push(String(args[1]));
     else if (args[0] === '[KnowledgeTimingPolicy]') timings.push(args[1]);
+    else if (args[0] === '[EvidenceFirstKnowledge]') summaries.push(JSON.parse(String(args[1])));
     else if (args[0] === '[EvidenceFirstDecision]') decisions.push(JSON.parse(String(args[1]))); });
   let now = 1_000_000; t.mock.method(Date, 'now', () => now);
   const { service, matches: canonical } = await productionInventory();
@@ -98,7 +99,7 @@ async function turn(t: any, channel: IncidentChannel, language: keyof typeof QUE
   await incidentInbound(b, channel, question);
   assert.deepEqual(errors, []);
   assert.equal(replies.length, 1, 'exactly one customer reply');
-  return { routes, reply: replies[0], publishedAnswer, logs: logs.map(l => JSON.parse(l)), timings, verificationUnits, evidenceTenants, decisions };
+  return { routes, reply: replies[0], publishedAnswer, logs: logs.map(l => JSON.parse(l)), timings, verificationUnits, evidenceTenants, decisions, summaries };
 }
 const knowledgeStages = (routes: Route[]) => routes.filter(r => r.stage.startsWith('knowledge_') && r.stage !== 'knowledge_planning' && r.stage !== 'knowledge_composition');
 
@@ -208,6 +209,11 @@ test('Production timing (13,365 ms Extraction): re-extraction cannot fit, paid V
   for (const [, text] of PREP) assert.ok(!r.reply.includes(text));
   assert.ok(!r.reply.includes(AMBIGUOUS_U2));
   assert.deepEqual(r.logs.map(l => l.publication), ['safe_fallback']);
+  assert.deepEqual(r.summaries.map(s => s.reExtraction), [
+    { trigger: 'ambiguous_connective', outcome: 'skipped', skipReason: 'permit_unavailable' },
+  ]);
+  assert.ok(r.summaries[0].businessInfoTurnId);
+  assert.ok(!JSON.stringify(r.summaries).includes(AMBIGUOUS_U2));
 });
 
 // Final safety gate for the narrowed Persian purpose grammar. Each faulty u2 has a

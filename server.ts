@@ -634,6 +634,10 @@ Required JSON shape:
       model: "gemini-2.5-flash",
       informationBudget,
       ...(informationBudget?{structuredOutput:knowledgeStructuredOutput('planning')}:{}),
+      // Controlled diagnostic, default OFF: the same low effort the planning-stage
+      // source-language query and Luna extraction/verification already use.
+      // Prompt, schema, deadline and literal fallback are unchanged.
+      ...(informationBudget && process.env.ODINLINK_KNOWLEDGE_PLANNING_REASONING === 'low' ? { reasoningEffort: 'low' as const } : {}),
       context: {
         businessId: getBusinessIdFromConfig(businessConfig),
         channel: "knowledge-core",

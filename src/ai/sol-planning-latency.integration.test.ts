@@ -36,6 +36,7 @@ async function turn(t: TestContext, channel: IncidentChannel, s: Scenario) {
   const reserve = owner.reserve.bind(owner); owner.reserve = async (q, signal) => { const r = await reserve(q, signal); reserved = true; return r; }; configureKnowledgeBudgetOwner(owner); t.after(() => configureKnowledgeBudgetOwner());
   const failures: any[] = [], decisions: any[] = [], replies: string[] = [];
   const calls: { stage: string; model: string; reasoning?: string; at: number; abortedAt?: number }[] = [];
+  const plannerSchemas: string[] = [];
   for (const name of ['log', 'info', 'warn'] as const) t.mock.method(console, name, () => {});
   t.mock.method(console, 'error', (label: unknown, payload: any) => { if (label === '[OpenAIProviderFailure]') failures.push(payload); });
   const { service, matches: canonical } = await productionInventory();
@@ -53,7 +54,8 @@ async function turn(t: TestContext, channel: IncidentChannel, s: Scenario) {
   t.mock.method(Responses.prototype, 'create', async (p: any, options: any) => {
     const d = JSON.parse(p.input[0].content), instruction: string = p.instructions;
     if (instruction.includes('retrieval query planner')) {
-      const call: typeof calls[number] = { stage: 'planning', model: p.model, at: Date.now() }; calls.push(call);
+      const call: typeof calls[number] = { stage: 'planning', model: p.model, reasoning: p.reasoning?.effort, at: Date.now() }; calls.push(call);
+      plannerSchemas.push(p.text?.format?.name);
       if (s.planner === 'slow') return new Promise((_resolve, reject) => {
         const abort = () => { call.abortedAt = Date.now(); reject(options?.signal?.reason ?? new Error('aborted')); };
         if (options?.signal?.aborted) abort(); else options?.signal?.addEventListener('abort', abort, { once: true });
@@ -107,7 +109,7 @@ async function turn(t: TestContext, channel: IncidentChannel, s: Scenario) {
   } as any);
   await incidentInbound(b, channel, question);
   assert.equal(replies.length, 1, 'exactly one customer delivery');
-  return { calls, replies, owner, failures, decisions };
+  return { calls, replies, owner, failures, decisions, plannerSchemas };
 }
 const stages = (r: Awaited<ReturnType<typeof turn>>) => r.calls.map(c => [c.stage, c.model]);
 
@@ -169,5 +171,30 @@ test('invalid other source on Luna rollback: answers from the valid source under
   const r = await turn(t, 'whatsapp', { model: LUNA, planner: 'fast', rejectOtherSource: true });
   assert.deepEqual(stages(r), [['planning', LUNA], ['extraction', LUNA], ['verification', LUNA]]);
   assert.deepEqual(r.owner.events, []);
+  assert.equal(r.replies[0], answer);
+});
+
+for (const [flag, expected] of [[undefined, undefined], ['low', 'low'], ['LOW', undefined], ['minimal', undefined]] as const)
+  test(`planner reasoning flag ${flag ?? 'unset'}: Luna planner effort ${expected ?? 'default'}; schema, deadline and publication unchanged`, async t => {
+    const saved = process.env.ODINLINK_KNOWLEDGE_PLANNING_REASONING;
+    if (flag === undefined) delete process.env.ODINLINK_KNOWLEDGE_PLANNING_REASONING; else process.env.ODINLINK_KNOWLEDGE_PLANNING_REASONING = flag;
+    t.after(() => { if (saved === undefined) delete process.env.ODINLINK_KNOWLEDGE_PLANNING_REASONING; else process.env.ODINLINK_KNOWLEDGE_PLANNING_REASONING = saved; });
+    const r = await turn(t, 'telegram', { model: SOL, planner: 'fast', rejectOtherSource: false });
+    const planning = r.calls.filter(c => c.stage === 'planning');
+    assert.deepEqual(planning.map(c => [c.model, c.reasoning]), [[LUNA, expected]]);
+    assert.deepEqual(r.plannerSchemas, ['odinlink_knowledge_planning_v2']);
+    assert.deepEqual(stages(r).filter(([stage]) => stage !== 'planning'), [['extraction', SOL], ['verification', SOL]]);
+    assert.equal(r.replies[0], answer);
+  });
+
+test('planner reasoning flag low + slow planner: same 2500 ms cancellation and whole-question fallback', async t => {
+  const saved = process.env.ODINLINK_KNOWLEDGE_PLANNING_REASONING; process.env.ODINLINK_KNOWLEDGE_PLANNING_REASONING = 'low';
+  t.after(() => { if (saved === undefined) delete process.env.ODINLINK_KNOWLEDGE_PLANNING_REASONING; else process.env.ODINLINK_KNOWLEDGE_PLANNING_REASONING = saved; });
+  const r = await turn(t, 'telegram', { model: SOL, planner: 'slow', rejectOtherSource: false });
+  const planning = r.calls.find(c => c.stage === 'planning')!;
+  assert.equal(planning.reasoning, 'low');
+  const waited = planning.abortedAt! - planning.at;
+  assert.ok(waited >= KNOWLEDGE_PLANNING_LIMIT_MS - 100 && waited < KNOWLEDGE_PLANNING_LIMIT_MS + 1000, `planner budget ${waited} ms`);
+  assert.ok(r.decisions.some(e => e.stage === 'planning' && e.reason === 'LITERAL_REQUEST_FALLBACK'));
   assert.equal(r.replies[0], answer);
 });

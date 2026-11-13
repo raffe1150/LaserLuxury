@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {incidentFlags,incidentConfig,incidentChannels,incidentInbound,incidentSession,interceptedIncidentSend} from '../../tests/helpers/p0-incident-knowledge';
+import {isBusinessInformationQuestion} from './business-information';
+import {normalizeConversationText} from './booking-intelligence';
 import {nativeKnowledgeTiming} from './knowledge-timing-policy';
 
 // Real native handlers, in-memory completion evidence and intercepted delivery.
@@ -106,4 +108,115 @@ test('Persian confirmation document is not completed booking status',()=>{
     Object.assign(incidentConfig,saved);
     b.reset();
   }
+});
+
+const arabicPreparation = 'أنا أزور الاستوديو لأول مرة. هل يجب أن أصل قبل موعدي بعشر دقائق بالضبط، أم أن هذا مجرد توصية؟ وهل أحتاج إلى إحضار تأكيد الحجز؟';
+
+test('booking confirmation documents and explicit status are distinct in supported languages', t => {
+  const cases = {
+    ar: {
+      documents: [
+        arabicPreparation,
+        'هل أحتاج إلى إحضار تأكيد الحجز؟',
+        'هل يلزم إبراز رسالة تأكيد الموعد؟',
+        'هل يمكنك إِحْضَار تأكيد الحجز عند الزيارة؟',
+        'هل عليّ تقديم تأكيد حجزي عند الوصول؟',
+        'هل يجب إحضار تأكيد الحجز؟ وهل تنصحون أن أصل قبل موعدي بعشر دقائق؟',
+      ],
+      status: ['هل يمكنك تأكيد الحجز من فضلك؟', 'هل الحجز مؤكد؟'],
+    },
+    fa: { documents: ['آیا باید تأییدیه رزرو را همراه داشته باشم؟'], status: ['رزرو من تأیید شده؟'] },
+    en: { documents: ['Do I need to bring my booking confirmation?'], status: ['Is my booking confirmed?'] },
+    es: { documents: ['¿Necesito llevar el comprobante de mi reserva?'], status: ['¿Está confirmada mi reserva?'] },
+    sv: { documents: ['Behöver jag ta med min bokningsbekräftelse?'], status: ['Är min bokning bekräftad?'] },
+    de: { documents: ['Muss ich meine Buchungsbestätigung mitbringen?'], status: ['Ist meine Buchung bestätigt?'] },
+  };
+  b.reset();
+  t.after(() => b.reset());
+  for (const [language, {documents, status}] of Object.entries(cases)) {
+    const config = {...incidentConfig, id:3, businessId:3, language};
+    const session = `confirmation-document:${language}`;
+    b.seedRecentCompletedBooking(session, language, {
+      ok:true, bookingId:'synthetic-booking', businessId:3, serviceName:'Consultation',
+      startTime:'2026-10-31T18:30:00+01:00', customerName:'Synthetic', sourceChannel:'whatsapp',
+    });
+    for (const question of documents) {
+      if (language === 'ar') assert.equal(isBusinessInformationQuestion(question), true, question);
+      const result = b.recentCompletionClassification(session, question, config);
+      assert.equal(result?.requestedDetails.status, false, question);
+      assert.equal(result?.category, 'business_support', question);
+    }
+    for (const question of status) {
+      assert.equal(b.recentCompletionClassification(session, question, config)?.category, 'current_booking_status', question);
+    }
+    if (language === 'ar') {
+      for (const question of ['هل لدي حجز قادم؟', 'متى موعدي؟']) {
+        assert.equal(b.recentCompletionClassification(session, question, config)?.category, 'another_booking_lookup', question);
+      }
+      for (const question of [
+        'هل أحتاج إلى إحضار تأكيد الحجز؟ وهل الحجز مؤكد؟',
+        'هل يمكنك تأكيد الحجز من فضلك؟ وهل أحتاج إلى إحضار تأكيد الحجز؟',
+        'هل أحتاج إلى إحضار تأكيد الحجز، وهل يمكنك تأكيد الحجز من فضلك؟',
+      ]) {
+        const result = b.recentCompletionClassification(session, question, config);
+        assert.equal(result?.requestedDetails.status, true, question);
+        assert.equal(result?.category, 'current_booking_status', question);
+      }
+    }
+  }
+});
+
+test('exact Arabic WhatsApp preparation question reaches managed Knowledge intake', async t => {
+  b.reset();
+  const saved = {...incidentConfig};
+  t.after(() => { Object.assign(incidentConfig, saved); b.reset(); });
+  Object.assign(incidentConfig, {id:3, businessId:3, language:'ar'});
+  const decisions: Record<string, unknown>[] = [];
+  const manifests: Record<string, unknown>[] = [];
+  const reads: number[] = [];
+  const replies: string[] = [];
+  const unexpected: string[] = [];
+  const forbidden = async () => {
+    unexpected.push('booking or calendar operation');
+    assert.fail('Unexpected booking or calendar operation');
+  };
+  for (const method of ['log', 'info', 'warn', 'error'] as const) t.mock.method(console, method, () => {});
+  t.mock.method(globalThis, 'fetch', async (input, options) => {
+    replies.push(interceptedIncidentSend(input, options));
+    return new Response(JSON.stringify({messages:[{id:'synthetic'}]}));
+  });
+  b.configure({
+    offlineAi:true, structuredUnderstandingAdoptionRuntime:null,
+    postProcess:async () => {}, incrementUsage:async () => ({allowed:true, count:1, limit:100}),
+    semanticLanguageResolver:async () => ({language:'ar', confidence:1}),
+    knowledgeSourceLanguages:async () => ['sv'],
+    knowledgeSearch:async id => { reads.push(id); return []; },
+    semanticKnowledgeSearchQueries:async () => [], completeKnowledgeCorpus:async () => null,
+    knowledgeServiceCatalog:async () => incidentConfig.services,
+    evidenceFirstDecisionDiagnostic:decision => decisions.push(decision),
+    evidenceFirstDiagnostic:manifest => manifests.push(manifest),
+    aiGenerate:async request => {
+      if (!request.systemInstruction.includes('source-language search query')) {
+        unexpected.push('AI generation outside source-language query planning');
+        assert.fail('Unexpected AI stage');
+      }
+      assert.equal(nativeKnowledgeTiming()?.policy.version, 'accuracy-first-v1');
+      return {text:JSON.stringify({query:'ankomsttid och bokningsbekräftelse'})};
+    },
+    calendarAdapter:{getCalendarId:() => 'synthetic', getEvents:forbidden, checkSlots:forbidden,
+      insertAppointment:forbidden, cancelAppointment:forbidden, updateAppointment:forbidden},
+    recordAppointment:forbidden, cancelAppointmentRow:forbidden, updateAppointmentRow:forbidden,
+  });
+  await incidentInbound(b, 'whatsapp', arabicPreparation);
+  assert.ok(decisions.some(decision => decision.stage === 'planning' && decision.reason === 'ACCEPTED' &&
+    decision.businessId === 3 && decision.timingPolicyVersion === 'accuracy-first-v1'));
+  assert.equal(manifests.length, 1);
+  assert.equal(manifests[0].fallbackReason, 'NO_EVIDENCE');
+  assert.ok(reads.length > 0);
+  assert.deepEqual([...new Set(reads)], [3]);
+  const support = b.businessInformationState(incidentSession(b, 'whatsapp', '46700000001'));
+  assert.equal(support?.question, normalizeConversationText(arabicPreparation));
+  assert.equal(support?.language, 'ar');
+  assert.equal(replies.length, 1);
+  assert.deepEqual(unexpected, []);
 });

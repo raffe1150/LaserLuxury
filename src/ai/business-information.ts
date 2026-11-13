@@ -85,6 +85,15 @@ function hasArabicAppointmentOperation(text: string): boolean {
   return /(?<![\p{L}\p{M}])(?:غير|عدل|انقل|أجل|اجل|قدم|أخر|اخر|احجز|أحجز|ألغ|الغ)(?![\p{L}\p{M}])|(?:^|[.!?؟]\s*|(?:أريد|اريد|أود|اود|أرغب|ارغب)\s+)(?:تغيير|تعديل|نقل|تأجيل|تقديم|إلغاء|الغاء)[^.!?؟\n]{0,30}(?:موعد|حجز)|تحقق|تأكد|حالة\s+(?:الموعد|الحجز)|متى\s+موعدي|هل\s+(?:لدي|حجزت)|تم\s+(?:حجز|تأكيد)/u.test(probe);
 }
 
+// Match the document only when it is the object of bringing or presenting it.
+const arabicBookingConfirmationDocument = /(?<![\p{L}\p{M}])(?:[إا]حضار|[إا]براز|تقد[يی]م|[أا]حضر|[أا]برز|[أا]قدم)\s+(?:(?:رسالة|نسخة\s+من)\s+)?ت[أا]ك[يی]د\s+(?:الحجز|حجز[يی]|الموعد|موعد[يی])(?![\p{L}\p{M}])/gu;
+
+export function withoutArabicBookingConfirmationDocument(text: string): string {
+  const probe = text.normalize('NFKC').replace(/[\u064b-\u065f\u0670]/gu, '');
+  const stripped = probe.replace(arabicBookingConfirmationDocument, ' ');
+  return stripped === probe ? text : stripped;
+}
+
 /** Shared with the intent router; retain its existing sentence-boundary grammar. */
 export function isExplicitArabicBookingCreationRequest(text: string): boolean {
   return /(?:^|[,.!?؛]\s*)(?:أريد|اريد|أود|اود)\s+(?:حجز|(?:أن\s+)?(?:أحجز|احجز))(?=\s|[.!?،؛]|$)/u.test(text);
@@ -108,6 +117,8 @@ export function isBusinessInformationQuestion(text: string): boolean {
   // An explicit action anywhere in a mixed turn retains deterministic authority.
   const permissionQuestion = /\b(?:(?:can|could|may)\s+i|(?:is|would)\s+it\s+(?:be\s+)?possible|(?:do\s+i\s+need|do\s+i\s+have)\s+to|can\s+[^.!?\n]{1,60}\s+be)\b|\b(?:(?:kan|får|måste|behöver)\s+jag|(?:är|vore)\s+det\s+möjligt|kan\s+[^.!?\n]{1,60}\s+(?:bokas|avbokas))\b|\b(?:(?:kann|darf|muss)\s+ich|ist\s+es\s+möglich|kann\s+[^.!?\n]{1,60}\s+werden)\b|\b(?:puedo|es\s+posible|se\s+puede|necesito)\b|آیا[^.!?؟\n]{0,30}(?:می[‌\s]?توان|باید)|هل\s+(?:يمكن|يجب)/iu.test(text);
   if (schedulingInput && permissionQuestion && !isExplicitBusinessActionRequest(text)) return true;
+  if (/[?؟]|هل/u.test(text) && withoutArabicBookingConfirmationDocument(text) !== text &&
+      !isExplicitBusinessActionRequest(text) && !hasArabicAppointmentOperation(text)) return true;
   if (isPassiveCancellationPolicyQuestion(text) && !isExplicitBusinessActionRequest(text)) return true;
   const requestedTopics = businessInformationTopics(text);
   // A service named "Online Appointment" does not turn an explicit request

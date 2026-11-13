@@ -89,6 +89,7 @@ import {
   formatRecommendationClarification,
   isBusinessAddressQuestion,
   isBusinessInformationQuestion,
+  withoutArabicBookingConfirmationDocument,
   isExplicitBusinessActionRequest,
   isBusinessRecommendationQuestion,
   isServiceCatalogQuestion,
@@ -8180,13 +8181,14 @@ function hasRecentCompletedBookingStatusSemantics(text?: string): boolean {
   if ((isConditionalArrivalInformationQuestion(String(text||'')) || isPassiveCancellationPolicyQuestion(String(text||''))) && !isExplicitBusinessActionRequest(String(text||''))) return false;
   const normalized = normalizeConfirmationReply(text);
   if (!normalized) return false;
+  const arabicStatusText = normalizeConfirmationReply(withoutArabicBookingConfirmationDocument(String(text || "")));
   return (
     /\b(?:appointment|booking)\b.{0,50}\b(?:confirmed|booked|reserved|successful)\b|\b(?:confirmed|booked|reserved)\b.{0,50}\b(?:appointment|booking)\b/u.test(normalized) ||
     /\b(?:bokning|tid)\b.{0,50}\b(?:bekraftad|bokad|klar)\b|\b(?:bekraftad|bokad)\b.{0,50}\b(?:bokning|tid)\b/u.test(normalized) ||
     /\b(?:termin|buchung)\b.{0,50}\b(?:bestatigt|gebucht|reserviert)\b|\b(?:bestatigt|gebucht|reserviert)\b.{0,50}\b(?:termin|buchung)\b/u.test(normalized) ||
     /\b(?:cita|reserva|reservacion)\b.{0,50}\b(?:confirmada|confirmado|reservada|reservado)\b|\b(?:confirmada|confirmado|reservada|reservado)\b.{0,50}\b(?:cita|reserva|reservacion)\b/u.test(normalized) ||
     /(?:وقت|نوبت|رزرو|قرار).{0,45}(?:(?:تایید|تأیید)(?!یه)|قطعی|ثبت|رزرو\s+شده)|(?:(?:تایید|تأیید)(?!یه)|قطعی|ثبت).{0,45}(?:وقت|نوبت|رزرو|قرار)/u.test(normalized) ||
-    /(?:موعد|حجز).{0,45}(?:مؤ[كک]د|مو[كک]د|مؤ[كک]دة|مو[كک]دة|(?<![\p{L}\p{M}])تم(?![\p{L}\p{M}])|محجوز)|(?:تأ[كک][يی]د|تا[كک][يی]د|مؤ[كک]د|مو[كک]د|(?<![\p{L}\p{M}])تم(?![\p{L}\p{M}])).{0,45}(?:موعد|حجز)/u.test(normalized)
+    /(?:موعد|حجز).{0,45}(?:مؤ[كک]د|مو[كک]د|مؤ[كک]دة|مو[كک]دة|(?<![\p{L}\p{M}])تم(?![\p{L}\p{M}])|محجوز)|(?:تأ[كک][يی]د|تا[كک][يی]د|مؤ[كک]د|مو[كک]د|(?<![\p{L}\p{M}])تم(?![\p{L}\p{M}])).{0,45}(?:موعد|حجز)/u.test(arabicStatusText)
   );
 }
 
@@ -8248,6 +8250,7 @@ function isRecentCompletedBookingStatusQuestion(text?: string): boolean {
   if (!raw || isExplicitNewBookingPivotText(raw)) return false;
   const normalized = raw.toLowerCase().replace(/[!?.,،؟؛]/g, " ").replace(/\s+/g, " ").trim();
 
+  const arabicStatusText = withoutArabicBookingConfirmationDocument(normalized);
   return (
     /\b(?:can|could|would)\s+you\s+(?:please\s+)?(?:confirm|check|verify)\s+(?:my|the)?\s*(?:booking|appointment)\b/iu.test(normalized) ||
     /\b(?:is|was)\s+(?:my|the)\s+(?:booking|appointment)\s+(?:confirmed|successful|booked)\b/iu.test(normalized) ||
@@ -8260,8 +8263,8 @@ function isRecentCompletedBookingStatusQuestion(text?: string): boolean {
     /\b(?:confirma|confirmar|verifica|verificar)\s+(?:mi|la)?\s*(?:reserva|cita)\b/iu.test(normalized) ||
     /(?:میشه|می\s*شه|لطفا|لطفاً).{0,24}(?:تایید|تأیید|بررسی).{0,24}(?:رزرو|وقت|نوبت)/u.test(normalized) ||
     /(?:تایید|تأیید)\s+(?:کن|کنید).{0,16}(?:رزرو|وقت|نوبت)|(?:رزرو|وقت|نوبت).{0,16}(?:تایید|تأیید)\s+(?:کن|کنید)/u.test(normalized) ||
-    /(?:هل\s+يمكنك|هل\s+تستطيع|ممكن).{0,24}(?:تأكيد|تؤكد|التحقق).{0,24}(?:الحجز|الموعد)/u.test(normalized) ||
-    /هل\s+(?:الحجز|الموعد).{0,16}(?:مؤكد|تم)/u.test(normalized)
+    /(?:هل\s+يمكنك|هل\s+تستطيع|ممكن).{0,24}(?:تأكيد|تؤكد|التحقق).{0,24}(?:الحجز|الموعد)/u.test(arabicStatusText) ||
+    /هل\s+(?:الحجز|الموعد).{0,16}(?:مؤكد|تم)/u.test(arabicStatusText)
   );
 }
 

@@ -4,7 +4,9 @@ import { nativeKnowledgeTiming, type NativeKnowledgeTiming } from './knowledge-t
 import { cancellationConfigurationProposals, cancellationRecoveryEligible, cancellationSourceLimitations, isReportedCancellationPremiseClause } from './cancellation-answer-recovery';
 import { selectCanonicalConfigurationProducer, captureCanonicalConfigurationProducer, canonicalConfigurationOutputValid,
   CANONICAL_CONFIG_INSTRUCTION, SOURCE_PARTITIONED_PRODUCER, SOURCE_PARTITIONED_INSTRUCTION, type CanonicalConfigurationProducer } from './canonical-configuration-propositions';
-import { isSourceExhaustiveProtocol, sourceExhaustiveInstruction, assessSourceCoverage, SOURCE_EXHAUSTIVE_V2_EVIDENCE_REVIEW } from './source-exhaustive-coverage';
+import { isSourceExhaustiveProtocol, sourceExhaustiveInstruction, SOURCE_EXHAUSTIVE_V2_EVIDENCE_REVIEW } from './source-exhaustive-coverage';
+import { assessSourceCoverageDetailed, describeSourceCoveragePrecondition, emitSourceCoverageAccepted, sourceCoverageField,
+  withOwnerCompleteVeto } from './source-coverage-decision-record';
 import { createHash } from 'node:crypto';
 import { packDocumentEvidence } from '../knowledge/document-evidence-packing';
 import { numericalConstraintSafe, assessNumericalConstraint, hasMatchingExactnessRecoveryAnchor, numericalAmbiguityReasons, numericalComparisonShapes, numericalRejectionShape, numericalRepresentationRepair, citedQuantitiesSupported, NUMERICAL_DIRECTION_GUIDANCE } from './numerical-constraints';
@@ -863,7 +865,8 @@ export async function buildEvidenceFirstAnswer(input: {
   // result. Do not spend a paid Verification call on a known fallback. Every
   // other protocol, and every complete inventory, is unchanged.
   if (isSourceExhaustiveProtocol(verificationProtocol) && (!proposalParseComplete || extractionIncomplete)) {
-    diagnostic({ stage: 'verification', reason: 'INVALID_COVERAGE' });
+    diagnostic({ stage: 'verification', reason: 'INVALID_COVERAGE', ...sourceCoverageField(() => describeSourceCoveragePrecondition({ kind: 'EARLY_STOP',
+      protocol: verificationProtocol, facets, units: proposed.units, evidence: availableEvidence, proposalParseComplete, extractionIncomplete })) });
     return empty('UNAVAILABLE', 'INVALID_COVERAGE');
   }
   let parsed: any;
@@ -1023,15 +1026,23 @@ export async function buildEvidenceFirstAnswer(input: {
   if (!verified.length) return Object.freeze({ ...empty('UNAVAILABLE','NO_VERIFIED_UNITS'), outcomes });
   if (isSourceExhaustiveProtocol(verificationProtocol) && (!proposalParseComplete || extractionIncomplete || conflicts.size ||
     !catalogComplete || verified.length !== proposed.units.length)) {
-    diagnostic({ stage: 'verification', reason: 'INVALID_COVERAGE' });
+    diagnostic({ stage: 'verification', reason: 'INVALID_COVERAGE', ...sourceCoverageField(() => describeSourceCoveragePrecondition({ kind: 'PRECONDITION',
+      protocol: verificationProtocol, raw: parsed, facets, units: proposed.units, evidence: availableEvidence, proposalParseComplete, extractionIncomplete,
+      conflicts: conflicts.size, catalogComplete, verified: verified.length })) });
     return empty('UNAVAILABLE', 'INVALID_COVERAGE');
   }
-  const sourceAssessment = isSourceExhaustiveProtocol(verificationProtocol)
-    ? assessSourceCoverage(parsed, facets, proposed.units, availableEvidence, input.businessId, verificationProtocol) : undefined;
+  // Decision authority is assessSourceCoverage() (called unchanged inside the
+  // detailed wrapper); the record is content-free observability and is emitted
+  // exactly once: on the existing denial event, or as SOURCE_COVERAGE_ACCEPTED.
+  const sourceDetail = isSourceExhaustiveProtocol(verificationProtocol)
+    ? assessSourceCoverageDetailed(parsed, facets, proposed.units, availableEvidence, input.businessId, verificationProtocol) : undefined;
+  const sourceAssessment = sourceDetail?.assessment;
   if (sourceAssessment?.state === 'DENIED' || (ownerProposalIndex !== undefined && sourceAssessment?.state !== 'COMPLETE')) {
-    diagnostic({ stage: 'verification', reason: 'INVALID_COVERAGE' });
+    diagnostic({ stage: 'verification', reason: 'INVALID_COVERAGE', ...sourceCoverageField(() => sourceDetail &&
+      (sourceDetail.assessment.state === 'DENIED' ? sourceDetail.record : withOwnerCompleteVeto(sourceDetail.record))) });
     return empty('UNAVAILABLE', 'INVALID_COVERAGE');
   }
+  emitSourceCoverageAccepted(diagnostic, sourceDetail?.record);
   // With no further model work, defer the duplicate post-verification read to
   // the native publication guard. This grants no authority to send the manifest.
   const deferFreshness=input.finalPublicationRevalidates && !input.natural && !optionalCompositionAffordable(budget);

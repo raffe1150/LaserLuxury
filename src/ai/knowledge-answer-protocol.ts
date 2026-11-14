@@ -56,6 +56,7 @@ export const DECISION_REASONS = [
   'NATURAL_VERDICT_INVALID', 'NATURAL_SEMANTIC_REJECTION', 'NATURAL_COVERAGE_REJECTION', 'NATURAL_SINGLE_PARTIAL_DISABLED', 'NATURAL_TIMEOUT',
   'PUBLICATION_RESERVE', 'SOURCE_UNAVAILABLE', 'STAGE_ADMISSION', 'LITERAL_REQUEST_FALLBACK', 'LITERAL_REQUEST_DIRECT',
   'COVERAGE_WITNESS_VALID', 'COVERAGE_WITNESS_UNKNOWN', 'COVERAGE_WITNESS_INVALID',
+  'SOURCE_COVERAGE_ACCEPTED',
 ] as const;
 export type DecisionReason = typeof DECISION_REASONS[number];
 export type KnowledgeDecision = {
@@ -103,6 +104,8 @@ export type KnowledgeDecision = {
   admission?: ReturnType<typeof verificationAdmissionDiagnostic>;
   verificationProtocol?: KnowledgeVerificationProtocol;
   coverageWitness?: CoverageWitnessAssessment;
+  /** Content-free source-exhaustive coverage decision record (enums, booleans, bounded counts). */
+  sourceCoverage?: import('./source-coverage-decision-record').SourceCoverageDecisionRecord;
 };
 
 /** Snapshot the existing remaining-minus-reserve guard and trace atomically. */

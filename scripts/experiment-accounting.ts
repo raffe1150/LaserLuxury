@@ -104,6 +104,11 @@ export class ExperimentLedger {
     this.pins = { ...this.pins, expectedSha256: sha256(Buffer.from(text)) };
     this.read();                                         // re-verify what was written
   }
+  claimCanary(caseId: string, requestSha256: string) {
+    const { ledger } = this.read();
+    if (ledger.calls.some(row => row.authorizationId === this.authorizationId)) throw new Error('APPROVAL_ALREADY_USED');
+    this.append({ case: caseId, requestSha256, reservationStatus: 'CANARY_APPROVAL_CLAIMED', estimatedUsd: 0 }, {});
+  }
   reserve(request: { requestId: string; caseId: string; stage: string; model: string; requestSha256: string; ceilingUsd: number }) {
     if (!(request.ceilingUsd > 0 && request.ceilingUsd <= EXPERIMENT_LIMITS.perRequestUsd)) throw new Error('PER_REQUEST_CEILING_EXCEEDED');
     const { ledger, reservedUsd } = this.read();

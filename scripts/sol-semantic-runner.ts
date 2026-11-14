@@ -61,6 +61,28 @@ function manifestTurns(bytes: Buffer): Turn[] {
   return m.turns;
 }
 
+function solWire(packet: NonNullable<ReturnType<typeof interpretationPacket>>) {
+  return JSON.stringify({ model, instructions: packet.instruction, input: [{ role: 'user', content: packet.data }],
+    store: false, stream: false, service_tier: 'default', reasoning: { effort: 'low' },
+    prompt_cache_options: { mode: 'implicit', ttl: '30m' }, max_output_tokens: packet.maxOutputTokens,
+    text: { format: { type: 'json_object' } } });
+}
+
+function turnContext(turn: Turn) {
+  return { ...context, turn: turn.turn, binding: { ...context.binding, conversationId: 'sol-semantic-' + turn.language },
+    language: { deterministicLanguage: turn.language, explicitSwitch: turn.switchTo } };
+}
+
+export async function planSolCanary(manifest: Buffer) {
+  verifySolSemanticSources();
+  const turn = manifestTurns(manifest)[0];
+  const handle = await prepareTurn(undefined, turnContext(turn), turn.text);
+  const packet = handle.request && interpretationPacket(handle.request);
+  if (!packet) throw new Error('INPUT_UNAVAILABLE');
+  const body = solWire(packet);
+  return { turnId: turn.id, body, requestSha256: sha(body) };
+}
+
 function validatedReceipt(response: SimulatedResponse, project: string, seen: Set<string>, inputBound: number) {
   // Unknown provider data is decoded field by field before reducing the hold.
   const b = response.body as Record<string, any> | null;
@@ -95,8 +117,11 @@ export function verifySolSemanticSources() {
 }
 
 export async function rehearseSolSemanticRun(input: Readonly<{ manifest: Buffer; pins: LedgerPins; approval: Approval;
-  credentialRoot: string; meter?: RehearsalMeter; simulate: Simulation; signal?: AbortSignal }>) {
-  const turns = manifestTurns(input.manifest);
+  credentialRoot: string; meter?: RehearsalMeter; simulate: Simulation; signal?: AbortSignal; canaryRequestSha256?: string }>) {
+  const canaryHash = input.canaryRequestSha256;
+  const canary = canaryHash !== undefined;
+  const turns = manifestTurns(input.manifest).slice(0, canary ? 1 : undefined);
+  const ceilingUsd = canary ? maxCost : 1.008;
   verifySolSemanticSources();
   const meter = input.meter;
   if (!meter) throw new Error('INPUT_BOUND_UNPROVEN');
@@ -121,7 +146,7 @@ export async function rehearseSolSemanticRun(input: Readonly<{ manifest: Buffer;
   const checkApproval = () => {
     if (a.mode !== 'OFFLINE_SIMULATION' || !/^[-\w]{8,80}$/.test(a.id) || !uint(a.expiresAtMs) || a.expiresAtMs <= Date.now() ||
         a.manifestSha256 !== manifestHash || a.primaryLedgerSha256 !== p.expectedSha256 || a.otherLedgerSha256 !== other.expectedSha256 ||
-        a.primaryPath !== p.path || a.otherPath !== other.path || a.maxUsd !== 1.008 || a.cumulativeUsd !== 4 || a.requestUsd !== 0.15)
+        a.primaryPath !== p.path || a.otherPath !== other.path || a.maxUsd !== ceilingUsd || a.cumulativeUsd !== 4 || a.requestUsd !== 0.15)
       throw new Error('APPROVAL_INVALID');
     const credential = loadSimulationCredential();
     if (credential.expectedProjectId !== a.project || sha(credential.key) !== credentialFingerprint)
@@ -138,7 +163,7 @@ export async function rehearseSolSemanticRun(input: Readonly<{ manifest: Buffer;
   try {
     const state = ledger.read();
     if (state.ledger.calls.some(r => r.authorizationId === a.id)) throw new Error('APPROVAL_ALREADY_USED');
-    if (Math.ceil(state.reservedUsd * 1e9) + 1_008_000_000 > 4_000_000_000) throw new Error('RUN_BUDGET');
+    if (Math.ceil(state.reservedUsd * 1e9) + Math.round(ceilingUsd * 1e9) > 4_000_000_000) throw new Error('RUN_BUDGET');
     const otherRows = JSON.parse(readFileSync(other.path, 'utf8')).calls as Record<string, unknown>[];
     if (!Array.isArray(otherRows)) throw new Error('OTHER_LEDGER_ROWS_INVALID');
     if (otherRows.some(r => r.authorizationId === a.id)) throw new Error('APPROVAL_ALREADY_USED');
@@ -146,21 +171,26 @@ export async function rehearseSolSemanticRun(input: Readonly<{ manifest: Buffer;
     const frames = new Map<EvalLanguage, TurnFrame>();
     const results = [];
     for (const turn of turns) {
-      const handle = await prepareTurn(frames.get(turn.language), { ...context, turn: turn.turn,
-        binding: { ...context.binding, conversationId: 'sol-semantic-' + turn.language },
-        language: { deterministicLanguage: turn.language, explicitSwitch: turn.switchTo },
-      }, turn.text);
+      const handle = await prepareTurn(frames.get(turn.language), turnContext(turn), turn.text);
       if (!handle.request || !interpretationPacket(handle.request)) throw new Error('INPUT_UNAVAILABLE');
       const requestId = a.id + '-' + turn.id;
       let receipt: ReturnType<typeof validatedReceipt> | undefined;
       let failure: unknown;
       const adapter = createInterpretationAdapter(async (packet, signal) => {
         try {
-          const body = JSON.stringify({ model, instructions: packet.instruction, input: [{ role: 'user', content: packet.data }],
-            store: false, stream: false, service_tier: 'default', reasoning: { effort: 'low' },
-            prompt_cache_options: { mode: 'implicit', ttl: '30m' }, max_output_tokens: packet.maxOutputTokens,
-            text: { format: { type: 'json_object' } } });
+          const body = solWire(packet);
           const requestSha256 = sha(body);
+          if (canary) {
+            if (requestSha256 !== canaryHash) throw new Error('CANARY_WIRE_MISMATCH');
+            checkApproval();
+            signal.throwIfAborted();
+            // Consume the approval before the first counted request. This is
+            // an append-only zero-cost marker, not an inference reservation.
+            ledger.claimCanary(turn.id, requestSha256);
+            ledger.assertOwnership();
+            checkApproval();
+            signal.throwIfAborted();
+          }
           const proof = await meter(body, signal);
           signal.throwIfAborted();
           if (proof?.kind !== 'SIMULATED_EXACT_COUNT' || proof.model !== model ||

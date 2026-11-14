@@ -4,8 +4,8 @@ import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync
 import { tmpdir } from 'node:os';
 import { test } from 'node:test';
 import { ExperimentLedger, pinsFromCurrent } from './experiment-accounting';
-import { executeSolSemanticLive, rehearseSolLiveAdmission, solLedgerPinsSha256 } from './sol-semantic-live';
-import { rehearseSolSemanticRun, solSemanticPins, type Approval } from './sol-semantic-runner';
+import { executeSolSemanticCanary, executeSolSemanticLive, rehearseSolLiveAdmission, solLedgerPinsSha256 } from './sol-semantic-live';
+import { planSolCanary, rehearseSolSemanticRun, solSemanticPins, type Approval } from './sol-semantic-runner';
 
 const manifest = readFileSync(new URL('../docs/validation/brain-v2-sol-readiness/manifest.json', import.meta.url));
 const sha = (s: string | Buffer) => createHash('sha256').update(s).digest('hex');
@@ -302,4 +302,73 @@ test('interruption retains the hold across reopen and blocks reuse of the author
       approval: { ...input.approval, primaryLedgerSha256: pins.expectedSha256 } }), /APPROVAL_ALREADY_USED/);
     assert.deepEqual([counts, calls], [1, 1]);
   } finally { f.cleanup(); }
+});
+
+test('first-turn canary binds one wire, claims approval before counting, and reserves before inference', async () => {
+  const f = fixture();
+  try {
+    const plan = await planSolCanary(f.args.manifest);
+    const base = liveFixture(f);
+    const input = { ...base, approval: { ...base.approval, maxUsd: 0.056 }, authorization: {
+      ...base.authorization, requestSha256: plan.requestSha256, countCalls: 1 as const, inferenceCalls: 1 as const, maxRunUsd: 0.056,
+    } };
+    await assert.rejects(executeSolSemanticCanary(input), /LIVE_CREDENTIAL_EXCLUSION_UNPROVEN/);
+    await assert.rejects(executeSolSemanticCanary({ ...input, authorization: { ...input.authorization, expiresAtMs: 0 } }), /LIVE_APPROVAL_INVALID/);
+    await assert.rejects(executeSolSemanticCanary({ ...input, authorization: { ...input.authorization, requestSha256: 'wrong' } }), /LIVE_APPROVAL_INVALID/);
+    let counts = 0, calls = 0;
+    const result = await rehearseSolLiveAdmission({ ...input, count: async request => {
+      counts++;
+      assert.equal(request.generationSha256, plan.requestSha256);
+      const { model, instructions, input, reasoning, text } = JSON.parse(plan.body);
+      assert.deepEqual(JSON.parse(request.body), { model, instructions, input, reasoning, text });
+      assert.equal(f.read().calls.at(-1).reservationStatus, 'CANARY_APPROVAL_CLAIMED');
+      return { httpStatus: 200, project: request.project, body: { object: 'response.input_tokens', input_tokens: 120 } };
+    }, simulate: async request => {
+      calls++;
+      assert.equal(request.body, plan.body);
+      const row = f.read().calls.at(-1);
+      assert.equal(row.requestSha256, plan.requestSha256);
+      assert.equal(row.conservativeReservationUsd, 0.056);
+      return reply(0);
+    } });
+    assert.deepEqual([counts, calls], [1, 1]);
+    assert.equal(result.results[0].id, plan.turnId);
+  } finally { f.cleanup(); }
+});
+
+test('failed canary count consumes approval and inference identity failures retain the hold', async () => {
+  for (const mismatch of ['count-project', 'inference-project', 'inference-model', 'unknown-usage']) {
+    const f = fixture();
+    try {
+      const plan = await planSolCanary(f.args.manifest);
+      const base = liveFixture(f);
+      const input = { ...base, approval: { ...base.approval, maxUsd: 0.056 }, authorization: {
+        ...base.authorization, requestSha256: plan.requestSha256, countCalls: 1 as const, inferenceCalls: 1 as const, maxRunUsd: 0.056,
+      } };
+      let counts = 0, calls = 0;
+      const count: Parameters<typeof rehearseSolLiveAdmission>[0]['count'] = async request => {
+        counts++;
+        return { httpStatus: 200, project: mismatch === 'count-project' ? 'proj_wrong' : request.project,
+          body: { object: 'response.input_tokens', input_tokens: 120 } };
+      };
+      await assert.rejects(rehearseSolLiveAdmission({ ...input, count, simulate: async () => {
+        calls++;
+        const r = reply(0);
+        if (mismatch === 'inference-project') r.project = 'proj_wrong';
+        if (mismatch === 'inference-model') r.body.model = 'wrong';
+        if (mismatch === 'unknown-usage') Reflect.deleteProperty(r.body, 'usage');
+        return r;
+      } }), /OFFICIAL_COUNT_INVALID|RESPONSE_IDENTITY|UNVERIFIED_USAGE/);
+      const noInference = mismatch === 'count-project';
+      assert.deepEqual([counts, calls], [1, noInference ? 0 : 1]);
+      const retained = f.read();
+      assert.equal(retained.calls.at(-1).reservationStatus, noInference ? 'CANARY_APPROVAL_CLAIMED' : 'RESERVED');
+      assert.ok(Math.abs(retained.unmeteredReserveUsd - f.original.unmeteredReserveUsd - (noInference ? 0 : 0.056)) < 1e-10);
+      const pins = pinsFromCurrent(f.path, retained.calls.length, [f.other]);
+      await assert.rejects(rehearseSolLiveAdmission({ ...input, pins, count, simulate: never,
+        authorization: { ...input.authorization, ledgerPinsSha256: solLedgerPinsSha256(pins) },
+        approval: { ...input.approval, primaryLedgerSha256: pins.expectedSha256 } }), /APPROVAL_ALREADY_USED/);
+      assert.deepEqual([counts, calls], [1, noInference ? 0 : 1]);
+    } finally { f.cleanup(); }
+  }
 });

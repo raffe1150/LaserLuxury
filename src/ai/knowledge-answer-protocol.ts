@@ -83,7 +83,7 @@ export type KnowledgeDecision = {
     targetLanguage: 'fa' | 'ar' | 'en' | 'sv' | 'de' | 'es' | 'other';
     detectedLanguage?: 'fa' | 'ar' | 'en' | 'sv' | 'de' | 'es';
     ruleIds: ('foreign_address_preposition' | 'strong_language_mismatch' | 'opposite_arabic_script_evidence' |
-      'english_structure' | 'swedish_structure' | 'persian_structure')[];
+      'english_structure' | 'swedish_structure' | 'german_structure' | 'persian_structure')[];
     configuredEntityRemoved: boolean;
     containsCitedSpan: boolean;
     /** Fixed branch/marker-family IDs and bounded scores; never prose or tokens. */

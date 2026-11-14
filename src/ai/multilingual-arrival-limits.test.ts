@@ -96,12 +96,14 @@ test('Arabic «بحد أقصى»: the same stated maximum in a Swedish source is
   }
 });
 
-test('known pre-existing conservative rejection: English «ahead of» is not a recognised anchor (fails closed)', () => {
-  // Faithful paraphrase, but the closed anchor vocabulary has «before», not «ahead of».
-  // Unchanged by this work; safe direction (no publication), recorded as a gap.
+test('English «ahead of» is a recognised before-anchor; wrong values and directions still fail closed', () => {
+  // Previously a recorded conservative gap (UNBOUNDED_CLAIM_NOT_SUPPORTED); the
+  // closed anchor vocabulary now includes «ahead of» as an explicit before-anchor.
   const claim = 'First-time visitors are advised to get there roughly 10 minutes ahead of their booked time so they can settle in and prepare.';
-  assert.equal(assess(claim).safe, false);
-  assert.equal(assess(claim).reason, 'UNBOUNDED_CLAIM_NOT_SUPPORTED');
+  assert.equal(assess(claim).safe, true);
+  assert.equal(assess(claim).reason, 'CONSTRAINT_MATCH');
+  assert.equal(assess(claim.replace('10', '20')).safe, false);
+  assert.equal(assess(claim.replace('ahead of', 'after')).safe, false);
 });
 
 test('language-specific safeguards are retained', () => {

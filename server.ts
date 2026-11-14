@@ -15775,6 +15775,10 @@ function assessCustomerReplyLanguage(prose: string, language: string, structureP
   const hasEnglishStructure = unicodeWordPattern(/\b(to confirm|can i ask|please send|please choose|i need|i can'?t find|what mobile|what day|what time|which time|of course|your appointment|your booking|would you like|sorry|couldn'?t|is available|is booked|try again)\b/i).test(structureProse);
   const hasSwedishStructure = unicodeWordPattern(/\b(för att|kan jag|ditt namn|din bokning|mobilnummer|vill du|tyvärr|är ledig|är bokad)\b/i).test(structureProse);
   const hasSwedishConfirmationStructure = unicodeWordPattern(/\b(?:ta gärna med|din bokningsbekräftelse)\b/iu).test(structureProse);
+  // German-only phrases, mirroring the English/Swedish structure backstops, so a
+  // German clause appended to another target language is not hidden by
+  // target-language markers elsewhere in the same text.
+  const hasGermanStructure = unicodeWordPattern(/\b(?:bringen sie|sie können|ihre buchung|ihre buchungsbestätigung|ihr termin|ihren termin|ihrem termin|vor dem termin|bitte bringen|empfiehlt es sich|wird empfohlen)\b/iu).test(structureProse);
   const hasPersianStructure = /[\u0600-\u06FF]/u.test(structureProse) &&
     /(برای|لطفاً|می.?خواهید|وقت|رزرو|نام|شماره|متأسفانه)/u.test(structureProse);
   const fallbackReplyLanguage = isMeaningfulLanguageMessage(prose)
@@ -15816,8 +15820,10 @@ function assessCustomerReplyLanguage(prose: string, language: string, structureP
   if (hasOppositeArabicScriptLanguageEvidence) ruleIds.push('opposite_arabic_script_evidence');
   if (language !== 'en' && hasEnglishStructure &&
       ['sv', 'fa', 'de', 'es', 'ar'].includes(language)) ruleIds.push('english_structure');
-  if ((['fa', 'en', 'de'].includes(language) && hasSwedishStructure) ||
-      (language === 'de' && hasSwedishConfirmationStructure)) ruleIds.push('swedish_structure');
+  // Swedish phrases are foreign for every non-Swedish target (previously only fa/en/de,
+  // and confirmation phrases only de), so an appended Swedish clause cannot pass.
+  if (language !== 'sv' && (hasSwedishStructure || hasSwedishConfirmationStructure)) ruleIds.push('swedish_structure');
+  if (language !== 'de' && hasGermanStructure) ruleIds.push('german_structure');
   if (language === 'en' && hasPersianStructure) ruleIds.push('persian_structure');
   // Fixed identifiers and bounded integers only; never prose, tokens or quotes.
   const grammaticalScores = scoreGrammaticalLatinLanguage(prose);

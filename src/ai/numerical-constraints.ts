@@ -45,7 +45,7 @@ const rules: Array<[Bound | 'latest' | 'earliest', string[]]> = [
   ['strict_maximum', ['less than', 'fewer than', 'mindre än', 'weniger als', 'menos de', 'کمتر از', 'أقل من']],
 ];
 const boundary = (phrase: string) => new RegExp(`(?<![\\p{L}\\p{N}])${phrase.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')}(?![\\p{L}\\p{N}])`, 'gu');
-const before = ['before', 'in advance', 'i förväg', 'im voraus', 'de antelación', 'före', 'innan', 'vor', 'vorher', 'antes', 'قبل', 'پیش از', 'پیش'];
+const before = ['before', 'ahead of', 'in advance', 'i förväg', 'im voraus', 'vorab', 'de antelación', 'före', 'innan', 'vor', 'vorher', 'antes', 'قبل', 'پیش از', 'پیش'];
 const after = ['after', 'efter', 'nach', 'después', 'بعد', 'پس از'];
 const hasPhrase = (s: string, list: string[]) => list.some(p => boundary(p).test(s));
 // Arabic "يصل/تصل إلى" is an upper limit ("up to N") only when it introduces the
@@ -59,6 +59,40 @@ const unitGroups: Array<[number, string[]]> = [
   [86400, ['day', 'days', 'dag', 'dagar', 'tag', 'tage', 'tagen', 'día', 'días', 'روز', 'يوم', 'يوما', 'أيام']],
 ];
 const units: Record<string, number> = Object.fromEntries(unitGroups.flatMap(([factor, names]) => names.map(name => [name, factor])));
+
+/** Unambiguous cardinal number words, rewritten to digits ONLY when directly
+ * followed by a known time unit, in the parser's copy. Claims, citations and
+ * published text are never rewritten. Articles (a/an, en/ett, ein/eine, un/una,
+ * Persian یک) and Persian نه (also "no/not") are deliberately absent, so those
+ * forms keep failing closed. This changes only the digit form of an adjacent
+ * quantity: it never adds, removes or moves an anchor, bound, negation or modality. */
+const numberWords: Record<string, number> = Object.fromEntries(Object.entries({
+  en: 'one 1 two 2 three 3 four 4 five 5 six 6 seven 7 eight 8 nine 9 ten 10 eleven 11 twelve 12 thirteen 13 fourteen 14 fifteen 15 sixteen 16 seventeen 17 eighteen 18 nineteen 19 twenty 20 twenty-four 24 twenty_four 24 twenty-five 25 twenty_five 25 thirty 30 forty 40 forty-five 45 forty_five 45 fifty 50 sixty 60 ninety 90',
+  sv: 'två 2 tre 3 fyra 4 fem 5 sex 6 sju 7 åtta 8 nio 9 tio 10 elva 11 tolv 12 tretton 13 fjorton 14 femton 15 sexton 16 sjutton 17 arton 18 nitton 19 tjugo 20 tjugofyra 24 tjugofem 25 trettio 30 fyrtio 40 fyrtiofem 45 femtio 50 sextio 60 nittio 90',
+  de: 'zwei 2 drei 3 vier 4 fünf 5 sechs 6 sieben 7 acht 8 neun 9 zehn 10 elf 11 zwölf 12 dreizehn 13 vierzehn 14 fünfzehn 15 sechzehn 16 siebzehn 17 achtzehn 18 neunzehn 19 zwanzig 20 vierundzwanzig 24 fünfundzwanzig 25 dreißig 30 vierzig 40 fünfundvierzig 45 fünfzig 50 sechzig 60 neunzig 90',
+  es: 'dos 2 tres 3 cuatro 4 cinco 5 seis 6 siete 7 ocho 8 nueve 9 diez 10 once 11 doce 12 trece 13 catorce 14 quince 15 dieciséis 16 diecisiete 17 dieciocho 18 diecinueve 19 veinte 20 veinticuatro 24 veinticinco 25 treinta 30 cuarenta 40 cuarenta_y_cinco 45 cincuenta 50 sesenta 60 noventa 90',
+  fa: 'دو 2 سه 3 چهار 4 پنج 5 شش 6 هفت 7 هشت 8 ده 10 یازده 11 دوازده 12 سیزده 13 چهارده 14 پانزده 15 شانزده 16 هفده 17 هجده 18 نوزده 19 بیست 20 بیست_و_چهار 24 بیست_و_پنج 25 سی 30 چهل 40 چهل_و_پنج 45 پنجاه 50 شصت 60 نود 90',
+  ar: 'ثلاث 3 ثلاثة 3 أربع 4 اربع 4 أربعة 4 اربعة 4 خمس 5 خمسة 5 ست 6 ستة 6 سبع 7 سبعة 7 ثماني 8 ثمانية 8 تسع 9 تسعة 9 عشر 10 عشرة 10 ' +
+    'إحدى_عشرة 11 احدى_عشرة 11 أحد_عشر 11 احد_عشر 11 اثنتا_عشرة 12 اثنا_عشر 12 اثني_عشر 12 ثلاث_عشرة 13 ثلاثة_عشر 13 أربع_عشرة 14 أربعة_عشر 14 ' +
+    'خمس_عشرة 15 خمسة_عشر 15 ست_عشرة 16 ستة_عشر 16 سبع_عشرة 17 سبعة_عشر 17 ثماني_عشرة 18 ثمانية_عشر 18 تسع_عشرة 19 تسعة_عشر 19 ' +
+    'عشرون 20 عشرين 20 ثلاثون 30 ثلاثين 30 أربعون 40 أربعين 40 اربعين 40 خمس_وأربعون 45 خمس_وأربعين 45 خمسة_وأربعون 45 خمسة_وأربعين 45 ' +
+    'خمسون 50 خمسين 50 ستون 60 ستين 60 تسعون 90 تسعين 90',
+}).flatMap(([, list]) => { const parts = list.split(/\s+/u); const pairs: [string, number][] = [];
+  for (let i = 0; i < parts.length; i += 2) pairs.push([parts[i].replace(/_/gu, ' '), Number(parts[i + 1])]); return pairs; }));
+const escapeRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+const numberWordAlternation = Object.keys(numberWords).sort((a, b) => b.length - a.length)
+  .map(word => escapeRegex(word).replace(/ /gu, '\\s+')).join('|');
+const unitAlternation = Object.keys(units).sort((a, b) => b.length - a.length).join('|');
+// Arabic numerals may carry the proclitic ب ("by"); keep it as a separate token.
+const writtenQuantity = new RegExp(`(?<![\\p{L}\\p{N}])(ب)?(${numberWordAlternation})(\\s+)(${unitAlternation})(?![\\p{L}\\p{N}])`, 'gu');
+const arabicDual = /(?<![\p{L}\p{N}])(ب)?(دقيقتين|دقيقتان|ساعتين|ساعتان|يومين|يومان)(?![\p{L}\p{N}])/gu;
+const arabicDualUnit: Record<string, string> = { دقيقتين: 'دقيقة', دقيقتان: 'دقيقة', ساعتين: 'ساعة', ساعتان: 'ساعة', يومين: 'يوم', يومان: 'يوم' };
+function writtenQuantities(text: string): string {
+  return text
+    .replace(writtenQuantity, (_m, proclitic: string | undefined, word: string, space: string, unit: string) =>
+      `${proclitic ? proclitic + ' ' : ''}${numberWords[word.replace(/\s+/gu, ' ')]}${space}${unit}`)
+    .replace(arabicDual, (_m, proclitic: string | undefined, dual: string) => `${proclitic ? proclitic + ' ' : ''}2 ${arabicDualUnit[dual]}`);
+}
 
 /** Typography around a standalone numeric temporal literal is not a changed
  * policy quantity. Remove only matched quote pairs immediately before a known
@@ -127,7 +161,7 @@ function parse(input: string, diagnoseBound = false): { constraints: Constraint[
   }
   // German source attribution ("according to the test terms") is not an
   // after-event anchor. Quantified temporal uses of nach remain untouched.
-  const text = spatialConnectives(quotedTemporalNumbers(canonical(input))).replace(/\bnach\s+(?:(?:den|dem|diesen|unseren|fiktiven|vorliegenden|genannten)\s+){0,3}(?:testbedingungen|angaben|informationen|dokumenten|dokument)\b/gu, 'laut Quelle');
+  const text = spatialConnectives(quotedTemporalNumbers(writtenQuantities(canonical(input)))).replace(/\bnach\s+(?:(?:den|dem|diesen|unseren|fiktiven|vorliegenden|genannten)\s+){0,3}(?:testbedingungen|angaben|informationen|dokumenten|dokument)\b/gu, 'laut Quelle');
   const constraints: Constraint[] = [];
   const quantities = [...text.matchAll(new RegExp(`(?<![\\p{L}\\p{N}])([0-9]+(?:[.,][0-9]+)?)\\s+(${Object.keys(units).join('|')})(?![\\p{L}\\p{N}])`, 'gu'))];
   for (const quantity of quantities) {
@@ -149,6 +183,11 @@ function parse(input: string, diagnoseBound = false): { constraints: Constraint[
       /^\s*con antelación(?![\p{L}\p{N}])/u.test(right) &&
         /(?:preséntese|preséntate|llegue|llegar|acuda)/u.test(left) ||
       /^\s*زودتر\s+در\s+محل\s+حضور\s+داشته\s+باشید/u.test(right) ||
+      // German/Swedish comparative "earlier" after the quantity, only with an arrival verb.
+      /^\s*(?:früher|eher)(?![\p{L}\p{N}])/u.test(right) &&
+        /(?:komm|ankunft|da\s+(?:zu\s+)?sein|vor\s+ort|erschein|eintreff|einzutreff)/u.test(context) ||
+      /^\s*tidigare(?![\p{L}\p{N}])/u.test(right) &&
+        /(?:(?<![\p{L}])kom(?:ma|mer|mit)?(?![\p{L}])|anländ|på\s+plats|infinn)/u.test(context) ||
       /(?:الوصول|الحضور)\s+مبكرا\s+بـ?\s*$/u.test(left)
     );
     const anchoredBefore = hasPhrase(context, before) || /^ زودتر از /u.test(right) ||
@@ -414,6 +453,35 @@ export function hasMatchingExactnessRecoveryAnchor(assessment: NumericalConstrai
         !candidate.cancellationKind && appointmentAnchored.has(candidate) && candidate.seconds === fact.seconds &&
         candidate.side === fact.side && candidate.bound === fact.bound;
     });
+}
+
+export type NumericalRepresentationRepair = 'anchor_omitted' | 'redundant_restatement';
+/** Recovery eligibility only; this never accepts a numerical claim. The unit's
+ * single cited source must hold exactly one appointment-anchored, unambiguous,
+ * non-policy quantity, and the claim must repeat exactly that value while either
+ * (a) omitting its temporal anchor, or (b) restating the identical quantity two
+ * or three times, ambiguous only through those repeats. Different values,
+ * bounds or directions, policy quantities, zero quantities and any other
+ * ambiguity are not repairable: they keep failing closed. */
+export function numericalRepresentationRepair(assessment: NumericalConstraintAssessment): NumericalRepresentationRepair | null {
+  if (assessment.sources.length !== 1 || assessment.checks.length !== 2 || assessment.checks.some(check => check.unsupported)) return null;
+  const [source] = assessment.sources;
+  const facts = source.constraints.filter(c => c.bound !== null || c.side !== 'none');
+  if (source.unsupported || facts.length !== 1) return null;
+  const [fact] = facts;
+  if (fact.ambiguous || fact.cancellationKind || fact.side === 'none' || !appointmentAnchored.has(fact) ||
+      !Number.isFinite(fact.seconds) || fact.seconds <= 0 || source.constraints.some(c => c !== fact && c.seconds === fact.seconds)) return null;
+  if (assessment.reason === 'UNBOUNDED_CLAIM_NOT_SUPPORTED') {
+    return fact.bound === null && assessment.checks.every(check => check.constraints.length === 1 && !check.constraints[0].ambiguous &&
+      !check.constraints[0].cancellationKind && check.constraints[0].bound === null && check.constraints[0].side === 'none' &&
+      check.constraints[0].seconds === fact.seconds) ? 'anchor_omitted' : null;
+  }
+  if (assessment.reason === 'CLAIM_QUANTITY_COUNT') {
+    return assessment.checks.every(check => check.constraints.length >= 2 && check.constraints.length <= 3 && check.constraints.every(c =>
+      !c.cancellationKind && c.seconds === fact.seconds && c.bound === fact.bound && c.side === fact.side &&
+      (!c.ambiguous || (candidateAmbiguityReasons.get(c) ?? ['unknown']).every(reason => reason === 'extra_digit')))) ? 'redundant_restatement' : null;
+  }
+  return null;
 }
 
 /** Diagnostic projection only. Ordinals refer to assessor inputs; no quantities,

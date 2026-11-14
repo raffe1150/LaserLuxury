@@ -7,7 +7,7 @@ import { selectCanonicalConfigurationProducer, captureCanonicalConfigurationProd
 import { isSourceExhaustiveProtocol, sourceExhaustiveInstruction, assessSourceCoverage, SOURCE_EXHAUSTIVE_V2_EVIDENCE_REVIEW } from './source-exhaustive-coverage';
 import { createHash } from 'node:crypto';
 import { packDocumentEvidence } from '../knowledge/document-evidence-packing';
-import { numericalConstraintSafe, assessNumericalConstraint, hasMatchingExactnessRecoveryAnchor, numericalAmbiguityReasons, numericalComparisonShapes, numericalRejectionShape, citedQuantitiesSupported, NUMERICAL_DIRECTION_GUIDANCE } from './numerical-constraints';
+import { numericalConstraintSafe, assessNumericalConstraint, hasMatchingExactnessRecoveryAnchor, numericalAmbiguityReasons, numericalComparisonShapes, numericalRejectionShape, numericalRepresentationRepair, citedQuantitiesSupported, NUMERICAL_DIRECTION_GUIDANCE } from './numerical-constraints';
 import { recordPrivateNumericalCandidate } from './late-arrival-numerical-diagnostics';
 import { containsUnverifiedBookingSuccessClaim } from './reliability';
 import { containsWebOperationSuccess } from './web-response-integrity';
@@ -232,9 +232,9 @@ export function answerEvidenceBindings(businessId: number, matches: readonly any
 
 /** Re-extraction trigger classes. A class only REQUESTS one fresh, complete
  * re-extraction; it never admits, repairs or re-reads a rejected proposal. */
-export type ReExtractionTally = { ambiguousConnective: number; citationOmitsQuantity: number; numericalExactness?: number };
+export type ReExtractionTally = { ambiguousConnective: number; citationOmitsQuantity: number; numericalExactness?: number; numericalRepresentation?: number };
 export type ReExtractionEvent = Readonly<{
-  trigger: 'none' | 'ambiguous_connective' | 'citation_omits_quantity' | 'both' | 'numerical_exactness' | 'other_rejection' | 'out_of_scope';
+  trigger: 'none' | 'ambiguous_connective' | 'citation_omits_quantity' | 'both' | 'numerical_exactness' | 'numerical_representation' | 'other_rejection' | 'out_of_scope';
   outcome: 'not_needed' | 'not_eligible' | 'skipped' | 'source_changed' | 'dispatched' | 'failed';
   skipReason?: string; firstPass: { proposed: number; parsed: number; rejected: number };
   replacement?: { proposed: number; parsed: number; rejected: number }; durationMs?: number; failureReason?: string }>;
@@ -251,6 +251,12 @@ export const REEXTRACTION_CITATION_GUIDANCE = 'RE-EXTRACTION: A previous proposa
 const REEXTRACTION_EXACTNESS_GUIDANCE = 'RE-EXTRACTION: Regenerate the complete set of material facts from the cited sources. ' +
   'State the supported timing affirmatively, using the source quantity, approximation or precision, numerical bound and appointment anchor. ' +
   'Preserve recommendation versus requirement and every applicable condition. Do not repeat an unsupported deadline, add facts, or omit material facts.';
+
+/** Offline-validated only (deterministic mocks); NOT yet validated with a paid run. */
+const REEXTRACTION_REPRESENTATION_GUIDANCE = 'RE-EXTRACTION: A previous proposal restated a source quantity without its explicit temporal anchor, ' +
+  'or repeated the same quantity more than once in one unit. Regenerate the complete set of material facts. State each independently scoped ' +
+  'quantity exactly once, in digits with its unit, and name the event it is relative to with explicit before/after wording as the source does. ' +
+  'Preserve approximation, bound, polarity, modality, audience and every applicable condition. Do not add facts, requirements or anchors the source does not state.';
 
 const ambiguousConnectiveRow = (row: ReturnType<typeof numericalComparisonShapes>[number]) =>
   row.boundTriggerCategory === 'persian_ta' && row.boundTriggerPosition === 'after_quantity' &&
@@ -327,6 +333,9 @@ export function parseAnswerUnits(raw: unknown, facets: readonly Facet[], evidenc
         if (refs.length === 1 && evidenceBindings[0]?.sourceId && evidenceBindings[0]?.sourceRevision &&
             !isExplicitBusinessActionRequest(u.text) && hasMatchingExactnessRecoveryAnchor(numerical)) {
           reExtractionTally.numericalExactness = (reExtractionTally.numericalExactness ?? 0) + 1;
+        } else if (refs.length === 1 && evidenceBindings[0]?.sourceId && evidenceBindings[0]?.sourceRevision &&
+            !isExplicitBusinessActionRequest(u.text) && numericalRepresentationRepair(numerical)) {
+          reExtractionTally.numericalRepresentation = (reExtractionTally.numericalRepresentation ?? 0) + 1;
         } else if (numerical.reason === 'SOURCE_BOUND_ANCHOR_OR_SCOPE_MISMATCH' && shapes.length && shapes.every(ambiguousConnectiveRow))
           reExtractionTally.ambiguousConnective++;
         else if (numerical.reason === 'SOURCE_CONSTRAINT_UNAVAILABLE' && refs.every(r => !r.evidenceId.startsWith('configured-') && !r.sourceId.startsWith('configured-')) &&
@@ -379,6 +388,7 @@ allowedFacetIds is the exhaustive set: copy a nonempty subset into each unit, re
 /** Native v2 producer clarification only; no proposal filtering or citation repair.
  * The schema, base contracts and independent verifier remain unchanged. */
 export const NATIVE_V2_PRODUCER_GUIDANCE = `Producer check: For each proposed unit, identify the exact requested fact it answers or the necessary condition, exception, coordinated restriction or directly applicable recommendation it preserves. Do not add optional background merely because it concerns the same subject. If a requested attribute is unavailable, leave that attribute unresolved; do not substitute a nearby known attribute. Preserve every requested clause and material source qualification, including when another requested detail is unknown. Do not omit a supported requested fact because it is difficult to quote.
+Numerical propositions: give each independently scoped quantity its own unit and state it once, in digits with its unit (for example 10 minutes rather than a spelled-out number) whenever the source supports that quantity. When the source states a quantity relative to an event, name that event with explicit before/after wording in the text; do not reduce it to "earlier" or "in advance" alone, and never add an anchor the source does not state. Keep the source's approximation, bound, polarity and modality: an approximate recommendation is not an exact or mandatory time, and a question asking whether a time is exact or mandatory is answered only with what the source supports. Keep audience conditions exactly as stated. Give separate units for separately requested facts, and keep alternatives the source offers together with their recommendation.
 Copy exactQuote directly from its evidence item, character for character as supplied, including OCR split words, internal whitespace, line breaks and punctuation spacing. Never correct spelling, join split words, reconstruct typography, translate a quotation or invent source text. Translate only the proposed factual text. Before returning, check that every quote is present in that same item and every proposed unit serves the actual question with all material qualifiers. Return only the existing schema.`;
 /** Shared semantic instruction only; no local relevance or publication authority. */
 export const NATIVE_V2_QUESTION_RESPONSIVENESS_GUIDANCE = `Question responsiveness: Judge every independently asserted clause against the complete latest customer question, not merely a shared entity, broad topic, facet label or neighboring source passage. A clause is responsive when it supplies an explicitly requested attribute or relationship, or preserves the source-bound antecedent, condition, exception, coordinated restriction or directly applicable recommendation needed to interpret the requested answer or scenario accurately. A recommendation must address the customer's actual requested need or scenario with its original modality; do not infer a different information need merely from the shared subject. Necessary conditions remain relevant even when the customer did not explicitly ask about those conditions. Do not invent additional requirements.
@@ -757,9 +767,11 @@ export async function buildEvidenceFirstAnswer(input: {
       // replacement is a complete fresh inventory under every unchanged gate.
       const proposedCount = Array.isArray(raw.units) ? raw.units.length : 0;
       const firstPass = { proposed: proposedCount, parsed: proposed.units.length, rejected: Math.max(0, proposedCount - proposed.units.length) };
-      const eligible = reExtractionTally.ambiguousConnective + reExtractionTally.citationOmitsQuantity + (reExtractionTally.numericalExactness ?? 0);
+      const eligible = reExtractionTally.ambiguousConnective + reExtractionTally.citationOmitsQuantity + (reExtractionTally.numericalExactness ?? 0) +
+        (reExtractionTally.numericalRepresentation ?? 0);
       const trigger = !firstPass.rejected ? 'none' as const : !Array.isArray(raw.units) || raw.oversized !== false || eligible !== firstPass.rejected ? 'other_rejection' as const :
         reExtractionTally.numericalExactness ? 'numerical_exactness' as const :
+        reExtractionTally.numericalRepresentation ? 'numerical_representation' as const :
         reExtractionTally.ambiguousConnective && reExtractionTally.citationOmitsQuantity ? 'both' as const :
         reExtractionTally.ambiguousConnective ? 'ambiguous_connective' as const : 'citation_omits_quantity' as const;
       if (trigger === 'none') input.reExtraction.record({ trigger, outcome: 'not_needed', firstPass });
@@ -782,6 +794,7 @@ export async function buildEvidenceFirstAnswer(input: {
               reExtractionTally.ambiguousConnective ? REEXTRACTION_CONNECTIVE_GUIDANCE : '',
               reExtractionTally.citationOmitsQuantity ? REEXTRACTION_CITATION_GUIDANCE : '',
               reExtractionTally.numericalExactness ? REEXTRACTION_EXACTNESS_GUIDANCE : '',
+              reExtractionTally.numericalRepresentation ? REEXTRACTION_REPRESENTATION_GUIDANCE : '',
             ].filter(Boolean).join('\n');
             const started = Date.now();
             let second: ProviderResult;

@@ -103,6 +103,20 @@ export const OUTGOING_UNITS: ReadonlyArray<readonly [Target, string, 'accept' | 
   ['ar', 'تم تأكيد موعدك يوم الجمعة الساعة 2.', 'accept', 'ar'],
   ['ar', 'الاستشارة تستغرق 30 دقيقة.', 'accept', 'ar'],
   ['ar', 'Du kan boka online.', 'reject', 'sv-under-ar'],
+  // Appended foreign clauses are rejected for every other target; own-language text is accepted.
+  ['en', 'We recommend bringing your booking confirmation. Ta gärna med din bokningsbekräftelse, digitalt eller på papper.', 'reject', 'sv-clause-under-en'],
+  ['es', 'Se recomienda llevar la confirmación de la reserva. Ta gärna med din bokningsbekräftelse, digitalt eller på papper.', 'reject', 'sv-clause-under-es'],
+  ['fa', 'توصیه می‌شود تأییدیه رزرو را همراه داشته باشید. Ta gärna med din bokningsbekräftelse, digitalt eller på papper.', 'reject', 'sv-clause-under-fa'],
+  ['ar', 'يُنصح بإحضار تأكيد الحجز. Ta gärna med din bokningsbekräftelse, digitalt eller på papper.', 'reject', 'sv-clause-under-ar'],
+  ['en', 'We recommend bringing your booking confirmation. Bringen Sie Ihre Buchungsbestätigung am besten digital oder auf Papier mit.', 'reject', 'de-clause-under-en'],
+  ['sv', 'Ta gärna med din bokningsbekräftelse. Bringen Sie Ihre Buchungsbestätigung mit.', 'reject', 'de-clause-under-sv'],
+  ['sv', 'Ta gärna med din bokningsbekräftelse, digitalt eller på papper.', 'accept', 'sv-confirmation'],
+  ['de', 'Bringen Sie Ihre Buchungsbestätigung am besten digital oder auf Papier mit.', 'accept', 'de-confirmation'],
+  ['en', 'We recommend bringing your booking confirmation digitally or on paper.', 'accept', 'en-confirmation'],
+  ['es', 'Se recomienda llevar la confirmación de la reserva en formato digital o en papel.', 'accept', 'es-confirmation'],
+  ['fa', 'توصیه می‌شود تأییدیه رزرو را به‌صورت دیجیتال یا کاغذی همراه داشته باشید.', 'accept', 'fa-confirmation'],
+  ['ar', 'يُنصح بإحضار تأكيد الحجز، رقميًا أو على ورق.', 'accept', 'ar-confirmation'],
+  ['en', 'You can park in Nordpark; the entrance is on Stjärngatan 14.', 'accept', 'en-swedish-proper-nouns'],
 ];
 
 /** Pre-existing Swedish/mixed under-detection, unchanged by this repair (HEAD 1db0a6c behaves the same). */

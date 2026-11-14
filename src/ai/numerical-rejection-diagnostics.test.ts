@@ -5,8 +5,9 @@ import { assessNumericalConstraint, numericalRejectionShape, type NumericalRejec
 import type { KnowledgeDecision } from './knowledge-answer-protocol';
 
 // SYNTHETIC claims only. Sources follow the public test business's Swedish wording.
-// Expected decisions were recorded from the unchanged baseline d0702e1: this
-// diagnostic must never change a numerical, recovery or parse decision.
+// Expected decisions were recorded from baseline d0702e1. The diagnostic itself
+// never changes a decision; the only expected change since then is intentional:
+// written cardinal numbers before a known unit are now parsed (row "written").
 const threshold = 'Vid en försening på mer än 15 minuter kan studion behöva göra en ny bedömning av om besöket kan genomföras enligt plan.';
 const arrival = 'Vi rekommenderar att du kommer 10 minuter före din bokade tid.';
 const claims = {
@@ -56,10 +57,11 @@ const claims = {
 type Kind = keyof typeof claims.de;
 const sourcesFor = (kind: Kind) => kind === 'abbreviated' ? [arrival] : kind.startsWith('two') ? [threshold, arrival] : [threshold];
 
-// [unchanged baseline reason, claimCount, claimDistinct, repeated, supportedAlone, numeric form]
+// [expected reason, claimCount, claimDistinct, repeated, supportedAlone, numeric form]
+// "written" was UNSUPPORTED_CLAIM_COMPARISON / unit_no_digits before written numbers were parsed.
 const expected: Record<Kind, readonly [string, number, number, boolean, number | null, NumericalRejectionShape['claimForm']]> = {
   one: ['CONSTRAINT_MATCH', 1, 1, false, 1, 'parsed'],
-  written: ['UNSUPPORTED_CLAIM_COMPARISON', 0, 0, false, null, 'unit_no_digits'],
+  written: ['CONSTRAINT_MATCH', 1, 1, false, 1, 'parsed'],
   none: ['CLAIM_QUANTITY_COUNT', 0, 0, false, 0, 'neither'],
   repeated: ['CLAIM_QUANTITY_COUNT', 2, 1, true, 2, 'parsed'],
   two: ['CLAIM_QUANTITY_COUNT', 2, 2, false, 2, 'parsed'],
@@ -82,7 +84,7 @@ function assertBounded(shape: NumericalRejectionShape, trusted: boolean) {
 }
 
 for (const [language, set] of Object.entries(claims)) for (const kind of Object.keys(set) as Kind[]) {
-  test(`${language} ${kind}: unchanged decision and bounded shape`, () => {
+  test(`${language} ${kind}: expected decision and bounded shape`, () => {
     const text = set[kind];
     const assessment = assessNumericalConstraint(text, text, sourcesFor(kind));
     const [reason, count, distinct, repeated, supported, form] = expected[kind];

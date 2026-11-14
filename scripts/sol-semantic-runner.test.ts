@@ -149,6 +149,14 @@ test('input admission rejects absent or stale proof and applies the exact 16,000
   try {
     const run = (meter: typeof f.args.meter | undefined) => rehearseSolSemanticRun({ ...f.args, meter, simulate: never });
     await assert.rejects(run(undefined), /INPUT_BOUND_UNPROVEN/);
+    // A caller-supplied imitation of an official response does not authorize
+    // the rehearsal (and cannot be used as live input evidence).
+    await assert.rejects(run(wire => ({ object: 'response.input_tokens', input_tokens: 120,
+      model: 'gpt-6.1-sol', wireSha256: sha(wire) }) as unknown as ReturnType<typeof f.args.meter>), /INPUT_BOUND_UNPROVEN/);
+    for (const count of [0, -1, 12.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      await assert.rejects(run(wire => f.args.meter(wire, count)), /INPUT_BOUND_UNPROVEN/);
+    }
+    await assert.rejects(run(wire => ({ ...f.args.meter(wire), model: 'other-model' })), /INPUT_BOUND_UNPROVEN/);
     await assert.rejects(run(wire => ({ ...f.args.meter(wire), wireSha256: sha(wire + ' ') })), /INPUT_BOUND_UNPROVEN/);
     await assert.rejects(run(wire => f.args.meter(wire, 16001)), /INPUT_TOKEN_LIMIT/);
     assert.deepEqual(f.read(), f.original);
@@ -182,4 +190,20 @@ test('losing the canonical lock or changing a companion ledger retains the hold'
       if (attack === 'replace lock') assert.equal(readFileSync(lock, 'utf8'), 'other writer');
     } finally { f.cleanup(); }
   }
+});
+
+
+test('a matching non-simulation credential cannot enter the rehearsal', async () => {
+  const f = fixture();
+  try {
+    const key = 'sk-proj-placeholder-for-negative-control';
+    const root = f.args.credentialRoot;
+    writeFileSync(root + '/work-openai.env', 'OPENAI_API_KEY=' + key);
+    writeFileSync(root + '/work-openai-project.json', JSON.stringify({
+      expectedProjectId: f.args.approval.project, credentialSha256: sha(key),
+    }));
+    await assert.rejects(rehearseSolSemanticRun({ ...f.args, simulate: never }), /SIMULATION_CREDENTIAL_REQUIRED/);
+    assert.deepEqual(f.read(), f.original);
+    assert.ok(!existsSync(f.path + '.semantic-recovery.lock'));
+  } finally { f.cleanup(); }
 });

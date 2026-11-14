@@ -102,13 +102,21 @@ export async function rehearseSolSemanticRun(input: Readonly<{ manifest: Buffer;
   if (dirname(directory) !== realpathSync(tmpdir()) || !basename(directory).startsWith('odin-sol-sim-') ||
       basename(p.path) !== 'source-aware-usage.json' || basename(other.path) !== 'budget-resumed-usage.json' ||
       realpathSync(input.credentialRoot) !== directory + '/credentials') throw new Error('LIVE_EXECUTION_DISABLED');
-  const credentialFingerprint = sha(loadCredential(input.credentialRoot).key);
+  // Copies of live credentials are also out of scope for this entry point,
+  // even if placed in a valid temporary directory with a matching fingerprint.
+  const loadSimulationCredential = () => {
+    const credential = loadCredential(input.credentialRoot);
+    if (!/^sk-synthetic-[A-Za-z0-9_-]+$/.test(credential.key))
+      throw new Error('SIMULATION_CREDENTIAL_REQUIRED');
+    return credential;
+  };
+  const credentialFingerprint = sha(loadSimulationCredential().key);
   const checkApproval = () => {
     if (a.mode !== 'OFFLINE_SIMULATION' || !/^[-\w]{8,80}$/.test(a.id) || !uint(a.expiresAtMs) || a.expiresAtMs <= Date.now() ||
         a.manifestSha256 !== manifestHash || a.primaryLedgerSha256 !== p.expectedSha256 || a.otherLedgerSha256 !== other.expectedSha256 ||
         a.primaryPath !== p.path || a.otherPath !== other.path || a.maxUsd !== 1.008 || a.cumulativeUsd !== 4 || a.requestUsd !== 0.15)
       throw new Error('APPROVAL_INVALID');
-    const credential = loadCredential(input.credentialRoot);
+    const credential = loadSimulationCredential();
     if (credential.expectedProjectId !== a.project || sha(credential.key) !== credentialFingerprint)
       throw new Error('CREDENTIAL_PROJECT_MISMATCH');
     input.signal?.throwIfAborted();

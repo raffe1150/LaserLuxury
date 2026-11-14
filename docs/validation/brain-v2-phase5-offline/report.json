@@ -1,0 +1,1872 @@
+{
+  "schema": "odinlink-brain-phase5-offline-v1",
+  "semantics": {
+    "byLanguage": {
+      "sv": {
+        "turns": 3,
+        "deterministic": {
+          "exact": 0,
+          "primaryIntentErrors": 3,
+          "obligationCountMatches": 2,
+          "clarificationMatches": 0,
+          "languageMatches": 3,
+          "unsafeRoutes": 0
+        },
+        "scripted": {
+          "exact": 3,
+          "primaryIntentErrors": 0,
+          "obligationCountMatches": 3,
+          "clarificationMatches": 3,
+          "languageMatches": 3,
+          "unsafeRoutes": 0
+        }
+      },
+      "en": {
+        "turns": 3,
+        "deterministic": {
+          "exact": 2,
+          "primaryIntentErrors": 1,
+          "obligationCountMatches": 3,
+          "clarificationMatches": 2,
+          "languageMatches": 3,
+          "unsafeRoutes": 0
+        },
+        "scripted": {
+          "exact": 3,
+          "primaryIntentErrors": 0,
+          "obligationCountMatches": 3,
+          "clarificationMatches": 3,
+          "languageMatches": 3,
+          "unsafeRoutes": 0
+        }
+      },
+      "de": {
+        "turns": 2,
+        "deterministic": {
+          "exact": 0,
+          "primaryIntentErrors": 2,
+          "obligationCountMatches": 1,
+          "clarificationMatches": 0,
+          "languageMatches": 2,
+          "unsafeRoutes": 0
+        },
+        "scripted": {
+          "exact": 2,
+          "primaryIntentErrors": 0,
+          "obligationCountMatches": 2,
+          "clarificationMatches": 2,
+          "languageMatches": 2,
+          "unsafeRoutes": 0
+        }
+      },
+      "es": {
+        "turns": 4,
+        "deterministic": {
+          "exact": 0,
+          "primaryIntentErrors": 4,
+          "obligationCountMatches": 4,
+          "clarificationMatches": 1,
+          "languageMatches": 4,
+          "unsafeRoutes": 0
+        },
+        "scripted": {
+          "exact": 4,
+          "primaryIntentErrors": 0,
+          "obligationCountMatches": 4,
+          "clarificationMatches": 4,
+          "languageMatches": 4,
+          "unsafeRoutes": 0
+        }
+      },
+      "fa": {
+        "turns": 3,
+        "deterministic": {
+          "exact": 0,
+          "primaryIntentErrors": 2,
+          "obligationCountMatches": 3,
+          "clarificationMatches": 1,
+          "languageMatches": 3,
+          "unsafeRoutes": 0
+        },
+        "scripted": {
+          "exact": 3,
+          "primaryIntentErrors": 0,
+          "obligationCountMatches": 3,
+          "clarificationMatches": 3,
+          "languageMatches": 3,
+          "unsafeRoutes": 0
+        }
+      },
+      "ar": {
+        "turns": 3,
+        "deterministic": {
+          "exact": 0,
+          "primaryIntentErrors": 3,
+          "obligationCountMatches": 2,
+          "clarificationMatches": 1,
+          "languageMatches": 3,
+          "unsafeRoutes": 0
+        },
+        "scripted": {
+          "exact": 3,
+          "primaryIntentErrors": 0,
+          "obligationCountMatches": 3,
+          "clarificationMatches": 3,
+          "languageMatches": 3,
+          "unsafeRoutes": 0
+        }
+      }
+    },
+    "rows": [
+      {
+        "language": "sv",
+        "turn": 1,
+        "text": "Måste jag komma en kvart i förväg om jag redan har fyllt i blanketten, och vad rekommenderar ni att jag tar med?",
+        "expected": [
+          {
+            "intent": "general_question",
+            "span": {
+              "start": 0,
+              "end": 69
+            },
+            "questionType": "requirement",
+            "conditions": [
+              {
+                "kind": "if",
+                "explicit": true,
+                "span": {
+                  "start": 34,
+                  "end": 69
+                }
+              }
+            ],
+            "entities": {}
+          },
+          {
+            "intent": "general_question",
+            "span": {
+              "start": 75,
+              "end": 111
+            },
+            "questionType": "recommendation",
+            "conditions": [],
+            "entities": {}
+          }
+        ],
+        "deterministicMisses": [
+          "intent abstention",
+          "missing decomposition",
+          "condition and modality omitted"
+        ],
+        "deterministic": {
+          "exact": false,
+          "primary": false,
+          "obligationCountMatches": false,
+          "languageMatches": true,
+          "clarificationExpected": false,
+          "clarificationProposed": true,
+          "unsafeRoute": false,
+          "guidance": [
+            {
+              "kind": "ASK",
+              "obligationId": "t1o1",
+              "field": "intent"
+            }
+          ],
+          "actual": [
+            {
+              "intent": "unknown",
+              "span": {
+                "start": 0,
+                "end": 112
+              },
+              "missing": "intent"
+            }
+          ]
+        },
+        "scripted": {
+          "exact": true,
+          "primary": true,
+          "obligationCountMatches": true,
+          "languageMatches": true,
+          "clarificationExpected": false,
+          "clarificationProposed": false,
+          "unsafeRoute": false,
+          "guidance": [
+            {
+              "kind": "CHECK_KNOWLEDGE",
+              "obligationId": "t1o1"
+            },
+            {
+              "kind": "CHECK_KNOWLEDGE",
+              "obligationId": "t1o2"
+            }
+          ],
+          "actual": [
+            {
+              "intent": "general_question",
+              "span": {
+                "start": 0,
+                "end": 69
+              },
+              "questionType": "requirement",
+              "conditions": [
+                {
+                  "kind": "if",
+                  "explicit": true,
+                  "span": {
+                    "start": 34,
+                    "end": 69
+                  }
+                }
+              ],
+              "entities": {}
+            },
+            {
+              "intent": "general_question",
+              "span": {
+                "start": 75,
+                "end": 111
+              },
+              "questionType": "recommendation",
+              "conditions": [],
+              "entities": {}
+            }
+          ]
+        }
+      },
+      {
+        "language": "sv",
+        "turn": 2,
+        "text": "Är det första fortfarande ett krav?",
+        "expected": [
+          {
+            "intent": "general_question",
+            "span": {
+              "start": 0,
+              "end": 34
+            },
+            "questionType": "requirement",
+            "conditions": [],
+            "reference": 0,
+            "entities": {}
+          }
+        ],
+        "deterministicMisses": [
+          "intent abstention",
+          "lost ordinal reference"
+        ],
+        "deterministic": {
+          "exact": false,
+          "primary": false,
+          "obligationCountMatches": true,
+          "languageMatches": true,
+          "clarificationExpected": false,
+          "clarificationProposed": true,
+          "unsafeRoute": false,
+          "guidance": [
+            {
+              "kind": "ASK",
+              "obligationId": "t2o1",
+              "field": "reference"
+            }
+          ],
+          "actual": [
+            {
+              "intent": "unknown",
+              "span": {
+                "start": 0,
+                "end": 35
+              },
+              "missing": "reference"
+            }
+          ]
+        },
+        "scripted": {
+          "exact": true,
+          "primary": true,
+          "obligationCountMatches": true,
+          "languageMatches": true,
+          "clarificationExpected": false,
+          "clarificationProposed": false,
+          "unsafeRoute": false,
+          "guidance": [
+            {
+              "kind": "CHECK_KNOWLEDGE",
+              "obligationId": "t2o1"
+            }
+          ],
+          "actual": [
+            {
+              "intent": "general_question",
+              "span": {
+                "start": 0,
+                "end": 34
+              },
+              "questionType": "requirement",
+              "conditions": [],
+              "reference": 0,
+              "entities": {}
+            }
+          ]
+        }
+      },
+      {
+        "language": "sv",
+        "turn": 3,
+        "text": "Tack, nu har jag fått den hjälp jag behövde.",
+        "expected": [
+          {
+            "intent": "close",
+            "span": {
+              "start": 0,
+              "end": 44
+            },
+            "conditions": [],
+            "entities": {}
+          }
+        ],
+        "deterministicMisses": [
+          "completion unsupported"
+        ],
+        "deterministic": {
+          "exact": false,
+          "primary": false,
+          "obligationCountMatches": true,
+          "languageMatches": true,
+          "clarificationExpected": false,
+          "clarificationProposed": true,
+          "unsafeRoute": false,
+          "guidance": [
+            {
+              "kind": "WAIT_FOR_CLARIFICATION",
+              "obligationId": "t3o1",
+              "field": "reference"
+            }
+          ],
+          "actual": [
+            {
+              "intent": "unknown",
+              "span": {
+                "start": 0,
+                "end": 44
+              },
+              "missing": "reference"
+            }
+          ]
+        },
+        "scripted": {
+          "exact": true,
+          "primary": true,
+          "obligationCountMatches": true,
+          "languageMatches": true,
+          "clarificationExpected": false,
+          "clarificationProposed": false,
+          "unsafeRoute": false,
+          "guidance": [
+            {
+              "kind": "CLOSE",
+              "obligationId": "t3o1"
+            }
+          ],
+          "actual": [
+            {
+              "intent": "close",
+              "span": {
+                "start": 0,
+                "end": 44
+              },
+              "conditions": [],
+              "entities": {}
+            }
+          ]
+        }
+      },
+      {
+        "language": "en",
+        "turn": 1,
+        "text": "Please book a haircut with Alex next Tuesday at 14:20.",
+        "expected": [
+          {
+            "intent": "new_booking",
+            "span": {
+              "start": 0,
+              "end": 53
+            },
+            "conditions": [],
+            "entities": {
+              "service": {
+                "start": 14,
+                "end": 21
+              },
+              "staff": {
+                "start": 27,
+                "end": 31
+              },
+              "date": {
+                "start": 32,
+                "end": 44
+              },
+              "time": {
+                "start": 48,
+                "end": 53
+              }
+            }
+          }
+        ],
+        "deterministicMisses": [],
+        "deterministic": {
+          "exact": true,
+          "primary": true,
+          "obligationCountMatches": true,
+          "languageMatches": true,
+          "clarificationExpected": false,
+          "clarificationProposed": false,
+          "unsafeRoute": false,
+          "guidance": [
+            {
+              "kind": "REFER_TO_BOOKING_AUTHORITY",
+              "obligationId": "t1o1",
+              "route": "new_booking"
+            }
+          ],
+          "actual": [
+            {
+              "intent": "new_booking",
+              "span": {
+                "start": 0,
+                "end": 54
+              },
+              "entities": {
+                "service": {
+                  "start": 14,
+                  "end": 21
+                },
+                "staff": {
+                  "start": 27,
+                  "end": 31
+                },
+                "date": {
+                  "start": 0,
+                  "end": 54
+                },
+                "time": {
+                  "start": 0,
+                  "end": 54
+                }
+              }
+            }
+          ]
+        },
+        "scripted": {
+          "exact": true,
+          "primary": true,
+          "obligationCountMatches": true,
+          "languageMatches": true,
+          "clarificationExpected": false,
+          "clarificationProposed": false,
+          "unsafeRoute": false,
+          "guidance": [
+            {
+              "kind": "REFER_TO_BOOKING_AUTHORITY",
+              "obligationId": "t1o1",
+              "route": "new_booking"
+            }
+          ],
+          "actual": [
+            {
+              "intent": "new_booking",
+              "span": {
+                "start": 0,
+                "end": 53
+              },
+              "conditions": [],
+              "entities": {
+                "service": {
+                  "start": 14,
+                  "end": 21
+                },
+                "staff": {
+                  "start": 27,
+                  "end": 31
+                },
+                "date": {
+                  "start": 32,
+                  "end": 44
+                },
+                "time": {
+                  "start": 48,
+                  "end": 53
+                }
+              }
+            }
+          ]
+        }
+      },
+      {
+        "language": "en",
+        "turn": 2,
+        "text": "Actually, make it Thursday.",
+        "expected": [
+          {
+            "intent": "correction",
+            "span": {
+              "start": 0,
+              "end": 26
+            },
+            "conditions": [],
+            "reference": 0,
+            "change": [
+              "date"
+            ],
+            "entities": {
+              "date": {
+                "start": 18,
+                "end": 26
+              }
+            }
+          }
+        ],
+        "deterministicMisses": [],
+        "deterministic": {
+          "exact": true,
+          "primary": true,
+          "obligationCountMatches": true,
+          "languageMatches": true,
+          "clarificationExpected": false,
+          "clarificationProposed": false,
+          "unsafeRoute": false,
+          "guidance": [
+            {
+              "kind": "CORRECTION",
+              "obligationId": "t2o1",
+              "goalId": "t1o1",
+              "updated": [
+                "date"
+              ]
+            }
+          ],
+          "actual": [
+            {
+              "intent": "correction",
+              "span": {
+                "start": 0,
+                "end": 27
+              },
+              "change": [
+                "date"
+              ],
+              "reference": 0,
+              "entities": {
+                "date": {
+                  "start": 18,
+                  "end": 26
+                }
+              }
+            }
+          ]
+        },
+        "scripted": {
+          "exact": true,
+          "primary": true,
+          "obligationCountMatches": true,
+          "languageMatches": true,
+          "clarificationExpected": false,
+          "clarificationProposed": false,
+          "unsafeRoute": false,
+          "guidance": [
+            {
+              "kind": "CORRECTION",
+              "obligationId": "t2o1",
+              "goalId": "t1o1",
+              "updated": [
+                "date"
+              ]
+            }
+          ],
+          "actual": [
+            {
+              "intent": "correction",
+              "span": {
+                "start": 0,
+                "end": 26
+              },
+              "conditions": [],
+              "reference": 0,
+              "change": [
+                "date"
+              ],
+              "entities": {
+                "date": {
+                  "start": 18,
+                  "end": 26
+                }
+              }
+            }
+          ]
+        }
+      },
+      {
+        "language": "en",
+        "turn": 3,
+        "text": "That takes care of everything. Thanks for your help!",
+        "expected": [
+          {
+            "intent": "close",
+            "span": {
+              "start": 0,
+              "end": 52
+            },
+            "conditions": [],
+            "entities": {}
+          }
+        ],
+        "deterministicMisses": [
+          "completion unsupported"
+        ],
+        "deterministic": {
+          "exact": false,
+          "primary": false,
+          "obligationCountMatches": true,
+          "languageMatches": true,
+          "clarificationExpected": false,
+          "clarificationProposed": true,
+          "unsafeRoute": false,
+          "guidance": [
+            {
+              "kind": "ASK",
+              "obligationId": "t3o1",
+              "field": "reference"
+            }
+          ],
+          "actual": [
+            {
+              "intent": "unknown",
+              "span": {
+                "start": 0,
+                "end": 52
+              },
+              "missing": "reference"
+            }
+          ]
+        },
+        "scripted": {
+          "exact": true,
+          "primary": true,
+          "obligationCountMatches": true,
+          "languageMatches": true,
+          "clarificationExpected": false,
+          "clarificationProposed": false,
+          "unsafeRoute": false,
+          "guidance": [
+            {
+              "kind": "CLOSE",
+              "obligationId": "t3o1"
+            }
+          ],
+          "actual": [
+            {
+              "intent": "close",
+              "span": {
+                "start": 0,
+                "end": 52
+              },
+              "conditions": [],
+              "entities": {}
+            }
+          ]
+        }
+      },
+      {
+        "language": "de",
+        "turn": 1,
+        "text": "Ich dachte, der Parkplatz ist nicht kostenlos. Stimmt das, und können Sie meinen Termin absagen?",
+        "expected": [
+          {
+            "intent": "general_question",
+            "span": {
+              "start": 0,
+              "end": 57
+            },
+            "questionType": "description",
+            "polarity": "negative",
+            "premise": {
+              "start": 12,
+              "end": 45
+            },
+            "conditions": [],
+            "entities": {}
+          },
+          {
+            "intent": "cancellation",
+            "span": {
+              "start": 63,
+              "end": 95
+            },
+            "conditions": [],
+            "entities": {}
+          }
+        ],
+        "deterministicMisses": [
+          "intent abstention",
+          "missing decomposition",
+          "negative premise omitted",
+          "cancellation intent missed"
+        ],
+        "deterministic": {
+          "exact": false,
+          "primary": false,
+          "obligationCountMatches": false,
+          "languageMatches": true,
+          "clarificationExpected": false,
+          "clarificationProposed": true,
+          "unsafeRoute": false,
+          "guidance": [
+            {
+              "kind": "ASK",
+              "obligationId": "t1o1",
+              "field": "reference"
+            }
+          ],
+          "actual": [
+            {
+              "intent": "unknown",
+              "span": {
+                "start": 0,
+                "end": 96
+              },
+              "missing": "reference"
+            }
+          ]
+        },
+        "scripted": {
+          "exact": true,
+          "primary": true,
+          "obligationCountMatches": true,
+          "languageMatches": true,
+          "clarificationExpected": false,
+          "clarificationProposed": false,
+          "unsafeRoute": false,
+          "guidance": [
+            {
+              "kind": "CHECK_KNOWLEDGE",
+              "obligationId": "t1o1"
+            },
+            {
+              "kind": "REFER_TO_BOOKING_AUTHORITY",
+              "obligationId": "t1o2",
+              "route": "cancellation"
+            }
+          ],
+          "actual": [
+            {
+              "intent": "general_question",
+              "span": {
+                "start": 0,
+                "end": 57
+              },
+              "questionType": "description",
+              "polarity": "negative",
+              "premise": {
+                "start": 12,
+                "end": 45
+              },
+              "conditions": [],
+              "entities": {}
+            },
+            {
+              "intent": "cancellation",
+              "span": {
+                "start": 63,
+                "end": 95
+              },
+              "conditions": [],
+              "entities": {}
+            }
+          ]
+        }
+      },
+      {
+        "language": "de",
+        "turn": 2,
+        "text": "Danke, damit sind alle meine Fragen geklärt.",
+        "expected": [
+          {
+            "intent": "close",
+            "span": {
+              "start": 0,
+              "end": 44
+            },
+            "conditions": [],
+            "entities": {}
+          }
+        ],
+        "deterministicMisses": [
+          "completion unsupported"
+        ],
+        "deterministic": {
+          "exact": false,
+          "primary": false,
+          "obligationCountMatches": true,
+          "languageMatches": true,
+          "clarificationExpected": false,
+          "clarificationProposed": true,
+          "unsafeRoute": false,
+          "guidance": [
+            {
+              "kind": "ASK",
+              "obligationId": "t2o1",
+              "field": "intent"
+            }
+          ],
+          "actual": [
+            {
+              "intent": "unknown",
+              "span": {
+                "start": 0,
+                "end": 44
+              },
+              "missing": "intent"
+            }
+          ]
+        },
+        "scripted": {
+          "exact": true,
+          "primary": true,
+          "obligationCountMatches": true,
+          "languageMatches": true,
+          "clarificationExpected": false,
+          "clarificationProposed": false,
+          "unsafeRoute": false,
+          "guidance": [
+            {
+              "kind": "CLOSE",
+              "obligationId": "t2o1"
+            }
+          ],
+          "actual": [
+            {
+              "intent": "close",
+              "span": {
+                "start": 0,
+                "end": 44
+              },
+              "conditions": [],
+              "entities": {}
+            }
+          ]
+        }
+      },
+      {
+        "language": "es",
+        "turn": 1,
+        "text": "¿Cuánto cuesta el corte de pelo?",
+        "expected": [
+          {
+            "intent": "general_question",
+            "span": {
+              "start": 1,
+              "end": 31
+            },
+            "questionType": "description",
+            "conditions": [],
+            "entities": {}
+          }
+        ],
+        "deterministicMisses": [
+          "intentionally unsupported business-information interpretation"
+        ],
+        "deterministic": {
+          "exact": false,
+          "primary": false,
+          "obligationCountMatches": true,
+          "languageMatches": true,
+          "clarificationExpected": false,
+          "clarificationProposed": true,
+          "unsafeRoute": false,
+          "guidance": [
+            {
+              "kind": "ASK",
+              "obligationId": "t1o1",
+              "field": "intent"
+            }
+          ],
+          "actual": [
+            {
+              "intent": "unknown",
+              "span": {
+                "start": 0,
+                "end": 32
+              },
+              "missing": "intent"
+            }
+          ]
+        },
+        "scripted": {
+          "exact": true,
+          "primary": true,
+          "obligationCountMatches": true,
+          "languageMatches": true,
+          "clarificationExpected": false,
+          "clarificationProposed": false,
+          "unsafeRoute": false,
+          "guidance": [
+            {
+              "kind": "CHECK_KNOWLEDGE",
+              "obligationId": "t1o1"
+            }
+          ],
+          "actual": [
+            {
+              "intent": "general_question",
+              "span": {
+                "start": 1,
+                "end": 31
+              },
+              "questionType": "description",
+              "conditions": [],
+              "entities": {}
+            }
+          ]
+        }
+      },
+      {
+        "language": "es",
+        "turn": 2,
+        "text": "Reserva un corte mañana a las tres, por favor.",
+        "expected": [
+          {
+            "intent": "new_booking",
+            "span": {
+              "start": 0,
+              "end": 45
+            },
+            "conditions": [],
+            "missing": "time",
+            "entities": {}
+          }
+        ],
+        "deterministicMisses": [
+          "booking intent missed",
+          "ambiguous clock not identified"
+        ],
+        "deterministic": {
+          "exact": false,
+          "primary": false,
+          "obligationCountMatches": true,
+          "languageMatches": true,
+          "clarificationExpected": true,
+          "clarificationProposed": true,
+          "unsafeRoute": false,
+          "guidance": [
+            {
+              "kind": "WAIT_FOR_CLARIFICATION",
+              "obligationId": "t2o1",
+              "field": "intent"
+            }
+          ],
+          "actual": [
+            {
+              "intent": "unknown",
+              "span": {
+                "start": 0,
+                "end": 46
+              },
+              "missing": "intent"
+            }
+          ]
+        },
+        "scripted": {
+          "exact": true,
+          "primary": true,
+          "obligationCountMatches": true,
+          "languageMatches": true,
+          "clarificationExpected": true,
+          "clarificationProposed": true,
+          "unsafeRoute": false,
+          "guidance": [
+            {
+              "kind": "ASK",
+              "obligationId": "t2o1",
+              "field": "time"
+            }
+          ],
+          "actual": [
+            {
+              "intent": "new_booking",
+              "span": {
+                "start": 0,
+                "end": 45
+              },
+              "conditions": [],
+              "missing": "time",
+              "entities": {}
+            }
+          ]
+        }
+      },
+      {
+        "language": "es",
+        "turn": 3,
+        "text": "Volviendo al precio, ¿incluye el lavado?",
+        "expected": [
+          {
+            "intent": "general_question",
+            "span": {
+              "start": 0,
+              "end": 39
+            },
+            "questionType": "description",
+            "conditions": [],
+            "reference": 0,
+            "entities": {}
+          }
+        ],
+        "deterministicMisses": [
+          "intent abstention",
+          "earlier goal reference lost"
+        ],
+        "deterministic": {
+          "exact": false,
+          "primary": false,
+          "obligationCountMatches": true,
+          "languageMatches": true,
+          "clarificationExpected": false,
+          "clarificationProposed": true,
+          "unsafeRoute": false,
+          "guidance": [
+            {
+              "kind": "WAIT_FOR_CLARIFICATION",
+              "obligationId": "t3o1",
+              "field": "intent"
+            }
+          ],
+          "actual": [
+            {
+              "intent": "unknown",
+              "span": {
+                "start": 0,
+                "end": 40
+              },
+              "missing": "intent"
+            }
+          ]
+        },
+        "scripted": {
+          "exact": true,
+          "primary": true,
+          "obligationCountMatches": true,
+          "languageMatches": true,
+          "clarificationExpected": false,
+          "clarificationProposed": false,
+          "unsafeRoute": false,
+          "guidance": [
+            {
+              "kind": "CHECK_KNOWLEDGE",
+              "obligationId": "t3o1"
+            }
+          ],
+          "actual": [
+            {
+              "intent": "general_question",
+              "span": {
+                "start": 0,
+                "end": 39
+              },
+              "questionType": "description",
+              "conditions": [],
+              "reference": 0,
+              "entities": {}
+            }
+          ]
+        }
+      },
+      {
+        "language": "es",
+        "turn": 4,
+        "text": "Gracias, con eso tengo todo lo que necesitaba.",
+        "expected": [
+          {
+            "intent": "close",
+            "span": {
+              "start": 0,
+              "end": 46
+            },
+            "conditions": [],
+            "entities": {}
+          }
+        ],
+        "deterministicMisses": [
+          "completion unsupported"
+        ],
+        "deterministic": {
+          "exact": false,
+          "primary": false,
+          "obligationCountMatches": true,
+          "languageMatches": true,
+          "clarificationExpected": false,
+          "clarificationProposed": true,
+          "unsafeRoute": false,
+          "guidance": [
+            {
+              "kind": "ASK",
+              "obligationId": "t4o1",
+              "field": "reference"
+            }
+          ],
+          "actual": [
+            {
+              "intent": "unknown",
+              "span": {
+                "start": 0,
+                "end": 46
+              },
+              "missing": "reference"
+            }
+          ]
+        },
+        "scripted": {
+          "exact": true,
+          "primary": true,
+          "obligationCountMatches": true,
+          "languageMatches": true,
+          "clarificationExpected": false,
+          "clarificationProposed": false,
+          "unsafeRoute": false,
+          "guidance": [
+            {
+              "kind": "CLOSE",
+              "obligationId": "t4o1"
+            }
+          ],
+          "actual": [
+            {
+              "intent": "close",
+              "span": {
+                "start": 0,
+                "end": 46
+              },
+              "conditions": [],
+              "entities": {}
+            }
+          ]
+        }
+      },
+      {
+        "language": "fa",
+        "turn": 1,
+        "text": "اگر شماره پیگیری را ندارم، آیا آوردن رسید لازم است؟",
+        "expected": [
+          {
+            "intent": "general_question",
+            "span": {
+              "start": 0,
+              "end": 50
+            },
+            "questionType": "requirement",
+            "conditions": [
+              {
+                "kind": "if",
+                "explicit": true,
+                "span": {
+                  "start": 0,
+                  "end": 25
+                }
+              }
+            ],
+            "entities": {}
+          }
+        ],
+        "deterministicMisses": [
+          "intent abstention",
+          "condition and requirement omitted"
+        ],
+        "deterministic": {
+          "exact": false,
+          "primary": false,
+          "obligationCountMatches": true,
+          "languageMatches": true,
+          "clarificationExpected": false,
+          "clarificationProposed": true,
+          "unsafeRoute": false,
+          "guidance": [
+            {
+              "kind": "ASK",
+              "obligationId": "t1o1",
+              "field": "intent"
+            }
+          ],
+          "actual": [
+            {
+              "intent": "unknown",
+              "span": {
+                "start": 0,
+                "end": 51
+              },
+              "missing": "intent"
+            }
+          ]
+        },
+        "scripted": {
+          "exact": true,
+          "primary": true,
+          "obligationCountMatches": true,
+          "languageMatches": true,
+          "clarificationExpected": false,
+          "clarificationProposed": false,
+          "unsafeRoute": false,
+          "guidance": [
+            {
+              "kind": "CHECK_KNOWLEDGE",
+              "obligationId": "t1o1"
+            }
+          ],
+          "actual": [
+            {
+              "intent": "general_question",
+              "span": {
+                "start": 0,
+                "end": 50
+              },
+              "questionType": "requirement",
+              "conditions": [
+                {
+                  "kind": "if",
+                  "explicit": true,
+                  "span": {
+                    "start": 0,
+                    "end": 25
+                  }
+                }
+              ],
+              "entities": {}
+            }
+          ]
+        }
+      },
+      {
+        "language": "fa",
+        "turn": 2,
+        "text": "Friday or Saturday, please answer in English.",
+        "expected": [
+          {
+            "intent": "unknown",
+            "span": {
+              "start": 0,
+              "end": 18
+            },
+            "conditions": [],
+            "missing": "conflict",
+            "entities": {}
+          }
+        ],
+        "deterministicMisses": [
+          "generic intent clarification instead of date-alternative conflict"
+        ],
+        "deterministic": {
+          "exact": false,
+          "primary": true,
+          "obligationCountMatches": true,
+          "languageMatches": true,
+          "clarificationExpected": true,
+          "clarificationProposed": true,
+          "unsafeRoute": false,
+          "guidance": [
+            {
+              "kind": "WAIT_FOR_CLARIFICATION",
+              "obligationId": "t2o1",
+              "field": "intent"
+            }
+          ],
+          "actual": [
+            {
+              "intent": "unknown",
+              "span": {
+                "start": 0,
+                "end": 45
+              },
+              "missing": "intent"
+            }
+          ]
+        },
+        "scripted": {
+          "exact": true,
+          "primary": true,
+          "obligationCountMatches": true,
+          "languageMatches": true,
+          "clarificationExpected": true,
+          "clarificationProposed": true,
+          "unsafeRoute": false,
+          "guidance": [
+            {
+              "kind": "ASK",
+              "obligationId": "t2o1",
+              "field": "conflict"
+            }
+          ],
+          "actual": [
+            {
+              "intent": "unknown",
+              "span": {
+                "start": 0,
+                "end": 18
+              },
+              "conditions": [],
+              "missing": "conflict",
+              "entities": {}
+            }
+          ]
+        }
+      },
+      {
+        "language": "fa",
+        "turn": 3,
+        "text": "ممنون، دیگر سؤالی ندارم و همین کافی است.",
+        "expected": [
+          {
+            "intent": "close",
+            "span": {
+              "start": 0,
+              "end": 40
+            },
+            "conditions": [],
+            "entities": {}
+          }
+        ],
+        "deterministicMisses": [
+          "completion unsupported"
+        ],
+        "deterministic": {
+          "exact": false,
+          "primary": false,
+          "obligationCountMatches": true,
+          "languageMatches": true,
+          "clarificationExpected": false,
+          "clarificationProposed": true,
+          "unsafeRoute": false,
+          "guidance": [
+            {
+              "kind": "WAIT_FOR_CLARIFICATION",
+              "obligationId": "t3o1",
+              "field": "intent"
+            }
+          ],
+          "actual": [
+            {
+              "intent": "unknown",
+              "span": {
+                "start": 0,
+                "end": 40
+              },
+              "missing": "intent"
+            }
+          ]
+        },
+        "scripted": {
+          "exact": true,
+          "primary": true,
+          "obligationCountMatches": true,
+          "languageMatches": true,
+          "clarificationExpected": false,
+          "clarificationProposed": false,
+          "unsafeRoute": false,
+          "guidance": [
+            {
+              "kind": "CLOSE",
+              "obligationId": "t3o1"
+            }
+          ],
+          "actual": [
+            {
+              "intent": "close",
+              "span": {
+                "start": 0,
+                "end": 40
+              },
+              "conditions": [],
+              "entities": {}
+            }
+          ]
+        }
+      },
+      {
+        "language": "ar",
+        "turn": 1,
+        "text": "لا تلغ موعدي. هل تنصحون بإحضار إيصال الدفع؟",
+        "expected": [
+          {
+            "intent": "cancellation",
+            "span": {
+              "start": 0,
+              "end": 12
+            },
+            "polarity": "negative",
+            "conditions": [],
+            "entities": {}
+          },
+          {
+            "intent": "general_question",
+            "span": {
+              "start": 14,
+              "end": 42
+            },
+            "questionType": "recommendation",
+            "conditions": [],
+            "entities": {}
+          }
+        ],
+        "deterministicMisses": [
+          "intent abstention",
+          "missing decomposition",
+          "negated action and recommendation omitted"
+        ],
+        "deterministic": {
+          "exact": false,
+          "primary": false,
+          "obligationCountMatches": false,
+          "languageMatches": true,
+          "clarificationExpected": true,
+          "clarificationProposed": true,
+          "unsafeRoute": false,
+          "guidance": [
+            {
+              "kind": "ASK",
+              "obligationId": "t1o1",
+              "field": "intent"
+            }
+          ],
+          "actual": [
+            {
+              "intent": "unknown",
+              "span": {
+                "start": 0,
+                "end": 43
+              },
+              "missing": "intent"
+            }
+          ]
+        },
+        "scripted": {
+          "exact": true,
+          "primary": true,
+          "obligationCountMatches": true,
+          "languageMatches": true,
+          "clarificationExpected": true,
+          "clarificationProposed": true,
+          "unsafeRoute": false,
+          "guidance": [
+            {
+              "kind": "ASK",
+              "obligationId": "t1o1",
+              "field": "intent"
+            },
+            {
+              "kind": "CHECK_KNOWLEDGE",
+              "obligationId": "t1o2"
+            }
+          ],
+          "actual": [
+            {
+              "intent": "cancellation",
+              "span": {
+                "start": 0,
+                "end": 12
+              },
+              "polarity": "negative",
+              "conditions": [],
+              "entities": {}
+            },
+            {
+              "intent": "general_question",
+              "span": {
+                "start": 14,
+                "end": 42
+              },
+              "questionType": "recommendation",
+              "conditions": [],
+              "entities": {}
+            }
+          ]
+        }
+      },
+      {
+        "language": "ar",
+        "turn": 2,
+        "text": "وهل يجب إحضاره إذا دفع شخص آخر؟",
+        "expected": [
+          {
+            "intent": "general_question",
+            "span": {
+              "start": 0,
+              "end": 30
+            },
+            "questionType": "requirement",
+            "conditions": [
+              {
+                "kind": "if",
+                "explicit": true,
+                "span": {
+                  "start": 15,
+                  "end": 30
+                }
+              }
+            ],
+            "reference": 1,
+            "entities": {}
+          }
+        ],
+        "deterministicMisses": [
+          "intent abstention",
+          "condition, requirement and reference omitted"
+        ],
+        "deterministic": {
+          "exact": false,
+          "primary": false,
+          "obligationCountMatches": true,
+          "languageMatches": true,
+          "clarificationExpected": false,
+          "clarificationProposed": true,
+          "unsafeRoute": false,
+          "guidance": [
+            {
+              "kind": "WAIT_FOR_CLARIFICATION",
+              "obligationId": "t2o1",
+              "field": "intent"
+            }
+          ],
+          "actual": [
+            {
+              "intent": "unknown",
+              "span": {
+                "start": 0,
+                "end": 31
+              },
+              "missing": "intent"
+            }
+          ]
+        },
+        "scripted": {
+          "exact": true,
+          "primary": true,
+          "obligationCountMatches": true,
+          "languageMatches": true,
+          "clarificationExpected": false,
+          "clarificationProposed": false,
+          "unsafeRoute": false,
+          "guidance": [
+            {
+              "kind": "CHECK_KNOWLEDGE",
+              "obligationId": "t2o1"
+            }
+          ],
+          "actual": [
+            {
+              "intent": "general_question",
+              "span": {
+                "start": 0,
+                "end": 30
+              },
+              "questionType": "requirement",
+              "conditions": [
+                {
+                  "kind": "if",
+                  "explicit": true,
+                  "span": {
+                    "start": 15,
+                    "end": 30
+                  }
+                }
+              ],
+              "reference": 1,
+              "entities": {}
+            }
+          ]
+        }
+      },
+      {
+        "language": "ar",
+        "turn": 3,
+        "text": "شكرًا، حصلت على كل ما أحتاج إليه.",
+        "expected": [
+          {
+            "intent": "close",
+            "span": {
+              "start": 0,
+              "end": 33
+            },
+            "conditions": [],
+            "entities": {}
+          }
+        ],
+        "deterministicMisses": [
+          "completion unsupported"
+        ],
+        "deterministic": {
+          "exact": false,
+          "primary": false,
+          "obligationCountMatches": true,
+          "languageMatches": true,
+          "clarificationExpected": false,
+          "clarificationProposed": true,
+          "unsafeRoute": false,
+          "guidance": [
+            {
+              "kind": "WAIT_FOR_CLARIFICATION",
+              "obligationId": "t3o1",
+              "field": "intent"
+            }
+          ],
+          "actual": [
+            {
+              "intent": "unknown",
+              "span": {
+                "start": 0,
+                "end": 33
+              },
+              "missing": "intent"
+            }
+          ]
+        },
+        "scripted": {
+          "exact": true,
+          "primary": true,
+          "obligationCountMatches": true,
+          "languageMatches": true,
+          "clarificationExpected": false,
+          "clarificationProposed": false,
+          "unsafeRoute": false,
+          "guidance": [
+            {
+              "kind": "CLOSE",
+              "obligationId": "t3o1"
+            }
+          ],
+          "actual": [
+            {
+              "intent": "close",
+              "span": {
+                "start": 0,
+                "end": 33
+              },
+              "conditions": [],
+              "entities": {}
+            }
+          ]
+        }
+      }
+    ],
+    "genuineModelAccuracy": "UNMEASURED"
+  },
+  "responses": {
+    "partial": {
+      "publication": "OFFLINE_ONLY",
+      "language": "de",
+      "text": "Bei einem ersten Besuch bei AdMotion Studio sollten Sie etwa 10 Minuten vor Ihrer gebuchten Zeit eintreffen, damit Sie sich in Ruhe vorbereiten können. Zu Ihrer anderen Frage: Ob das erforderlich ist, konnte ich nicht bestätigen.",
+      "blocks": [
+        {
+          "kind": "fact",
+          "obligationIds": [
+            "t1o1"
+          ],
+          "factIds": [
+            "t1o1:0:0"
+          ],
+          "text": "Bei einem ersten Besuch bei AdMotion Studio sollten Sie etwa 10 Minuten vor Ihrer gebuchten Zeit eintreffen, damit Sie sich in Ruhe vorbereiten können."
+        },
+        {
+          "kind": "uncertainty",
+          "obligationIds": [
+            "t1o2"
+          ],
+          "factIds": [],
+          "text": "Zu Ihrer anderen Frage: Ob das erforderlich ist, konnte ich nicht bestätigen."
+        }
+      ],
+      "withheld": []
+    },
+    "booking": [
+      {
+        "response": {
+          "publication": "OFFLINE_ONLY",
+          "language": "en",
+          "text": "What time did you have in mind?",
+          "blocks": [
+            {
+              "kind": "clarification",
+              "obligationIds": [
+                "t1o1"
+              ],
+              "factIds": [],
+              "text": "What time did you have in mind?"
+            }
+          ],
+          "withheld": []
+        },
+        "parameters": {
+          "service": {
+            "value": "cut",
+            "turn": 1,
+            "atMs": 1794816000000,
+            "provenance": "USER_SPAN_INTERPRETED"
+          },
+          "date": {
+            "value": {
+              "kind": "relative_date",
+              "value": "2026-11-17"
+            },
+            "turn": 1,
+            "atMs": 1794816000000,
+            "provenance": "USER_SPAN_INTERPRETED"
+          }
+        }
+      },
+      {
+        "response": {
+          "publication": "OFFLINE_ONLY",
+          "language": "en",
+          "text": "Got it, I’ll use that preference.",
+          "blocks": [
+            {
+              "kind": "correction",
+              "obligationIds": [
+                "t2o1"
+              ],
+              "factIds": [],
+              "text": "Got it, I’ll use that preference."
+            }
+          ],
+          "withheld": []
+        },
+        "parameters": {
+          "service": {
+            "value": "cut",
+            "turn": 1,
+            "atMs": 1794816000000,
+            "provenance": "USER_SPAN_INTERPRETED"
+          },
+          "date": {
+            "value": {
+              "kind": "weekday",
+              "value": "2026-11-20"
+            },
+            "turn": 2,
+            "atMs": 1794816000000,
+            "provenance": "USER_SPAN_INTERPRETED"
+          }
+        }
+      },
+      {
+        "response": {
+          "publication": "OFFLINE_ONLY",
+          "language": "en",
+          "text": "The booking system can check that request.",
+          "blocks": [
+            {
+              "kind": "handoff",
+              "obligationIds": [
+                "t3o1"
+              ],
+              "factIds": [],
+              "text": "The booking system can check that request."
+            }
+          ],
+          "withheld": []
+        },
+        "parameters": {
+          "service": {
+            "value": "cut",
+            "turn": 1,
+            "atMs": 1794816000000,
+            "provenance": "USER_SPAN_INTERPRETED"
+          },
+          "date": {
+            "value": {
+              "kind": "weekday",
+              "value": "2026-11-20"
+            },
+            "turn": 2,
+            "atMs": 1794816000000,
+            "provenance": "USER_SPAN_INTERPRETED"
+          },
+          "time": {
+            "value": {
+              "kind": "exact",
+              "startMinutes": 900,
+              "startInclusive": true,
+              "endInclusive": true
+            },
+            "turn": 3,
+            "atMs": 1794816000000,
+            "provenance": "USER_STATED"
+          }
+        }
+      }
+    ],
+    "repeatedClarification": {
+      "publication": "OFFLINE_ONLY",
+      "language": "en",
+      "text": "",
+      "blocks": [],
+      "withheld": []
+    },
+    "closure": {
+      "publication": "OFFLINE_ONLY",
+      "language": "en",
+      "text": "You’re welcome. Take care!",
+      "blocks": [
+        {
+          "kind": "close",
+          "obligationIds": [
+            "t1o1"
+          ],
+          "factIds": [],
+          "text": "You’re welcome. Take care!"
+        }
+      ],
+      "withheld": []
+    },
+    "premiseCorrection": {
+      "publication": "OFFLINE_ONLY",
+      "language": "en",
+      "text": "The studio entrance is in the courtyard, away from the main street entrance.",
+      "blocks": [
+        {
+          "kind": "fact",
+          "obligationIds": [
+            "t1o1"
+          ],
+          "factIds": [
+            "t1o1:0:0"
+          ],
+          "text": "The studio entrance is in the courtyard, away from the main street entrance."
+        }
+      ],
+      "withheld": []
+    },
+    "comparison": {
+      "v1GermanReplay": {
+        "id": "rec-shared-core-de-20261022",
+        "drift": [],
+        "publishedUnits": 0
+      },
+      "v2VerifiedFactsExpressed": 1,
+      "v2UnresolvedObligationsDisclosed": 1
+    }
+  },
+  "independentNativeNaturalnessRating": "NOT_RUN",
+  "liveValidationProposal": {
+    "model": "gpt-6.1-sol",
+    "rateSnapshot": "openai-sol-standard-30m-2026-10-28",
+    "attempts": 18,
+    "inputTokenReserve": 16000,
+    "outputTokenLimit": 1600,
+    "inputRate": 2.5,
+    "outputRate": 10,
+    "projectedMaximumUsd": 1.008,
+    "proposedCeilingUsd": 1.01,
+    "authorization": "OWNER_APPROVAL_REQUIRED",
+    "dispatch": "DISABLED"
+  },
+  "providerCalls": 0,
+  "spendUsd": 0
+}

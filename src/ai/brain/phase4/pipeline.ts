@@ -1,6 +1,9 @@
 import { decideTurn } from '../decide-turn';
 import { bindEvidence, hashRecord, type BindingResult, type Candidate, type Inventory, type Receipt, type Scope } from '../evidence/bind';
 import { finishTurn, policyReferences, prepareTurn, type TurnContext } from '../memory/conversation-memory';
+import type { Binding } from '../semantic/contracts';
+import type { TurnResult } from '../memory/conversation-memory';
+import type { TurnDecision } from '../decide-turn';
 import type { TurnFrame } from '../memory/turn-frame';
 
 type EvidenceBatch = Readonly<{ candidates: readonly Candidate[]; receipts: readonly Receipt[] }>;
@@ -23,6 +26,21 @@ export type EvidencePort = Readonly<{
   initial: (scopes: readonly Scope[]) => EvidenceBatch;
   recovery?: Recovery;
 }>;
+
+// Private process-local association prevents a structural lookalike or a
+// decision from another turn from being used as composition input.
+const origins = new WeakMap<TurnDecision, { semantic: TurnResult; scopes: readonly Scope[]; batches: ReadonlyMap<string, EvidenceBatch>; checkedAt: number; digest: string }>();
+
+export function recheckShadowComposition(semantic: TurnResult, decision: TurnDecision, binding: Binding, turn: number, now: number, inventory?: Inventory) {
+  const origin = origins.get(decision);
+  if (origin?.semantic !== semantic || origin.digest !== hashRecord(decision) ||
+      semantic.frame.binding.tenantId !== binding.tenantId || semantic.frame.binding.conversationId !== binding.conversationId ||
+      semantic.frame.turn !== turn || !Number.isSafeInteger(now) || now < origin.checkedAt) return undefined;
+  return origin.scopes.map(scope => {
+    const batch = origin.batches.get(scope.obligationId);
+    return bindEvidence(scope, now, inventory, batch?.candidates ?? [], batch?.receipts ?? []);
+  });
+}
 
 function valid(n: number) { return Number.isSafeInteger(n) && n >= 0; }
 
@@ -140,5 +158,6 @@ export async function shadowTurn(input: Readonly<{
     currentRevisions: (inventory?.revisions ?? []).map(r => ({ ...r, tenantId: inventory!.tenantId })),
     proposals: bound.flatMap(b => b.proposals), reviews: bound.flatMap(b => b.reviews),
   });
+  origins.set(decision, { semantic, scopes: Object.freeze(scopes), batches: accepted, checkedAt: now + elapsed, digest: hashRecord(decision) });
   return { semantic, decision, bindings: bound, recoveries, attempts, reservedMs, reservedCostUnits };
 }

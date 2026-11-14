@@ -7,7 +7,7 @@ import { selectCanonicalConfigurationProducer, captureCanonicalConfigurationProd
 import { isSourceExhaustiveProtocol, sourceExhaustiveInstruction, assessSourceCoverage, SOURCE_EXHAUSTIVE_V2_EVIDENCE_REVIEW } from './source-exhaustive-coverage';
 import { createHash } from 'node:crypto';
 import { packDocumentEvidence } from '../knowledge/document-evidence-packing';
-import { numericalConstraintSafe, assessNumericalConstraint, hasMatchingExactnessRecoveryAnchor, numericalAmbiguityReasons, numericalComparisonShapes, citedQuantitiesSupported, NUMERICAL_DIRECTION_GUIDANCE } from './numerical-constraints';
+import { numericalConstraintSafe, assessNumericalConstraint, hasMatchingExactnessRecoveryAnchor, numericalAmbiguityReasons, numericalComparisonShapes, numericalRejectionShape, citedQuantitiesSupported, NUMERICAL_DIRECTION_GUIDANCE } from './numerical-constraints';
 import { recordPrivateNumericalCandidate } from './late-arrival-numerical-diagnostics';
 import { containsUnverifiedBookingSuccessClaim } from './reliability';
 import { containsWebOperationSuccess } from './web-response-integrity';
@@ -340,6 +340,7 @@ export function parseAnswerUnits(raw: unknown, facets: readonly Facet[], evidenc
         // Emit comparison shapes only when every cited item has eligible,
         // same-tenant metadata; sourceIndex then binds to this ordered array.
         ...(evidenceBindings.length===refs.length ? {numericalComparisons:numericalComparisonShapes(numerical)} : {}),
+        numericalShape:numericalRejectionShape(numerical,evidenceBindings.length===refs.length),
         evidenceBindings});
       continue;
     }
@@ -348,8 +349,9 @@ export function parseAnswerUnits(raw: unknown, facets: readonly Facet[], evidenc
     // catalog/cancellation authorities are structured and judged elsewhere.
     if (numerical.reason === 'NO_RELEVANT_CONSTRAINT' && !citedQuantitiesSupported(numerical, refs.map(r => r.exactQuote)) &&
         refs.every(r => !r.evidenceId.startsWith('configured-') && !r.sourceId.startsWith('configured-'))) {
+      const evidenceBindings=diagnosticBindings(refs);
       diagnostic({stage:'extraction',unitId:`u${index+1}`,reason:'NUMERICAL_CONSTRAINT',numericalMismatchReason:'QUANTITY_NOT_IN_CITATION',
-        evidenceBindings:diagnosticBindings(refs)});
+        numericalShape:numericalRejectionShape(numerical,evidenceBindings.length===refs.length),evidenceBindings});
       if (reExtractionTally && index !== ownerProposalIndex && quantitySupportedByAdmittedEvidence(u.text, evidence, conditionalCitationScope?.businessId))
         reExtractionTally.citationOmitsQuantity++;
       continue;

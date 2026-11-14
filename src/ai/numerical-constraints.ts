@@ -22,6 +22,11 @@ export type NumericalAmbiguityReason = 'oversized_clause' | 'opposed_anchors' | 
 const appointmentAnchored = new WeakSet<Constraint>();
 const candidateAmbiguityReasons = new WeakMap<Constraint, readonly NumericalAmbiguityReason[]>();
 const boundMarkers = new WeakMap<Constraint, BoundMarkerDiagnostic>();
+/** What the parser's own grammar found in an input, for rejection diagnostics.
+ * It never reads number words: "no digits" is all it can say about them. */
+export type ClaimNumericForm = 'parsed' | 'digits_unit_unpaired' | 'digits_no_unit' | 'unit_no_digits' | 'neither' | 'oversized';
+const numericForms = new WeakMap<object, ClaimNumericForm>();
+const independentlySupported = new WeakMap<object, number>();
 
 const cancellationClaim = /cancel|avbok|absag|stornier|لغو|إلغاء|الغاء/iu;
 const freeClaim = /\b(?:free|gratis|avgiftsfri\w*|kostenlos\w*|gratuit\w*)\b|رایگان|مجاني|المجاني/iu;
@@ -115,7 +120,11 @@ function indicativeActionNegation(text:string,context:string):string {
 }
 
 function parse(input: string, diagnoseBound = false): { constraints: Constraint[]; unsupported: boolean } {
-  if (input.length > 20_000) return { constraints: [], unsupported: true };
+  if (input.length > 20_000) {
+    const oversized = { constraints: [], unsupported: true };
+    numericForms.set(oversized, 'oversized');
+    return oversized;
+  }
   // German source attribution ("according to the test terms") is not an
   // after-event anchor. Quantified temporal uses of nach remain untouched.
   const text = spatialConnectives(quotedTemporalNumbers(canonical(input))).replace(/\bnach\s+(?:(?:den|dem|diesen|unseren|fiktiven|vorliegenden|genannten)\s+){0,3}(?:testbedingungen|angaben|informationen|dokumenten|dokument)\b/gu, 'laut Quelle');
@@ -233,7 +242,12 @@ function parse(input: string, diagnoseBound = false): { constraints: Constraint[
     (hasPhrase(text, before) || hasPhrase(text, after)) &&
     (/(?<![\p{L}\p{N}-])[0-9]+(?![\p{L}\p{N}-])/u.test(text) || hasPhrase(text, Object.keys(units)));
   const marked = rules.some(([, phrases]) => phrases.some(phrase => rulePattern(phrase).test(text))) || /[<>≤≥]/u.test(text) || incompleteDeadline;
-  return { constraints, unsupported: marked && !quantities.length };
+  const parsed = { constraints, unsupported: marked && !quantities.length };
+  // Diagnostic side table only; the parse result above is returned unchanged.
+  const digits = !quantities.length && /[0-9]/u.test(text), knownUnit = !quantities.length && hasPhrase(text, Object.keys(units));
+  numericForms.set(parsed, quantities.length ? 'parsed' : digits && knownUnit ? 'digits_unit_unpaired' :
+    digits ? 'digits_no_unit' : knownUnit ? 'unit_no_digits' : 'neither');
+  return parsed;
 }
 
 /** Literal identity for completeness checks, never authority to publish a fact. */
@@ -328,25 +342,35 @@ export function assessNumericalConstraint(candidateQuote: string, atomicClaim: s
   }
   let mismatchReason = 'CLAIM_QUANTITY_COUNT';
   const mismatch = (reason:string) => { mismatchReason=reason;return false; };
-  const safe = checks.every(check => check.constraints.length === 1 && check.constraints.every(c => {
-    if (c.ambiguous) return mismatch('CLAIM_AMBIGUOUS');
-    if (!Number.isFinite(c.seconds) || c.seconds <= 0) return mismatch('CLAIM_VALUE_INVALID');
+  // Pure per-quantity judgement (null = supported). The decision below applies
+  // it exactly as before; the diagnostic count reuses it without side effects.
+  const quantityMismatch = (c: Constraint): string | null => {
+    if (c.ambiguous) return 'CLAIM_AMBIGUOUS';
+    if (!Number.isFinite(c.seconds) || c.seconds <= 0) return 'CLAIM_VALUE_INVALID';
     // An ordinary relative time is not an inequality. Match its exact value
     // and temporal anchor against equally unbounded explicit source wording.
     if (!c.bound) return (!policyClaim && configuredDeadline === null &&
       authoritative.some(a => !a.ambiguous && a.bound === null && a.seconds === c.seconds && a.side === c.side) &&
-      authoritative.filter(a => a.seconds === c.seconds).every(a => !a.ambiguous && a.bound === null && a.side === c.side)) || mismatch('UNBOUNDED_CLAIM_NOT_SUPPORTED');
-    if (configuredDeadline !== null && (c.seconds !== configuredDeadline || c.bound !== 'minimum' || c.side !== 'before')) return mismatch('CONFIGURED_DEADLINE_MISMATCH');
+      authoritative.filter(a => a.seconds === c.seconds).every(a => !a.ambiguous && a.bound === null && a.side === c.side)) ? null : 'UNBOUNDED_CLAIM_NOT_SUPPORTED';
+    if (configuredDeadline !== null && (c.seconds !== configuredDeadline || c.bound !== 'minimum' || c.side !== 'before')) return 'CONFIGURED_DEADLINE_MISMATCH';
     const sameValue = authoritative.filter(a => a.seconds === c.seconds);
     // Equal intervals cannot turn an optional free-fee window into mandatory
     // notice (or vice versa), even when the citation is documentary prose.
     // Keep the attribute clause-local so unrelated policy sentences do not
     // donate or erase the free qualifier.
-    if (!sameValue.length) return mismatch('SOURCE_VALUE_MISSING');
+    if (!sameValue.length) return 'SOURCE_VALUE_MISSING';
     return sameValue.every(a => !a.ambiguous && a.bound === c.bound && a.side === c.side &&
-      (!a.cancellationKind || a.cancellationKind === c.cancellationKind)) || mismatch('SOURCE_BOUND_ANCHOR_OR_SCOPE_MISMATCH');
+      (!a.cancellationKind || a.cancellationKind === c.cancellationKind)) ? null : 'SOURCE_BOUND_ANCHOR_OR_SCOPE_MISMATCH';
+  };
+  const safe = checks.every(check => check.constraints.length === 1 && check.constraints.every(c => {
+    const reason = quantityMismatch(c);
+    return reason === null || mismatch(reason);
   }));
-  return result(safe,safe?'CONSTRAINT_MATCH':mismatchReason);
+  const assessment = result(safe,safe?'CONSTRAINT_MATCH':mismatchReason);
+  // Diagnostic only, computed after the decision: claim quantities that would
+  // each pass the single-quantity rule on their own. Grants no authority.
+  independentlySupported.set(assessment, checks[1].constraints.filter(c => quantityMismatch(c) === null).length);
+  return assessment;
 }
 
 export function numericalConstraintSafe(candidateQuote:string,atomicClaim:string,evidence:Array<string|{quote:string;source:string}>,structuredBusinessConfig?:string,
@@ -417,6 +441,35 @@ export function numericalComparisonShapes(assessment: NumericalConstraintAssessm
     }
   }
   return shapes;
+}
+
+const capCount = (n: number) => Math.min(n, 4);
+/** Bounded rejection diagnostic. Counts are capped at 4 (meaning "4 or more").
+ * claim* fields describe the atomic-claim input; in Extraction both assessor
+ * inputs are the same unit text. supportedAlone counts claim quantities that
+ * each pass the single-quantity rule (null: rejected before that stage).
+ * source* counts are null unless the caller verified same-tenant metadata for
+ * every cited item. No values, text, quotes, tokens or parser structures leave
+ * this projection, and it never decides anything. */
+export type NumericalRejectionShape = Readonly<{
+  claimCount: number; claimAmbiguous: number; claimDistinct: number; repeated: boolean; claimForm: ClaimNumericForm;
+  supportedAlone: number | null; sourceCount: number | null; sourceAuthoritative: number | null;
+}>;
+export function numericalRejectionShape(assessment: NumericalConstraintAssessment, sourceMetadataTrusted: boolean): NumericalRejectionShape {
+  const claim = assessment.checks[1] ?? { constraints: [], unsupported: false };
+  const shapes = new Set(claim.constraints.map(c => JSON.stringify([c.seconds, c.bound, c.side, c.cancellationKind ?? null])));
+  const supported = independentlySupported.get(assessment);
+  const sourceConstraints = assessment.sources.flatMap(s => s.constraints);
+  return Object.freeze({
+    claimCount: capCount(claim.constraints.length),
+    claimAmbiguous: capCount(claim.constraints.filter(c => c.ambiguous).length),
+    claimDistinct: capCount(shapes.size),
+    repeated: claim.constraints.length >= 2 && shapes.size < claim.constraints.length,
+    claimForm: numericForms.get(claim) ?? 'neither',
+    supportedAlone: supported === undefined ? null : capCount(supported),
+    sourceCount: sourceMetadataTrusted ? capCount(sourceConstraints.length) : null,
+    sourceAuthoritative: sourceMetadataTrusted ? capCount(sourceConstraints.filter(c => c.bound !== null || c.side !== 'none').length) : null,
+  });
 }
 
 export const NUMERICAL_DIRECTION_GUIDANCE = `Preserve numerical constraint direction, not just values: minimum/at least is not maximum/at most; before is not after. A cancellation deadline no later than N hours before a visit means at least N hours of advance notice, not at most N. Preserve no earlier/no later distinctions relative to the event. In Persian use حداقل for minimum notice and حداکثر for maximum; Arabic على الأقل/على الأكثر, Swedish minst/högst, German mindestens/höchstens, Spanish al menos/como máximo, English at least/at most. Ambiguous or reversed inequality, temporal anchor or unit cannot be stated as a verified policy. Exact matching numbers are never sufficient support.`;

@@ -76,6 +76,8 @@ export type KnowledgeDecision = {
   numericalMismatchReason?: string;
   ambiguityReasons?: readonly import('./numerical-constraints').NumericalAmbiguityReason[];
   numericalComparisons?: ReturnType<typeof import('./numerical-constraints').numericalComparisonShapes>;
+  /** Bounded counts/enums only (see numericalRejectionShape); never values or text. */
+  numericalShape?: import('./numerical-constraints').NumericalRejectionShape;
   evidenceBindings?: readonly { evidenceId: string; sourceId?: string; sourceRevision?: string }[];
   localLanguage?: {
     targetLanguage: 'fa' | 'ar' | 'en' | 'sv' | 'de' | 'es' | 'other';

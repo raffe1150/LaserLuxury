@@ -73,7 +73,7 @@ test('four-reference payload remains bounded without quotes or proposed fields',
   const raw=proposal(text('۲۰'));raw.units[0].evidenceRefs=items.map(e=>({evidenceId:e.id,exactQuote:quote}));
   const {events}=parse(raw,items);const event=events.find(e=>e.reason==='NUMERICAL_CONSTRAINT')!;
   assert.equal(event.evidenceBindings!.length,4);assert.ok(Buffer.byteLength(JSON.stringify(event))<1000);
-  assert.deepEqual(Object.keys(event).sort(),['stage','unitId','reason','numericalMismatchReason','numericalComparisons','evidenceBindings'].sort());
+  assert.deepEqual(Object.keys(event).sort(),['stage','unitId','reason','numericalMismatchReason','numericalComparisons','numericalShape','evidenceBindings'].sort());
 });
 test('constituent-range rejection retains fail-closed category and metadata',()=> {
   const {result,events}=parse(proposal(),[{...evidence[0],citationRanges:[{start:0,end:5}]}]);

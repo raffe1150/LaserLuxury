@@ -1,0 +1,452 @@
+{
+  "version": 1,
+  "model": "gpt-6.1-sol",
+  "inputLimit": 16000,
+  "outputLimit": 1600,
+  "requestCount": 18,
+  "instructionSha256": "8b02a6b157d9b6aafa3e0406545d3acf9d32f48e355e2dc6408df9fac282162a",
+  "turns": [
+    {
+      "id": "sv:1",
+      "language": "sv",
+      "turn": 1,
+      "text": "Måste jag komma en kvart i förväg om jag redan har fyllt i blanketten, och vad rekommenderar ni att jag tar med?",
+      "switchTo": null,
+      "expected": [
+        {
+          "intent": "general_question",
+          "span": {
+            "start": 0,
+            "end": 69
+          },
+          "questionType": "requirement",
+          "conditions": [
+            {
+              "kind": "if",
+              "explicit": true,
+              "span": {
+                "start": 34,
+                "end": 69
+              }
+            }
+          ],
+          "entities": {}
+        },
+        {
+          "intent": "general_question",
+          "span": {
+            "start": 75,
+            "end": 111
+          },
+          "questionType": "recommendation",
+          "conditions": [],
+          "entities": {}
+        }
+      ],
+      "sha256": "e4ae851045b72d8d2c4ca259ea514256f62f736233967877d25da8676c5fea48"
+    },
+    {
+      "id": "sv:2",
+      "language": "sv",
+      "turn": 2,
+      "text": "Är det första fortfarande ett krav?",
+      "switchTo": null,
+      "expected": [
+        {
+          "intent": "general_question",
+          "span": {
+            "start": 0,
+            "end": 34
+          },
+          "questionType": "requirement",
+          "conditions": [],
+          "reference": 0,
+          "entities": {}
+        }
+      ],
+      "sha256": "ca8cfb58388163ce83bf61fb7402ba2cdb8c38b052974173384f4b4d48efc235"
+    },
+    {
+      "id": "sv:3",
+      "language": "sv",
+      "turn": 3,
+      "text": "Tack, nu har jag fått den hjälp jag behövde.",
+      "switchTo": null,
+      "expected": [
+        {
+          "intent": "close",
+          "span": {
+            "start": 0,
+            "end": 44
+          },
+          "conditions": [],
+          "entities": {}
+        }
+      ],
+      "sha256": "654cfb006003cac0ece2d23b5ad18e51fdb7e2bed364df35153365d12f34fb97"
+    },
+    {
+      "id": "en:1",
+      "language": "en",
+      "turn": 1,
+      "text": "Please book a haircut with Alex next Tuesday at 14:20.",
+      "switchTo": null,
+      "expected": [
+        {
+          "intent": "new_booking",
+          "span": {
+            "start": 0,
+            "end": 53
+          },
+          "conditions": [],
+          "entities": {
+            "service": {
+              "start": 14,
+              "end": 21
+            },
+            "staff": {
+              "start": 27,
+              "end": 31
+            },
+            "date": {
+              "start": 32,
+              "end": 44
+            },
+            "time": {
+              "start": 48,
+              "end": 53
+            }
+          }
+        }
+      ],
+      "sha256": "4c5a758cdf13dbf2389d9eb40d10b468f8a0a839a2f3c448dabb2d4b7bb1069e"
+    },
+    {
+      "id": "en:2",
+      "language": "en",
+      "turn": 2,
+      "text": "Actually, make it Thursday.",
+      "switchTo": null,
+      "expected": [
+        {
+          "intent": "correction",
+          "span": {
+            "start": 0,
+            "end": 26
+          },
+          "conditions": [],
+          "reference": 0,
+          "change": [
+            "date"
+          ],
+          "entities": {
+            "date": {
+              "start": 18,
+              "end": 26
+            }
+          }
+        }
+      ],
+      "sha256": "c1f4f7d72d1ffd80dd3e843a1c6cade660da28e13a2d300e970147cef06d4cdd"
+    },
+    {
+      "id": "en:3",
+      "language": "en",
+      "turn": 3,
+      "text": "That takes care of everything. Thanks for your help!",
+      "switchTo": null,
+      "expected": [
+        {
+          "intent": "close",
+          "span": {
+            "start": 0,
+            "end": 52
+          },
+          "conditions": [],
+          "entities": {}
+        }
+      ],
+      "sha256": "ada59ddad9ffa418fbb2ae19d08f1800334dd0109c03e86c5d4dea123eeaeb99"
+    },
+    {
+      "id": "de:1",
+      "language": "de",
+      "turn": 1,
+      "text": "Ich dachte, der Parkplatz ist nicht kostenlos. Stimmt das, und können Sie meinen Termin absagen?",
+      "switchTo": null,
+      "expected": [
+        {
+          "intent": "general_question",
+          "span": {
+            "start": 0,
+            "end": 57
+          },
+          "questionType": "description",
+          "polarity": "negative",
+          "premise": {
+            "start": 12,
+            "end": 45
+          },
+          "conditions": [],
+          "entities": {}
+        },
+        {
+          "intent": "cancellation",
+          "span": {
+            "start": 63,
+            "end": 95
+          },
+          "conditions": [],
+          "entities": {}
+        }
+      ],
+      "sha256": "0e0d5dd85b2df0652f6c67c534bde79e19d120d865859d3486a69e48ea02bff3"
+    },
+    {
+      "id": "de:2",
+      "language": "de",
+      "turn": 2,
+      "text": "Danke, damit sind alle meine Fragen geklärt.",
+      "switchTo": null,
+      "expected": [
+        {
+          "intent": "close",
+          "span": {
+            "start": 0,
+            "end": 44
+          },
+          "conditions": [],
+          "entities": {}
+        }
+      ],
+      "sha256": "3ca87dfbe9eee8879261f626cb079778ef55f3198f124e2b6c0bfe2c06c2fc9e"
+    },
+    {
+      "id": "es:1",
+      "language": "es",
+      "turn": 1,
+      "text": "¿Cuánto cuesta el corte de pelo?",
+      "switchTo": null,
+      "expected": [
+        {
+          "intent": "general_question",
+          "span": {
+            "start": 1,
+            "end": 31
+          },
+          "questionType": "description",
+          "conditions": [],
+          "entities": {}
+        }
+      ],
+      "sha256": "9e20f08d1ae8ef11569bcf445b756311f5ae9bbbe83c4722799652a986f03206"
+    },
+    {
+      "id": "es:2",
+      "language": "es",
+      "turn": 2,
+      "text": "Reserva un corte mañana a las tres, por favor.",
+      "switchTo": null,
+      "expected": [
+        {
+          "intent": "new_booking",
+          "span": {
+            "start": 0,
+            "end": 45
+          },
+          "conditions": [],
+          "missing": "time",
+          "entities": {}
+        }
+      ],
+      "sha256": "912d66a668d8a17dbb7bd92b0a78e32e0ed0058b99a14d0c42a2498815c0de41"
+    },
+    {
+      "id": "es:3",
+      "language": "es",
+      "turn": 3,
+      "text": "Volviendo al precio, ¿incluye el lavado?",
+      "switchTo": null,
+      "expected": [
+        {
+          "intent": "general_question",
+          "span": {
+            "start": 0,
+            "end": 39
+          },
+          "questionType": "description",
+          "conditions": [],
+          "reference": 0,
+          "entities": {}
+        }
+      ],
+      "sha256": "09bd1f19045746c74d4e977d77133209bea5491b3886e9e2aa695a81af1adba3"
+    },
+    {
+      "id": "es:4",
+      "language": "es",
+      "turn": 4,
+      "text": "Gracias, con eso tengo todo lo que necesitaba.",
+      "switchTo": null,
+      "expected": [
+        {
+          "intent": "close",
+          "span": {
+            "start": 0,
+            "end": 46
+          },
+          "conditions": [],
+          "entities": {}
+        }
+      ],
+      "sha256": "e73acabfe94c7730823d3383605d6fe5205a09820a3dd27444a271d324fc15c6"
+    },
+    {
+      "id": "fa:1",
+      "language": "fa",
+      "turn": 1,
+      "text": "اگر شماره پیگیری را ندارم، آیا آوردن رسید لازم است؟",
+      "switchTo": null,
+      "expected": [
+        {
+          "intent": "general_question",
+          "span": {
+            "start": 0,
+            "end": 50
+          },
+          "questionType": "requirement",
+          "conditions": [
+            {
+              "kind": "if",
+              "explicit": true,
+              "span": {
+                "start": 0,
+                "end": 25
+              }
+            }
+          ],
+          "entities": {}
+        }
+      ],
+      "sha256": "3570c65b416fccd36868c915f635ecf0e996c1d195302513c19923c78178e934"
+    },
+    {
+      "id": "fa:2",
+      "language": "fa",
+      "turn": 2,
+      "text": "Friday or Saturday, please answer in English.",
+      "switchTo": "en",
+      "expected": [
+        {
+          "intent": "unknown",
+          "span": {
+            "start": 0,
+            "end": 18
+          },
+          "conditions": [],
+          "missing": "conflict",
+          "entities": {}
+        }
+      ],
+      "sha256": "d8e72e814b1791a678b31f0b1383518a337f634da301053cbcf4e6f73fff479f"
+    },
+    {
+      "id": "fa:3",
+      "language": "fa",
+      "turn": 3,
+      "text": "ممنون، دیگر سؤالی ندارم و همین کافی است.",
+      "switchTo": null,
+      "expected": [
+        {
+          "intent": "close",
+          "span": {
+            "start": 0,
+            "end": 40
+          },
+          "conditions": [],
+          "entities": {}
+        }
+      ],
+      "sha256": "de14daaf92d38f3c3b2c1a45dec5a0987d302afc556030efb8809d924b852fec"
+    },
+    {
+      "id": "ar:1",
+      "language": "ar",
+      "turn": 1,
+      "text": "لا تلغ موعدي. هل تنصحون بإحضار إيصال الدفع؟",
+      "switchTo": null,
+      "expected": [
+        {
+          "intent": "cancellation",
+          "span": {
+            "start": 0,
+            "end": 12
+          },
+          "polarity": "negative",
+          "conditions": [],
+          "entities": {}
+        },
+        {
+          "intent": "general_question",
+          "span": {
+            "start": 14,
+            "end": 42
+          },
+          "questionType": "recommendation",
+          "conditions": [],
+          "entities": {}
+        }
+      ],
+      "sha256": "3fb694696278fae3d622e2ba758e0e8c2712a452f1c2ea5c2350e57f78198dfc"
+    },
+    {
+      "id": "ar:2",
+      "language": "ar",
+      "turn": 2,
+      "text": "وهل يجب إحضاره إذا دفع شخص آخر؟",
+      "switchTo": null,
+      "expected": [
+        {
+          "intent": "general_question",
+          "span": {
+            "start": 0,
+            "end": 30
+          },
+          "questionType": "requirement",
+          "conditions": [
+            {
+              "kind": "if",
+              "explicit": true,
+              "span": {
+                "start": 15,
+                "end": 30
+              }
+            }
+          ],
+          "reference": 1,
+          "entities": {}
+        }
+      ],
+      "sha256": "8c5fb963487336cb2f80223336b6b9b169921f89e03db17ecd5131cc3e3adacd"
+    },
+    {
+      "id": "ar:3",
+      "language": "ar",
+      "turn": 3,
+      "text": "شكرًا، حصلت على كل ما أحتاج إليه.",
+      "switchTo": null,
+      "expected": [
+        {
+          "intent": "close",
+          "span": {
+            "start": 0,
+            "end": 33
+          },
+          "conditions": [],
+          "entities": {}
+        }
+      ],
+      "sha256": "6b9dea4554d872eb9b0499ba3c242833666d9faaf1476c3234efdc7b5b86a872"
+    }
+  ]
+}

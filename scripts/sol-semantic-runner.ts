@@ -36,15 +36,18 @@ export type Approval = Readonly<{ id: string; manifestSha256: string; primaryLed
 export type SimulatedResponse = Readonly<{ httpStatus: number; project: string; body: unknown }>;
 // An offline test double exercises the admission policy with a count tied
 // to the complete wire. It is never accepted as a real provider's proof.
-type RehearsalMeter = (wire: string) => Readonly<{
+type RehearsalCount = Readonly<{
   kind: 'SIMULATED_EXACT_COUNT'; model: string; wireSha256: string; inputTokens: number;
-}> | undefined;
+}>;
+type RehearsalMeter = (wire: string, signal: AbortSignal) => RehearsalCount | undefined | Promise<RehearsalCount | undefined>;
 const sourcePins = {
   '../src/ai/brain/phase4/held-out.ts': '757ddf4173f1853b7426e7a2897d6ccb733862bf6fb74e78a993a522f387ab7c',
   '../src/ai/brain/phase5/semantic-eval.ts': '71be25389cbb84f892719aad19fdbebbfe79b3954843b3ef10ec8b583e7185d9',
   '../src/ai/brain/semantic/model-adapter.ts': '072dd1f863bfa5eae8891641aafd5b7cf01beddb1ac1b1d025c2fb9319915840',
   '../src/ai/brain/memory/conversation-memory.ts': 'a3b91e4ed07020871ccb70a204092b05f29fa785b0325dce988a20c6c9865913',
 } as const;
+export const solSemanticPins = Object.freeze({ manifestSha256: manifestHash, sourcesSha256: sha(JSON.stringify(sourcePins)), model,
+  requestExposureUsd: maxCost, requestedTurns: 18, historicalCarryUsd: carry, inputLimit, outputLimit });
 type Simulation = (request: Readonly<{ endpoint: string; body: string; project: string }>, signal: AbortSignal) => Promise<SimulatedResponse>;
 const uint = (n: unknown): n is number => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0;
 
@@ -85,12 +88,16 @@ function validatedReceipt(response: SimulatedResponse, project: string, seen: Se
   return { id: b.id as string, cost, text: content[0].text as string };
 }
 
-export async function rehearseSolSemanticRun(input: Readonly<{ manifest: Buffer; pins: LedgerPins; approval: Approval;
-  credentialRoot: string; meter?: RehearsalMeter; simulate: Simulation; signal?: AbortSignal }>) {
-  const turns = manifestTurns(input.manifest);
+export function verifySolSemanticSources() {
   for (const [path, expected] of Object.entries(sourcePins)) {
     if (sha(readFileSync(new URL(path, import.meta.url))) !== expected) throw new Error('SEMANTIC_SOURCE_HASH');
   }
+}
+
+export async function rehearseSolSemanticRun(input: Readonly<{ manifest: Buffer; pins: LedgerPins; approval: Approval;
+  credentialRoot: string; meter?: RehearsalMeter; simulate: Simulation; signal?: AbortSignal }>) {
+  const turns = manifestTurns(input.manifest);
+  verifySolSemanticSources();
   const meter = input.meter;
   if (!meter) throw new Error('INPUT_BOUND_UNPROVEN');
   const a = Object.freeze({ ...input.approval });
@@ -154,7 +161,8 @@ export async function rehearseSolSemanticRun(input: Readonly<{ manifest: Buffer;
             prompt_cache_options: { mode: 'implicit', ttl: '30m' }, max_output_tokens: packet.maxOutputTokens,
             text: { format: { type: 'json_object' } } });
           const requestSha256 = sha(body);
-          const proof = meter(body);
+          const proof = await meter(body, signal);
+          signal.throwIfAborted();
           if (proof?.kind !== 'SIMULATED_EXACT_COUNT' || proof.model !== model ||
               proof.wireSha256 !== requestSha256 || !uint(proof.inputTokens) || proof.inputTokens === 0)
             throw new Error('INPUT_BOUND_UNPROVEN');

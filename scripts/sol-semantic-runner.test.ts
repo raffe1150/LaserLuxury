@@ -4,7 +4,8 @@ import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync
 import { tmpdir } from 'node:os';
 import { test } from 'node:test';
 import { ExperimentLedger, pinsFromCurrent } from './experiment-accounting';
-import { rehearseSolSemanticRun, type Approval } from './sol-semantic-runner';
+import { executeSolSemanticLive, rehearseSolLiveAdmission, solLedgerPinsSha256 } from './sol-semantic-live';
+import { rehearseSolSemanticRun, solSemanticPins, type Approval } from './sol-semantic-runner';
 
 const manifest = readFileSync(new URL('../docs/validation/brain-v2-sol-readiness/manifest.json', import.meta.url));
 const sha = (s: string | Buffer) => createHash('sha256').update(s).digest('hex');
@@ -26,7 +27,7 @@ function fixture(balance = 2.43327206) {
   const meter = (wire: string, inputTokens = 120) => ({
     kind: 'SIMULATED_EXACT_COUNT' as const, model: 'gpt-6.1-sol', wireSha256: sha(wire), inputTokens,
   });
-  return { args: { manifest, pins, approval, credentialRoot, meter },  dir, path, other, original,
+  return { args: { manifest, pins, approval, credentialRoot, meter: (wire: string) => meter(wire) }, meter,  dir, path, other, original,
     read: () => JSON.parse(readFileSync(path, 'utf8')), cleanup: () => rmSync(dir, { recursive: true, force: true }) };
 }
 function reply(i: number) {
@@ -147,21 +148,21 @@ test('deadline expires even if a transport ignores cancellation and responds lat
 test('input admission rejects absent or stale proof and applies the exact 16,000 boundary', async () => {
   const f = fixture();
   try {
-    const run = (meter: typeof f.args.meter | undefined) => rehearseSolSemanticRun({ ...f.args, meter, simulate: never });
+    const run = (meter: Parameters<typeof rehearseSolSemanticRun>[0]['meter']) => rehearseSolSemanticRun({ ...f.args, meter, simulate: never });
     await assert.rejects(run(undefined), /INPUT_BOUND_UNPROVEN/);
     // A caller-supplied imitation of an official response does not authorize
     // the rehearsal (and cannot be used as live input evidence).
     await assert.rejects(run(wire => ({ object: 'response.input_tokens', input_tokens: 120,
-      model: 'gpt-6.1-sol', wireSha256: sha(wire) }) as unknown as ReturnType<typeof f.args.meter>), /INPUT_BOUND_UNPROVEN/);
+      model: 'gpt-6.1-sol', wireSha256: sha(wire) }) as unknown as ReturnType<typeof f.meter>), /INPUT_BOUND_UNPROVEN/);
     for (const count of [0, -1, 12.5, Number.NaN, Number.POSITIVE_INFINITY]) {
-      await assert.rejects(run(wire => f.args.meter(wire, count)), /INPUT_BOUND_UNPROVEN/);
+      await assert.rejects(run(wire => f.meter(wire, count)), /INPUT_BOUND_UNPROVEN/);
     }
     await assert.rejects(run(wire => ({ ...f.args.meter(wire), model: 'other-model' })), /INPUT_BOUND_UNPROVEN/);
     await assert.rejects(run(wire => ({ ...f.args.meter(wire), wireSha256: sha(wire + ' ') })), /INPUT_BOUND_UNPROVEN/);
-    await assert.rejects(run(wire => f.args.meter(wire, 16001)), /INPUT_TOKEN_LIMIT/);
+    await assert.rejects(run(wire => f.meter(wire, 16001)), /INPUT_TOKEN_LIMIT/);
     assert.deepEqual(f.read(), f.original);
     let calls = 0;
-    await assert.rejects(rehearseSolSemanticRun({ ...f.args, meter: wire => f.args.meter(wire, 16000), simulate: async request => {
+    await assert.rejects(rehearseSolSemanticRun({ ...f.args, meter: wire => f.meter(wire, 16000), simulate: async request => {
       calls++;
       assert.equal(sha(request.body), f.read().calls.at(-1).requestSha256);
       throw new Error('simulation stopped at boundary');
@@ -205,5 +206,100 @@ test('a matching non-simulation credential cannot enter the rehearsal', async ()
     await assert.rejects(rehearseSolSemanticRun({ ...f.args, simulate: never }), /SIMULATION_CREDENTIAL_REQUIRED/);
     assert.deepEqual(f.read(), f.original);
     assert.ok(!existsSync(f.path + '.semantic-recovery.lock'));
+  } finally { f.cleanup(); }
+});
+
+function liveFixture(f: ReturnType<typeof fixture>) {
+  const a = f.args.approval;
+  return { ...f.args, authorization: {
+    id: a.id, issuedAtMs: Date.now(), expiresAtMs: a.expiresAtMs, manifestSha256: a.manifestSha256,
+    sourcesSha256: solSemanticPins.sourcesSha256, model: solSemanticPins.model, project: a.project,
+    credentialSha256: sha('sk-synthetic-fixture-only-no-provider'), ledgerPinsSha256: solLedgerPinsSha256(f.args.pins),
+    countCalls: 18 as const, inferenceCalls: 18 as const, retryCalls: 0 as const,
+    maxRunUsd: 1.008, maxRequestUsd: 0.15, cumulativeUsd: 4,
+  } };
+}
+
+test('live admission is blocked for real transport, even when all local pins match', () => {
+  const f = fixture();
+  try {
+    const input = liveFixture(f);
+    assert.throws(() => executeSolSemanticLive(input), /LIVE_CREDENTIAL_EXCLUSION_UNPROVEN/);
+    for (const patch of [{ expiresAtMs: 0 }, { sourcesSha256: 'wrong' }, { ledgerPinsSha256: 'wrong' }])
+      assert.throws(() => executeSolSemanticLive({ ...input, authorization: { ...input.authorization, ...patch } }), /LIVE_APPROVAL_INVALID/);
+    for (const patch of [{ credentialSha256: 'wrong' }, { project: 'proj_different' }])
+      assert.throws(() => executeSolSemanticLive({ ...input, authorization: { ...input.authorization, ...patch } }), /LIVE_CREDENTIAL_PIN_MISMATCH/);
+    assert.deepEqual(f.read(), f.original);
+    assert.ok(!existsSync(f.path + '.semantic-recovery.lock'));
+  } finally { f.cleanup(); }
+});
+
+test('18 mocked official counts precede 18 reserved requests and cover model-visible fields', async () => {
+  const f = fixture();
+  try {
+    let counts = 0, calls = 0;
+    let nextHash: string | undefined;
+    let countBody: unknown;
+    const result = await rehearseSolLiveAdmission({ ...liveFixture(f), count: async request => {
+      assert.equal(counts++, calls);
+      assert.match(request.endpoint, /\/responses\/input_tokens$/);
+      nextHash = request.generationSha256;
+      countBody = JSON.parse(request.body);
+      return { httpStatus: 200, project: request.project, body: { object: 'response.input_tokens', input_tokens: 16000 } };
+    }, simulate: async request => {
+      assert.equal(counts, calls + 1);
+      assert.equal(sha(request.body), nextHash);
+      const { model, instructions, input, reasoning, text } = JSON.parse(request.body);
+      assert.deepEqual(countBody, { model, instructions, input, reasoning, text });
+      assert.equal(f.read().calls.at(-1).requestSha256, nextHash);
+      assert.equal(f.read().calls.at(-1).conservativeReservationUsd, 0.056);
+      return reply(calls++);
+    } });
+    assert.deepEqual([counts, calls], [18, 18]);
+    assert.ok(result.results.every(row => row.exact));
+  } finally { f.cleanup(); }
+});
+
+test('invalid official count evidence cannot reserve or reach inference', async () => {
+  const f = fixture();
+  try {
+    const input = liveFixture(f);
+    for (const body of [null, { object: 'response', input_tokens: 10 },
+      { object: 'response.input_tokens' }, { object: 'response.input_tokens', input_tokens: 1.5 },
+      { object: 'response.input_tokens', input_tokens: 16001 }]) {
+      let calls = 0;
+      await assert.rejects(rehearseSolLiveAdmission({ ...input, count: async request => {
+        calls++;
+        return { httpStatus: 200, project: request.project, body };
+      }, simulate: never }), /OFFICIAL_COUNT_INVALID|INPUT_TOKEN_LIMIT/);
+      assert.equal(calls, 1);
+      assert.deepEqual(f.read(), f.original);
+    }
+  } finally { f.cleanup(); }
+});
+
+test('interruption retains the hold across reopen and blocks reuse of the authorization', async () => {
+  const f = fixture();
+  try {
+    let counts = 0, calls = 0;
+    const input = liveFixture(f);
+    const stop = new AbortController();
+    const count: Parameters<typeof rehearseSolLiveAdmission>[0]['count'] = async request => {
+      counts++;
+      return { httpStatus: 200, project: request.project, body: { object: 'response.input_tokens', input_tokens: 120 } };
+    };
+    await assert.rejects(rehearseSolLiveAdmission({ ...input, count, signal: stop.signal, simulate: async () => {
+      calls++;
+      stop.abort();
+      throw new Error('interrupted');
+    } }));
+    const pins = pinsFromCurrent(f.path, 2, [f.other]);
+    const disk = new ExperimentLedger(pins, 'inspect-interruption', solSemanticPins.historicalCarryUsd).read();
+    assert.equal(disk.ledger.calls[1].reservationStatus, 'RESERVED');
+    assert.ok(Math.abs(disk.ledger.unmeteredReserveUsd - f.original.unmeteredReserveUsd - 0.056) < 1e-10);
+    await assert.rejects(rehearseSolLiveAdmission({ ...input, pins, count, simulate: never,
+      authorization: { ...input.authorization, ledgerPinsSha256: solLedgerPinsSha256(pins) },
+      approval: { ...input.approval, primaryLedgerSha256: pins.expectedSha256 } }), /APPROVAL_ALREADY_USED/);
+    assert.deepEqual([counts, calls], [1, 1]);
   } finally { f.cleanup(); }
 });

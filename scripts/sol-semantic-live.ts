@@ -98,7 +98,7 @@ export async function rehearseSolLiveAdmission(input: Admission & Readonly<{
 }
 
 
-const manualWireSha256 = '5c6f7ebfaa94e556b08d839206ab02552a3c9fdd86f0dc476975b743a2ade6b7';
+const manualWireSha256 = 'd4ba9ed34d15df92a0ee61bd2b4196ad29cf64aeee9eb198b5c2bde4f510b16c';
 
 async function pinnedManualWire(manifest: Buffer) {
   const plan = await planSolCanary(manifest);

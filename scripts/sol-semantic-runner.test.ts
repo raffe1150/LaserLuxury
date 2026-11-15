@@ -53,7 +53,10 @@ test('18 ordered simulations reserve before calling and preserve the historical 
       assert.equal(wire.max_output_tokens, 1600);
       assert.ok(!('tools' in wire) && !('previous_response_id' in wire));
       assert.ok(!request.body.includes('"expected"'));
-      assert.equal(JSON.parse(wire.input[0].content).text, turns[calls].text);
+      assert.equal(wire.text.format.type, 'json_object');
+      assert.deepEqual(wire.input.map((message: { role: string }) => message.role), ['developer', 'user']);
+      assert.match(wire.input[0].content, /\bJSON\b/i);
+      assert.equal(JSON.parse(wire.input[1].content).text, turns[calls].text);
       return reply(calls++);
     } });
     assert.equal(calls, 18);
@@ -312,6 +315,20 @@ test('first-turn canary binds one wire, claims approval before counting, and res
     const input = { ...base, approval: { ...base.approval, maxUsd: 0.056 }, authorization: {
       ...base.authorization, requestSha256: plan.requestSha256, countCalls: 1 as const, inferenceCalls: 1 as const, maxRunUsd: 0.056,
     } };
+    assert.equal(plan.requestSha256, 'd4ba9ed34d15df92a0ee61bd2b4196ad29cf64aeee9eb198b5c2bde4f510b16c');
+    const wire = JSON.parse(plan.body);
+    assert.deepEqual(wire.input[0], { role: 'developer', content: 'Return the semantic interpretation as a JSON object.' });
+    assert.equal(wire.text.format.type, 'json_object');
+    const customer = JSON.parse(wire.input[1].content);
+    assert.equal(customer.text, turns[0].text);
+    assert.equal(customer.language, 'sv');
+    assert.deepEqual(customer.references, []);
+    assert.deepEqual(turns[0].expected.map((label: { questionType: string }) => label.questionType), ['requirement', 'recommendation']);
+    assert.equal(turns[0].expected[0].conditions.length, 1);
+    const stale = { ...input, authorization: { ...input.authorization,
+      requestSha256: '5c6f7ebfaa94e556b08d839206ab02552a3c9fdd86f0dc476975b743a2ade6b7' } };
+    await assert.rejects(rehearseSolLiveAdmission({ ...stale, count: never, simulate: never }), /LIVE_APPROVAL_INVALID/);
+    assert.deepEqual(f.read(), f.original);
     await assert.rejects(executeSolSemanticCanary(input), /LIVE_CREDENTIAL_EXCLUSION_UNPROVEN/);
     await assert.rejects(executeSolSemanticCanary({ ...input, authorization: { ...input.authorization, expiresAtMs: 0 } }), /LIVE_APPROVAL_INVALID/);
     await assert.rejects(executeSolSemanticCanary({ ...input, authorization: { ...input.authorization, requestSha256: 'wrong' } }), /LIVE_APPROVAL_INVALID/);

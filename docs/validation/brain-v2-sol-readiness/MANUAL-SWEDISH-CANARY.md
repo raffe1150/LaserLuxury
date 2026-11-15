@@ -1,5 +1,7 @@
 # Manual Swedish canary without official token counting
 
+**JSON-object request correction.** The reported HTTP 400 identified the missing JSON keyword in the input messages. The shared wire now prepends a developer message reading “Return the semantic interpretation as a JSON object.” The user packet, instructions, interpretation contract, pinned labels and manifest remain byte-identical. The new wire digest below supersedes the prior request pin. Old wire approvals cannot be reused. Send no authenticated request without a new authorization. The official-count path requires a successful count for the corrected payload before inference. The manual path still requires independently verified input bounds. Real transport and credential exclusivity remain blocked.
+
 **HOLD for the first paid Sol request.** This change adds a one-turn offline rehearsal and a live preflight that rejects an unproven manual input bound. The previously consumed metadata and counting authorization confers no authority for this route. The earlier HTTP 400 is owner-reported. No provider call was made here.
 
 HEAD was `c6195a8e655d09ce66b402fb52bc08218f597aec`, with a clean tracked tree. The original 18-turn manifest is unchanged. Its ordinary count path and the original one-turn official-count path retain their checks. The new approval has zero count calls, one potential inference and zero retries. The anonymous mock uses synthetic credentials and temporary ledgers through the existing simulation boundary.
@@ -7,7 +9,7 @@ HEAD was `c6195a8e655d09ce66b402fb52bc08218f597aec`, with a clean tracked tree. 
 | Item | Verified value |
 | --- | --- |
 | Turn | `sv:1`, the first fictional turn, with no prior conversation goals |
-| Exact generation body SHA-256 | `5c6f7ebfaa94e556b08d839206ab02552a3c9fdd86f0dc476975b743a2ade6b7` |
+| Exact generation body SHA-256 | `d4ba9ed34d15df92a0ee61bd2b4196ad29cf64aeee9eb198b5c2bde4f510b16c` |
 | Model, output cap and cache | `gpt-6.1-sol`, 1,600 total output tokens including reasoning, standard service and 30-minute cache |
 | Manifest SHA-256 | `e3892a0fd2095e5944a99e12a157d04aec03c7562416137b6a3e77642d63f92d` |
 | Source pin set SHA-256 | `0e5c91965382b412bfefd4b4fd35e29603ef2887fc1c7a4933cb26e6223ede67` |
@@ -19,7 +21,7 @@ HEAD was `c6195a8e655d09ce66b402fb52bc08218f597aec`, with a clean tracked tree. 
 
 The rehearsal fixes the exact wire rather than relying on user-supplied fields or settings. It verifies source hashes and rejects any changed wire, including additions. Under the approved [standard rates](https://developers.openai.com/api/docs/pricing), $0.056 minus the 1,600-token output maximum at $10 per million leaves $0.04. That covers at most 16,000 input tokens at $2.50 per million. The $0.15 absolute per-request cap is unchanged.
 
-The exact wire occupies 2,105 UTF-8 bytes, including 1,537 decoded instruction bytes and 244 decoded message bytes. For byte-segmenting tokenization, each nonempty text token consumes at least one byte. Even counting every serialized byte as text, the envelope would have room for 13,895 additional billed tokens. The figure is conditional on the provider preserving that byte relationship and capping all extra normalization, wrappers, and JSON-object formatting at or below the remaining amount. [OpenAI's accounting documentation](https://help.openai.com/en/articles/4936856-understanding-and-counting-tokens) explains that complete requests include provider framing. It does not establish a maximum for that framing. No trustworthy local Sol contract was available to close the proof. Neither the byte calculation nor a mock framing value is accepted for real admission.
+The exact wire occupies 2,191 UTF-8 bytes, including 1,537 decoded instruction bytes and 244 decoded message bytes. For byte-segmenting tokenization, each nonempty text token consumes at least one byte. Even counting every serialized byte as text, the envelope would have room for 13,809 additional billed tokens. The figure is conditional on the provider preserving that byte relationship and capping all extra normalization, wrappers, and JSON-object formatting at or below the remaining amount. [OpenAI's accounting documentation](https://help.openai.com/en/articles/4936856-understanding-and-counting-tokens) explains that complete requests include provider framing. It does not establish a maximum for that framing. No trustworthy local Sol contract was available to close the proof. Neither the byte calculation nor a mock framing value is accepted for real admission.
 
 The existing credential matched its local fingerprint and declared project `proj_FyeEDfyaHLfKjmWj4hZHoU2z`. Its actual remote access remains unverified here. Legacy scripts running as the same user can read or use the credential outside the canonical lock. Exclusive custody is unproven. This path does not issue a new key or create an OS user. It does not enable live transport or waive the accounting boundary.
 

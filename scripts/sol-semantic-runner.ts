@@ -62,7 +62,12 @@ function manifestTurns(bytes: Buffer): Turn[] {
 }
 
 function solWire(packet: NonNullable<ReturnType<typeof interpretationPacket>>) {
-  return JSON.stringify({ model, instructions: packet.instruction, input: [{ role: 'user', content: packet.data }],
+  return JSON.stringify({ model, instructions: packet.instruction, input: [
+    // JSON mode validates the input messages. Keep this instruction outside
+    // the serialized customer turn and its conversation context.
+    { role: 'developer', content: 'Return the semantic interpretation as a JSON object.' },
+    { role: 'user', content: packet.data },
+  ],
     store: false, stream: false, service_tier: 'default', reasoning: { effort: 'low' },
     prompt_cache_options: { mode: 'implicit', ttl: '30m' }, max_output_tokens: packet.maxOutputTokens,
     text: { format: { type: 'json_object' } } });

@@ -1,5 +1,7 @@
 # One-request Sol semantic canary
 
+**JSON-object request correction.** The reported HTTP 400 identified the missing JSON keyword in the input messages. The shared wire now prepends a developer message reading “Return the semantic interpretation as a JSON object.” The user packet, instructions, interpretation contract, pinned labels and manifest remain byte-identical. The new wire digest below supersedes the prior request pin. Old wire approvals cannot be reused. Send no authenticated request without a new authorization. The official-count path requires a successful count for the corrected payload before inference. The manual path still requires independently verified input bounds. Real transport and credential exclusivity remain blocked.
+
 **GO for local offline controls. HOLD for authenticated verification, paid inference and Phase 6.** Baseline `6d05452d7e72c7e5661777dbaeca1fdf9508472f` on `release/owner-answer-approvals-20261112` had a clean tracked tree. The manifest is intact. The canary uses only its first fictional Swedish turn, `sv:1`. Its labels stay local.
 
 ## Exact scope
@@ -7,7 +9,7 @@
 | Pin or limit | Value |
 | --- | --- |
 | Model and declared project | `gpt-6.1-sol`, `proj_FyeEDfyaHLfKjmWj4hZHoU2z` |
-| First generation wire SHA-256 | `5c6f7ebfaa94e556b08d839206ab02552a3c9fdd86f0dc476975b743a2ade6b7` |
+| First generation wire SHA-256 | `d4ba9ed34d15df92a0ee61bd2b4196ad29cf64aeee9eb198b5c2bde4f510b16c` |
 | Manifest SHA-256 | `e3892a0fd2095e5944a99e12a157d04aec03c7562416137b6a3e77642d63f92d` |
 | Source pin set SHA-256 | `0e5c91965382b412bfefd4b4fd35e29603ef2887fc1c7a4933cb26e6223ede67` |
 | Canonical ledger pin set SHA-256 | `581eba77ac7631f14abf4ebab9980aff572a9047b08f3a48acdebd977ac3c0de` |

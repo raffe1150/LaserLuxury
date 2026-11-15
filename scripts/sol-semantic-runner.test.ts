@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync
 import { tmpdir } from 'node:os';
 import { test } from 'node:test';
 import { ExperimentLedger, pinsFromCurrent } from './experiment-accounting';
-import { executeSolSemanticCanary, executeSolSemanticLive, rehearseSolLiveAdmission, solLedgerPinsSha256 } from './sol-semantic-live';
+import { executeSolSemanticManualCanary, rehearseSolManualCanary, executeSolSemanticCanary, executeSolSemanticLive, rehearseSolLiveAdmission, solLedgerPinsSha256 } from './sol-semantic-live';
 import { planSolCanary, rehearseSolSemanticRun, solSemanticPins, type Approval } from './sol-semantic-runner';
 
 const manifest = readFileSync(new URL('../docs/validation/brain-v2-sol-readiness/manifest.json', import.meta.url));
@@ -371,4 +371,42 @@ test('failed canary count consumes approval and inference identity failures reta
       assert.deepEqual([counts, calls], [1, noInference ? 0 : 1]);
     } finally { f.cleanup(); }
   }
+});
+
+test('manual canary admits only the pinned simulation and retains unknown billing without retry', async () => {
+  const f = fixture();
+  try {
+    const plan = await planSolCanary(f.args.manifest);
+    const base = liveFixture(f);
+    const input = { ...base, approval: { ...base.approval, maxUsd: 0.056 }, authorization: {
+      ...base.authorization, requestSha256: plan.requestSha256, countCalls: 0 as const, inferenceCalls: 1 as const, maxRunUsd: 0.056,
+    } };
+    await assert.rejects(executeSolSemanticManualCanary(input), /MANUAL_INPUT_BOUND_UNPROVEN/);
+    await assert.rejects(rehearseSolManualCanary({ ...input, authorization: { ...input.authorization, requestSha256: 'wrong' },
+      simulatedFramingTokenLimit: 0, simulate: never }), /LIVE_APPROVAL_INVALID/);
+    const maxFraming = 16_000 - Buffer.byteLength(plan.body);
+    await assert.rejects(rehearseSolManualCanary({ ...input, simulatedFramingTokenLimit: maxFraming + 1, simulate: never }),
+      /MANUAL_CANARY_BUDGET/);
+    assert.deepEqual(f.read(), f.original);
+    let calls = 0;
+    await assert.rejects(rehearseSolManualCanary({ ...input, simulatedFramingTokenLimit: maxFraming, simulate: async request => {
+      calls++;
+      assert.equal(request.body, plan.body);
+      assert.equal(sha(request.body), plan.requestSha256);
+      const wire = JSON.parse(request.body);
+      assert.equal(wire.max_output_tokens, 1600);
+      assert.equal(f.read().calls.at(-1).conservativeReservationUsd, 0.056);
+      assert.equal(f.read().calls.at(-1).reservationStatus, 'RESERVED');
+      const response = reply(0);
+      Reflect.deleteProperty(response.body, 'usage');
+      return response;
+    } }), /UNVERIFIED_USAGE/);
+    assert.equal(calls, 1);
+    const state = f.read();
+    assert.ok(Math.abs(state.unmeteredReserveUsd - f.original.unmeteredReserveUsd - 0.056) < 1e-10);
+    const pins = pinsFromCurrent(f.path, state.calls.length, [f.other]);
+    await assert.rejects(rehearseSolManualCanary({ ...input, pins, simulatedFramingTokenLimit: maxFraming, simulate: never,
+      authorization: { ...input.authorization, ledgerPinsSha256: solLedgerPinsSha256(pins) },
+      approval: { ...input.approval, primaryLedgerSha256: pins.expectedSha256 } }), /APPROVAL_ALREADY_USED/);
+  } finally { f.cleanup(); }
 });

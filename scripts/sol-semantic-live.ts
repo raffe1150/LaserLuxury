@@ -14,7 +14,7 @@ type RunnerInput = Parameters<typeof rehearseSolSemanticRun>[0];
 type Authorization = Readonly<{
   id: string; issuedAtMs: number; expiresAtMs: number; manifestSha256: string; sourcesSha256: string;
   model: string; project: string; credentialSha256: string; ledgerPinsSha256: string;
-  countCalls: 1 | 18; inferenceCalls: 1 | 18; retryCalls: 0; requestSha256?: string;
+  countCalls: 0 | 1 | 18; inferenceCalls: 1 | 18; retryCalls: 0; requestSha256?: string;
   maxRunUsd: number; maxRequestUsd: number; cumulativeUsd: number;
 }>;
 export const solLedgerPinsSha256 = (p: LedgerPins) => sha(JSON.stringify([
@@ -23,7 +23,7 @@ export const solLedgerPinsSha256 = (p: LedgerPins) => sha(JSON.stringify([
 ]));
 
 type Admission = Readonly<{ manifest: Buffer; pins: LedgerPins; credentialRoot: string; authorization: Authorization }>;
-function checkAdmission(input: Admission, canaryHash?: string) {
+function checkAdmission(input: Admission, canaryHash?: string, manual = false) {
   const { authorization: a, manifest, pins } = input;
   const now = Date.now();
   const count = canaryHash === undefined ? 18 : 1;
@@ -32,7 +32,7 @@ function checkAdmission(input: Admission, canaryHash?: string) {
       a.issuedAtMs > now || a.expiresAtMs <= now || a.expiresAtMs - a.issuedAtMs > maxApprovalMs ||
       sha(manifest) !== a.manifestSha256 || a.manifestSha256 !== solSemanticPins.manifestSha256 ||
       a.sourcesSha256 !== solSemanticPins.sourcesSha256 || a.model !== solSemanticPins.model ||
-      a.countCalls !== count || a.inferenceCalls !== count || a.requestSha256 !== canaryHash || a.retryCalls !== 0 ||
+      a.countCalls !== (manual ? 0 : count) || a.inferenceCalls !== count || a.requestSha256 !== canaryHash || a.retryCalls !== 0 ||
       a.maxRunUsd !== ceiling || a.maxRequestUsd !== EXPERIMENT_LIMITS.perRequestUsd ||
       a.cumulativeUsd !== EXPERIMENT_LIMITS.cumulativeUsd || pins.others.length !== 1 ||
       solLedgerPinsSha256(pins) !== a.ledgerPinsSha256) throw new Error('LIVE_APPROVAL_INVALID');
@@ -94,5 +94,49 @@ export async function rehearseSolLiveAdmission(input: Admission & Readonly<{
     // Attribution comes from the exact request in this call, not an echo in
     // the untrusted response. The existing guard checks hash/model/limit.
     return { kind: 'SIMULATED_EXACT_COUNT', model: wire.model, wireSha256: generationSha256, inputTokens: r.input_tokens };
+  } });
+}
+
+
+const manualWireSha256 = '5c6f7ebfaa94e556b08d839206ab02552a3c9fdd86f0dc476975b743a2ade6b7';
+
+async function pinnedManualWire(manifest: Buffer) {
+  const plan = await planSolCanary(manifest);
+  if (plan.turnId !== 'sv:1' || plan.requestSha256 !== manualWireSha256)
+    throw new Error('MANUAL_CANARY_WIRE_MISMATCH');
+  return plan;
+}
+
+export async function executeSolSemanticManualCanary(input: Admission): Promise<never> {
+  const plan = await pinnedManualWire(input.manifest);
+  checkAdmission(input, plan.requestSha256, true);
+  // No verified Sol framing and normalization bound is available. A byte
+  // count, a mock bound, and valid owner approval cannot establish one.
+  throw new Error('MANUAL_INPUT_BOUND_UNPROVEN');
+}
+
+/** Exercises the one-turn, zero-count-call path with a synthetic bound only.
+ * The rehearsal still owns temporary ledger and synthetic credential checks.
+ * Assumptions: byte-segmented text, and at most the supplied additional tokens
+ * for all provider formatting/normalization. Neither is a live attestation. */
+export async function rehearseSolManualCanary(input: Admission & Readonly<{
+  approval: RunnerInput['approval']; simulatedFramingTokenLimit: number;
+  simulate: RunnerInput['simulate']; signal?: AbortSignal;
+}>) {
+  const authorization = Object.freeze({ ...input.authorization });
+  const plan = await pinnedManualWire(input.manifest);
+  checkAdmission({ ...input, authorization }, plan.requestSha256, true);
+  if (authorization.id !== input.approval.id || authorization.project !== input.approval.project ||
+      authorization.expiresAtMs !== input.approval.expiresAtMs) throw new Error('LIVE_APPROVAL_MISMATCH');
+  const framing = input.simulatedFramingTokenLimit;
+  if (!Number.isSafeInteger(framing) || framing < 0) throw new Error('INVALID_SIMULATED_FRAMING_LIMIT');
+  const bound = Buffer.byteLength(plan.body) + framing;
+  // Exact nano-USD for standard 30-minute input and total output.
+  const exposure = bound * 2500 + solSemanticPins.outputLimit * 10000;
+  if (bound > solSemanticPins.inputLimit || exposure > Math.round(solSemanticPins.requestExposureUsd * 1e9))
+    throw new Error('MANUAL_CANARY_BUDGET');
+  return rehearseSolSemanticRun({ ...input, canaryRequestSha256: plan.requestSha256, meter: body => {
+    if (body !== plan.body || sha(body) !== manualWireSha256) throw new Error('MANUAL_CANARY_WIRE_MISMATCH');
+    return { kind: 'SIMULATED_EXACT_COUNT', model: solSemanticPins.model, wireSha256: manualWireSha256, inputTokens: bound };
   } });
 }

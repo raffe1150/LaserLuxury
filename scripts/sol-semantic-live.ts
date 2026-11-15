@@ -3,7 +3,7 @@
  * This module has no network client and never sends a credential. */
 import { createHash } from 'node:crypto';
 import { realpathSync } from 'node:fs';
-import { ExperimentLedger, EXPERIMENT_LIMITS, loadCredential, type LedgerPins } from './experiment-accounting';
+import { ENDPOINT, ExperimentLedger, EXPERIMENT_LIMITS, loadCredential, type LedgerPins } from './experiment-accounting';
 import { rehearseSolSemanticRun, planSolCanary, solSemanticPins, verifySolSemanticSources } from './sol-semantic-runner';
 
 const sha = (bytes: string | Buffer) => createHash('sha256').update(bytes).digest('hex');
@@ -98,17 +98,17 @@ export async function rehearseSolLiveAdmission(input: Admission & Readonly<{
 }
 
 
-const manualWireSha256 = 'd4ba9ed34d15df92a0ee61bd2b4196ad29cf64aeee9eb198b5c2bde4f510b16c';
+const pinnedSwedishWireSha256 = 'd4ba9ed34d15df92a0ee61bd2b4196ad29cf64aeee9eb198b5c2bde4f510b16c';
 
-async function pinnedManualWire(manifest: Buffer) {
+async function pinnedSwedishWire(manifest: Buffer) {
   const plan = await planSolCanary(manifest);
-  if (plan.turnId !== 'sv:1' || plan.requestSha256 !== manualWireSha256)
+  if (plan.turnId !== 'sv:1' || plan.requestSha256 !== pinnedSwedishWireSha256)
     throw new Error('MANUAL_CANARY_WIRE_MISMATCH');
   return plan;
 }
 
 export async function executeSolSemanticManualCanary(input: Admission): Promise<never> {
-  const plan = await pinnedManualWire(input.manifest);
+  const plan = await pinnedSwedishWire(input.manifest);
   checkAdmission(input, plan.requestSha256, true);
   // No verified Sol framing and normalization bound is available. A byte
   // count, a mock bound, and valid owner approval cannot establish one.
@@ -124,7 +124,7 @@ export async function rehearseSolManualCanary(input: Admission & Readonly<{
   simulate: RunnerInput['simulate']; signal?: AbortSignal;
 }>) {
   const authorization = Object.freeze({ ...input.authorization });
-  const plan = await pinnedManualWire(input.manifest);
+  const plan = await pinnedSwedishWire(input.manifest);
   checkAdmission({ ...input, authorization }, plan.requestSha256, true);
   if (authorization.id !== input.approval.id || authorization.project !== input.approval.project ||
       authorization.expiresAtMs !== input.approval.expiresAtMs) throw new Error('LIVE_APPROVAL_MISMATCH');
@@ -136,7 +136,71 @@ export async function rehearseSolManualCanary(input: Admission & Readonly<{
   if (bound > solSemanticPins.inputLimit || exposure > Math.round(solSemanticPins.requestExposureUsd * 1e9))
     throw new Error('MANUAL_CANARY_BUDGET');
   return rehearseSolSemanticRun({ ...input, canaryRequestSha256: plan.requestSha256, meter: body => {
-    if (body !== plan.body || sha(body) !== manualWireSha256) throw new Error('MANUAL_CANARY_WIRE_MISMATCH');
-    return { kind: 'SIMULATED_EXACT_COUNT', model: solSemanticPins.model, wireSha256: manualWireSha256, inputTokens: bound };
+    if (body !== plan.body || sha(body) !== pinnedSwedishWireSha256) throw new Error('MANUAL_CANARY_WIRE_MISMATCH');
+    return { kind: 'SIMULATED_EXACT_COUNT', model: solSemanticPins.model, wireSha256: pinnedSwedishWireSha256, inputTokens: bound };
   } });
+}
+
+
+export const ownerReportedSolCount = Object.freeze({
+  provenance: 'OWNER_REPORTED' as const,
+  model: solSemanticPins.model,
+  turnId: 'sv:1',
+  requestSha256: pinnedSwedishWireSha256,
+  inputTokens: 387,
+});
+
+/** No caller-supplied evidence or boolean can open the real gate. */
+export async function executeSolCountedInference(input: Admission): Promise<never> {
+  const plan = await pinnedSwedishWire(input.manifest);
+  checkAdmission(input, plan.requestSha256, true);
+  throw new Error('LIVE_COUNT_PROVENANCE_AND_CREDENTIAL_EXCLUSION_UNPROVEN');
+}
+
+function pinnedResponsesTransport(key: string, project: string, body: string, fetchOnce: typeof fetch): RunnerInput['simulate'] {
+  let used = false;
+  return async (request, signal) => {
+    if (used || request.endpoint !== ENDPOINT || request.project !== project ||
+        request.body !== body || sha(request.body) !== pinnedSwedishWireSha256)
+      throw new Error('PINNED_RESPONSES_REQUEST_MISMATCH');
+    signal.throwIfAborted();
+    used = true;
+    const r = await fetchOnce(ENDPOINT, {
+      method: 'POST', redirect: 'error', signal, body,
+      headers: { Authorization: 'Bearer ' + key, 'OpenAI-Project': project, 'Content-Type': 'application/json' },
+    });
+    signal.throwIfAborted();
+    const responseProject = r.headers.get('openai-project') ?? '';
+    // Never substitute the outbound project for missing response identity.
+    return { project: responseProject, httpStatus: r.status,
+      body: r.status === 200 && responseProject === project ? await r.json() : null };
+  };
+}
+
+/** Exercise the HTTP transport and existing reservation path without admitting
+ * a real key, real ledger writes, or the built-in network client. */
+export async function rehearseSolCountedInference(input: Admission & Readonly<{
+  approval: RunnerInput['approval']; mockFetch: typeof fetch; signal?: AbortSignal;
+}>) {
+  const authorization = Object.freeze({ ...input.authorization });
+  const plan = await pinnedSwedishWire(input.manifest);
+  checkAdmission({ ...input, authorization }, plan.requestSha256, true);
+  if (authorization.id !== input.approval.id || authorization.project !== input.approval.project ||
+      authorization.expiresAtMs !== input.approval.expiresAtMs) throw new Error('LIVE_APPROVAL_MISMATCH');
+  const mockFetch = input.mockFetch;
+  if (mockFetch === globalThis.fetch) throw new Error('MOCK_FETCH_REQUIRED');
+  let transport: RunnerInput['simulate'] | undefined;
+  return rehearseSolSemanticRun({ ...input, canaryRequestSha256: plan.requestSha256,
+    // Exercise the bound using the owner-reported number. It is synthetic
+    // evidence here and cannot be used by executeSolCountedInference.
+    meter: wire => ({ kind: 'SIMULATED_EXACT_COUNT', model: ownerReportedSolCount.model,
+      wireSha256: sha(wire), inputTokens: ownerReportedSolCount.inputTokens }),
+    simulate: async (request, signal) => {
+      const { key, expectedProjectId } = loadCredential(input.credentialRoot);
+      if (!/^sk-synthetic-[A-Za-z0-9_-]+$/.test(key) || sha(key) !== authorization.credentialSha256 ||
+          expectedProjectId !== authorization.project) throw new Error('SIMULATION_CREDENTIAL_REQUIRED');
+      transport ??= pinnedResponsesTransport(key, expectedProjectId, plan.body, mockFetch);
+      return transport(request, signal);
+    },
+  });
 }

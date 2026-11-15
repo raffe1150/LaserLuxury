@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync
 import { tmpdir } from 'node:os';
 import { test } from 'node:test';
 import { ExperimentLedger, pinsFromCurrent } from './experiment-accounting';
-import { executeSolSemanticManualCanary, rehearseSolManualCanary, executeSolSemanticCanary, executeSolSemanticLive, rehearseSolLiveAdmission, solLedgerPinsSha256 } from './sol-semantic-live';
+import { executeSolCountedInference, rehearseSolCountedInference, executeSolSemanticManualCanary, rehearseSolManualCanary, executeSolSemanticCanary, executeSolSemanticLive, rehearseSolLiveAdmission, solLedgerPinsSha256 } from './sol-semantic-live';
 import { planSolCanary, rehearseSolSemanticRun, solSemanticPins, type Approval } from './sol-semantic-runner';
 
 const manifest = readFileSync(new URL('../docs/validation/brain-v2-sol-readiness/manifest.json', import.meta.url));
@@ -426,4 +426,80 @@ test('manual canary admits only the pinned simulation and retains unknown billin
       authorization: { ...input.authorization, ledgerPinsSha256: solLedgerPinsSha256(pins) },
       approval: { ...input.approval, primaryLedgerSha256: pins.expectedSha256 } }), /APPROVAL_ALREADY_USED/);
   } finally { f.cleanup(); }
+});
+
+test('counted inference HTTP transport pins the wire and project and reserves before its single POST', async () => {
+  const f = fixture();
+  try {
+    const plan = await planSolCanary(f.args.manifest);
+    const base = liveFixture(f);
+    const input = { ...base, approval: { ...base.approval, maxUsd: 0.056 }, authorization: {
+      ...base.authorization, requestSha256: plan.requestSha256, countCalls: 0 as const, inferenceCalls: 1 as const, maxRunUsd: 0.056,
+    } };
+    await assert.rejects(executeSolCountedInference(input), /LIVE_COUNT_PROVENANCE_AND_CREDENTIAL_EXCLUSION_UNPROVEN/);
+    await assert.rejects(rehearseSolCountedInference({ ...input, mockFetch: globalThis.fetch }), /MOCK_FETCH_REQUIRED/);
+    let calls = 0;
+    const mockFetch: typeof fetch = async (url, init) => {
+      calls++;
+      assert.equal(url, 'https://api.openai.com/v1/responses');
+      assert.equal(init?.method, 'POST');
+      assert.equal(init?.redirect, 'error');
+      assert.equal(init?.body, plan.body);
+      assert.equal(sha(String(init?.body)), plan.requestSha256);
+      const headers = new Headers(init?.headers);
+      assert.equal(headers.get('OpenAI-Project'), input.authorization.project);
+      assert.equal(headers.get('Authorization'), 'Bearer sk-synthetic-fixture-only-no-provider');
+      const rows = f.read().calls;
+      assert.deepEqual(rows[0], f.original.calls[0]);
+      assert.equal(rows.at(-2).reservationStatus, 'CANARY_APPROVAL_CLAIMED');
+      assert.equal(rows.at(-1).conservativeReservationUsd, 0.056);
+      assert.equal(rows.at(-1).requestSha256, plan.requestSha256);
+      return Response.json(reply(0).body, { headers: { 'openai-project': input.authorization.project } });
+    };
+    await assert.rejects(rehearseSolCountedInference({ ...input, mockFetch,
+      authorization: { ...input.authorization, expiresAtMs: 0 } }), /LIVE_APPROVAL_INVALID/);
+    await assert.rejects(rehearseSolCountedInference({ ...input, mockFetch,
+      authorization: { ...input.authorization, requestSha256: sha(plan.body + ' ') } }), /LIVE_APPROVAL_INVALID/);
+    assert.equal(calls, 0);
+    const result = await rehearseSolCountedInference({ ...input, mockFetch });
+    assert.deepEqual(result.results.map(r => r.id), ['sv:1']);
+    assert.equal(calls, 1);
+    const pins = pinsFromCurrent(f.path, f.read().calls.length, [f.other]);
+    await assert.rejects(rehearseSolCountedInference({ ...input, mockFetch, pins,
+      authorization: { ...input.authorization, ledgerPinsSha256: solLedgerPinsSha256(pins) },
+      approval: { ...input.approval, primaryLedgerSha256: pins.expectedSha256 } }), /APPROVAL_ALREADY_USED/);
+    assert.equal(calls, 1);
+  } finally { f.cleanup(); }
+});
+
+test('counted inference retains the full hold on invalid HTTP receipts or interrupted transport', async () => {
+  for (const mode of ['missing-project', 'wrong-project', 'bad-body', 'unverified-usage', 'input-over-count', 'interruption']) {
+    const f = fixture();
+    try {
+      const plan = await planSolCanary(f.args.manifest);
+      const base = liveFixture(f);
+      const signal = new AbortController();
+      let calls = 0;
+      await assert.rejects(rehearseSolCountedInference({ ...base, signal: signal.signal,
+        approval: { ...base.approval, maxUsd: 0.056 }, authorization: {
+          ...base.authorization, requestSha256: plan.requestSha256, countCalls: 0, inferenceCalls: 1, maxRunUsd: 0.056,
+        }, mockFetch: async () => {
+          calls++;
+          if (mode === 'interruption') { signal.abort(); throw new Error('interrupted after reservation'); }
+          const headers = new Headers();
+          if (mode !== 'missing-project') headers.set('openai-project', mode === 'wrong-project' ? 'proj_other' : base.authorization.project);
+          if (mode === 'bad-body') return new Response('{', { headers });
+          const body = reply(0).body;
+          if (mode === 'unverified-usage') Reflect.deleteProperty(body, 'usage');
+          if (mode === 'input-over-count') { body.usage.input_tokens = 388; body.usage.total_tokens = 408; }
+          return Response.json(body, { headers });
+        } }));
+      const after = f.read();
+      assert.equal(calls, 1);
+      assert.equal(after.calls.at(-1).reservationStatus, 'RESERVED');
+      assert.ok(Math.abs(after.unmeteredReserveUsd - f.original.unmeteredReserveUsd - 0.056) < 1e-10);
+      assert.deepEqual(after.calls[0], f.original.calls[0]);
+      assert.ok(!existsSync(f.path + '.semantic-recovery.lock'));
+    } finally { f.cleanup(); }
+  }
 });

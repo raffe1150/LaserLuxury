@@ -209,7 +209,10 @@ try {
   assert.equal(fourth.pending, null);
   assert.equal(calls.calendarCreates, 1);
   assert.equal(calls.databaseCreates, 1);
-  assert.equal(calls.calendarReads, 5);
+  // Since 2589791 the confirmation performs intent, final and post-reservation
+  // strict exact-slot reads; the last proves the slot is still free once this
+  // operation owns the durable reservation. Reads only; writes stay exactly one.
+  assert.equal(calls.calendarReads, 6);
   assert.equal(calls.groundingVerifier, 0);
   assert.equal(calls.entailment, 0);
   assert.match(fourth.replies.join(' '), /اسکار ساندبرگ|رزرو شد|تأیید/u);

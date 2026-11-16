@@ -26,6 +26,10 @@ export type EvidencePort = Readonly<{
   initial: (scopes: readonly Scope[]) => EvidenceBatch;
   recovery?: Recovery;
 }>;
+export type AsyncEvidencePort = Readonly<{
+  load: (scopes: readonly Scope[], semantic: TurnResult) =>
+    Promise<Readonly<{ batch: EvidenceBatch; inventory?: Inventory }>>;
+}>;
 
 // Private process-local association prevents a structural lookalike or a
 // decision from another turn from being used as composition input.
@@ -45,7 +49,7 @@ export function recheckShadowComposition(semantic: TurnResult, decision: TurnDec
 function valid(n: number) { return Number.isSafeInteger(n) && n >= 0; }
 
 export async function shadowTurn(input: Readonly<{
-  frame?: TurnFrame; context: TurnContext; text: string; wire?: unknown; evidence: EvidencePort;
+  frame?: TurnFrame; context: TurnContext; text: string; wire?: unknown; evidence: EvidencePort | AsyncEvidencePort;
 }>) {
   const prepared = await prepareTurn(input.frame, input.context, input.text);
   const semantic = finishTurn(prepared, input.wire);
@@ -60,9 +64,13 @@ export async function shadowTurn(input: Readonly<{
       requestDigest: hashRecord([prepared.request?.text, reading, prepared.request?.references, semantic.frame.recent.at(-1)]),
     }));
   }
-  const inventory = input.evidence.inventory ? structuredClone(input.evidence.inventory) : undefined;
-  const initial = scopes.length ? structuredClone(input.evidence.initial(Object.freeze(scopes))) : { candidates: [], receipts: [] };
-  const now = semantic.frame.updatedAtMs;
+  const asyncPort = 'load' in input.evidence;
+  const loaded = scopes.length ? asyncPort
+    ? await input.evidence.load(Object.freeze(scopes), semantic)
+    : { batch: input.evidence.initial(Object.freeze(scopes)), inventory: input.evidence.inventory }
+    : undefined;
+  const { inventory, batch: initial }: { inventory?: Inventory; batch: EvidenceBatch } = structuredClone(loaded ?? { batch: { candidates: [], receipts: [] } });
+  const now = asyncPort ? Date.now() : semantic.frame.updatedAtMs;
   const bindings = new Map<string, BindingResult>();
   const accepted = new Map<string, EvidenceBatch>();
   for (const scope of scopes) {
@@ -71,7 +79,7 @@ export async function shadowTurn(input: Readonly<{
     if (b.status === 'BOUND') accepted.set(scope.obligationId, initial);
   }
 
-  const recovery = input.evidence.recovery;
+  const recovery = 'recovery' in input.evidence ? input.evidence.recovery : undefined;
   const recoveries: { obligationId: string; outcome: RecoveryOutcome; attempted: boolean; reason?: string }[] = [];
   let attempts = 0;
   let reservedCostUnits = 0;

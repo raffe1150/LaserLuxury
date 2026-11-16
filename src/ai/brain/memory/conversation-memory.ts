@@ -164,26 +164,29 @@ export function finishTurn(handle: Prepared, wire?: unknown): TurnResult {
     const id = `t${turn}o${index + 1}`;
     obligations.push(id);
     if (closed) { guidance.push({ kind: 'CLOSE', obligationId: id }); break; }
+    const negatedAction = isRoute(reading.intent) && reading.polarity === 'negative';
     const kind = isRoute(reading.intent) || reading.intent === 'correction' ? 'booking' : 'information';
     const explicitGoal = reading.reference === undefined ? undefined : goals.find(g => g.id === optionIds[reading.reference]);
     const repeatedGoal = repeatedQuestion && priorMemo ? goals.find(g => g.id === priorMemo.goalIds[index]) : undefined;
     const unknownGoal = reading.intent === 'unknown' ? goals.find(g => g.id === activeGoalId && g.kind === 'information' && g.intent === 'unknown') : undefined;
     const siblingGoal = kind === 'information' && reading.intent === 'general_question' ? goals.find(g => g.id === informationGoalId) : undefined;
     const ref = explicitGoal ?? repeatedGoal ?? unknownGoal ?? siblingGoal;
-    const compatibleRef = ref?.kind === kind && (kind === 'information' || reading.intent === 'correction' ||
-      reading.intent === ref.intent) ? ref : undefined;
+    const compatibleRef = !negatedAction && ref?.kind === kind && (kind === 'information' ||
+      (ref.obligations.some(o => o.polarity !== 'negative') &&
+        (reading.intent === 'correction' || reading.intent === ref.intent))) ? ref : undefined;
     if (explicitGoal && compatibleRef) referenced.add(explicitGoal.id);
     const goalId = compatibleRef?.id ?? id;
     touched.push(goalId);
     if (kind === 'information' && reading.intent === 'general_question' && !explicitGoal) informationGoalId = goalId;
     let missing = reading.missing;
+    if (request && reading.intent === 'unknown' && reading.entities?.date &&
+        parsedDate(excerpt(request.text, reading.entities.date), context.timezone, new Date(nowMs)) === 'conflict')
+      missing = 'conflict';
     if (reading.reference !== undefined && !compatibleRef || reading.intent === 'correction' && !compatibleRef) missing = 'reference';
     if (bookingReadings.length > 1 && kind === 'booking') missing = 'conflict';
     if (kind === 'booking' && reading.conditions?.length) missing ??= 'intent';
-    if (kind === 'booking' && request &&
-        (reading.polarity === 'negative' || hasBookingInterruption(excerpt(request.text, reading.span)))) missing ??= 'intent';
-    const next = request && reading.intent !== 'unknown' && missing !== 'reference' && missing !== 'conflict' &&
-      !(kind === 'booking' && reading.polarity === 'negative')
+    if (kind === 'booking' && request && hasBookingInterruption(excerpt(request.text, reading.span))) missing ??= 'intent';
+    const next = request && !negatedAction && reading.intent !== 'unknown' && missing !== 'reference' && missing !== 'conflict'
       ? interpretParameters(reading, request, context, !proposal) : { params: {}, conflict: false };
     if (next.conflict) missing = 'conflict';
     if (reading.intent === 'correction' && !Object.keys(next.params).length) missing ??= 'intent';
@@ -199,13 +202,15 @@ export function finishTurn(handle: Prepared, wire?: unknown): TurnResult {
         (!reading.entities?.[missing as Field] || next.params[missing as Field]) && parameters[missing as Field]) missing = undefined;
     if (reading.intent === 'new_booking' && !parameters.service) missing ??= 'service';
     if (reading.intent === 'new_booking' && !parameters.date) missing ??= 'date';
-    if (reading.intent === 'new_booking' && reading.entities?.time && !next.params.time &&
+    if (isRoute(reading.intent) && reading.entities?.time && !next.params.time &&
         (proposal || hasUnresolvedBookingTime(request!.text, context))) missing ??= 'time';
     if (reading.intent === 'new_booking' && !missing && compatibleRef?.pending &&
         !next.params[compatibleRef.pending.field as Field]) missing = compatibleRef.pending.field;
     if (reading.intent === 'new_booking' && reading.entities?.staff && !next.params.staff && proposal) missing ??= 'staff';
     let pending: Goal['pending'];
-    if (missing) {
+    if (negatedAction) {
+      guidance.push({ kind: 'NO_BOOKING_ACTION', obligationId: id });
+    } else if (missing) {
       const earlier = compatibleRef?.pending;
       const repeats = earlier?.field === missing;
       pending = { field: missing, firstTurn: repeats ? earlier.firstTurn : turn, lastTurn: turn };
@@ -278,7 +283,7 @@ export function applyKnowledgeAssessment(result: TurnResult, assessment: Readonl
  * conflicts or facts to the offline decision engine. */
 export function policyReferences(result: TurnResult): ResolvedObligation[] {
   return result.guidance.flatMap(g => {
-    if (g.kind === 'CLOSE' || g.kind === 'CORRECTION') return [];
+    if (g.kind === 'CLOSE' || g.kind === 'CORRECTION' || g.kind === 'NO_BOOKING_ACTION') return [];
     const resolution = g.kind === 'REFER_TO_BOOKING_AUTHORITY' ? 'BOOKING_ACTION'
       : g.kind === 'ASK' || g.kind === 'WAIT_FOR_CLARIFICATION' ? 'AMBIGUOUS' : 'KNOWLEDGE';
     return [{ id: g.obligationId, resolution, coverage: 'UNKNOWN', conflict: 'UNKNOWN', requiredFactIds: [],

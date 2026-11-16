@@ -58,4 +58,4 @@ export type Guidance =
   | Readonly<{ kind: 'ASK' | 'WAIT_FOR_CLARIFICATION'; obligationId: string; field: Missing }>
   | Readonly<{ kind: 'REFER_TO_BOOKING_AUTHORITY'; obligationId: string; route: Route }>
   | Readonly<{ kind: 'CORRECTION'; obligationId: string; goalId: string; updated: readonly Field[] }>
-  | Readonly<{ kind: 'CLOSE'; obligationId: string }>;
+  | Readonly<{ kind: 'CLOSE' | 'NO_BOOKING_ACTION'; obligationId: string }>;

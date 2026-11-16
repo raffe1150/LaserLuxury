@@ -159,6 +159,13 @@ export function literalReading(request: InterpretationRequest, catalog: Catalog)
 
 export function parsedDate(text: string, timezone: string, now: Date) {
   if (getBookingDateConflict(text, timezone, now)) return 'conflict' as const;
+  // The shared parser may return the first date in an explicit choice.
+  // Require two independently parseable, different dates before flagging it.
+  const alternatives = text.split(/\s+(?:or|eller|oder|o|یا|أو)\s+/iu);
+  if (alternatives.length > 1) {
+    const dates = new Set(alternatives.map(part => parseBookingDate(part, timezone, now)?.value).filter(Boolean));
+    if (dates.size > 1) return 'conflict' as const;
+  }
   const value = parseBookingDate(text, timezone, now);
   if (!value?.value || !/^\d{4}-\d{2}-\d{2}$/.test(value.value) ||
       (value.endValue !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(value.endValue))) return undefined;

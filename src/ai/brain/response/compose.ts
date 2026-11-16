@@ -17,6 +17,8 @@ type Block = Readonly<{ kind: 'fact' | 'uncertainty' | 'clarification' | 'handof
 export type CompositionInput = Readonly<{
   semantic: TurnResult;
   decision: TurnDecision;
+  /** Trusted offline wording for a requirement question, without a factual answer. */
+  swedishRequirementSubject?: Readonly<{ obligationId: string; clause: string }>;
   current: Readonly<Binding & { turn: number; nowMs: number; language: SupportedConversationLanguage; inventory?: Inventory }>;
 }>;
 export type ResponseCandidate = Readonly<{
@@ -27,7 +29,7 @@ export type ResponseCandidate = Readonly<{
 /** Only independently reviewed wording is eligible for factual blocks. The
  * caller supplies a current inventory separately from the earlier decision.
  * Optional free-form prose is deliberately outside this offline contract. */
-export function composeResponse({ semantic, decision, current }: CompositionInput): ResponseCandidate | null {
+export function composeResponse({ semantic, decision, current, swedishRequirementSubject }: CompositionInput): ResponseCandidate | null {
   const { language } = current;
   if (semantic.frame.language.language !== language || decision.publication !== 'OFFLINE_ONLY') return null;
   const checks = recheckShadowComposition(semantic, decision, current, current.turn, current.nowMs, current.inventory);
@@ -35,7 +37,7 @@ export function composeResponse({ semantic, decision, current }: CompositionInpu
   const copy = phrases[language];
   const blocks: { kind: Block['kind']; obligationIds: string[]; factIds: string[]; text: string }[] = [];
   const withheld: string[] = [];
-  const disclosed: { id: string; index: number; text: string }[] = [];
+  const disclosed: { id: string; index: number; text: string; specific?: boolean }[] = [];
   const add = (kind: Block['kind'], id: string, text: string, factIds: string[] = []) => {
     const same = blocks.find(b => b.kind === kind && b.text === text);
     if (same) { same.obligationIds.push(id); same.factIds.push(...factIds); }
@@ -66,7 +68,9 @@ export function composeResponse({ semantic, decision, current }: CompositionInpu
       }
       if (d?.outcome === 'ANSWER') withheld.push(id);
       const q = semantic.readings[index]?.questionType;
-      disclosed.push({ id, index, text: q && q !== 'description' ? copy[q] : copy.unknown });
+      if (language === 'sv' && q === 'requirement' && swedishRequirementSubject?.obligationId === id) {
+        disclosed.push({ id, index, text: 'Jag kunde inte bekräfta ' + swedishRequirementSubject.clause + '.', specific: true });
+      } else disclosed.push({ id, index, text: q && q !== 'description' ? copy[q] : copy.unknown });
     } else if (guide.kind === 'ASK' && d?.outcome === 'CLARIFY') {
       add('clarification', id, copy.ask[guide.field]);
     } else if (guide.kind === 'REFER_TO_BOOKING_AUTHORITY' && d?.outcome === 'HANDOFF' && d.route === guide.route) {
@@ -76,10 +80,12 @@ export function composeResponse({ semantic, decision, current }: CompositionInpu
   }
   const hasFacts = blocks.some(b => b.kind === 'fact');
   for (const row of disclosed) {
-    const prefix = semantic.guidance.length === 1 ? '' : semantic.guidance.length === 2 && hasFacts && disclosed.length === 1
+    const prefix = row.specific || semantic.guidance.length === 1 ? '' : semantic.guidance.length === 2 && hasFacts && disclosed.length === 1
       ? otherQuestion[language] : numbered[language] + ' ' + (row.index + 1) + ': ';
     add('uncertainty', row.id, prefix + row.text);
   }
+  const order = new Map(semantic.guidance.map((guide, index) => [guide.obligationId, index]));
+  blocks.sort((a, b) => order.get(a.obligationIds[0])! - order.get(b.obligationIds[0])!);
   const text = blocks.map(b => b.text).join(' ');
   if (text.length > MAX_RESPONSE_CHARS) return null; // Never truncate a verified statement.
   return { publication: 'OFFLINE_ONLY', language, text, blocks, withheld };

@@ -95,7 +95,7 @@ test('mixed information and action retain independent guidance; contradictory ac
   assert.ok(b.guidance.every(g => g.kind === 'ASK' && g.field === 'conflict'));
   const negative = 'Do not cancel my appointment.';
   assert.equal((await run(negative, ctx, undefined, wire({ intent: 'cancellation', span: full(negative),
-    polarity: 'negative' }))).guidance[0].kind, 'ASK');
+    polarity: 'negative' }))).guidance[0].kind, 'NO_BOOKING_ACTION');
   assert.equal((await run(negative, ctx, undefined, wire({ intent: 'cancellation', span: full(negative) }))).guidance[0].kind, 'ASK');
   const conditional = 'Cancel only if there is no charge.';
   assert.equal((await run(conditional, ctx, undefined, wire({ intent: 'cancellation', span: full(conditional),
@@ -246,4 +246,49 @@ test('Phase 2 service follow-up keeps its catalog reference without inventing th
   assert.equal(followUp.frame.goals[0].parameters.service?.value, 'video');
   assert.equal(followUp.frame.goals[0].obligations.length, 2);
   assert.equal(followUp.guidance[0].kind, 'CHECK_KNOWLEDGE');
+});
+
+
+test('recorded Spanish clock stays ambiguous for booking and rescheduling', async () => {
+  const text = 'Reserva un corte mañana a las tres, por favor.';
+  const entities = { service: at(text, 'corte'), date: at(text, 'mañana'), time: at(text, 'tres') };
+  const spanish = { ...ctx, catalog: { ...ctx.catalog, services: [{ id: 'cut', label: 'corte' }] } };
+  for (const intent of ['new_booking', 'reschedule'] as const) {
+    const result = await run(text, spanish, undefined, wire({ intent, span: full(text), entities }));
+    assert.deepEqual(result.guidance[0], { kind: 'ASK', obligationId: 't1o1', field: 'time' });
+    assert.equal(result.frame.goals[0].parameters.time, undefined);
+  }
+});
+
+test('recorded date alternatives request a choice without committing a date', async () => {
+  const text = 'Friday or Saturday, please answer in English.';
+  const entities = { date: at(text, 'Friday or Saturday') };
+  for (const intent of ['unknown', 'reschedule'] as const) {
+    const result = await run(text, ctx, undefined, wire({ intent, span: full(text), missing: 'intent', entities }));
+    assert.deepEqual(result.guidance[0], { kind: 'ASK', obligationId: 't1o1', field: 'conflict' });
+    assert.equal(result.frame.goals[0].parameters.date, undefined);
+  }
+});
+
+test('negated cancellation does not request an appointment or hide the knowledge sibling', async () => {
+  const negative = 'لا تلغ موعدي';
+  const question = 'هل تنصحون بإحضار إيصال الدفع؟';
+  const text = `${negative}. ${question}`;
+  const result = await run(text, ctx, undefined, wire(
+    { intent: 'cancellation', span: at(text, negative), polarity: 'negative', missing: 'reference' },
+    { intent: 'general_question', span: at(text, question), questionType: 'recommendation' },
+  ));
+  assert.deepEqual(result.guidance.map(g => g.kind), ['NO_BOOKING_ACTION', 'CHECK_KNOWLEDGE']);
+  assert.equal(result.frame.goals[0].pending, undefined);
+  assert.deepEqual(result.frame.goals[0].parameters, {});
+  assert.deepEqual(policyReferences(result).map(o => o.id), ['t1o2']);
+  const later = 'Cancel it.';
+  const follow = await run(later, contextAt(2), result.frame,
+    wire({ intent: 'cancellation', span: full(later), reference: 0 }));
+  assert.deepEqual(follow.guidance[0], { kind: 'ASK', obligationId: 't2o1', field: 'reference' });
+  const conflicting = await run(text, ctx, undefined, wire(
+    { intent: 'cancellation', span: at(text, negative), polarity: 'negative' },
+    { intent: 'reschedule', span: at(text, question) },
+  ));
+  assert.deepEqual(conflicting.guidance[1], { kind: 'ASK', obligationId: 't1o2', field: 'conflict' });
 });

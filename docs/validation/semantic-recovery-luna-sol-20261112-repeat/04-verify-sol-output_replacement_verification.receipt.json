@@ -1,0 +1,31 @@
+{
+  "requestId": "0d84b6df-3762-4504-82d9-b626df866580",
+  "caseId": "verify-sol-output:replacement:verification",
+  "stage": "verification",
+  "model": "luna",
+  "requestSha256": "b1b7781b090f6aa8bb0fd97db6d6fcc8882a2f649a30e55567954ebc9eebb8de",
+  "ceilingUsd": 0.0174009,
+  "outcome": "OK",
+  "latencyMs": 5877,
+  "httpStatus": 200,
+  "projectHeader": "MATCH",
+  "processingMs": "5700",
+  "requestIdHeader": "req_86ff814f6c674146bdca9eca7ce97efc",
+  "responseModel": "gpt-5.6-luna",
+  "responseId": "resp_0acf83ffea28cee1006af59e1e5e9087d29e25073b9e8f28f8",
+  "responseStatus": "completed",
+  "usage": {
+    "input_tokens": 5516,
+    "input_tokens_details": {
+      "cache_write_tokens": 5513,
+      "cached_tokens": 0
+    },
+    "output_tokens": 443,
+    "output_tokens_details": {
+      "reasoning_tokens": 200
+    },
+    "total_tokens": 5959
+  },
+  "estimatedUsd": 0.0019104499999999997,
+  "outputText": "{\"decisions\":[{\"unitId\":\"u1\",\"relation\":\"ENTAILED\",\"facetIds\":[\"f1\"],\"meaningPreserved\":true,\"modalityPreserved\":true,\"qualifiersPreserved\":true,\"relevant\":true,\"languageCorrect\":true,\"explicitAbsenceEvidence\":true,\"negativeAbsence\":false}],\"coverage\":[{\"facetId\":\"f1\",\"requestAligned\":true,\"materialFactsComplete\":true,\"incompletenessReason\":\"NONE\",\"materialUnitIds\":[\"u1\"],\"obligations\":[{\"obligationId\":\"f1.o1\",\"status\":\"COVERED\",\"unitIds\":[\"u1\"]}]}],\"sourceCoverage\":{\"protocol\":\"source-exhaustive-v2\",\"requestAligned\":true,\"availableMaterialFactsComplete\":true,\"conditionsPreserved\":true,\"conflictsAbsent\":true,\"evidenceIdsReviewed\":[\"e1\",\"e2\",\"e3\",\"e4\",\"e5\"],\"acceptedUnitIdsReviewed\":[\"u1\"],\"obligations\":[{\"facetId\":\"f1\",\"obligationId\":\"f1.o1\",\"state\":\"COMPLETE\"}]}}"
+}

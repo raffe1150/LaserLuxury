@@ -1,0 +1,31 @@
+{
+  "requestId": "f556a78d-562a-4245-9763-f18b9eeea72f",
+  "caseId": "luna:original:extraction",
+  "stage": "extraction",
+  "model": "luna",
+  "requestSha256": "78b2660e4382b5b0e01c25aa96cfa1d4ca27ffc0b6161bbd3519e323578a05df",
+  "ceilingUsd": 0.01476165,
+  "outcome": "OK",
+  "latencyMs": 8224,
+  "httpStatus": 200,
+  "projectHeader": "MATCH",
+  "processingMs": "6990",
+  "requestIdHeader": "req_459f3418f9374bf9b869c0c827c00ea3",
+  "responseModel": "gpt-5.6-luna",
+  "responseId": "resp_052286fe239150c2006af59e0947a487d281b903afecf3f515",
+  "responseStatus": "completed",
+  "usage": {
+    "input_tokens": 3635,
+    "input_tokens_details": {
+      "cache_write_tokens": 3632,
+      "cached_tokens": 0
+    },
+    "output_tokens": 550,
+    "output_tokens_details": {
+      "reasoning_tokens": 171
+    },
+    "total_tokens": 4185
+  },
+  "estimatedUsd": 0.0015685999999999999,
+  "outputText": "{\"oversized\":false,\"units\":[{\"facetIds\":[\"f1\"],\"subject\":\"بازدیدکنندگانِ بار اول از AdMotion Studio\",\"predicate\":\"زمان توصیه‌شده برای رسیدن پیش از نوبت رزروشده\",\"value\":\"حدود ۱۰ دقیقه زودتر\",\"modality\":\"recommended\",\"negation\":false,\"scope\":\"برای نخستین بازدید از AdMotion Studio\",\"qualifiers\":[\"برای آماده‌شدن با آرامش\"],\"language\":\"fa\",\"text\":\"به بازدیدکنندگانِ بار اول توصیه می‌شود برای آماده‌شدن با آرامش، حدود ۱۰ دقیقه پیش از زمان رزروشده به AdMotion Studio برسند.\",\"evidenceRefs\":[{\"evidenceId\":\"e2\",\"exactQuote\":\"Kunder som besöker AdMotion Studio för första gången rekommenderas att komma cirka 10 minuter före sin bokade tid för att hinna förbereda sig i lugn och ro.\"}]},{\"facetIds\":[\"f1\"],\"subject\":\"AdMotion Studio\",\"predicate\":\"الزامی‌بودن رسیدن ۱۰ دقیقه پیش از نوبت\",\"value\":\"الزامی نیست\",\"modality\":\"descriptive\",\"negation\":true,\"scope\":\"برای بازدیدکنندگانِ بار اول\",\"qualifiers\":[\"این توصیه آخرین زمان مجاز رسیدن هم نیست\"],\"language\":\"fa\",\"text\":\"رسیدن حدود ۱۰ دقیقه پیش از نوبت برای بازدیدکنندگانِ بار اول الزامی نیست و این توصیه، آخرین زمان مجاز رسیدن محسوب نمی‌شود.\",\"evidenceRefs\":[{\"evidenceId\":\"e2\",\"exactQuote\":\"Detta är en rekommendation för förstagångsbesökare, inte ett obligatoriskt krav eller en sista ankomsttid.\"}]}]}"
+}

@@ -1,0 +1,238 @@
+{
+  "authorizationId": "semantic-recovery-luna-sol-20261112-1",
+  "planSha256": "8ca7cacdfbd9f28f39f2fda0737463e075515bd5b27f139cd5e23b5943046bcd",
+  "disclosures": {
+    "lunaOutputCapExperimentOnly": "Luna requests carry max_output_tokens=8192 only to bound cost; production Luna is uncapped.",
+    "solExtractionOnly": "Sol is evaluated on extraction only; production refuses source-exhaustive verification under a managed profile, so Sol is NOT a production-compatible end-to-end model here.",
+    "constantVerifier": "Every verification request uses the default-profile Luna verifier with an identical contract."
+  },
+  "stopped": null,
+  "arms": {
+    "luna": {
+      "trigger": {
+        "eligible": true,
+        "reason": "ELIGIBLE"
+      },
+      "publishable": false,
+      "fallback": "INVALID_COVERAGE",
+      "text": "در حال حاضر نمی‌توانم آن بخش را بررسی کنم.",
+      "reasons": [
+        "extraction:NUMERICAL_CONSTRAINT",
+        "extraction:ACCEPTED",
+        "verification:ACCEPTED",
+        "verification:ACCEPTED",
+        "verification:OBLIGATION_UNRESOLVED",
+        "verification:MATERIAL_FACTS_MISSING",
+        "verification:INVALID_COVERAGE"
+      ]
+    },
+    "sol": {
+      "trigger": {
+        "eligible": true,
+        "reason": "ELIGIBLE"
+      },
+      "publishable": true,
+      "fallback": null,
+      "text": "به کسانی که برای اولین بار به AdMotion Studio مراجعه می‌کنند توصیه می‌شود حدود ۱۰ دقیقه پیش از زمان رزروشده برسند، به‌منظور اینکه با آرامش آماده شوند؛ این صرفاً یک توصیه است، نه الزام یا آخرین زمان مجاز ورود.",
+      "reasons": [
+        "extraction:ACCEPTED",
+        "verification:ACCEPTED",
+        "verification:ACCEPTED",
+        "verification:ACCEPTED",
+        "composition:DIRECT_SINGLE_UNIT"
+      ]
+    }
+  },
+  "requests": [
+    {
+      "requestId": "bc70c260-6707-42f8-89f3-17c300677492",
+      "caseId": "luna:original:extraction",
+      "stage": "extraction",
+      "model": "luna",
+      "requestSha256": "78b2660e4382b5b0e01c25aa96cfa1d4ca27ffc0b6161bbd3519e323578a05df",
+      "ceilingUsd": 0.01476165,
+      "outcome": "OK",
+      "latencyMs": 6189,
+      "httpStatus": 200,
+      "projectHeader": "MATCH",
+      "processingMs": "4761",
+      "requestIdHeader": "req_830a578a52eb4fca8996acad68ef330c",
+      "responseModel": "gpt-5.6-luna",
+      "responseId": "resp_0152c0c417cd563f006af59385164c87d28a9148564515ef63",
+      "responseStatus": "completed",
+      "usage": {
+        "input_tokens": 3635,
+        "input_tokens_details": {
+          "cache_write_tokens": 3632,
+          "cached_tokens": 0
+        },
+        "output_tokens": 340,
+        "output_tokens_details": {
+          "reasoning_tokens": 67
+        },
+        "total_tokens": 3975
+      },
+      "estimatedUsd": 0.0013165999999999998
+    },
+    {
+      "requestId": "603c9957-4a31-46fa-83e0-e4159f879a6e",
+      "caseId": "luna:replacement:extraction",
+      "stage": "extraction",
+      "model": "luna",
+      "requestSha256": "8a4399a742217c53a6a710d7995d74379e98bf4246fc3d28da13b8853bba4236",
+      "ceilingUsd": 0.01487165,
+      "outcome": "OK",
+      "latencyMs": 10067,
+      "httpStatus": 200,
+      "projectHeader": "MATCH",
+      "processingMs": "8383",
+      "requestIdHeader": "req_11c8eb3899014b619a2f471acb8c71de",
+      "responseModel": "gpt-5.6-luna",
+      "responseId": "resp_065aaf7e88e58deb006af5938b903087d2b4d8d5cd4e3d952f",
+      "responseStatus": "completed",
+      "usage": {
+        "input_tokens": 3723,
+        "input_tokens_details": {
+          "cache_write_tokens": 3720,
+          "cached_tokens": 0
+        },
+        "output_tokens": 596,
+        "output_tokens_details": {
+          "reasoning_tokens": 228
+        },
+        "total_tokens": 4319
+      },
+      "estimatedUsd": 0.0016458
+    },
+    {
+      "requestId": "200c769c-2800-4187-8dd4-d58e2254d9fa",
+      "caseId": "verify-luna-output:replacement:verification",
+      "stage": "verification",
+      "model": "luna",
+      "requestSha256": "f7fc18953749eb03139feb7edc78195d41eac1b30fde9c7a1d35b7bd3046b320",
+      "ceilingUsd": 0.0172934,
+      "outcome": "OK",
+      "latencyMs": 10520,
+      "httpStatus": 200,
+      "projectHeader": "MATCH",
+      "processingMs": "10297",
+      "requestIdHeader": "req_2ec37ff7bc444f5e81fe214fd5baa3a6",
+      "responseModel": "gpt-5.6-luna",
+      "responseId": "resp_0d7b33d3bbc16b7b006af5939443e887d29acb86805611dd57",
+      "responseStatus": "completed",
+      "usage": {
+        "input_tokens": 5433,
+        "input_tokens_details": {
+          "cache_write_tokens": 5430,
+          "cached_tokens": 0
+        },
+        "output_tokens": 693,
+        "output_tokens_details": {
+          "reasoning_tokens": 450
+        },
+        "total_tokens": 6126
+      },
+      "estimatedUsd": 0.0021896999999999997
+    },
+    {
+      "requestId": "34ef9ead-39a8-4919-af2d-ac4c7ffb48c9",
+      "caseId": "sol:original:extraction",
+      "stage": "extraction",
+      "model": "sol",
+      "requestSha256": "27d7fbdfa375da2e891d638ee72c2e77f8c853a473e3f7bd21a01e5fb0bef947",
+      "ceilingUsd": 0.13143,
+      "outcome": "OK",
+      "latencyMs": 11827,
+      "httpStatus": 200,
+      "projectHeader": "MATCH",
+      "processingMs": "11706",
+      "requestIdHeader": "req_353175cf5b9c44ed8e5b8fa1d87d5c26",
+      "responseModel": "gpt-6.1-sol",
+      "responseId": "resp_0b6422ba4b07bbb2006af5939ec75087d2931b211e91578e31",
+      "responseStatus": "completed",
+      "usage": {
+        "input_tokens": 3635,
+        "input_tokens_details": {
+          "cache_write_tokens": 3632,
+          "cache_write_tokens_details": {
+            "ttl_12h_tokens": 0,
+            "ttl_30m_tokens": 3632
+          },
+          "cached_tokens": 0
+        },
+        "output_tokens": 321,
+        "output_tokens_details": {
+          "reasoning_tokens": 55
+        },
+        "total_tokens": 3956
+      },
+      "estimatedUsd": 0.012296
+    },
+    {
+      "requestId": "5b4557e2-551d-4903-90c8-557cbbc648ed",
+      "caseId": "sol:replacement:extraction",
+      "stage": "extraction",
+      "model": "sol",
+      "requestSha256": "a6a4738f38bb49e01b2d5928beecff423796240d04e44a7771339526122aff56",
+      "ceilingUsd": 0.13253,
+      "outcome": "OK",
+      "latencyMs": 6192,
+      "httpStatus": 200,
+      "projectHeader": "MATCH",
+      "processingMs": "5912",
+      "requestIdHeader": "req_333095b8440c48f1b7582b7715dc8ae5",
+      "responseModel": "gpt-6.1-sol",
+      "responseId": "resp_0faa937245e920a7006af593aab10c87d2a69363f828b15476",
+      "responseStatus": "completed",
+      "usage": {
+        "input_tokens": 3723,
+        "input_tokens_details": {
+          "cache_write_tokens": 3720,
+          "cache_write_tokens_details": {
+            "ttl_12h_tokens": 0,
+            "ttl_30m_tokens": 3720
+          },
+          "cached_tokens": 0
+        },
+        "output_tokens": 267,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 3990
+      },
+      "estimatedUsd": 0.011976
+    },
+    {
+      "requestId": "136999ec-ffe3-46c6-bdc5-943555bdffa9",
+      "caseId": "verify-sol-output:replacement:verification",
+      "stage": "verification",
+      "model": "luna",
+      "requestSha256": "e75657865d2c6d57e4aa9c2779e05f44d6f2fa4c7318a374010ed8a88c8bb1e1",
+      "ceilingUsd": 0.0173904,
+      "outcome": "OK",
+      "latencyMs": 6525,
+      "httpStatus": 200,
+      "projectHeader": "MATCH",
+      "processingMs": "6214",
+      "requestIdHeader": "req_96a235ef49e14dc3a0e5d9f44371ff23",
+      "responseModel": "gpt-5.6-luna",
+      "responseId": "resp_00a005633398da36006af593b0e1a487d28f1d3592dd70caa9",
+      "responseStatus": "completed",
+      "usage": {
+        "input_tokens": 5507,
+        "input_tokens_details": {
+          "cache_write_tokens": 2010,
+          "cached_tokens": 3494
+        },
+        "output_tokens": 491,
+        "output_tokens_details": {
+          "reasoning_tokens": 248
+        },
+        "total_tokens": 5998
+      },
+      "estimatedUsd": 0.0011621799999999999
+    }
+  ],
+  "dispatched": 6,
+  "settledUsd": 0.03058628
+}

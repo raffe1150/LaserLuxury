@@ -1,0 +1,167 @@
+{
+  "authorizationId": "semantic-recovery-luna-sol-20261112-2",
+  "planSha256": "8ca7cacdfbd9f28f39f2fda0737463e075515bd5b27f139cd5e23b5943046bcd",
+  "disclosures": {
+    "lunaOutputCapExperimentOnly": "Luna requests carry max_output_tokens=8192 only to bound cost; production Luna is uncapped.",
+    "solExtractionOnly": "Sol is evaluated on extraction only; production refuses source-exhaustive verification under a managed profile, so Sol is NOT a production-compatible end-to-end model here.",
+    "constantVerifier": "Every verification request uses the default-profile Luna verifier with an identical contract."
+  },
+  "stopped": null,
+  "arms": {
+    "luna": {
+      "trigger": {
+        "eligible": false,
+        "reason": "OTHER_REJECTION"
+      },
+      "replacement": null
+    },
+    "sol": {
+      "trigger": {
+        "eligible": true,
+        "reason": "ELIGIBLE"
+      },
+      "publishable": true,
+      "fallback": null,
+      "text": "به کسانی که برای اولین بار به AdMotion Studio مراجعه می‌کنند توصیه می‌شود حدود ۱۰ دقیقه پیش از زمان رزروشده حضور داشته باشند، با این هدف که در آرامش آماده شوند؛ این زمان صرفاً توصیه است، نه الزام یا آخرین مهلت ورود.",
+      "reasons": [
+        "extraction:ACCEPTED",
+        "verification:ACCEPTED",
+        "verification:ACCEPTED",
+        "verification:ACCEPTED",
+        "composition:DIRECT_SINGLE_UNIT"
+      ]
+    }
+  },
+  "requests": [
+    {
+      "requestId": "f556a78d-562a-4245-9763-f18b9eeea72f",
+      "caseId": "luna:original:extraction",
+      "stage": "extraction",
+      "model": "luna",
+      "requestSha256": "78b2660e4382b5b0e01c25aa96cfa1d4ca27ffc0b6161bbd3519e323578a05df",
+      "ceilingUsd": 0.01476165,
+      "outcome": "OK",
+      "latencyMs": 8224,
+      "httpStatus": 200,
+      "projectHeader": "MATCH",
+      "processingMs": "6990",
+      "requestIdHeader": "req_459f3418f9374bf9b869c0c827c00ea3",
+      "responseModel": "gpt-5.6-luna",
+      "responseId": "resp_052286fe239150c2006af59e0947a487d281b903afecf3f515",
+      "responseStatus": "completed",
+      "usage": {
+        "input_tokens": 3635,
+        "input_tokens_details": {
+          "cache_write_tokens": 3632,
+          "cached_tokens": 0
+        },
+        "output_tokens": 550,
+        "output_tokens_details": {
+          "reasoning_tokens": 171
+        },
+        "total_tokens": 4185
+      },
+      "estimatedUsd": 0.0015685999999999999
+    },
+    {
+      "requestId": "b854873e-81d9-4de3-8180-6acd4209e2b8",
+      "caseId": "sol:original:extraction",
+      "stage": "extraction",
+      "model": "sol",
+      "requestSha256": "27d7fbdfa375da2e891d638ee72c2e77f8c853a473e3f7bd21a01e5fb0bef947",
+      "ceilingUsd": 0.13143,
+      "outcome": "OK",
+      "latencyMs": 5917,
+      "httpStatus": 200,
+      "projectHeader": "MATCH",
+      "processingMs": "5814",
+      "requestIdHeader": "req_c2ee62733a7441ed9be7f7c33f38b2a7",
+      "responseModel": "gpt-6.1-sol",
+      "responseId": "resp_05d9f845ada4349e006af59e10840087d2b94fc0ec6ec9b586",
+      "responseStatus": "completed",
+      "usage": {
+        "input_tokens": 3635,
+        "input_tokens_details": {
+          "cache_write_tokens": 3632,
+          "cache_write_tokens_details": {
+            "ttl_12h_tokens": 0,
+            "ttl_30m_tokens": 3632
+          },
+          "cached_tokens": 0
+        },
+        "output_tokens": 267,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 3902
+      },
+      "estimatedUsd": 0.011756
+    },
+    {
+      "requestId": "b8d01835-8edf-4318-8d0a-21605cff4ab5",
+      "caseId": "sol:replacement:extraction",
+      "stage": "extraction",
+      "model": "sol",
+      "requestSha256": "a6a4738f38bb49e01b2d5928beecff423796240d04e44a7771339526122aff56",
+      "ceilingUsd": 0.13253,
+      "outcome": "OK",
+      "latencyMs": 7766,
+      "httpStatus": 200,
+      "projectHeader": "MATCH",
+      "processingMs": "6775",
+      "requestIdHeader": "req_52e8a6318ac74f63a07a55fa70333af1",
+      "responseModel": "gpt-6.1-sol",
+      "responseId": "resp_07776298860dc2d0006af59e17473487d2bf1a38227c59369f",
+      "responseStatus": "completed",
+      "usage": {
+        "input_tokens": 3723,
+        "input_tokens_details": {
+          "cache_write_tokens": 3720,
+          "cache_write_tokens_details": {
+            "ttl_12h_tokens": 0,
+            "ttl_30m_tokens": 3720
+          },
+          "cached_tokens": 0
+        },
+        "output_tokens": 276,
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        },
+        "total_tokens": 3999
+      },
+      "estimatedUsd": 0.012066
+    },
+    {
+      "requestId": "0d84b6df-3762-4504-82d9-b626df866580",
+      "caseId": "verify-sol-output:replacement:verification",
+      "stage": "verification",
+      "model": "luna",
+      "requestSha256": "b1b7781b090f6aa8bb0fd97db6d6fcc8882a2f649a30e55567954ebc9eebb8de",
+      "ceilingUsd": 0.0174009,
+      "outcome": "OK",
+      "latencyMs": 5877,
+      "httpStatus": 200,
+      "projectHeader": "MATCH",
+      "processingMs": "5700",
+      "requestIdHeader": "req_86ff814f6c674146bdca9eca7ce97efc",
+      "responseModel": "gpt-5.6-luna",
+      "responseId": "resp_0acf83ffea28cee1006af59e1e5e9087d29e25073b9e8f28f8",
+      "responseStatus": "completed",
+      "usage": {
+        "input_tokens": 5516,
+        "input_tokens_details": {
+          "cache_write_tokens": 5513,
+          "cached_tokens": 0
+        },
+        "output_tokens": 443,
+        "output_tokens_details": {
+          "reasoning_tokens": 200
+        },
+        "total_tokens": 5959
+      },
+      "estimatedUsd": 0.0019104499999999997
+    }
+  ],
+  "dispatched": 4,
+  "settledUsd": 0.02730105
+}

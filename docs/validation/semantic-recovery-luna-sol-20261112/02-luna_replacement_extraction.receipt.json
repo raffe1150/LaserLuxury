@@ -1,0 +1,31 @@
+{
+  "requestId": "603c9957-4a31-46fa-83e0-e4159f879a6e",
+  "caseId": "luna:replacement:extraction",
+  "stage": "extraction",
+  "model": "luna",
+  "requestSha256": "8a4399a742217c53a6a710d7995d74379e98bf4246fc3d28da13b8853bba4236",
+  "ceilingUsd": 0.01487165,
+  "outcome": "OK",
+  "latencyMs": 10067,
+  "httpStatus": 200,
+  "projectHeader": "MATCH",
+  "processingMs": "8383",
+  "requestIdHeader": "req_11c8eb3899014b619a2f471acb8c71de",
+  "responseModel": "gpt-5.6-luna",
+  "responseId": "resp_065aaf7e88e58deb006af5938b903087d2b4d8d5cd4e3d952f",
+  "responseStatus": "completed",
+  "usage": {
+    "input_tokens": 3723,
+    "input_tokens_details": {
+      "cache_write_tokens": 3720,
+      "cached_tokens": 0
+    },
+    "output_tokens": 596,
+    "output_tokens_details": {
+      "reasoning_tokens": 228
+    },
+    "total_tokens": 4319
+  },
+  "estimatedUsd": 0.0016458,
+  "outputText": "{\"oversized\":false,\"units\":[{\"facetIds\":[\"f1\"],\"subject\":\"AdMotion Studio\",\"predicate\":\"زمان پیشنهادی حضور پیش از نوبت\",\"value\":\"حدود ۱۰ دقیقه زودتر\",\"modality\":\"recommended\",\"negation\":false,\"scope\":\"بازدیدکنندگان برای نخستین‌بار\",\"qualifiers\":[\"برای آماده‌شدن با آرامش\"],\"language\":\"fa\",\"text\":\"AdMotion Studio به مشتریانی که برای نخستین‌بار مراجعه می‌کنند توصیه می‌کند حدود ۱۰ دقیقه پیش از زمان رزروشده خود حاضر شوند تا با آرامش آماده شوند.\",\"evidenceRefs\":[{\"evidenceId\":\"e1\",\"exactQuote\":\"Kunder som besöker studion för första gången rekommenderas att komma cirka 10 minuter före sin\\nbokade tid för att hinna förbereda sig i lugn och ro.\"}]},{\"facetIds\":[\"f1\"],\"subject\":\"AdMotion Studio\",\"predicate\":\"الزامی‌بودن حضور ۱۰ دقیقه زودتر\",\"value\":\"الزامی نیست و آخرین زمان ورود محسوب نمی‌شود\",\"modality\":\"descriptive\",\"negation\":true,\"scope\":\"توصیه حضور حدود ۱۰ دقیقه پیش از نوبت برای بازدیدکنندگان نخستین‌بار\",\"qualifiers\":[],\"language\":\"fa\",\"text\":\"این توصیه برای بازدیدکنندگان نخستین‌بار الزامی نیست و حدود ۱۰ دقیقه زودتر، آخرین زمان ورود محسوب نمی‌شود.\",\"evidenceRefs\":[{\"evidenceId\":\"e2\",\"exactQuote\":\"Detta är en rekommendation för förstagångsbesökare, inte ett obligatoriskt krav eller en sista ankomsttid.\"}]}]}"
+}

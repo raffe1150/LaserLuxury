@@ -1,0 +1,31 @@
+{
+  "requestId": "bc70c260-6707-42f8-89f3-17c300677492",
+  "caseId": "luna:original:extraction",
+  "stage": "extraction",
+  "model": "luna",
+  "requestSha256": "78b2660e4382b5b0e01c25aa96cfa1d4ca27ffc0b6161bbd3519e323578a05df",
+  "ceilingUsd": 0.01476165,
+  "outcome": "OK",
+  "latencyMs": 6189,
+  "httpStatus": 200,
+  "projectHeader": "MATCH",
+  "processingMs": "4761",
+  "requestIdHeader": "req_830a578a52eb4fca8996acad68ef330c",
+  "responseModel": "gpt-5.6-luna",
+  "responseId": "resp_0152c0c417cd563f006af59385164c87d28a9148564515ef63",
+  "responseStatus": "completed",
+  "usage": {
+    "input_tokens": 3635,
+    "input_tokens_details": {
+      "cache_write_tokens": 3632,
+      "cached_tokens": 0
+    },
+    "output_tokens": 340,
+    "output_tokens_details": {
+      "reasoning_tokens": 67
+    },
+    "total_tokens": 3975
+  },
+  "estimatedUsd": 0.0013165999999999998,
+  "outputText": "{\"oversized\":false,\"units\":[{\"facetIds\":[\"f1\"],\"subject\":\"بازدیدکنندگان برای اولین بار\",\"predicate\":\"زمان توصیه‌شده برای رسیدن\",\"value\":\"حدود ۱۰ دقیقه پیش از زمان رزرو‌شده\",\"modality\":\"recommended\",\"negation\":false,\"scope\":\"استودیو\",\"qualifiers\":[\"برای آماده شدن با آرامش\",\"این توصیه الزام اجباری یا آخرین زمان مجاز رسیدن نیست\"],\"language\":\"fa\",\"text\":\"به بازدیدکنندگانی که برای اولین بار به AdMotion Studio می‌آیند توصیه می‌شود حدود ۱۰ دقیقه پیش از زمان رزرو‌شده در استودیو حاضر شوند تا با آرامش آماده شوند؛ این یک توصیه است، نه الزام اجباری یا آخرین زمان مجاز رسیدن.\",\"evidenceRefs\":[{\"evidenceId\":\"e2\",\"exactQuote\":\"Kunder som besöker AdMotion Studio för första gången rekommenderas att komma cirka 10 minuter före sin bokade tid för att hinna förbereda sig i lugn och ro.\\n\\nDetta är en rekommendation för förstagångsbesökare, inte ett obligatoriskt krav eller en sista ankomsttid.\"}]}]}"
+}

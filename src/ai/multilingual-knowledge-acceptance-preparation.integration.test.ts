@@ -18,9 +18,10 @@ let serial=46707000000;
 for(const spec of preliminaryAcceptancePlan)test(`preliminary native ${spec.id}/${spec.channel}`,async t=>{
  const original={...incidentConfig};b.reset();const recipient=String(++serial),stages:string[]=[],inputs:any[]=[],events:any[]=[],replies:string[]=[],lookups:any[]=[];let actions=0,unhandled:any;
  for(const method of ['log','info','warn','error']as const)t.mock.method(console,method,()=>{});
- // Synthetic equal vectors test evidence transport, not multilingual ranking.
+ // Family A exercises genuine lexical ranking, including the source-language retry.
+ // Other historical families retain their existing synthetic embedding control.
  const v={provider:'openai',model:'synthetic-preparation',dimensions:2,version:1,values:[1,0]};
- const service=new KnowledgeService(corpus.storage,corpus.storage,{supportsLocalSemanticSearch:true,embedQuery:async()=>v,embedDocuments:async texts=>texts.map(text=>({...v,values:text==='Heading'?[0,1]:[1,0]}))});
+ const service=new KnowledgeService(corpus.storage,corpus.storage,spec.family==='A'?null:{supportsLocalSemanticSearch:true,embedQuery:async()=>v,embedDocuments:async texts=>texts.map(text=>({...v,values:text==='Heading'?[0,1]:[1,0]}))});
  const forbidden=async()=>{actions++;throw Error('Unauthorized booking/calendar/notification action');};
  const start=performance.now();
  try{
@@ -37,6 +38,12 @@ for(const spec of preliminaryAcceptancePlan)test(`preliminary native ${spec.id}/
    geminiGenerate:async p=>{
     const instruction=p.config.systemInstruction;
     if(instruction.includes('language-routing classifier')){stages.push('language');return{text:JSON.stringify({language:spec.language,requestedReplyLanguage:null,confidence:.99})};}
+    if(spec.family==='A' && instruction.includes('source-language search query')){
+     const data=JSON.parse(p.contents[0].parts[0].text);
+     assert.equal(data.targetLanguage,'sv');
+     stages.push('source-language-query');
+     return{text:JSON.stringify({query:'förberedelseinstruktioner parfym vattenflaska mellanmål väntrummet behandlingsrum'})};
+    }
     if(!/retrieval query planner|UNIT EXTRACTION|BATCH ENTAILMENT|VERIFIED-UNIT PRESENTATION/u.test(instruction)){
      unhandled={instruction,contents:p.contents};throw Error('Preparation requires reviewed independent evidence-first execution, not an unsupported scripted legacy response');
     }

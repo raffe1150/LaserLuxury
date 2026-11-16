@@ -99,7 +99,7 @@ export type KnowledgeDecision = {
   blockId?: string; blockKind?: 'fact'|'uncertainty'|'courtesy'; requestedLanguage?: string;
   semanticVerifiedUnits?: number; publishableUnits?: number; deadlineAt?: number; timeoutMs?: number;
   natural?: { schemaVersion: string; outcome: 'accepted_natural'|'canonical_fallback'|'direct_canonical'; reason: DecisionReason | null };
-  route?: 'verified_manifest' | 'partial_manifest' | 'unavailable' | 'suppressed' | 'legacy';
+  route?: 'verified_manifest' | 'partial_manifest' | 'unresolved_notice' | 'unavailable' | 'suppressed' | 'legacy';
   providerAttempted?: boolean;
   admission?: ReturnType<typeof verificationAdmissionDiagnostic>;
   verificationProtocol?: KnowledgeVerificationProtocol;

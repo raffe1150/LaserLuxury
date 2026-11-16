@@ -19,6 +19,7 @@ import { QUESTION_TYPES, MODALITIES, RELATIONS, knowledgeFailureReason, selectKn
   type KnowledgeExtractionProtocol, type KnowledgeVerificationProtocol, type KnowledgeDecision, type DecisionReason } from './knowledge-answer-protocol';
 import { uncertaintyNotice, uncertaintyReferences, requestUncertaintyFacets, unresolvedRequirementNotices, sourceExhaustiveLimitations, renderAnswerClarification, type AnswerClarification, type UncertaintyReference, type RequirementNotice } from './knowledge-answer-presentation';
 import { isBusinessInformationQuestion, isExplicitBusinessActionRequest } from './business-information';
+import { withoutNegatedBookingClauses } from './booking-interruption';
 import { detectNormalizedIntent } from './booking-intelligence';
 import { compactVerificationInstruction, decodeCompactVerification } from './knowledge-compact-verification';
 import { COVERAGE_WITNESS_PROTOCOL, coverageWitnessInstruction, parseCoverageWitnessResponse, assessCoverageWitnesses } from './knowledge-coverage-witness';
@@ -67,7 +68,10 @@ export type AnswerManifest = Readonly<{ language: string; presentation: AnswerPr
   qualifiedPartial?: object;
   /** Separate source-exhaustive permission; never a complete-answer verdict. */
   sourceScopedPartial?: object;
+  /** Zero-fact, backend-authored unresolved-requirement notice; never carries a unit. */
+  unresolvedNoticeOnly?: object;
   sourceLimitations?: readonly RequirementNotice[];
+  obligationLimitations?: readonly RequirementNotice[];
   sourceScopeNotice?: string;
   /** Internal publication dependency; never supplied by the model. */
   documentaryInventoryIds?: readonly string[];
@@ -135,9 +139,40 @@ type PartialAuthority = Readonly<{ businessId: number; owner: NativeKnowledgeTim
 const partialAuthorities = new WeakMap<object, PartialAuthority>();
 const sourcePartialAuthorities = new WeakMap<object, PartialAuthority>();
 const revokedSourcePartial = new WeakSet<object>();
-const partialContractHash = (m: AnswerManifest) => hash(JSON.stringify([m.language,m.facets,m.units,m.outcomes,m.sourceScopeNotice,m.uncertaintyReferences,m.unresolvedRequirements,m.clarification]));
+const partialContractHash = (m: AnswerManifest) => hash(JSON.stringify([m.language,m.facets,m.units,m.outcomes,m.sourceScopeNotice,m.uncertaintyReferences,m.unresolvedRequirements,m.clarification,m.obligationLimitations]));
 const sourcePartialContractHash = (m: AnswerManifest) => hash(JSON.stringify([partialContractHash(m), m.sourceLimitations, m.presentation]));
 const partialEvidenceHash = (evidence: readonly Evidence[]) => hash(JSON.stringify([...evidence].sort((a,b)=>a.id.localeCompare(b.id))));
+const unresolvedNoticeAuthorities = new WeakMap<object, PartialAuthority>();
+const unresolvedNoticeContractHash = (m: AnswerManifest) =>
+  hash(JSON.stringify([m.language, m.facets, m.units, m.outcomes, m.unresolvedRequirements, m.text]));
+/** Backend-authored Arabic notice. It asserts only that the available business
+ * information does not establish the requirement; it carries no source fact. */
+export const ARABIC_OTHER_PAYER_RECEIPT_UNRESOLVED =
+  'لا تحدد معلومات المنشأة المتاحة ما إذا كان إحضار إيصال الدفع إلزاميًا إذا دفع شخص آخر. يمكن للمنشأة تأكيد ذلك.';
+/** Language-neutral reading of a planner-authored receipt obligation. The
+ * planner may state the obligation in English while the customer writes Arabic.
+ * Admit only an inquiry (never an assertion) whose explicit referent is the
+ * payment receipt and whose sole condition is that another person paid. */
+export function receiptOtherPayerRequirementInquiry(description: unknown): boolean {
+  if (typeof description !== 'string') return false;
+  const text = description.normalize('NFKC').toLowerCase().replace(/\s+/gu, ' ').trim().replace(/[?.؟]$/u, '').trim();
+  const receipt = '(?:the )?payment receipt';
+  const subject = '(?:i|we|the customer|the visitor|they)';
+  const verb = '(?:bring|present|show)';
+  const inquiry = [
+    `whether ${receipt} (?:must|has to|needs to) be (?:brought|presented|shown)`,
+    `whether ${receipt} is (?:required|mandatory)`,
+    `whether ${subject} (?:must|need(?:s)? to|ha(?:s|ve) to) ${verb} ${receipt}`,
+    `whether it is (?:required|mandatory|necessary) to ${verb} ${receipt}`,
+    `must ${subject} ${verb} ${receipt}`,
+    `(?:do|does) ${subject} (?:need|have) to ${verb} ${receipt}`,
+    `is ${receipt} (?:required|mandatory)`,
+    `is it (?:required|mandatory|necessary) to ${verb} ${receipt}`,
+  ].join('|');
+  const otherPayer = '(?:if|when) (?:someone else|another person|a different person|a third party) ' +
+    '(?:paid|pays|has paid|made the payment|makes the payment|paid for (?:it|the (?:booking|appointment|visit)))';
+  return new RegExp(`^(?:${inquiry}) ${otherPayer}$`, 'u').test(text);
+}
 // Additional subtraction-only admission for the new PARTIAL permission. Matching
 // numerals never establishes entailment; an absent cited numeral cannot acquire
 // support from a neighboring source or an erroneous positive model judgment.
@@ -150,6 +185,15 @@ const citedNumeralsPresent = (unit: AnswerUnit) => {
 
 /** Publication only: never upgrades coverage or verifies a proposed fact. */
 export function publishableKnowledgeManifest(manifest: AnswerManifest | undefined, businessId: number | undefined): boolean {
+  if (manifest?.unresolvedNoticeOnly) {
+    const proof = unresolvedNoticeAuthorities.get(manifest.unresolvedNoticeOnly);
+    return !!proof && Number.isSafeInteger(businessId) && proof.businessId === businessId &&
+      proof.owner === nativeKnowledgeTiming() && !proof.owner.failure && proof.contractHash === unresolvedNoticeContractHash(manifest) &&
+      manifest.units.length === 0 && !manifest.qualifiedPartial && !manifest.sourceScopedPartial && !manifest.sourceLimitations &&
+      !manifest.obligationLimitations && !manifest.naturalAttachment && !manifest.fallbackReason &&
+      manifest.unresolvedRequirements?.length === 1 && manifest.text === ARABIC_OTHER_PAYER_RECEIPT_UNRESOLVED &&
+      manifest.unresolvedRequirements[0].text === manifest.text;
+  }
   if (manifest?.sourceScopedPartial || manifest?.sourceLimitations) {
     const token = manifest.sourceScopedPartial, proof = token && sourcePartialAuthorities.get(token);
     return !!proof && !revokedSourcePartial.has(token!) && !manifest.qualifiedPartial && !manifest.naturalAttachment &&
@@ -160,7 +204,7 @@ export function publishableKnowledgeManifest(manifest: AnswerManifest | undefine
       JSON.stringify(manifest.presentation.unitIds) === JSON.stringify(manifest.units.map(u => u.id)) &&
       manifest.text === renderVerifiedManifest(manifest).text;
   }
-  if (!manifest?.qualifiedPartial && !manifest?.unresolvedRequirements && completeKnowledgeManifest(manifest)) return true;
+  if (!manifest?.qualifiedPartial && !manifest?.unresolvedRequirements && !manifest?.obligationLimitations && completeKnowledgeManifest(manifest)) return true;
   if (!manifest?.qualifiedPartial || manifest.naturalAttachment || !Number.isSafeInteger(businessId) || !manifest.units.length) return false;
   const proof = partialAuthorities.get(manifest.qualifiedPartial);
   if (!proof || proof.businessId !== businessId || proof.owner !== nativeKnowledgeTiming() || proof.owner.failure || proof.contractHash !== partialContractHash(manifest) ||
@@ -387,11 +431,12 @@ Each unit has ONE actor and ONE modality. Split recommendations and requirements
 Only source-asserted propositions belong in factual units. Do not append conclusions about missing evidence, unknown relationships, or what a document does not establish: unresolved relationships belong to coverage, not factual text. Source silence is not an explicit negative fact. For distinct documented and configured offerings, retain known catalog attributes and relevant independently scoped document facts, naming the actual documented offering in its unit text. Never equate them without an explicit authoritative relationship.
 Citations: exactQuote remains in the SOURCE language, even when text is translated. Locate each contiguous quote in the specific evidence item and copy THAT item's id. Different chunks from one document have different ids. Never translate, reconstruct or reassign a source quote. Use the shortest complete source sentence(s) supporting every clause, with separate refs when needed; surrounding complete source context still constrains meaning. Check every supplied evidence item for material facts, conditions, applicable contradictions and exceptions.
 allowedFacetIds is the exhaustive set: copy a nonempty subset into each unit, reusing the same facet IDs for multiple facts when appropriate. Unit ordinals and evidence IDs are separate namespaces. These bindings confer no support or coverage. Maximum 6 units; if more are necessary, set oversized=true and return units=[]. Never invent an answer for an unsupported part.` + MATERIAL_ARRANGEMENT_GUIDANCE;
+export const CONDITIONAL_EXEMPTION_GUIDANCE = 'An explicit exemption from a requirement is required with negation true. Preserve the condition that grants the exemption and keep it separate from a requirement applying under a different condition. Cite verbatim source text supporting the exemption and its condition. If that branch states only that early arrival is unnecessary, state the general exemption without a number in any proposed field. A number in the question or in a requirement for the opposite condition does not quantify the exemption. Include a number only when the verbatim citation explicitly ties it to the exemption under the same condition.';
 /** Native v2 producer clarification only; no proposal filtering or citation repair.
  * The schema, base contracts and independent verifier remain unchanged. */
 export const NATIVE_V2_PRODUCER_GUIDANCE = `Producer check: For each proposed unit, identify the exact requested fact it answers or the necessary condition, exception, coordinated restriction or directly applicable recommendation it preserves. Do not add optional background merely because it concerns the same subject. If a requested attribute is unavailable, leave that attribute unresolved; do not substitute a nearby known attribute. Preserve every requested clause and material source qualification, including when another requested detail is unknown. Do not omit a supported requested fact because it is difficult to quote.
 Numerical propositions: give each independently scoped quantity its own unit and state it once, in digits with its unit (for example 10 minutes rather than a spelled-out number) whenever the source supports that quantity. When the source states a quantity relative to an event, name that event with explicit before/after wording in the text; do not reduce it to "earlier" or "in advance" alone, and never add an anchor the source does not state. Keep the source's approximation, bound, polarity and modality: an approximate recommendation is not an exact or mandatory time, and a question asking whether a time is exact or mandatory is answered only with what the source supports. Keep audience conditions exactly as stated. Give separate units for separately requested facts, and keep alternatives the source offers together with their recommendation.
-Copy exactQuote directly from its evidence item, character for character as supplied, including OCR split words, internal whitespace, line breaks and punctuation spacing. Never correct spelling, join split words, reconstruct typography, translate a quotation or invent source text. Translate only the proposed factual text. Before returning, check that every quote is present in that same item and every proposed unit serves the actual question with all material qualifiers. Return only the existing schema.`;
+Copy exactQuote directly from its evidence item, character for character as supplied, including OCR split words, internal whitespace, line breaks and punctuation spacing. Never correct spelling, join split words, reconstruct typography, translate a quotation or invent source text. Translate only the proposed factual text. Before returning, check that every quote is present in that same item and every proposed unit serves the actual question with all material qualifiers. Return only the existing schema.` + '\n' + CONDITIONAL_EXEMPTION_GUIDANCE;
 /** Shared semantic instruction only; no local relevance or publication authority. */
 export const NATIVE_V2_QUESTION_RESPONSIVENESS_GUIDANCE = `Question responsiveness: Judge every independently asserted clause against the complete latest customer question, not merely a shared entity, broad topic, facet label or neighboring source passage. A clause is responsive when it supplies an explicitly requested attribute or relationship, or preserves the source-bound antecedent, condition, exception, coordinated restriction or directly applicable recommendation needed to interpret the requested answer or scenario accurately. A recommendation must address the customer's actual requested need or scenario with its original modality; do not infer a different information need merely from the shared subject. Necessary conditions remain relevant even when the customer did not explicitly ask about those conditions. Do not invent additional requirements.
 A different independent attribute is not necessary context merely because it is useful, present in the same source, or known while the requested attribute is unknown. Consider whether omitting it would change the meaning, scope, applicability or safe interpretation of the requested answer. If not, and it answers no requested attribute or relationship, it is an unrequested supplement. Preserve independently requested facts about distinct offerings without asserting an unsupported equivalence. Evaluate all clauses of a compound unit; one responsive clause does not authorize unrelated extra assertions.
@@ -486,6 +531,13 @@ function renderVerifiedManifest(manifest: Omit<AnswerManifest, 'text'>): AnswerM
     ...(manifest.sourceScopeNotice ? [manifest.sourceScopeNotice] : []), ...manifest.unresolvedRequirements.map(n => n.text),
   ])] : [...new Set(manifest.outcomes.filter(o => o.status !== 'VERIFIED').map(outcome => manifest.sourceScopeNotice ||
     uncertaintyNotice(manifest.language, manifest.facets.find(f => f.id === outcome.facetId), outcome, manifest.uncertaintyReferences)))];
+  if (manifest.obligationLimitations) {
+    const text = manifest.facets.flatMap(facet => [
+      ...ordered.filter(unit => unit.facetIds.includes(facet.id)).map(unit => unit.text),
+      ...manifest.obligationLimitations!.filter(notice => notice.facetId === facet.id).map(notice => notice.text),
+    ]).join(' ');
+    return Object.freeze({ ...manifest, text });
+  }
   const prefix = manifest.presentation.prefix === 'none' ? '' : notices[manifest.presentation.prefix];
   const clarification = ordered.some(u => u.verification === 'ENTAILED' && u.evidenceRefs.some(ref => ref.evidenceId === 'configured-services'))
     ? renderAnswerClarification(manifest.clarification, manifest.language) : undefined;
@@ -502,6 +554,11 @@ export function pruneAnswerManifest(manifest: AnswerManifest, validEvidence: rea
       revokedSourcePartial.add(token);
       manifest = Object.freeze({ ...manifest, sourceScopedPartial: undefined });
     }
+  }
+  if (manifest.unresolvedNoticeOnly) {
+    const proof = unresolvedNoticeAuthorities.get(manifest.unresolvedNoticeOnly);
+    if (!proof || proof.evidenceHash !== partialEvidenceHash(validEvidence))
+      manifest = Object.freeze({ ...manifest, unresolvedNoticeOnly: undefined });
   }
   if (manifest.qualifiedPartial) {
     const proof=partialAuthorities.get(manifest.qualifiedPartial);
@@ -539,6 +596,8 @@ export async function buildEvidenceFirstAnswer(input: {
   question: string; language: string; facets: readonly Facet[]; evidence: readonly Evidence[];
   /** Read-only presentation instruction supplied by the native host, never by the model. */
   clarification?: AnswerClarification;
+  /** Backend-only provenance for the previous native publication in this session. */
+  priorVerifiedReply?: Readonly<{ user: string; reply: string; units: readonly AnswerUnit[] }>;
   authoritativeEvidence: string; businessTone: unknown; history: unknown; budget: InformationBudget;
   /** Foreground wire projection only. Other callers retain their existing payload. */
   omitModelEvidenceVersions?: boolean;
@@ -665,6 +724,7 @@ export async function buildEvidenceFirstAnswer(input: {
     ...(canonicalConfiguration?{canonicalConfiguration}:{})});
   let proposed: ReturnType<typeof parseAnswerUnits>;
   let extractionIncomplete=false;
+  let isolatedNumericalFacets: ReadonlySet<string> | undefined;
   let proposalParseComplete=false;
   let ownerProposalIndex: number | undefined;
   let documentaryInventoryIds: readonly string[] = [];
@@ -757,11 +817,25 @@ export async function buildEvidenceFirstAnswer(input: {
     const reExtractionTally: ReExtractionTally | undefined = reExtractionScope ? { ambiguousConnective: 0, citationOmitsQuantity: 0 } : undefined;
     if (input.reExtraction && !reExtractionScope) input.reExtraction.record({ trigger: 'out_of_scope', outcome: 'not_eligible',
       firstPass: { proposed: Array.isArray(raw.units) ? raw.units.length : 0, parsed: 0, rejected: 0 } });
-    proposed = parseAnswerUnits(catalogProposal&&Array.isArray(raw.units)?{...raw,units:[catalogProposal.unit,...raw.units]}:raw, facets, availableEvidence, language,diagnostic,literalSnapshot&&!ownerFirst?'whole_source':'quotation',
+    const numericalRejections = new Set<string>();
+    const extractionDiagnostic = (event: KnowledgeDecision) => {
+      if (event.unitId && event.reason === 'NUMERICAL_CONSTRAINT' && event.numericalMismatchReason === 'QUANTITY_NOT_IN_CITATION')
+        numericalRejections.add(event.unitId);
+      diagnostic(event);
+    };
+    proposed = parseAnswerUnits(catalogProposal&&Array.isArray(raw.units)?{...raw,units:[catalogProposal.unit,...raw.units]}:raw, facets, availableEvidence, language,extractionDiagnostic,literalSnapshot&&!ownerFirst?'whole_source':'quotation',
       {businessId:input.businessId,question:input.question,language},
       input.foreground && budget.nativeTiming && !input.natural && !input.requireCompleteCoverage && !literalSnapshot &&
       verificationProtocol==='source-exhaustive-v2'?{businessId:input.businessId,protocol:verificationProtocol}:undefined, ownerProposalIndex, reExtractionTally);
     proposalParseComplete=Array.isArray(raw.units) && raw.oversized!==true && proposed.units.length===raw.units.length+(catalogProposal?1:0);
+    if (!proposalParseComplete && !catalogProposal && !cancellationProposals.length && !ownerApproval &&
+        !canonicalConfiguration && !literalSnapshot && raw.oversized === false && Array.isArray(raw.units)) {
+      const missing = raw.units.map((unit: any, i: number) => ({ unit, id: `u${i + 1}` }))
+        .filter(({ id }: { id: string }) => !proposed.units.some(unit => unit.id === id));
+      if (missing.length && missing.every(({ id, unit }: { id: string; unit: any }) =>
+        numericalRejections.has(id) && unit.facetIds.length === 1))
+        isolatedNumericalFacets = new Set(missing.map(({ unit }: { unit: any }) => unit.facetIds[0]));
+    }
     if (input.reExtraction && reExtractionTally) {
       // Narrow, one-shot recovery. Only the canary's own v2 documentary path is
       // in scope; owner, catalog, cancellation, canonical, literal, natural and
@@ -812,6 +886,7 @@ export async function buildEvidenceFirstAnswer(input: {
               return empty('UNAVAILABLE', second.structuredFailure || 'MALFORMED_JSON');
             }
             raw = replacementRaw;
+            isolatedNumericalFacets = undefined;
             proposed = parseAnswerUnits(raw, facets, availableEvidence, language, diagnostic, 'quotation',
               {businessId:input.businessId,question:input.question,language},
               {businessId:input.businessId!,protocol:'source-exhaustive-v2'});
@@ -892,11 +967,76 @@ export async function buildEvidenceFirstAnswer(input: {
   if (!await input.current()) return rejectProposals('CONTEXT_INVALID');
   let verified: AnswerUnit[] = [];
   const conflicts = new Set<string>();
+  const unresolvedVerifierFacets = new Set<string>();
+  const arabicOtherPayerReceiptNoticeOnly = async (): Promise<AnswerManifest | undefined> => {
+    const businessId = availableEvidence[0]?.businessId;
+    if (language !== 'ar' || facets.length !== 1 || facets[0].obligations.length !== 1 || verified.length ||
+        !input.foreground || !budget.nativeTiming || input.natural || input.requireCompleteCoverage ||
+        verificationProtocol !== 'v2' || requestedExtractionProtocol !== 'v2' || ownerProposalIndex !== undefined ||
+        catalogProposal || cancellationProposals.length || canonicalConfiguration || literalSnapshot || catalogRequirements.length ||
+        documentaryInventoryIds.length || !proposalParseComplete || extractionIncomplete || conflicts.size || unscopedVerifierFailure ||
+        !proposed.units.length || parsed.decisions.length !== proposed.units.length ||
+        !Number.isSafeInteger(businessId) || businessId <= 0 || input.businessId !== businessId ||
+        !availableEvidence.every(e => e.businessId === businessId) ||
+        partialEvidenceHash(availableEvidence) !== partialEvidenceHash(input.evidence)) return;
+    const [facet] = facets, [obligation] = facet.obligations;
+    // Each proposed unit received exactly one explicit UNKNOWN verdict. Any
+    // contradiction, inapplicability, missing or duplicate verdict stays closed.
+    if (obligation.questionType !== 'requirement' || !unresolvedVerifierFacets.has(facet.id) ||
+        !proposed.units.every(unit => unit.facetIds.length === 1 && unit.facetIds[0] === facet.id &&
+          parsed.decisions.filter((d: any) => object(d) && d.unitId === unit.id).length === 1 &&
+          parsed.decisions.find((d: any) => object(d) && d.unitId === unit.id).relation === 'UNKNOWN')) return;
+    const coverage = Array.isArray(parsed.coverage) && parsed.coverage.length === 1 ? parsed.coverage[0] : undefined;
+    if (!object(coverage) || coverage.facetId !== facet.id || coverage.requestAligned !== true ||
+        coverage.materialFactsComplete !== false ||
+        !['MISSING_CONDITION', 'UNRESOLVED', 'MISSING_RELEVANT_FACT'].includes(coverage.incompletenessReason) ||
+        !Array.isArray(coverage.materialUnitIds) || coverage.materialUnitIds.length ||
+        !Array.isArray(coverage.obligations) || coverage.obligations.length !== 1 ||
+        coverage.obligations[0]?.obligationId !== obligation.id || coverage.obligations[0]?.status !== 'UNRESOLVED' ||
+        !Array.isArray(coverage.obligations[0]?.unitIds) || coverage.obligations[0].unitIds.length) return;
+    // Literal customer follow-up with the other-payer condition, and a planner
+    // obligation naming the same receipt and condition (Arabic or English).
+    const normalizeArabic = (text: string) => text.normalize('NFKC').replace(/[\u064b-\u065f\u0670]/gu, '').replace(/\s+/gu, ' ').trim();
+    const followUp = /^(?:و\s*)?هل (?:يجب|يلزم) (?:إحضاره|احضاره|تقديمه|إبرازه) ((?:إذا|اذا|إن|ان|لو) (?:دفع|سدد) شخص (?:آخر|اخر))[?؟]$/u;
+    const condition = followUp.exec(normalizeArabic(input.question))?.[1];
+    const plan = normalizeArabic(obligation.description);
+    const plannedQuestion = plan.replace(/^(?:(?:هل )?(?:يجب|يلزم) )?/u, 'هل يجب ')
+      .replace(/(?:إحضار|احضار) (?:إيصال|ايصال) الدفع/u, 'إحضاره').replace(/[?؟]?$/u, '?');
+    if (!condition || isExplicitBusinessActionRequest(input.question) || detectNormalizedIntent(input.question) === 'booking_lookup' ||
+        !(/(?:إيصال|ايصال) الدفع/u.test(plan) && followUp.exec(plannedQuestion)?.[1] === condition ||
+          receiptOtherPayerRequirementInquiry(obligation.description))) return;
+    // The referent comes only from this session's latest native verified
+    // publication: the customer asked for the receipt recommendation and the
+    // backend-attested reply recommended it from evidence that is still current.
+    const [previousUser, previousReply] = Array.isArray(input.history) ? input.history.slice(-2) : [];
+    const prior = input.priorVerifiedReply;
+    if (!prior || !object(previousUser) || previousUser.role !== 'user' || typeof previousUser.content !== 'string' ||
+        !object(previousReply) || previousReply.role !== 'assistant' || typeof previousReply.content !== 'string' ||
+        prior.user !== previousUser.content || prior.reply !== previousReply.content ||
+        !/^هل (?:تنصحون|توصون|ينصح|يوصى) ب(?:إحضار|احضار|تقديم|إبراز) (?:إيصال|ايصال) الدفع(?: (?:عند|خلال|في) الزيارة)?[?؟]$/u
+          .test(normalizeArabic(withoutNegatedBookingClauses(previousUser.content))) ||
+        !prior.units.some(unit => unit.verification === 'ENTAILED' && unit.modality === 'recommended' && !unit.negation &&
+          unit.evidenceRefs.length > 0 && unit.evidenceRefs.every(ref => availableEvidence.some(e => e.businessId === businessId &&
+            e.sourceId === ref.sourceId && e.chunkId === ref.chunkId && e.version === ref.version && e.text.includes(ref.exactQuote))))) return;
+    if (!await input.current()) return;
+    const notice: RequirementNotice = Object.freeze({ facetId: facet.id, obligationId: obligation.id, text: ARABIC_OTHER_PAYER_RECEIPT_UNRESOLVED });
+    const manifest: AnswerManifest = Object.freeze({ ...empty('UNAVAILABLE', 'NO_VERIFIED_UNITS'),
+      outcomes: Object.freeze([Object.freeze({ facetId: facet.id, status: 'UNAVAILABLE' as const, unitIds: Object.freeze([]),
+        obligations: Object.freeze([Object.freeze({ obligationId: obligation.id, status: 'UNRESOLVED' as const, unitIds: Object.freeze([]) })]),
+        requestAligned: true, materialFactsComplete: false, materialUnitIds: Object.freeze([]) })]),
+      unresolvedRequirements: Object.freeze([notice]), text: notice.text,
+      presentationFallback: false, presentationPath: 'direct_verified_units' as const, fallbackReason: null });
+    const token = Object.freeze({});
+    unresolvedNoticeAuthorities.set(token, Object.freeze({ businessId: businessId!, owner: budget.nativeTiming,
+      evidenceHash: partialEvidenceHash(availableEvidence), contractHash: unresolvedNoticeContractHash(manifest) }));
+    return Object.freeze({ ...manifest, unresolvedNoticeOnly: token });
+  };
+  let unscopedVerifierFailure = false;
   const irrelevantSupplements = new Set<string>();
   if(parsed.decisions.some((d:any)=>!object(d)||!proposed.units.some(u=>u.id===d.unitId)))diagnostic({stage:'verification',reason:'WRONG_VERDICT_ID'});
   for (const unit of proposed.units) {
     const decisions = parsed.decisions.filter((d: any) => object(d) && d.unitId === unit.id);
-    if (decisions.length !== 1) { diagnostic({stage:'verification',unitId:unit.id,reason:decisions.length?'DUPLICATE_VERDICT':'MISSING_VERDICT'});continue; }
+    if (decisions.length !== 1) { unscopedVerifierFailure = true; diagnostic({stage:'verification',unitId:unit.id,reason:decisions.length?'DUPLICATE_VERDICT':'MISSING_VERDICT'});continue; }
     const d = decisions[0];
     const flag=(key:string)=>typeof d[key]==='boolean'?d[key]:null;
     const flags={meaningPreserved:flag('meaningPreserved'),modalityPreserved:flag('modalityPreserved'),qualifiersPreserved:flag('qualifiersPreserved'),relevant:flag('relevant'),
@@ -912,6 +1052,8 @@ export async function buildEvidenceFirstAnswer(input: {
     }
     diagnostic({stage:'verification',unitId:unit.id,reason,relation:RELATIONS.includes(d.relation)?d.relation:'INVALID',flags,
       ...(localLanguage ? { localLanguage } : {})});
+    if (reason === 'UNKNOWN' && unit.facetIds.length === 1) unresolvedVerifierFacets.add(unit.facetIds[0]);
+    else if (reason !== 'ACCEPTED') unscopedVerifierFailure = true;
     if(reason==='CONTRADICTED')unit.facetIds.forEach(id=>conflicts.add(id));
     if(reason==='ACCEPTED')verified.push(Object.freeze({...unit,verification:'ENTAILED'}));
     // NOT_RELEVANT alone is insufficient: its earlier position in the rejection
@@ -952,7 +1094,8 @@ export async function buildEvidenceFirstAnswer(input: {
     extractionIncomplete=true;
   }
   diagnostic({stage:'verification',reason:'ACCEPTED',counts:{proposed:proposed.units.length,parsed:proposed.units.length,verified:verified.length,rejected:proposed.units.length-verified.length}});
-  const outcomes=assessCoverage(parsed.coverage,facets,verified,conflicts,diagnostic).map(o=>{
+  const independentlyReviewed = assessCoverage(parsed.coverage,facets,verified,conflicts,diagnostic);
+  const outcomes=independentlyReviewed.map(o=>{
     if(!extractionIncomplete||!o.unitIds.length)return o;
     // Contradictory producer metadata is not proof of complete inventory. Keep
     // independently verified facts but never upgrade this ambiguity to VERIFIED.
@@ -1023,7 +1166,15 @@ export async function buildEvidenceFirstAnswer(input: {
     const notice=serviceScopeUncertainty(relationshipRequest.requirement.serviceName,language);
     if(notice&&verified.length&&(!input.languageSafe||input.languageSafe({...verified[0],text:notice})))sourceScopeNotice=notice;
   }
-  if (!verified.length) return Object.freeze({ ...empty('UNAVAILABLE','NO_VERIFIED_UNITS'), outcomes });
+  if (!verified.length) {
+    // Option B: a completed, well-formed independent verdict judged every proposed
+    // unit UNKNOWN for the Arabic other-payer receipt follow-up. Publish only the
+    // backend notice that the requirement is unestablished, never an extracted
+    // fact. Every other zero-verified case keeps the existing unavailable path.
+    const notice = await arabicOtherPayerReceiptNoticeOnly();
+    if (notice) return notice;
+    return Object.freeze({ ...empty('UNAVAILABLE','NO_VERIFIED_UNITS'), outcomes });
+  }
   if (isSourceExhaustiveProtocol(verificationProtocol) && (!proposalParseComplete || extractionIncomplete || conflicts.size ||
     !catalogComplete || verified.length !== proposed.units.length)) {
     diagnostic({ stage: 'verification', reason: 'INVALID_COVERAGE', ...sourceCoverageField(() => describeSourceCoveragePrecondition({ kind: 'PRECONDITION',
@@ -1118,16 +1269,121 @@ export async function buildEvidenceFirstAnswer(input: {
           c.obligations.some((d:any)=>d.obligationId===obligation.id && d.status==='UNRESOLVED' && Array.isArray(d.unitIds)&&!d.unitIds.length)) : o.status==='VERIFIED') &&
         JSON.stringify([...o.materialUnitIds].sort())===JSON.stringify([...o.unitIds].sort());
     }) && new Set(input.evidence.map(e=>e.id)).size===input.evidence.length;
+  // A verified general recommendation can contextualize an unanswered
+  // conditional requirement. Bind this receipt follow-up to the latest exchange
+  // and the literal payer condition before issuing the existing partial token.
+  // The recommendation never counts as coverage of the requirement.
+  let receiptNotice: RequirementNotice | undefined;
+  if (language === 'ar' && facets.length === 1 && facets[0].obligations.length === 1 && manifest.units.length === 1) {
+    const normalizeArabic = (text: string) => text.normalize('NFKC').replace(/[\u064b-\u065f\u0670]/gu, '').replace(/\s+/gu, ' ').trim();
+    const receipt = /(?:إيصال|ايصال) الدفع/u;
+    const followUp = /^(?:و\s*)?هل (?:يجب|يلزم) (?:إحضاره|احضاره|تقديمه|إبرازه) ((?:إذا|اذا|إن|ان|لو) (?:دفع|سدد) شخص (?:آخر|اخر))[?؟]$/u;
+    const condition = followUp.exec(normalizeArabic(input.question))?.[1];
+    const [previousUser, previousReply] = Array.isArray(input.history) ? input.history.slice(-2) : [];
+    const advicePattern = /^(?:ينصح|نوصي|يوصى|ننصح(?:ك)?) ب(?:إحضار|احضار|تقديم|إبراز) (?:إيصال|ايصال) الدفع(?: معك)?(?: (?:عند|خلال|في) الزيارة)?[.!؟?]?$/u;
+    const priorReceiptQuestion = object(previousUser) && previousUser.role === 'user' && typeof previousUser.content === 'string' &&
+      /^هل (?:تنصحون|توصون|ينصح|يوصى) ب(?:إحضار|احضار|تقديم|إبراز) (?:إيصال|ايصال) الدفع(?: (?:عند|خلال|في) الزيارة)?[?؟]$/u
+        .test(normalizeArabic(withoutNegatedBookingClauses(previousUser.content)));
+    const prior = input.priorVerifiedReply;
+    const sameEvidence = (a: AnswerUnit['evidenceRefs'][number], b: AnswerUnit['evidenceRefs'][number]) =>
+      a.sourceId === b.sourceId && a.chunkId === b.chunkId && a.version === b.version && a.exactQuote === b.exactQuote;
+    const assistantReply = object(previousReply) && previousReply.role === 'assistant' &&
+      typeof previousReply.content === 'string' ? previousReply.content : undefined;
+    const verifiedPriorRecommendation = assistantReply !== undefined && !!prior && object(previousUser) &&
+      prior.user === previousUser.content && prior.reply === assistantReply &&
+      prior.units.some(previousUnit => previousUnit.verification === 'ENTAILED' &&
+        previousUnit.modality === 'recommended' && !previousUnit.negation &&
+        previousUnit.evidenceRefs.length > 0 &&
+        previousUnit.evidenceRefs.every(ref => manifest.units[0].evidenceRefs.some(currentRef => sameEvidence(ref, currentRef))));
+    const literalPriorRecommendation = assistantReply !== undefined &&
+      advicePattern.test(normalizeArabic(assistantReply).replace(/^نعم[,،]\s*/u, ''));
+    const [facet] = facets, [obligation] = facet.obligations, [unit] = manifest.units;
+    const coverage = parsed.coverage?.[0];
+    const outcome = manifest.outcomes[0];
+    const plan = normalizeArabic(obligation.description);
+    const advice = normalizeArabic(unit.text);
+    const plannedQuestion = plan.replace(/^(?:(?:هل )?(?:يجب|يلزم) )?/u, 'هل يجب ')
+      .replace(/(?:إحضار|احضار) (?:إيصال|ايصال) الدفع/u, 'إحضاره').replace(/[?؟]?$/u, '?');
+    if (condition && priorReceiptQuestion &&
+        (verifiedPriorRecommendation || literalPriorRecommendation && advicePattern.test(advice)) &&
+        obligation.questionType === 'requirement' &&
+        (receipt.test(plan) && followUp.exec(plannedQuestion)?.[1] === condition ||
+          receiptOtherPayerRequirementInquiry(obligation.description)) &&
+        unit.verification === 'ENTAILED' && unit.modality === 'recommended' && !unit.negation &&
+        !/(?:يجب|يلزم|إلزامي|الزامي|إجباري|اجباري|مطلوب|\b(?:must|required|mandatory)\b)/iu.test(unit.text) &&
+        unit.facetIds.length === 1 && unit.facetIds[0] === facet.id &&
+        Array.isArray(parsed.coverage) && parsed.coverage.length === 1 && coverage?.facetId === facet.id &&
+        ['UNRESOLVED', 'MISSING_RELEVANT_FACT', 'MISSING_CONDITION'].includes(coverage.incompletenessReason) &&
+        outcome?.requestAligned && outcome.status === 'PARTIAL' && !outcome.materialFactsComplete &&
+        outcome.materialUnitIds.length === 1 && outcome.materialUnitIds[0] === unit.id &&
+        outcome.obligations.length === 1 && outcome.obligations[0].status === 'UNRESOLVED' && !outcome.obligations[0].unitIds.length) {
+      receiptNotice = Object.freeze({ facetId: facet.id, obligationId: obligation.id,
+        text: 'لا أستطيع تأكيد ما إذا كان إحضار إيصال الدفع إلزاميًا إذا دفع شخص آخر.' });
+    }
+  }
   if (input.foreground && budget.nativeTiming && !input.natural && !input.requireCompleteCoverage &&
-      proposalParseComplete && !extractionIncomplete && !conflicts.size && catalogComplete && validPartialCoverage && (descriptivePartial||requirementPartial) &&
+      proposalParseComplete && !extractionIncomplete && !conflicts.size && catalogComplete &&
+      (receiptNotice ? !operationalClause(input.question) && input.businessId === businessId : validPartialCoverage && (descriptivePartial||requirementPartial)) &&
       (!relationshipRequest || Boolean(sourceScopeNotice)) &&
       parsed.decisions.length===proposed.units.length && verified.length===proposed.units.length && manifest.units.length===verified.length && manifest.units.every(citedNumeralsPresent) &&
       Number.isSafeInteger(businessId) && businessId>0 && availableEvidence.every(e=>e.businessId===businessId) &&
       partialEvidenceHash(availableEvidence)===partialEvidenceHash(input.evidence) && partialEvidenceHash(manifestEvidence)===partialEvidenceHash(availableEvidence)) {
-    if(requirementPartial)manifest=renderVerifiedManifest({...manifest,unresolvedRequirements:requirementNotices!});
+    if (receiptNotice || requirementPartial) manifest = renderVerifiedManifest({ ...manifest,
+      unresolvedRequirements: receiptNotice ? Object.freeze([receiptNotice]) : requirementNotices! });
     const token=Object.freeze({});
     partialAuthorities.set(token,Object.freeze({businessId,owner:budget.nativeTiming,evidenceHash:partialEvidenceHash(manifestEvidence),contractHash:partialContractHash(manifest)}));
     manifest=Object.freeze({...manifest,qualifiedPartial:token});
+  }
+  // Disjoint literal questions may retain a complete sibling when the other
+  // was independently unresolved or failed its numerical citation. Reuse the
+  // existing current-run publication token and keep the entire evidence pin.
+  if (!manifest.qualifiedPartial && input.foreground && budget.nativeTiming && !input.natural && !input.requireCompleteCoverage &&
+      verificationProtocol === 'v2' && requestedExtractionProtocol === 'v2' && ownerProposalIndex === undefined &&
+      !catalogProposal && !cancellationProposals.length && !canonicalConfiguration && !literalSnapshot &&
+      !catalogRequirements.length && !documentaryInventoryIds.length &&
+      (!extractionIncomplete || !!isolatedNumericalFacets) && !conflicts.size && !unscopedVerifierFailure &&
+      parsed.decisions.length === proposed.units.length && proposed.units.every(u => u.facetIds.length === 1) &&
+      manifest.units.length === verified.length && availableEvidence.length > 0 &&
+      Number.isSafeInteger(businessId) && input.businessId === businessId && availableEvidence.every(e => e.businessId === businessId) &&
+      partialEvidenceHash(availableEvidence) === partialEvidenceHash(input.evidence) &&
+      partialEvidenceHash(manifestEvidence) === partialEvidenceHash(availableEvidence)) {
+    const questions = input.question.trim().split(/(?<=[?؟])\s+/u);
+    const exactQuestions = isBusinessInformationQuestion(input.question) && !operationalClause(input.question) &&
+      facets.length > 1 && facets.length === questions.length && new Set(questions).size === questions.length &&
+      facets.every((facet, i) => facet.obligations.length === 1 &&
+        ['requirement', 'recommendation'].includes(facet.obligations[0].questionType) &&
+        facet.obligations[0].description === questions[i] && /[?؟]$/u.test(questions[i]) && !operationalClause(questions[i]));
+    const gaps = independentlyReviewed.filter(o => o.status !== 'VERIFIED');
+    const gapIds = new Set(gaps.map(o => o.facetId));
+    const scopedFailures = [...unresolvedVerifierFacets, ...(isolatedNumericalFacets ?? [])].every(id => gapIds.has(id));
+    const complete = independentlyReviewed.filter(o => !gapIds.has(o.facetId));
+    const coveredIds = new Set(complete.flatMap(o => o.materialUnitIds));
+    const units = manifest.units.filter(u => coveredIds.has(u.id));
+    const coverage = Array.isArray(parsed.coverage) && parsed.coverage.length === facets.length ? parsed.coverage : [];
+    if (exactQuestions && gaps.length && complete.length && scopedFailures && gaps.every(o => o.requestAligned &&
+        !o.materialFactsComplete && o.obligations[0]?.status === 'UNRESOLVED' && coverage.some(c => c?.facetId === o.facetId &&
+          (c.incompletenessReason === 'UNRESOLVED' ||
+            c.incompletenessReason === 'MISSING_CONDITION' && isolatedNumericalFacets?.has(o.facetId)))) && complete.every(o =>
+        o.obligations[0]?.status === 'COVERED' && o.materialUnitIds.length > 0 &&
+        coverage.some(c => c?.facetId === o.facetId && c.incompletenessReason === 'NONE') &&
+        JSON.stringify([...o.materialUnitIds].sort()) === JSON.stringify([...o.obligations[0].unitIds].sort())) &&
+        units.length === coveredIds.size && units.every(citedNumeralsPresent)) {
+      const limitations = sourceExhaustiveLimitations(input.question, language, facets,
+        gaps.map(o => ({ facetId: o.facetId, obligationId: o.obligations[0].obligationId })));
+      if (limitations && await input.current()) {
+        const outcomes = independentlyReviewed.map(o => gapIds.has(o.facetId)
+          ? Object.freeze({ ...o, status: 'UNAVAILABLE' as const, materialFactsComplete: false, unitIds: [], materialUnitIds: [],
+            obligations: Object.freeze(o.obligations.map(obligation => Object.freeze({ ...obligation, unitIds: [] }))) }) : o);
+        const token = Object.freeze({});
+        const partial = renderVerifiedManifest({ ...manifest, units: Object.freeze(units), outcomes: Object.freeze(outcomes),
+          obligationLimitations: limitations, qualifiedPartial: token, presentationFallback: false,
+          presentationPath: 'direct_verified_units', fallbackReason: null,
+          presentation: Object.freeze({ unitIds: Object.freeze(units.map(u => u.id)), prefix: 'none', addition: false }) });
+        partialAuthorities.set(token, Object.freeze({ businessId: businessId!, owner: budget.nativeTiming,
+          evidenceHash: partialEvidenceHash(manifestEvidence), contractHash: partialContractHash(partial) }));
+        return partial;
+      }
+    }
   }
   // This new permission needs no model-authored transitions. Retain every exact
   // verified sentence and its mandatory backend notices in canonical order.

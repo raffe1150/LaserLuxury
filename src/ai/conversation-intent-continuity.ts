@@ -30,9 +30,21 @@ export function splitMixedBusinessRequest(text: string, isAction = isExplicitBus
   return null;
 }
 
+function hasArabicObjectReference(text: string): boolean {
+  return /(?<![\p{L}\p{M}])(?:[وف])?(?:إحضار|احضار|تقديم|إبراز|ابراز)(?:ها|ه)(?![\p{L}\p{M}])/u.test(text.replace(/[\u064b-\u065f\u0670]/gu, ''));
+}
+
 /** Reference recognition is not reference resolution and never supplies facts. */
 export function hasConversationReference(text: string): boolean {
+  // Arabic object suffixes can carry the reference without a standalone pronoun.
+  if (hasArabicObjectReference(text)) return true;
   return /(?<![\p{L}\p{M}])(?:it|that|there|this|them|same\s+place|det|den|där|samma\s+plats|das|dort|demselben\s+ort|eso|all[ií]|mismo\s+lugar|آنجا|آن|همان\s+مکان|هناك|ذلك|نفس\s+المكان)(?![\p{L}\p{M}])/iu.test(text);
+}
+
+/** Ignore a Persian pronoun only within a receive-and-follow conditional
+ * naming the instruction. This probe never rewrites the customer request. */
+export function maskPersianInlineInstructionReference(text: string): string {
+  return text.replace(/(^|[،,:?؟]\s*)(اگر\s+(?:دستور(?:العمل)?|راهنمایی)(?:[‌ ]های)?\s+(?:آماده[‌ ]سازی|ایمنی|بهداشتی)\s+(?:را\s+)?(?:دریافت\s+کرده[‌ ](?:ام|ایم)|گرفته[‌ ](?:ام|ایم))\s+(?:[،,]\s*)?باید\s+)آن(?=\s+را\s+رعایت\s+کن(?:م|یم)\s*[?؟])/gu, '$1$2');
 }
 
 /** A coordinated distance predicate refers to the location named in the same
@@ -47,7 +59,7 @@ export function hasExternalConversationReference(text: string): boolean {
   // supplies its own event antecedent. Mask only its demonstrative in this
   // reference probe; the original question is never rewritten or resolved to
   // an appointment identity. Alternatives and external references stay closed.
-  const inlineCapability = text.replace(/^(\s*(?:wenn|falls)\s+ich\s+(?:meinen|einen|den)\s+Termin\s+(?:(?!(?:und|oder|das|dort|sein|ihr|absagen|stornieren|verschieben)\b)\p{L}+\s+){0,3}(?:absagen|stornieren|verschieben)\s+(?:muss|müsste),\s*(?:kann|könnte|darf)\s+ich)\s+das(?=\s+[^?؟.!;\n]{1,65}[?؟])/iu, '$1');
+  const inlineCapability = maskPersianInlineInstructionReference(text).replace(/^(\s*(?:wenn|falls)\s+ich\s+(?:meinen|einen|den)\s+Termin\s+(?:(?!(?:und|oder|das|dort|sein|ihr|absagen|stornieren|verschieben)\b)\p{L}+\s+){0,3}(?:absagen|stornieren|verschieben)\s+(?:muss|müsste),\s*(?:kann|könnte|darf)\s+ich)\s+das(?=\s+[^?؟.!;\n]{1,65}[?؟])/iu, '$1');
   const referenceText = inlineCapability
     .replace(/\b(?:this|that)\s+(?:chat|conversation)\b/giu, 'the chat')
     .replace(/\b((?:I|we)\s+(?:heard|read|understand)|(?:you|they)\s+said)\s+that\b/giu, '$1')
@@ -70,7 +82,11 @@ export function continuesReferenceClarification(text: string): boolean {
 
 /** No factual or booking claims: these are requests for a missing referent. The
  * second attempt gives a concrete instruction instead of repeating the question. */
-export function referenceClarificationReply(language: string, repeated = false): string {
+export function referenceClarificationReply(language: string, repeated = false, question = ''): string {
+  if (language === 'sv' && /\bdet\s+(?:första|andra|tredje|fjärde|sista)\b/iu.test(question))
+    return repeated ? 'Ange vilken av frågorna du menar, så hjälper jag dig.' : 'Vad syftar du på? Vilken av frågorna menar du?';
+  if (language === 'ar' && hasArabicObjectReference(question))
+    return repeated ? 'يرجى ذكر الشيء الذي تقصد إحضاره أو تقديمه.' : 'ما المقصود تحديدًا؟ ما الشيء الذي تسأل عنه؟';
   const copy: Record<string, [string, string]> = {
     en: ['What are you referring to, and which place do you mean?', 'Please name what you mean and the specific place so I can help.'],
     sv: ['Vad syftar du på, och vilken plats menar du?', 'Ange det du syftar på och den specifika platsen, så att jag kan besvara frågan.'],

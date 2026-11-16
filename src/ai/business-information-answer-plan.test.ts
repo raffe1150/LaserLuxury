@@ -200,3 +200,67 @@ for(const wrong of [false,true])test(`an actual prohibition stays normative; wro
  assert.equal(manifest.units.length,wrong?0:1);if(!wrong){assert.equal(manifest.units[0].modality,'prohibited');assert.equal(manifest.outcomes[0].status,'VERIFIED');}
  else assert.ok(events.some(e=>e.reason==='MODALITY_CHANGED'));
 });
+
+test('conditional exemption proposals keep quantities scoped to the cited branch', async () => {
+ const mandatory = 'Kom 15 minuter tidigt om du inte har fyllt i formuläret.';
+ const general = 'Om du redan har fyllt i formuläret behöver du inte komma tidigt.';
+ const quantified = 'Om du redan har fyllt i formuläret behöver du inte komma 15 minuter tidigt.';
+ const source = (completed: string) => answerEvidence(77, [{ businessId: 77, sourceId: 'arrival',
+  text: mandatory + ' ' + completed, metadata: { documentRevision: 'current' } }]);
+ const unit = (text: string, exactQuote: string, negation = true) => ({
+  ...proposal(text), modality: 'required', negation, predicate: 'ankomst före besöket', value: 'ankomstpolicy',
+  qualifiers: [negation ? 'om du redan har fyllt i formuläret' : 'om du inte har fyllt i formuläret'],
+  evidenceRefs: [{ evidenceId: 'e1', exactQuote }],
+ });
+ assert.equal(parseAnswerUnits({ units: [unit(general, general)] }, facets, source(general), 'sv').units.length, 1);
+ assert.equal(parseAnswerUnits({ units: [unit(mandatory, mandatory, false)] }, facets, source(general), 'sv').units.length, 1);
+ assert.equal(parseAnswerUnits({ units: [unit(quantified, quantified)] }, facets, source(quantified), 'sv').units.length, 1);
+ assert.equal(parseAnswerUnits({ units: [unit(quantified, general)] }, facets, source(general), 'sv').units.length, 0);
+ assert.equal(parseAnswerUnits({ units: [unit(quantified, quantified)] }, facets, source(general), 'sv').units.length, 0);
+ const { manifest } = await run({ units: [proposal()], decisions: [{ ...verdict('u1', 'f1'), relation: 'CONTRADICTED' }] });
+ assert.equal(manifest.units.length, 0);
+});
+
+test('independent verification receives distinct opposite policy branches and an intact receipt recommendation', async () => {
+ const unfilled = 'Kom 15 minuter tidigt om du inte har fyllt i formuläret.';
+ const completed = 'Om du redan har fyllt i formuläret behöver du inte komma tidigt.';
+ const receipt = 'Vi rekommenderar att du tar med ditt betalningskvitto till besöket.';
+ const conditionalFacets = parseRequestedFacets([
+  { subject:'ankomst', attribute:'om formuläret inte är ifyllt', questionType:'requirement' },
+  { subject:'ankomst', attribute:'om formuläret redan är ifyllt', questionType:'requirement' },
+  { subject:'besök', attribute:'vad bör jag ta med', questionType:'recommendation' },
+ ]).facets;
+ const sources = answerEvidence(77, [
+  { businessId:77, sourceId:'arrival', text:unfilled + ' ' + completed, metadata:{documentRevision:'arrival-v1'} },
+  { businessId:77, sourceId:'bring', text:receipt, metadata:{documentRevision:'bring-v1'} },
+  { businessId:78, sourceId:'foreign', text:'Du måste komma 90 minuter tidigt.', metadata:{documentRevision:'foreign-v1'} },
+ ]);
+ const units = [
+  { ...proposal(unfilled), modality:'required', negation:false, value:'15 minuter', qualifiers:['om du inte har fyllt i formuläret'] },
+  { ...proposal(completed,'f2'), modality:'required', negation:true, value:'tidig ankomst är inte nödvändig', qualifiers:['om du redan har fyllt i formuläret'] },
+  { ...proposal(receipt,'f3'), evidenceRefs:[{evidenceId:'e2',exactQuote:receipt}] },
+ ];
+ const manifest = await buildEvidenceFirstAnswer({
+  businessId:77, question:'Måste jag komma tidigt om formuläret är ifyllt eller inte ifyllt, och vad bör jag ta med?',
+  language:'sv', facets:conditionalFacets, evidence:sources, authoritativeEvidence:'', businessTone:{}, history:[],
+  budget:new InformationBudget(), current:async()=>true, generate:async(stage, _instruction, data:any) => {
+   if (stage === 'extraction') return { text:JSON.stringify({oversized:false,units}) };
+   if (stage === 'verification') {
+    assert.deepEqual(data.units.map(({ id, ...claim }: any) => claim), units);
+    assert.deepEqual(data.evidence.map((item:any) => item.businessId), [77,77]);
+    return { text:JSON.stringify({
+     decisions: data.units.map((item:any) => verdict(item.id,item.facetIds[0])),
+     coverage: data.facets.map((facet:any,i:number) => ({
+      facetId:facet.id, requestAligned:true, materialFactsComplete:true, incompletenessReason:'NONE', materialUnitIds:['u'+(i+1)],
+      obligations:facet.obligations.map((obligation:any)=>({obligationId:obligation.id,status:'COVERED',unitIds:['u'+(i+1)]})),
+     })),
+    }) };
+   }
+   throw Error('Unexpected provider stage');
+  },
+ });
+ assert.deepEqual(manifest.units.map(unit=>[unit.text,unit.verification,unit.evidenceRefs[0].version]), [
+  [unfilled,'ENTAILED','arrival-v1'], [completed,'ENTAILED','arrival-v1'], [receipt,'ENTAILED','bring-v1'],
+ ]);
+ assert.ok(manifest.outcomes.every(outcome=>outcome.status==='VERIFIED'));
+});

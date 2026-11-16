@@ -4,7 +4,7 @@ import {acceptanceQuestions,preliminaryAcceptancePlan} from '../../tests/fixture
 import {directVisitPolicyChecklistPlan,wholeQuestionInformationPlan,literalInformationFallback} from './knowledge-planning';
 import {parseRequestedFacets} from './business-information-answer-plan';
 import {readFileSync} from 'node:fs';
-const safe=['en','sv','de','es','ar'];
+const safe=['en','sv','de','es','ar','fa'];
 for(const [language,q]of Object.entries(acceptanceQuestions.A))test(`${language}: original checklist preserves full request, not invented obligations`,()=>{
  const plan=directVisitPolicyChecklistPlan(q,true);assert.equal(!!plan,safe.includes(language));
  if(plan){assert.deepEqual(plan,literalInformationFallback(q,true));assert.equal(plan.canonicalMeaning,q);assert.deepEqual(plan.queries,[q]);const {facets}=parseRequestedFacets(plan.requestedFacets);assert.equal(facets[0].attribute,q);assert.equal(facets[0].obligations[0].description,q);assert.equal('coverage'in plan,false);assert.equal('evidence'in plan,false);}
@@ -13,7 +13,11 @@ for(const [language,q]of Object.entries(acceptanceQuestions.A))test(`${language}
 test('exact failed Swedish capture now reuses literal fallback without altering question',()=>{
  const r=JSON.parse(readFileSync('docs/validation/shared-core-2026-10-22/asv-whatsapp-acceptance-20261025/A-sv.result.json','utf8'));assert.equal(r.spec.question,acceptanceQuestions.A.sv);assert.equal(r.state.stopReason,'PROVIDER_STAGE_ABORT');assert.equal(r.state.calls.at(-1).stage,'planning');assert.equal(r.decisions.some((e:any)=>e.stage==='planning'&&e.timeoutMs===2500&&e.reason==='DEADLINE'),true);assert.deepEqual(wholeQuestionInformationPlan(r.spec.question,true),literalInformationFallback(r.spec.question,true));
 });
-test('Persian unresolved local reference retains guarded planning rather than overriding reference resolution',()=>{assert.equal(literalInformationFallback(acceptanceQuestions.A.fa,true),null);assert.equal(wholeQuestionInformationPlan(acceptanceQuestions.A.fa,true),null);});
+test('Persian local instruction reference retains the original conditional, while an external reference stays unresolved',()=>{
+ assert.deepEqual(wholeQuestionInformationPlan(acceptanceQuestions.A.fa,true),literalInformationFallback(acceptanceQuestions.A.fa,true));
+ const ambiguous=acceptanceQuestions.A.fa.replace('دستور آماده‌سازی','چیزی');
+ assert.equal(wholeQuestionInformationPlan(ambiguous,true),null);
+});
 for(const q of [
  'Inför besöket: måste jag följa hygienråd om jag har fått dem, och får jag ta med egna handskar?',
  'Före mitt besök, måste jag inte äta nötter, och bör jag undvika stark parfym?',
@@ -49,3 +53,22 @@ const negatives=[
 ];
 for(const q of negatives)test(`ambiguous/operational/unsafe checklist retains guard: ${q}`,()=>{assert.equal(directVisitPolicyChecklistPlan(q,true),null);assert.equal(wholeQuestionInformationPlan(q,true),null);});
 for(const spec of preliminaryAcceptancePlan.filter(s=>s.family!=='A'))test(`${spec.id}: descriptive checklist does not absorb mixed catalog or missing-fee requests`,()=>assert.equal(directVisitPolicyChecklistPlan(spec.question,true),null));
+
+test('Arabic receipt recommendation keeps a separate negated booking clause outside Knowledge coverage', () => {
+ const receipt = 'هل تنصحون بإحضار إيصال الدفع؟';
+ const full = 'لا تلغ موعدي. ' + receipt;
+ const plan = wholeQuestionInformationPlan(full, true);
+ assert.equal(plan?.canonicalMeaning, full);
+ assert.deepEqual(plan?.queries, [receipt]);
+ assert.deepEqual(plan?.requestedFacets.flatMap(facet => facet.obligations), [
+  { description: receipt, questionType: 'recommendation' },
+ ]);
+ for (const other of [
+  'ألغ موعدي. ' + receipt,
+  'لا تلغ موعدي واحجز موعدا آخر. ' + receipt,
+  'لا تلغ موعدي. هل يجب إحضار إيصال الدفع إذا دفع شخص آخر؟',
+  'لا تلغ موعدي. هل تنصحون بإحضاره؟',
+  'لا تلغ موعدي. ' + receipt + ' متى تفتحون؟',
+ ]) assert.ok(!wholeQuestionInformationPlan(other, true)?.requestedFacets.some(facet => facet.questionType === 'recommendation'));
+ assert.equal(literalInformationFallback(full, true, true), null);
+});

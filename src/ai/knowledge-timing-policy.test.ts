@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ACCURACY_FIRST_POLICY as P, NativeKnowledgeTiming, accuracyFirstExtractionAllowance as allowance,
-  accuracyFirstEnabled, knowledgeAdmission, nativeKnowledgeTiming, runAccuracyFirstNative } from './knowledge-timing-policy';
+  accuracyFirstEnabled, continuityTestPlanningAllowance, knowledgeAdmission, nativeKnowledgeTiming, runAccuracyFirstNative } from './knowledge-timing-policy';
 import { InformationBudget, completeKnowledgeManifest } from './business-information-answer-plan';
 import { knowledgeProposalAllowance } from './knowledge-planning';
 import { verificationAdmissionDiagnostic } from './knowledge-answer-protocol';
@@ -189,9 +189,31 @@ test('late uncooperative completion after fallback cannot send a second response
  assert.equal(sends,1);await assert.rejects(owner!.deliver(async()=>{sends++;}),/closed|deadline|delivery_attempted/);
  assert.equal(sends,1);assert.equal(knowledgeAdmission().snapshot().active,0);
 });
+test('continuity allowance leaves extraction and verification reserves and yields to an earlier outer deadline', async t => {
+  clock(t);
+  assert.equal(continuityTestPlanningAllowance(32_000), 8_000);
+  assert.equal(continuityTestPlanningAllowance(28_500), 4_500);
+  assert.equal(continuityTestPlanningAllowance(24_000), 0);
+  const late = deferred<string>();
+  let calls = 0, signal: AbortSignal | undefined;
+  const pending = runAiProviderRequest({ timeoutMs: continuityTestPlanningAllowance(32_000),
+    deadlineAt: Date.now() + 400, cancelOnTimeout: true, invoke: async (_, supplied) => {
+      calls++;
+      signal = supplied;
+      return late.promise;
+    } });
+  const rejected = assert.rejects(pending, (error: any) => error.category === 'TIMEOUT');
+  t.mock.timers.tick(400);
+  await rejected;
+  assert.ok(signal?.aborted);
+  late.resolve('late planner result');
+  await flush();
+  assert.equal(calls, 1);
+});
+
 test('parent cancellation reaches provider, cannot be retried, and cannot become late success',async()=>{
  const parent=new AbortController(),late=deferred<string>();let calls=0,signal:AbortSignal|undefined;
- const pending=runAiProviderRequest({timeoutMs:20000,cancelOnTimeout:true,signal:parent.signal,
+ const pending=runAiProviderRequest({timeoutMs:continuityTestPlanningAllowance(32_000),cancelOnTimeout:true,signal:parent.signal,
   invoke:async(_,s)=>{calls++;signal=s;return late.promise;}});
  const rejected=assert.rejects(pending);await flush();parent.abort(Error('aborted'));await rejected;
  assert.ok(signal?.aborted);late.resolve('late');await flush();assert.equal(calls,1);

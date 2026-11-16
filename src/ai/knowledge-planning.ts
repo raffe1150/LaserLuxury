@@ -1,6 +1,6 @@
 import { businessInformationTopics, isExplicitBusinessActionRequest } from './business-information';
 import {withoutExplicitParkingFeeTerms, hasDocumentaryVisitAccess, isArrivalInformationQuestion, hasVisitInformationContext} from './information-request-contract';
-import { hasConversationReference, hasExternalConversationReference } from './conversation-intent-continuity';
+import { hasConversationReference, hasExternalConversationReference, maskPersianInlineInstructionReference } from './conversation-intent-continuity';
 import { documentAttributeQuestions } from './knowledge-answer-presentation';
 import { hasServiceName } from './source-aware-service-proposal';
 
@@ -112,6 +112,19 @@ export function literalInformationFallback(question: string, businessInformation
     // No text is removed from the request passed to extraction/verification.
     .replace(/\b(?:and|och|und|y)\s+(?:is|are|är|ist|sind|es)\s+(?:it|den|det|das|eso)\b/giu, '');
   if (hasExternalConversationReference(references)) return null;
+  // A separate booking veto is conversation context, not an item for Knowledge
+  // coverage. Scope only a literal, self-contained receipt recommendation.
+  const clauses = text.split(/(?<=[.!؟?])\s+/u);
+  const receiptQuestion = clauses[1];
+  if (clauses.length === 2 && /^لا (?:تلغ|تلغي) (?:موعدي|حجزي)[.!]$/u.test(clauses[0]) &&
+      /^هل (?:تنصحون|توصون|يُنصح|ينصح|يوصى) ب(?:إحضار|احضار|تقديم) (?:إيصال|ايصال) الدفع(?: (?:عند|في) الزيارة)?[?؟]$/u.test(receiptQuestion)) {
+    return {
+      canonicalMeaning: text, queries: [receiptQuestion], queryLanguages: {}, requestKind: 'BUSINESS_INFORMATION',
+      referenceResolution: 'NOT_REQUIRED' as const,
+      requestedFacets: [{ subject: 'إيصال الدفع', attribute: receiptQuestion, questionType: 'recommendation',
+        obligations: [{ description: receiptQuestion, questionType: 'recommendation' }] }],
+    };
+  }
   const cancellation = cancellationPolicyNoticePlan(text, businessInformationRecognized, referenceRequired);
   if (cancellation) return cancellation;
   return {
@@ -167,6 +180,9 @@ function localizedVisitPolicyChecklistPlan(question: string, recognized: boolean
       action:/\b(?:befolgen|mitbringen|tragen|meiden|vermeiden|essen|trinken|mitnehmen|lassen)\b/iu},
     {language:'es',lead:/^(?:antes|durante)\s+(?:de\s+)?(?:la|mi|una)\s+visita\s*[:,،]\s*/iu,
       heads:/(?:¿\s*)?(?<![\p{L}\p{M}])(?:debo|debería|puedo)\s+(?:no\s+)?(?:seguir|traer|llevar|evitar|comer|beber)\b/giu,maxQuestions:1,action:null},
+    {language:'fa',lead:/^(?:برای|قبل\s+از|پیش\s+از)\s+مراجعه\s*[,،:]\s*/u,
+      heads:/(?:^اگر\s+[^?؟]+?\s+باید\s+|(?<![\p{L}\p{M}])(?:بهتر\s+است\s+از|می[‌ ]?توانم)\s+)/gu,maxQuestions:3,
+      action:/(?:رعایت\s+کنم|پرهیز\s+کنم|بیاورم|بخورم)\s*[?؟]/u},
     {language:'ar',lead:/^(?:قبل|أثناء|اثناء)\s+(?:الزيارة|زيارتي)\s*[,،:]\s*/u,
       heads:/(?<![\p{L}\p{M}])و?هل\s+(?:يجب\s+اتباع|ينصح\s+بتجنب|يمكنني\s+(?:إحضار|احضار))\s+/gu,maxQuestions:3,action:null},
   ];
@@ -184,6 +200,7 @@ function localizedVisitPolicyChecklistPlan(question: string, recognized: boolean
   // A received-object anaphor is local only when its explicit object and
   // receipt condition occur together in the same conduct clause.
   if(profile.language==='sv')references=references.replace(/(?:måste|bör)\s+jag\s+(?:inte\s+)?följa\s+(?:[\p{L}\p{M}-]+\s+){1,6}om\s+jag\s+(?:inte\s+)?har\s+fått\s+dem\b/giu,s=>s.replace(/dem$/iu,''));
+  if(profile.language==='fa')references=maskPersianInlineInstructionReference(references);
   if(hasConversationReference(references) || /(?<![\p{L}\p{M}])(?:dem|dieser|diese|dieses|dasselbe|esto|esta|este|aquello|هناك|هذا|هذه|همان)(?![\p{L}\p{M}])/iu.test(references))return null;
   if(heads[0].index!==0)return null;
   for(let i=0;i<heads.length;i++){

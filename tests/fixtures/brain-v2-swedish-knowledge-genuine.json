@@ -1,0 +1,16 @@
+{
+  "authorizationId": "knowledge-sv-5fc32a1f",
+  "fixture": "sv-complete-v1",
+  "extraction": {
+    "requestSha256": "4a2f09fd547f49bc0c65d9640373a82793e0cab0c70ca94db5accb4be5647293",
+    "responseId": "resp_0338a8c6806465cc016af9b2efe1ac87d285ac8125314c0e70",
+    "outputSha256": "4aba07c1c534aada78026ec913569941ccea9332625b40d96a1bcdcb360d0424",
+    "outputText": "{\"oversized\":false,\"units\":[{\"facetIds\":[\"f1\"],\"subject\":\"besökaren\",\"predicate\":\"komma 15 minuter tidigt\",\"value\":\"komma 15 minuter tidigt\",\"modality\":\"required\",\"negation\":true,\"scope\":\"besöket\",\"qualifiers\":[\"om besökaren redan har fyllt i formuläret\"],\"language\":\"sv\",\"text\":\"Om du redan har fyllt i formuläret behöver du inte komma 15 minuter tidigt.\",\"evidenceRefs\":[{\"evidenceId\":\"e1\",\"exactQuote\":\"Om du redan har fyllt i formuläret behöver du inte komma tidigt.\"}]},{\"facetIds\":[\"f2\"],\"subject\":\"besökaren\",\"predicate\":\"ta med\",\"value\":\"ditt betalningskvitto\",\"modality\":\"recommended\",\"negation\":false,\"scope\":\"besöket\",\"qualifiers\":[],\"language\":\"sv\",\"text\":\"Vi rekommenderar att du tar med ditt betalningskvitto till besöket.\",\"evidenceRefs\":[{\"evidenceId\":\"e2\",\"exactQuote\":\"Vi rekommenderar att du tar med ditt betalningskvitto till besöket.\"}]},{\"facetIds\":[\"f2\"],\"subject\":\"besökaren\",\"predicate\":\"visa\",\"value\":\"ditt betalningskvitto på mobilen\",\"modality\":\"permitted\",\"negation\":false,\"scope\":\"besöket\",\"qualifiers\":[],\"language\":\"sv\",\"text\":\"Du kan visa ditt betalningskvitto på mobilen.\",\"evidenceRefs\":[{\"evidenceId\":\"e3\",\"exactQuote\":\"Du kan visa ditt betalningskvitto på mobilen.\"}]}]}"
+  },
+  "verification": {
+    "requestSha256": "7bf41ed3d67748e8aa59600da374c4b8feefd98d7ee0136f08404737af4ee6de",
+    "responseId": "resp_04e42e53963f544d016af9b2f676cc87d2badc4a191ea1e05f",
+    "outputSha256": "7df9f93e7846d0a0f2ecb0a94fdb865faa35eea4cc8801aea61362ae44541bb2",
+    "outputText": "{\"decisions\":[{\"unitId\":\"u2\",\"relation\":\"ENTAILED\",\"facetIds\":[\"f2\"],\"meaningPreserved\":true,\"modalityPreserved\":true,\"qualifiersPreserved\":true,\"relevant\":true,\"languageCorrect\":true,\"explicitAbsenceEvidence\":false,\"negativeAbsence\":false},{\"unitId\":\"u3\",\"relation\":\"ENTAILED\",\"facetIds\":[\"f2\"],\"meaningPreserved\":true,\"modalityPreserved\":true,\"qualifiersPreserved\":true,\"relevant\":true,\"languageCorrect\":true,\"explicitAbsenceEvidence\":false,\"negativeAbsence\":false}],\"coverage\":[{\"facetId\":\"f1\",\"requestAligned\":true,\"materialFactsComplete\":false,\"incompletenessReason\":\"MISSING_CONDITION\",\"materialUnitIds\":[],\"obligations\":[{\"obligationId\":\"f1.o1\",\"status\":\"UNRESOLVED\",\"unitIds\":[]}]},{\"facetId\":\"f2\",\"requestAligned\":true,\"materialFactsComplete\":true,\"incompletenessReason\":\"NONE\",\"materialUnitIds\":[\"u2\",\"u3\"],\"obligations\":[{\"obligationId\":\"f2.o1\",\"status\":\"COVERED\",\"unitIds\":[\"u2\",\"u3\"]}]}]}"
+  }
+}

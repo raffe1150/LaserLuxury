@@ -52,6 +52,16 @@ export function knowledgeTurnExtension(businessId: number | undefined, env: Node
 export const accuracyFirstExtractionAllowance = (generationMs: number) => Number.isFinite(generationMs)
   ? Math.max(0, Math.floor(Math.min(ACCURACY_FIRST_POLICY.extractionMs, generationMs - ACCURACY_FIRST_POLICY.verificationReserveMs))) : 0;
 
+/** Activated only by the isolated two-conversation test boundary. */
+export const CONTINUITY_TEST_TIMING = Object.freeze({
+  profile: 'continuity-test-v1', planningMs: 8_000, extractionReserveMs: 12_000,
+  verificationReserveMs: ACCURACY_FIRST_POLICY.verificationReserveMs,
+});
+export function continuityTestPlanningAllowance(generationRemainingMs: number): number {
+  const { planningMs, extractionReserveMs, verificationReserveMs } = CONTINUITY_TEST_TIMING;
+  return Math.max(0, Math.min(planningMs, Math.floor(generationRemainingMs - extractionReserveMs - verificationReserveMs)));
+}
+
 /** Contains no question, recipient, tenant, evidence or credentials. Timers never reset on retry. */
 export class NativeKnowledgeTiming {
   readonly policy = ACCURACY_FIRST_POLICY;

@@ -99,3 +99,25 @@ for(const text of ['Could you tell me where I can park my car?', 'Please cancel 
   assert.deepEqual(prepared.clauses,[{kind:'unclassified',text}]);
   assert.deepEqual(prepared.executionOrder,[0]);
  });
+
+for (const text of [
+ 'Ja, tack. Kan du boka den på mitt namn och nummer? Alex Testsson, 0701234567.',
+ 'Can you book it in my name and number? Alex Testsson, 0701234567.',
+ 'Can you book it in my name and phone number?',
+ 'Can you book it under my name and email? alex@example.com',
+ 'Kan du boka den på mitt namn och mitt mobilnummer? 0701234567',
+ 'Können Sie es auf meinen Namen und meine Nummer buchen?',
+ '¿Puedes reservarla a mi nombre y número de teléfono?',
+]) test(`a customer contact list is one turn, never a separate information clause: ${text}`, () =>
+ assert.equal(prepareLiteralTurn(text).kind, 'single'));
+
+for (const text of [
+ 'Boka en klippning imorgon och vad kostar parkering?',
+ 'Book a haircut tomorrow and is parking free?',
+ 'Book a haircut tomorrow and what is your phone number?',
+ 'Book a haircut tomorrow and your phone number?',
+ 'Ich möchte einen Termin buchen und gibt es Parkplätze?',
+ 'Quiero reservar una cita mañana y hay estacionamiento?',
+ 'Book me in tomorrow at 10, my number is 0701234567, and is parking free?',
+]) test(`a genuine action plus information request still splits: ${text}`, () =>
+ assert.equal(prepareLiteralTurn(text).kind, 'mixed'));

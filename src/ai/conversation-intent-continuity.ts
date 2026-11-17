@@ -1,12 +1,17 @@
 import { hasIntroducedReferent } from './information-request-contract';
 import { isBusinessInformationQuestion, isExplicitBusinessActionRequest } from './business-information';
 
+/** A conjunction followed by the customer's own contact field ("my name and number")
+ * continues a noun list; it never starts a separate information clause. */
+const CONTACT_FIELD_CONTINUATION = /^(?:(?:my|mitt|min|mina|meine?n?|mi)\s+)?(?:(?:phone|mobile|cell|telephone|telefon|mobil|handy)[\s-]*)?(?:numbers?|no\.|nummer\w*|numret|nr\.?|número|numero|e-?mail\w*|e-?post\w*|mejl\w*|phone|mobile|telefon|mobil|handy|teléfono|telefono|celular|correo)(?![\p{L}\p{N}])|^(?:شماره|تلفن|موبایل|ایمیل|رقم|هاتف|جوال|بريد)/iu;
+
 /** Only separate independently understood literal clauses. Never synthesize an
  * action, infer its target from the question, or execute multiple action clauses. */
 export function splitMixedBusinessRequest(text: string, isAction = isExplicitBusinessActionRequest): { action: string; information: string } | null {
   const clauses: Array<{ text: string; start: number; before: number }> = [];
   let start = 0, before = 0;
   for (const boundary of text.matchAll(/(?<=[.!?؟؛;])\s+|\n+|\s+(?:and|och|und|y|و)\s+/giu)) {
+    if (/^\s+\S+\s+$/u.test(boundary[0]) && CONTACT_FIELD_CONTINUATION.test(text.slice(boundary.index + boundary[0].length))) continue;
     clauses.push({ text: text.slice(start, boundary.index).trim(), start, before });
     before = boundary.index;
     start = boundary.index + boundary[0].length;

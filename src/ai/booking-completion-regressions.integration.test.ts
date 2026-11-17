@@ -385,6 +385,29 @@ try {
     },
   ];
 
+  // English contact submission ("my name and number"/"my name and phone number") is one
+  // booking turn: the typed phone wins over WhatsApp sender metadata and continuation is not paused.
+  for (const [channel, sessionId, userId, text] of [
+    ['whatsapp', 'wa_7:46700000000', '46700000000', 'Yes please. Can you book it in my name and number? Alex Testsson, 0701234567.'],
+    ['telegram', 'tg:7:token:1001', '1001', 'Yes please. Can you book it in my name and phone number? Alex Testsson, 0701234567.'],
+  ] as const) {
+    const counters = fixture();
+    seedSelectedSlot(sessionId, channel, userId, 'awaiting_confirmation');
+    const incomplete = await boundary.turn({ sessionId, platformName: channel, recipientUserId: userId, text, businessConfig, now: turnNow });
+    assert.equal(incomplete.pending?.customerPhone, '0701234567', channel);
+    assert.equal(incomplete.pending?.contactPhoneSource, 'explicit_customer_message', channel);
+    assert.equal(incomplete.pending?.status, 'awaiting_contact', channel);
+    assert.notEqual(incomplete.pending?.continuationPaused, true, channel);
+    assert.equal(counters.calendarCreate, 0, channel);
+
+    const result = await boundary.turn({ sessionId, platformName: channel, recipientUserId: userId, text: 'My name is Alex Testsson.', businessConfig, now: turnNow });
+    assert.equal(counters.createdName, 'Alex Testsson', channel);
+    assert.equal(counters.createdPhone, '0701234567', channel);
+    assert.equal(counters.calendarCreate, 1, channel);
+    assert.equal(counters.databaseInsert, 1, channel);
+    assert.equal(result.pending, null, channel);
+  }
+
   for (const liveCase of liveWhatsAppCases) {
     const counters = fixture();
     seedSelectedSlot('wa_7:46700000000', 'whatsapp', '46700000000', liveCase.status);

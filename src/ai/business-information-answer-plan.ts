@@ -4,7 +4,7 @@ import { nativeKnowledgeTiming, type NativeKnowledgeTiming } from './knowledge-t
 import { cancellationConfigurationProposals, cancellationRecoveryEligible, cancellationSourceLimitations, isReportedCancellationPremiseClause } from './cancellation-answer-recovery';
 import { selectCanonicalConfigurationProducer, captureCanonicalConfigurationProducer, canonicalConfigurationOutputValid,
   CANONICAL_CONFIG_INSTRUCTION, SOURCE_PARTITIONED_PRODUCER, SOURCE_PARTITIONED_INSTRUCTION, type CanonicalConfigurationProducer } from './canonical-configuration-propositions';
-import { isSourceExhaustiveProtocol, sourceExhaustiveInstruction, SOURCE_EXHAUSTIVE_V2_EVIDENCE_REVIEW } from './source-exhaustive-coverage';
+import { isSourceExhaustiveProtocol, scopedPartialModalityBlocked, sourceExhaustiveInstruction, SOURCE_EXHAUSTIVE_V2_EVIDENCE_REVIEW } from './source-exhaustive-coverage';
 import { assessSourceCoverageDetailed, describeSourceCoveragePrecondition, emitSourceCoverageAccepted, sourceCoverageField,
   withOwnerCompleteVeto } from './source-coverage-decision-record';
 import { createHash } from 'node:crypto';
@@ -1268,7 +1268,12 @@ export async function buildEvidenceFirstAnswer(input: {
         ['PARTIAL','UNAVAILABLE'].includes(o.status) && unresolved.every(obligation=>obligation.questionType==='requirement' &&
           c.obligations.some((d:any)=>d.obligationId===obligation.id && d.status==='UNRESOLVED' && Array.isArray(d.unitIds)&&!d.unitIds.length)) : o.status==='VERIFIED') &&
         JSON.stringify([...o.materialUnitIds].sort())===JSON.stringify([...o.unitIds].sort());
-    }) && new Set(input.evidence.map(e=>e.id)).size===input.evidence.length;
+    }) && new Set(input.evidence.map(e=>e.id)).size===input.evidence.length &&
+    // Same facet-scoped modality rule as source-exhaustive GUARD_12: beside an
+    // unresolved requirement only affirmative optional/advisory facts may appear;
+    // a required, prohibited or negated fact there stays blocked.
+    !scopedPartialModalityBlocked(manifest.units,manifest.outcomes.flatMap(o=>o.obligations.some(d=>d.status==='UNRESOLVED')?
+      [{facetId:o.facetId,state:'UNRESOLVED_REQUIREMENT' as const}]:[]));
   // A verified general recommendation can contextualize an unanswered
   // conditional requirement. Bind this receipt follow-up to the latest exchange
   // and the literal payer condition before issuing the existing partial token.

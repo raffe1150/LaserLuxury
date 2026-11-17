@@ -345,6 +345,60 @@ export function wholeQuestionInformationPlan(question: string, recognized: boole
   const firstSentence = question.split(/[.!]/u)[0];
   const contextLead = firstSentence.trim().split(/\s+/u).length >= 3 && /[.!]\s+[^.!]*[?؟]/u.test(question) ||
     /^(?:(?:okay|ok|okej|well)[,،]?\s*(?:(?:and|och)\s+)?)?(?:if|om|wenn|falls)\b|^\s*اگر\s/iu.test(question);
-  return contextLead ? literalInformationFallback(question, recognized, referenceRequired)
+  return contextLead ? contextualCompoundInformationPlan(question, recognized, referenceRequired) ??
+      literalInformationFallback(question, recognized, referenceRequired)
     : literalInformationPlan(question, recognized, referenceRequired);
+}
+
+// Coordinated question boundaries. The boundary words are consumed; each
+// resulting clause remains an exact, contiguous span of the customer's text.
+const coordinatedQuestionBoundary = new RegExp([
+  String.raw`(?:[,،]\s*|\s+)(?:and|och|und|y)\s+(?=(?:do|does|is|are|should|must|can|may|will|would|could|behöver|måste|ska|bör|kan|får|är|finns|muss|müssen|brauche|soll|sollte|kann|darf|ist|gibt|necesito|debo|tengo|hay|es|puedo|se)(?![\p{L}\p{M}]))`,
+  String.raw`(?:[,،]\s*|\s+)و\s*(?=آیا(?![\p{L}\p{M}]))`,
+  String.raw`(?:[,،]\s*|\s+)و\s*(?=هل(?![\p{L}\p{M}]))`,
+].join('|'), 'giu');
+// A yes/no necessity question. Wh-questions ("how many minutes before must I…")
+// stay descriptive: they ask for the business fact, not a binary obligation.
+const necessityQuestion = /^(?:¿\s*)?(?:(?:do|does)\s+(?:i|we|one)\s+(?:need|have)\s+to|(?:must|need)\s+(?:i|we)|is\s+it\s+(?:necessary|required|mandatory)|(?:behöver|måste)\s+(?:jag|vi|man)|är\s+det\s+(?:nödvändigt|obligatoriskt)|(?:muss|müssen|brauche|brauchen)\s+(?:ich|wir|man)|ist\s+es\s+(?:nötig|notwendig|erforderlich|pflicht)|(?:necesito|necesitamos|debo|debemos|tengo\s+que|hay\s+que|es\s+(?:necesario|obligatorio)))(?![\p{L}\p{M}])|^آیا\s+(?:لازم|باید|ضروری|اجباری|الزامی)|^هل\s+(?:يجب|يلزم|أحتاج|احتاج|نحتاج|يتعين|عل[يىَّ]+|من\s+الضروري)/iu;
+
+/** A visit-context sentence followed by two to four coordinated questions.
+ * Keeps the full literal-container safety checks, then preserves each question
+ * as its own obligation (an exact user span) and the context as the shared
+ * facet subject. It infers no answer, condition or coverage; the independent
+ * verifier still judges every obligation against the complete request. */
+export function contextualCompoundInformationPlan(question: string, recognized: boolean, referenceRequired = false) {
+  const literal = literalInformationFallback(question, recognized, referenceRequired);
+  // Only the generic whole-question container is decomposed; specialised literal
+  // plans (receipt, cancellation notice) keep their reviewed contracts.
+  if (!literal || literal.requestedFacets.length !== 1 || literal.requestedFacets[0].subject !== 'customer request') return null;
+  const text = question.trim();
+  const lead = /^[^.!?؟]*?[.!](?=\s)/u.exec(text);
+  if (!lead || lead[0].trim().split(/\s+/u).length < 3) return null;
+  const context = lead[0].trim(), rest = text.slice(lead[0].length).trim();
+  // Reviewed class only: a visit context ("I'm coming for the first time.").
+  // A context that introduces a service or other referent ("I'm considering
+  // booking X. What does it cost…") keeps the whole-question container, because
+  // its later clauses depend on that referent.
+  if (!hasVisitInformationContext(context) || hasConversationReference(rest)) return null;
+  if (!rest || /[.!;:؛\n\r]/u.test(rest) || !/[?؟]$/u.test(rest)) return null;
+  const asked = rest.match(/[^?؟]+[?؟]/gu) || [];
+  if (asked.join('') !== rest) return null;
+  const spans: string[] = [];
+  for (const part of asked) {
+    let start = 0;
+    for (const boundary of part.matchAll(coordinatedQuestionBoundary)) {
+      spans.push(part.slice(start, boundary.index).trim());
+      start = boundary.index! + boundary[0].length;
+    }
+    spans.push(part.slice(start).trim());
+  }
+  if (spans.length < 2 || spans.length > 4 || new Set(spans).size !== spans.length ||
+      spans.some(span => span.length < 8 || span.length > 160 || !text.includes(span) || isExplicitBusinessActionRequest(span))) return null;
+  return {
+    ...literal,
+    requestedFacets: spans.map(span => {
+      const questionType = necessityQuestion.test(span) ? 'requirement' as const : 'description' as const;
+      return { subject: context, attribute: span, questionType, obligations: [{ description: span, questionType }] };
+    }),
+  };
 }

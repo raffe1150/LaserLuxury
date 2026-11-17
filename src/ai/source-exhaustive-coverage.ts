@@ -70,6 +70,32 @@ export function sourceExhaustiveInstruction(protocol: SourceExhaustiveProtocol):
   return protocol === SOURCE_EXHAUSTIVE_V2_PROTOCOL ? SOURCE_EXHAUSTIVE_V2_INSTRUCTION : SOURCE_EXHAUSTIVE_INSTRUCTION;
 }
 
+/** GUARD_12, scoped to the facets that are actually unavailable. A scoped
+ * partial may publish a recommendation, permission or requirement only when it
+ * cannot be read as the answer to an unavailable obligation:
+ * - every facet the unit belongs to is COMPLETE (independently verified), or
+ * - it is an affirmative (not negated) verified recommendation, permission or
+ *   requirement beside facets whose only gaps are typed UNRESOLVED_REQUIREMENT,
+ *   which always render that requirement's limitation notice. GUARD_11 forbids
+ *   citing it as coverage of the unresolved requirement and GUARD_10 forbids a
+ *   permitted/recommended fact from completing one, so optional-item evidence
+ *   can never establish that something is, or is not, required.
+ * Negated facts and prohibitions beside any gap, and any non-descriptive fact
+ * beside an unverified description, stay blocked (whole-turn denial).
+ * Validated against the independent Phase 2 corpus (incl. recorded rep-04). */
+export function scopedPartialModalityBlocked(units: readonly AnswerUnit[], unavailable: readonly Pick<SourceShortfall, 'facetId' | 'state'>[]): boolean {
+  if (!unavailable.length) return false;
+  const gaps = new Map<string, Set<string>>();
+  for (const gap of unavailable) gaps.set(gap.facetId, (gaps.get(gap.facetId) ?? new Set()).add(gap.state));
+  return units.some(u => {
+    if (u.modality === 'descriptive') return false;
+    const unresolved = u.facetIds.filter(id => gaps.has(id));
+    if (!unresolved.length) return false;
+    return !((u.modality === 'permitted' || u.modality === 'recommended' || u.modality === 'required') && u.negation === false &&
+      unresolved.every(id => [...gaps.get(id)!].every(state => state === 'UNRESOLVED_REQUIREMENT')));
+  });
+}
+
 /** Pure contract assessment. No tenant enrolment, model invocation, rendering or
  * authority minting. All independent judgments and identities must agree. */
 export function assessSourceCoverage(raw: any, facets: readonly Facet[], units: readonly AnswerUnit[],
@@ -131,6 +157,6 @@ export function assessSourceCoverage(raw: any, facets: readonly Facet[], units: 
       }
     }
   }
-  if (unavailable.length && units.some(u => u.modality !== 'descriptive')) return coverageDenied('GUARD_12');
+  if (scopedPartialModalityBlocked(units, unavailable)) return coverageDenied('GUARD_12');
   return Object.freeze({ state: unavailable.length ? 'SCOPED_PARTIAL' : 'COMPLETE', unavailable: Object.freeze(unavailable) });
 }

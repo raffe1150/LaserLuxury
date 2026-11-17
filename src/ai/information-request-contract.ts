@@ -40,11 +40,25 @@ export function isPassiveCancellationPolicyQuestion(text: string): boolean {
   ].some(pattern => pattern.test(text));
 }
 
+/** "How many minutes / how early before my appointment should I arrive (be
+ * there)?" asks for a documented arrival recommendation, not for a time to book.
+ * Speech-act recognition only: no quantity, rule or booking identity is inferred,
+ * and cancellation/rescheduling deadlines keep their own workflows. */
+export function isArrivalLeadTimeQuestion(text:string):boolean {
+  if(/\b(?:cancel\p{L}*|reschedul\p{L}*|avbok\p{L}*|ombok\p{L}*|stornier\p{L}*|absag\p{L}*|verschieb\p{L}*|cancela\p{L}*|reprogram\p{L}*)\b|لغو|تغییر\s+(?:وقت|نوبت)|إلغاء|الغاء|تأجيل/iu.test(text))return false;
+  return /\bhow\s+(?:many\s+minutes|early)\b[^.!?\n]{0,60}\b(?:before|ahead\s+of|prior\s+to)\b[^.!?\n]{0,30}\b(?:my|the|our)?\s*(?:appointment|booking|booked\s+time|visit)\b/iu.test(text) ||
+    /\bhur\s+(?:många\s+minuter|tidigt)\b[^.!?\n]{0,60}\b(?:före|innan)\b[^.!?\n]{0,30}\b(?:min|mitt|den|vår)?\s*(?:bokade\s+tid|bokning\p{L}*|tid|besök\p{L}*)\b/iu.test(text) ||
+    /\bwie\s+(?:viele\s+minuten|früh)\b[^.!?\n]{0,60}\bvor\b[^.!?\n]{0,30}\b(?:meinem|dem|unserem)?\s*(?:Termin\p{L}*|Besuch\p{L}*)\b/iu.test(text) ||
+    /\b(?:cu[aá]ntos\s+minutos\s+antes|con\s+cu[aá]nta\s+antelaci[oó]n)\b[^.!?\n]{0,30}\b(?:de\s+)?(?:mi|la|nuestra)?\s*(?:cita|reserva|visita)\b/iu.test(text) ||
+    /چند\s+دقیقه\s+(?:قبل|زودتر|پیش)\s+(?:از\s+)?(?:وقت|نوبت|رزرو|زمان)/u.test(text) ||
+    /كم\s+دقيقة\s+قبل\s+(?:موعد|الموعد|حجز|الحجز)/u.test(text);
+}
+
 /** Bounded visit-policy context, not a question/action classifier or authority
  * for any business fact. Callers still require a question and reject actions. */
 export function hasVisitInformationContext(text:string):boolean {
-  return isArrivalInformationQuestion(text) ||
-    /\b(?:first[ -](?:visit|time)|första\s+(?:besök\p{L}*|gången)|ersten?\s+(?:Besuch|Mal)|primera\s+(?:visita|vez))\b|اولین\s+(?:مراجعه|بار)|بار اول|للمرة\s+الأولى|زيار\p{L}*\s+الأولى/iu.test(text) ||
+  return isArrivalInformationQuestion(text) || isArrivalLeadTimeQuestion(text) ||
+    /\b(?:first[ -](?:visit|time)|första\s+(?:besök\p{L}*|gången)|ersten?\s+(?:Besuch|Mal)|primera\s+(?:visita|vez))\b|اولین\s+(?:مراجعه|بار)|بار اول|للمرة\s+الأولى|ل[أا]ول\s+مرة|زيار\p{L}*\s+الأولى/iu.test(text) ||
     /\b(?:lost\s+(?:propert\p{L}*|items?|valuables?)|(?:leave|forget|forgot|left).{0,45}(?:items?|valuabl\p{L}*)|kvarglömd\p{L}*|glömmer.{0,30}(?:något|värde\p{L}*)|(?:Wertgegenstand|Fundsach\p{L}*).{0,35}vergess\p{L}*|olvid\p{L}*.{0,35}(?:objeto|pertenencia))\b|وسیله.{0,35}جا بگذار|نسيت.{0,35}(?:غرض|شيء|متعلقات)|(?:غرض|أغراض|ممتلكات).{0,25}(?:منسي|مفقود)/iu.test(text);
 }
 

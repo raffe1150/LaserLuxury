@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {businessInformationTopics,isBusinessInformationQuestion,isExplicitBusinessActionRequest} from './business-information';
 import {isArrivalInformationQuestion,isConditionalArrivalInformationQuestion} from './information-request-contract';
 import {documentKnowledgeTopicsEligible,wholeQuestionInformationPlan,literalInformationFallback} from './knowledge-planning';
-import {sharedQuestions} from '../../tests/helpers/shared-core-incident';
+import {sharedQuestions,assertRequestContract} from '../../tests/helpers/shared-core-incident';
 
 // These controls classify requests, never provide business policy or authorize
 // a booking. Native mutation authority is also covered by protected suites.
@@ -21,7 +21,7 @@ for(const [language,questions]of Object.entries(sharedQuestions)) {
   assert.equal(isBusinessInformationQuestion(question),true);
   assert.equal(isExplicitBusinessActionRequest(question),false);
   const plan=wholeQuestionInformationPlan(question,true)||literalInformationFallback(question,true);
-  assert.ok(plan);assert.equal(plan.requestedFacets[0].obligations[0].description,question);
+  assert.ok(plan);assertRequestContract(question,index,plan);
  });
  const [book,cancel,availability,fee,notice,contact,status]=controls[language as keyof typeof controls];
  for(const[actionIndex,action]of [book,cancel].entries())test(`${language}: action control ${actionIndex}`,()=>{

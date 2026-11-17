@@ -180,6 +180,18 @@ const remainingInformation: Record<string,string> = {
  ar:'لا أستطيع تأكيد بقية التفاصيل المطلوبة من المعلومات المتاحة.',
 };
 
+// Fixed copy for an unresolved requirement whose planner label is not a safe
+// literal span of the request. States uncertainty only: it never says that
+// something is, or is not, required, and echoes no model-authored text.
+const unconfirmedRequirement: Record<string,string> = {
+ en:'I cannot confirm from the available information what, if anything, is required.',
+ sv:'Utifrån den tillgängliga informationen kan jag inte bekräfta om något krävs, och i så fall vad.',
+ de:'Anhand der verfügbaren Informationen kann ich nicht bestätigen, ob und was erforderlich ist.',
+ es:'Con la información disponible no puedo confirmar si se exige algo ni, en su caso, qué.',
+ fa:'بر اساس اطلاعات موجود نمی‌توانم تأیید کنم که آیا چیزی الزامی است یا نه.',
+ ar:'لا أستطيع أن أؤكد من المعلومات المتاحة ما إذا كان هناك أي شيء مطلوب.',
+};
+
 /** Never render a model-authored missing-proposition explanation as a business
  * fact. General limitations name bounded literal spans of the user's request. */
 export function sourceExhaustiveLimitations(question: string, language: string, facets: readonly Facet[],
@@ -195,8 +207,17 @@ export function sourceExhaustiveLimitations(question: string, language: string, 
    // the caller still requires the original exhaustive unavailable certificate.
    result.push(Object.freeze({...gap,text:remainingInformation[language]}));continue;
   }
-  if (!label || !safeReference(label, 90) || !userSpan(question, label, o.questionType === 'requirement')) return;
-  result.push(Object.freeze({ ...gap, text: unavailableAnswer[language](label) }));
+  if (!label || !safeReference(label, 90) || !userSpan(question, label, o.questionType === 'requirement')) {
+   // A paraphrased planner label is never echoed. Use fixed, fact-free copy for
+   // a typed gap when available; otherwise keep the existing fail-closed result.
+   const generic = facets.length > 1 && o ? (o.questionType === 'requirement' ? unconfirmedRequirement : o.questionType === 'description' ? remainingInformation : undefined)?.[language] : undefined;
+   if (!generic) return;
+   result.push(Object.freeze({ ...gap, text: generic }));
+   continue;
+  }
+  // Intake normalizes the Arabic-script question mark to '?'. Restore it in the
+  // echoed fa/ar span so the RTL sentence renders correctly; no other byte changes.
+  result.push(Object.freeze({ ...gap, text: unavailableAnswer[language](language === 'fa' || language === 'ar' ? label.replace(/\?/gu, '؟') : label) }));
  }
  return Object.freeze(result);
 }

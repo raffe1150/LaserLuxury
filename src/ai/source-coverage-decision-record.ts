@@ -16,7 +16,7 @@
  * already carries businessId). The serialized record is capped at
  * SOURCE_COVERAGE_DECISION_MAX_BYTES; detail arrays are dropped first.
  */
-import { assessSourceCoverage, isSourceExhaustiveProtocol, SOURCE_COVERAGE_STATES, SOURCE_EXHAUSTIVE_PROTOCOL,
+import { assessSourceCoverage, isSourceExhaustiveProtocol, scopedPartialModalityBlocked, SOURCE_COVERAGE_STATES, SOURCE_EXHAUSTIVE_PROTOCOL,
   type SourceCoverageAssessment, type SourceExhaustiveProtocol } from './source-exhaustive-coverage';
 import type { AnswerUnit, Evidence, Facet } from './business-information-answer-plan';
 import type { KnowledgeDecision } from './knowledge-answer-protocol';
@@ -86,7 +86,7 @@ export type SourceCoverageDecisionRecord = Readonly<{
   decisionRelations: Readonly<Record<typeof RECORD_RELATIONS[number] | 'INVALID', number>> | null;
   counts: Readonly<{ facets: number; obligations: number; units: number; evidence: number; unavailable: number }>;
   guard12: 'BLOCKED' | 'PASSED' | 'NOT_REACHED';
-  /** Non-descriptive units plus a typed-unavailable obligation: GUARD_12 would deny if every earlier guard passed. */
+  /** Non-descriptive units plus a typed-unavailable obligation (the former turn-wide GUARD_12 condition). GUARD_12 is now facet-scoped; see scopedPartialModalityBlocked. */
   guard12Latent: boolean;
   callerVeto?: 'OWNER_PROPOSAL_REQUIRES_COMPLETE';
   truncated: boolean;
@@ -145,6 +145,7 @@ function classify(raw: any, facets: readonly Facet[], units: readonly AnswerUnit
     !Array.isArray(raw.coverage) || raw.coverage.length !== facets.length || !same(raw.coverage.map((c: any) => c?.facetId), facets.map(f => f.id)))
     return deny('GUARD_07', ['OBLIGATION_INVENTORY_MISMATCH']);
   let unavailable = 0;
+  const gaps: { facetId: string; state: string }[] = [];
   for (const f of facets) {
     const c = raw.coverage.find((c: any) => c.facetId === f.id), validIds = units.filter(u => u.facetIds.includes(f.id)).map(u => u.id);
     const subset = (ids: any) => Array.isArray(ids) && ids.every(id => typeof id === 'string' && validIds.includes(id)) && new Set(ids).size === ids.length;
@@ -168,10 +169,11 @@ function classify(raw: any, facets: readonly Facet[], units: readonly AnswerUnit
           !(a.state === 'REQUESTED_INFORMATION_NOT_VERIFIED' && o.questionType === 'description' || a.state === 'UNRESOLVED_REQUIREMENT' && o.questionType === 'requirement'))
           return deny('GUARD_11', ['UNAVAILABLE_STATE_NOT_PERMITTED']);
         unavailable++;
+        gaps.push({ facetId: f.id, state: a.state });
       }
     }
   }
-  if (unavailable && units.some(u => u.modality !== 'descriptive')) return { guard: 'GUARD_12', failedChecks: ['PARTIAL_NON_DESCRIPTIVE_UNITS'], unavailable, reached12: true };
+  if (scopedPartialModalityBlocked(units, gaps as never)) return { guard: 'GUARD_12', failedChecks: ['PARTIAL_NON_DESCRIPTIVE_UNITS'], unavailable, reached12: true };
   return { guard: 'NONE', failedChecks: [], unavailable, reached12: true };
 }
 

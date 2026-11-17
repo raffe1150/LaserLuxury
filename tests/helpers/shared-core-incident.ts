@@ -102,3 +102,13 @@ export function focusedSemanticChecklist(index:number,text:string,language:strin
   relationshipUncertainty:en?/cannot confirm whether the document's information applies to Video Consultation/u.test(text):/nicht bestätigen, ob die Angaben im Dokument für Video Consultation gelten/u.test(text),
  };
 }
+
+/** P0 2026-11-17: the first-visit compound (index 0) keeps one exact-span
+ * obligation per question with the visit context on every facet. Every other
+ * shared question keeps the single whole-question container. */
+export function assertRequestContract(question:string,index:number,plan:any){
+ if(index!==0){assert.equal(plan.requestedFacets.length,1);assert.equal(plan.requestedFacets[0].obligations[0].description,question);return;}
+ const context=question.slice(0,question.search(/[.!]\s/u)+1);
+ assert.deepEqual(plan.requestedFacets.map((f:any)=>[f.subject,f.questionType,f.obligations.length]),[[context,'description',1],[context,'requirement',1]]);
+ for(const f of plan.requestedFacets)assert.ok(question.includes(f.obligations[0].description),f.obligations[0].description);
+}

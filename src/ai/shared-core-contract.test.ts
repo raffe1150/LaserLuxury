@@ -5,7 +5,7 @@ import { hasExternalConversationReference } from './conversation-intent-continui
 import { isBusinessInformationQuestion } from './business-information';
 import { wholeQuestionInformationPlan,literalInformationFallback } from './knowledge-planning';
 import { configuredServiceEvidence } from './configured-service-evidence';
-import { sharedQuestions } from '../../tests/helpers/shared-core-incident';
+import { sharedQuestions, assertRequestContract } from '../../tests/helpers/shared-core-incident';
 import { isArrivalInformationQuestion } from './information-request-contract';
 test('delay noun is arrival information only with a visit context and without fees or notice',()=>{
  const text='A delay of more than 15 minutes does not automatically cancel the visit; staff must first assess the situation, and the studio may need to reassess whether the visit can proceed as planned.';
@@ -18,7 +18,8 @@ for(const [language,questions]of Object.entries(sharedQuestions))for(const[index
  assert.equal(isBusinessInformationQuestion(question),true);assert.equal(hasExternalConversationReference(question),false);
  // A bounded literal shortcut is optional. Legitimate semantic planning must
  // retain transport recovery with the same full question, not a guessed fact.
- const plan=wholeQuestionInformationPlan(question,true)||literalInformationFallback(question,true);assert.ok(plan);assert.equal(plan.canonicalMeaning,question);assert.equal(plan.requestedFacets[0].obligations[0].description,question);
+ const plan=wholeQuestionInformationPlan(question,true)||literalInformationFallback(question,true);assert.ok(plan);assert.equal(plan.canonicalMeaning,question);
+ assertRequestContract(question,index,plan);
 });
 for(const text of ['Is it free?','Can I reserve it there?','Is that parking free?','Can I bring something to that place?','Kan jag boka den där?'])test(`external reference stays unresolved: ${text}`,()=>assert.equal(hasExternalConversationReference(text),true));
 for(const [claim,source]of [

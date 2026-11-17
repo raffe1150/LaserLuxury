@@ -87,10 +87,12 @@ type Scenario = 'partial' | 'complete' | 'omitted' | 'contradicted' | 'required_
   'prohibited_beside_gap' | 'condition_dropped' | 'unsupported_beside_gap' | 'unbound_citation' |
   'no_units' | 'extraction_timeout';
 type Outcome = { replies: string[]; stages: string[]; plannerCalls: number; facets: any[]; guards: unknown[]; publications: string[]; errors: unknown[];
-  presentation: any[]; compatibility: any[] };
+  presentation: any[]; compatibility: any[]; composer: any[]; composerCalls: any[]; repliesAtFirstComposerCall: number | null; budgetLog: BudgetLogEntry[] };
 
 type Planner = (question: string) => unknown[];
-async function run(t: TestContext, channel: IncidentChannel, row: Row, scenario: Scenario, turns = 1, opts: { question?: string; planner?: Planner } = {}): Promise<Outcome> {
+type ComposerMock = (request: any, out: Outcome) => Promise<any>;
+async function run(t: TestContext, channel: IncidentChannel, row: Row, scenario: Scenario, turns = 1,
+  opts: { question?: string | string[]; planner?: Planner; composer?: ComposerMock; budget?: (log: BudgetLogEntry[]) => NaturalComposerBudget | undefined } = {}): Promise<Outcome> {
   boundary.reset(); t.after(() => boundary.reset());
   for (const m of ['log', 'warn', 'error'] as const) t.mock.method(console, m, () => {});
   const storage = new InMemoryKnowledgeStorage();
@@ -100,12 +102,14 @@ async function run(t: TestContext, channel: IncidentChannel, row: Row, scenario:
   const previousModel = process.env.ODINLINK_AI_DEFAULT_MODEL;
   process.env.ODINLINK_AI_DEFAULT_MODEL = 'gpt-6.1-sol'; configureKnowledgeBudgetOwner(owner);
   t.after(() => { if (previousModel === undefined) delete process.env.ODINLINK_AI_DEFAULT_MODEL; else process.env.ODINLINK_AI_DEFAULT_MODEL = previousModel; configureKnowledgeBudgetOwner(); });
-  const out: Outcome = { replies: [], stages: [], plannerCalls: 0, facets: [], guards: [], publications: [], errors: [], presentation: [], compatibility: [] };
+  const out: Outcome = { replies: [], stages: [], plannerCalls: 0, facets: [], guards: [], publications: [], errors: [], presentation: [], compatibility: [],
+    composer: [], composerCalls: [], repliesAtFirstComposerCall: null, budgetLog: [] };
   t.mock.method(console, 'info', (label: unknown, value: any) => {
     if (label === '[EvidenceFirstDecision]') { const e = JSON.parse(value); (out as any).events = [...((out as any).events ?? []), [e.stage, e.reason, e.facetId, e.unitId, e.sourceCoverage?.guard, e.sourceCoverage?.failedChecks]]; if (e.stage === 'verification' && e.reason === 'INVALID_COVERAGE' && e.sourceCoverage) out.guards.push(e.sourceCoverage.guard); }
     if (label === '[KnowledgeModelRouting]') out.publications.push(JSON.parse(value).publication);
     if (label === '[KnowledgePresentation]') out.presentation.push(JSON.parse(value));
     if (label === '[KnowledgeNaturalCompatibility]') out.compatibility.push(JSON.parse(value));
+    if (label === '[KnowledgeNaturalComposer]') out.composer.push(JSON.parse(value));
   });
   t.mock.method(globalThis, 'fetch', async (input: any, options: any) => {
     out.replies.push(interceptedIncidentSend(input, options));
@@ -113,7 +117,8 @@ async function run(t: TestContext, channel: IncidentChannel, row: Row, scenario:
   });
   const forbidden = async () => { out.errors.push('unexpected action'); throw Error('offline'); };
   const a = accepted(row);
-  const question = opts.question ?? (scenario === 'complete' ? row.complete : row.question);
+  const questions = Array.isArray(opts.question) ? opts.question : null;
+  const question: string = (questions ? questions[0] : opts.question as string | undefined) ?? (scenario === 'complete' ? row.complete : row.question);
   boundary.configure({
     offlineAi: true, structuredUnderstandingAdoptionRuntime: null, postProcess: async () => {},
     incrementUsage: async () => ({ allowed: true, count: 1, limit: 100 }),
@@ -214,8 +219,17 @@ async function run(t: TestContext, channel: IncidentChannel, row: Row, scenario:
     },
     calendarAdapter: { getCalendarId: () => 'offline', getEvents: forbidden, checkSlots: forbidden, insertAppointment: forbidden, cancelAppointment: forbidden, updateAppointment: forbidden },
     recordAppointment: forbidden,
+    // Tier B: the only provider the shadow may use in tests (deterministic mock).
+    naturalComposerGenerate: async (request: any) => {
+      out.composerCalls.push(request);
+      if (out.repliesAtFirstComposerCall === null) out.repliesAtFirstComposerCall = out.replies.length;
+      if (!opts.composer) throw Error('composer must not be called');
+      return opts.composer(request, out);
+    },
+    // Tier B money: an offline in-memory ledger (never a real one).
+    naturalComposerBudget: opts.budget ? opts.budget(out.budgetLog) : recordingNaturalBudget(out.budgetLog),
   });
-  for (let i = 0; i < turns; i++) await incidentInbound(boundary, channel, question);
+  for (let i = 0; i < turns; i++) await incidentInbound(boundary, channel, questions ? questions[i] : question);
   return out;
 }
 
@@ -451,5 +465,186 @@ for (const row of ROWS) for (const channel of incidentChannels) {
     const r = await run(t, channel, row, 'extraction_timeout', 1, { question: SHORT[row.language], planner: singlePlanner });
     assert.deepEqual(r.errors, []);
     assert.deepEqual(r.replies, [contextualKnowledgeFallback({ language: row.language, question: SHORT[row.language], category: 'TIMEOUT' }).text]);
+  });
+}
+
+
+// ---------------------------------------------------------------------------
+// Tier B natural composer (SHADOW ONLY, 2026-11-17). Provider calls are
+// deterministic mocks; the validator mock is rule-based (digits kept, no
+// strengthened modality), never an automatic approval. Nothing is a genuine
+// model result.
+import { NATURAL_FLAGS } from './grounded-knowledge-composition';
+import { resetNaturalComposerBounds } from './natural-composer-shadow';
+import type { NaturalComposerBudget } from './natural-composer-budget';
+import { recordingNaturalBudget, type BudgetLogEntry } from '../../tests/helpers/natural-composer-test-budget';
+const settle = async (out: Outcome, n: number) => { for (let i = 0; i < 200 && out.composer.length < n; i++) await new Promise(r => setTimeout(r, 5)); };
+const REPHRASED_CONFIRMATION: Record<AcceptanceLanguage, string> = {
+  en: 'Bringing your booking confirmation, on your phone or printed, is a good idea.',
+  sv: 'Ta gärna med bokningsbekräftelsen, i mobilen eller utskriven.',
+  de: 'Am besten bringen Sie Ihre Buchungsbestätigung mit, digital oder ausgedruckt.',
+  es: 'Conviene llevar la confirmación de la reserva, en el móvil o en papel.',
+  fa: 'بهتر است تأییدیه رزرو را به‌صورت دیجیتال یا کاغذی همراه داشته باشید.',
+  ar: 'من الأفضل إحضار تأكيد الحجز، رقميًا أو ورقيًا.',
+};
+const MANDATORY_CONFIRMATION: Record<AcceptanceLanguage, string> = {
+  en: 'You must bring your booking confirmation.', sv: 'Du måste ta med bokningsbekräftelsen.', de: 'Sie müssen Ihre Buchungsbestätigung mitbringen.',
+  es: 'Debe llevar la confirmación de la reserva.', fa: 'باید تأییدیه رزرو را همراه داشته باشید.', ar: 'يجب عليك إحضار تأكيد الحجز.',
+};
+function composerMock(row: Row, variant: 'faithful' | 'mandatory' | 'quantity' | 'tool' | 'malformed' | 'timeout' | 'reject'): ComposerMock {
+  return async (request) => {
+    const data = JSON.parse(request.messages[0].content);
+    if (request.structuredOutput.name === 'odinlink_tierb_composer_v1') {
+      if (variant === 'tool') return { text: '{}', functionCalls: [{ id: 'x', function: { name: 'book_appointment', arguments: '{}' } }] };
+      if (variant === 'malformed') return { text: 'Sure! Here is a reply.', functionCalls: [] };
+      if (variant === 'timeout') throw Object.assign(new Error('deadline'), { name: 'TimeoutError' });
+      const [arrival, ...rest] = data.units;
+      const blocks: any[] = [{ kind: 'fact', text: variant === 'quantity' ? accepted(row).relative.replace(/10|۱۰/u, '15') : accepted(row).relative, proposedUnitOrdinals: [arrival.ordinal], obligationIds: [] }];
+      for (const u of rest) blocks.push({ kind: 'fact', text: u.text === accepted(row).confirmation
+        ? (variant === 'mandatory' ? MANDATORY_CONFIRMATION : REPHRASED_CONFIRMATION)[row.language] : u.text, proposedUnitOrdinals: [u.ordinal], obligationIds: [] });
+      for (const n of data.notices) blocks.push({ kind: 'uncertainty', text: n.text, proposedUnitOrdinals: [], obligationIds: n.obligationIds });
+      return { text: JSON.stringify({ blocks }), functionCalls: [], usage: { inputTokens: 900, outputTokens: 250 } };
+    }
+    const { proposal, contract } = data, pass = variant !== 'reject';
+    return { text: JSON.stringify({ contractHash: data.contractHash, proposalHash: data.proposalHash,
+      blocks: proposal.blocks.map((b: any) => ({ blockId: b.id, relation: pass ? 'ENTAILED' : 'UNKNOWN', noUnsupportedFacts: pass, meaningPreserved: pass, uncertaintyAccurate: true })),
+      unitCoverage: contract.units.map((u: any) => ({ unitId: u.id, blockIds: proposal.blocks.filter((b: any) => b.unitIds.includes(u.id)).map((b: any) => b.id), complete: true })),
+      obligationCoverage: contract.outcomes.flatMap((o: any) => o.obligations.filter((d: any) => d.status === 'UNRESOLVED')).map((d: any) => ({ obligationId: d.obligationId,
+        blockIds: proposal.blocks.filter((b: any) => b.obligationIds.includes(d.obligationId)).map((b: any) => b.id), accurate: true })),
+      flags: Object.fromEntries(NATURAL_FLAGS.map(f => [f, pass])) }), functionCalls: [], usage: { inputTokens: 1400, outputTokens: 300 } };
+  };
+}
+const TIER_B_KEYS = ['ODINLINK_KNOWLEDGE_NATURAL_COMPOSER', 'ODINLINK_KNOWLEDGE_NATURAL_COMPOSER_TENANTS', 'ODINLINK_KNOWLEDGE_NATURAL_COMPOSER_KILL'];
+const tierB = (t: TestContext, tenants = '3', extra: Record<string, string | undefined> = {}) => {
+  resetNaturalComposerBounds();
+  withEnv(t, { ODINLINK_KNOWLEDGE_NATURAL_COMPOSER: 'shadow', ODINLINK_KNOWLEDGE_NATURAL_COMPOSER_TENANTS: tenants, ...extra });
+};
+
+for (const row of ROWS) for (const channel of incidentChannels) {
+  test(`Tier B/${row.language}/${channel}: shadow validates a natural rephrasing; customer gets the canonical answer first and unchanged`, async t => {
+    tierB(t);
+    const r = await run(t, channel, row, 'partial', 1, { composer: composerMock(row, 'faithful') });
+    await settle(r, 1);
+    assert.deepEqual(r.errors, []);
+    assert.deepEqual(r.replies, [partialAnswer(row)], 'canonical customer reply unchanged');
+    assert.equal(r.repliesAtFirstComposerCall, 1, 'the composer runs only after the reply was sent');
+    assert.deepEqual(r.stages, ['extraction', 'verification'], 'no extra Knowledge provider stages');
+    assert.deepEqual(r.composer.map(x => [x.schema, x.mode, x.publication, x.outcome, x.reason, x.modelCalls, x.model, x.businessId, x.channel]),
+      [['tierb-natural-composer-v1', 'shadow', 'never_published', 'validated', 'VALIDATED', 2, 'gpt-6.1-sol', 3, channel]]);
+    assert.deepEqual(r.composerCalls.map(c => [c.model, c.routingStage, c.maxOutputTokens, c.tools.length, !!c.naturalComposerAdmission]),
+      [['gpt-6.1-sol', 'knowledge_natural_composition', 2000, 0, true], ['gpt-5.6-luna', 'knowledge_natural_validation', 1200, 0, true]]);
+    assert.deepEqual(r.budgetLog.map(e => e.op), ['reserve', 'settle', 'reserve', 'settle'], 'reserved before each dispatch, settled after');
+    assert.deepEqual([r.composer[0].reservations, r.composer[0].unknownRetainedNanoUsd, r.composer[0].validatorModel], [2, 0, 'gpt-5.6-luna']);
+    // Composer: verified meanings only (no evidence, quotes, source IDs or other business data).
+    const composerSent = JSON.stringify(r.composerCalls.filter(c => c.structuredOutput.name === 'odinlink_tierb_composer_v1').map(c => JSON.parse(c.messages[0].content)));
+    for (const forbidden of ['Kunder som besöker', 'evidenceRefs', 'sourceId', 'AdMotion', 'exactQuote']) assert.ok(!composerSent.includes(forbidden), forbidden);
+    // Validator: the existing same-tenant natural contract, with exact quotations stripped.
+    const validatorSent = JSON.stringify(r.composerCalls.filter(c => c.structuredOutput.name === 'odinlink_natural_validation_v1').map(c => JSON.parse(c.messages[0].content)));
+    assert.ok(!validatorSent.includes('exactQuote') && JSON.parse(validatorSent).every((d: any) => d.contract.scope.businessId === 3));
+    const record = JSON.stringify(r.composer);
+    for (const text of [accepted(row).digit, accepted(row).confirmation, row.question]) assert.ok(!record.includes(text), 'record is content-free');
+  });
+}
+for (const row of ROWS) for (const channel of ['telegram', 'whatsapp'] as const) {
+  for (const [variant, outcome, reason] of [['mandatory', 'rejected', 'MODALITY_ESCALATION'], ['quantity', 'rejected', 'QUANTITY_CHANGED'],
+    ['tool', 'error', 'TOOL_OUTPUT'], ['malformed', 'rejected', 'MALFORMED_PROPOSAL'], ['timeout', 'error', 'TIMEOUT'], ['reject', 'rejected', 'NATURAL_SEMANTIC_REJECTION']] as const)
+    test(`Tier B/${row.language}/${channel}/${variant}: recorded as ${reason}; canonical reply unchanged`, async t => {
+      tierB(t);
+      const r = await run(t, channel, row, 'partial', 1, { composer: composerMock(row, variant) });
+      await settle(r, 1);
+      assert.deepEqual(r.replies, [partialAnswer(row)]);
+      assert.deepEqual(r.composer.map(x => [x.outcome, x.reason]), [[outcome, reason]]);
+      // Timeout and a tool reply without usage both keep the full reservation as unknown exposure.
+      if (variant === 'timeout' || variant === 'tool') assert.deepEqual(r.budgetLog.map(e => [e.op, e.reason]),
+        [['reserve', undefined], ['unknown', variant === 'timeout' ? 'DISPATCH_OUTCOME_UNKNOWN' : 'USAGE_MISSING']]);
+    });
+  test(`Tier B/${row.language}/${channel}: complete answer validated; zero verified facts and fail-closed turns never reach the composer`, async t => {
+    tierB(t);
+    const complete = await run(t, channel, row, 'complete', 1, { composer: composerMock(row, 'faithful') });
+    await settle(complete, 1);
+    assert.deepEqual(complete.composer.map(x => [x.outcome, x.notices]), [['validated', 0]]);
+    for (const scenario of ['no_units', 'omitted', 'contradicted', 'negated_beside_gap', 'unbound_citation'] as const) {
+      const r = await run(t, channel, row, scenario, 1, { composer: composerMock(row, 'faithful'), ...(scenario === 'no_units' ? { question: SHORT[row.language], planner: singlePlanner } : {}) });
+      await new Promise(res => setTimeout(res, 30));
+      assert.deepEqual([r.composer, r.composerCalls.length], [[], 0], scenario);
+    }
+  });
+  test(`Tier B/${row.language}/${channel}: OFF by default, kill switch, non-allowlisted tenant -> no calls, no records`, async t => {
+    withEnv(t, Object.fromEntries(TIER_B_KEYS.map(k => [k, undefined])));  // single restore after the loop
+    for (const env of [{}, { ODINLINK_KNOWLEDGE_NATURAL_COMPOSER: 'active', ODINLINK_KNOWLEDGE_NATURAL_COMPOSER_TENANTS: '3' },
+      { ODINLINK_KNOWLEDGE_NATURAL_COMPOSER: 'shadow', ODINLINK_KNOWLEDGE_NATURAL_COMPOSER_TENANTS: '3', ODINLINK_KNOWLEDGE_NATURAL_COMPOSER_KILL: 'true' },
+      { ODINLINK_KNOWLEDGE_NATURAL_COMPOSER: 'shadow', ODINLINK_KNOWLEDGE_NATURAL_COMPOSER_TENANTS: '4' }]) {
+      resetNaturalComposerBounds();
+      for (const k of TIER_B_KEYS) delete process.env[k];
+      Object.assign(process.env, env);
+      const r = await run(t, channel, row, 'partial', 1, { composer: composerMock(row, 'faithful') });
+      await new Promise(res => setTimeout(res, 30));
+      assert.deepEqual([r.replies, r.composer, r.composerCalls.length], [[partialAnswer(row)], [], 0], JSON.stringify(env));
+    }
+  });
+}
+test('Tier B/fa/telegram: multi-turn continuity uses only the previous customer message; one shadow per turn', async t => {
+  tierB(t);
+  const row = ROWS[0];
+  const r = await run(t, 'telegram', row, 'partial', 2, { question: [row.question, row.complete], composer: composerMock(row, 'faithful') });
+  await settle(r, 2);
+  assert.equal(r.replies.length, 2);
+  assert.deepEqual(r.composer.map(x => [x.outcome, x.contextTurns]), [['validated', 0], ['validated', 1]]);
+  const second = JSON.parse(r.composerCalls[2].messages[0].content);
+  assert.equal(second.previousCustomerMessage, row.question);
+  // The first reply's limitation notice exists only in the previous ASSISTANT message
+  // (the second turn is a complete answer with no notices), so it must not appear.
+  assert.ok(!JSON.stringify(second).includes(limitation(row, row.bring)), 'previous assistant text is never forwarded as context');
+  assert.deepEqual(second.notices, []);
+});
+test('Tier B/fa/telegram: Tier A active and Tier B shadow are independent; Tier B never alters the presented text', async t => {
+  tierB(t, '3', { ODINLINK_KNOWLEDGE_PRESENTATION: 'active', ODINLINK_KNOWLEDGE_PRESENTATION_TENANTS: '3' });
+  const row = ROWS[0];
+  const r = await run(t, 'telegram', row, 'partial', 1, { composer: composerMock(row, 'faithful') });
+  await settle(r, 1);
+  assert.deepEqual(r.replies, [presented(row)]);
+  assert.deepEqual(r.composer.map(x => x.outcome), ['validated']);
+});
+
+// Tier B financial admission end to end (offline ledger mocks only).
+const TIER_B_MODEL_KEYS = ['ODINLINK_KNOWLEDGE_NATURAL_COMPOSER_MODEL', 'ODINLINK_KNOWLEDGE_NATURAL_VALIDATOR_MODEL', 'ODINLINK_KNOWLEDGE_NATURAL_VALIDATOR_ALLOW_SAME_MODEL'];
+/** One restore per test (registered once), then direct per-iteration env: no cross-test leakage. */
+const tierBScope = (t: TestContext) => withEnv(t, Object.fromEntries([...TIER_B_KEYS, ...TIER_B_MODEL_KEYS].map(k => [k, undefined])));
+const tierBSet = (extra: Record<string, string> = {}) => {
+  resetNaturalComposerBounds();
+  for (const k of [...TIER_B_KEYS, ...TIER_B_MODEL_KEYS]) delete process.env[k];
+  Object.assign(process.env, { ODINLINK_KNOWLEDGE_NATURAL_COMPOSER: 'shadow', ODINLINK_KNOWLEDGE_NATURAL_COMPOSER_TENANTS: '3', ...extra });
+};
+for (const row of ROWS) for (const channel of incidentChannels) {
+  test(`Tier B/${row.language}/${channel}: no ledger, denial or exhausted budget -> zero model calls; canonical reply unchanged`, async t => {
+    tierBScope(t);
+    for (const [name, budget, reason] of [
+      ['no ledger', () => undefined, 'LEDGER_UNAVAILABLE'],
+      ['denied', (log: BudgetLogEntry[]) => recordingNaturalBudget(log, { deny: () => true }), 'BUDGET_DENIED'],
+      ['exhausted', (log: BudgetLogEntry[]) => recordingNaturalBudget(log, { historicalNanoUsd: 3_999_000_000 }), 'BUDGET_DENIED'],
+    ] as const) {
+      tierBSet();
+      const r = await run(t, channel, row, 'partial', 1, { composer: composerMock(row, 'faithful'), budget });
+      await settle(r, 1);
+      assert.deepEqual([r.replies, r.composer.map(x => [x.outcome, x.reason, x.modelCalls]), r.composerCalls.length],
+        [[partialAnswer(row)], [['skipped', reason, 0]], 0], name);
+    }
+  });
+}
+for (const row of ROWS) {
+  test(`Tier B/${row.language}/telegram: explicit Luna composer validated by Sol; unknown model fails closed with zero calls`, async t => {
+    tierBScope(t);
+    tierBSet({ ODINLINK_KNOWLEDGE_NATURAL_COMPOSER_MODEL: 'gpt-5.6-luna' });
+    const luna = await run(t, 'telegram', row, 'partial', 1, { composer: composerMock(row, 'faithful') });
+    await settle(luna, 1);
+    assert.deepEqual(luna.composerCalls.map(c => c.model), ['gpt-5.6-luna', 'gpt-6.1-sol']);
+    assert.deepEqual(luna.composer.map(x => [x.outcome, x.model, x.validatorModel]), [['validated', 'gpt-5.6-luna', 'gpt-6.1-sol']]);
+    for (const extra of [{ ODINLINK_KNOWLEDGE_NATURAL_COMPOSER_MODEL: 'gpt-5.6-terra' }, { ODINLINK_KNOWLEDGE_NATURAL_VALIDATOR_MODEL: 'gpt-6.1-sol', ODINLINK_KNOWLEDGE_NATURAL_COMPOSER_MODEL: 'gpt-6.1-sol' }]) {
+      tierBSet(extra);
+      const r = await run(t, 'telegram', row, 'partial', 1, { composer: composerMock(row, 'faithful') });
+      await settle(r, 1);
+      assert.deepEqual([r.replies, r.composer.map(x => [x.outcome, x.reason]), r.composerCalls.length, r.budgetLog],
+        [[partialAnswer(row)], [['skipped', extra.ODINLINK_KNOWLEDGE_NATURAL_COMPOSER_MODEL === 'gpt-5.6-terra' ? 'MODEL_NOT_APPROVED' : 'VALIDATOR_NOT_INDEPENDENT']], 0, []]);
+    }
   });
 }

@@ -8,7 +8,13 @@
 export type AiRoutingProvider = 'openai' | 'gemini';
 
 /** Metered evidence-first Knowledge stages, the latency-bound planner, and everything else. */
-export type ModelStage = 'general' | 'knowledge_planning' | 'knowledge_extraction' | 'knowledge_re_extraction' | 'knowledge_verification';
+export type ModelStage = 'general' | 'knowledge_planning' | 'knowledge_extraction' | 'knowledge_re_extraction' | 'knowledge_verification'
+  | NaturalComposerStage;
+/** Tier B natural composer stages (shadow only). Every dispatch on these stages
+ * needs an explicit model AND a single-use pre-dispatch budget admission; they
+ * never inherit the default model and never fall back to another model. */
+export type NaturalComposerStage = 'knowledge_natural_composition' | 'knowledge_natural_validation';
+export const RESERVATION_REQUIRED_STAGES: ReadonlySet<ModelStage> = new Set(['knowledge_natural_composition', 'knowledge_natural_validation']);
 export const FINANCIALLY_CONTROLLED_STAGES: ReadonlySet<ModelStage> =
   new Set(['knowledge_extraction', 'knowledge_re_extraction', 'knowledge_verification']);
 /** Stages with a fixed sub-3-second host budget (Knowledge query planning:
@@ -111,6 +117,8 @@ export type ModelRoute = Readonly<{ model: string; stage: ModelStage; selected: 
  * A financially controlled default reaches a metered Knowledge stage only with
  * an owner permit; otherwise that request uses the baseline (Luna). */
 export function routeDefaultModel(stage: ModelStage = 'general', financialPermit = false, env: NodeJS.ProcessEnv = process.env): ModelRoute {
+  // Reservation-bound stages are explicit-model only: never a silent default.
+  if (RESERVATION_REQUIRED_STAGES.has(stage)) throw new Error('reserved_stage_requires_explicit_model');
   const result = readDefaultModelConfiguration(env);
   if (!result.ok) throw new DefaultModelConfigurationError(result.errors);
   const selected = result.config.model;
@@ -140,4 +148,44 @@ export function describeDefaultModel(env: NodeJS.ProcessEnv = process.env) {
   return result.ok
     ? Object.freeze({ status: 'ok' as const, model: result.config.model, source: result.config.source, managedKnowledge: managedKnowledgeDefault(env) })
     : Object.freeze({ status: 'invalid' as const, errors: result.errors });
+}
+
+// ---------------------------------------------------------------------------
+// Tier B natural composer model selection (shadow only, 2026-11-17).
+// Policy lives here, not in the composer. Composer defaults to the preferred
+// primary model (Sol); Luna is an explicit alternative. The validator defaults
+// to the OTHER approved model so a model never grades its own prose; the same
+// model needs an explicit owner override. Unknown, unpriced, cross-provider or
+// non-approved values fail closed: there is no fallback and no downgrade.
+export const NATURAL_COMPOSER_MODEL_ENV = 'ODINLINK_KNOWLEDGE_NATURAL_COMPOSER_MODEL';
+export const NATURAL_VALIDATOR_MODEL_ENV = 'ODINLINK_KNOWLEDGE_NATURAL_VALIDATOR_MODEL';
+export const NATURAL_VALIDATOR_SAME_MODEL_ENV = 'ODINLINK_KNOWLEDGE_NATURAL_VALIDATOR_ALLOW_SAME_MODEL';
+/** Approved Tier B models, in preference order. */
+export const NATURAL_COMPOSER_MODELS: readonly string[] = Object.freeze(['gpt-6.1-sol', 'gpt-5.6-luna']);
+export const NATURAL_COMPOSER_DEFAULT_MODEL = 'gpt-6.1-sol';
+
+export type NaturalComposerModels = Readonly<{ ok: true; composer: string; validator: string; provider: AiRoutingProvider;
+  validatorIndependence: 'distinct_model' | 'same_model_owner_override' }> |
+  Readonly<{ ok: false; reason: 'MODEL_NOT_APPROVED' | 'PROVIDER_UNSUPPORTED' | 'VALIDATOR_NOT_INDEPENDENT' }>;
+
+export function routeNaturalComposerModels(env: Readonly<Record<string, string | undefined>> = process.env): NaturalComposerModels {
+  let provider: string;
+  try { provider = String(env.AI_PROVIDER ?? '').trim().toLowerCase() || 'openai'; } catch { provider = ''; }
+  const approved = (raw: string | undefined, fallback: string | undefined) => {
+    if (raw === undefined) return fallback;
+    const id = raw.trim();
+    return id && NATURAL_COMPOSER_MODELS.includes(id) && MODEL_CATALOG[id] ? id : null;   // set but invalid => null (fail closed)
+  };
+  const composer = approved(env[NATURAL_COMPOSER_MODEL_ENV], NATURAL_COMPOSER_DEFAULT_MODEL);
+  if (!composer) return Object.freeze({ ok: false, reason: 'MODEL_NOT_APPROVED' as const });
+  const distinct = NATURAL_COMPOSER_MODELS.find(id => id !== composer);
+  const validator = approved(env[NATURAL_VALIDATOR_MODEL_ENV], distinct);
+  if (!validator) return Object.freeze({ ok: false, reason: 'MODEL_NOT_APPROVED' as const });
+  // Only the OpenAI adapter can bound output and carry an admission today.
+  if (provider !== 'openai' || MODEL_CATALOG[composer].provider !== 'openai' || MODEL_CATALOG[validator].provider !== 'openai')
+    return Object.freeze({ ok: false, reason: 'PROVIDER_UNSUPPORTED' as const });
+  if (validator === composer && env[NATURAL_VALIDATOR_SAME_MODEL_ENV] !== 'true')
+    return Object.freeze({ ok: false, reason: 'VALIDATOR_NOT_INDEPENDENT' as const });
+  return Object.freeze({ ok: true, composer, validator, provider: 'openai' as const,
+    validatorIndependence: validator === composer ? 'same_model_owner_override' as const : 'distinct_model' as const });
 }

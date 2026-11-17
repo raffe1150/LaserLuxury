@@ -1,6 +1,8 @@
 import { isSourceExhaustiveProtocol } from './src/ai/source-exhaustive-coverage';
 import { classifyKnowledgeFallback, contextualKnowledgeFallback, previousAssistantReply } from './src/ai/knowledge-fallback';
 import { knowledgePresentationConfig, presentVerifiedManifest, PRESENTATION_SCHEMA } from './src/ai/knowledge-presentation';
+import { composerSnapshot, naturalComposerConfig, previousCustomerMessage, runNaturalComposerShadow, skippedComposerRecord } from './src/ai/natural-composer-shadow';
+import { serverNaturalComposerBudget, type NaturalComposerBudget } from './src/ai/natural-composer-budget';
 import { ordinaryEntailmentPunctuationKey, ordinaryEntailmentIsReusable } from './src/ai/claim-entailment-reuse';
 import { recoveryDiagnostic, recoveryFailureFields, recoveryOutcome, recoveryExtractionStage, recoveryEntailmentStage, recoveryRequestedFactStage, withRepairDiagnostics, withRecoveryDiagnostics, type RecoveryStage } from './src/ai/recovery-diagnostics';
 import {installControlledTrial,trialModeOn,trialEnforced,trialHttpAllowed,trialBusinessId,
@@ -9,7 +11,7 @@ import {installControlledTrial,trialModeOn,trialEnforced,trialHttpAllowed,trialB
 import { formatRetrievedBusinessKnowledge, type KnowledgeFormattingFailure } from './src/knowledge/retrieved-knowledge-format';
 import {hierarchicalSearchEnabled} from './src/knowledge/hierarchical-search';
 import { installConfiguredKnowledgeBudgetOwner, refreshConfiguredKnowledgeBudgetOwner, knowledgeBudgetOwnerRefreshMs } from './src/ai/durable-knowledge-budget-owner';
-import { accuracyFirstEnabled, ACCURACY_FIRST_POLICY, accuracyFirstExtractionAllowance, continuityTestPlanningAllowance, nativeKnowledgeTiming, runAccuracyFirstNative, abortKnowledgeWork } from './src/ai/knowledge-timing-policy';
+import { accuracyFirstEnabled, ACCURACY_FIRST_POLICY, accuracyFirstExtractionAllowance, continuityTestPlanningAllowance, nativeKnowledgeTiming, runAccuracyFirstNative, abortKnowledgeWork, runDetachedKnowledgeShadow } from './src/ai/knowledge-timing-policy';
 import { directServiceInformationPlan } from './src/ai/direct-service-planning';
 import { selectCandidateRetrievalPolicy, type CandidateFallback, type RetrievalObservation } from './src/knowledge/candidate-retrieval';
 import { directMixedSourceInformationPlan, mixedSourceInformationQuestion } from './src/ai/mixed-source-planning';
@@ -53,7 +55,7 @@ import { KNOWLEDGE_SCHEMA_VERSION, verificationAdmissionDiagnostic, knowledgeDia
 import { captureKnowledgeModelProfile, sentEvidenceCurrent, knowledgeStageOptions, solExtractionMode, solExtractionEligible, KNOWLEDGE_SOL_EXTRACTION_PROFILE, KNOWLEDGE_SOL_PRODUCTION_PROFILE, knowledgeManagedStages, type KnowledgeModelProfile, type KnowledgeExecutionPermit } from './src/ai/knowledge-model-policy';
 import { emitSolCanaryTelemetry, extractionReasonCounts, reExtractionAdmission, runSolExtractionShadow, type SolStageRecord } from './src/ai/sol-extraction-canary';
 import { generateWithOpenAi } from './src/ai/providers/openai';
-import { assertDefaultModelConfiguration, describeDefaultModel, modelStageFor } from './src/ai/model-routing';
+import { assertDefaultModelConfiguration, describeDefaultModel, modelStageFor, routeNaturalComposerModels } from './src/ai/model-routing';
 import { resolveOpenAiTextModel } from './src/ai/providers/openai';
 import { mapWebsiteInstallation, websiteInstallationRouter } from './src/knowledge/website-installations';
 import { DocumentEvidenceRegistry, revalidateKnowledgeSourceIds } from './src/knowledge/evidence-registry';
@@ -1569,6 +1571,10 @@ type Priority1hTestDependencies = {
   solCanaryTelemetry?: (event: any) => void;
   evidenceFirstDecisionDiagnostic?: (event: Record<string, unknown>) => void;
   knowledgePresentation?: (record: Record<string, unknown>) => void;
+  /** Tier B shadow: the ONLY provider a test run may use (never a real provider). */
+  naturalComposerGenerate?: (request: UnifiedAiGenerationRequest) => Promise<UnifiedAiGenerationResponse>;
+  naturalComposerRecord?: (record: Record<string, unknown>) => void;
+  naturalComposerBudget?: NaturalComposerBudget;
   knowledgeNaturalCompatibility?: (record: Record<string, unknown>) => void;
   evidenceFirstPublicationDiagnostic?: (event: Record<string, unknown>) => void;
   bookingPresentationGenerate?: (request: UnifiedAiGenerationRequest) => Promise<UnifiedAiGenerationResponse>;
@@ -5453,7 +5459,7 @@ type KnowledgeTurnState = { readonly modelProfile?: KnowledgeModelProfile; reado
   verifiedCancellationReply?: string;
   naturalEnabled?: boolean; naturalSinglePartial?: boolean; naturalTurnId?: string; replyLanguage?: string;
   /** S0: the legacy grounded-natural path was requested but is incompatible with the active verifier protocol. */
-  naturalBypassed?: boolean; naturalBypassLogged?: boolean; presentationRecorded?: boolean;
+  naturalBypassed?: boolean; naturalBypassLogged?: boolean; presentationRecorded?: boolean; naturalComposerScheduled?: boolean;
   businessId?: number; question?: string; manifest?: AnswerManifest; sessionId?: string; history?: any[]; matches?: KnowledgeSearchMatch[];
   snapshot?: Readonly<{ businessId: number; question: string; matches: KnowledgeSearchMatch[]; evidence: Evidence[] }>;
   invalidSourceIds?: Set<string>; nativeChannel?: 'telegram'|'instagram'|'whatsapp'|'messenger'; provider?:string; model?:string;
@@ -6260,6 +6266,49 @@ function knowledgePresentationText(state: KnowledgeTurnState, canonical: string)
   } catch { return canonical; }
 }
 
+/** Tier B natural composer, SHADOW ONLY. Schedules at most one detached run per
+ * turn after the publication decision; returns synchronously. The customer
+ * text is computed before this call and is never read back. */
+function scheduleNaturalComposerShadow(state: KnowledgeTurnState) {
+  if (state.naturalComposerScheduled) return;
+  state.naturalComposerScheduled = true;
+  runOptionalDiagnostic(() => {
+    const config = naturalComposerConfig();
+    if (config.mode !== 'shadow' || !Number.isSafeInteger(state.businessId) || !config.tenants.has(state.businessId!) ||
+        state.naturalEnabled || state.ownerAnswerSelection || state.budget instanceof DurableKnowledgeBudget || !state.manifest) return;
+    const emit = (record: Record<string, unknown>) => runOptionalDiagnostic(() => {
+      runOptionalDiagnostic(() => priority1hTestDependencies?.naturalComposerRecord?.(record));
+      console.info('[KnowledgeNaturalComposer]', JSON.stringify(record));
+    });
+    const channel = state.nativeChannel || 'internal', businessId = state.businessId!;
+    const { snapshot, reason } = composerSnapshot(state.manifest);
+    if (!snapshot) return emit(skippedComposerRecord({ businessId, channel, language: state.manifest.language, reason: reason!, canonicalChars: state.manifest.text.length }));
+    // Shared router decides the models (fail closed, no fallback/downgrade).
+    const models = routeNaturalComposerModels();
+    if (!models.ok) return emit(skippedComposerRecord({ businessId, channel, language: snapshot.language, reason: (models as { reason: string }).reason, canonicalChars: snapshot.canonicalText.length }));
+    // Tests may only use the injected mocks. Production dispatches through the configured provider,
+    // whose OpenAI adapter refuses any Tier B request without a single-use pre-dispatch admission.
+    const generate = process.env.NODE_ENV === 'test' ? priority1hTestDependencies?.naturalComposerGenerate : generateWithConfiguredProvider;
+    if (!generate) return emit(skippedComposerRecord({ businessId, channel, language: snapshot.language, reason: 'NO_PROVIDER', canonicalChars: snapshot.canonicalText.length, models }));
+    // Server-side money must be durable and cross-instance; none is authorised for Tier B yet => zero calls.
+    const budget = process.env.NODE_ENV === 'test' ? priority1hTestDependencies?.naturalComposerBudget : serverNaturalComposerBudget().budget;
+    if (!budget) return emit(skippedComposerRecord({ businessId, channel, language: snapshot.language, reason: 'LEDGER_UNAVAILABLE', canonicalChars: snapshot.canonicalText.length, models }));
+    const support = requestSecurity.evidence?.support as any;
+    const businessConfig = support?.businessConfig;
+    const question = state.question || (typeof support?.question === 'string' ? support.question : '');
+    const previous = previousCustomerMessage(state.sessionId ? chatSessions[state.sessionId] : undefined);
+    const tone = normalizeBusinessToneConfig(businessConfig?.toneConfig);
+    const turnId = nativeKnowledgeTiming()?.turnId || crypto.randomUUID();
+    const languageSafe = (unit: any) => !assessKnowledgeUnitLanguage(unit, snapshot.language, businessConfig);
+    setImmediate(() => knowledgeTurnScope.exit(() => {
+      void runDetachedKnowledgeShadow(() => runNaturalComposerShadow({ snapshot, businessId, channel, question, turnId, tone, generate, languageSafe, models, budget,
+        dailyCap: config.dailyCap, ...(previous ? { previousCustomerMessage: previous } : {}) }))
+        .then(record => emit(record ?? skippedComposerRecord({ businessId, channel, language: snapshot.language, reason: 'DETACHED_ABORT', canonicalChars: snapshot.canonicalText.length, models })),
+          () => undefined);
+    }));
+  });
+}
+
 async function securePublicationReply(reply: string, language?: string): Promise<string | null> {
   // Delivery can recheck publication multiple times without a support object.
   // The current turn's resolved language remains authoritative at every check.
@@ -6301,6 +6350,8 @@ async function securePublicationReply(reply: string, language?: string): Promise
   // synchronous and zero-model; any failure keeps the canonical text.
   const text = publishable && scopedTiming && state?.manifest && canonicalText === state.manifest.text
     ? knowledgePresentationText(state, canonicalText) : canonicalText;
+  // Tier B (shadow only): detached, never alters `text`, history or delivery.
+  if (publishable && scopedTiming && state?.manifest && canonicalText === state.manifest.text) scheduleNaturalComposerShadow(state);
   if (state?.ownerAnswerSelection) state.ownerAnswerPublication = {
     text, requiresCurrentApproval: Boolean(publishable && state.manifest?.units.length),
   };

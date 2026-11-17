@@ -2,6 +2,7 @@ import type { EmbeddingVector } from "../embeddings";
 import type { UnifiedAudioInput } from "./audio";
 import type { KnowledgeExecutionPermit, KnowledgeUsage } from '../knowledge-model-policy';
 import type { ModelStage } from '../model-routing';
+import type { NaturalComposerAdmission } from '../natural-composer-budget';
 
 export type AiProviderName = "gemini" | "openai";
 
@@ -60,6 +61,10 @@ export interface UnifiedAiGenerationRequest {
   routingStage?: ModelStage;
   /** Opaque backend-owned strict Knowledge permission; absent on all defaults. */
   knowledgeExecution?: KnowledgeExecutionPermit;
+  /** Optional hard bound on output tokens (visible + reasoning). Absent => unchanged provider default. */
+  maxOutputTokens?: number;
+  /** Single-use Tier B budget admission; mandatory on reservation-bound stages. */
+  naturalComposerAdmission?: NaturalComposerAdmission;
 }
 
 export interface UnifiedAiGenerationResponse {

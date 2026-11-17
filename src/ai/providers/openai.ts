@@ -5,7 +5,8 @@ import type { EmbeddingVector } from "../embeddings";
 import { buildOpenAiFailureDiagnostic } from "./openai-diagnostic";
 import { normalizeOpenAiToolSchema } from "./openai-tool-schema";
 import { executeKnowledgeGeneration, type KnowledgeUsage } from '../knowledge-model-policy';
-import { isKnowledgeStageSchema, modelDescriptor, modelStageFor, routeDefaultModel, type ModelRoute } from '../model-routing';
+import { isKnowledgeStageSchema, modelDescriptor, modelStageFor, RESERVATION_REQUIRED_STAGES, routeDefaultModel, type ModelRoute } from '../model-routing';
+import { consumeNaturalAdmission } from '../natural-composer-budget';
 import type {
   UnifiedAiGenerationRequest,
   UnifiedAiGenerationResponse,
@@ -153,6 +154,11 @@ export function normalizeOpenAiGenerationResponse(
 export async function generateWithOpenAi(
   request: UnifiedAiGenerationRequest,
 ): Promise<UnifiedAiGenerationResponse> {
+  // Tier B: no single-use pre-dispatch admission => no dispatch (checked before
+  // credentials, trial routing or any SDK construction; never retried).
+  if (request.naturalComposerAdmission || (request.routingStage && RESERVATION_REQUIRED_STAGES.has(request.routingStage))) consumeNaturalAdmission(request);
+  if (request.maxOutputTokens !== undefined && !(Number.isSafeInteger(request.maxOutputTokens) && request.maxOutputTokens > 0))
+    throw new Error('invalid_max_output_tokens');
   if(trialEnforced())assertTrialProvider('openai',request.knowledgeExecution ? (request.knowledgeExecution.stage==='extraction'?'knowledge_units_extraction':request.knowledgeExecution.stage==='verification'?'knowledge_units_verification':undefined) : request.controlledTrialStage==='language'?'semantic_language_resolution':undefined);
   const trialSignal=controlledTrialSignal();
   if(trialSignal)request={...request,signal:AbortSignal.any([trialSignal,...(request.signal?[request.signal]:[])])};
@@ -197,6 +203,8 @@ export async function generateWithOpenAi(
         },
       },
     } : {}),
+    // Responses API: max_output_tokens bounds visible AND reasoning output.
+    ...(request.maxOutputTokens !== undefined ? { max_output_tokens: request.maxOutputTokens } : {}),
     ...(request.temperature !== undefined && OPENAI_TEMPERATURE_MODELS.has(model)
       ? { temperature: request.temperature }
       : {}),

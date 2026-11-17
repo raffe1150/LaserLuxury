@@ -44,7 +44,7 @@ const sourcePins = {
   '../src/ai/brain/phase4/held-out.ts': '757ddf4173f1853b7426e7a2897d6ccb733862bf6fb74e78a993a522f387ab7c',
   '../src/ai/brain/phase5/semantic-eval.ts': '71be25389cbb84f892719aad19fdbebbfe79b3954843b3ef10ec8b583e7185d9',
   '../src/ai/brain/semantic/model-adapter.ts': '072dd1f863bfa5eae8891641aafd5b7cf01beddb1ac1b1d025c2fb9319915840',
-  '../src/ai/brain/memory/conversation-memory.ts': 'a3b91e4ed07020871ccb70a204092b05f29fa785b0325dce988a20c6c9865913',
+  '../src/ai/brain/memory/conversation-memory.ts': 'f7ce92081a1b331c31fb51de159133008ab097cd06a4704e3feb09a8aac5ea53',
 } as const;
 export const solSemanticPins = Object.freeze({ manifestSha256: manifestHash, sourcesSha256: sha(JSON.stringify(sourcePins)), model,
   requestExposureUsd: maxCost, requestedTurns: 18, historicalCarryUsd: carry, inputLimit, outputLimit });

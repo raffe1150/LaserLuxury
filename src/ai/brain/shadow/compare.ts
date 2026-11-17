@@ -13,11 +13,11 @@ import { negativeControls } from './negative-controls';
 import { catalogInput, isAnswer, sourcePayload } from './phase3-input';
 import { digest, recordedInput } from './recorded-input';
 
-export const BASELINE_HASH = 'c92b7958b6f1c02bb4b36b9aac8d108f25dbd7db1e157607b86f7e59e676d37a';
+export const BASELINE_HASH = '6edbf350b2df4c526fb57fef6393c6d4d1a59496a6c438b9e944bc84c459a4e1';
 const protocols = ['v2', 'source-exhaustive-v2'] as const;
 
 function readBaseline() {
-  const bytes = readFileSync(new URL('docs/validation/brain-v2-phase2-baseline-20261114/report.json', REPO_ROOT));
+  const bytes = readFileSync(new URL('docs/validation/brain-v2-phase2-baseline-20261117-p0-proposal/report.json', REPO_ROOT));
   if (createHash('sha256').update(bytes).digest('hex') !== BASELINE_HASH) throw new Error('Phase 2 report changed');
   const baseline = JSON.parse(bytes.toString('utf8')) as Awaited<ReturnType<typeof runBaseline>>;
   const issues = validateCorpus(CORPUS);

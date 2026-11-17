@@ -65,7 +65,7 @@ assert.ok(whatsappStatePlan >= 0 && whatsappIntent > whatsappStatePlan);
 assert.match(server, /loadPendingBooking\(chatId, "whatsapp", businessConfig, \{[\s\S]{0,100}throwOnReadFailure: true/);
 assert.match(server, /if \(!clearlyNonBookingTurn && !whatsappUnifiedAttempted\)[\s\S]{0,500}handleUnifiedBookingEngine\(/);
 assert.match(server, /whatsappIntent === "language_repair"[\s\S]{0,200}formatLanguageRepairAcknowledgement/);
-assert.match(server, /shouldReturnWhatsAppAmbiguousClarification\(chatId, whatsappIntent, textMessage\)[\s\S]{0,200}formatAmbiguousBookingIntentClarification/);
+assert.match(server, /shouldReturnWhatsAppAmbiguousClarification\(chatId, whatsappIntent, textMessage, businessConfig\)[\s\S]{0,200}formatAmbiguousBookingIntentClarification/);
 assert.match(server, /const telegramReplyPreferences:/);
 assert.match(server, /updateTelegramReplyPreference\([\s\S]{0,300}resolveTelegramReplyPreference/);
 assert.match(server, /send:\s*async \(reply\) => \(await sendTelegramPreferredReply/);

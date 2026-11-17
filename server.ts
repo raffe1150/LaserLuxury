@@ -1,4 +1,6 @@
 import { isSourceExhaustiveProtocol } from './src/ai/source-exhaustive-coverage';
+import { classifyKnowledgeFallback, contextualKnowledgeFallback, previousAssistantReply } from './src/ai/knowledge-fallback';
+import { knowledgePresentationConfig, presentVerifiedManifest, PRESENTATION_SCHEMA } from './src/ai/knowledge-presentation';
 import { ordinaryEntailmentPunctuationKey, ordinaryEntailmentIsReusable } from './src/ai/claim-entailment-reuse';
 import { recoveryDiagnostic, recoveryFailureFields, recoveryOutcome, recoveryExtractionStage, recoveryEntailmentStage, recoveryRequestedFactStage, withRepairDiagnostics, withRecoveryDiagnostics, type RecoveryStage } from './src/ai/recovery-diagnostics';
 import {installControlledTrial,trialModeOn,trialEnforced,trialHttpAllowed,trialBusinessId,
@@ -1566,6 +1568,8 @@ type Priority1hTestDependencies = {
   solShadowTelemetry?: (event: any) => void;
   solCanaryTelemetry?: (event: any) => void;
   evidenceFirstDecisionDiagnostic?: (event: Record<string, unknown>) => void;
+  knowledgePresentation?: (record: Record<string, unknown>) => void;
+  knowledgeNaturalCompatibility?: (record: Record<string, unknown>) => void;
   evidenceFirstPublicationDiagnostic?: (event: Record<string, unknown>) => void;
   bookingPresentationGenerate?: (request: UnifiedAiGenerationRequest) => Promise<UnifiedAiGenerationResponse>;
   bookingPresentationDiagnostic?: (event: { kind: string; source: string; repeated: boolean; fallbackReason?: string; validationReason?: BookingValidationReason }) => void;
@@ -5448,6 +5452,8 @@ type KnowledgeTurnState = { readonly modelProfile?: KnowledgeModelProfile; reado
   cancellationBridge?: ReturnType<typeof createCancellationEvidenceBridge>;
   verifiedCancellationReply?: string;
   naturalEnabled?: boolean; naturalSinglePartial?: boolean; naturalTurnId?: string; replyLanguage?: string;
+  /** S0: the legacy grounded-natural path was requested but is incompatible with the active verifier protocol. */
+  naturalBypassed?: boolean; naturalBypassLogged?: boolean; presentationRecorded?: boolean;
   businessId?: number; question?: string; manifest?: AnswerManifest; sessionId?: string; history?: any[]; matches?: KnowledgeSearchMatch[];
   snapshot?: Readonly<{ businessId: number; question: string; matches: KnowledgeSearchMatch[]; evidence: Evidence[] }>;
   invalidSourceIds?: Set<string>; nativeChannel?: 'telegram'|'instagram'|'whatsapp'|'messenger'; provider?:string; model?:string;
@@ -5479,7 +5485,11 @@ function verifiedTenantTimingBusinessId(
 const knowledgeTurnScope = new AsyncLocalStorage<KnowledgeTurnState>();
 function runUnifiedConversationRequest<T>(work: () => Promise<T>, nativeChannel:KnowledgeTurnState['nativeChannel'], nativeEvent?:NativeKnowledgeEvent,
   written?: { text: string; config: any }): Promise<T | undefined> {
-  const naturalEnabled=process.env.ODINLINK_EVIDENCE_FIRST_KNOWLEDGE==='true'&&process.env.ODINLINK_GROUNDED_NATURAL_RESPONSES==='true';
+  const naturalRequested=process.env.ODINLINK_EVIDENCE_FIRST_KNOWLEDGE==='true'&&process.env.ODINLINK_GROUNDED_NATURAL_RESPONSES==='true';
+  // S0: the legacy grounded-natural path cannot run under a source-exhaustive
+  // verifier (the answer builder fails closed). Keep the canonical verified path.
+  const naturalBypassed=naturalRequested&&!groundedNaturalProtocolCompatible();
+  const naturalEnabled=naturalRequested&&!naturalBypassed;
   // Reuse existing read-only admission; no new intent classifier or action route.
   // Preserve the existing standalone adapter contract. Database-backed Meta
   // traffic must use a tenant resolved from its registered channel connection.
@@ -5511,7 +5521,7 @@ function runUnifiedConversationRequest<T>(work: () => Promise<T>, nativeChannel:
 
   const scoped = accuracyFirstEnabled(Number(timingBusinessId)) && !!written?.text &&
     verifiedKnowledgeInformationRequest(written.text, timingConfig,nativeChannel);
-  return withBusinessInformationTiming(() => requestSecurity.run(() => knowledgeTurnScope.run({nativeChannel,nativeEvent,naturalEnabled,...(naturalEnabled?{
+  return withBusinessInformationTiming(() => requestSecurity.run(() => knowledgeTurnScope.run({nativeChannel,nativeEvent,naturalEnabled,...(naturalBypassed?{naturalBypassed:true}:{}),...(naturalEnabled?{
     naturalSinglePartial:process.env.ODINLINK_GROUNDED_NATURAL_SINGLE_PARTIAL==='true',naturalTurnId:crypto.randomUUID()}: {})}, () => scoped
       ? runAccuracyFirstNative(work, async () => {
           // An overloaded/unresolved intake has not established session authority.
@@ -5898,9 +5908,36 @@ async function knowledgeEvidenceCurrent(): Promise<boolean> {
   return requestSecurity.current();
 }
 
+function groundedNaturalProtocolCompatible():boolean {
+  try { return !isSourceExhaustiveProtocol(selectKnowledgeVerificationProtocol()); } catch { return false; }
+}
+/** S0: one content-free record per native turn whose legacy natural request was bypassed. */
+function logNaturalBypass(state:KnowledgeTurnState) {
+  if (!state.naturalBypassed || state.naturalBypassLogged) return;
+  state.naturalBypassLogged = true;
+  runOptionalDiagnostic(() => {
+    const record = { schema: 'knowledge-natural-compatibility-v1', businessId: state.businessId ?? null, channel: state.nativeChannel || 'internal',
+      outcome: 'legacy_natural_bypassed', reason: 'SOURCE_EXHAUSTIVE_PROTOCOL' };
+    runOptionalDiagnostic(() => priority1hTestDependencies?.knowledgeNaturalCompatibility?.(record));
+    console.info('[KnowledgeNaturalCompatibility]', JSON.stringify(record));
+  });
+}
+const nativeFallbackSubjects:Record<string,string>={en:'the requested details',sv:'de efterfrågade uppgifterna',de:'die angefragten Einzelheiten',es:'los detalles solicitados',fa:'جزئیات درخواست‌شده',ar:'التفاصيل المطلوبة'};
 function knowledgeUnavailableReply(language:string):string {
-  if (nativeKnowledgeTiming()) return formatBusinessSupportVerificationUnavailable(language,
-    ({en:'the requested details',sv:'de efterfrågade uppgifterna',de:'die angefragten Einzelheiten',es:'los detalles solicitados',fa:'جزئیات درخواست‌شده',ar:'التفاصيل المطلوبة'} as Record<string,string>)[language] || 'the requested details');
+  if (nativeKnowledgeTiming()) {
+    // S1: deterministic, fact-free, contextual. Categorised only from backend
+    // signals; repeat detection reads the previous assistant turn only.
+    try {
+      const state = knowledgeTurnScope.getStore(), support = requestSecurity.evidence?.support as any;
+      const category = classifyKnowledgeFallback({ timingFailure: !!nativeKnowledgeTiming()!.failure, freshnessFailure: state?.freshnessFailure ?? null,
+        fallbackReason: state?.manifest?.fallbackReason ?? null, retrievalStatus: support?.retrievalStatus ?? null });
+      const question = state?.question || (support && typeof support.question === 'string' ? support.question : '');
+      const history = state?.sessionId ? chatSessions[state.sessionId] : undefined;
+      return contextualKnowledgeFallback({ language, question, category, previousAssistantReply: previousAssistantReply(history) }).text;
+    } catch {
+      return formatBusinessSupportVerificationUnavailable(language, nativeFallbackSubjects[language] || 'the requested details');
+    }
+  }
   const support=requestSecurity.evidence?.support;
   return formatBusinessSupportVerificationUnavailable(language,businessInformationSubject(support&&'question' in support?support.question:'',language));
 }
@@ -5962,6 +5999,7 @@ const nativeVerifiedHistory = new WeakMap<object, {
 /** Shared already-admitted native execution; routing remains at its caller. */
 async function generateNativeKnowledgeContent(sessionId:string,options:any,support:(BusinessInformationTurn|CompletedBookingSupportTurn)&{question:string},state:KnowledgeTurnState) {
   state.sessionId = sessionId;
+  logNaturalBypass(state);
   if (!state.manifest) {
     const verificationProtocol = state.verificationProtocol ?? selectKnowledgeVerificationProtocol();
     if (state.verificationProtocol === undefined) Object.defineProperty(state, 'verificationProtocol', { value: verificationProtocol, enumerable: true });
@@ -6158,8 +6196,10 @@ export async function executeDurableKnowledgeTask(task: KnowledgeTask,
   if (!await current()) return reject('TURN_CONTEXT');
   const sessionId = `durable-knowledge:${task.turnId}:${task.fence}`;
   const budget = new DurableKnowledgeBudget(task, context.signal, context.reserveModelAttempt);
-  const naturalEnabled = process.env.ODINLINK_GROUNDED_NATURAL_RESPONSES === 'true';
-  const state: KnowledgeTurnState = { nativeChannel: task.scope.channel, sessionId,
+  const naturalRequested = process.env.ODINLINK_GROUNDED_NATURAL_RESPONSES === 'true';
+  const naturalBypassed = naturalRequested && !groundedNaturalProtocolCompatible();
+  const naturalEnabled = naturalRequested && !naturalBypassed;
+  const state: KnowledgeTurnState = { nativeChannel: task.scope.channel, sessionId, ...(naturalBypassed ? { naturalBypassed: true } : {}),
     budget, businessId: task.scope.businessId, question: question, history: structuredClone([...task.input.history]),
     durableCheckpoint: context.checkpoint, durableProgress: context.progress, durableCurrent: async () => !context.signal.aborted && budget.remaining() > 0 && await current(),
     naturalEnabled, naturalSinglePartial: process.env.ODINLINK_GROUNDED_NATURAL_SINGLE_PARTIAL === 'true', naturalTurnId: task.turnId };
@@ -6192,6 +6232,32 @@ export async function executeDurableKnowledgeTask(task: KnowledgeTask,
         text: manifest.text, sources: [...sources].map(([id, revision]) => ({ id, revision })) });
     } finally { delete businessInformationTurns[sessionId]; }
   })), task.scope.channel, task.turnId);
+}
+
+/** S2 Tier A. Off by default; shadow/active only for allowlisted tenants.
+ * Shadow never changes customer text. One content-free record per turn. */
+function knowledgePresentationText(state: KnowledgeTurnState, canonical: string): string {
+  try {
+    const config = knowledgePresentationConfig();
+    if (config.mode === 'off' || !state.manifest || !Number.isSafeInteger(state.businessId) || !config.tenants.has(state.businessId!) ||
+        state.naturalEnabled || state.ownerAnswerSelection || state.budget instanceof DurableKnowledgeBudget) return canonical;
+    const started = process.hrtime.bigint();
+    const result = presentVerifiedManifest(state.manifest);
+    const apply = config.mode === 'active' && result.reason === 'APPLIED' && typeof result.text === 'string';
+    if (!state.presentationRecorded) {
+      state.presentationRecorded = true;
+      runOptionalDiagnostic(() => {
+        const record = { schema: PRESENTATION_SCHEMA, tier: 'A', mode: config.mode, businessId: state.businessId, channel: state.nativeChannel || 'internal',
+          language: state.manifest!.language, outcome: apply ? 'applied' : config.mode === 'shadow' && result.reason === 'APPLIED' ? 'shadow_would_apply' : 'canonical',
+          reason: result.reason, facets: result.facets, units: result.units, notices: result.notices,
+          canonicalChars: canonical.length, presentedChars: result.text?.length ?? null, modelCalls: 0,
+          durationMicros: Number((process.hrtime.bigint() - started) / 1000n) };
+        runOptionalDiagnostic(() => priority1hTestDependencies?.knowledgePresentation?.(record));
+        console.info('[KnowledgePresentation]', JSON.stringify(record));
+      });
+    }
+    return apply ? result.text! : canonical;
+  } catch { return canonical; }
 }
 
 async function securePublicationReply(reply: string, language?: string): Promise<string | null> {
@@ -6228,9 +6294,13 @@ async function securePublicationReply(reply: string, language?: string): Promise
   const outputLanguage=language || capturedSupportLanguage(requestSecurity.evidence.support);
   const supportQuestion = requestSecurity.evidence.support && 'question' in requestSecurity.evidence.support
     ? requestSecurity.evidence.support.question : '';
-  const text = publishable ? state?.manifest?.text || state?.verifiedCancellationReply || reply : !scopedTiming && !state?.budget && hasCancellationInformationTopic(supportQuestion)
+  const canonicalText = publishable ? state?.manifest?.text || state?.verifiedCancellationReply || reply : !scopedTiming && !state?.budget && hasCancellationInformationTopic(supportQuestion)
     ? cancellationInformationNotice(outputLanguage, 'source_invalid')
     : scopedTiming || state?.budget&&state.migrated!==false?knowledgeUnavailableReply(outputLanguage):formatBusinessSupportKnowledgeGap(outputLanguage);
+  // S2: optional Tier A presentation of the SAME publishable manifest. Pure,
+  // synchronous and zero-model; any failure keeps the canonical text.
+  const text = publishable && scopedTiming && state?.manifest && canonicalText === state.manifest.text
+    ? knowledgePresentationText(state, canonicalText) : canonicalText;
   if (state?.ownerAnswerSelection) state.ownerAnswerPublication = {
     text, requiresCurrentApproval: Boolean(publishable && state.manifest?.units.length),
   };
@@ -37748,6 +37818,9 @@ export const priority1hUnifiedEngineTestBoundary = {
     for (const key of Object.keys(telegramReplyPreferences)) delete telegramReplyPreferences[key];
     for (const key of Object.keys(chatLanguages)) delete chatLanguages[key];
     for (const key of Object.keys(conversationFlowLanguages)) delete conversationFlowLanguages[key];
+    // Test boundary only: conversation history must not leak between isolated tests
+    // (the S1 fallback reads the previous assistant turn).
+    for (const key of Object.keys(chatSessions)) delete chatSessions[key];
     for (const key of Object.keys(businessConfigVersions)) delete businessConfigVersions[key];
     resetBookingPresentationMemory();
     stagedBookingPresentations.clear();

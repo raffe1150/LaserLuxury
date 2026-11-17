@@ -260,7 +260,8 @@ for (const channel of ['telegram', 'whatsapp', 'instagram', 'messenger'] as cons
     // 3. Verification rejects the unsupported meaning, modality, audience or fact.
     assert.deepEqual(verdicts.filter(d => d.reason !== 'ACCEPTED').map(d => d.reason), [u2.reject.reason], JSON.stringify(verdicts));
     // 4. No incorrect answer and no partial publication: the customer gets only the safe outcome.
-    assert.equal(r.reply, formatBusinessSupportVerificationUnavailable('fa', 'جزئیات درخواست‌شده'));
+    // S1 (2026-11-17): the fallback names the customer's own (short) question.
+    assert.equal(r.reply, formatBusinessSupportVerificationUnavailable('fa', `«${PREP_QUESTION.replace(/\u200c/gu, ' ').replace(/،/gu, '،')}»`));
     assert.ok(!r.reply.includes(u2.text));
     for (const [, text] of PREP) assert.ok(!r.reply.includes(text), 'no verified sibling is published either');
     assert.deepEqual(r.logs.map(l => l.publication), ['safe_fallback']);

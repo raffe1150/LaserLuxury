@@ -5,6 +5,7 @@ import { InMemoryKnowledgeStorage, KnowledgeService, knowledgeSourceRevision, ty
 import { incidentChannels, incidentConfig, incidentFlags, incidentInbound, interceptedIncidentSend, type IncidentChannel } from '../../tests/helpers/p0-incident-knowledge';
 import { answerEvidenceBindings } from './business-information-answer-plan';
 import { formatBusinessSupportVerificationUnavailable } from './business-information';
+import { contextualKnowledgeFallback } from './knowledge-fallback';
 import { configureKnowledgeBudgetOwner, executeKnowledgeGeneration } from './knowledge-model-policy';
 import { AiReliabilityError } from './reliability';
 import { assessNumericalConstraint } from './numerical-constraints';
@@ -435,7 +436,12 @@ async function replay(t: TestContext, channel: IncidentChannel,
     assert.deepEqual(languageEvents, []);
   }
   if (rejected) {
-    assert.equal(replies[0], formatBusinessSupportVerificationUnavailable(language, fallbackSubject));
+    // S1 (2026-11-17): a recovery-stage provider timeout is reported as a timeout
+    // (fact-free, asks the customer to resend); every other rejection keeps the
+    // existing verification-unavailable wording.
+    assert.equal(replies[0], failure === 'provider_timeout'
+      ? contextualKnowledgeFallback({ language, question: null, category: 'TIMEOUT' }).text
+      : formatBusinessSupportVerificationUnavailable(language, fallbackSubject));
   } else if (fault) {
     assert.ok(!replies[0].includes(answer));
   } else {

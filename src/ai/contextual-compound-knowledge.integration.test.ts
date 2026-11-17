@@ -7,6 +7,8 @@ import { ACCEPTANCE_ROWS, type AcceptanceLanguage } from '../../tests/helpers/fi
 import { formatBusinessSupportVerificationUnavailable } from './business-information';
 import { configureKnowledgeBudgetOwner, executeKnowledgeGeneration } from './knowledge-model-policy';
 import { ScriptedKnowledgeBudgetOwner } from '../../tests/helpers/knowledge-budget-owner';
+import { AiReliabilityError } from './reliability';
+import { contextualKnowledgeFallback } from './knowledge-fallback';
 
 // P0 2026-11-17 (Telegram, fa): a context sentence followed by two coordinated
 // questions was collapsed into ONE literal obligation, and the turn-wide GUARD_12
@@ -82,8 +84,10 @@ const accepted = (row: Row) => ACCEPTANCE_ROWS.find(r => r.language === row.lang
 const fallbackSubject = (row: Row) => accepted(row).fallbackSubject;
 
 type Scenario = 'partial' | 'complete' | 'omitted' | 'contradicted' | 'required_beside_gap' | 'negated_beside_gap' |
-  'prohibited_beside_gap' | 'condition_dropped' | 'unsupported_beside_gap' | 'unbound_citation';
-type Outcome = { replies: string[]; stages: string[]; plannerCalls: number; facets: any[]; guards: unknown[]; publications: string[]; errors: unknown[] };
+  'prohibited_beside_gap' | 'condition_dropped' | 'unsupported_beside_gap' | 'unbound_citation' |
+  'no_units' | 'extraction_timeout';
+type Outcome = { replies: string[]; stages: string[]; plannerCalls: number; facets: any[]; guards: unknown[]; publications: string[]; errors: unknown[];
+  presentation: any[]; compatibility: any[] };
 
 type Planner = (question: string) => unknown[];
 async function run(t: TestContext, channel: IncidentChannel, row: Row, scenario: Scenario, turns = 1, opts: { question?: string; planner?: Planner } = {}): Promise<Outcome> {
@@ -96,10 +100,12 @@ async function run(t: TestContext, channel: IncidentChannel, row: Row, scenario:
   const previousModel = process.env.ODINLINK_AI_DEFAULT_MODEL;
   process.env.ODINLINK_AI_DEFAULT_MODEL = 'gpt-6.1-sol'; configureKnowledgeBudgetOwner(owner);
   t.after(() => { if (previousModel === undefined) delete process.env.ODINLINK_AI_DEFAULT_MODEL; else process.env.ODINLINK_AI_DEFAULT_MODEL = previousModel; configureKnowledgeBudgetOwner(); });
-  const out: Outcome = { replies: [], stages: [], plannerCalls: 0, facets: [], guards: [], publications: [], errors: [] };
+  const out: Outcome = { replies: [], stages: [], plannerCalls: 0, facets: [], guards: [], publications: [], errors: [], presentation: [], compatibility: [] };
   t.mock.method(console, 'info', (label: unknown, value: any) => {
     if (label === '[EvidenceFirstDecision]') { const e = JSON.parse(value); (out as any).events = [...((out as any).events ?? []), [e.stage, e.reason, e.facetId, e.unitId, e.sourceCoverage?.guard, e.sourceCoverage?.failedChecks]]; if (e.stage === 'verification' && e.reason === 'INVALID_COVERAGE' && e.sourceCoverage) out.guards.push(e.sourceCoverage.guard); }
     if (label === '[KnowledgeModelRouting]') out.publications.push(JSON.parse(value).publication);
+    if (label === '[KnowledgePresentation]') out.presentation.push(JSON.parse(value));
+    if (label === '[KnowledgeNaturalCompatibility]') out.compatibility.push(JSON.parse(value));
   });
   t.mock.method(globalThis, 'fetch', async (input: any, options: any) => {
     out.replies.push(interceptedIncidentSend(input, options));
@@ -138,7 +144,9 @@ async function run(t: TestContext, channel: IncidentChannel, row: Row, scenario:
         assert.ok(data.evidence.every((e: any) => e.businessId === 3), 'only same-tenant evidence reaches a provider');
         if (request.systemInstruction.includes('UNIT EXTRACTION')) {
           out.stages.push('extraction'); out.facets = data.facets;
-          const [arrivalFacet, bringFacet] = data.facets;
+          if (scenario === 'extraction_timeout') throw new AiReliabilityError('TIMEOUT', 'Synthetic extraction timeout');
+          if (scenario === 'no_units') return { text: JSON.stringify({ oversized: false, units: [] }) };
+          const [arrivalFacet, bringFacet = data.facets[0]] = data.facets;
           const find = (p: (text: string) => boolean) => data.evidence.find((e: any) => p(e.text));
           const arrivalItem = find(text => ARRIVAL.test(text)), confirmationItem = find(text => text.includes(CONFIRMATION));
           const unit = (facet: any, predicate: string, modality: string, text: string, evidenceId: string, quote: string, negation = false) => ({
@@ -202,7 +210,7 @@ async function run(t: TestContext, channel: IncidentChannel, row: Row, scenario:
           async () => ({ ...await respond(), model: 'gpt-6.1-sol', service_tier: 'default', reasoning: { effort: 'low' }, prompt_cache_options: { mode: 'implicit', ttl: '30m' },
             usage: { input_tokens: 200, output_tokens: 100, input_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 } } }));
         return { text: response.text, knowledgeUsage: usage, functionCalls: [] };
-      } catch (error) { out.errors.push(error); throw error; }
+      } catch (error) { if (!(scenario === 'extraction_timeout' && error instanceof AiReliabilityError)) out.errors.push(error); throw error; }
     },
     calendarAdapter: { getCalendarId: () => 'offline', getEvents: forbidden, checkSlots: forbidden, insertAppointment: forbidden, cancelAppointment: forbidden, updateAppointment: forbidden },
     recordAppointment: forbidden,
@@ -243,7 +251,7 @@ for (const row of ROWS) for (const channel of incidentChannels) {
 }
 
 // Fail-closed outcomes stay byte-identical to the existing safe fallback; no partial leaks.
-const closed: Record<Exclude<Scenario, 'partial' | 'complete' | 'required_beside_gap'>, string> = {
+const closed: Record<Exclude<Scenario, 'partial' | 'complete' | 'required_beside_gap' | 'no_units' | 'extraction_timeout'>, string> = {
   omitted: 'GUARD_04', contradicted: 'PRECONDITION', negated_beside_gap: 'GUARD_12', prohibited_beside_gap: 'GUARD_12',
   condition_dropped: 'PRECONDITION', unsupported_beside_gap: 'PRECONDITION', unbound_citation: 'PRECONDITION',
 };
@@ -347,3 +355,101 @@ for (const row of ROWS) test(`${row.language}: no published partial claims that 
     assert.ok(r.replies[0].includes(limitation(row, row.bring)), 'the requirement limitation is always rendered');
   }
 });
+
+
+// ---------------------------------------------------------------------------
+// S0 / S1 / S2 (natural response integration, 2026-11-17). All offline, zero paid
+// calls. Flags are read per turn, so each test sets and restores its own env.
+function withEnv(t: TestContext, values: Record<string, string | undefined>) {
+  const saved = Object.fromEntries(Object.keys(values).map(k => [k, process.env[k]]));
+  for (const [k, v] of Object.entries(values)) if (v === undefined) delete process.env[k]; else process.env[k] = v;
+  t.after(() => { for (const [k, v] of Object.entries(saved)) if (v === undefined) delete process.env[k]; else process.env[k] = v; });
+}
+const TRANSITION: Record<AcceptanceLanguage, string> = { en: 'On your other question:', sv: 'Om din andra fråga:', de: 'Zu Ihrer anderen Frage:',
+  es: 'Sobre tu otra pregunta:', fa: 'دربارهٔ سؤال دیگرتان:', ar: 'بخصوص سؤالك الآخر:' };
+const presented = (row: Row, extra: string[] = []) =>
+  `${accepted(row).digit}\n\n${TRANSITION[row.language]} ${[accepted(row).confirmation, ...extra].join(' ')} ${limitation(row, row.bring)}`;
+
+for (const row of ROWS) for (const channel of incidentChannels) {
+  test(`S2 shadow/${row.language}/${channel}: customer text unchanged, one content-free record, zero extra model calls`, async t => {
+    withEnv(t, { ODINLINK_KNOWLEDGE_PRESENTATION: 'shadow', ODINLINK_KNOWLEDGE_PRESENTATION_TENANTS: '3' });
+    const r = await run(t, channel, row, 'partial');
+    assert.deepEqual(r.errors, []);
+    assert.deepEqual(r.replies, [partialAnswer(row)]);
+    assert.deepEqual(r.stages, ['extraction', 'verification']);
+    assert.equal(r.presentation.length, 1);
+    const [rec] = r.presentation;
+    assert.deepEqual([rec.schema, rec.tier, rec.mode, rec.outcome, rec.reason, rec.modelCalls, rec.businessId, rec.channel],
+      ['knowledge-presentation-v1', 'A', 'shadow', 'shadow_would_apply', 'APPLIED', 0, 3, channel]);
+    const json = JSON.stringify(rec);
+    for (const text of [accepted(row).digit, accepted(row).confirmation, row.question, row.bring]) assert.ok(!json.includes(text), 'record is content-free');
+  });
+  test(`S2 active/${row.language}/${channel}: facts regrouped per question, verified texts byte-identical`, async t => {
+    withEnv(t, { ODINLINK_KNOWLEDGE_PRESENTATION: 'active', ODINLINK_KNOWLEDGE_PRESENTATION_TENANTS: '3' });
+    const r = await run(t, channel, row, 'partial');
+    assert.deepEqual(r.errors, []);
+    assert.deepEqual(r.replies, [presented(row)]);
+    assert.deepEqual(r.stages, ['extraction', 'verification']);
+    assert.deepEqual(r.presentation.map(x => [x.outcome, x.reason, x.modelCalls]), [['applied', 'APPLIED', 0]]);
+  });
+}
+for (const row of ROWS) for (const channel of ['telegram', 'whatsapp'] as const) {
+  test(`S2 active/${row.language}/${channel}: complete answer and verified conditional requirement`, async t => {
+    withEnv(t, { ODINLINK_KNOWLEDGE_PRESENTATION: 'active', ODINLINK_KNOWLEDGE_PRESENTATION_TENANTS: '3' });
+    const complete = await run(t, channel, row, 'complete');
+    assert.deepEqual(complete.replies, [`${accepted(row).digit}\n\n${TRANSITION[row.language]} ${accepted(row).confirmation}`]);
+    const required = await run(t, channel, row, 'required_beside_gap');
+    assert.deepEqual(required.replies, [presented(row, [row.instructions])]);
+  });
+  test(`S2 active/${row.language}/${channel}: tenant not allowlisted -> canonical, no record`, async t => {
+    withEnv(t, { ODINLINK_KNOWLEDGE_PRESENTATION: 'active', ODINLINK_KNOWLEDGE_PRESENTATION_TENANTS: '4' });
+    const r = await run(t, channel, row, 'partial');
+    assert.deepEqual(r.replies, [partialAnswer(row)]);
+    assert.deepEqual(r.presentation, []);
+  });
+  for (const scenario of ['omitted', 'contradicted', 'negated_beside_gap', 'prohibited_beside_gap', 'condition_dropped', 'unsupported_beside_gap', 'unbound_citation'] as const)
+    test(`S2 active/${row.language}/${channel}/${scenario}: unpublishable turns are never presented`, async t => {
+      withEnv(t, { ODINLINK_KNOWLEDGE_PRESENTATION: 'active', ODINLINK_KNOWLEDGE_PRESENTATION_TENANTS: '3' });
+      const r = await run(t, channel, row, scenario);
+      assert.deepEqual(r.replies, [unavailable(row)]);
+      assert.deepEqual(r.presentation, []);
+    });
+}
+
+// S0: enabling the legacy natural flag never turns a valid answer into UNAVAILABLE.
+for (const row of ROWS) for (const channel of incidentChannels)
+  test(`S0/${row.language}/${channel}: legacy natural flag ON`, async t => {
+    withEnv(t, { ODINLINK_GROUNDED_NATURAL_RESPONSES: 'true', ODINLINK_GROUNDED_NATURAL_SINGLE_PARTIAL: 'true' });
+    const r = await run(t, channel, row, 'partial');
+    if (SOURCE_EXHAUSTIVE) {
+      assert.deepEqual(r.errors, []);
+      assert.deepEqual(r.replies, [partialAnswer(row)], 'canonical verified answer preserved');
+      assert.deepEqual(r.compatibility.map(c => [c.schema, c.outcome, c.reason, c.businessId, c.channel]),
+        [['knowledge-natural-compatibility-v1', 'legacy_natural_bypassed', 'SOURCE_EXHAUSTIVE_PROTOCOL', 3, channel]]);
+    } else {
+      assert.deepEqual(r.compatibility, [], 'v2 keeps the existing natural path');
+    }
+  });
+
+// S1: contextual, deterministic fallback with the customer's own short question.
+const SHORT: Record<AcceptanceLanguage, string> = {
+  fa: 'چند دقیقه قبل از نوبتم باید برسم؟', ar: 'كم دقيقة قبل موعدي يجب أن أصل؟', sv: 'Hur tidigt före min bokade tid ska jag komma?',
+  en: 'How many minutes before my appointment should I arrive?', de: 'Wie früh vor meinem Termin sollte ich da sein?', es: '¿Con cuánta antelación a mi cita debo llegar?',
+};
+const singlePlanner: Planner = q => [{ subject: 'first visit', attribute: 'arrival time', questionType: 'description', obligations: [{ description: q.trim(), questionType: 'description' }] }];
+for (const row of ROWS) for (const channel of incidentChannels) {
+  test(`S1/${row.language}/${channel}: verification failure names the question; repeat gets the next step, no loop`, async t => {
+    const r = await run(t, channel, row, 'no_units', 3, { question: SHORT[row.language], planner: singlePlanner });
+    assert.deepEqual(r.errors, []);
+    const first = contextualKnowledgeFallback({ language: row.language, question: SHORT[row.language], category: 'VERIFICATION' });
+    const again = contextualKnowledgeFallback({ language: row.language, question: SHORT[row.language], category: 'VERIFICATION', previousAssistantReply: first.text });
+    assert.equal(first.quoted, true); assert.equal(again.repeated, true);
+    assert.deepEqual(r.replies, [first.text, again.text, again.text]);
+    assert.notEqual(first.text, unavailable(row));
+  });
+  test(`S1/${row.language}/${channel}: timeout is reported as a timeout, never as missing information`, async t => {
+    const r = await run(t, channel, row, 'extraction_timeout', 1, { question: SHORT[row.language], planner: singlePlanner });
+    assert.deepEqual(r.errors, []);
+    assert.deepEqual(r.replies, [contextualKnowledgeFallback({ language: row.language, question: SHORT[row.language], category: 'TIMEOUT' }).text]);
+  });
+}

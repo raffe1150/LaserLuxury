@@ -9,6 +9,7 @@ for (const key of ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'SUPABASE_ANON_K
 // Mock verdicts below exercise local publication safety only; they are never genuine verification.
 const NOTICE = ARABIC_OTHER_PAYER_RECEIPT_UNRESOLVED;
 const GENERIC_AR = 'لا أستطيع التحقق من إجابة بشأن التفاصيل المطلوبة الآن. يمكن للمنشأة تأكيد ما ينطبق.';
+const CONTEXTUAL_AR = /^لا أستطيع التحقق من (?:إجابة بشأن «[^«»]+» الآن\. يمكن للمنشأة تأكيد ما ينطبق\.|«[^«»]+» الآن بسبب مشكلة تقنية مؤقتة\. يُرجى المحاولة مرة أخرى بعد قليل\.)$/u;
 const ARABIC_OBLIGATION = 'هل يجب إحضار إيصال الدفع إذا دفع شخص آخر؟';
 const ENGLISH_OBLIGATION = 'whether the payment receipt must be brought when another person made the payment';
 const ADVICE = 'توصي الجهة المقدمة للخدمة بإحضار إيصال الدفع إلى الموعد.';
@@ -76,7 +77,10 @@ async function run(s: Scenario) {
   return { ...result, stages };
 }
 
-const noFacts = (candidate: string) => {
+const noFacts = (raw: string) => {
+  // The customer's own question may be quoted back («…») by the S1 fallback; it is
+  // not a system assertion. Everything outside the quotation must assert nothing.
+  const candidate = raw.replace(/«[^«»]*»/gu, '');
   assert.doesNotMatch(candidate, /توصي|يُنصح|ينصح|نوصي/u, 'no recommendation published');
   assert.doesNotMatch(candidate, /يجب إحضار|لا يلزم|غير مطلوب/u, 'no requirement or exemption asserted');
 };
@@ -128,7 +132,9 @@ test('every other zero-verified Arabic follow-up keeps the existing generic unav
     const result = await run(scenario as Scenario);
     assert.notEqual(result.publication, 'unresolved_notice', name);
     assert.notEqual(result.candidate, NOTICE, name);
-    if (name !== 'unverified-referent') assert.equal(result.candidate, GENERIC_AR, name);
+    // S1 (2026-11-17): the zero-fact fallback now names the customer's own
+    // question and distinguishes a runtime fault; it still states no fact.
+    if (name !== 'unverified-referent') assert.ok(result.candidate === GENERIC_AR || CONTEXTUAL_AR.test(result.candidate), `${name}: ${result.candidate}`);
     noFacts(result.candidate);
   }
 });

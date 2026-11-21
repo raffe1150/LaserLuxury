@@ -1,6 +1,6 @@
 import { knowledgeDatabaseRead, knowledgeOperation } from './knowledge-operation';
 import { knowledgeSourceRevision, SupabaseKnowledgeStorage, type KnowledgeService } from '../../knowledge';
-import { captureVerified, resultDigest, type KnowledgeAuthority, type KnowledgeTask } from './knowledge-lifecycle';
+import { captureVerified, resultDigest, safeUnavailableKnowledge, type KnowledgeAuthority, type KnowledgeTask } from './knowledge-lifecycle';
 import type { KnowledgeDatabase } from './supabase-knowledge-lifecycle-repository';
 
 /** Trusted backend dependency, never passed in a webhook or stored task input.
@@ -32,7 +32,8 @@ export function createKnowledgeAuthority(db: KnowledgeDatabase, sources: Pick<Kn
     const read = () => knowledgeTurnCurrent(db, task, provider);
     if (!await read()) return false;
     if (!await provider.eligible(task)) return false;
-    const live = await knowledgeOperation(()=>sources.list(scope.businessId));
+    if (task.result.protocol === 'safe-unavailable-v1' && task.result.text !== safeUnavailableKnowledge(task.input.language).text) return false;
+    const live = task.result.sources.length ? await knowledgeOperation(()=>sources.list(scope.businessId)) : [];
     for (const source of task.result.sources) {
       const matches = live.filter(s => s.id === source.id && s.businessId === scope.businessId && s.status === 'ready');
       if (matches.length !== 1 || knowledgeSourceRevision(matches[0]) !== source.revision) return false;

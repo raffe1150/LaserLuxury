@@ -7,10 +7,11 @@ import { createHash } from 'node:crypto';
 import { DisposableNativeKnowledgeDatabase } from '../../tests/helpers/disposable-native-knowledge-db';
 import { NativeKnowledgeRuntime, nativeAsyncControls, type NativeAsyncControls } from './native-knowledge-runtime';
 import { knowledgeSourceRevision, type KnowledgeSource } from '../../knowledge';
-import type { KnowledgeScope } from './knowledge-lifecycle';
+import { safeUnavailableKnowledge, type KnowledgeScope } from './knowledge-lifecycle';
 import type { ResolvedChannelConnection } from '../channels/connections/contracts';
 import { naturalLocationCases } from '../../tests/fixtures/knowledge-natural-location';
 process.env.GEMINI_API_KEY='synthetic-only';
+process.env.AI_PROVIDER='gemini';
 const {executeDurableKnowledgeTask,priority1hUnifiedEngineTestBoundary:b}=await import('../../server');
 const channels=['whatsapp','telegram','instagram','messenger'] as const;
 type Channel=typeof channels[number];
@@ -67,11 +68,11 @@ test('Smart Waiting through four actual native entries, PostgreSQL safety and in
     assert.fail('Unrecognized synthetic provider GET '+url.pathname);
   };
   globalThis.fetch=fetcher;
-  const resetSource=(text:string)=>{source={id:'doc',businessId:77,type:'document',title:'Synthetic parking',status:'ready',content:text,createdAt:'synthetic',updatedAt:'synthetic',metadata:{segments:[{text}]}};};
+  const resetSource=(text:string)=>{source={id:'doc',businessId:config.businessId,type:'document',title:'Synthetic parking',status:'ready',content:text,createdAt:'synthetic',updatedAt:'synthetic',metadata:{segments:[{text}]}};};
   resetSource(fact);
   const createRuntime=()=>new NativeKnowledgeRuntime({db:pg.db,secret,controls:()=>controls,waiting:()=>({enabled:waitingEnabled,delayMs:5000}),
-    waitingSchedule:(run,ms)=>{assert.equal(ms,5000);alarms.add(run);return()=>alarms.delete(run);},connections:async(business,channel)=>business===77?connections.get(channel)||null:null,
-    sources:{list:async business=>business===77?[source]:[]},fetcher,diagnostic:event=>{diagnostic.push(event);if(telemetryThrows)throw new Error('synthetic optional observer');},
+    waitingSchedule:(run,ms)=>{assert.equal(ms,5000);alarms.add(run);return()=>alarms.delete(run);},connections:async(business,channel)=>business===config.businessId?connections.get(channel)||null:null,
+    sources:{list:async business=>business===config.businessId?[source]:[]},fetcher,diagnostic:event=>{diagnostic.push(event);if(telemetryThrows)throw new Error('synthetic optional observer');},
     execute:async(task,context,current)=>{const result=await executeDurableKnowledgeTask(task,context,config,current);if(changeAfterExecution)source={...source,status:'disabled'};return result;}});
   let runtime=createRuntime();t.after(()=>runtime.stop());
   const configure=()=>{b.reset();b.configure({nativeKnowledgeRuntime:runtime,
@@ -113,7 +114,12 @@ test('Smart Waiting through four actual native entries, PostgreSQL safety and in
     catch(error){release();throw error;}
     await new Promise(r=>setImmediate(r));return {release,tick};
   };
-  const six=[...new Map(naturalLocationCases.map(c=>[c[0],c])).values()];
+  const nativeFacts: Record<string, string> = {
+    fa: 'پارکینگ رایگان در حیاط پشت استودیو قرار دارد.',
+    ar: 'يوجد موقف مجاني في الفناء الخلفي للاستوديو.',
+  };
+  const six = [...new Map(naturalLocationCases.map(([lang, question, text]) =>
+    [lang, [lang, question, nativeFacts[lang] ?? text] as const])).values()];
   for(const channel of channels)for(const[lang,question,text]of six)await t.test(`${channel}/${lang}: simulated five-second slow stage → one guarded localized acknowledgement → verified final`,async()=>{
     language=lang;fact=text;resetSource(fact);posts=[];stages=[];diagnostic=[];configure();
     const recipient=String(46700000000+ ++serial);await inbound(channel,question,recipient);const task=latestTask();
@@ -235,6 +241,37 @@ test('Smart Waiting through four actual native entries, PostgreSQL safety and in
       await inbound(channel,'Please book Video Consultation for me. My name is Ada Example and my phone number is 0701234567. Also where can I park my car?',recipient,event,at);
       const held=await heldTick();fire();await waitFor(()=>posts.some(p=>approvedWaitingText(language,p.text)));held.release();await held.tick;assert.equal(mutations,1);assert.equal(rows,1);assert.equal(posts.filter(p=>p.recipient===recipient&&p.text===fact).length,1);
     }finally{extra={};}
+  });
+
+  await t.test('opted-in verification failure and source revocation after waiting publish one safe final through each adapter', async () => {
+    pg.sql('insert into public.businesses values (3);');
+    pg.sql(readFileSync('docs/designs/durable-knowledge-publication-migration-package/durable-publication-v2.sql','utf8'));
+    config.id = config.businessId = 3;
+    for (const connection of connections.values()) (connection as { businessId: number }).businessId = 3;
+    controls = {...controls, publicationV2:true, fiveAttempts:true, admissionTenants:new Set([3])};
+    assert.equal(runtime.admissionEnabledFor(77), false);
+    assert.equal(runtime.admissionEnabledFor(3), true);
+    for (const channel of channels) for (const [index, [lang, question, text]] of six.entries()) {
+      language = lang; fact = text; resetSource(fact);
+      posts = []; stages = []; configure();
+      const event = ++serial, recipient = String(46709120000 + event), at = Date.now() - 60_000;
+      await inbound(channel, question, recipient, event, at);
+      const task = latestTask(), held = await heldTick();
+      assert.equal(task.knowledge_publication_v2, true);
+      assert.equal(task.knowledge_max_models, 5);
+      fire();
+      await waitFor(() => progress(task.id)[0]?.knowledge_state === 'SENT');
+      verifyRelation = index % 2 ? 'ENTAILED' : 'UNKNOWN';
+      changeAfterExecution = index % 2 === 1;
+      try { held.release(); await held.tick; }
+      finally { verifyRelation = 'ENTAILED'; changeAfterExecution = false; }
+      assert.deepEqual(posts.map(p => p.text).slice(1), [safeUnavailableKnowledge(language).text]);
+      assert.ok(approvedWaitingText(language, posts[0].text));
+      assert.equal(latestTask().knowledge_result.protocol, 'safe-unavailable-v1');
+      await inbound(channel, question, recipient, event, at);
+      await runtime.tick();
+      assert.equal(posts.length, 2);
+    }
   });
 
 

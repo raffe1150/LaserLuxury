@@ -81,3 +81,17 @@ test('retryable failure receives a fresh signal per attempt; successful and defa
   assert.ok(signals.every(s => !s.aborted));
   assert.equal(await runAiProviderRequest({ timeoutMs: 100, invoke: async (_, signal) => { assert.equal(signal, undefined); return 'unchanged'; } }), 'unchanged');
 });
+
+
+test('an opted-in durable request sheds overload without joining the provider queue', async () => {
+  const queue = new AiRequestQueue(1);
+  let release!: () => void;
+  const held = queue.run(() => new Promise<void>(resolve => { release = resolve; }));
+  await Promise.resolve();
+  try {
+    await assert.rejects(queue.run(async () => assert.fail('must not dispatch'), undefined, undefined, true), /knowledge_admission_overload/u);
+    assert.equal(queue.snapshot().waiting, 0);
+    assert.equal(queue.snapshot().active, 1);
+  } finally { release(); }
+  await held;
+});

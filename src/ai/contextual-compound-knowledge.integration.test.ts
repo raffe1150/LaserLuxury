@@ -1,4 +1,8 @@
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
+import { KnowledgeRunner } from '../p2/knowledge-runner';
+import { FakeKnowledgeDatabase, FakeKnowledgeLifecycle } from '../../tests/helpers/fake-knowledge-lifecycle';
+import { safeUnavailableKnowledge, type KnowledgeTask } from '../p2/knowledge-lifecycle';
 import { readFileSync } from 'node:fs';
 import test, { type TestContext } from 'node:test';
 import { InMemoryKnowledgeStorage, KnowledgeService, type KnowledgeSource } from '../../knowledge';
@@ -30,7 +34,7 @@ Object.assign(process.env, {
   KNOWLEDGE_DOCUMENT_UPLOADS_ENABLED: 'false',
 });
 Object.assign(incidentConfig, { id: 3, businessId: 3 });
-const { priority1hUnifiedEngineTestBoundary: boundary } = await import('../../server');
+const { priority1hUnifiedEngineTestBoundary: boundary, executeDurableKnowledgeTask } = await import('../../server');
 const sources: KnowledgeSource[] = JSON.parse(readFileSync(new URL('../../tests/fixtures/admotion-mixed-inventory.json', import.meta.url), 'utf8')).sources
   .map((s: any) => ({ ...s, businessId: s.business_id, createdAt: s.created_at, updatedAt: s.updated_at }));
 const ARRIVAL = /Kunder som besöker[^.]+cirka 10 minuter[^.]+\./u;
@@ -87,18 +91,19 @@ type Scenario = 'partial' | 'complete' | 'omitted' | 'contradicted' | 'required_
   'prohibited_beside_gap' | 'condition_dropped' | 'unsupported_beside_gap' | 'unbound_citation' |
   'no_units' | 'extraction_timeout';
 type Outcome = { replies: string[]; stages: string[]; plannerCalls: number; facets: any[]; guards: unknown[]; publications: string[]; errors: unknown[];
-  presentation: any[]; compatibility: any[]; composer: any[]; composerCalls: any[]; repliesAtFirstComposerCall: number | null; budgetLog: BudgetLogEntry[] };
+  task?: KnowledgeTask; presentation: any[]; compatibility: any[]; composer: any[]; composerCalls: any[]; repliesAtFirstComposerCall: number | null; budgetLog: BudgetLogEntry[] };
 
 type Planner = (question: string) => unknown[];
 type ComposerMock = (request: any, out: Outcome) => Promise<any>;
 async function run(t: TestContext, channel: IncidentChannel, row: Row, scenario: Scenario, turns = 1,
-  opts: { question?: string | string[]; planner?: Planner; composer?: ComposerMock; budget?: (log: BudgetLogEntry[]) => NaturalComposerBudget | undefined } = {}): Promise<Outcome> {
+  opts: { durable?: { priorAttempts?: number; money?: ScriptedKnowledgeBudgetOwner['mode'] }; question?: string | string[]; planner?: Planner; composer?: ComposerMock; budget?: (log: BudgetLogEntry[]) => NaturalComposerBudget | undefined } = {}): Promise<Outcome> {
   boundary.reset(); t.after(() => boundary.reset());
   for (const m of ['log', 'warn', 'error'] as const) t.mock.method(console, m, () => {});
   const storage = new InMemoryKnowledgeStorage();
   for (const s of sources) await storage.create(structuredClone(s));
   const service = new KnowledgeService(storage, storage, null);
   const owner = new ScriptedKnowledgeBudgetOwner(); owner.businessIds = [3];
+  owner.mode = opts.durable?.money ?? 'ok';
   const previousModel = process.env.ODINLINK_AI_DEFAULT_MODEL;
   process.env.ODINLINK_AI_DEFAULT_MODEL = 'gpt-6.1-sol'; configureKnowledgeBudgetOwner(owner);
   t.after(() => { if (previousModel === undefined) delete process.env.ODINLINK_AI_DEFAULT_MODEL; else process.env.ODINLINK_AI_DEFAULT_MODEL = previousModel; configureKnowledgeBudgetOwner(); });
@@ -126,7 +131,7 @@ async function run(t: TestContext, channel: IncidentChannel, row: Row, scenario:
     // Plain v2 declines the complete-inventory read by design (it requires a
     // source-exhaustive protocol). Offline search cannot cross languages, so v2
     // runs supply the same tenant's complete current corpus (perfect retrieval).
-    knowledgeSearch: SOURCE_EXHAUSTIVE ? forbidden : async (id: number) => (await service.completeSmallCorpus(id, [], undefined, 'native-documentary')) ?? [],
+    knowledgeSearch: SOURCE_EXHAUSTIVE && !opts.durable ? forbidden : async (id: number) => (await service.completeSmallCorpus(id, [], undefined, 'native-documentary')) ?? [],
     semanticKnowledgeSearchQueries: SOURCE_EXHAUSTIVE ? forbidden : async () => [],
     completeKnowledgeCorpus: (id: number, anchors: any, options: any, mode: any, decline: any) => service.completeSmallCorpus(id, anchors, options, mode, decline),
     knowledgeSourceLanguages: async () => [],
@@ -229,7 +234,29 @@ async function run(t: TestContext, channel: IncidentChannel, row: Row, scenario:
     // Tier B money: an offline in-memory ledger (never a real one).
     naturalComposerBudget: opts.budget ? opts.budget(out.budgetLog) : recordingNaturalBudget(out.budgetLog),
   });
-  for (let i = 0; i < turns; i++) await incidentInbound(boundary, channel, questions ? questions[i] : question);
+  if (opts.durable) {
+    const db = new FakeKnowledgeDatabase(), repo = new FakeKnowledgeLifecycle(db, Date.now, async () => true);
+    const scope = { businessId: 3, channel, providerAccount: 'offline', conversationId: randomUUID() };
+    const task = (await repo.accept(scope, randomUUID(), { question, language: row.language, history: [] },
+      { executionMs: 75_000, maxModelAttempts: 5 })).task!;
+    const priorAttempts = opts.durable.priorAttempts ?? 0;
+    for (let i = 0; i < priorAttempts; i++) {
+      const initial = i === 0 ? (await repo.claim(scope, task.id, 'first-run', 15_000))! : (await repo.get(scope, task.id))!;
+      assert.ok(await repo.reserveModelAttempt(scope, { taskId: task.id, owner: 'first-run', fence: initial.fence }));
+    }
+    // Advance the fake clock only for a simulated prior worker lease.
+    if (priorAttempts) {
+      const stored = db.rows.tasks.get(task.id)!;
+      db.rows.tasks.set(task.id, { ...stored, lease: { ...stored.lease!, until: Date.now() - 1 } });
+    }
+    const stored = db.rows.tasks.get(task.id)!;
+    db.rows.tasks.set(task.id, { ...stored, publicationV2: true });
+    const runner = new KnowledgeRunner(repo, (claimed, ctx) =>
+      executeDurableKnowledgeTask(claimed, ctx, incidentConfig, async () => true), 'offline-worker');
+    const delivery = await runner.run(scope, task.id);
+    out.task = (await repo.get(scope, task.id))!;
+    if (delivery) out.replies.push(delivery.text);
+  } else for (let i = 0; i < turns; i++) await incidentInbound(boundary, channel, questions ? questions[i] : question);
   return out;
 }
 
@@ -241,7 +268,8 @@ const V2_REQUIREMENT: Record<AcceptanceLanguage, string> = {
 };
 // RTL: the echoed fa/ar span keeps its Arabic-script question mark.
 const echoed = (row: Row, label: string) => ['fa', 'ar'].includes(row.language) ? norm(label).replace(/\?/gu, '؟') : norm(label);
-const limitation = (row: Row, label: string | null) => SOURCE_EXHAUSTIVE ? (label === null ? unconfirmedRequirement[row.language] : row.notice(echoed(row, label))) : V2_REQUIREMENT[row.language];
+// A single unresolved requirement uses the fixed, question-independent copy (no quoted request span).
+const limitation = (row: Row, _label: string | null) => SOURCE_EXHAUSTIVE ? unconfirmedRequirement[row.language] : V2_REQUIREMENT[row.language];
 const partialAnswer = (row: Row, label: string | null = row.bring) => `${accepted(row).digit} ${accepted(row).confirmation}\n\n${limitation(row, label)}`;
 const unavailable = (row: Row) => formatBusinessSupportVerificationUnavailable(row.language, fallbackSubject(row));
 
@@ -308,7 +336,8 @@ test('fa: published answer never claims that nothing is required', async t => {
   const r = await run(t, 'telegram', ROWS[0], 'partial');
   assert.doesNotMatch(r.replies[0], /نیازی نیست|لازم نیست|لازم نمی|الزامی نیست|چیز دیگری لازم/u);
   assert.match(r.replies[0], /۱۰ دقیقه/u);
-  assert.match(r.replies[0], SOURCE_EXHAUSTIVE ? /«آیا لازم هست چیزی با خودم بیارم؟»/u : /نمی‌توانم تأیید کنم چه الزاماتی/u);
+  assert.match(r.replies[0], SOURCE_EXHAUSTIVE ? /نمی‌توانم تأیید کنم که آیا چیزی الزامی است یا نه\./u : /نمی‌توانم تأیید کنم چه الزاماتی/u);
+  assert.doesNotMatch(r.replies[0], /«/u, 'no quoted question span');
 });
 
 // Context-free form of the incident (no introductory sentence). Before the fix the
@@ -648,3 +677,58 @@ for (const row of ROWS) {
     }
   });
 }
+
+for (const row of ROWS) for (const channel of incidentChannels)
+  test('durable partial publication ' + channel + '/' + row.language + ' preserves uncertainty through Tier B', async t => {
+    tierB(t, '3', { ODINLINK_KNOWLEDGE_NATURAL_COMPOSER: 'active' });
+    const variant = { durable: { priorAttempts: 1 }, composer: composerMock(row, 'faithful') };
+    const partial = await run(t, channel, row, 'partial', 1, variant);
+    assert.deepEqual(partial.errors, []);
+    assert.equal(partial.task?.result?.completeRequiredFacts, false);
+    assert.equal(partial.task?.result?.protocol, 'evidence-first-partial-v1');
+    assert.equal(partial.task?.modelAttempts, 5);
+    assert.equal(partial.composer[0]?.publication, 'published_validated');
+    assert.ok(partial.replies[0]?.includes(limitation(row, row.bring)));
+    assert.ok(partial.replies[0]?.includes(REPHRASED_CONFIRMATION[row.language]));
+    assert.deepEqual(partial.budgetLog.map(x => x.op), ['reserve', 'settle', 'reserve', 'settle']);
+  });
+
+test('durable canonical fallback when prior fences leave one Tier B attempt', async t => {
+  const row = ROWS.find(r => r.language === 'en')!;
+  tierB(t, '3', { ODINLINK_KNOWLEDGE_NATURAL_COMPOSER: 'active' });
+  const r = await run(t, 'telegram', row, 'partial', 1, { durable: { priorAttempts: 2 } });
+  assert.deepEqual(r.errors, []);
+  assert.equal(r.task?.modelAttempts, 4);
+  assert.equal(r.task?.result?.completeRequiredFacts, false);
+  assert.equal(r.composer[0]?.reason, 'ATTEMPT_BUDGET');
+  assert.deepEqual(r.replies, [partialAnswer(row)]);
+  assert.deepEqual(r.budgetLog, []);
+});
+
+test('durable pre-verification financial denial publishes the fixed unavailable result', async t => {
+  const row = ROWS.find(r => r.language === 'en')!;
+  const r = await run(t, 'telegram', row, 'partial', 1, { durable: { money: 'deny' } });
+  assert.deepEqual(r.stages, []);
+  assert.equal(r.task?.modelAttempts, 1);
+  assert.deepEqual(r.task?.result, safeUnavailableKnowledge('en'));
+  assert.deepEqual(r.replies, [safeUnavailableKnowledge('en').text]);
+});
+
+test('durable validator settlement failure retains unknown exposure and publishes canonical partial', async t => {
+  const row = ROWS.find(r => r.language === 'en')!;
+  tierB(t, '3', { ODINLINK_KNOWLEDGE_NATURAL_COMPOSER: 'active' });
+  const r = await run(t, 'telegram', row, 'partial', 1, {
+    durable: {}, composer: composerMock(row, 'faithful'),
+    budget: log => {
+      const ledger = recordingNaturalBudget(log);
+      return { ...ledger, async settle(id, quote, actual) {
+        if (quote.role === 'validator') throw new Error('synthetic ambiguous settlement');
+        return ledger.settle(id, quote, actual);
+      }};
+    },
+  });
+  assert.deepEqual(r.replies, [partialAnswer(row)]);
+  assert.equal(r.composer[0]?.reason, 'SETTLEMENT_UNKNOWN');
+  assert.equal(r.task?.modelAttempts, 4);
+  assert.deepEqual(r.budgetLog.map(x => x.op), ['reserve', 'settle', 'reserve', 'unknown']);
+});

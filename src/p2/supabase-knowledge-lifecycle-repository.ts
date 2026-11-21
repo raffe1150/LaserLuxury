@@ -1,6 +1,6 @@
 import { knowledgeDatabaseRead } from './knowledge-operation';
 import {
-  boundedInteger, captureInput, captureVerified, requireId, requireProviderId, snapshot, validateScope,
+  boundedInteger, captureInput, captureVerified, safeUnavailableKnowledge, resultDigest, requireId, requireProviderId, snapshot, validateScope,
   type Acceptance, type Checkpoint, type DeliveryOutcome, type DeliveryToken, type KnowledgeAuthority,
   type KnowledgeDelivery, type KnowledgeInput, type KnowledgeLifecycleRepository, type KnowledgeScope,
   type KnowledgeTask, type TaskToken,
@@ -56,6 +56,7 @@ export class SupabaseKnowledgeLifecycleRepository implements KnowledgeLifecycleR
       lease: row.knowledge_owner && row.knowledge_lease_until ? { owner: row.knowledge_owner, fence: Number(row.knowledge_fence), until: date(row.knowledge_lease_until) } : null,
       runAttempts: row.knowledge_run_attempts, maxRunAttempts: row.knowledge_max_runs,
       modelAttempts: row.knowledge_model_attempts, maxModelAttempts: row.knowledge_max_models,
+      ...(row.knowledge_publication_v2 === true ? { publicationV2: true, finalOnly: Number(row.knowledge_fence) > row.knowledge_run_attempts } : {}),
       checkpoint: row.knowledge_checkpoint, result: row.knowledge_result ? captureVerified(row.knowledge_result) : null,
       resultDigest: row.knowledge_result_digest });
   }
@@ -82,12 +83,31 @@ export class SupabaseKnowledgeLifecycleRepository implements KnowledgeLifecycleR
       p_task: taskId, p_channel: s.channel, p_account: s.providerAccount, p_command: command, p_args: args }));
   }
   private token(t: TaskToken | DeliveryToken) { requireId(t.owner); boundedInteger(t.fence, 1, Number.MAX_SAFE_INTEGER); return { owner: t.owner, fence: t.fence }; }
-  private async receipt(s: KnowledgeScope, id: string, phase: 'finalize' | 'send') {
+  private async receipt(s: KnowledgeScope, id: string, phase: 'finalize' | 'send', withdrawResult = false) {
     const task = await this.get(s, id);
-    if (!task || !await this.authority(task, phase)) return null;
+    if (!task) return null;
+    let candidate = task;
+    if (withdrawResult) {
+      if (!task.publicationV2 || !task.result?.sources.length) return null;
+      const result = safeUnavailableKnowledge(task.input.language);
+      candidate = { ...task, result, resultDigest: resultDigest(result) };
+    }
+    try {
+      if (!await this.authority(candidate, phase)) return null;
+    } catch (error) {
+      if (!task.publicationV2 || !candidate.result?.sources.length) throw error;
+      return null;
+    }
     return { allowed: true, businessId: s.businessId, conversationId: s.conversationId, channel: s.channel,
       account: s.providerAccount, taskId: id, turnId: task.turnId, sequence: task.sequence,
-      resultDigest: task.resultDigest, phase, checkedAt: new Date().toISOString() };
+      resultDigest: task.resultDigest, phase, checkedAt: new Date().toISOString(),
+      ...(withdrawResult ? { withdrawResult: true } : {}) };
+  }
+  async withdrawFinal(s: KnowledgeScope, taskId: string, deliveryId: string) {
+    if (!this.lifecycleV2) return null;
+    uuid(deliveryId);
+    const authority = await this.receipt(s, taskId, 'send', true);
+    return authority ? this.task(s, await this.transition(s, taskId, 'withdraw_result', { deliveryId, authority })) : null;
   }
   async accept(s: KnowledgeScope, eventId: string, input?: KnowledgeInput,
     limits: { executionMs?: number; maxRunAttempts?: number; maxModelAttempts?: number } = {}): Promise<Acceptance> {
@@ -137,7 +157,12 @@ export class SupabaseKnowledgeLifecycleRepository implements KnowledgeLifecycleR
   async finalize(s: KnowledgeScope, t: TaskToken) {
     s = snapshot(s);
     t = snapshot(t);
-    const authority = await this.receipt(s, t.taskId, 'finalize');
+    let authority = await this.receipt(s, t.taskId, 'finalize');
+    if (!authority && this.lifecycleV2) {
+      const withdrawal = await this.receipt(s, t.taskId, 'finalize', true);
+      if (withdrawal && await this.transition(s, t.taskId, 'withdraw_result', { ...this.token(t), authority: withdrawal }))
+        authority = await this.receipt(s, t.taskId, 'finalize');
+    }
     return authority ? this.delivery(await this.transition(s, t.taskId, 'finalize', { ...this.token(t), authority })) : null;
   }
   async enqueueProgress(s: KnowledgeScope, id: string, text: string) {

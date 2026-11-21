@@ -4,6 +4,7 @@ import { knowledgeStructuredOutput } from './knowledge-answer-protocol';
 import { isSourceExhaustiveProtocol } from './source-exhaustive-coverage';
 import type { UnifiedAiGenerationRequest } from './providers/provider';
 import { managedKnowledgeDefault } from './model-routing';
+import { ACCURACY_FIRST_POLICY, knowledgeStageCapMs } from './knowledge-timing-policy';
 
 export const KNOWLEDGE_SOL_PROFILE = 'sol-low-v1' as const;
 /** Extraction-only canary: Sol for extraction and one budget-owned re_extraction;
@@ -53,6 +54,8 @@ export interface KnowledgeBudgetOwner {
   reserve(quote: KnowledgeCostQuote, signal: AbortSignal): Promise<Readonly<{ id: string; reservationKey: string; maximumNanoUsd: number }> | null>;
   settle(id: string, quote: KnowledgeCostQuote, usage: KnowledgeUsage): Promise<void>;
   retainUnknown(quote: KnowledgeCostQuote, reservationId: string | null): Promise<void>;
+  /** Optional: the SAME durable authority for the Tier B natural stages (reserve/settle/unknown only). */
+  naturalTransition?(command: 'reserve' | 'settle' | 'unknown', payload: Record<string, unknown>, signal?: AbortSignal): Promise<unknown>;
 }
 type Owner = Readonly<KnowledgeBudgetOwner>;
 let installedOwner: Owner | undefined;
@@ -84,7 +87,13 @@ export function configureKnowledgeBudgetOwner(owner?: KnowledgeBudgetOwner): voi
   installedOwner = Object.freeze({ id: owner.id, approvalReference: owner.approvalReference, accounting: owner.accounting,
     ratesVersion: owner.ratesVersion, ...(owner.providerProjectId ? { providerProjectId: owner.providerProjectId } : {}), businessIds: Object.freeze([...owner.businessIds]),
     maximumRequestNanoUsd: owner.maximumRequestNanoUsd, maximumTurnNanoUsd: owner.maximumTurnNanoUsd,
-    reserve: owner.reserve.bind(owner), settle: owner.settle.bind(owner), retainUnknown: owner.retainUnknown.bind(owner) });
+    reserve: owner.reserve.bind(owner), settle: owner.settle.bind(owner), retainUnknown: owner.retainUnknown.bind(owner),
+    ...(owner.naturalTransition ? { naturalTransition: owner.naturalTransition.bind(owner) } : {}) });
+}
+/** Read-only view of the installed durable owner for the Tier B budget adapter (never an experiment ledger). */
+export function installedKnowledgeBudgetOwner(): Readonly<Pick<KnowledgeBudgetOwner, 'id' | 'approvalReference' | 'accounting' | 'providerProjectId' |
+  'businessIds' | 'maximumRequestNanoUsd' | 'maximumTurnNanoUsd' | 'naturalTransition'>> | undefined {
+  return installedOwner;
 }
 export type KnowledgeModelProfile = Readonly<{ id: 'default' | SolProfile; activationBlock?: string;
   /** Pre-turn canary fallback reason (content-free). The turn runs entirely on Luna. */ canaryFallback?: string;
@@ -119,7 +128,9 @@ export function captureKnowledgeModelProfile(input: KnowledgeModelBinding & {
   provider: string; nativeForeground: boolean; natural: boolean; durable: boolean;
   extractionProtocol: string; verificationProtocol: string; documentary: boolean; operational: boolean;
   current?: CurrentCheck;
+  durablePublicationV2?: boolean;
 }, env: NodeJS.ProcessEnv = process.env): KnowledgeModelProfile {
+  if (input.durablePublicationV2) return captureSolProduction(input);
   if ((!env.ODINLINK_KNOWLEDGE_MODEL_PROFILE || env.ODINLINK_KNOWLEDGE_MODEL_PROFILE === 'off') &&
     solExtractionMode(input.businessId, env) === 'active') return captureSolExtraction(input);
   if (!env.ODINLINK_KNOWLEDGE_MODEL_PROFILE || env.ODINLINK_KNOWLEDGE_MODEL_PROFILE === 'off') {
@@ -190,7 +201,10 @@ export function solProductionEligible(input: { provider: string; nativeForegroun
  * selected a later failure fails closed. */
 function captureSolProduction(input: Parameters<typeof captureKnowledgeModelProfile>[0]): KnowledgeModelProfile {
   const fallback = (reason: string): KnowledgeModelProfile => Object.freeze({ id: 'default', managedFallback: reason });
-  if (!solProductionEligible(input)) return fallback('scope_ineligible');
+  const durableEligible = input.durablePublicationV2 && input.durable && input.businessId === 3 &&
+    input.provider === 'openai' && !input.natural && !input.operational && input.extractionProtocol === 'v2' &&
+    (input.verificationProtocol === 'v2' || isSourceExhaustiveProtocol(input.verificationProtocol));
+  if (!durableEligible && !solProductionEligible(input)) return fallback('scope_ineligible');
   if (!(integer(input.businessId) && input.businessId > 0 && input.turnId.length && /^[a-f0-9]{64}$/u.test(input.requestKey))) return fallback('turn_binding');
   const owner = installedOwner;
   if (!owner) return fallback('budget_owner_unavailable');
@@ -212,6 +226,13 @@ export function knowledgeManagedStages(profile: KnowledgeModelProfile | undefine
  * of the same message (same request key, so the same per-message limits). */
 export function captureSolExtractionShadow(input: Parameters<typeof captureKnowledgeModelProfile>[0], env: NodeJS.ProcessEnv = process.env): KnowledgeModelProfile {
   return solExtractionMode(input.businessId, env) === 'shadow' ? captureSolExtraction(input) : defaultProfile;
+}
+/** Tier B (active) admission for the durable host: the message binding of a Sol profile that ran through the installed
+ * durable owner, whose verification settled and in which no stage failed. The natural stages reuse this request key,
+ * so they share the same per-turn cap and the database's composition-after-verification ordering holds. */
+export function knowledgeNaturalBinding(profile: KnowledgeModelProfile | undefined): KnowledgeModelBinding | undefined {
+  const selection = profile && profile.id !== 'default' ? profiles.get(profile) : undefined;
+  return selection && selection.owner && !profile!.activationBlock && !selection.failed && selection.settled.has('verification') ? selection.binding : undefined;
 }
 /** Re-extraction admission for the host: Sol extraction must have settled and
  * no stage of this turn may have failed. Never consumes or creates a permit. */
@@ -302,8 +323,10 @@ export async function executeKnowledgeGeneration<T>(request: UnifiedAiGeneration
     validRequest(request, state);
     check(!owner.providerProjectId || !process.env.OPENAI_PROJECT_ID || process.env.OPENAI_PROJECT_ID === owner.providerProjectId, 'provider_project_mismatch');
     check(request.signal && !request.signal.aborted, 'cancellation');
-    const deadlineAt = Math.min(state.deadlineAt, Date.now() + (state.stage === 'verification' ? 19999 : 20000));
-    check(deadlineAt - Date.now() >= (state.stage === 'verification' ? 10000 : 1), 'dispatch_allowance');
+    // Production: 20000 / 19999 (accuracy-first-v1). Only an active experiment timing scope raises the cap.
+    const deadlineAt = Math.min(state.deadlineAt, Date.now() + knowledgeStageCapMs(state.stage));
+    const dispatchFloorMs = state.stage === 'verification' ? ACCURACY_FIRST_POLICY.verificationDispatchMs : 1;
+    check(deadlineAt - Date.now() >= dispatchFloorMs, 'dispatch_allowance');
     const signal = AbortSignal.any([request.signal, AbortSignal.timeout(Math.max(1, deadlineAt - Date.now()))]);
     check((params.max_output_tokens === undefined || params.max_output_tokens === 8192) &&
       (params.service_tier === undefined || params.service_tier === 'default') &&
@@ -340,7 +363,7 @@ export async function executeKnowledgeGeneration<T>(request: UnifiedAiGeneration
       Object.freeze({ id: String(e.id), businessId: e.businessId, text: String(e.text) })));
     check(state.selection.current && await withinSignal(state.selection.current(sent), signal), 'source_or_turn_changed');
     signal.throwIfAborted();
-    check(deadlineAt - Date.now() >= (state.stage === 'verification' ? 10000 : 1), 'dispatch_allowance');
+    check(deadlineAt - Date.now() >= dispatchFloorMs, 'dispatch_allowance');
     check(sha256Wire(wire) === requestSha256, 'wire_mutated');
     const admittedQuote = quote, admittedReservationId = reservationId;
     const pendingResponse = send(wire, signal, deadlineAt - Date.now(), owner.providerProjectId);

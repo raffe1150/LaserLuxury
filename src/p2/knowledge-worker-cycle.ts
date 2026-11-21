@@ -23,7 +23,8 @@ export class KnowledgeWorkerCycle {
   private readonly abort = new AbortController();
   constructor(private readonly repository: DiscoverableKnowledgeRepository, private readonly runner: KnowledgeRunner,
     private readonly transport: GuardedKnowledgeTransport, private readonly sender: string,
-    private readonly controls: {processing:()=>boolean;delivery:()=>boolean} = {processing:()=>true,delivery:()=>true}, private readonly telemetry?:(event:RunnerEvent)=>unknown) { requireId(sender); }
+    private readonly controls: {processing:()=>boolean;delivery:()=>boolean} = {processing:()=>true,delivery:()=>true}, private readonly telemetry?:(event:RunnerEvent)=>unknown,
+    private readonly cycleMs: () => number = () => KNOWLEDGE_OPERATION_LIMITS.cycleMs) { requireId(sender); }
   stop(): void { this.stopped = true; this.abort.abort(); this.runner.stop(); }
   async tick(): Promise<KnowledgeCycleReport> {
     if (this.stopped || this.busy || !this.controls.processing() && !this.controls.delivery()) return { ran: false, deliveries: [] };
@@ -68,7 +69,7 @@ export class KnowledgeWorkerCycle {
       // Keep the reentry guard until every owned branch settles; preserve errors.
       for (const outcome of outcomes) if (outcome.status === 'rejected') throw outcome.reason;
       return { ran: true, deliveries: reports };
-      },{signal:this.abort.signal,timeoutMs:KNOWLEDGE_OPERATION_LIMITS.cycleMs});
+      },{signal:this.abort.signal,timeoutMs:this.cycleMs()});
     } finally { this.busy = false; }
   }
 }

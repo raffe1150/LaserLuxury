@@ -4,6 +4,12 @@ import type { KnowledgeTask } from './knowledge-lifecycle';
 export const KNOWLEDGE_OPERATION_LIMITS = Object.freeze({ databaseMs:3000, eligibilityMs:5000, sendMs:5000, cycleMs:60000, deliveryMs:15000 });
 const scope=new AsyncLocalStorage<{signal:AbortSignal;deadlineAt:number}>();
 export function knowledgeOperationSignal():AbortSignal|undefined { return scope.getStore()?.signal; }
+/** Host tick bound that can contain one whole task lifecycle of the longest configured window (execution, lifecycle
+ * reserve, verified transition, finalize and send) plus intake recovery and discovery. Never below the original 60s. */
+export function knowledgeCycleTimeoutMs(maxExecutionMs:number):number {
+  if(!Number.isSafeInteger(maxExecutionMs)||maxExecutionMs<1000||maxExecutionMs>120000)throw new Error('knowledge_invalid_execution_limit');
+  return Math.max(KNOWLEDGE_OPERATION_LIMITS.cycleMs,maxExecutionMs+2*KNOWLEDGE_OPERATION_LIMITS.databaseMs+1000);
+}
 export function knowledgeExecutionDeadline(task:Pick<KnowledgeTask,'acceptedAt'|'expiresAt'>):number {
   // Candidate allowance for final source checks, eligibility, send and
   // settlement, each separately bounded below. This is a scheduling reserve,

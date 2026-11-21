@@ -89,6 +89,13 @@ export class DurableKnowledgeBudgetOwner implements KnowledgeBudgetOwner {
     await this.transition('unknown', { id: reservationId, quote });
   }
 
+  /** Tier B natural stages through the SAME odin_ai_money_v1 authority. Only reserve/settle/unknown; the database
+   * (tierb-natural-stages-v1) enforces stage, model, rates, envelope, order, caps and one attempt per stage. */
+  async naturalTransition(command: 'reserve' | 'settle' | 'unknown', payload: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
+    requireValue(command === 'reserve' || command === 'settle' || command === 'unknown');
+    return this.transition(command, payload, signal);
+  }
+
   /** Backend reconciliation only: actual, adapter-validated late provider usage.
    * No timeout-based release, new dispatch permit, model retry or automatic TTL.
    * Repeated identical settlement is idempotent; conflicting receipts fail.

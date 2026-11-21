@@ -22,19 +22,21 @@ export class SupabaseOrderedKnowledgeRepository extends SupabaseKnowledgeLifecyc
       p_business: scope.businessId, p_conversation: scope.conversationId, p_channel: scope.channel,
       p_account: scope.providerAccount, p_event: eventId, p_key: await this.canonicalKey(scope), p_order: order, p_input: input ?? null,
       p_execution_ms: boundedInteger(limits.executionMs ?? 40000, 1000, 120000),
-      p_max_runs: boundedInteger(limits.maxRunAttempts ?? 3, 1, 5), p_max_models: boundedInteger(limits.maxModelAttempts ?? 4, 1, 8),
+      p_max_runs: boundedInteger(limits.maxRunAttempts ?? 3, 1, 5), p_max_models: boundedInteger(limits.maxModelAttempts ?? 4, 1, 4),
     }));
     return this.decodeOrdered(scope, data);
   }
   async intake(scope: KnowledgeScope, eventId: string, order: NativeKnowledgeOrder | null,
-    command: 'begin' | 'prepare' | 'reconcile' | 'finish' | 'legacy', owner: string, context = '', input?: KnowledgeInput, executionMs = 20000) {
+    command: 'begin' | 'prepare' | 'reconcile' | 'finish' | 'legacy', owner: string, context = '', input?: KnowledgeInput, executionMs = 20000, publicationMaxModels?: 4 | 5) {
     scope = snapshot(scope); requireProviderId(eventId); order = captureNativeOrder(scope.channel, order);
     if (!await this.scope(scope)) throw new Error('knowledge_conversation_scope_mismatch');
-    const data = await this.result(this.db.rpc('odin_native_intake_v1', {
+    if (publicationMaxModels !== undefined && (scope.businessId !== 3 || command !== 'begin')) throw new Error('knowledge_publication_scope');
+    const data = await this.result(this.db.rpc(publicationMaxModels === undefined ? 'odin_native_intake_v1' : 'odin_native_intake_v2', {
       p_business: scope.businessId, p_conversation: scope.conversationId, p_channel: scope.channel,
       p_account: scope.providerAccount, p_event: eventId, p_key: await this.canonicalKey(scope), p_order: order,
       p_command: command, p_owner: owner, p_context: context, p_input: input ? captureInput(input) : null,
       p_execution_ms: boundedInteger(executionMs, 1000, 120000),
+      ...(publicationMaxModels !== undefined ? { p_max_models: publicationMaxModels } : {}),
     }));
     if (!data || !['ROUTING','PREPARED','ATTACHED','TERMINAL'].includes(data.intakeState)) throw new Error('knowledge_intake_response');
     return snapshot({ result: await this.decodeOrdered(scope, data), state: data.intakeState as 'ROUTING'|'PREPARED'|'ATTACHED'|'TERMINAL',

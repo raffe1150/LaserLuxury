@@ -14,15 +14,31 @@ export type ProcessingState = 'ACCEPTED' | 'RUNNING' | 'VERIFIED' | 'FINALIZED' 
 export type DeliveryState = 'PENDING' | 'SENDING' | 'SENT' | 'FAILED' | 'EXPIRED' | 'SUPERSEDED' | 'UNCERTAIN';
 export type Checkpoint = 'planning' | 'retrieval' | 'extraction';
 export type Lease = Readonly<{ owner: string; fence: number; until: number }>;
-export type VerifiedKnowledge = Readonly<{
-  protocol: 'evidence-first-v2'; independentlyVerified: true; completeRequiredFacts: true;
-  text: string; sources: readonly Readonly<{ id: string; revision: string }>[];
-}>;
+type KnowledgeSourcePin = Readonly<{ id: string; revision: string }>;
+/** A result eligible for the existing fenced VERIFIED-to-final transition. */
+export type VerifiedKnowledge = Readonly<(
+  | { protocol: 'evidence-first-v2'; independentlyVerified: true; completeRequiredFacts: true }
+  | { protocol: 'evidence-first-partial-v1'; independentlyVerified: true; completeRequiredFacts: false }
+  | { protocol: 'safe-unavailable-v1'; independentlyVerified: false; completeRequiredFacts: false }
+) & { text: string; sources: readonly KnowledgeSourcePin[] }>;
+const unavailableText: Readonly<Record<string, string>> = Object.freeze({
+  en: 'I can’t verify the requested details right now.',
+  sv: 'Jag kan inte bekräfta de efterfrågade uppgifterna just nu.',
+  de: 'Ich kann die angefragten Angaben gerade nicht bestätigen.',
+  es: 'No puedo verificar los detalles solicitados en este momento.',
+  fa: 'در حال حاضر نمی‌توانم جزئیات درخواست‌شده را تأیید کنم.',
+  ar: 'لا أستطيع التحقق من التفاصيل المطلوبة الآن.',
+});
+export function safeUnavailableKnowledge(language: string): VerifiedKnowledge {
+  return snapshot({ protocol: 'safe-unavailable-v1', independentlyVerified: false, completeRequiredFacts: false,
+    text: unavailableText[language.toLowerCase().split('-')[0]] ?? unavailableText.en, sources: [] });
+}
 export type KnowledgeTask = Readonly<{
   id: string; turnId: string; eventId: string; scope: KnowledgeScope; sequence: number;
   acceptedAt: number; expiresAt: number; input: KnowledgeInput;
   state: ProcessingState; revision: number; fence: number; lease: Lease | null;
   runAttempts: number; maxRunAttempts: number; modelAttempts: number; maxModelAttempts: number;
+  publicationV2?: boolean; finalOnly?: boolean;
   checkpoint: Checkpoint | null; result: VerifiedKnowledge | null; resultDigest: string | null;
 }>;
 export type KnowledgeDelivery = Readonly<{
@@ -67,6 +83,7 @@ export interface KnowledgeLifecycleRepository {
   fail(scope: KnowledgeScope, token: TaskToken): Promise<boolean>;
   interrupt?(scope:KnowledgeScope,token:TaskToken):Promise<boolean>;
   deferDelivery?(scope: KnowledgeScope, taskId: string, deliveryId: string): Promise<boolean>;
+  withdrawFinal?(scope: KnowledgeScope, taskId: string, deliveryId: string): Promise<KnowledgeTask | null>;
   rejectDelivery?(scope:KnowledgeScope,taskId:string,deliveryId:string):Promise<boolean>;
   finalize(scope: KnowledgeScope, token: TaskToken): Promise<KnowledgeDelivery | null>;
   enqueueProgress(scope: KnowledgeScope, taskId: string, text: string): Promise<KnowledgeDelivery | null>;
@@ -108,12 +125,22 @@ export function captureInput(input: KnowledgeInput): KnowledgeInput {
   }) });
 }
 export function captureVerified(result: VerifiedKnowledge): VerifiedKnowledge {
-  if (result.protocol !== 'evidence-first-v2' || result.independentlyVerified !== true || result.completeRequiredFacts !== true ||
+  if (result.protocol === 'safe-unavailable-v1') {
+    if (result.independentlyVerified !== false || result.completeRequiredFacts !== false ||
+        !Array.isArray(result.sources) || result.sources.length || !Object.values(unavailableText).includes(result.text))
+      throw new Error('knowledge_unverified_result');
+    return snapshot({ protocol: result.protocol, independentlyVerified: false, completeRequiredFacts: false, text: result.text, sources: [] });
+  }
+  if (!['evidence-first-v2', 'evidence-first-partial-v1'].includes(result.protocol) || result.independentlyVerified !== true ||
+      result.completeRequiredFacts !== (result.protocol === 'evidence-first-v2') ||
       !Array.isArray(result.sources) || !result.sources.length || result.sources.length > 10) throw new Error('knowledge_unverified_result');
   text(result.text, 6000);
   const sources = result.sources.map(s => { requireId(s.id); requireId(s.revision); return { id: s.id, revision: s.revision }; });
   if (new Set(sources.map(s => s.id)).size !== sources.length) throw new Error('knowledge_duplicate_source');
-  return snapshot({ protocol: result.protocol, independentlyVerified: true, completeRequiredFacts: true, text: result.text, sources });
+  const coverage = result.protocol === 'evidence-first-v2'
+    ? { protocol: result.protocol, independentlyVerified: true as const, completeRequiredFacts: true as const }
+    : { protocol: result.protocol, independentlyVerified: true as const, completeRequiredFacts: false as const };
+  return snapshot({ ...coverage, text: result.text, sources });
 }
 export function resultDigest(result: VerifiedKnowledge): string {
   // Length-framed UTF-8, independent of JSON object key ordering/whitespace.

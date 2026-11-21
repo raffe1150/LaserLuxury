@@ -1,7 +1,7 @@
 import { isSourceExhaustiveProtocol } from './src/ai/source-exhaustive-coverage';
 import { classifyKnowledgeFallback, contextualKnowledgeFallback, previousAssistantReply } from './src/ai/knowledge-fallback';
 import { knowledgePresentationConfig, presentVerifiedManifest, PRESENTATION_SCHEMA } from './src/ai/knowledge-presentation';
-import { composerSnapshot, naturalComposerConfig, previousCustomerMessage, runNaturalComposerShadow, skippedComposerRecord } from './src/ai/natural-composer-shadow';
+import { composerSnapshot, naturalComposerConfig, previousCustomerMessage, runNaturalComposer, runNaturalComposerShadow, skippedComposerRecord } from './src/ai/natural-composer-shadow';
 import { serverNaturalComposerBudget, type NaturalComposerBudget } from './src/ai/natural-composer-budget';
 import { ordinaryEntailmentPunctuationKey, ordinaryEntailmentIsReusable } from './src/ai/claim-entailment-reuse';
 import { recoveryDiagnostic, recoveryFailureFields, recoveryOutcome, recoveryExtractionStage, recoveryEntailmentStage, recoveryRequestedFactStage, withRepairDiagnostics, withRecoveryDiagnostics, type RecoveryStage } from './src/ai/recovery-diagnostics';
@@ -33,6 +33,7 @@ import { NativeKnowledgeRuntime, nativeAsyncControls, type NativeKnowledgeAdmiss
 import { nativeKnowledgeOrder, type NativeKnowledgeOrder } from './src/p2/native-knowledge-order';
 import { bindBusinessInformationTurnId } from './src/ai/business-information-timing';
 import { DurableKnowledgeBudget } from './src/p2/durable-knowledge-budget';
+import { knowledgeOperation } from './src/p2/knowledge-operation';
 import { captureVerified, type KnowledgeTask, type VerifiedKnowledge } from './src/p2/knowledge-lifecycle';
 import type { KnowledgeExecutor } from './src/p2/knowledge-runner';
 import { prepareLiteralTurn, type SharedTurnExecutionResult, hasConversationReference, hasExternalConversationReference, continuesReferenceClarification, referenceClarificationReply, mixedActionClarificationReply } from './src/ai/conversation-intent-continuity';
@@ -50,9 +51,9 @@ import { isCancellationInformationRequested, readCancellationPolicy, cancellatio
   type CancellationConfirmation, type CancellationSubject } from './src/ai/cancellation-policy';
 import { selectSemanticQueries, retainPlannedQueryLanguages, explicitlyWrongWorkflow, type PlannedQueryLanguages, type SourceLanguage } from './src/knowledge/semantic-queries';
 import { RequestSecurity, immutable } from './src/knowledge/request-security';
-import { ANSWER_LIMITS, InformationBudget, INFORMATION_PUBLICATION_RESERVE_MS, parseRequestedFacets, answerEvidence, answerEvidenceBindings, buildEvidenceFirstAnswer, narrowInformationRequest, withinInformationDeadline, pruneAnswerManifest, publishableKnowledgeManifest, type Facet, type Evidence, type AnswerManifest } from './src/ai/business-information-answer-plan';
+import { ANSWER_LIMITS, InformationBudget, INFORMATION_PUBLICATION_RESERVE_MS, parseRequestedFacets, answerEvidence, answerEvidenceBindings, buildEvidenceFirstAnswer, narrowInformationRequest, withinInformationDeadline, pruneAnswerManifest, completeKnowledgeManifest, publishableKnowledgeManifest, type Facet, type Evidence, type AnswerManifest } from './src/ai/business-information-answer-plan';
 import { KNOWLEDGE_SCHEMA_VERSION, verificationAdmissionDiagnostic, knowledgeDiagnosticFailure, knowledgeStructuredOutput, knowledgeFailureReason, safeModelIdentifier, selectKnowledgeVerificationProtocol, selectKnowledgeExtractionProtocol, type KnowledgeExtractionProtocol, type KnowledgeVerificationProtocol, type KnowledgeDecision, type DecisionReason, type KnowledgeStage } from './src/ai/knowledge-answer-protocol';
-import { captureKnowledgeModelProfile, sentEvidenceCurrent, knowledgeStageOptions, solExtractionMode, solExtractionEligible, KNOWLEDGE_SOL_EXTRACTION_PROFILE, KNOWLEDGE_SOL_PRODUCTION_PROFILE, knowledgeManagedStages, type KnowledgeModelProfile, type KnowledgeExecutionPermit } from './src/ai/knowledge-model-policy';
+import { captureKnowledgeModelProfile, knowledgeNaturalBinding, sentEvidenceCurrent, knowledgeStageOptions, solExtractionMode, solExtractionEligible, KNOWLEDGE_SOL_EXTRACTION_PROFILE, KNOWLEDGE_SOL_PRODUCTION_PROFILE, knowledgeManagedStages, type KnowledgeModelProfile, type KnowledgeExecutionPermit } from './src/ai/knowledge-model-policy';
 import { emitSolCanaryTelemetry, extractionReasonCounts, reExtractionAdmission, runSolExtractionShadow, type SolStageRecord } from './src/ai/sol-extraction-canary';
 import { generateWithOpenAi } from './src/ai/providers/openai';
 import { assertDefaultModelConfiguration, describeDefaultModel, modelStageFor, routeNaturalComposerModels } from './src/ai/model-routing';
@@ -580,6 +581,8 @@ async function resolveSemanticKnowledgeQueries(
     if(deterministic)return deterministic;
   }
 
+  // AI Money has no model planner quote for this lane.
+  if (informationBudget instanceof DurableKnowledgeBudget && informationBudget.publicationV2) return null;
   try {
     const response = await generateContentWithFallback(null, {
       messages: [
@@ -864,8 +867,8 @@ let currentKeyIndex = 0;
 const MAX_CONCURRENT_AI_REQUESTS = Number(process.env.MAX_CONCURRENT_AI_REQUESTS || 3);
 const aiRequestQueue = new AiRequestQueue(MAX_CONCURRENT_AI_REQUESTS);
 
-function runWithAiQueue<T>(job: () => Promise<T>, onExecutionStart?: () => void, signal?: AbortSignal): Promise<T> {
-  return aiRequestQueue.run(job, onExecutionStart, signal);
+function runWithAiQueue<T>(job: () => Promise<T>, onExecutionStart?: () => void, signal?: AbortSignal, rejectWhenBusy = false): Promise<T> {
+  return aiRequestQueue.run(job, onExecutionStart, signal, rejectWhenBusy);
 }
 
 function getApiKeys(): string[] {
@@ -915,6 +918,9 @@ async function generateContentWithFallback(ai: GoogleGenAI | null, options: {
   };
 }): Promise<any> {
   const scopedTiming = nativeKnowledgeTiming();
+  if (options.informationBudget instanceof DurableKnowledgeBudget && options.informationBudget.publicationV2 &&
+      !options.knowledgeExecution && !(process.env.NODE_ENV === 'test' && priority1hTestDependencies?.geminiGenerate && getConfiguredAiProvider() === 'gemini'))
+    throw new Error('knowledge_durable_paid_stage_unavailable');
   scopedTiming?.assertProcessing();
   const provider = getConfiguredAiProvider();
   const testGenerate = process.env.NODE_ENV === 'test' ? priority1hTestDependencies?.aiGenerate : undefined;
@@ -960,6 +966,7 @@ async function generateContentWithFallback(ai: GoogleGenAI | null, options: {
     ? Math.min(60_000, Math.max(1_000, configuredTimeoutMs))
     : 20_000;
   const informationBudget = options.informationBudget;
+  const durableBudget = informationBudget instanceof DurableKnowledgeBudget ? informationBudget : undefined;
   const knowledgeState = knowledgeTurnScope.getStore();
   if(informationBudget && knowledgeState) {
     knowledgeState.provider=provider;
@@ -968,7 +975,11 @@ async function generateContentWithFallback(ai: GoogleGenAI | null, options: {
   if (informationBudget && !informationBudget.remaining()) throw new Error("information_deadline");
   if(informationBudget && !informationBudget.generationRemaining()) throw new Error('information_publication_reserve');
   const knowledgeProposal = informationBudget && options.context?.stage === 'knowledge_units_extraction';
-  const proposalAllowance = knowledgeProposal ? (informationBudget.nativeTiming ? accuracyFirstExtractionAllowance(informationBudget.generationRemaining()) : knowledgeProposalAllowance(informationBudget.generationRemaining())) : null;
+  const proposalAllowance = knowledgeProposal ? (informationBudget.nativeTiming ? accuracyFirstExtractionAllowance(informationBudget.generationRemaining(), informationBudget.nativeTiming.policy) : knowledgeProposalAllowance(informationBudget.generationRemaining())) : null;
+  // Managed Knowledge extraction/verification only: the native turn's provider floor (production 0, so AI_PROVIDER_TIMEOUT_MS applies unchanged;
+  // only the scoped fa Sol-to-Sol experiment profile raises it to its 45 s stage allowance).
+  const knowledgeProviderTimeoutMs = informationBudget?.nativeTiming && ['knowledge_units_extraction', 'knowledge_units_re_extraction', 'knowledge_units_verification'].includes(options.context?.stage || '')
+    ? Math.max(providerTimeoutMs, informationBudget.nativeTiming.policy.knowledgeProviderFloorMs) : providerTimeoutMs;
   if (proposalAllowance === 0) {
     emitKnowledgeDecision({stage:'extraction',reason:'STAGE_ADMISSION',remainingMs:informationBudget!.remaining(),timeoutMs:0});
     throw new Error('information_proposal_admission');
@@ -984,8 +995,8 @@ async function generateContentWithFallback(ai: GoogleGenAI | null, options: {
   }
   const informationStageLimit = proposalAllowance ?? (isKnowledgePlanning
     ? Math.min(planningLimit,providerTimeoutMs) : ['knowledge_units_composition','knowledge_units_presentation_verification'].includes(options.context?.stage || '') && informationBudget
-    ? Math.max(1, Math.min(2_000, informationBudget.generationRemaining())) : providerTimeoutMs);
-  const timeoutMs = informationBudget ? Math.min(providerTimeoutMs, informationStageLimit, informationBudget.generationRemaining()) : options.context?.stage === "business_information_completeness_repair"
+    ? Math.max(1, Math.min(2_000, informationBudget.generationRemaining())) : knowledgeProviderTimeoutMs);
+  const timeoutMs = informationBudget ? Math.min(knowledgeProviderTimeoutMs, informationStageLimit, informationBudget.generationRemaining()) : options.context?.stage === "business_information_completeness_repair"
     ? Math.min(5_000, providerTimeoutMs) : providerTimeoutMs;
   const stageDeadlineAt = Date.now() + timeoutMs;
   recordKnowledgePolicyStage('queued', timeoutMs);
@@ -1026,7 +1037,8 @@ async function generateContentWithFallback(ai: GoogleGenAI | null, options: {
   const response = await runAiProviderRequest({
     timeoutMs,
     cancelOnTimeout: provider === "openai" || !!scopedTiming,
-    ...(scopedTiming ? { signal: scopedTiming.signal, deadlineAt: Math.min(informationBudget?.deadlineAt ?? scopedTiming.deadlineAt - 7_000, stageDeadlineAt) } : {}),
+    ...(durableBudget ? { signal: durableBudget.signal, deadlineAt: Math.min(durableBudget.executionDeadlineAt, stageDeadlineAt) }
+      : scopedTiming ? { signal: scopedTiming.signal, deadlineAt: Math.min(informationBudget?.deadlineAt ?? scopedTiming.deadlineAt - 7_000, stageDeadlineAt) } : {}),
     retryDelayMs: 500,
     invoke: (attempt, signal) => {
       informationBudget?.attempt();
@@ -1078,7 +1090,7 @@ async function generateContentWithFallback(ai: GoogleGenAI | null, options: {
             queueWaitMs: Date.now() - attemptTimings.get(attempt)!.queuedAt,
           }));
         }
-      }, signal);
+      }, signal, durableBudget?.publicationV2);
     },
     beforeRetry: () => {
       // Evidence-first turns spend their allowance on distinct stages, never nested retries.
@@ -1574,6 +1586,10 @@ type Priority1hTestDependencies = {
   /** Tier B shadow: the ONLY provider a test run may use (never a real provider). */
   naturalComposerGenerate?: (request: UnifiedAiGenerationRequest) => Promise<UnifiedAiGenerationResponse>;
   naturalComposerRecord?: (record: Record<string, unknown>) => void;
+  /** Tests only: stands in for the settled durable Knowledge binding of the message (request key shared with Tier B). */
+  naturalComposerBinding?: Readonly<{ businessId: number; turnId: string; requestKey: string }>;
+  /** Tests only: Tier B routing when the offline Knowledge harness runs on the Gemini mock provider. */
+  naturalComposerModels?: ReturnType<typeof routeNaturalComposerModels>;
   naturalComposerBudget?: NaturalComposerBudget;
   knowledgeNaturalCompatibility?: (record: Record<string, unknown>) => void;
   evidenceFirstPublicationDiagnostic?: (event: Record<string, unknown>) => void;
@@ -5531,7 +5547,7 @@ function runUnifiedConversationRequest<T>(work: () => Promise<T>, nativeChannel:
     naturalSinglePartial:process.env.ODINLINK_GROUNDED_NATURAL_SINGLE_PARTIAL==='true',naturalTurnId:crypto.randomUUID()}: {})}, () => scoped
       ? runAccuracyFirstNative(work, async () => {
           // An overloaded/unresolved intake has not established session authority.
-          if (!requestSecurity.current() || !nativeEvent || !nativeChannel || !written) return;
+          if (nativeIntakeScope.getStore() || !requestSecurity.current() || !nativeEvent || !nativeChannel || !written) return;
           const language=knowledgeTurnScope.getStore()?.replyLanguage || (requestSecurity.evidence?.support ? capturedSupportLanguage(requestSecurity.evidence.support) : written.config.language || 'en');
           await sendCustomerMessage(nativeChannel,nativeEvent.recipient,knowledgeUnavailableReply(language),timingConfig,'conversation');
         }, event => runOptionalDiagnostic(() => console.info('[KnowledgeTimingPolicy]', event)), Number(timingBusinessId)) : work())), nativeChannel);
@@ -5582,6 +5598,7 @@ async function runNativeIntake(channel:'telegram'|'whatsapp'|'messenger'|'instag
     if(!connected)throw new Error('knowledge_intake_connection_unavailable');
     businessId=Number(connected.business.id);
   }
+  if (!runtime.admissionEnabledFor(businessId)) return handler();
   const intake=await runtime.beginIntake({businessId,channel,account,recipient,eventId,order:nativeKnowledgeOrder(channel,event)},text);
   if(!intake)throw new Error('knowledge_intake_unavailable');
   if(!intake.run)return true;
@@ -5969,6 +5986,7 @@ async function generateSecureConversationContent(sessionId: string, options: any
       state.businessId === Number(getBusinessIdFromConfig(support.businessConfig)) && state.question === support.question) {
     return generateNativeKnowledgeContent(sessionId,options,support,state);
   }
+  if (state?.budget instanceof DurableKnowledgeBudget && state.budget.publicationV2) return { text: '', functionCalls: [] };
   return generateContentWithFallback(null, { ...options, tools });
 }
 
@@ -6010,11 +6028,15 @@ async function generateNativeKnowledgeContent(sessionId:string,options:any,suppo
     const verificationProtocol = state.verificationProtocol ?? selectKnowledgeVerificationProtocol();
     if (state.verificationProtocol === undefined) Object.defineProperty(state, 'verificationProtocol', { value: verificationProtocol, enumerable: true });
     const configuredExtractionProtocol = state.extractionProtocol ?? selectKnowledgeExtractionProtocol();
-    const modelBinding = controlledTrialBinding() ?? Object.freeze({ businessId: state.businessId, turnId: nativeKnowledgeTiming()?.turnId ?? '',
-      requestKey: crypto.createHash('sha256').update(JSON.stringify([sessionId, state.nativeEvent?.eventId ?? null, support.question])).digest('hex') });
+    const durablePublication = state.budget instanceof DurableKnowledgeBudget && state.budget.publicationV2;
+    const modelBinding = controlledTrialBinding() ?? Object.freeze({ businessId: state.businessId,
+      turnId: durablePublication ? state.naturalTurnId! : nativeKnowledgeTiming()?.turnId ?? '',
+      requestKey: crypto.createHash('sha256').update(JSON.stringify(durablePublication
+        ? ['native-durable-knowledge', state.businessId, state.naturalTurnId]
+        : [sessionId, state.nativeEvent?.eventId ?? null, support.question])).digest('hex') });
     const modelEvidenceSnapshot = state.snapshot?.evidence ?? [];
     if (state.modelProfile === undefined) Object.defineProperty(state, 'modelProfile', { enumerable: true, value: captureKnowledgeModelProfile({
-      ...modelBinding, provider: getConfiguredAiProvider(), nativeForeground: !!nativeKnowledgeTiming() && !!state.nativeChannel && !!state.nativeEvent?.eventId,
+      ...modelBinding, durablePublicationV2: durablePublication, provider: getConfiguredAiProvider(), nativeForeground: !!nativeKnowledgeTiming() && !!state.nativeChannel && !!state.nativeEvent?.eventId,
       natural: !!state.naturalEnabled, durable: state.budget instanceof DurableKnowledgeBudget, extractionProtocol: configuredExtractionProtocol, verificationProtocol,
       documentary: modelEvidenceSnapshot.some(e => !e.sourceId.startsWith('configured-services:') && !e.sourceId.startsWith('business-cancellation-configuration:')) &&
         (!directConfiguredServicePlan(support.question, support.businessConfig) || isMixedSourceInformationQuestion(support.question, support.businessConfig)),
@@ -6071,7 +6093,9 @@ async function generateNativeKnowledgeContent(sessionId:string,options:any,suppo
       // Durable budgets, attempt accounting and publication authority stay separate.
       omitModelEvidenceVersions: true,
       foreground: true,
-      requireCompleteCoverage: state.budget instanceof DurableKnowledgeBudget,
+      requireCompleteCoverage: state.budget instanceof DurableKnowledgeBudget && !durablePublication,
+      durablePartialPublication: durablePublication,
+      ...(durablePublication || state.budget instanceof DurableKnowledgeBudget && durableNaturalComposerActive(state) ? { reserveForNaturalComposer: true } : {}),
       // Retrieved text is supplied only through the current source-bound evidence
       // list; a revoked passage must not remain in a second verifier corpus.
       authoritativeEvidence: JSON.stringify({ business_system_prompt: snapshot.sources.business_system_prompt,
@@ -6108,7 +6132,7 @@ async function generateNativeKnowledgeContent(sessionId:string,options:any,suppo
         record: event => { canaryReExtraction = event; },
         admit: () => reExtractionAdmission({ profile: state.modelProfile!, businessId: state.businessId!,
           mode: state.modelProfile!.id === KNOWLEDGE_SOL_PRODUCTION_PROFILE ? 'production' : 'active',
-          generationRemainingMs: state.budget!.generationRemaining(), attempts: state.budget!.attempts, maxAttempts: ANSWER_LIMITS.attempts }),
+          generationRemainingMs: state.budget!.generationRemaining(), attempts: state.budget!.attempts, maxAttempts: state.budget instanceof DurableKnowledgeBudget ? state.budget.maxAttempts : ANSWER_LIMITS.attempts }),
       } } : {}),
       generate: async (requestedStage, instruction, data, contract) => {
         // A re_extraction is a complete fresh extraction: same schema, effort
@@ -6119,7 +6143,8 @@ async function generateNativeKnowledgeContent(sessionId:string,options:any,suppo
           ? compactKnowledgeVerifierInput(data) : data;
         try {
           const profileOptions = knowledgeStageOptions(state.modelProfile!, requestedStage, modelBinding, Date.now() +
-            (stage === 'extraction' ? accuracyFirstExtractionAllowance(state.budget!.generationRemaining()) : Math.min(19999, state.budget!.generationRemaining())));
+            (stage === 'extraction' ? accuracyFirstExtractionAllowance(state.budget!.generationRemaining(), state.budget!.nativeTiming?.policy)
+              : Math.min((state.budget!.nativeTiming?.policy ?? ACCURACY_FIRST_POLICY).verificationMs, state.budget!.generationRemaining())));
           sol = !!profileOptions.knowledgeExecution;
           const pending = generateContentWithFallback(null, { messages: [{ role: 'user', content: JSON.stringify(wireData) }],
           systemInstruction: instruction, tools: [], informationBudget: state.budget,
@@ -6151,7 +6176,7 @@ async function generateNativeKnowledgeContent(sessionId:string,options:any,suppo
       console.info('[KnowledgeModelRouting]', JSON.stringify({ businessId: state.businessId, channel: state.nativeChannel || 'internal',
         profile: state.modelProfile!.id, managedStages: knowledgeManagedStages(state.modelProfile),
         ...(state.modelProfile!.managedFallback ? { fallbackReason: state.modelProfile!.managedFallback } : {}),
-        publication: publishableKnowledgeManifest(state.manifest, state.businessId) ? 'published' : 'safe_fallback' })));
+        publication: publishableKnowledgeManifest(state.manifest, state.businessId, durablePublication ? state.budget : undefined) ? 'published' : 'safe_fallback' })));
     if (canaryMode === 'active') (priority1hTestDependencies?.solCanaryTelemetry ?? emitSolCanaryTelemetry)({ schema: 'sol-extraction-canary-v1', mode: 'active', businessId: state.businessId!,
       channel: state.nativeChannel || 'internal', language, profile: state.modelProfile!.id === KNOWLEDGE_SOL_EXTRACTION_PROFILE ? 'sol-extraction-v1' : 'default',
       ...(state.modelProfile!.canaryFallback ? { fallbackReason: state.modelProfile!.canaryFallback } : {}),
@@ -6201,8 +6226,11 @@ export async function executeDurableKnowledgeTask(task: KnowledgeTask,
   if (context.signal.aborted) return reject('CANCELLED');
   if (!await current()) return reject('TURN_CONTEXT');
   const sessionId = `durable-knowledge:${task.turnId}:${task.fence}`;
-  const budget = new DurableKnowledgeBudget(task, context.signal, context.reserveModelAttempt);
-  const naturalRequested = process.env.ODINLINK_GROUNDED_NATURAL_RESPONSES === 'true';
+  // Durable model attempts actually reserved for this task (prior runs included), counted at the database boundary.
+  let reservedAttempts = task.modelAttempts;
+  const reserveAttempt = async () => { await context.reserveModelAttempt(); reservedAttempts++; };
+  const budget = new DurableKnowledgeBudget(task, context.signal, reserveAttempt);
+  const naturalRequested = !budget.publicationV2 && process.env.ODINLINK_GROUNDED_NATURAL_RESPONSES === 'true';
   const naturalBypassed = naturalRequested && !groundedNaturalProtocolCompatible();
   const naturalEnabled = naturalRequested && !naturalBypassed;
   const state: KnowledgeTurnState = { nativeChannel: task.scope.channel, sessionId, ...(naturalBypassed ? { naturalBypassed: true } : {}),
@@ -6217,7 +6245,7 @@ export async function executeDurableKnowledgeTask(task: KnowledgeTask,
       const retrievedKnowledge = await retrieveBusinessKnowledgeForQuestion(businessConfig, question,
         businessInformationTimingContext(sessionId));
       await context.checkpoint('retrieval');
-      if (state.unresolvedReference || state.oversized || !state.budget?.remaining()) return null;
+      if (state.unresolvedReference || state.oversized || !state.budget?.remaining() || budget.publicationV2 && !state.facets?.length) return null;
       businessInformationTurns[sessionId] = { savedAt: Date.now(), businessConfig, question: question,
         language: task.input.language, retrievedKnowledge };
       await generateSecureConversationContent(sessionId, { messages: task.input.history,
@@ -6226,18 +6254,98 @@ export async function executeDurableKnowledgeTask(task: KnowledgeTask,
       const manifest = state.manifest;
       // A canonical presentation fallback can still contain every independently
       // verified fact. Eligibility depends on coverage/evidence, not formatting.
-      if (!manifest || !manifest.units.length || manifest.units.some(unit => unit.verification !== 'ENTAILED') || manifest.outcomes.length !== manifest.facets.length ||
-          manifest.outcomes.some(o => o.status !== 'VERIFIED' || !o.requestAligned || !o.materialFactsComplete ||
-            o.obligations.some(item => item.status !== 'COVERED'))) return null;
+      if (!manifest?.units.length || !manifest.text.trim() || manifest.units.some(unit => unit.verification !== 'ENTAILED')) return null;
+      const complete = completeKnowledgeManifest(manifest) && !manifest.qualifiedPartial && !manifest.sourceScopedPartial &&
+        !manifest.sourceLimitations && !manifest.unresolvedRequirements && !manifest.obligationLimitations;
+      if (!complete && (!budget.publicationV2 || !publishableKnowledgeManifest(manifest, task.scope.businessId, budget))) return null;
       const sources = new Map<string, string>();
       for (const item of state.snapshot?.evidence || []) {
         if (sources.has(item.sourceId) && sources.get(item.sourceId) !== item.version) return null;
         sources.set(item.sourceId, item.version);
       }
-      return captureVerified({ protocol: 'evidence-first-v2', independentlyVerified: true, completeRequiredFacts: true,
-        text: manifest.text, sources: [...sources].map(([id, revision]) => ({ id, revision })) });
+      const natural = await durableNaturalPublication({ state, manifest, budget, businessConfig, channel: task.scope.channel,
+        attemptsLeft: () => budget.maxAttempts - reservedAttempts, reserveAttempt });
+      if (state.manifest !== manifest || state.freshnessFailure || !budget.remaining()) return null;
+      if (natural && (!await knowledgeEvidenceCurrent() || state.manifest !== manifest || !await current())) return null;
+      const coverage = complete
+        ? { protocol: 'evidence-first-v2' as const, completeRequiredFacts: true as const }
+        : { protocol: 'evidence-first-partial-v1' as const, completeRequiredFacts: false as const };
+      return captureVerified({ ...coverage, independentlyVerified: true,
+        text: natural ?? manifest.text, sources: [...sources].map(([id, revision]) => ({ id, revision })) });
     } finally { delete businessInformationTurns[sessionId]; }
   })), task.scope.channel, task.turnId);
+}
+
+/** Tier B compute reserve inside the durable execution window (the lifecycle/delivery reserve is already outside
+ * DurableKnowledgeBudget.remaining(), so it is not counted again here). */
+export const DURABLE_TIERB_RESERVE = Object.freeze({ composerMs: 9_000, validatorMs: 7_000, marginMs: 1_000, modelAttempts: 2 });
+/** Active Tier B is configured for this durable turn's tenant (models, money and attempts are checked later). */
+function durableNaturalComposerActive(state: KnowledgeTurnState): boolean {
+  try {
+    const config = naturalComposerConfig();
+    return config.mode === 'active' && Number.isSafeInteger(state.businessId) && config.tenants.has(state.businessId!) && !state.naturalEnabled && !state.ownerAnswerSelection;
+  } catch { return false; }
+}
+/** Active Tier B for one complete durable manifest. Returns validated text or undefined (canonical). Never throws
+ * except when the durable attempt reservation itself fails (the runner then aborts the execution, as for any stage). */
+async function durableNaturalPublication(input: Readonly<{ state: KnowledgeTurnState; manifest: AnswerManifest; budget: DurableKnowledgeBudget;
+  businessConfig: any; channel: string; attemptsLeft: () => number; reserveAttempt: () => Promise<void> }>): Promise<string | undefined> {
+  const { state, manifest, budget } = input;
+  if (!durableNaturalComposerActive(state)) return;
+  const config = naturalComposerConfig();
+  const businessId = state.businessId!, channel = input.channel;
+  const emit = (record: Record<string, unknown>) => runOptionalDiagnostic(() => {
+    runOptionalDiagnostic(() => priority1hTestDependencies?.naturalComposerRecord?.(record));
+    console.info('[KnowledgeNaturalComposer]', JSON.stringify(record));
+  });
+  const skip = (reason: string, language = manifest.language, extra: Record<string, unknown> = {}) =>
+    { emit({ ...skippedComposerRecord({ businessId, channel, language, reason, canonicalChars: manifest.text.length, ...extra } as any), mode: 'active', publication: 'canonical_fallback' }); return undefined; };
+  const { snapshot, reason } = composerSnapshot(manifest);
+  // A partial shape without explicit composer-bound notices stays canonical.
+  if (!completeKnowledgeManifest(manifest) && !snapshot?.notices.length) return skip('UNSUPPORTED_SHAPE');
+  if (!snapshot) return skip(reason!);
+  // Canonical fallback, never an aborted execution: Tier B needs two durable model attempts and its full compute reserve.
+  if (input.attemptsLeft() < DURABLE_TIERB_RESERVE.modelAttempts) return skip('ATTEMPT_BUDGET', snapshot.language);
+  if (budget.remaining() < DURABLE_TIERB_RESERVE.composerMs + DURABLE_TIERB_RESERVE.validatorMs + DURABLE_TIERB_RESERVE.marginMs) return skip('TIME_BUDGET', snapshot.language);
+  const binding = process.env.NODE_ENV === 'test' && priority1hTestDependencies?.naturalComposerBinding ? priority1hTestDependencies.naturalComposerBinding : knowledgeNaturalBinding(state.modelProfile);
+  if (!binding || binding.businessId !== businessId) return skip('DURABLE_STAGES_UNSETTLED', snapshot.language);
+  const models = process.env.NODE_ENV === 'test' && priority1hTestDependencies?.naturalComposerModels ? priority1hTestDependencies.naturalComposerModels : routeNaturalComposerModels();
+  if (!models.ok) return skip((models as { reason: string }).reason, snapshot.language);
+  const generate = process.env.NODE_ENV === 'test' ? priority1hTestDependencies?.naturalComposerGenerate : generateWithConfiguredProvider;
+  if (!generate) return skip('NO_PROVIDER', snapshot.language, { models });
+  const naturalBudget = process.env.NODE_ENV === 'test' ? priority1hTestDependencies?.naturalComposerBudget : serverNaturalComposerBudget('active').budget;
+  if (!naturalBudget) return skip('LEDGER_UNAVAILABLE', snapshot.language, { models });
+  const tone = normalizeBusinessToneConfig(input.businessConfig?.toneConfig);
+  const previous = previousCustomerMessage(state.history as any);
+  const languageSafe = (unit: any) => !assessKnowledgeUnitLanguage(unit, snapshot.language, input.businessConfig);
+  let attemptFailure: unknown;
+  const compose = (signal: AbortSignal) => runNaturalComposer({ snapshot, businessId, channel, question: state.question || '', turnId: binding.turnId, requestKey: binding.requestKey,
+    tone, generate, languageSafe, models, budget: naturalBudget, dailyCap: config.dailyCap, publish: true,
+    timeouts: { composerMs: DURABLE_TIERB_RESERVE.composerMs, validatorMs: DURABLE_TIERB_RESERVE.validatorMs },
+    signal,
+    beforeDispatch: async role => {
+      signal.throwIfAborted();
+      const requiredMs = (role === 'composer' ? DURABLE_TIERB_RESERVE.composerMs + DURABLE_TIERB_RESERVE.validatorMs : DURABLE_TIERB_RESERVE.validatorMs) + DURABLE_TIERB_RESERVE.marginMs;
+      if (input.attemptsLeft() < 1 || budget.remaining() < requiredMs || !await knowledgeEvidenceCurrent() || state.manifest !== manifest)
+        throw new Error('tierb_attempt_unavailable');
+      signal.throwIfAborted();
+      try { await input.reserveAttempt(); } catch (error) { attemptFailure = error; throw error; }
+      signal.throwIfAborted();
+    },
+    ...(previous ? { previousCustomerMessage: previous } : {}) });
+  // Optional presentation has an earlier cutoff than the verified canonical answer.
+  const optionalDeadline = budget.executionDeadlineAt - DURABLE_TIERB_RESERVE.marginMs;
+  try {
+    const result = budget.publicationV2
+      ? await knowledgeOperation(compose, { signal: budget.signal, deadlineAt: optionalDeadline, timeoutMs: 120_000 })
+      : await compose(budget.signal);
+    emit(result.record);
+    if (attemptFailure && !budget.publicationV2) throw attemptFailure;
+    return result.text;
+  } catch (error) {
+    if (!budget.publicationV2 || budget.signal.aborted || Date.now() < optionalDeadline) throw error;
+    return skip('TIME_BUDGET', snapshot.language);
+  }
 }
 
 /** S2 Tier A. Off by default; shadow/active only for allowlisted tenants.
@@ -9543,6 +9651,7 @@ async function retrieveBusinessKnowledgeForQuestion(
     const semanticRetrieval: {origin: RetrievalObservation['origin']} = {origin:'strict-semantic'};
     const recordRetrieval = (event: RetrievalObservation) => { semanticRetrieval.origin = event.origin; };
     const semanticSearchKnowledge = (id: number, planned: string[], limit: number, candidateFallback?: CandidateFallback) => {
+      if (state?.budget instanceof DurableKnowledgeBudget && state.budget.publicationV2) return Promise.resolve([] as KnowledgeSearchMatch[]);
       // Bound optional semantic work so lexical evidence remains usable. The
       // same signal covers query embeddings and persistent database search.
       // Google retains its existing retrieval behavior.
@@ -18963,9 +19072,8 @@ async function handleUnifiedBookingEngineTurn(params: UnifiedBookingEngineParams
           runOptionalDiagnostic(()=>console.error('[AsyncKnowledge]',{stage:'attachment_outcome_unknown'}));
           if(nativeIntakeScope.getStore())throw new Error('knowledge_intake_attachment_uncertain');
         }
-      } else {
-        await send(formatBusinessSupportVerificationUnavailable(informationLanguage,businessInformationSubject(informationQuestion,informationLanguage)));
       }
+      // Durable admission owns the reply. An ambiguous or rejected attachment cannot authorize a direct send.
       // Never run foreground planning after an admission/attachment attempt,
       // including an ambiguous database result that may already have committed.
       return true;

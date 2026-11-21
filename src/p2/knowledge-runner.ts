@@ -1,6 +1,6 @@
 import { knowledgeOperation, knowledgeOperationSignal, knowledgeExecutionDeadline, KNOWLEDGE_OPERATION_LIMITS } from './knowledge-operation';
 import { runOptionalDiagnostic } from '../ai/business-information-timing';
-import { boundedInteger, captureVerified, requireId, snapshot, type Checkpoint, type DeliveryOutcome,
+import { boundedInteger, captureVerified, safeUnavailableKnowledge, resultDigest, requireId, snapshot, type Checkpoint, type DeliveryOutcome,
   type KnowledgeAuthority, type KnowledgeDelivery, type KnowledgeLifecycleRepository, type KnowledgeScope, type KnowledgeTask,
   type TaskToken, type VerifiedKnowledge } from './knowledge-lifecycle';
 
@@ -73,22 +73,36 @@ export class KnowledgeRunner {
       if (task.state !== 'VERIFIED') {
         let checkpoint = task.checkpoint;
         const order: Checkpoint[] = ['planning', 'retrieval', 'extraction'];
-        const result = await knowledgeOperation(executionSignal=>this.execute(task!, { signal: executionSignal, expiresAt: task!.expiresAt,
-          reserveModelAttempt: async () => {
-            if(executionSignal.aborted)throw new Error('knowledge_runner_stopped');
-            current();
-            if (!await knowledgeOperation(()=>this.repository.reserveModelAttempt(scope, token),{signal:executionSignal})) { abort.abort(); throw new Error('knowledge_attempt_not_reserved'); }
-            current();
-          },
-          checkpoint: async stage => {
-            if(executionSignal.aborted)throw new Error('knowledge_runner_stopped');
-            current();
-            // Recovery may recompute earlier stages, without regressing markers.
-            if (order.indexOf(stage) <= order.indexOf(checkpoint!)) return;
-            if (!await knowledgeOperation(()=>this.repository.checkpoint(scope, token, stage),{signal:executionSignal})) { abort.abort(); throw new Error('knowledge_checkpoint_rejected'); }
-            checkpoint = stage; current();
-          },
-        }),{signal,deadlineAt:knowledgeExecutionDeadline(task),timeoutMs:120000});
+        const deadlineAt = knowledgeExecutionDeadline(task);
+        const fallback = () => task!.publicationV2 ? safeUnavailableKnowledge(task!.input.language) : null;
+        let result: VerifiedKnowledge | null;
+        try {
+          result = task.publicationV2 && (task.finalOnly || Date.now() >= deadlineAt) ? fallback()
+            : await knowledgeOperation(executionSignal=>this.execute(task!, { signal: executionSignal, expiresAt: task!.expiresAt,
+              reserveModelAttempt: async () => {
+                if(executionSignal.aborted)throw new Error('knowledge_runner_stopped');
+                current();
+                if (!await knowledgeOperation(()=>this.repository.reserveModelAttempt(scope, token),{signal:executionSignal})) {
+                  if (!task!.publicationV2) abort.abort();
+                  throw new Error('knowledge_attempt_not_reserved');
+                }
+                current();
+              },
+              checkpoint: async stage => {
+                if(executionSignal.aborted)throw new Error('knowledge_runner_stopped');
+                current();
+                // Recovery may recompute earlier stages, without regressing markers.
+                if (order.indexOf(stage) <= order.indexOf(checkpoint!)) return;
+                if (!await knowledgeOperation(()=>this.repository.checkpoint(scope, token, stage),{signal:executionSignal})) { abort.abort(); throw new Error('knowledge_checkpoint_rejected'); }
+                checkpoint = stage; current();
+              },
+            }),{signal,deadlineAt,timeoutMs:120000});
+        } catch (error) {
+          if (!task.publicationV2 || signal.aborted) throw error;
+          this.event(task, 'execution_error');
+          result = fallback();
+        }
+        result ??= fallback();
         current();
         if (!result) { this.event(task, await knowledgeOperation(()=>this.repository.fail(scope, token),{signal}) ? 'failed' : 'lease_lost'); return null; }
         if (!await knowledgeOperation(()=>this.repository.verified(scope, token, captureVerified(result)),{signal})) return null;
@@ -149,6 +163,11 @@ export async function deliverKnowledge(repository: KnowledgeLifecycleRepository,
   let task:KnowledgeTask|null;
   let target:TrustedDeliveryTarget|null;
   let delivery:KnowledgeDelivery|null;
+  const canWithdraw = () => !!task?.publicationV2 && !!task.result?.sources.length && !!repository.withdrawFinal;
+  const authorized = (candidate: KnowledgeTask) => step(async () => {
+    try { return await transport.authorize(candidate, 'send'); }
+    catch (error) { if (canWithdraw()) return false; throw error; }
+  });
   try {
     task=await step(()=>repository.get(scope,taskId));
     if(!task){
@@ -162,7 +181,15 @@ export async function deliverKnowledge(repository: KnowledgeLifecycleRepository,
     ...(resolved.businessId!==undefined?{businessId:resolved.businessId}:{}),...(resolved.conversationId?{conversationId:resolved.conversationId}:{}),
     ...(resolved.taskId?{taskId:resolved.taskId}:{})}):null;
     if(!target || typeof target.recipient!=='string' || !/^[^\u0000-\u0020\u007f]{1,256}$/u.test(target.recipient) || target.channel!==scope.channel || target.providerAccount!==scope.providerAccount ||
-    !await step(()=>transport.eligible(task,target)) || !await step(()=>transport.authorize(task,'send')))return reject();
+    !await step(()=>transport.eligible(task,target)))return reject();
+    if (!await authorized(task)) {
+      if (!canWithdraw()) return reject();
+      const safe = safeUnavailableKnowledge(task.input.language);
+      if (!await step(() => transport.authorize({ ...task!, result: safe, resultDigest: resultDigest(safe) }, 'send'))) return reject();
+      const withdrawn = await step(() => repository.withdrawFinal!(scope, taskId, deliveryId));
+      if (!withdrawn) return null;
+      task = withdrawn;
+    }
     delivery=await step(()=>repository.claimDelivery(scope,deliveryId,owner,15000));
     if(!delivery || delivery.taskId!==taskId || !delivery.lease)return null;
     deadlineAt=Math.min(deadlineAt,delivery.lease.until);
@@ -180,13 +207,20 @@ export async function deliverKnowledge(repository: KnowledgeLifecycleRepository,
       event(settled?'settled':'settlement_failed',outcome.kind,settled);return {outcome,settled};
     } catch(settlementError){event('settlement_failed',outcome.kind,false);return {outcome,settled:false,settlementError};}
   };
+  // Another worker may have withdrawn stale facts between our task read and claim.
+  if (delivery.kind === 'final' && task.publicationV2 && delivery.text !== task.result?.text) {
+    try { task = await step(() => repository.get(scope, taskId)) ?? task; }
+    catch { return settle({ kind: 'DEFINITIVELY_UNSENT', retryable: true }); }
+  }
   if(delivery.kind!=='final' || !task.result || delivery.text!==task.result.text){
     await settle({kind:'DEFINITIVELY_UNSENT',retryable:false});return null;
   }
   let entered=false;
   try {
-    if(signal.aborted || Date.now()>=deadlineAt || !await step(()=>transport.eligible(task,target)) || !await step(()=>transport.authorize(task,'send')) ||
-      signal.aborted || Date.now()>=deadlineAt)return settle({kind:'DEFINITIVELY_UNSENT',retryable:false});
+    if(signal.aborted || Date.now()>=deadlineAt || !await step(()=>transport.eligible(task,target)))
+      return settle({kind:'DEFINITIVELY_UNSENT',retryable:false});
+    if (!await authorized(task)) return settle({kind:'DEFINITIVELY_UNSENT',retryable:canWithdraw()});
+    if (signal.aborted || Date.now()>=deadlineAt) return settle({kind:'DEFINITIVELY_UNSENT',retryable:false});
     event('send_claimed');entered=true;
     const outcome=await knowledgeOperation(sendSignal=>transport.send(target!,delivery!.text,sendSignal),{signal,deadlineAt,timeoutMs:KNOWLEDGE_OPERATION_LIMITS.deliveryMs,factualResult:true});
     event('transport_result',outcome.kind);return settle(outcome);

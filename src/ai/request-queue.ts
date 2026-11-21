@@ -14,13 +14,13 @@ export class AiRequestQueue {
 
   snapshot() { return Object.freeze({ active: this.active, waiting: this.waiting.length, concurrency: this.concurrency, maxWaiting: this.maxWaiting }); }
 
-  private acquire(signal?: AbortSignal): Promise<void> {
+  private acquire(signal?: AbortSignal, rejectWhenBusy = false): Promise<void> {
     if (signal?.aborted) return Promise.reject(signal.reason);
     if (this.active < this.concurrency) {
       this.active++;
       return Promise.resolve();
     }
-    if (this.waiting.length >= this.maxWaiting) return Promise.reject(new Error('knowledge_admission_overload'));
+    if (rejectWhenBusy || this.waiting.length >= this.maxWaiting) return Promise.reject(new Error('knowledge_admission_overload'));
     return new Promise<void>((resolve, reject) => {
       const entry: WaitingRequest = {
         signal,
@@ -47,8 +47,8 @@ export class AiRequestQueue {
     next?.start();
   }
 
-  async run<T>(job: () => Promise<T>, onExecutionStart?: () => void, signal?: AbortSignal): Promise<T> {
-    await this.acquire(signal);
+  async run<T>(job: () => Promise<T>, onExecutionStart?: () => void, signal?: AbortSignal, rejectWhenBusy = false): Promise<T> {
+    await this.acquire(signal, rejectWhenBusy);
     try {
       signal?.throwIfAborted();
       onExecutionStart?.();

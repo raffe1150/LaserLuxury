@@ -1,0 +1,13 @@
+{
+  "payload": "tierb-natural-stages-v1.sql",
+  "payloadSha256": "1edd54bcd3d80d0644eb9320e21fd6896a70a6d4b359cb922262f9e2bbdc2256",
+  "rollback": "rollback-tierb-natural-stages-v1.sql",
+  "rollbackSha256": "16cd25c28dfac2484264b358270f2e200515747245650057651d6dd669f182e9",
+  "function": "ai_money.transition_core_v2(text,text,text,jsonb,jsonb)",
+  "expectedCurrentBodyMd5": "e54c7052fd6ad27b10983d7d78cda9b4",
+  "expectedCurrentBodySha256": "c66d00af7588fb25ca138ef4fd8b8a1a51bb5271b11eb7d7dff9c476fd9cc098",
+  "newBodyMd5": "cf7773b3a165f6118f91cede0f265b45",
+  "newBodySha256": "92181adfb0026f0aed847247d7e191c16d8887e104e05ab5c3c40012cfdd007c",
+  "applied": false,
+  "automaticMigrationDiscovery": false
+}

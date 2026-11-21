@@ -48,7 +48,7 @@ export class DisposableNativeKnowledgeDatabase {
   close(){if(this.started){this.run('pg_ctl',['-D',join(this.root,'data'),'-m','immediate','-w','stop']);this.started=false;}rmSync(this.root,{recursive:true,force:true});}
   readonly db={
     rpc:async(name:string,args:Record<string,unknown>)=>{
-      assert.ok(['odin_accept_knowledge_turn_v2','odin_transition_knowledge_v1','odin_claim_knowledge_progress_v1','odin_native_intake_v1','odin_recover_native_intakes_v1','odin_telegram_poller_v1','odin_transition_knowledge_v2','odin_discover_knowledge_v2'].includes(name),'No v1 admission or Booking RPC permitted');this.calls.push(name);
+      assert.ok(['odin_accept_knowledge_turn_v2','odin_transition_knowledge_v1','odin_claim_knowledge_progress_v1','odin_native_intake_v1','odin_native_intake_v2','odin_recover_native_intakes_v1','odin_telegram_poller_v1','odin_transition_knowledge_v2','odin_discover_knowledge_v2'].includes(name),'No v1 admission or Booking RPC permitted');this.calls.push(name);
       try{return {data:JSON.parse(this.sql('SET ROLE service_role; SELECT public.'+identifier(name)+'('+Object.entries(args).map(([k,v])=>identifier(k)+'=>'+literal(v)).join(',')+');')||'null'),error:null};}
       catch(error){return {data:null,error};}
     },

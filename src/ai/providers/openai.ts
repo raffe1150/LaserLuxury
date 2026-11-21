@@ -148,7 +148,22 @@ export function normalizeOpenAiGenerationResponse(
       : response?.status==='failed' || response?.status==='cancelled' ? { structuredFailure:'BLOCKED' as const } : {}),
     ...(Number.isSafeInteger(response?.usage?.input_tokens) && Number.isSafeInteger(response?.usage?.output_tokens)
       ? { usage: { inputTokens: response.usage.input_tokens, outputTokens: response.usage.output_tokens } } : {}),
+    ...providerReceiptOf(response),
   };
+}
+/** Exact billing receipt for durable settlement. Every component must be an explicit non-negative integer
+ * (no defaulted cache or reasoning counts); otherwise no receipt and the reservation stays unknown. */
+function providerReceiptOf(response: any): { providerReceipt?: NonNullable<UnifiedAiGenerationResponse['providerReceipt']> } {
+  const u = response?.usage, input = u?.input_tokens, output = u?.output_tokens, cached = u?.input_tokens_details?.cached_tokens,
+    writes = u?.input_tokens_details?.cache_write_tokens, reasoning = u?.output_tokens_details?.reasoning_tokens ?? 0,
+    ttl = u?.input_tokens_details?.cache_write_tokens_details;
+  const n = (v: unknown) => Number.isSafeInteger(v) && (v as number) >= 0;
+  // Same billing-identity rules as the Knowledge receipts: default service tier, explicit cache breakdown, no 12h cache writes.
+  if (typeof response?.id !== 'string' || !/^resp_[A-Za-z0-9_-]+$/u.test(response.id) || typeof response?.model !== 'string' ||
+      response?.service_tier !== 'default' || (ttl && typeof ttl === 'object' && ttl.ttl_12h_tokens) ||
+      ![input, output, cached, writes, reasoning].every(n) || cached + writes > input || reasoning > output) return {};
+  return { providerReceipt: Object.freeze({ responseId: response.id, model: response.model, inputTokens: input, outputTokens: output,
+    cachedTokens: cached, cacheWriteTokens: writes, reasoningTokens: reasoning }) };
 }
 
 export async function generateWithOpenAi(
@@ -156,7 +171,7 @@ export async function generateWithOpenAi(
 ): Promise<UnifiedAiGenerationResponse> {
   // Tier B: no single-use pre-dispatch admission => no dispatch (checked before
   // credentials, trial routing or any SDK construction; never retried).
-  if (request.naturalComposerAdmission || (request.routingStage && RESERVATION_REQUIRED_STAGES.has(request.routingStage))) consumeNaturalAdmission(request);
+  const naturalQuote = request.naturalComposerAdmission || (request.routingStage && RESERVATION_REQUIRED_STAGES.has(request.routingStage)) ? consumeNaturalAdmission(request) : undefined;
   if (request.maxOutputTokens !== undefined && !(Number.isSafeInteger(request.maxOutputTokens) && request.maxOutputTokens > 0))
     throw new Error('invalid_max_output_tokens');
   if(trialEnforced())assertTrialProvider('openai',request.knowledgeExecution ? (request.knowledgeExecution.stage==='extraction'?'knowledge_units_extraction':request.knowledgeExecution.stage==='verification'?'knowledge_units_verification':undefined) : request.controlledTrialStage==='language'?'semantic_language_resolution':undefined);
@@ -210,6 +225,7 @@ export async function generateWithOpenAi(
       : {}),
   };
   let response;
+  let projectVerified: string | undefined;
   let knowledgeUsage: KnowledgeUsage | undefined;
   try {
     if (request.knowledgeExecution) {
@@ -221,6 +237,14 @@ export async function generateWithOpenAi(
       response = result.response; knowledgeUsage = result.usage;
     } else if(trialEnforced()) response=await executeTrialRequest('language',params,{signal:request.signal,timeoutMs:20000},
       (wire,signal,timeout,project)=>client.responses.create(wire as unknown as OpenAI.Responses.ResponseCreateParamsNonStreaming,{signal,timeout,maxRetries:0,headers:{'OpenAI-Project':project}}));
+    else if (naturalQuote?.providerProjectId) {
+      // Durable Tier B: bill the owner's project and prove the provider answered for it (header verified before use).
+      const { data, response: raw } = await client.responses.create(params as any, { ...(request.signal ? { signal: request.signal } : {}), maxRetries: 0,
+        headers: { 'OpenAI-Project': naturalQuote.providerProjectId } }).withResponse();
+      if (raw.headers.get('openai-project') !== naturalQuote.providerProjectId) throw new Error('tierb_provider_project_mismatch');
+      response = data;
+      projectVerified = naturalQuote.providerProjectId;
+    }
     else response = await client.responses.create(params as any, request.signal ? { signal: request.signal } : undefined);
   } catch (error) {
     console.error("[OpenAIProviderFailure]", buildOpenAiFailureDiagnostic(error, {
@@ -231,7 +255,9 @@ export async function generateWithOpenAi(
     throw error;
   }
 
-  return { ...normalizeOpenAiGenerationResponse(response), ...(knowledgeUsage ? { knowledgeUsage } : {}) };
+  const normalized = normalizeOpenAiGenerationResponse(response);
+  return { ...normalized, ...(normalized.providerReceipt && projectVerified ? { providerReceipt: Object.freeze({ ...normalized.providerReceipt, providerProjectId: projectVerified }) } : {}),
+    ...(knowledgeUsage ? { knowledgeUsage } : {}) };
 }
 
 const transcriptionPrompt =

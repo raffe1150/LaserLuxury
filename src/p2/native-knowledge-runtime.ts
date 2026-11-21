@@ -1,4 +1,4 @@
-import { knowledgeDatabaseRead, knowledgeOperation, knowledgeOperationSignal, KNOWLEDGE_OPERATION_LIMITS } from './knowledge-operation';
+import { knowledgeCycleTimeoutMs, knowledgeDatabaseRead, knowledgeOperation, knowledgeOperationSignal } from './knowledge-operation';
 import { preflightRejected } from './knowledge-preflight-diagnostic';
 import { SmartWaitingCoordinator, smartWaitingControls, type WaitingControls, type WaitingSchedule, type WaitingHandle } from './smart-waiting';
 import { NativeKnowledgeProgressAuthority } from './knowledge-progress-authority';
@@ -15,13 +15,30 @@ import { runOptionalDiagnostic } from '../ai/business-information-timing';
 import type { KnowledgeDatabase } from './supabase-knowledge-lifecycle-repository';
 import type { KnowledgeService } from '../../knowledge';
 
-export type NativeAsyncControls = Readonly<{admission:boolean;processing:boolean;delivery:boolean;executionMs:number}>;
+export type NativeAsyncControls = Readonly<{admission:boolean;processing:boolean;delivery:boolean;executionMs:number;publicationV2?:boolean;fiveAttempts?:boolean;admissionTenants?:ReadonlySet<number>;
+  /** Tenant-scoped extended window (default absent). Only the listed businesses are admitted with it. */
+  extended?:Readonly<{executionMs:number;tenants:ReadonlySet<number>}>}>;
 export function nativeAsyncControls(env:NodeJS.ProcessEnv=process.env):NativeAsyncControls {
   const ms=env.ODINLINK_ASYNC_KNOWLEDGE_EXECUTION_MS;
   if(ms!==undefined && !['20000','30000','35000','40000'].includes(ms))throw new Error('knowledge_invalid_execution_limit');
+  const extendedMs=env.ODINLINK_ASYNC_KNOWLEDGE_EXTENDED_EXECUTION_MS;
+  if(extendedMs!==undefined && extendedMs!=='75000')throw new Error('knowledge_invalid_execution_limit');
+  const admissionTenants = env.ODINLINK_ASYNC_KNOWLEDGE_ADMISSION_TENANTS?.split(',').map(value => value.trim());
+  if (admissionTenants?.some(value => !/^[1-9]\d{0,9}$/u.test(value))) throw new Error('knowledge_invalid_admission_tenants');
+  const tenants=new Set((env.ODINLINK_ASYNC_KNOWLEDGE_EXTENDED_TENANTS||'').split(',').map(s=>s.trim()).filter(s=>/^[1-9]\d{0,9}$/u.test(s)).map(Number));
   return Object.freeze({admission:env.ODINLINK_ASYNC_KNOWLEDGE_ADMISSION==='true',processing:env.ODINLINK_ASYNC_KNOWLEDGE_PROCESSING==='true',
-    delivery:env.ODINLINK_ASYNC_KNOWLEDGE_DELIVERY==='true',executionMs:ms?Number(ms):20000});
+    delivery:env.ODINLINK_ASYNC_KNOWLEDGE_DELIVERY==='true',executionMs:ms?Number(ms):20000,
+    ...(admissionTenants ? {admissionTenants:new Set(admissionTenants.map(Number))} : {}),
+    ...(env.ODINLINK_ASYNC_KNOWLEDGE_PUBLICATION_V2==='true' ? {publicationV2:true,
+      fiveAttempts:env.ODINLINK_ASYNC_KNOWLEDGE_FIVE_ATTEMPTS==='true'} : {}),
+    ...(extendedMs&&tenants.size?{extended:Object.freeze({executionMs:Number(extendedMs),tenants:Object.freeze(tenants)})}:{})});
 }
+/** Window admitted for one business: the extended window only for an allowlisted tenant, otherwise the global one. */
+export function nativeExecutionMsFor(controls:NativeAsyncControls,businessId:number):number {
+  return controls.extended?.tenants.has(businessId)?controls.extended.executionMs:controls.executionMs;
+}
+/** Longest window any task of this host can carry (bounds the host tick). */
+export function nativeMaxExecutionMs(controls:NativeAsyncControls):number { return Math.max(controls.executionMs,controls.extended?.executionMs??0); }
 export type NativeKnowledgeIngress = Readonly<{businessId:number;channel:KnowledgeScope['channel'];account:string;recipient:string;eventId:string;order:NativeKnowledgeOrder|null}>;
 export type NativeKnowledgeAdmission = Readonly<{scope:KnowledgeScope;eventId:string;order:NativeKnowledgeOrder|null;result:OrderedAdmission;intakeOwner?:string}>;
 export class NativeKnowledgeRuntime {
@@ -53,7 +70,8 @@ export class NativeKnowledgeRuntime {
       if(!await nativeProviderEligible(this.bindings,task,fetcher,context.signal,undefined,reason=>preflightRejected(task.turnId,task.scope.channel,'provider',reason)))return null;
       let waiting:WaitingHandle={progress:()=>{},stop:()=>{}};
       try{waiting=this.waiting.begin(task,context.signal);}catch{this.event({stage:'waiting_setup_failed',turnId:task.turnId,channel:task.scope.channel});}
-      try{return await options.execute(task,{...context,progress:(stage,labels)=>waiting.progress(stage,labels)},async()=>Boolean(await this.bindings.resolve(task.scope)) && await knowledgeTurnCurrent(db,task,provider));}
+      try{return await options.execute(task,{...context,progress:(stage,labels)=>waiting.progress(stage,labels)},
+        async()=>Boolean(await this.bindings.resolve(task.scope)) && await knowledgeTurnCurrent(db,task,provider));}
       finally{try{waiting.stop();}catch{this.event({stage:'waiting_cancel_failed',turnId:task.turnId,channel:task.scope.channel});}}
     },
       `knowledge-${randomUUID()}`,2,event=>this.event(event));
@@ -70,7 +88,14 @@ export class NativeKnowledgeRuntime {
         if(!scope || signal.aborted || !options.controls().delivery || this.stopped)return noSend;
         const task=await this.repository.get(scope,target.taskId!);if(!task || !matches(task,target) || task.result?.text!==text)return noSend;
         const before=await this.bindings.resolve(scope);
-        if(!before || before.binding.recipient!==target.recipient || !await authority(task,'send'))return noSend;
+        if(!before || before.binding.recipient!==target.recipient)return noSend;
+        const retryable = task.publicationV2 === true && !!task.result?.sources.length;
+        try {
+          if (!await authority(task,'send')) return {...noSend,retryable};
+        } catch (error) {
+          if (!retryable) throw error;
+          return {...noSend,retryable:true};
+        }
         const after=await this.bindings.resolve(scope);
         if(!after || after.connection.id!==before.connection.id || after.connection.credential.accessToken!==before.connection.credential.accessToken ||
           JSON.stringify(after.connection.grantedScopes)!==JSON.stringify(before.connection.grantedScopes) || after.connection.providerConnectionId!==before.connection.providerConnectionId ||
@@ -82,23 +107,31 @@ export class NativeKnowledgeRuntime {
         return outcome;
       }};
     this.cycle=new KnowledgeWorkerCycle(this.repository,this.runner,this.transport,`delivery-${randomUUID()}`,
-      {processing:()=>options.controls().processing,delivery:()=>options.controls().delivery},event=>this.event(event));
+      {processing:()=>options.controls().processing,delivery:()=>options.controls().delivery},event=>this.event(event),
+      ()=>knowledgeCycleTimeoutMs(nativeMaxExecutionMs(options.controls())));
   }
   private event(event:Readonly<{stage:string;turnId?:string;channel?:string;fence?:number;attempt?:number;outcome?:string;settled?:boolean;durationMs?:number;customerDelivery?:'UNCONFIRMED'}>){runOptionalDiagnostic(()=>this.options.diagnostic?.(Object.freeze(event)));}
   async accept(ingress:NativeKnowledgeIngress):Promise<NativeKnowledgeAdmission|null>{
-    if(this.stopped || !this.options.controls().admission)return null;
+    if(!this.admissionEnabledFor(ingress.businessId))return null;
     ingress=snapshot(ingress);
     const scope=await this.bindings.ensure(ingress.businessId,ingress.channel,ingress.account,ingress.recipient);
-    const result=await this.repository.acceptOrdered(scope,ingress.eventId,ingress.order,undefined,{executionMs:this.options.controls().executionMs});
+    const result=await this.repository.acceptOrdered(scope,ingress.eventId,ingress.order,undefined,{executionMs:nativeExecutionMsFor(this.options.controls(),scope.businessId)});
     this.event({stage:`native_${result.disposition.toLowerCase()}`,turnId:result.acceptance?.identity.turnId,channel:ingress.channel});
     return snapshot({scope,eventId:ingress.eventId,order:ingress.order,result});
   }
+  admissionEnabledFor(businessId: number): boolean {
+    const controls = this.options.controls();
+    return !this.stopped && controls.admission && (!controls.admissionTenants || controls.admissionTenants.has(businessId));
+  }
   get admissionEnabled():boolean { return !this.stopped && this.options.controls().admission; }
   async beginIntake(ingress:NativeKnowledgeIngress, context:string) {
-    if(this.stopped || !this.options.controls().admission)return null;
+    if(!this.admissionEnabledFor(ingress.businessId))return null;
     const scope=await this.bindings.ensure(ingress.businessId,ingress.channel,ingress.account,ingress.recipient);
     const owner=randomUUID();
-    const accepted=await this.repository.intake(scope,ingress.eventId,ingress.order,'begin',owner,context.slice(0,4000),undefined,this.options.controls().executionMs);
+    const controls=this.options.controls();
+    const maxModels=scope.businessId===3 && controls.publicationV2 ? controls.fiveAttempts ? 5 : 4 : undefined;
+    const accepted=await this.repository.intake(scope,ingress.eventId,ingress.order,'begin',owner,context.slice(0,4000),undefined,
+      nativeExecutionMsFor(controls,scope.businessId),maxModels);
     const admission:NativeKnowledgeAdmission=snapshot({scope,eventId:ingress.eventId,order:ingress.order,result:accepted.result,intakeOwner:accepted.owner});
     const run=accepted.result.acceptance?.inserted===true && accepted.state==='ROUTING' && accepted.owner===owner;
     if(!run && accepted.state!=='TERMINAL' && accepted.state!=='ATTACHED') {
@@ -146,7 +179,7 @@ export class NativeKnowledgeRuntime {
     const pending=knowledgeOperation(async()=>{
       if(this.options.controls().processing)await this.repository.recoverIntakes();
       return this.cycle.tick();
-    },{timeoutMs:KNOWLEDGE_OPERATION_LIMITS.cycleMs});this.pending=pending;
+    },{timeoutMs:knowledgeCycleTimeoutMs(nativeMaxExecutionMs(this.options.controls()))});this.pending=pending;
     try{this.lastReport=await pending;return this.lastReport;}catch(error){this.lastFailure=error;throw error;}finally{if(this.pending===pending)this.pending=undefined;}
   }
   start(intervalMs=1000):void{

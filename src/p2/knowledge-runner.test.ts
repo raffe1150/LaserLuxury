@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { KnowledgeRunner, deliverKnowledge, type KnowledgeExecutor, type GuardedKnowledgeTransport } from './knowledge-runner';
 import { FakeKnowledgeDatabase, FakeKnowledgeLifecycle } from '../../tests/helpers/fake-knowledge-lifecycle';
-import type { KnowledgeScope, VerifiedKnowledge } from './knowledge-lifecycle';
+import { safeUnavailableKnowledge, type KnowledgeScope, type VerifiedKnowledge } from './knowledge-lifecycle';
 const result: VerifiedKnowledge = { protocol: 'evidence-first-v2', independentlyVerified: true, completeRequiredFacts: true,
   text: 'Parking is available nearby.', sources: [{ id: 'doc', revision: 'v1' }] };
 const input = { question: 'Where can I park?', language: 'en', history: [] };
@@ -158,4 +158,21 @@ test('verified work that expires during finalization never exposes a sendable re
   assert.equal(await new KnowledgeRunner(f.repo, execute, 'worker').run(f.scope, a.task!.id), null);
   assert.equal(f.db.rows.deliveries.size, 0); const task = (await f.repo.get(f.scope, a.task!.id))!;
   assert.equal(task.state, 'EXPIRED'); assert.ok(task.result, 'verification completed, but expiry still blocks publication');
+});
+
+
+test('opted-in compute timeout preserves the reserve for one localized safe final', async () => {
+  const f = fixture('telegram');
+  const accepted = await f.repo.accept(f.scope, 'timeout', { ...input, language: 'fa' }, { executionMs: 2000 });
+  const task = accepted.task!;
+  f.db.rows.tasks.set(task.id, { ...f.db.rows.tasks.get(task.id)!, publicationV2: true });
+  let signal: AbortSignal | undefined;
+  const runner = new KnowledgeRunner(f.repo, async (_task, context) => {
+    signal = context.signal;
+    return new Promise<never>(() => {});
+  }, 'worker');
+  const delivery = await runner.run(f.scope, task.id);
+  assert.ok(signal?.aborted);
+  assert.equal(delivery?.text, safeUnavailableKnowledge('fa').text);
+  assert.equal(f.db.rows.deliveries.size, 1);
 });

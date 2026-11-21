@@ -198,9 +198,18 @@ export function sourceExhaustiveLimitations(question: string, language: string, 
  unavailable: readonly { facetId: string; obligationId: string }[]): readonly RequirementNotice[] | undefined {
  if (!unavailableAnswer[language] || !unavailable.length || unavailable.length > 8) return;
  const result: RequirementNotice[] = [];
+ const obligationOf = (gap: { facetId: string; obligationId: string }) => facets.find(f => f.id === gap.facetId)?.obligations.find(o => o.id === gap.obligationId);
+ const requirementGaps = unavailable.filter(gap => obligationOf(gap)?.questionType === 'requirement').length;
  for (const gap of unavailable) {
   const f = facets.find(f => f.id === gap.facetId), o = f?.obligations.find(o => o.id === gap.obligationId);
   const label = o?.description.trim();
+  if (facets.length > 1 && o?.questionType === 'requirement' && requirementGaps === 1 && unconfirmedRequirement[language]) {
+   // A single unresolved requirement needs no quoted request span: the fixed, reviewed, fact-free copy states the same
+   // uncertainty without repeating the customer's question (natural replies forbid question echo). Several requirement
+   // gaps keep their distinct literal spans so each notice stays identifiable.
+   result.push(Object.freeze({ ...gap, text: unconfirmedRequirement[language] }));
+   continue;
+  }
   if (facets.length===1 && f?.obligations.length===1 && o?.questionType==='description' && label===question.trim() && remainingInformation[language]) {
    // A faithfully retained whole-question container can exceed the safe echo
    // bound. This copy supplies no new fact or narrowed missing-attribute claim;

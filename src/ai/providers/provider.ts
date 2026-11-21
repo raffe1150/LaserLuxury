@@ -71,6 +71,9 @@ export interface UnifiedAiGenerationResponse {
   text: string;
   structuredFailure?: 'REFUSAL' | 'TRUNCATED' | 'BLOCKED';
   usage?: { inputTokens: number; outputTokens: number };
+  /** Full provider billing receipt when every field is present (durable settlement); absent otherwise. */
+  providerReceipt?: Readonly<{ responseId: string; model: string; inputTokens: number; outputTokens: number; cachedTokens: number;
+    cacheWriteTokens: number; reasoningTokens: number; providerProjectId?: string }>;
   knowledgeUsage?: KnowledgeUsage;
   functionCalls: Array<{
     id: string;

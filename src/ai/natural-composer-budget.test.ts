@@ -181,3 +181,128 @@ test('experiment ledger: second concurrent writer cannot lock; unlocked or unapp
   } finally { a.release(); }
   assert.throws(() => experimentLedgerNaturalBudget(a, { id: ' ', approvedRateVersions: VERSIONS }), /authorization_invalid/u);
 });
+
+// --- Durable AI Money adapter (tierb-natural-stages-v1): fake owner RPC, offline ----------------
+import { durableNaturalComposerBudget, durableNaturalCostNanoUsd, DURABLE_NATURAL_PRICES } from './natural-composer-budget';
+import { createHash } from 'node:crypto';
+const PROJECT = 'proj_tierb_offline', REQUEST_KEY = 'a'.repeat(64);
+function fakeOwner(reply: (command: string, payload: any) => unknown = (c, p) => c === 'reserve'
+  ? { id: 'res-' + p.quote.stage, reservationKey: p.quote.reservationKey, maximumNanoUsd: p.quote.maximumNanoUsd } : c === 'settle' ? { settled: true } : { unknown: true }) {
+  const calls: { command: string; payload: any }[] = [];
+  const owner = { id: 'owned-durable-test', approvalReference: 'approval-offline', accounting: 'atomic-durable' as const, providerProjectId: PROJECT,
+    businessIds: Object.freeze([3]), maximumRequestNanoUsd: 300_000_000, maximumTurnNanoUsd: 900_000_000,
+    async naturalTransition(command: 'reserve' | 'settle' | 'unknown', payload: Record<string, unknown>) { calls.push({ command, payload }); return reply(command, payload); } };
+  return { owner, calls };
+}
+const durableQuote = (role: 'composer' | 'validator', model: string, over: Record<string, unknown> = {}) => {
+  const q = quoteNaturalRequest({ request: request(role, model), role, turnId: 't-durable', businessId: 3, requestKey: REQUEST_KEY, providerProjectId: PROJECT, ...over } as any);
+  assert.ok(q.ok, JSON.stringify(q)); return (q as any).quote as NaturalQuote;
+};
+const receipt = (model: string, over: Record<string, unknown> = {}) => ({ responseId: 'resp_offline1', model, inputTokens: 3000, outputTokens: 400,
+  cachedTokens: 1000, cacheWriteTokens: 500, reasoningTokens: 100, providerProjectId: PROJECT, ...over });
+
+test('durable Tier B: reserve sends the exact DB quote (same request key, envelope, caps and project) before dispatch', async () => {
+  const { owner, calls } = fakeOwner(), budget = durableNaturalComposerBudget(owner);
+  assert.equal(budget.accounting, 'durable-cross-instance');
+  assert.deepEqual([...budget.approvedRateVersions], [DURABLE_NATURAL_PRICES['gpt-6.1-sol'].ratesVersion, 'openai-luna-standard-2026-07-30']);
+  for (const [role, model, stage, write, output, limit] of [['composer', SOL, 'knowledge_natural_composition', 2500, 10000, 2000],
+    ['validator', LUNA, 'knowledge_natural_validation', 250, 1200, 1200]] as const) {
+    const q = durableQuote(role, model);
+    assert.ok(await budget.reserve(q));
+    const sent = calls.at(-1)!.payload.quote;
+    assert.equal(calls.at(-1)!.command, 'reserve');
+    assert.deepEqual([sent.stage, sent.model, sent.requestKey, sent.providerProjectId, sent.outputTokenLimit, sent.inputTokenProxy, sent.businessId],
+      [stage, model, REQUEST_KEY, PROJECT, limit, q.maxInputTokens, 3]);
+    assert.equal(sent.maximumNanoUsd, sent.inputTokenProxy * write + limit * output, 'DB envelope formula');
+    assert.equal(sent.reservationKey, createHash('sha256').update(JSON.stringify([3, REQUEST_KEY, stage])).digest('hex'));
+    assert.deepEqual([sent.maximumRequestNanoUsd, sent.maximumTurnNanoUsd], [300_000_000, 900_000_000], 'production caps unchanged, passed through');
+  }
+});
+
+test('durable Tier B: malformed quotes are refused locally with zero RPCs; denial resolves null; identity mismatch throws', async () => {
+  const { owner, calls } = fakeOwner(), budget = durableNaturalComposerBudget(owner);
+  assert.equal(await budget.reserve(quote('composer', SOL)), null, 'no request key / project');
+  assert.equal(await budget.reserve(durableQuote('composer', SOL, { providerProjectId: 'proj_other' })), null);
+  assert.equal(await budget.reserve(durableQuote('composer', SOL, { businessId: 4 })), null, 'tenant outside owner scope');
+  assert.equal(calls.length, 0);
+  assert.equal(await durableNaturalComposerBudget(fakeOwner(() => ({ denied: 'budget_exhausted' })).owner).reserve(durableQuote('composer', SOL)), null);
+  assert.equal(await durableNaturalComposerBudget(fakeOwner(() => null).owner).reserve(durableQuote('composer', SOL)), null);
+  await assert.rejects(durableNaturalComposerBudget(fakeOwner(() => ({ id: 'x', reservationKey: 'wrong', maximumNanoUsd: 1 })).owner).reserve(durableQuote('composer', SOL)), /tierb_reservation_identity/u);
+  assert.throws(() => durableNaturalComposerBudget({ ...owner, providerProjectId: undefined } as any), /tierb_durable_owner_unavailable/u);
+  assert.throws(() => durableNaturalComposerBudget({ ...owner, naturalTransition: undefined } as any), /tierb_durable_owner_unavailable/u);
+});
+
+test('durable Tier B: settles only from an exact receipt of the verified project, else the full hold stays unknown', async () => {
+  for (const model of [SOL, LUNA]) {
+    const role = model === SOL ? 'composer' : 'validator';
+    const r = receipt(model), p = DURABLE_NATURAL_PRICES[model];
+    const expected = (3000 - 1000 - 500) * p.input + 1000 * p.read + 500 * p.write + 400 * p.output;
+    assert.equal(durableNaturalCostNanoUsd(model, r), expected);
+    const { owner, calls } = fakeOwner(), budget = durableNaturalComposerBudget(owner), q = durableQuote(role, model);
+    const { reservationId } = (await budget.reserve(q))!;
+    await budget.settle(reservationId, q, 1, r);
+    assert.equal(calls.at(-1)!.command, 'settle');
+    assert.deepEqual([calls.at(-1)!.payload.usage.estimatedNanoUsd, calls.at(-1)!.payload.usage.providerResponseId, calls.at(-1)!.payload.usage.providerProjectId],
+      [expected, 'resp_offline1', PROJECT], 'cost from the receipt, never the caller estimate');
+    for (const bad of [undefined, receipt(model, { providerProjectId: undefined }), receipt(model, { providerProjectId: 'proj_other' }),
+      receipt(model, { model: model + '-2026-11-01' }), receipt(model, { outputTokens: p.outputLimit + 1, reasoningTokens: 0 }),
+      receipt(model, { cachedTokens: 2600 }), receipt(model, { responseId: 'chatcmpl_x' }), receipt(model, { inputTokens: q.maxInputTokens + 1 })]) {
+      const f = fakeOwner(), b = durableNaturalComposerBudget(f.owner), qq = durableQuote(role, model);
+      const id = (await b.reserve(qq))!.reservationId;
+      await b.settle(id, qq, 1, bad as any);
+      assert.equal(f.calls.at(-1)!.command, 'unknown', JSON.stringify(bad));
+    }
+  }
+  const f = fakeOwner((c, pl) => c === 'reserve' ? { id: 'r', reservationKey: pl.quote.reservationKey, maximumNanoUsd: pl.quote.maximumNanoUsd } : { settled: false });
+  const b = durableNaturalComposerBudget(f.owner), q = durableQuote('composer', SOL);
+  await assert.rejects(b.settle((await b.reserve(q))!.reservationId, q, 1, receipt(SOL)), /tierb_settlement_unconfirmed/u);
+});
+
+test('server: shadow mode never uses the durable owner; active needs the installed owner with the Tier B transition', () => {
+  for (const mode of ['off', 'shadow'] as const) assert.deepEqual(serverNaturalComposerBudget(mode), { reason: 'DURABLE_TIERB_ACCOUNT_UNAVAILABLE' });
+  assert.deepEqual(serverNaturalComposerBudget('active'), { reason: 'DURABLE_TIERB_ACCOUNT_UNAVAILABLE' }, 'no owner installed in tests');
+});
+
+const receiptResponse = (over: Record<string, unknown> = {}) => ({ id: 'resp_tierb1', model: SOL, service_tier: 'default', output_text: '{}', output: [],
+  usage: { input_tokens: 3000, output_tokens: 400, input_tokens_details: { cached_tokens: 1000, cache_write_tokens: 500 }, output_tokens_details: { reasoning_tokens: 100 } }, ...over });
+const withResponse = (data: unknown, project: string) => ({ withResponse: async () => ({ data, response: { headers: new Headers({ 'openai-project': project }) } }) });
+
+test('adapter: durable Tier B pins the project header, verifies the echoed project and returns the full receipt', async t => {
+  const options: any[] = [];
+  t.mock.method(Responses.prototype, 'create', ((p: any, o: any) => { options.push(o); return withResponse(receiptResponse(), PROJECT); }) as any);
+  const q = durableQuote('composer', SOL);
+  const res = await generateWithOpenAi({ ...request('composer', SOL), naturalComposerAdmission: mintNaturalAdmission(q, 'r1') } as any);
+  assert.equal(options[0].headers['OpenAI-Project'], PROJECT);
+  assert.equal(options[0].maxRetries, 0, 'never retried');
+  assert.deepEqual(res.providerReceipt, { responseId: 'resp_tierb1', model: SOL, inputTokens: 3000, outputTokens: 400, cachedTokens: 1000,
+    cacheWriteTokens: 500, reasoningTokens: 100, providerProjectId: PROJECT });
+});
+
+test('adapter: project mismatch throws (hold stays unknown); incomplete billing data yields no receipt', async t => {
+  t.mock.method(Responses.prototype, 'create', (() => withResponse(receiptResponse(), 'proj_other')) as any);
+  await assert.rejects(generateWithOpenAi({ ...request('composer', SOL), naturalComposerAdmission: mintNaturalAdmission(durableQuote('composer', SOL), 'r2') } as any),
+    /tierb_provider_project_mismatch/u);
+  t.mock.restoreAll();
+  for (const bad of [{ service_tier: 'flex' }, { id: 'x' }, { usage: { input_tokens: 10, output_tokens: 5 } },
+    { usage: { input_tokens: 10, output_tokens: 5, input_tokens_details: { cached_tokens: 1, cache_write_tokens: 1, cache_write_tokens_details: { ttl_12h_tokens: 1 } } } }]) {
+    t.mock.method(Responses.prototype, 'create', (() => withResponse(receiptResponse(bad), PROJECT)) as any);
+    const res = await generateWithOpenAi({ ...request('composer', SOL), naturalComposerAdmission: mintNaturalAdmission(durableQuote('composer', SOL), 'r3') } as any);
+    assert.equal(res.providerReceipt, undefined, JSON.stringify(bad));
+    t.mock.restoreAll();
+  }
+});
+
+test('receipts: synthetic Tier B responses yield full receipts and the exact DB settlement cost', async t => {
+  const dir = new URL('../../tests/fixtures/tierb-synthetic-receipts/', import.meta.url);
+  const expected: Record<string, [string, 'composer' | 'validator', number]> = {
+    '01-natural_composition.response.json': [SOL, 'composer', 837 * 2000 + 232 * 10000],
+    '02-natural_validation.response.json': [LUNA, 'validator', 3 * 200 + 2980 * 250 + 583 * 1200] };
+  for (const [file, [model, role, cost]] of Object.entries(expected)) {
+    const genuine = JSON.parse(readFileSync(new URL(file, dir), 'utf8'));
+    t.mock.method(Responses.prototype, 'create', (() => withResponse(genuine, PROJECT)) as any);
+    const res = await generateWithOpenAi({ ...request(role, model), naturalComposerAdmission: mintNaturalAdmission(durableQuote(role, model), 'g') } as any);
+    t.mock.restoreAll();
+    assert.ok(res.providerReceipt, file);
+    assert.equal(durableNaturalCostNanoUsd(model, res.providerReceipt!), cost, file);
+  }
+});

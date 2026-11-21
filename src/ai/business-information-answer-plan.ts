@@ -135,7 +135,7 @@ export function completeKnowledgeManifest(manifest: AnswerManifest | undefined):
     });
 }
 
-type PartialAuthority = Readonly<{ businessId: number; owner: NativeKnowledgeTiming; evidenceHash: string; contractHash: string }>;
+type PartialAuthority = Readonly<{ businessId: number; owner: NativeKnowledgeTiming | InformationBudget; evidenceHash: string; contractHash: string }>;
 const partialAuthorities = new WeakMap<object, PartialAuthority>();
 const sourcePartialAuthorities = new WeakMap<object, PartialAuthority>();
 const revokedSourcePartial = new WeakSet<object>();
@@ -184,11 +184,14 @@ const citedNumeralsPresent = (unit: AnswerUnit) => {
 };
 
 /** Publication only: never upgrades coverage or verifies a proposed fact. */
-export function publishableKnowledgeManifest(manifest: AnswerManifest | undefined, businessId: number | undefined): boolean {
+export function publishableKnowledgeManifest(manifest: AnswerManifest | undefined, businessId: number | undefined, durableBudget?: InformationBudget): boolean {
+  const owner = durableBudget ?? nativeKnowledgeTiming();
+  const ownerCurrent = owner instanceof InformationBudget ? owner.remaining() > 0 : !!owner && !owner.failure;
+  if (durableBudget && !ownerCurrent) return false;
   if (manifest?.unresolvedNoticeOnly) {
     const proof = unresolvedNoticeAuthorities.get(manifest.unresolvedNoticeOnly);
     return !!proof && Number.isSafeInteger(businessId) && proof.businessId === businessId &&
-      proof.owner === nativeKnowledgeTiming() && !proof.owner.failure && proof.contractHash === unresolvedNoticeContractHash(manifest) &&
+      proof.owner === owner && ownerCurrent && proof.contractHash === unresolvedNoticeContractHash(manifest) &&
       manifest.units.length === 0 && !manifest.qualifiedPartial && !manifest.sourceScopedPartial && !manifest.sourceLimitations &&
       !manifest.obligationLimitations && !manifest.naturalAttachment && !manifest.fallbackReason &&
       manifest.unresolvedRequirements?.length === 1 && manifest.text === ARABIC_OTHER_PAYER_RECEIPT_UNRESOLVED &&
@@ -198,7 +201,7 @@ export function publishableKnowledgeManifest(manifest: AnswerManifest | undefine
     const token = manifest.sourceScopedPartial, proof = token && sourcePartialAuthorities.get(token);
     return !!proof && !revokedSourcePartial.has(token!) && !manifest.qualifiedPartial && !manifest.naturalAttachment &&
       !manifest.unresolvedRequirements && !!manifest.sourceLimitations?.length && Number.isSafeInteger(businessId) &&
-      proof.businessId === businessId && proof.owner === nativeKnowledgeTiming() && !proof.owner.failure &&
+      proof.businessId === businessId && proof.owner === owner && ownerCurrent &&
       proof.contractHash === sourcePartialContractHash(manifest) && !manifest.fallbackReason && manifest.units.length > 0 &&
       manifest.presentation.prefix === 'none' && !manifest.presentation.addition &&
       JSON.stringify(manifest.presentation.unitIds) === JSON.stringify(manifest.units.map(u => u.id)) &&
@@ -207,7 +210,7 @@ export function publishableKnowledgeManifest(manifest: AnswerManifest | undefine
   if (!manifest?.qualifiedPartial && !manifest?.unresolvedRequirements && !manifest?.obligationLimitations && completeKnowledgeManifest(manifest)) return true;
   if (!manifest?.qualifiedPartial || manifest.naturalAttachment || !Number.isSafeInteger(businessId) || !manifest.units.length) return false;
   const proof = partialAuthorities.get(manifest.qualifiedPartial);
-  if (!proof || proof.businessId !== businessId || proof.owner !== nativeKnowledgeTiming() || proof.owner.failure || proof.contractHash !== partialContractHash(manifest) ||
+  if (!proof || proof.businessId !== businessId || proof.owner !== owner || !ownerCurrent || proof.contractHash !== partialContractHash(manifest) ||
       manifest.fallbackReason && !['COMPOSER_FALLBACK','COMPOSER_SKIPPED_BUDGET'].includes(manifest.fallbackReason)) return false;
   const ids = manifest.presentation.unitIds;
   if (ids.length !== manifest.units.length || new Set(ids).size !== ids.length || ids.some(id=>!manifest.units.some(u=>u.id===id))) return false;
@@ -436,7 +439,7 @@ export const CONDITIONAL_EXEMPTION_GUIDANCE = 'An explicit exemption from a requ
  * The schema, base contracts and independent verifier remain unchanged. */
 export const NATIVE_V2_PRODUCER_GUIDANCE = `Producer check: For each proposed unit, identify the exact requested fact it answers or the necessary condition, exception, coordinated restriction or directly applicable recommendation it preserves. Do not add optional background merely because it concerns the same subject. If a requested attribute is unavailable, leave that attribute unresolved; do not substitute a nearby known attribute. Preserve every requested clause and material source qualification, including when another requested detail is unknown. Do not omit a supported requested fact because it is difficult to quote.
 Numerical propositions: give each independently scoped quantity its own unit and state it once, in digits with its unit (for example 10 minutes rather than a spelled-out number) whenever the source supports that quantity. When the source states a quantity relative to an event, name that event with explicit before/after wording in the text; do not reduce it to "earlier" or "in advance" alone, and never add an anchor the source does not state. Keep the source's approximation, bound, polarity and modality: an approximate recommendation is not an exact or mandatory time, and a question asking whether a time is exact or mandatory is answered only with what the source supports. Keep audience conditions exactly as stated. Give separate units for separately requested facts, and keep alternatives the source offers together with their recommendation.
-Copy exactQuote directly from its evidence item, character for character as supplied, including OCR split words, internal whitespace, line breaks and punctuation spacing. Never correct spelling, join split words, reconstruct typography, translate a quotation or invent source text. Translate only the proposed factual text. Before returning, check that every quote is present in that same item and every proposed unit serves the actual question with all material qualifiers. Return only the existing schema.` + '\n' + CONDITIONAL_EXEMPTION_GUIDANCE;
+Citation precision: cite only the sentence(s) that state the unit's own claim. Do not extend a quote to a neighboring sentence whose quantity, condition or claim the unit does not state, even to supply a referent such as "this": that sentence belongs to its own unit, and the verifier reads the full source context. Copy exactQuote directly from its evidence item, character for character as supplied, including OCR split words, internal whitespace, line breaks and punctuation spacing. Never correct spelling, join split words, reconstruct typography, translate a quotation or invent source text. Translate only the proposed factual text. Before returning, check that every quote is present in that same item and every proposed unit serves the actual question with all material qualifiers. Return only the existing schema.` + '\n' + CONDITIONAL_EXEMPTION_GUIDANCE;
 /** Shared semantic instruction only; no local relevance or publication authority. */
 export const NATIVE_V2_QUESTION_RESPONSIVENESS_GUIDANCE = `Question responsiveness: Judge every independently asserted clause against the complete latest customer question, not merely a shared entity, broad topic, facet label or neighboring source passage. A clause is responsive when it supplies an explicitly requested attribute or relationship, or preserves the source-bound antecedent, condition, exception, coordinated restriction or directly applicable recommendation needed to interpret the requested answer or scenario accurately. A recommendation must address the customer's actual requested need or scenario with its original modality; do not infer a different information need merely from the shared subject. Necessary conditions remain relevant even when the customer did not explicitly ask about those conditions. Do not invent additional requirements.
 A different independent attribute is not necessary context merely because it is useful, present in the same source, or known while the requested attribute is unknown. Consider whether omitting it would change the meaning, scope, applicability or safe interpretation of the requested answer. If not, and it answers no requested attribute or relationship, it is an unrequested supplement. Preserve independently requested facts about distinct offerings without asserting an unsupported equivalence. Evaluate all clauses of a compound unit; one responsive clause does not authorize unrelated extra assertions.
@@ -594,6 +597,9 @@ export function pruneAnswerManifest(manifest: AnswerManifest, validEvidence: rea
 
 export async function buildEvidenceFirstAnswer(input: {
   question: string; language: string; facets: readonly Facet[]; evidence: readonly Evidence[];
+  /** Durable host with active Tier B: keep the model attempt and time of the optional Tier A composition for the
+   * Tier B composer/validator (canonical order is used; no fact, unit or notice changes). */
+  reserveForNaturalComposer?: boolean;
   /** Read-only presentation instruction supplied by the native host, never by the model. */
   clarification?: AnswerClarification;
   /** Backend-only provenance for the previous native publication in this session. */
@@ -612,6 +618,7 @@ export async function buildEvidenceFirstAnswer(input: {
   ownerAnswerProposal?: (facets: readonly Facet[], evidence: readonly Evidence[]) => Promise<OwnerAnswerProposal | undefined>;
   /** Durable callers cannot publish partial coverage; stop before optional model work. */
   requireCompleteCoverage?: boolean;
+  durablePartialPublication?: boolean;
   localLanguageRejection?: (unit: AnswerUnit) => KnowledgeDecision['localLanguage'];
   languageSafe?: (unit: AnswerUnit) => boolean;
   revalidateEvidence?: () => Promise<readonly Evidence[]>;
@@ -627,11 +634,12 @@ export async function buildEvidenceFirstAnswer(input: {
   generate: AnswerGenerator; current: () => Promise<boolean>;
 }): Promise<AnswerManifest> {
   const { language, budget } = input;
+  const partialOwner = input.durablePartialPublication ? budget : budget.nativeTiming;
   const verificationProtocol = input.verificationProtocol ?? selectKnowledgeVerificationProtocol();
   assertKnowledgeVerificationProtocol(verificationProtocol);
   const requestedExtractionProtocol=input.extractionProtocol??'v2';
   assertKnowledgeExtractionProtocol(requestedExtractionProtocol);
-  const facets=input.foreground && budget.nativeTiming && !input.natural && !input.requireCompleteCoverage
+  const facets=input.foreground && partialOwner && !input.natural && !input.requireCompleteCoverage
     ?requestUncertaintyFacets(input.question,language,input.facets):input.facets;
   const diagnostic = (e:KnowledgeDecision) => input.diagnostic?.({...e,remainingMs:budget.remaining()});
   const notices = connective[language] || connective.en;
@@ -646,7 +654,7 @@ export async function buildEvidenceFirstAnswer(input: {
     const parsed=answerJson(result.text);if(!parsed)diagnostic({stage,reason:'MALFORMED_JSON'});return parsed;
   };
   if (!facets.length || !budget.remaining() || !await input.current()) return empty('UNAVAILABLE',budget.remaining()?'CONTEXT_INVALID':'DEADLINE');
-  if (isSourceExhaustiveProtocol(verificationProtocol) && (!input.foreground || !budget.nativeTiming || input.natural ||
+  if (isSourceExhaustiveProtocol(verificationProtocol) && (!input.foreground || !partialOwner || input.natural ||
     input.requireCompleteCoverage || !input.revalidateEvidence || !isBusinessInformationQuestion(input.question) ||
     isExplicitBusinessActionRequest(input.question))) return empty('UNAVAILABLE', 'CONTEXT_INVALID');
   if (!input.evidence.length) return empty('NO_EVIDENCE','NO_EVIDENCE');
@@ -693,10 +701,10 @@ export async function buildEvidenceFirstAnswer(input: {
   const catalogProposal=input.foreground&&!input.natural&&!input.requireCompleteCoverage?independentServiceProposal(input.question,language,facets,availableEvidence):null;
   // Capture the same backend scope once for both stages. Other protocols and
   // legacy, natural, durable and catalog-producing paths retain their prompts.
-  const questionResponsivenessGuidance=input.foreground && budget.nativeTiming && !input.natural && !input.requireCompleteCoverage &&
+  const questionResponsivenessGuidance=input.foreground && partialOwner && !input.natural && !input.requireCompleteCoverage &&
     !catalogProposal && requestedExtractionProtocol==='v2' && verificationProtocol==='v2'
     ? '\n'+NATIVE_V2_QUESTION_RESPONSIVENESS_GUIDANCE : '';
-  const mixedDocumentaryGuidance=catalogProposal && input.foreground && budget.nativeTiming && !input.natural && !input.requireCompleteCoverage &&
+  const mixedDocumentaryGuidance=catalogProposal && input.foreground && partialOwner && !input.natural && !input.requireCompleteCoverage &&
     requestedExtractionProtocol==='v2' && verificationProtocol==='v2'
     ? '\n'+NATIVE_V2_MIXED_DOCUMENTARY_GUIDANCE : '';
   const producerProtocol=selectCanonicalConfigurationProducer();
@@ -742,7 +750,7 @@ export async function buildEvidenceFirstAnswer(input: {
     // A constructed catalog proposal needs verification, not a document model
     // invocation with no documentary sources. Coverage still sees the full question.
     const baseInstruction=catalogProposal ? DOCUMENT_AUTHORITY_EXTRACTION : input.foreground ? FOREGROUND_UNIT_EXTRACTION_INSTRUCTION : UNIT_EXTRACTION_INSTRUCTION;
-    const producerGuidance=input.foreground && budget.nativeTiming && !input.natural && !input.requireCompleteCoverage &&
+    const producerGuidance=input.foreground && partialOwner && !input.natural && !input.requireCompleteCoverage &&
       !catalogProposal && requestedExtractionProtocol==='v2' ? '\n'+NATIVE_V2_PRODUCER_GUIDANCE : '';
     const noDocumentaryGeneration=partitioned&&!extractionEvidence.length;
     if(noDocumentaryGeneration)diagnostic({stage:'extraction',reason:'NO_EVIDENCE',counts:{proposed:0,parsed:0,verified:0,rejected:0}});
@@ -825,7 +833,7 @@ export async function buildEvidenceFirstAnswer(input: {
     };
     proposed = parseAnswerUnits(catalogProposal&&Array.isArray(raw.units)?{...raw,units:[catalogProposal.unit,...raw.units]}:raw, facets, availableEvidence, language,extractionDiagnostic,literalSnapshot&&!ownerFirst?'whole_source':'quotation',
       {businessId:input.businessId,question:input.question,language},
-      input.foreground && budget.nativeTiming && !input.natural && !input.requireCompleteCoverage && !literalSnapshot &&
+      input.foreground && partialOwner && !input.natural && !input.requireCompleteCoverage && !literalSnapshot &&
       verificationProtocol==='source-exhaustive-v2'?{businessId:input.businessId,protocol:verificationProtocol}:undefined, ownerProposalIndex, reExtractionTally);
     proposalParseComplete=Array.isArray(raw.units) && raw.oversized!==true && proposed.units.length===raw.units.length+(catalogProposal?1:0);
     if (!proposalParseComplete && !catalogProposal && !cancellationProposals.length && !ownerApproval &&
@@ -971,7 +979,7 @@ export async function buildEvidenceFirstAnswer(input: {
   const arabicOtherPayerReceiptNoticeOnly = async (): Promise<AnswerManifest | undefined> => {
     const businessId = availableEvidence[0]?.businessId;
     if (language !== 'ar' || facets.length !== 1 || facets[0].obligations.length !== 1 || verified.length ||
-        !input.foreground || !budget.nativeTiming || input.natural || input.requireCompleteCoverage ||
+        !input.foreground || !partialOwner || input.natural || input.requireCompleteCoverage ||
         verificationProtocol !== 'v2' || requestedExtractionProtocol !== 'v2' || ownerProposalIndex !== undefined ||
         catalogProposal || cancellationProposals.length || canonicalConfiguration || literalSnapshot || catalogRequirements.length ||
         documentaryInventoryIds.length || !proposalParseComplete || extractionIncomplete || conflicts.size || unscopedVerifierFailure ||
@@ -1027,7 +1035,7 @@ export async function buildEvidenceFirstAnswer(input: {
       unresolvedRequirements: Object.freeze([notice]), text: notice.text,
       presentationFallback: false, presentationPath: 'direct_verified_units' as const, fallbackReason: null });
     const token = Object.freeze({});
-    unresolvedNoticeAuthorities.set(token, Object.freeze({ businessId: businessId!, owner: budget.nativeTiming,
+    unresolvedNoticeAuthorities.set(token, Object.freeze({ businessId: businessId!, owner: partialOwner,
       evidenceHash: partialEvidenceHash(availableEvidence), contractHash: unresolvedNoticeContractHash(manifest) }));
     return Object.freeze({ ...manifest, unresolvedNoticeOnly: token });
   };
@@ -1229,7 +1237,7 @@ export async function buildEvidenceFirstAnswer(input: {
     manifest = renderVerifiedManifest({ ...manifest, sourceLimitations: limitations, presentationFallback: false,
       presentationPath: 'direct_verified_units', fallbackReason: null });
     const token = Object.freeze({});
-    sourcePartialAuthorities.set(token, Object.freeze({ businessId: input.businessId!, owner: budget.nativeTiming!,
+    sourcePartialAuthorities.set(token, Object.freeze({ businessId: input.businessId!, owner: partialOwner!,
       evidenceHash: partialEvidenceHash(manifestEvidence), contractHash: sourcePartialContractHash(manifest) }));
     return Object.freeze({ ...manifest, sourceScopedPartial: token });
   }
@@ -1326,7 +1334,7 @@ export async function buildEvidenceFirstAnswer(input: {
         text: 'لا أستطيع تأكيد ما إذا كان إحضار إيصال الدفع إلزاميًا إذا دفع شخص آخر.' });
     }
   }
-  if (input.foreground && budget.nativeTiming && !input.natural && !input.requireCompleteCoverage &&
+  if (input.foreground && partialOwner && !input.natural && !input.requireCompleteCoverage &&
       proposalParseComplete && !extractionIncomplete && !conflicts.size && catalogComplete &&
       (receiptNotice ? !operationalClause(input.question) && input.businessId === businessId : validPartialCoverage && (descriptivePartial||requirementPartial)) &&
       (!relationshipRequest || Boolean(sourceScopeNotice)) &&
@@ -1336,13 +1344,13 @@ export async function buildEvidenceFirstAnswer(input: {
     if (receiptNotice || requirementPartial) manifest = renderVerifiedManifest({ ...manifest,
       unresolvedRequirements: receiptNotice ? Object.freeze([receiptNotice]) : requirementNotices! });
     const token=Object.freeze({});
-    partialAuthorities.set(token,Object.freeze({businessId,owner:budget.nativeTiming,evidenceHash:partialEvidenceHash(manifestEvidence),contractHash:partialContractHash(manifest)}));
+    partialAuthorities.set(token,Object.freeze({businessId,owner:partialOwner,evidenceHash:partialEvidenceHash(manifestEvidence),contractHash:partialContractHash(manifest)}));
     manifest=Object.freeze({...manifest,qualifiedPartial:token});
   }
   // Disjoint literal questions may retain a complete sibling when the other
   // was independently unresolved or failed its numerical citation. Reuse the
   // existing current-run publication token and keep the entire evidence pin.
-  if (!manifest.qualifiedPartial && input.foreground && budget.nativeTiming && !input.natural && !input.requireCompleteCoverage &&
+  if (!manifest.qualifiedPartial && input.foreground && partialOwner && !input.natural && !input.requireCompleteCoverage &&
       verificationProtocol === 'v2' && requestedExtractionProtocol === 'v2' && ownerProposalIndex === undefined &&
       !catalogProposal && !cancellationProposals.length && !canonicalConfiguration && !literalSnapshot &&
       !catalogRequirements.length && !documentaryInventoryIds.length &&
@@ -1384,7 +1392,7 @@ export async function buildEvidenceFirstAnswer(input: {
           obligationLimitations: limitations, qualifiedPartial: token, presentationFallback: false,
           presentationPath: 'direct_verified_units', fallbackReason: null,
           presentation: Object.freeze({ unitIds: Object.freeze(units.map(u => u.id)), prefix: 'none', addition: false }) });
-        partialAuthorities.set(token, Object.freeze({ businessId: businessId!, owner: budget.nativeTiming,
+        partialAuthorities.set(token, Object.freeze({ businessId: businessId!, owner: partialOwner,
           evidenceHash: partialEvidenceHash(manifestEvidence), contractHash: partialContractHash(partial) }));
         return partial;
       }
@@ -1463,7 +1471,7 @@ export async function buildEvidenceFirstAnswer(input: {
     return renderVerifiedManifest({...manifest,presentationFallback:false,presentationPath:'direct_verified_units',fallbackReason:null});
   }
   let presentation = manifest.presentation; let presentationFallback = true;
-  const canCompose=optionalCompositionAffordable(budget);
+  const canCompose=!input.reserveForNaturalComposer && optionalCompositionAffordable(budget);
   diagnostic({stage:'composition',reason:canCompose?'ACCEPTED':'COMPOSER_SKIPPED_BUDGET',
     startingBudgetMs:budget.remaining(),timeoutMs:OPTIONAL_COMPOSITION_LIMIT_MS,
     reserveMs:OPTIONAL_COMPOSITION_REQUIRED_MS-OPTIONAL_COMPOSITION_LIMIT_MS});

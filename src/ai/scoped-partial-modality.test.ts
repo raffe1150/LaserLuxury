@@ -86,7 +86,14 @@ test('descriptive facts are unaffected; with no gap nothing is ever blocked', ()
 test('limitation copy: literal user spans are echoed; paraphrased labels get fixed fact-free copy; single-facet behaviour unchanged', () => {
   const q = "I'm coming for the first time. How many minutes before should I arrive, and do I need to bring anything?";
   const span = sourceExhaustiveLimitations(q, 'en', facets, [{ facetId: 'f2', obligationId: 'f2.o1' }]);
-  assert.deepEqual(span?.map(n => n.text), ['The full answer to “do I need to bring anything?” cannot be confirmed from the available information.']);
+  // A single unresolved requirement uses the fixed, question-independent copy (the natural composer must not echo the question).
+  assert.deepEqual(span?.map(n => n.text), ['I cannot confirm from the available information what, if anything, is required.']);
+  // Two unresolved requirements are never merged into one generic notice: each keeps a distinct literal span or the result fails closed.
+  const two = parseRequestedFacets([{ subject: 'x', attribute: 'arrival', questionType: 'requirement', obligations: [{ description: 'How many minutes before should I arrive', questionType: 'requirement' }] },
+    { subject: 'x', attribute: 'items', questionType: 'requirement', obligations: [{ description: 'do I need to bring anything?', questionType: 'requirement' }] }]).facets;
+  const both = sourceExhaustiveLimitations(q, 'en', two, [{ facetId: 'f1', obligationId: 'f1.o1' }, { facetId: 'f2', obligationId: 'f2.o1' }]);
+  assert.ok(both === undefined || both.length === 2 && new Set(both.map(n => n.text)).size === 2 &&
+    both.every(n => n.text !== 'I cannot confirm from the available information what, if anything, is required.'), JSON.stringify(both));
   const paraphrased = parseRequestedFacets([facets[0], { subject: 'x', attribute: 'items', questionType: 'requirement', obligations: [{ description: 'whether anything must be brought', questionType: 'requirement' }] }]).facets;
   for (const [language, text] of [['en', 'I cannot confirm from the available information what, if anything, is required.'],
     ['fa', 'بر اساس اطلاعات موجود نمی‌توانم تأیید کنم که آیا چیزی الزامی است یا نه.']] as const)
@@ -132,7 +139,7 @@ test('fixed limitation copy states uncertainty only, never absence', () => {
 test('fa/ar echoed spans keep the Arabic-script question mark (RTL)', () => {
   const q = 'من برای اولین بار می خوام بیام. چند دقیقه قبل از وقت رزرو باید اونجا باشم و آیا لازم هست چیزی با خودم بیارم?';
   const fs = parseRequestedFacets([{ subject: 'x', attribute: 'a', questionType: 'description', obligations: [{ description: 'چند دقیقه قبل از وقت رزرو باید اونجا باشم', questionType: 'description' }] },
-    { subject: 'x', attribute: 'b', questionType: 'requirement', obligations: [{ description: 'آیا لازم هست چیزی با خودم بیارم?', questionType: 'requirement' }] }]).facets;
+    { subject: 'x', attribute: 'b', questionType: 'description', obligations: [{ description: 'آیا لازم هست چیزی با خودم بیارم?', questionType: 'description' }] }]).facets;
   assert.deepEqual(sourceExhaustiveLimitations(q, 'fa', fs, [{ facetId: 'f2', obligationId: 'f2.o1' }])?.map(n => n.text),
     ['پاسخ کامل به «آیا لازم هست چیزی با خودم بیارم؟» را نمی‌توان بر اساس اطلاعات موجود تأیید کرد.']);
 });

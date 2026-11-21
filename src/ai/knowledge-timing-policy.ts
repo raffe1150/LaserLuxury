@@ -7,7 +7,46 @@ export const ACCURACY_FIRST_POLICY = Object.freeze({
   version: 'accuracy-first-v1', turnMs: 45_000, knowledgeMs: 35_000,
   extractionMs: 20_000, verificationReserveMs: 12_000, verificationDispatchMs: 10_000,
   publicationMs: 3_000, deliveryMs: 5_000, cleanupMs: 2_000,
+  /** Sol verification per-request cap (was the literal 19999 in executeKnowledgeGeneration / server). */
+  verificationMs: 19_999,
+  /** Floor applied to the provider timeout of managed Knowledge extraction/verification. 0 = AI_PROVIDER_TIMEOUT_MS as before. */
+  knowledgeProviderFloorMs: 0,
 });
+export type KnowledgeTimingPolicy = Readonly<{ version: string; turnMs: number; knowledgeMs: number; extractionMs: number;
+  verificationReserveMs: number; verificationDispatchMs: number; publicationMs: number; deliveryMs: number; cleanupMs: number;
+  verificationMs: number; knowledgeProviderFloorMs: number; experiment?: true;
+  /** Experiment only: detached Tier B shadow bounds (production keeps NATURAL_COMPOSER_LIMITS 6 s / 4 s). */
+  naturalComposerMs?: number; naturalValidatorMs?: number }>;
+/** EXPERIMENT ONLY (owner decision 2026-11-18, Option B of the fa-first-visit-sol-sol-20261118-2 timeout diagnosis).
+ * A quality-validation profile for ONE authorized Sol-to-Sol run; it is not a production latency policy.
+ * Sol extraction and Sol verification each get 45 s; the verification reserve (47 s) keeps the verifier's full 45 s
+ * after extraction; the Knowledge window (100 s) and turn (110 s) hold planning + both stages + publication,
+ * delivery and cleanup. No environment variable selects it: only runWithExperimentKnowledgeTiming, under NODE_ENV=test,
+ * for an fa-first-visit-sol-sol-* authorization, inside an AsyncLocalStorage scope. Everything else is unchanged. */
+export const FA_EXTENDED_TIMING: KnowledgeTimingPolicy = Object.freeze({ ...ACCURACY_FIRST_POLICY,
+  version: 'fa-sol-sol-extended-timing-v1', turnMs: 110_000, knowledgeMs: 100_000,
+  extractionMs: 45_000, verificationMs: 45_000, verificationReserveMs: 47_000, knowledgeProviderFloorMs: 45_000, experiment: true as const,
+  naturalComposerMs: 20_000, naturalValidatorMs: 10_000 });
+export const EXPERIMENT_TIMING_AUTHORIZATION = /^fa-first-visit-sol-sol-[A-Za-z0-9-]{1,40}$/u;
+const experimentTiming = new AsyncLocalStorage<KnowledgeTimingPolicy>();
+/** Runs work with the experiment timing profile in scope. Refused outside the offline test boundary, for any other
+ * profile or authorization, and when nested. */
+export function runWithExperimentKnowledgeTiming<T>(grant: Readonly<{ profile: string; authorizationId: string }>, work: () => Promise<T>): Promise<T> {
+  if (process.env.NODE_ENV !== 'test' || grant?.profile !== FA_EXTENDED_TIMING.version ||
+      !EXPERIMENT_TIMING_AUTHORIZATION.test(String(grant?.authorizationId)) || experimentTiming.getStore())
+    throw new Error('EXPERIMENT_TIMING_REFUSED');
+  return experimentTiming.run(FA_EXTENDED_TIMING, work);
+}
+/** Tier B shadow bounds inside the experiment scope only; undefined everywhere else (production 6 s / 4 s apply). */
+export const experimentNaturalComposerTimeouts = () => { const p = experimentTiming.getStore();
+  return p?.naturalComposerMs && p.naturalValidatorMs ? { composerMs: p.naturalComposerMs, validatorMs: p.naturalValidatorMs } : undefined; };
+/** Policy for a NEW native turn: the production policy unless the experiment scope is active. */
+export const activeKnowledgeTimingPolicy = (): KnowledgeTimingPolicy => experimentTiming.getStore() ?? ACCURACY_FIRST_POLICY;
+/** Per-request cap of a managed Sol Knowledge stage, from the current native turn (production: 20000 / 19999). */
+export function knowledgeStageCapMs(stage: string): number {
+  const policy = nativeKnowledgeTiming()?.policy ?? ACCURACY_FIRST_POLICY;
+  return stage === 'verification' ? policy.verificationMs : policy.extractionMs;
+}
 export class KnowledgeTimingError extends Error {
   constructor(public readonly code: 'deadline' | 'closed' | 'overload' | 'delivery_attempted') {
     super(`knowledge_${code}${code === 'deadline' || code === 'closed' ? ': aborted' : ''}`); this.name = 'KnowledgeTimingError';
@@ -49,8 +88,8 @@ export function knowledgeTurnExtension(businessId: number | undefined, env: Node
   const listed = typeof businessId === 'number' && Number.isSafeInteger(businessId) && businessId > 0 && tenants.includes(String(businessId));
   return { extensionMs: listed ? 5_000 : 0, invalid: false };
 }
-export const accuracyFirstExtractionAllowance = (generationMs: number) => Number.isFinite(generationMs)
-  ? Math.max(0, Math.floor(Math.min(ACCURACY_FIRST_POLICY.extractionMs, generationMs - ACCURACY_FIRST_POLICY.verificationReserveMs))) : 0;
+export const accuracyFirstExtractionAllowance = (generationMs: number, policy: KnowledgeTimingPolicy = ACCURACY_FIRST_POLICY) => Number.isFinite(generationMs)
+  ? Math.max(0, Math.floor(Math.min(policy.extractionMs, generationMs - policy.verificationReserveMs))) : 0;
 
 /** Activated only by the isolated two-conversation test boundary. */
 export const CONTINUITY_TEST_TIMING = Object.freeze({
@@ -64,7 +103,7 @@ export function continuityTestPlanningAllowance(generationRemainingMs: number): 
 
 /** Contains no question, recipient, tenant, evidence or credentials. Timers never reset on retry. */
 export class NativeKnowledgeTiming {
-  readonly policy = ACCURACY_FIRST_POLICY;
+  readonly policy: KnowledgeTimingPolicy = activeKnowledgeTimingPolicy();
   readonly turnId = randomUUID();
   readonly startedAt = Date.now();
   readonly turnExtensionMs: 0 | 5_000;

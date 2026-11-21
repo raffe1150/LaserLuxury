@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { composerProposalReason, composerRequestData, composerSnapshot, naturalComposerConfig, previousCustomerMessage,
-  resetNaturalComposerBounds, runNaturalComposerShadow, type ResolvedNaturalModels } from './natural-composer-shadow';
+  resetNaturalComposerBounds, runNaturalComposer, runNaturalComposerShadow, type ResolvedNaturalModels } from './natural-composer-shadow';
 import { routeNaturalComposerModels } from './model-routing';
 import { recordingNaturalBudget, type BudgetLogEntry } from '../../tests/helpers/natural-composer-test-budget';
 import { naturalContractHash, parseNaturalProposal, NATURAL_FLAGS } from './grounded-knowledge-composition';
@@ -31,7 +31,7 @@ const GOOD = [block('courtesy', 'Welcome, happy to help!'), block('fact', 'For y
 const proposal = (blocks: unknown[]) => parseNaturalProposal({ blocks }, facets as any)!;
 const safe = () => true;
 
-test('config: default OFF, "active" is never accepted, kill switch wins, strict allowlist and bounded daily cap', () => {
+test('config: default OFF, "active" without a tenant list is OFF, kill switch wins, strict allowlist and bounded daily cap', () => {
   assert.equal(naturalComposerConfig({}).mode, 'off');
   for (const v of ['active', 'on', 'true', 'SHADOW']) assert.equal(naturalComposerConfig({ ODINLINK_KNOWLEDGE_NATURAL_COMPOSER: v }).mode, 'off', v);
   assert.equal(naturalComposerConfig({ ODINLINK_KNOWLEDGE_NATURAL_COMPOSER: 'shadow' }).mode, 'shadow');
@@ -269,4 +269,66 @@ test('models: explicit Luna composer, separate validator, same-model only with o
     assert.deepEqual([r.outcome, r.model, r.validatorModel, r.validatorIndependence], ['validated', composer, validator, independence]);
     assert.deepEqual(m.calls.map(c => c.model), [composer, validator]);
   }
+});
+
+// --- Active (customer-facing) mode: validated text only, otherwise canonical fallback ----------
+test('config: active needs an explicit tenant list; the kill switch still wins', () => {
+  const env = { ODINLINK_KNOWLEDGE_NATURAL_COMPOSER: 'active', ODINLINK_KNOWLEDGE_NATURAL_COMPOSER_TENANTS: '3' };
+  assert.equal(naturalComposerConfig(env).mode, 'active');
+  assert.deepEqual([...naturalComposerConfig(env).tenants], [3]);
+  assert.equal(naturalComposerConfig({ ...env, ODINLINK_KNOWLEDGE_NATURAL_COMPOSER_TENANTS: 'x,0' }).mode, 'off');
+  assert.equal(naturalComposerConfig({ ...env, ODINLINK_KNOWLEDGE_NATURAL_COMPOSER_KILL: 'true' }).mode, 'off');
+});
+const runActive = (generate: any, over: Record<string, unknown> = {}, log: BudgetLogEntry[] = []) => runNaturalComposer({ snapshot: snapshot(), businessId: 3, channel: 'telegram',
+  question: QUESTION, turnId: `a${++turn}`, generate, languageSafe: safe, dailyCap: 20, models: MODELS, budget: recordingNaturalBudget(log), publish: true, ...over });
+
+test('active: a validated proposal returns its text for publication, with the backend notice verbatim', async () => {
+  resetNaturalComposerBounds();
+  const m = mockProvider(GOOD), r = await runActive(m.generate);
+  assert.deepEqual([r.record.outcome, r.record.mode, r.record.publication], ['validated', 'active', 'published_validated']);
+  assert.ok(r.text && r.text.includes(NOTICE) && r.text.includes('10 minutes'));
+  assert.ok(!JSON.stringify(r.record).includes('10 minutes'), 'record stays content-free');
+});
+
+test('active: gate rejection, validator rejection, malformed verdict and provider failure return NO text (canonical fallback)', async () => {
+  for (const [generate, reason] of [[mockProvider([GOOD[1], GOOD[2]]).generate, 'NOTICE_BINDINGS'], [mockProvider(GOOD, { approve: false }).generate, null],
+    [mockProvider(GOOD, { validatorText: 'not json' }).generate, 'MALFORMED_VERDICT'], [mockProvider(new Error('boom')).generate, null]] as const) {
+    resetNaturalComposerBounds();
+    const r = await runActive(generate);
+    assert.equal(r.text, undefined);
+    assert.equal(r.record.publication, 'canonical_fallback');
+    assert.notEqual(r.record.outcome, 'validated');
+    if (reason) assert.equal(r.record.reason, reason);
+  }
+});
+
+test('active: stage timeouts of the calling profile are applied to each call', async () => {
+  resetNaturalComposerBounds();
+  const seen: number[] = [];
+  const m = mockProvider(GOOD);
+  const r = await runActive(async (req: any) => { seen.push(req.signal ? 1 : 0); return m.generate(req); }, { timeouts: { composerMs: 9000, validatorMs: 7000 } });
+  assert.equal(r.record.outcome, 'validated');
+  resetNaturalComposerBounds();
+  const keepAlive = setInterval(() => {}, 5); // AbortSignal.timeout timers are unref'd
+  const slow = await runActive(async (req: any) => new Promise((resolve, reject) => req.signal.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })))),
+    { timeouts: { composerMs: 30, validatorMs: 30 } });
+  clearInterval(keepAlive);
+  assert.deepEqual([slow.record.outcome, slow.record.reason, slow.text, slow.record.publication], ['error', 'TIMEOUT', undefined, 'canonical_fallback']);
+});
+
+test('active: a failed pre-dispatch attempt reservation dispatches nothing and keeps the hold as unknown', async () => {
+  resetNaturalComposerBounds();
+  const log: BudgetLogEntry[] = [], m = mockProvider(GOOD);
+  const r = await runActive(m.generate, { beforeDispatch: async () => { throw new Error('attempt budget exhausted'); } }, log);
+  assert.equal(m.calls.length, 0);
+  assert.deepEqual([r.record.outcome, r.record.modelCalls, r.text], ['skipped', 0, undefined]);
+  assert.deepEqual(log.map(e => [e.op, e.reason]), [['reserve', undefined], ['unknown', 'NOT_DISPATCHED_ATTEMPT']]);
+});
+
+test('active: durable accounting requires the message request key before any reservation', async () => {
+  resetNaturalComposerBounds();
+  const log: BudgetLogEntry[] = [], m = mockProvider(GOOD);
+  const durable = { ...recordingNaturalBudget(log), accounting: 'durable-cross-instance' as const };
+  const r = await runActive(m.generate, { budget: durable });
+  assert.deepEqual([r.record.outcome, r.record.reason, m.calls.length, log.length], ['skipped', 'REQUEST_KEY_MISSING', 0, 0]);
 });
